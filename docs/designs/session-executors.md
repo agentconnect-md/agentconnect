@@ -397,6 +397,13 @@ it:
   or returns the reply it already gave: the same key, no rotation, no pipe closed.
   Without this a preparation slower than one acknowledgement timeout would run
   twice, and the second run would rotate away the key the first had just returned.
+  The reply lives only as long as the launch does on the executor. Once the
+  executor has stopped the environment for idleness, or has restarted, there is no
+  reply to return, and it **refuses retryably** rather than minting a second key at
+  a generation it has already applied — which would hand a working key to whoever
+  replayed that generation, a deposed holder included. The holder discards the
+  launch and allocates a higher generation, so every wake and every recovery
+  advances the fence.
 - _A higher generation_ is a new launch. For an environment that already exists it
   attaches: it starts the shim if the environment was stopped, and mints a fresh
   key. So the same frame is session birth, the wake of an idle environment, recovery
@@ -639,12 +646,17 @@ applies the dirty and unique-commit rules over the shim, because those rules nee
 the agent's remote, default branch and retention policy, which the executor does
 not know.
 
-Neither decision needs a message. _Idle:_ the holder closes the session's pipe. An
-environment with no admitted pipe for longer than a linger — longer than the
-dialer's reconnect backoff, so a blip is not an idle signal — has its shim, and its
-VM, stopped by the executor. That frees its slot, since capacity counts live shims
-and VMs; the directory stays, and the next turn's `prepare` starts it again. A dead
-holder's pipes close by themselves, so nothing keeps running for lack of a judge.
+Neither decision needs a message. _Idle:_ the holder closes the session's pipe, and
+in the same step drops the session and forgets the launch — the coupling the pool's
+suspend path already has (`K8sDriver.suspendIfIdle`), and with the launch goes the
+`prepare` reply the provider kept for it. An environment with no admitted pipe for
+longer than a linger — longer than the dialer's reconnect backoff, so a blip is not
+an idle signal — has its shim, and its VM, stopped by the executor. That frees its
+slot, since capacity counts live shims and VMs; the directory stays. The next turn
+finds no launch, records one at a higher generation, and its `prepare` starts the
+environment again; a holder that kept the old launch would reuse a reply whose key
+no longer opens anything, and no `prepare` would ever be sent. A dead holder's
+pipes close by themselves, so nothing keeps running for lack of a judge.
 _Retirement:_ the holder deletes the session's row in the shared store, and the
 executor's reconcile (below) removes the environment. There is no `release` message
 (§15), so the reconcile is part of the executor facet itself (§12), not a
@@ -711,8 +723,10 @@ holder (§15).
   candidate, records the new executor on the row, and tells the user in the
   conversation that the previous environment was lost, as it is when a pinned
   daemon dies. If the old machine returns, its reconcile collects the orphan.
-- _The executor refuses_ — it is full, or draining. A refusal is not a loss: the
-  environment is intact, so the turn fails retryably and nothing moves.
+- _The executor refuses_ — it is full, or draining, or the launch it was asked about
+  is one it has retired (§6), which the holder answers with a new launch. A refusal
+  is not a loss: the environment is intact, so the turn fails retryably and nothing
+  moves.
 
 **Concurrency on one executor.** The executor facet is the only writer of its own
 sandbox state, so several holders placing sessions on one machine at once are
@@ -788,7 +802,9 @@ in scope. The keys die with the process too: a holder that lost its pipe re-dial
 the handshake is refused, the launch is given up as lost, and the next one sends a
 `prepare` at a new binding generation, which starts the shim again and returns a
 fresh key. The highest generation each environment has applied is on disk (§6), so
-the restart does not reopen the door to a stale `prepare`.
+the restart does not reopen the door to a stale `prepare`, and a `prepare` replayed
+at the generation the restart interrupted is refused rather than given a second
+key.
 
 Nothing version-sensitive is pushed from the holder. The executor runs its own shim
 bundle (§4), and the link has no protocol of its own to version: below the shim
@@ -887,7 +903,7 @@ to run, stands.
 | F1  | Protocol and CP: the executor facet, effective strategy table, endpoint and session capacity at registration and in `capabilities/update`; `hostedSessions` in the heartbeat; `executor/candidates`; the relayed `executor/prepare` with its ledger check; the group's switch on the member set; `executorDaemonId` on the CP session row and on the shared-store session row. |
 | F2a | The `host`-strategy shim launcher — the executor's own bundle as a host process with a private runtime root, a helper root and a unix-socket listener — and the daemon-side path derivation: the Git config directory, git-credential socket variable, MCP endpoint and credential helper derived from the reply's roots instead of constants (§5).                            |
 | F2b | The executor facet: `sandbox.share`, the TLS-PSK listener and the byte pipe, `prepare` handling (reservation, environment, HOME seed, key, and the generation rule: join, attach and rotate, or refuse), the idle stop, the orphan reconcile, and joining the shutdown drain.                                                                                                  |
-| F3  | The holder: `ExecutorPlane` and its `ShimEndpointProvider`, per-session plane resolution, the birth predicate with its recorded reason, failover, the lazy loss rule; and a two-daemon, one-CP integration fixture covering holder failover, executor loss and executor restart.                                                                                               |
+| F3  | The holder: `ExecutorPlane` and its `ShimEndpointProvider`, per-session plane resolution, the birth predicate with its recorded reason, launch retirement at idle and on a retired-launch refusal, failover, the lazy loss rule; and a two-daemon, one-CP integration fixture covering holder failover, executor loss and executor restart.                                    |
 | F4  | The `microsandbox` strategy: "prepare an environment" split from "spawn the runtime" in the microsandbox driver, the pipe into the guest over agentd's TCP stream, the session's state in an executor-local mount.                                                                                                                                                             |
 | F5  | Console: the group switch, per-daemon hosting and capacity, a session's executor or the reason it stayed home.                                                                                                                                                                                                                                                                 |
 
@@ -1051,8 +1067,9 @@ Removed by the 2026-09-20 revision, each with the reason it went:
 - [k8s-daemon-pool.md](k8s-daemon-pool.md) §4 and [git-workspace-model.md](git-workspace-model.md)
   §11 define the session-pod shape and the clone tier this design reuses; the
   workspace model's "tier a session is born in" gains an executor arm that always
-  answers "clone". The pool's §7 takeover trade-off does not carry over: rotating
-  the key closes a deposed holder's pipe (§6).
+  answers "clone". The pool's edge fence, the binding generation, is the fence on
+  `prepare` too, and its §7 takeover trade-off does not carry over: rotating the key
+  closes a deposed holder's pipe (§6).
 - [cluster-spawn-and-shim.md](cluster-spawn-and-shim.md) defines the seam, the shim,
   the dial direction and the tunnel direction, which apply verbatim, and the binding
   proof, whose identity steps (1–5) §6 replaces with a TLS-PSK pipe keyed by the
