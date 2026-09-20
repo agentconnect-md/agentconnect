@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { createRequire } from 'node:module'
@@ -61,13 +62,20 @@ async function bind(shim: HostShim, subject: string): Promise<{ session: ShimSes
   return { session, dialer }
 }
 
-/** Start an echo runtime through the shim, send one line, and return what came back with the runtime's pid and HOME. */
+// The runtime leaves a grandchild in a group of its own, which no group signal from the launcher reaches; it ends itself if a test does not.
+const RUNTIME = [
+  "const c = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { detached: true, stdio: 'ignore' })",
+  'c.unref()',
+  "require('fs').writeFileSync('info', [process.pid, process.env.HOME, process.ppid, c.pid].join('\\n'))",
+  'process.stdin.pipe(process.stdout)'
+].join('; ')
+
+/** Start an echo runtime through the shim, send one line, and return what came back with the pids and HOME it saw. */
 async function echoThrough(session: ShimSession, cwd: string, line: string) {
-  const script = `require('fs').writeFileSync('info', process.pid + '\\n' + process.env.HOME); process.stdin.pipe(process.stdout)`
   const opened = (await session.request('acp', {
     op: 'open',
     command: process.execPath,
-    args: ['-e', script],
+    args: ['-e', RUNTIME],
     env: { PATH: process.env.PATH ?? '' },
     cwd
   })) as { streamId: string }
@@ -79,8 +87,8 @@ async function echoThrough(session: ShimSession, cwd: string, line: string) {
   })
   await session.request('acp', { op: 'chunk', streamId: opened.streamId, data: Buffer.from(line).toString('base64') })
   await vi.waitFor(() => expect(echoed).toBe(line), WAIT)
-  const [pid, home] = readFileSync(join(cwd, 'info'), 'utf8').split('\n')
-  return { echoed, pid: Number(pid), home }
+  const [pid, home, shimPid, grandchild] = readFileSync(join(cwd, 'info'), 'utf8').split('\n')
+  return { echoed, home, pid: Number(pid), shimPid: Number(shimPid), grandchild: Number(grandchild) }
 }
 
 describe('host strategy shim launcher', () => {
@@ -126,14 +134,27 @@ describe('host strategy shim launcher', () => {
       // No complete environment: the holder sent no HOME, and each runtime got its own session's.
       expect(echoes.map((echo) => echo.home)).toEqual(shims.map((shim) => join(shim.workspaceRoot, 'home')))
 
-      await a.stop()
-      expect(existsSync(a.runtimeRoot)).toBe(false)
-      expect(await a.exited).toBeDefined()
-      await vi.waitFor(() => expect(alive(echoes[0]!.pid)).toBe(false), WAIT)
-      // The neighbour is untouched: its root, its runtime, and its channel.
-      expect(existsSync(b.socketPath)).toBe(true)
-      expect(alive(echoes[1]!.pid)).toBe(true)
-      expect(existsSync(a.workspaceRoot)).toBe(true)
+      // A process of this user that carries no mark, which no sweep may touch.
+      const bystander = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'ignore' })
+      try {
+        await a.stop()
+        expect(existsSync(a.runtimeRoot)).toBe(false)
+        expect(await a.exited).toBeDefined()
+        await vi.waitFor(() => expect(alive(echoes[0]!.pid) || alive(echoes[0]!.grandchild)).toBe(false), WAIT)
+        // The neighbour is untouched: its root, its runtime and what that left running, and the session's workspace stays.
+        expect(existsSync(b.socketPath)).toBe(true)
+        expect(alive(echoes[1]!.pid) && alive(echoes[1]!.grandchild)).toBe(true)
+        expect(existsSync(a.workspaceRoot)).toBe(true)
+
+        // A shim killed outright ends nothing itself: the launcher's sweep finds the runtime and the grandchild by their mark.
+        process.kill(echoes[1]!.shimPid, 'SIGKILL')
+        await b.exited
+        await vi.waitFor(() => expect(alive(echoes[1]!.pid) || alive(echoes[1]!.grandchild)).toBe(false), WAIT)
+        await vi.waitFor(() => expect(existsSync(b.runtimeRoot)).toBe(false), WAIT)
+        expect(bystander.exitCode ?? bystander.signalCode).toBeNull()
+      } finally {
+        bystander.kill('SIGKILL')
+      }
     }
   )
 
@@ -169,7 +190,8 @@ describe('host strategy shim launcher', () => {
       socketPath: '/d/hs/x/shim.sock',
       runtimeRoot: '/d/hs/x',
       workspaceRoot: '/d/sessions/s',
-      helperRoot: '/d/dist'
+      helperRoot: '/d/dist',
+      mark: 'm'
     })
     expect(env).toEqual({
       PATH: '/usr/bin',
@@ -178,7 +200,8 @@ describe('host strategy shim launcher', () => {
       AC_SHIM_SOCKET: '/d/hs/x/shim.sock',
       AC_SHIM_RUNTIME_ROOT: '/d/hs/x',
       AC_SHIM_WORKSPACE_ROOT: '/d/sessions/s',
-      AC_SHIM_HELPER_ROOT: '/d/dist'
+      AC_SHIM_HELPER_ROOT: '/d/dist',
+      AC_SHIM_RUNTIME_MARK: 'm'
     })
   })
 })

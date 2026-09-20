@@ -52,8 +52,10 @@ describe('shim entry options', () => {
     const host = shimEntryOptions({
       AC_SHIM_SOCKET: '/d/hs/x/shim.sock',
       AC_SHIM_RUNTIME_ROOT: '/d/hs/x',
-      AC_SHIM_HELPER_ROOT: '/d/dist'
+      AC_SHIM_HELPER_ROOT: '/d/dist',
+      AC_SHIM_RUNTIME_MARK: 'm'
     })
+    expect(host.runtimeMark).toBe('m')
     expect(host.completeEnv).toBe(false)
     expect(host.listen).toEqual({ socketPath: '/d/hs/x/shim.sock' })
     expect(host.paths.tunnels).toEqual({ gitcred: '/d/hs/x/gitcred.sock', mcp: '/d/hs/x/mcp.sock' })

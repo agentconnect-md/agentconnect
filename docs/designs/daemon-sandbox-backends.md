@@ -954,6 +954,19 @@ configuration key comes with it.
 - **Its own process group.** Stop signals the group, the shim ends the runtimes
   it started before exiting (no pod or VM teardown follows on a host), a kill
   follows past the deadline, and the runtime root is removed. The workspace stays.
+- **A marked-process sweep behind it.** Each runtime leads a process group of
+  its own, exactly as in a pod, so the group signal reaches only the shim; a shim
+  that crashes or is killed ends nothing. The launcher therefore mints a random
+  per-shim mark (not the identity token), the shim receives it as
+  `AC_SHIM_RUNTIME_MARK`, and the ACP runner copies it into every runtime's
+  environment in both environment modes. Pods and VMs set no mark and are
+  unchanged. Whenever the shim has exited — a stop, a crash, a failed start — and
+  before the runtime root is removed, the launcher reads `/proc/<pid>/environ` of
+  this user's processes and kills each one that carries exactly that mark, by
+  group when it leads one. The mark is verified at kill time, so a recycled pid is
+  never signalled. The sweep exists for crashes, not for containment: a process
+  that clears its environment and re-parents escapes it, which is the limit the
+  daemon's own unsandboxed local launch already has (architecture.md §9.1).
 - **Helpers from the daemon's installation.** `AC_SHIM_HELPER_ROOT` is the
   directory that holds `shim/index.js`, which resolves the MCP bridge, the
   merge-when-ready watcher and the `gh` token entry from the daemon's own bundle.

@@ -5,6 +5,7 @@ import {
   SHIM_HELPER_ROOT_ENV,
   SHIM_LISTEN_PORT_ENV,
   SHIM_LISTEN_SOCKET_ENV,
+  SHIM_RUNTIME_MARK_ENV,
   SHIM_RUNTIME_ROOT_ENV,
   SHIM_WORKSPACE_ROOT_ENV
 } from './protocol.js'
@@ -17,6 +18,8 @@ export interface ShimEntryOptions {
   paths: ShimPaths
   /** Explicit, never implied by how the identity arrived: a holder on another machine describes a different machine. */
   completeEnv: boolean
+  /** Set by a host launcher only; pods and VMs have a teardown of their own and get none. */
+  runtimeMark?: string
 }
 
 /** What the entrypoint reads from its environment; unset keeps the image's fixed layout, and `||` keeps '' from rooting paths at '/'. */
@@ -30,6 +33,7 @@ export function shimEntryOptions(env: Record<string, string | undefined>): ShimE
     listen: socketPath ? { socketPath } : { port },
     workspaceRoot: env[SHIM_WORKSPACE_ROOT_ENV] ?? DEFAULT_SHIM_WORKSPACE_ROOT,
     paths: shimPaths(env[SHIM_RUNTIME_ROOT_ENV]?.trim() || undefined, env[SHIM_HELPER_ROOT_ENV]?.trim() || undefined),
-    completeEnv: env[SHIM_COMPLETE_ENV_FLAG] === '1'
+    completeEnv: env[SHIM_COMPLETE_ENV_FLAG] === '1',
+    ...(env[SHIM_RUNTIME_MARK_ENV] ? { runtimeMark: env[SHIM_RUNTIME_MARK_ENV] } : {})
   }
 }

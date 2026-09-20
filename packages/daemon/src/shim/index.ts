@@ -55,6 +55,7 @@ async function main(): Promise<number> {
     // Image-accepted provider config (AC_CLAUDE_*/AC_CODEX_* → the runtime's BASE_URL/API_KEY).
     podEnv: process.env,
     completeEnv: options.completeEnv,
+    ...(options.runtimeMark ? { runtimeMark: options.runtimeMark } : {}),
     // Serves materialize and git exec, and ENFORCES the declared inventory here rather than
     // trusting that the daemon sent only permitted subcommands; tunnels are served separately
     // because they own long-lived sockets rather than answering one request.

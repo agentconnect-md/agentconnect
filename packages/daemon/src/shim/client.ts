@@ -52,6 +52,8 @@ export interface ShimClientDeps {
   podEnv?: Record<string, string | undefined>
   /** The driving daemon sends each runtime's whole environment, so the ACP runner adds no pod fill-in. */
   completeEnv?: boolean
+  /** A host launcher's mark, which the ACP runner copies into every runtime's environment. */
+  runtimeMark?: string
   /** This pod's workspace mount, reported in the hello so the daemon builds pod paths on it. */
   workspaceRoot?: string
   /** Versioned optional surfaces this shim image can accept. */
@@ -341,6 +343,7 @@ export class ShimClient {
         ...(this.deps.resolveCommand ? { resolveCommand: this.deps.resolveCommand } : {}),
         ...(this.deps.podEnv ? { podEnv: this.deps.podEnv } : {}),
         ...(this.deps.completeEnv ? { completeEnv: true } : {}),
+        ...(this.deps.runtimeMark ? { runtimeMark: this.deps.runtimeMark } : {}),
         ...(this.deps.log ? { log: this.deps.log } : {})
       })
       this.acpStreams.set(streamId, runner)

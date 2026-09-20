@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, rm } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AF_UNIX_PATH_MAX } from '../acp/sandbox-temp.js'
@@ -9,6 +9,7 @@ import type { Logger } from '../log.js'
 import {
   SHIM_HELPER_ROOT_ENV,
   SHIM_LISTEN_SOCKET_ENV,
+  SHIM_RUNTIME_MARK_ENV,
   SHIM_RUNTIME_ROOT_ENV,
   SHIM_WORKSPACE_ROOT_ENV
 } from '../shim/protocol.js'
@@ -69,6 +70,7 @@ export function hostShimEnv(input: {
   runtimeRoot: string
   workspaceRoot: string
   helperRoot: string
+  mark: string
 }): Record<string, string> {
   const env: Record<string, string> = {}
   for (const name of INHERITED_ENV) {
@@ -80,7 +82,33 @@ export function hostShimEnv(input: {
   env[SHIM_RUNTIME_ROOT_ENV] = input.runtimeRoot
   env[SHIM_WORKSPACE_ROOT_ENV] = input.workspaceRoot
   env[SHIM_HELPER_ROOT_ENV] = input.helperRoot
+  env[SHIM_RUNTIME_MARK_ENV] = input.mark
   return env
+}
+
+/** SIGKILL every process of this user whose environment carries exactly this mark; returns how many it signalled. */
+// For crashes, not containment: runtimes lead their own groups, so a dead shim's group signal cannot reach them.
+// A process that clears its environment and re-parents escapes, as it does from the daemon's own unsandboxed launch (architecture.md §9.1).
+export async function sweepMarked(mark: string): Promise<number> {
+  const entry = `${SHIM_RUNTIME_MARK_ENV}=${mark}`
+  let killed = 0
+  for (const name of await readdir('/proc').catch(() => [])) {
+    const pid = Number(name)
+    if (!Number.isInteger(pid) || pid === process.pid) continue
+    try {
+      // Read at kill time, so a recycled pid is never signalled; another user's process is unreadable and skipped.
+      const environ = await readFile(`/proc/${pid}/environ`, 'latin1')
+      if (!environ.split('\0').includes(entry)) continue
+      // Field 5 of stat, counted after the parenthesised command, is the process group.
+      const stat = await readFile(`/proc/${pid}/stat`, 'latin1')
+      const pgid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[2])
+      process.kill(pgid === pid ? -pid : pid, 'SIGKILL')
+      killed++
+    } catch {
+      /* gone, or not ours to read */
+    }
+  }
+  return killed
 }
 
 // The same two candidates the VM starter stages from: beside this module in dist, or the package's dist from source.
@@ -113,6 +141,8 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
   for (const dir of ['workspace', 'repos', 'home'])
     await mkdir(join(workspaceRoot, dir), { recursive: true, mode: 0o700 })
   const token = randomBytes(32).toString('base64url')
+  // Not the identity token: every runtime's environment carries this, and the identity must reach none of them.
+  const mark = randomBytes(16).toString('hex')
   const log = input.log
   const child: ChildProcess = spawn(process.execPath, [...entry.execArgv, entry.path, '--identity-stdin'], {
     cwd: workspaceRoot,
@@ -122,7 +152,8 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
       socketPath,
       runtimeRoot,
       workspaceRoot,
-      helperRoot
+      helperRoot,
+      mark
     }),
     stdio: ['pipe', 'pipe', 'pipe'],
     // Its own group, so stop can end whatever it spawned in one signal.
@@ -133,8 +164,12 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
     // A child that never spawned has no exit to wait for.
     child.once('error', () => resolve({ code: null, signal: null }))
   })
-  // The root is the shim's, so it goes whenever the shim does — a stop or a death alike.
-  const removed = exited.then(() => rm(runtimeRoot, { recursive: true, force: true }))
+  // Whenever the shim goes — a stop, a crash, a failed start — what it left running goes before its root does.
+  const removed = exited.then(async () => {
+    // Again while a pass finds something: a match may have forked between the scan and its kill.
+    for (let pass = 0; pass < 5 && (await sweepMarked(mark)) > 0; pass++);
+    await rm(runtimeRoot, { recursive: true, force: true })
+  })
   void removed.catch(() => {})
   let resolveReady!: () => void
   let rejectReady!: (error: Error) => void
@@ -178,7 +213,6 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
       } finally {
         clearTimeout(timer)
       }
-      // The group, not only the shim: the runtimes it left behind would otherwise outlive the session.
       signalGroup('SIGKILL')
       await removed
     })())

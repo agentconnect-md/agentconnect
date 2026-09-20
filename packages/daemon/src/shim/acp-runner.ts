@@ -10,7 +10,7 @@ import {
 import { AcpStreamPayloadSchema, type AcpOpen } from './acp-stream.js'
 import { seedDshPreset } from './dsh-preset.js'
 import { SANDBOX_BROWSER_EXECUTABLE_ENV, SANDBOX_GH_WRAPPER_DIR } from './sandbox-paths.js'
-import type { ShimEvent } from './protocol.js'
+import { SHIM_RUNTIME_MARK_ENV, type ShimEvent } from './protocol.js'
 
 /** How the runner reports back: many events per opened stream, not one response. */
 export type EmitEvent = (event: ShimEvent['event']) => void
@@ -144,6 +144,8 @@ export class AcpRunner {
       podEnv?: Record<string, string | undefined>
       /** The driving daemon is on this machine and sends the whole environment, so nothing a pod template would add applies. */
       completeEnv?: boolean
+      /** A host launcher's mark, set on every runtime in both env modes so its sweep finds what a dead shim left; unset elsewhere. */
+      runtimeMark?: string
       /** Test seam: the image directory the DeepSeek preset is seeded from. */
       dshPresetSource?: string
       log?: { info: (m: string) => void; warn: (m: string) => void }
@@ -259,6 +261,7 @@ export class AcpRunner {
   }
 
   private spawnChild(command: string, payload: AcpOpen, env: Record<string, string>): void {
+    if (this.deps.runtimeMark) env[SHIM_RUNTIME_MARK_ENV] = this.deps.runtimeMark
     const child = spawn(command, payload.args, {
       stdio: ['pipe', 'pipe', 'inherit'],
       env,
