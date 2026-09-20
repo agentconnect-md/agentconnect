@@ -3737,6 +3737,13 @@ export class Daemon {
       // ALWAYS publish fresh config first, so live reads — output.mode (per dispatch),
       // per-session cwd/tools, routing (mergedRules reads this.agents) — see the new config.
       this.agents.set(a.id, a as LoadedAgent)
+      if (change.integrations) {
+        for (const integration of previous?.integrations ?? []) {
+          if (!a.integrations.some((current) => current.id === integration.id)) {
+            await this.interruptAgentTurns(a.id, 'stop', 'terminal', integration.id)
+          }
+        }
+      }
       if (previous?.allowRuntimeChangesInChat === true && !a.allowRuntimeChangesInChat) {
         await this.restoreConfiguredRuntimeSettings(a as LoadedAgent)
       }
@@ -10633,13 +10640,14 @@ export class Daemon {
     }
   }
 
-  /** Drop an agent's admitted-but-unrun durable rows so a lifecycle interrupt (pause,
-   *  removal, or host respawn) makes that work terminal instead of surviving as restart
-   *  replay. `reason` is logged verbatim — a host respawn is NOT a pause, and mislabeling
-   *  it "paused" has sent real incidents down the wrong trail. */
-  private async purgeAgentInbox(agentId: string, reason: TurnInterruptReason = 'pause'): Promise<number> {
+  // Terminal lifecycle interrupts purge admitted work, optionally scoped to a removed integration.
+  private async purgeAgentInbox(
+    agentId: string,
+    reason: TurnInterruptReason = 'pause',
+    integrationId?: string
+  ): Promise<number> {
     try {
-      const ids = await this.store.removeInboxByAgentId(agentId)
+      const ids = await this.store.removeInboxByAgentId(agentId, integrationId)
       for (const id of ids) this.liveInboxIds.delete(id)
       if (ids.length > 0) this.log.warn(`durable inbox: purged ${ids.length} row(s) for agent "${agentId}" (${reason})`)
       return ids.length
@@ -11364,6 +11372,12 @@ export class Daemon {
   private async dispatchGateReason(entry: QueueEntry): Promise<TurnInterruptReason | undefined> {
     if (entry.cancelledReason) return entry.cancelledReason
     if (this.paused(entry.agentId)) return 'pause'
+    if (
+      entry.integrationId !== undefined &&
+      !this.agents.get(entry.agentId)?.integrations.some((integration) => integration.id === entry.integrationId)
+    ) {
+      return 'stop'
+    }
     if (await this.isLoopGuardOpen(entry.msg, entry.hookContext !== undefined)) return 'loop protection'
     return undefined
   }
@@ -13905,31 +13919,32 @@ export class Daemon {
       .catch((err) => this.log.warn(`transcript: ${reason} row not recorded for ${agentId}: ${formatErr(err)}`))
   }
 
-  /** Interrupt every logical session owned by an agent for a lifecycle gate (pause,
-   *  removal, or host respawn). Active ACP turns are cancelled; queued turns are
-   *  cleanly gate-dropped. A cold head is latched so it cannot resume after teardown. */
+  // Cancel active/cold turns and drop queued work, optionally scoped to a removed integration.
   private async interruptAgentTurns(
     agentId: string,
     reason: TurnInterruptReason,
-    disposition: TurnInterruptDisposition = 'terminal'
+    disposition: TurnInterruptDisposition = 'terminal',
+    integrationId?: string
   ): Promise<void> {
     const handoffInbox = disposition === 'handoff'
-    this.beginSafetyDrain(agentId, reason)
+    const matches = (entry: QueueEntry): boolean =>
+      entry.agentId === agentId && (integrationId === undefined || entry.integrationId === integrationId)
+    if (integrationId === undefined) this.beginSafetyDrain(agentId, reason)
     // A terminal interrupt ends every already-admitted turn: delete the durable rows first so an
     // immediate daemon stop cannot preserve and replay old work. A handoff keeps them instead —
     // on a pool's shared store those rows ARE the unrun work the successor holder must replay.
-    if (!handoffInbox) await this.purgeAgentInbox(agentId, reason)
+    if (!handoffInbox) await this.purgeAgentInbox(agentId, reason, integrationId)
     const targets = new Map<string, string | undefined>()
     for (const [key, entry] of this.activeGateEntries) {
-      if (entry.agentId !== agentId) continue
+      if (!matches(entry)) continue
       entry.cancelledReason = reason
       targets.set(key, undefined)
     }
     for (const p of this.pending.values()) {
-      if (p.plan.agentId === agentId) targets.set(p.plan.sessionKey, p.acpSessionId)
+      if (matches(p.entry)) targets.set(p.plan.sessionKey, p.acpSessionId)
     }
     for (const [key, queued] of this.serialQueue) {
-      if (queued.some((entry) => entry.agentId === agentId) && !targets.has(key)) {
+      if (queued.some(matches) && !targets.has(key)) {
         targets.set(key, (await this.store.getSession(key))?.acpSessionId ?? undefined)
       }
     }

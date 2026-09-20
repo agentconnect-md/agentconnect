@@ -7,7 +7,7 @@
  * clock the assertions depend on is the daemon's own injectable one.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
@@ -154,8 +154,9 @@ afterEach(() => {
 })
 
 async function boot(opts: BootOpts = {}) {
+  const root = scaffold(opts.outputMode ?? 'low', opts.expiresAt ?? FAR_FUTURE)
   const daemon = new Daemon({
-    root: scaffold(opts.outputMode ?? 'low', opts.expiresAt ?? FAR_FUTURE),
+    root,
     hostFactory: () => (opts.host ? opts.host() : fakeHost()) as any
   })
   await daemon.start()
@@ -233,7 +234,7 @@ async function boot(opts: BootOpts = {}) {
     for (let i = 0; i < 4; i += 1) await pendingRows()
     expect(await pendingRows()).toBe(0)
   }
-  return { daemon, posted, attached, reports, store, pendingRows, turnSettled }
+  return { daemon, root, posted, attached, reports, store, pendingRows, turnSettled }
 }
 
 const transportScope = (daemon: Daemon): string | undefined =>
@@ -935,6 +936,87 @@ describe('§4.4 the brokered token', () => {
 })
 
 describe('§7.5 the turn holds its egress transport', () => {
+  it.each(['prompt', 'startup'] as const)(
+    'stops removed integration work during %s and discards its backlog',
+    async (stage) => {
+      let signalReached!: () => void
+      let releaseBlocked!: () => void
+      const reached = new Promise<void>((resolve) => (signalReached = resolve))
+      const blocked = new Promise<void>((resolve) => (releaseBlocked = resolve))
+      const host = {
+        ...fakeHost(),
+        newSession: vi.fn(async () => {
+          if (stage === 'startup') {
+            signalReached()
+            await blocked
+          }
+          return 'acp-1'
+        }),
+        prompt: vi.fn(async () => {
+          signalReached()
+          await blocked
+          return 'end_turn'
+        }),
+        cancel: vi.fn(async () => releaseBlocked()),
+        stop: vi.fn(async () => releaseBlocked())
+      }
+      const { daemon, root, store, turnSettled } = await boot({ host: () => host })
+      await (daemon as any).watcher.close()
+      ;(daemon as any).watcher = undefined
+      try {
+        // Use the CP removal path, retaining the recording connection across reconvergence.
+        const file = join(root, 'agents', AGENT, 'agent.json')
+        const config = JSON.parse(readFileSync(file, 'utf8'))
+        const integration = config.integrations[0]
+        const conn = (daemon as any).lnConnByIntegration.get(INTEGRATION)
+        const apply = (daemon as any).cpConfigApply()
+        for (const integrationId of [INTEGRATION, 'int-kept']) {
+          apply.applyIntegrationUpsert({
+            integrationId,
+            agentId: AGENT,
+            platform: integration.platform,
+            core: integration.core,
+            config: integration.config
+          })
+        }
+        writeFileSync(file, JSON.stringify({ ...config, integrations: [] }))
+        await daemon.reconcile()
+        ;(daemon as any).lnConnByIntegration.set(INTEGRATION, conn)
+
+        await im(daemon, delivery())
+        await reached
+        const queuedId = `linear:${SESSION}:follow-up`
+        await im(daemon, { ...delivery({ msgId: queuedId, text: 'also run the checks' }), msgId: queuedId })
+        const row = (await store.listInboxBySessionKeyFifo()).find((entry: any) => entry.completedAt === null)
+        expect(row).toBeDefined()
+        await store.appendInbox({ ...row, id: 'kept-backlog', integrationId: 'int-kept' })
+        expect((daemon as any).serialQueue.size).toBe(1)
+
+        apply.applyIntegrationRemove(INTEGRATION)
+        await daemon.reconcile()
+        expect((daemon as any).serialQueue.size).toBe(0)
+        expect((await store.listInboxBySessionKeyFifo()).map((entry: any) => entry.id)).toEqual(['kept-backlog'])
+        if (stage === 'prompt') expect(host.cancel).toHaveBeenCalledWith('acp-1')
+        else expect(host.cancel).not.toHaveBeenCalled()
+        await store.removeInbox('kept-backlog')
+        releaseBlocked()
+        await turnSettled()
+        expect(host.prompt).toHaveBeenCalledTimes(stage === 'prompt' ? 1 : 0)
+        expect(host.stop).not.toHaveBeenCalled()
+
+        // A persisted admission racing removal is rejected by the same startup gate on replay.
+        await store.appendInbox({ ...row, id: 'stale-backlog' })
+        await (daemon as any).replayInbox()
+        await turnSettled()
+        expect(host.prompt).toHaveBeenCalledTimes(stage === 'prompt' ? 1 : 0)
+        expect(await store.listInboxBySessionKeyFifo()).toEqual([])
+      } finally {
+        releaseBlocked()
+        await daemon.stop()
+      }
+    }
+  )
+
   it('makes reconciliation wait for the settling activity before stopping the client', async () => {
     // Removing the integration mid-turn must not cut the turn's only reply surface. Without a
     // lease the prune pass stops the client while the model is still running, and the settling

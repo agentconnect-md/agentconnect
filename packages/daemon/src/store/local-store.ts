@@ -5492,17 +5492,16 @@ export class LocalStore {
       .all()) as unknown as InboxRow[]
   }
 
-  /** Remove ordinary durable turns owned by an agent. Live hook rows have their
-   *  own single completion owner and must survive until that owner atomically
-   *  redacts them into a terminal report. Unacknowledged terminal hook reports
-   *  are an outbox and likewise must survive lifecycle purges. ACKed receipts
-   *  may be discarded here because CP already durably converged them. */
-  async removeInboxByAgentId(agentId: string): Promise<string[]> {
-    const removable = 'agentId = ? AND hookContext IS NULL AND terminalReport IS NULL'
-    const rows = (await this.db.prepare(`SELECT id FROM inbox WHERE ${removable}`).all(agentId)) as Array<{
+  // Purge ordinary turns in scope; live hook owners and unacknowledged reports retain their completion path.
+  async removeInboxByAgentId(agentId: string, integrationId?: string): Promise<string[]> {
+    const removable =
+      'agentId = ? AND hookContext IS NULL AND terminalReport IS NULL' +
+      (integrationId === undefined ? '' : ' AND integrationId = ?')
+    const params = integrationId === undefined ? [agentId] : [agentId, integrationId]
+    const rows = (await this.db.prepare(`SELECT id FROM inbox WHERE ${removable}`).all(...params)) as Array<{
       id: string
     }>
-    await this.db.prepare(`DELETE FROM inbox WHERE ${removable}`).run(agentId)
+    await this.db.prepare(`DELETE FROM inbox WHERE ${removable}`).run(...params)
     return rows.map((row) => row.id)
   }
 
