@@ -142,12 +142,18 @@ describe('host strategy shim launcher', () => {
       const { session, dialer } = await bind(where, 'subject-orphan')
       dialers.push(dialer)
       const echo = await echoThrough(session, join(root, 'sessions', 'sess-a', 'workspace'), 'hello\n')
-      const pids = [echo.shimPid, echo.pid, echo.grandchild]
-      expect(pids.filter(alive)).toEqual(pids)
+      const pids = { shim: echo.shimPid, runtime: echo.pid, grandchild: echo.grandchild }
+      // A survivor is named with its kernel state, so a failure says who outlived the launcher and how; a zombie runs nothing and is not one.
+      const survivors = (): string[] =>
+        Object.entries(pids)
+          .filter(([, pid]) => alive(pid))
+          .map(([role, pid]) => `${role} ${readFileSync(`/proc/${pid}/stat`, 'latin1').split(') ')[1]?.[0]}`)
+          .filter((entry) => !entry.endsWith(' Z'))
+      expect(survivors()).toHaveLength(3)
 
       // No stop, no signal to the shim: only the descriptor its parent held closes.
       launcher.kill('SIGKILL')
-      await vi.waitFor(() => expect(pids.filter(alive)).toEqual([]), WAIT)
+      await vi.waitFor(() => expect(survivors()).toEqual([]), WAIT)
     }
   )
 

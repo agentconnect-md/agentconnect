@@ -976,9 +976,11 @@ network listener.
   one extra descriptor, named by `AC_SHIM_PARENT_FD`, whose other end it holds
   and never writes. The kernel closes that end when the daemon goes, however it
   goes; the shim reads end-of-file as that event, ends its runtimes as it does on
-  a stop, sweeps its own mark because no launcher is left to do it, and exits. It
-  is an event, not a poll, and the identity on stdin is read as before. The shim
-  watches only when it listens on `AC_SHIM_SOCKET`; pods and VMs are unchanged.
+  a stop, sweeps its own mark because no launcher is left to do it, and exits. Its
+  output went to that daemon too, so a host shim ignores write errors on it: a
+  log line that fails must not end the shim before its runtimes. It is an event,
+  not a poll, and the identity on stdin is read as before. The shim watches only
+  when it listens on `AC_SHIM_SOCKET`; pods and VMs are unchanged.
 - **A restart finishes what is left.** The launcher writes the mark to
   `<runtimeRoot>/mark` before it starts the shim, so there is no moment at which
   a marked process exists that a later daemon life cannot find; the facet's

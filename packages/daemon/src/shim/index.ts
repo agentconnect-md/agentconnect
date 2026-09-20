@@ -94,6 +94,8 @@ async function main(): Promise<number> {
     // The daemon holds the other end and never writes: this closes only when that daemon is gone, however it went.
     const parent = new Socket({ fd: options.parentFd, readable: true, writable: false })
     parent.on('error', () => {})
+    // That daemon also read this shim's output: once it is gone a log line fails, and must not end the shim before its runtimes.
+    for (const stream of [process.stdout, process.stderr]) stream.on('error', () => {})
     parent.once('close', () => {
       log.warn('the daemon that started this shim is gone — ending its runtimes and exiting')
       leave(true)
