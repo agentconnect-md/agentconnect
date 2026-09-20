@@ -41,6 +41,8 @@ export interface HostShim {
   socketPath: string
   /** The per-session root the shim binds its tunnel sockets and writes its Git config under; removed when the shim goes. */
   runtimeRoot: string
+  /** Where this installation's helper entries live; a holder derives their paths from it with `shimPaths`. */
+  helperRoot: string
   workspaceRoot: string
   /** The one-time identity the shim presents; the dialer's verifier accepts exactly this. */
   token: string
@@ -226,5 +228,5 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
   } finally {
     clearTimeout(timer)
   }
-  return { socketPath, runtimeRoot, workspaceRoot, token, missingHelpers, exited, stop }
+  return { socketPath, runtimeRoot, helperRoot, workspaceRoot, token, missingHelpers, exited, stop }
 }

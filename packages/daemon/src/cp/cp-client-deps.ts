@@ -58,6 +58,7 @@ import type { SystemMetrics } from '../metrics/system-metrics.js'
 import type { ReadinessGate } from '../readiness.js'
 import type { MemoryHomePorts } from '../memory/home.js'
 import type { DreamRunner } from '../dream/runner.js'
+import type { ExecutorFacet } from '../execution/executor-facet.js'
 import type { CodeHostNoteProjector } from '../gitlab/note-projection.js'
 
 /** The credentials, identity and logging this connection is built from, plus its single-point writes. */
@@ -96,6 +97,8 @@ export interface CpClientRegistrationHost {
   registrationFeatures(): string[]
   /** Set only when a configured sandbox is unusable; the CP keeps the `sandbox` capability either way. */
   sandboxUnavailable(): string | undefined
+  /** The executor facet (session-executors.md §6); undefined before it starts and while it is dark, and then nothing new is sent. */
+  executorFacet(): ExecutorFacet | undefined
   admittedRuntimeIds(): string[]
   reportedRuntimeIds(): string[]
   /** Registry id -> human-facing runtime name. */
@@ -250,6 +253,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     maxAgents: host.maxAgents(),
     capabilities: () => {
       const sandboxUnavailable = host.sandboxUnavailable()
+      const executor = host.executorFacet()?.facts()
       return {
         platforms: host.registrationPlatforms(),
         // Report the human-facing tool name (e.g. "Claude Agent"), not the
@@ -258,7 +262,8 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
         runtimes: host.admittedRuntimeIds().map((id) => host.runtimeNames()[id] ?? id),
         acp: true,
         features: host.registrationFeatures(),
-        ...(sandboxUnavailable ? { sandboxUnavailable } : {})
+        ...(sandboxUnavailable ? { sandboxUnavailable } : {}),
+        ...(executor ? { executor } : {})
       }
     },
     // Observed runtime profiles, sent as one `facts/daemon-runtimes` snapshot on
@@ -328,6 +333,10 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       agents: host.hostCount()
     }),
     activeSessions: () => host.activeSessions(),
+    hostedSessions: () => host.executorFacet()?.hostedSessions(),
+    // The facet's only way in. Read per frame: the facet starts after this literal is built.
+    executorPrepare: (req) =>
+      host.executorFacet()?.prepare(req) ?? Promise.resolve({ status: 'refused', reason: 'facet_off' }),
     orgForAgent: (agentId) => host.cpAgents()?.orgForAgent(agentId) ?? host.cpCollab().orgForAgent(agentId),
     orgForIntegration: (integrationId) => {
       const agentId = host.cpIntegrations()?.agentForIntegration(integrationId)

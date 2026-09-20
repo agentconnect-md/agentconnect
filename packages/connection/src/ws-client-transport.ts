@@ -76,6 +76,8 @@ export interface Transport {
   onClose(cb: (code: number, reason: string) => void): void
   close(code: number, reason: string): void
   readonly subprotocol: string
+  /** The local address this connection leaves from, when a real socket carries it: the interface a LAN peer reaches this end on. */
+  readonly localAddress?: string
 }
 
 /** Dial options — the wire-specific bits a caller pins per client. */
@@ -98,7 +100,8 @@ export class ClientTransport implements Transport {
   private constructor(
     private readonly ws: WebSocket,
     selfPingMs: number,
-    idleMs: number
+    idleMs: number,
+    readonly localAddress?: string
   ) {
     // Detect a half-open peer socket (gone without a FIN) and force a reconnect,
     // instead of silently queueing heartbeats until the OS TCP timeout.
@@ -133,6 +136,9 @@ export class ClientTransport implements Transport {
         reject(new Error('WebSocket closed before opening'))
       })
       ws.once('error', onPreOpenError)
+      // Read at the upgrade, the one public event that hands over the socket; a custom Duplex has no address.
+      let localAddress: string | undefined
+      ws.once('upgrade', (response) => (localAddress = response.socket.localAddress))
       ws.once('open', () => {
         clearTimeout(timer)
         ws.removeListener('error', onPreOpenError)
@@ -142,7 +148,7 @@ export class ClientTransport implements Transport {
         // (only unhandledRejection is trapped). Fold them into the close path:
         // terminate() emits 'close', and the client FSM reconnects from there.
         ws.on('error', () => ws.terminate())
-        resolve(new ClientTransport(ws, selfPingMs, idleMs))
+        resolve(new ClientTransport(ws, selfPingMs, idleMs, localAddress))
       })
     })
   }

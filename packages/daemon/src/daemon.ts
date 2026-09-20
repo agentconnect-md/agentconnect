@@ -396,6 +396,7 @@ import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from '
 import { runtimeCredentialsConfigured } from './runtimes/runtime-credential-discovery.js'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
 import { wireWorkspacePlane, type ExecutionPlane, type PlaneLaunch } from './execution/plane.js'
+import { seedSessionHome, startExecutorFacet, type ExecutorFacet } from './execution/executor-facet.js'
 import { effectiveStrategies } from './execution/strategies.js'
 import {
   declaredRuntimeCatalog,
@@ -1169,6 +1170,8 @@ export class Daemon {
   // Kubernetes readiness (#1043): the two sinks a pod probe reads, and the one fact only this
   // member knows — that the install-wide sandbox runtime probe came back.
   private readiness?: ReadinessGate
+  // The executor facet (session-executors.md §3): dark unless `sandbox.share`, and all of its logic lives in `execution/executor-facet.ts`.
+  private executorFacet?: ExecutorFacet
   private k8sRuntimeProbed = false
   private startupComplete = false
   // The shutdown duty drain in progress: its deadline, its counters, and the release of every grant
@@ -1980,6 +1983,7 @@ export class Daemon {
     await this.registerAgentCrons(agents)
     this.watchAgentConfigs()
     await this.replayDurableWork()
+    await this.startExecutorFacet(root, cfg)
     this.armTimersAndReadiness(root, startControlPlane)
   }
 
@@ -3501,7 +3505,46 @@ export class Daemon {
     if (this.dreamOperationsAllowed()) await this.dreamRunner().initialize()
   }
 
-  /** Phase 31 — curated admission, the deferred CP connect, the periodic sweeps, and only then: ready. */
+  /** Phase 31 — the executor facet, bound BEFORE the deferred CP connect so registration carries its facts; dark unless `sandbox.share` (session-executors.md §10). */
+  private async startExecutorFacet(root: string, cfg: Config): Promise<void> {
+    this.executorFacet = await startExecutorFacet({
+      daemonRoot: root,
+      share: cfg.sandbox.share,
+      strategies: () => this.executionStrategies(),
+      capacity: () => this.cfg.limits.maxConcurrentSessions,
+      ownSessions: () => [...this.hosts.keys()].filter((key) => hostKeySessionKey(key) !== undefined).length,
+      draining: () => this.draining,
+      endpointHost: () => this.cpClient?.localAddress(),
+      seedHome: (home) =>
+        seedSessionHome(
+          home,
+          Object.fromEntries(this.admittedRuntimeIds().map((id) => [id, this.runtimes[id]!])),
+          this.log
+        ),
+      agentsExist: async (agentIds) => {
+        if (!this.cpClient) throw new Error('no control plane connection')
+        return this.cpClient.agentsExist(agentIds)
+      },
+      // Only the SHARED store answers for a session another member holds; this daemon's own SQLite knows none of them.
+      ...(this.dataPlane
+        ? {
+            sessions: {
+              keysForAgent: (agentId) => this.store.sessionKeysForAgent(agentId),
+              executorOf: async (key) => {
+                const verdict = await this.store.getSessionExecutor(key)
+                return verdict && 'executorDaemonId' in verdict ? verdict : undefined
+              }
+            }
+          }
+        : {}),
+      daemonId: () => this.cfg.daemonId,
+      log: this.log
+    })
+    // Under --k8s the CP connect came first, so the facts ride a refresh instead of the register.
+    this.cpClient?.updateCapabilities()
+  }
+
+  /** Phase 32 — curated admission, the deferred CP connect, the periodic sweeps, and only then: ready. */
   private armTimersAndReadiness(root: string, startControlPlane: (root: string) => Promise<void> | undefined): void {
     // Curated admission belongs to local runtime resolution, not CP readiness.
     // Start it even when the control plane is disabled or still unreachable.
@@ -18860,6 +18903,10 @@ export class Daemon {
       }
     }
     const dreams = drainDreams()
+    // Hosted environments join this drain on the budget this machine's own turns get, then their shims stop (session-executors.md §9).
+    const hosted = Promise.resolve(
+      this.executorFacet?.drain(Math.min(this.cfg.limits.shutdownDrainMs, deadlineMs))
+    ).catch((err) => this.log.warn(`shutdown: draining hosted environments failed: ${formatErr(err)}`))
     const work = Promise.all([...active, ...coldStops])
     if (active.length > 0 || coldStops.length > 0) {
       this.log.info(
@@ -18897,6 +18944,7 @@ export class Daemon {
       }
     }
     await dreams
+    await hosted
     // §6.9 #390/#353: any messages still queued behind the gate are admitted-but-unrun.
     // Settle them explicitly (reject with a fail-stop notice) rather than dropping them
     // silently and leaving their dispatch() promises unsettled. (A durable inbox — the
@@ -19241,6 +19289,7 @@ export class Daemon {
       registrationPlatforms: () => this.registrationPlatforms(),
       registrationFeatures: () => this.registrationFeatures(),
       sandboxUnavailable: () => this.sandboxUnavailableReason(),
+      executorFacet: () => this.executorFacet,
       admittedRuntimeIds: () => this.admittedRuntimeIds(),
       reportedRuntimeIds: () => this.reportedRuntimeIds(),
       runtimeNames: () => this.runtimeFacts.runtimeNames(),
@@ -20322,6 +20371,9 @@ export class Daemon {
     // unable to send its ACP close — a sandbox process still running, and reconnecting.
     await this.microsandbox?.stopAll().catch((error: unknown) => errors.push(error))
     this.microsandbox = undefined
+    // The drain above already stopped every hosted shim; this closes the listener and whatever a late launch left.
+    await this.executorFacet?.stop().catch((error: unknown) => errors.push(error))
+    this.executorFacet = undefined
     await this.k8sPlane?.stop().catch(() => undefined)
     await this.readiness?.stop().catch(() => undefined)
     this.readiness = undefined

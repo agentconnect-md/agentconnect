@@ -39,6 +39,14 @@ describe('mergeConfigPush', () => {
     expect(bad.ignored).toEqual(['sessions.retention'])
   })
 
+  // Lending a machine and its runtime sign-in is its owner's consent (session-executors.md §10): no Control Plane push may give it.
+  it('never lets a push switch sandbox.share on', () => {
+    const cfg = baseCfg()
+    const r = mergeConfigPush(cfg, { 'sandbox.share': true })
+    expect(cfg.sandbox.share).toBe(false)
+    expect(r).toEqual({ applied: [], ignored: ['sandbox.share'] })
+  })
+
   it('ignores controlPlane.heartbeatMs (CP-authoritative via auth/ok, not config/push)', () => {
     const cfg = baseCfg()
     const defaultMs = cfg.controlPlane.heartbeatMs

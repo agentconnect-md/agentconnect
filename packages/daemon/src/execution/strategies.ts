@@ -5,7 +5,7 @@ export type ExecutionStrategy = 'host' | 'microsandbox'
 
 export type StrategyAvailability = { available: true } | { available: false; reason: string }
 
-/** The EFFECTIVE table: what this machine can run now, each entry with the reason it cannot. Nothing reports it over the wire yet. */
+/** The EFFECTIVE table: what this machine can run now, each entry with the reason it cannot. The executor facet reports its own reading of it at registration. */
 export function effectiveStrategies(input: {
   platform?: NodeJS.Platform
   /** The existing sandbox probe: whether microsandbox is the configured backend, and why it is down when it is. */

@@ -1,0 +1,145 @@
+// The executor facet's one network surface (session-executors.md §6): a certificate-less TLS-PSK listener that, after the handshake, pipes bytes to a session's shim socket and parses nothing.
+import { randomBytes } from 'node:crypto'
+import { connect, type Socket } from 'node:net'
+import { createServer, type TLSSocket } from 'node:tls'
+import type { Logger } from '../log.js'
+
+/** Pinned on both ends, never negotiated: a callback-supplied key is bound to SHA-256, so a peer preferring another suite must fail rather than fall back. */
+export const PIPE_TLS = { minVersion: 'TLSv1.3', maxVersion: 'TLSv1.3', ciphers: 'TLS_AES_128_GCM_SHA256' } as const
+
+export const PIPE_KEY_BYTES = 32
+/** What a peer that never finishes its handshake may hold a socket for; the dialer gives its own side of it the same ten seconds. */
+const HANDSHAKE_TIMEOUT_MS = 10_000
+// The facet parses nothing, so it cannot ping: the kernel's probes are what find a holder that vanished without a FIN.
+const KEEPALIVE_IDLE_MS = 60_000
+const REFUSAL_REPORT_MS = 60_000
+
+/** What admits a dial for one identity right now. */
+export interface PipeAdmission {
+  /** Compared by reference once the handshake ends, so a rotation also fails a handshake already under way. */
+  key: Buffer
+  /** The session's shim socket; an admitted dial is piped to it byte for byte. */
+  socketPath: string
+}
+
+export interface PipeListenerOptions {
+  /** The live environment an identity names, asked per handshake; undefined for everything else. */
+  admission: (identity: string) => PipeAdmission | undefined
+  /** An identity's pipe opened or closed; a dial that replaces a pipe reports one open and no close. */
+  onPipe: (identity: string, open: boolean) => void
+  /** How many sockets may sit before a finished handshake at once; one past it is dropped unread. */
+  maxPending: () => number
+  log: Pick<Logger, 'warn'>
+  /** Test seams: the bind address (every interface by default) and a shorter handshake budget. */
+  host?: string
+  handshakeTimeoutMs?: number
+}
+
+export interface PipeListener {
+  port: number
+  /** Whether the identity has an admitted pipe. */
+  piped(identity: string): boolean
+  pipeCount(): number
+  /** Close the identity's admitted pipe, if any. */
+  close(identity: string): void
+  stop(): Promise<void>
+}
+
+export async function startPipeListener(options: PipeListenerOptions): Promise<PipeListener> {
+  const claims = new WeakMap<TLSSocket, { identity: string; key: Buffer }>()
+  const pipes = new Map<string, () => void>()
+  const sockets = new Set<Socket>()
+  let admitted = 0
+  let refused = 0
+  let report: NodeJS.Timeout | undefined
+  // A count and nothing else: an unauthenticated peer chooses the identity and the address a line would name.
+  const refuse = (): void => {
+    refused += 1
+    report ??= setTimeout(() => {
+      options.log.warn(`executor: refused ${refused} dial(s) that did not present a live session's key`)
+      refused = 0
+      report = undefined
+    }, REFUSAL_REPORT_MS)
+    report.unref()
+  }
+
+  const admit = (identity: string, socket: TLSSocket, socketPath: string): void => {
+    admitted += 1
+    let open = true
+    let upstream: Socket | undefined
+    const close = (): void => {
+      if (!open) return
+      open = false
+      admitted -= 1
+      socket.destroy()
+      upstream?.destroy()
+      if (pipes.get(identity) !== close) return
+      pipes.delete(identity)
+      options.onPipe(identity, false)
+    }
+    // One pipe per environment: the one before goes first, so neither a half-dead socket nor a deposed holder sits in the shim's single slot.
+    const previous = pipes.get(identity)
+    pipes.set(identity, close)
+    previous?.()
+    upstream = connect(socketPath)
+    for (const end of [socket, upstream]) end.on('error', close).once('close', close)
+    socket.setNoDelay(true)
+    socket.setKeepAlive(true, KEEPALIVE_IDLE_MS)
+    socket.pipe(upstream)
+    upstream.pipe(socket)
+    options.onPipe(identity, true)
+  }
+
+  const server = createServer({
+    ...PIPE_TLS,
+    handshakeTimeout: options.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS,
+    pskCallback: (socket, identity) => {
+      const admission = options.admission(identity)
+      // A key nobody holds: an unknown identity fails exactly as a wrong key does, so the listener is no oracle for which sessions live here.
+      if (!admission) return randomBytes(PIPE_KEY_BYTES)
+      claims.set(socket, { identity, key: admission.key })
+      return admission.key
+    }
+  })
+  server.on('connection', (raw: Socket) => {
+    if (sockets.size - admitted >= options.maxPending()) {
+      refuse()
+      raw.destroy()
+      return
+    }
+    sockets.add(raw)
+    raw.once('close', () => sockets.delete(raw))
+  })
+  server.on('tlsClientError', refuse)
+  server.on('secureConnection', (socket: TLSSocket) => {
+    const claim = claims.get(socket)
+    const admission = claim && options.admission(claim.identity)
+    if (!claim || !admission || admission.key !== claim.key) {
+      refuse()
+      socket.destroy()
+      return
+    }
+    admit(claim.identity, socket, admission.socketPath)
+  })
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen({ port: 0, ...(options.host ? { host: options.host } : {}) }, () => {
+      server.removeListener('error', reject)
+      resolve()
+    })
+  })
+  // The bind-failure listener is gone by now, and a post-listen accept error is fatal unheard.
+  server.on('error', (error) => options.log.warn(`executor: accept error (${error.message})`))
+
+  return {
+    port: (server.address() as { port: number }).port,
+    piped: (identity) => pipes.has(identity),
+    pipeCount: () => pipes.size,
+    close: (identity) => pipes.get(identity)?.(),
+    stop: async () => {
+      if (report) clearTimeout(report)
+      for (const raw of sockets) raw.destroy()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  }
+}

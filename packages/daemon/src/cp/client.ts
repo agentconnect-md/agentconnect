@@ -81,9 +81,12 @@ import type {
   BootstrapLifecycle,
   DaemonLifecycleProgress,
   FrameOrgPeer,
-  OrganizationMode
+  OrganizationMode,
+  AgentExistsOk
 } from '@agentconnect.md/protocol'
 import {
+  AGENT_EXISTS_FEATURE,
+  AGENT_EXISTS_MAX,
   buildEnvelope,
   decodeCpEnvelope,
   encode,
@@ -104,6 +107,7 @@ import type { AgentControlDeps } from './control/agent.js'
 import type { ControlWire } from './control/context.js'
 import type { CodeHostControlDeps } from './control/codehost.js'
 import type { DreamControlDeps } from './control/dream.js'
+import type { ExecutorControlDeps } from './control/executor.js'
 import type { MemoryControlDeps } from './control/memory.js'
 import { CONTROL_HANDLERS, type ControlDeps } from './control/registry.js'
 import type { SessionControlDeps } from './control/session.js'
@@ -155,6 +159,7 @@ export interface CpClientDeps
   extends
     AgentControlDeps,
     DreamControlDeps,
+    ExecutorControlDeps,
     MemoryControlDeps,
     SessionControlDeps,
     SkillsControlDeps,
@@ -189,6 +194,8 @@ export interface CpClientDeps
   localState: () => RegisterReq['localState']
   loadSnapshot: () => Heartbeat['load']
   activeSessions: () => number
+  /** Session environments live on this machine (session-executors.md §6); undefined while the executor facet is dark, and then the heartbeat says nothing. */
+  hostedSessions?: () => number | undefined
   /** false ⇒ this daemon never reports session usage to the CP, because something
    *  upstream of it is the single writer for these sessions. Local recording is
    *  unaffected. Absent ⇒ reporting is on. */
@@ -318,6 +325,7 @@ export class CpClient {
       taskReader: deps.taskReader,
       autoMerge: deps.autoMerge,
       sandboxKeepAlive: deps.sandboxKeepAlive,
+      executorPrepare: deps.executorPrepare,
       agentWake: deps.agentWake,
       memoryReader: deps.memoryReader,
       memoryEntriesRead: deps.memoryEntriesRead,
@@ -1068,6 +1076,29 @@ export class CpClient {
     return rep.payload as DutyFetchOk
   }
 
+  /** `agent/exists` (D→C REQ): which of these agents the CP still knows, as the pool's orphan reconciler asks it. Throws when it cannot be asked, which a caller must never read as "gone". */
+  async agentsExist(agentIds: string[]): Promise<Set<string>> {
+    this.requireReady('agent/exists')
+    if (!this.serverFeatures.has(AGENT_EXISTS_FEATURE)) {
+      throw new WireError('UNKNOWN_FRAME', 'this control plane does not answer agent/exists', false)
+    }
+    const existing = new Set<string>()
+    for (let at = 0; at < agentIds.length; at += AGENT_EXISTS_MAX) {
+      const rep = await this.request('agent/exists', { agentIds: agentIds.slice(at, at + AGENT_EXISTS_MAX) })
+      if (rep.type !== 'agent/exists/ok') {
+        throw new WireError('INTERNAL', `expected agent/exists/ok, got ${rep.type}`, false)
+      }
+      for (const id of (rep.payload as AgentExistsOk).existing) existing.add(id)
+    }
+    return existing
+  }
+
+  /** The local address this control connection leaves from — where a LAN peer reaches this machine (session-executors.md §13). */
+  localAddress(): string | undefined {
+    // A dual-stack socket reports an IPv4 peer's interface in its mapped form, which is not an address to publish.
+    return this.transport?.localAddress?.replace(/^::ffff:/i, '')
+  }
+
   /** How this connection is tenanted: `connection` = one org (an API-key daemon),
    *  `frame` = install-wide, every frame carries its own org. Duty leases exist
    *  only on the latter. */
@@ -1520,6 +1551,7 @@ export class CpClient {
     // The duty lease exchange rides this beat (frames/duty.ts). Absent on a daemon in no member
     // set, which keeps the whole CP-side path dormant.
     const duties = this.reportsDuties() ? this.deps.duties?.() : undefined
+    const hostedSessions = this.deps.hostedSessions?.()
     const live = this.transport
     live?.send(
       encode(
@@ -1527,6 +1559,7 @@ export class CpClient {
           load: this.deps.loadSnapshot(),
           health: 'ok',
           activeSessions: this.deps.activeSessions(),
+          ...(hostedSessions === undefined ? {} : { hostedSessions }),
           degradedScopes: this.deps.degradedScopes?.() ?? [],
           ...(duties ? { duties } : {})
         })

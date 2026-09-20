@@ -198,10 +198,12 @@ export const ConfigSchema = z.object({
       backend: SandboxBackendSchema.default('srt'),
       env: z.record(EnvironmentName, ProcessValue).default({}),
       mounts: z.array(SandboxMountSchema).default([]),
+      // The executor facet switch (session-executors.md §10): this machine hosts isolated sessions of its group's other members, under ITS runtime sign-in. The owner's consent, so `config/push` never sets it.
+      share: z.boolean().default(false),
       microsandbox: MicrosandboxConfigSchema.optional()
     })
     .strict()
-    .default({ backend: 'srt', env: {}, mounts: [] }),
+    .default({ backend: 'srt', env: {}, mounts: [], share: false }),
   security: z
     .object({
       // Prevent ACP runtimes from implicitly inheriting apps/connectors attached

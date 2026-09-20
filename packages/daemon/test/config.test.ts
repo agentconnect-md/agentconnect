@@ -77,7 +77,7 @@ describe('loadConfig', () => {
     expect(cfg.runtimes!.claude!.command).toBe('npx')
     expect(cfg.security.isolateAccountApps).toBe(true)
     expect(cfg.security.workspaceGitAllowedOrigins).toEqual(['*'])
-    expect(cfg.sandbox).toEqual({ backend: 'srt', env: {}, mounts: [] })
+    expect(cfg.sandbox).toEqual({ backend: 'srt', env: {}, mounts: [], share: false })
     expect(cfg.features.turnFinalContextRefresh).toBe(true)
     expect(cfg.limits.maxAgents).toBe(32)
     expect(cfg.agentsDir).toContain('agents')
@@ -92,7 +92,8 @@ describe('loadConfig', () => {
     expect(cfg.sandbox).toEqual({
       backend: 'srt',
       env: {},
-      mounts: [{ source: '/opt/toolchain', target: '/opt/toolchain', mode: 'readonly' }]
+      mounts: [{ source: '/opt/toolchain', target: '/opt/toolchain', mode: 'readonly' }],
+      share: false
     })
     expect(() =>
       ConfigSchema.parse({
@@ -100,6 +101,12 @@ describe('loadConfig', () => {
         sandbox: { mounts: [{ source: '/opt/toolchain', target: '/opt/toolchain', readOnly: true }] }
       })
     ).toThrow()
+  })
+
+  it('keeps sandbox.share off unless the machine owner sets it, and takes nothing but a boolean', () => {
+    expect(ConfigSchema.parse({ version: 1, sandbox: { backend: 'microsandbox' } }).sandbox.share).toBe(false)
+    expect(ConfigSchema.parse({ version: 1, sandbox: { share: true } }).sandbox.share).toBe(true)
+    expect(() => ConfigSchema.parse({ version: 1, sandbox: { share: 'yes' } })).toThrow()
   })
 
   it('rejects an unimplemented sandbox backend', () => {
@@ -122,7 +129,8 @@ describe('loadConfig', () => {
     expect(ConfigSchema.parse({ version: 1, sandbox: { backend: 'microsandbox' } }).sandbox).toEqual({
       backend: 'microsandbox',
       env: {},
-      mounts: []
+      mounts: [],
+      share: false
     })
     expect(
       ConfigSchema.parse({ version: 1, sandbox: { backend: 'microsandbox', microsandbox: {} } }).sandbox.microsandbox
@@ -141,6 +149,7 @@ describe('loadConfig', () => {
       backend: 'microsandbox',
       env: {},
       mounts: [],
+      share: false,
       microsandbox: {
         image: 'registry.example.test/runtime:test',
         cpus: 2,
