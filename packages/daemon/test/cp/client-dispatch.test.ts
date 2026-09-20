@@ -1158,6 +1158,32 @@ describe('CpClient dispatch', () => {
     expect(rep.type).toBe('session/child-status/probe/ok')
     expect(rep.corr).toBe(f.id)
   })
+
+  // It advertises `session-executors-v1`, so a relayed prepare must be ANSWERED: an ignored frame costs the Control Plane its whole relay budget.
+  it('refuses a relayed executor/prepare at once while it has no executor facet', async () => {
+    const { t } = await readyClient()
+    const f = JSON.parse(
+      frame(
+        'executor/prepare',
+        {
+          agentId: CRON_AGENT_ID,
+          sessionKey: 'slack:C1:1700000000.000100',
+          executorDaemonId: DAEMON_ID,
+          generation: 7,
+          strategy: 'host'
+        },
+        { epoch: 5 }
+      )
+    )
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    const rep = JSON.parse(t.sent[0]!)
+    expect([rep.type, rep.corr, rep.payload]).toEqual([
+      'executor/prepare/result',
+      f.id,
+      { status: 'refused', reason: 'facet_off' }
+    ])
+  })
 })
 
 describe('CpClient memory/home/migrated (D→C REQ)', () => {

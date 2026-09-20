@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import {
   TASK_LIST_FEATURE,
   AGENT_WAKE_FEATURE,
+  SESSION_EXECUTORS_V1_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
   WORKSPACE_GIT_V1_FEATURE,
@@ -71,6 +72,8 @@ describe('registrationFeatures — the console dock reads (git review + write + 
     expect(features).toContain(WORKSPACE_REPO_SCOPE_FEATURE)
     // The sandbox wake is the one dock read that is NOT unconditional: a local daemon has nothing to wake.
     expect(features).not.toContain(AGENT_WAKE_FEATURE)
+    // It answers a relayed `executor/prepare` (cp/client-dispatch.test.ts), so the CP may send it one; whether it HOSTS is the executor facts' business.
+    expect(features).toContain(SESSION_EXECUTORS_V1_FEATURE)
   })
 })
 

@@ -43,6 +43,12 @@ const dropPlatformStanding = (db: DatabaseSync): void => {
   db.exec('ALTER TABLE sessions DROP COLUMN platformStanding')
 }
 
+/** A store from before v20 records no birth verdict on its sessions. */
+const dropBirthVerdict = (db: DatabaseSync): void => {
+  db.exec('ALTER TABLE sessions DROP COLUMN executorDaemonId')
+  db.exec('ALTER TABLE sessions DROP COLUMN stayedHomeReason')
+}
+
 /** Undo the v17 gate re-key, so a fixture's session_gates looks like the one an older daemon wrote. */
 const revertSessionGateKey = (db: DatabaseSync): void => {
   db.exec('DROP TABLE session_gates')
@@ -111,6 +117,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE permission_requests DROP COLUMN ownerId')
     dropApprovalDmColumns(old)
     dropPlatformStanding(old)
+    dropBirthVerdict(old)
     revertSessionGateKey(old)
     old.exec('DROP INDEX session_metadata_outbox_attempt')
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN failedAttempts')
@@ -158,7 +165,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect(cronColumns).toContain('definition')
     // Purge receipts are leased per pool member (#1032).
     expect(purgeColumns).toEqual(expect.arrayContaining(['ownerId', 'claimedAt']))
-    expect(userVersion(path)).toBe(19)
+    expect(userVersion(path)).toBe(20)
   })
 
   it.skipIf(pg)('never persists the CP routing map on a shared store, and still does on an owned one', async () => {
@@ -209,6 +216,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
     dropApprovalDmColumns(old)
     dropPlatformStanding(old)
+    dropBirthVerdict(old)
     old.exec('PRAGMA user_version = 5')
     old.close()
 
@@ -224,7 +232,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect(await upgraded.isCaptureExcluded('bot-c', 'c')).toBe(true)
     await upgraded.close()
 
-    expect(userVersion(path)).toBe(19)
+    expect(userVersion(path)).toBe(20)
   })
 
   it('re-keys the runtime catalog cache on its owning member when upgrading a v7 store', async () => {
@@ -257,6 +265,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
     dropApprovalDmColumns(old)
     dropPlatformStanding(old)
+    dropBirthVerdict(old)
     revertSessionGateKey(old)
     old.exec('PRAGMA user_version = 7')
     old.close()
@@ -279,7 +288,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
         .map((column) => column.name)
     expect(primaryKey(metaColumns)).toEqual(['ownerId', 'runtimeId'])
     expect(primaryKey(capColumns)).toEqual(['ownerId', 'runtimeId', 'modelId'])
-    expect(userVersion(path)).toBe(19)
+    expect(userVersion(path)).toBe(20)
   })
 
   it('backfills a v11 store with the outward id its sessions were already reported under', async () => {
@@ -295,6 +304,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
     dropApprovalDmColumns(old)
     dropPlatformStanding(old)
+    dropBirthVerdict(old)
     revertSessionGateKey(old)
     old.exec('PRAGMA user_version = 11')
     old.close()
@@ -306,7 +316,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect((await upgraded.getSession('k2'))?.sessionId).toBeNull()
     expect(await upgraded.ensureOutwardSessionId('k2', 'bot-a')).toMatch(/^[0-9a-f-]{36}$/)
     await upgraded.close()
-    expect(userVersion(path)).toBe(19)
+    expect(userVersion(path)).toBe(20)
   })
 
   // The regression that made `directDestination` reachable on fresh databases only: the step was
@@ -321,6 +331,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
       VALUES ('k1', 'bot-a', 'slack', 'C1', 'T1', 'acp-1', 'idle', 100)`)
     dropApprovalDmColumns(old)
     dropPlatformStanding(old)
+    dropBirthVerdict(old)
     revertSessionGateKey(old)
     old.exec('PRAGMA user_version = 12')
     old.close()
@@ -331,7 +342,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     await upgraded.setSessionClassification('k1', { sourceBindingKind: 'external', directDestination: true })
     expect(await upgraded.getSessionClassification('bot-a', 'acp-1')).toMatchObject({ directDestination: true })
     await upgraded.close()
-    expect(userVersion(path)).toBe(19)
+    expect(userVersion(path)).toBe(20)
   })
 
   it('refuses a store written by a newer daemon WITHOUT touching it first', async () => {
@@ -2700,6 +2711,7 @@ describe.skipIf(pg)('transcript org migration from a v10 store', () => {
     old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
     dropApprovalDmColumns(old)
     dropPlatformStanding(old)
+    dropBirthVerdict(old)
     revertSessionGateKey(old)
     old.exec('PRAGMA user_version = 10')
     old.close()
@@ -2750,6 +2762,7 @@ it.skipIf(pg)('upgrades a v17 store to durable memory continuations without chan
   await initial.putMemoryEntryContinuation('bot-a', '{}', 1000)
   await initial.close()
   const legacy = new DatabaseSync(path)
+  dropBirthVerdict(legacy)
   legacy.exec('DROP TABLE memory_entry_continuation; PRAGMA user_version = 17;')
   legacy.close()
   const upgraded = await openTestStore(path)
@@ -2757,6 +2770,6 @@ it.skipIf(pg)('upgrades a v17 store to durable memory continuations without chan
   expect(await upgraded.getMemoryEntryContinuation('bot-a', token, 999)).toBe('{"page":2}')
   await upgraded.close()
   const check = new DatabaseSync(path)
-  expect(check.prepare('PRAGMA user_version').get()).toEqual({ user_version: 19 })
+  expect(check.prepare('PRAGMA user_version').get()).toEqual({ user_version: 20 })
   check.close()
 })

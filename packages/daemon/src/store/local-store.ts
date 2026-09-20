@@ -14,7 +14,8 @@ import {
   type DreamInfo,
   type ExternalSessionOrigin,
   type QuotedMessage,
-  type SessionImageAttachment
+  type SessionImageAttachment,
+  type SessionStayedHomeReason
 } from '@agentconnect.md/protocol'
 import type { NoteProjectionOutcome, NoteProjectionPhase, NoteProjectionRow } from '../gitlab/note-projection.js'
 import type { ReviewIntentRow } from '../gitlab/review-adapter.js'
@@ -284,6 +285,9 @@ export interface SessionRecord {
   // logical session (first-wins) so a cold resume or a continuation that reconstructs its message
   // without the bag still re-asserts it. NULL on rows from before it existed and on platforms without one.
   platformStanding?: string | null
+  // Birth verdict (session-executors.md §7), written by `setSessionExecutor`: the executing daemon, or why the session stayed with its holder.
+  executorDaemonId?: string | null
+  stayedHomeReason?: SessionStayedHomeReason | null
 }
 
 export type PermissionRequestStatus = 'pending' | 'allowed' | 'denied' | 'expired'
@@ -924,7 +928,7 @@ function restrictPath(path: string, mode: number): void {
  * fresh databases and every established one fails at query time. `SCHEMA_MIGRATIONS`
  * asserts the two stay in lockstep for exactly that reason.
  */
-const SCHEMA_VERSION = 19
+const SCHEMA_VERSION = 20
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1104,7 +1108,13 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<v
     await db.exec(MEMORY_CONTINUATION_SCHEMA)
   },
   // New integration tombstones are created by the shared CREATE block below.
-  async () => undefined
+  async () => undefined,
+  // Where a spread session executes, or why it stayed with its holder (session-executors.md §7); null on every existing row.
+  async (db) =>
+    await db.exec(`
+      ALTER TABLE sessions ADD COLUMN executorDaemonId TEXT;
+      ALTER TABLE sessions ADD COLUMN stayedHomeReason TEXT;
+    `)
 ]
 
 // The list and the version are two halves of one fact: step `i` moves a database from
@@ -1218,7 +1228,9 @@ export class LocalStore {
         -- session-visibility.md §4.1: persisted so EVERY event/session re-emit
         -- carries them, not just the one dispatch that knew the message.
         conversationKind TEXT, tenantScope TEXT, launchCorrelationId TEXT,
-        platformStanding TEXT
+        platformStanding TEXT,
+        -- session-executors.md §7: the birth verdict, at most one of the two set.
+        executorDaemonId TEXT, stayedHomeReason TEXT
       );
       -- A !stop can arrive while a cold session is still materializing, before the
       -- sessions row exists. Keep the mute independently keyed so that stop survives a
@@ -2608,6 +2620,31 @@ export class LocalStore {
     await this.db
       .prepare('UPDATE sessions SET lastTurnOutcome = ?, updatedAt = ? WHERE key = ?')
       .run(outcome, updatedAt, key)
+  }
+
+  /** Record a session's birth verdict (session-executors.md §7): each write clears the other half, and an unknown key is a no-op. */
+  async setSessionExecutor(
+    key: string,
+    verdict: { executorDaemonId: string } | { stayedHomeReason: SessionStayedHomeReason }
+  ): Promise<void> {
+    await this.db
+      .prepare('UPDATE sessions SET executorDaemonId = ?, stayedHomeReason = ? WHERE key = ?')
+      .run(
+        'executorDaemonId' in verdict ? verdict.executorDaemonId : null,
+        'stayedHomeReason' in verdict ? verdict.stayedHomeReason : null,
+        key
+      )
+  }
+
+  /** The verdict on the shared row — how a successor holder finds a session's environment; undefined when none was recorded. */
+  async getSessionExecutor(
+    key: string
+  ): Promise<{ executorDaemonId: string } | { stayedHomeReason: SessionStayedHomeReason } | undefined> {
+    const row = (await this.db
+      .prepare('SELECT executorDaemonId, stayedHomeReason FROM sessions WHERE key = ?')
+      .get(key)) as { executorDaemonId: string | null; stayedHomeReason: SessionStayedHomeReason | null } | undefined
+    if (row?.executorDaemonId) return { executorDaemonId: row.executorDaemonId }
+    return row?.stayedHomeReason ? { stayedHomeReason: row.stayedHomeReason } : undefined
   }
 
   /** Targeted state transition for an existing session (§7.3), stamping `updatedAt`

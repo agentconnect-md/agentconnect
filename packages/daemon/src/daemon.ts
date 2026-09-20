@@ -33,6 +33,7 @@ import {
   GITLAB_EFFECT_V1_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
+  SESSION_EXECUTORS_V1_FEATURE,
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
   MAX_TASK_DESCRIPTION,
@@ -5437,7 +5438,9 @@ export class Daemon {
       PULL_REQUEST_FEEDBACK_FEATURE,
       // This daemon decodes the host-neutral `mode: 'git'` workspace arm; the CP
       // dual-encodes the legacy host-shaped arms to peers without this bit.
-      WORKSPACE_GIT_V1_FEATURE
+      WORKSPACE_GIT_V1_FEATURE,
+      // This daemon answers a relayed `executor/prepare`; whether it hosts anything is the executor facts' `enabled`, not this bit. Static.
+      SESSION_EXECUTORS_V1_FEATURE
     ]
   }
 
