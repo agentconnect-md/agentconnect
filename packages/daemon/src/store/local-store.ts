@@ -2677,9 +2677,8 @@ export class LocalStore {
          DO UPDATE SET sessionKey = excluded.sessionKey, updatedAt = excluded.updatedAt`
       )
       .run(p.channel, p.thread, p.agentId, p.transportScope ?? '', p.sessionKey, p.updatedAt ?? Date.now())
-    // A session's scope is the session's, not the thread's, and `upsertSession` rewrites it
-    // (scope hydration, the corruption fence). Retire the rows it left at the old scope, or
-    // a lookup at that scope keeps naming this agent for the rest of the session's life.
+    // Hygiene, not correctness — the read fences on the session's own scope, so a row left
+    // here by a crash resolves nothing. This keeps a scope move from accumulating rows.
     await this.db
       .prepare('DELETE FROM thread_participation WHERE sessionKey = ? AND transportScope != ?')
       .run(p.sessionKey, p.transportScope ?? '')
@@ -4960,8 +4959,14 @@ export class LocalStore {
    * the two agree while a session IS a thread, but an `append` session lives at a
    * coordinate that is no thread's, so the session row stops being able to answer "who is
    * talking in this thread". Liveness still comes from the session the row points at, so
-   * open-vs-dormant is decided in exactly one place, as before. The join also drops a
-   * participation row whose session is gone, which is what made "no session row ⇒ not
+   * open-vs-dormant is decided in exactly one place, as before.
+   *
+   * The join fences on the SESSION's own scope and agent, not just the key: a record is
+   * only as good as its agreement with the session it names. The old lookup could not
+   * disagree with itself — it read one row — whereas these are two rows written by two
+   * statements, so a record left behind by a scope move (or a crash between them) must
+   * fail closed rather than keep resolving through a scope the session has left. The join
+   * also drops a record whose session is gone, which is what made "no session row ⇒ not
    * listed" true before this table existed.
    */
   private async threadAgentsByState(
@@ -4976,6 +4981,8 @@ export class LocalStore {
         .prepare(
           `SELECT DISTINCT p.agentId AS agentId FROM thread_participation p
            JOIN sessions s ON s.key = p.sessionKey
+             AND COALESCE(s.transportScope, '') = p.transportScope
+             AND s.agentId = p.agentId
            WHERE p.channel = ? AND p.thread = ? AND p.transportScope = ? AND ${predicate}`
         )
         .all(channel, thread, transportScope ?? '')) as { agentId: string }[]

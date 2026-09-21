@@ -2843,6 +2843,38 @@ it.skipIf(pg)('retires the affinity row a session left at its previous transport
   await s.close()
 })
 
+// Two rows written by two statements can disagree — a crash between the participation
+// write and the retirement of the row at the old scope leaves one behind. The read fences
+// on the session's own scope so that row resolves nothing, rather than letting an
+// unmentioned message through the old bot keep reaching an agent that has moved.
+it.skipIf(pg)('ignores an affinity row whose scope the session no longer has', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-affinity-stale-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  const key = sessionKey('slack', 'C1', 'T1', 'bot-a', 'scope-b')
+  await s.upsertSession({
+    key,
+    agentId: 'bot-a',
+    platform: 'slack',
+    channel: 'C1',
+    thread: 'T1',
+    transportScope: 'scope-b',
+    acpSessionId: 'acp-1',
+    state: 'idle',
+    lastDeliveredTs: null,
+    updatedAt: 1
+  })
+  // The row a crash between the two writes would have left at the previous scope.
+  await s.recordThreadParticipation({
+    channel: 'C1',
+    thread: 'T1',
+    agentId: 'bot-a',
+    sessionKey: key,
+    transportScope: 'scope-a'
+  })
+  expect(await s.openSessionAgents('C1', 'T1', 'scope-a')).toEqual([])
+  await s.close()
+})
+
 it.skipIf(pg)('reads thread affinity from the participation record, and drops it with the session', async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'ac-affinity-')), 'local.sqlite')
   const s = await openTestStore(path)
