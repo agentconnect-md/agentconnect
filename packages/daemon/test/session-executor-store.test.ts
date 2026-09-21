@@ -69,6 +69,39 @@ describe('LocalStore session executor', () => {
     await store.close()
   })
 
+  it('counts the open isolated sessions of the agents held here, and none that execute elsewhere', async () => {
+    const store = await openTestStore()
+    const held = `bot-${crypto.randomUUID()}`
+    const other = `bot-${crypto.randomUUID()}`
+    const row = async (over: Partial<SessionRecord> = {}): Promise<SessionRecord> => {
+      const rec: SessionRecord = {
+        ...session(`t-${crypto.randomUUID()}`),
+        agentId: held,
+        workspaceIsolation: 'session',
+        ...over
+      }
+      await store.upsertSession(rec)
+      return rec
+    }
+    // A worktree session shares its agent's host, so only its row says it is load.
+    const worktree = await row()
+    await row({ state: 'prompting' })
+    const stayedHome = await row()
+    await store.setSessionExecutor(stayedHome.key, { stayedHomeReason: 'holder_least_loaded' })
+    await row({ workspaceIsolation: 'shared' })
+    await row({ state: 'closed' })
+    // Its executor counts it; the holder's host for it is a pipe.
+    const placed = await row()
+    await store.setSessionExecutor(placed.key, { executorDaemonId: EXECUTOR })
+    await row({ agentId: other })
+
+    expect(await store.countOwnIsolatedSessions([held])).toBe(3)
+    expect(await store.countOwnIsolatedSessions([held], worktree.key)).toBe(2)
+    expect(await store.countOwnIsolatedSessions([held, other])).toBe(4)
+    expect(await store.countOwnIsolatedSessions([])).toBe(0)
+    await store.close()
+  })
+
   // The SQLite in the pinned Node drops a LAST column by cutting back to the nearest comma BYTE, so a comment holding one there corrupts the table; a newer SQLite hides that.
   it.skipIf(usingPostgresStore())(
     'keeps nothing but whitespace between each column and the comma before it',

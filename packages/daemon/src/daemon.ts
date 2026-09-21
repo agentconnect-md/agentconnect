@@ -1209,6 +1209,8 @@ export class Daemon {
   private executorPlane?: ExecutorPlane
   /** Birth verdicts waiting for their session's row, which is written after placement decides its host key. */
   private readonly sessionExecutorVerdicts = new Map<string, SessionStayedHomeReason | { executorDaemonId: string }>()
+  /** Open isolated sessions executing here as last counted; the facet and heartbeat read it synchronously, each idle sweep and placement refresh it. */
+  private ownIsolatedSessionCount = 0
   /** The plane every scope of this daemon falls back to — its VMs or its pods; a spread session resolves to the executor plane instead. */
   private localPlane?: ExecutionPlane
   private k8sRuntimeProbed = false
@@ -3494,7 +3496,7 @@ export class Daemon {
       // Both are offered; the effective table above is what decides which of them a `prepare` may ask for.
       launchers: { host: hostLauncher(), microsandbox: microsandboxLauncher({ manager: () => this.microsandbox }) },
       capacity: () => this.cfg.limits.maxConcurrentSessions,
-      ownSessions: () => this.ownIsolatedSessions(),
+      ownSessions: () => this.ownIsolatedSessionCount,
       draining: () => this.draining,
       endpointHost: () => this.cpClient?.localAddress?.(),
       seedHome: (home) => {
@@ -3581,12 +3583,19 @@ export class Daemon {
   }
 
   /** What this machine hosts, counted as a candidate's `hostedSessions` is — its own isolated sessions included, so the number means the same for every candidate (§6). */
-  private hostedSessionCount(): number {
-    return this.executorFacet?.hostedSessions() ?? this.ownIsolatedSessions()
+  private async hostedSessionCount(placing: string): Promise<number> {
+    // The session being placed is not load yet: counted, it would send an idle group's first session away.
+    await this.refreshOwnIsolatedSessions(placing)
+    return this.executorFacet?.hostedSessions() ?? this.ownIsolatedSessionCount
   }
 
-  private ownIsolatedSessions(): number {
-    return [...this.hosts.keys()].filter((key) => hostKeySessionKey(key) !== undefined).length
+  /** Counted from the session rows, not the hosts: worktree sessions share one agent host, and a placed session's host here is its executor's load. */
+  private async refreshOwnIsolatedSessions(exceptKey?: string): Promise<void> {
+    try {
+      this.ownIsolatedSessionCount = await this.store.countOwnIsolatedSessions([...this.agents.keys()], exceptKey)
+    } catch (err) {
+      this.log.warn(`executor: counting this machine's isolated sessions failed: ${formatErr(err)}`)
+    }
   }
 
   /** What the holder knows about a session being born, in the vocabulary the birth predicate reads (§7). */
@@ -3638,7 +3647,7 @@ export class Daemon {
     const answer = await this.executorCandidates(agent.id, sessionKey)
     const placement = placeSession({
       ask,
-      holderHostedSessions: this.hostedSessionCount(),
+      holderHostedSessions: await this.hostedSessionCount(sessionKey),
       ...(answer ? { answer } : {})
     })
     if ('stayedHome' in placement) return await this.recordSessionExecutor(sessionKey, placement.stayedHome)
@@ -3705,7 +3714,7 @@ export class Daemon {
     const answer = await this.executorCandidates(placed.agentId, placed.sessionKey)
     const placement = placeSession({
       ask: this.placementAsk(agent, placed.sessionKey),
-      holderHostedSessions: this.hostedSessionCount(),
+      holderHostedSessions: await this.hostedSessionCount(placed.sessionKey),
       ...(answer ? { answer } : {})
     })
     // Nowhere else to put it: the session stays where it is and the turn fails, which is what a machine that comes back needs.
@@ -18723,6 +18732,8 @@ export class Daemon {
         thread: row.thread
       })
     }
+    // Only a facet that is hosting reports the count between placements.
+    if (this.executorFacet?.hostedSessions() !== undefined) await this.refreshOwnIsolatedSessions()
     // Config-file secrets: delete the materialized files once the agent has gone
     // quiet — same quiescence predicates as host reclaim below (no in-flight turn,
     // no live background work, no recent activity) but a much shorter window. The

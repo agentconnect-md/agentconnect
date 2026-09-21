@@ -2835,6 +2835,19 @@ export class LocalStore {
     return row?.stayedHomeReason ? { stayedHomeReason: row.stayedHomeReason } : undefined
   }
 
+  /** Open `session`-isolated sessions of `agentIds` that execute here (session-executors.md §6): a placed one is its executor's to count. */
+  async countOwnIsolatedSessions(agentIds: string[], exceptKey?: string): Promise<number> {
+    const unique = [...new Set(agentIds)]
+    if (unique.length === 0) return 0
+    const row = (await this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM sessions WHERE state != 'closed' AND workspaceIsolation = 'session'
+         AND executorDaemonId IS NULL AND key != ? AND agentId IN (${unique.map(() => '?').join(',')})`
+      )
+      .get(exceptKey ?? '', ...unique)) as { n: number | string } | undefined
+    return Number(row?.n ?? 0)
+  }
+
   /** Targeted state transition for an existing session (§7.3), stamping `updatedAt`
    *  so the change counts as activity for the TTL/idle clocks. No-op if the key is
    *  unknown (the row is created by the SessionManager on first turn). */
