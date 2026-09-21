@@ -210,6 +210,10 @@ export function rewrite(sql: string): string {
     .replace(/([A-Za-z_][A-Za-z0-9_.]*)\s+NOT\s+IN\s*\(\s*\)/gi, 'TRUE')
     .replace(/LIMIT\s+-1\s+OFFSET/gi, 'OFFSET')
     .replace(/\bIS\s+NOT\s+(\$\d+)/gi, 'IS DISTINCT FROM $1')
+    // The affirmative twin: PostgreSQL's `IS` takes a literal (NULL, TRUE), never a
+    // parameter, so a null-safe equality against a bound value needs the explicit spelling.
+    // Placed after the NOT rule, whose output is `IS DISTINCT FROM` and so cannot re-match.
+    .replace(/\bIS\s+(\$\d+)/gi, 'IS NOT DISTINCT FROM $1')
   const ignored = /^\s*INSERT\s+OR\s+IGNORE\s+/i.test(out)
   if (ignored) {
     out = out.replace(/^\s*INSERT\s+OR\s+IGNORE\s+/i, 'INSERT ')
