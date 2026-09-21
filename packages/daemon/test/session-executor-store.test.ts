@@ -106,6 +106,6 @@ describe('LocalStore session executor', () => {
     const after = new DatabaseSync(path)
     const version = (after.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
     after.close()
-    expect(version).toBe(20)
+    expect(version).toBe(21)
   })
 })
