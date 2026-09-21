@@ -7,7 +7,8 @@
 
 Sections 1–5 define product behavior. Sections 6–9 specify the proposed contracts,
 persistence, delivery lifecycle, and Console flow. Section 10 maps that design to
-the existing code and implementation milestones. New names and defaults below are
+the existing code and implementation milestones. Section 11 records possible future
+uses without specifying their implementation. New names and defaults below are
 implementation proposals, not APIs that already exist.
 
 ## 1. Purpose and delivery stages
@@ -1273,6 +1274,25 @@ actionable messages, provider latency, and peak message rate on representative
 content. Semantic judgments such as repeated violations need contextual samples;
 an exact counting benchmark is not a prerequisite. Concurrency limits belong to
 this host's measured budget, not to another application's defaults.
+
+## 11. Future possibilities
+
+These are exploratory uses of the same Decision resource, outside Stage 1 and
+Stage 2. They have no committed delivery order, configuration, API, or execution design.
+
+| Possible consumer                  | Potential judgment                                                                                      |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Webhooks and code-host events      | Whether an event contains an actionable request, repeated feedback, or ordinary discussion              |
+| Memory distillation                | Whether a completed conversation contains durable information worth extracting                          |
+| Scheduled tasks and monitoring     | Whether a result represents a meaningful change worth notifying the user about                          |
+| Organization knowledge suggestions | Whether an insight is useful to one agent or worth proposing for broader team reuse                     |
+| Final-answer context refresh       | Whether newly arrived conversation changes materially affect a pending answer                           |
+| Tool-approval assistance           | Whether a proposed operation raises concerns about risk or alignment with the user's task               |
+| Agent-invoked evaluation           | Letting a running agent reuse a maintained Decision instead of restating the judgment in its own prompt |
+
+Future consumers would retain their own context, result handling, permissions, and
+failure behavior. A judgment would not replace existing authorization or required
+human approval.
 
 ## References
 
