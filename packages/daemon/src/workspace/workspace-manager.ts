@@ -603,7 +603,6 @@ export class WorkspaceManager {
    * be created contributes nothing to that session and is simply absent here.
    */
   async readySecondaryRoots(agent: Agent, request?: SessionRootScope): Promise<readonly ReadyWorkspaceRoot[]> {
-    const fs = this.fsFor(agent.id)
     // The root a review made the cwd is not an additional directory of its own session.
     const ready = this.sessionSecondaryRoots(agent, await this.sessionCwdSubtreeName(agent, request))
     const id = await this.sessionWorktreeIdFor(agent, request)
@@ -615,7 +614,8 @@ export class WorkspaceManager {
       }
       const cwd = this.sessionRootDirectory(agent, root, request!.sessionKey!)
       // The `.git` marker is what `worktree add` (or a clone) writes: proof of a checkout, not of a failed attempt's leftover.
-      if ((await fs.stat(join(cwd, '.git'))) === 'missing') continue
+      // Asked of the filesystem that holds this session's directory, which is not always the agent's.
+      if ((await this.fsFor(agent.id, { path: cwd }).stat(join(cwd, '.git'))) === 'missing') continue
       roots.push({
         path: this.canonicalWorkspacePath(agent.id, cwd),
         repoFullName: root.repoFullName,
@@ -647,8 +647,8 @@ export class WorkspaceManager {
     if (agent.workspace.mode !== 'git-repo' || !agent.workspace.gitRepo) return undefined
     if ((await this.sessionCwdSubtreeName(agent, request)) === undefined) return undefined
     const path = await this.sessionRootPath(agent, this.primaryLocator(agent), request)
-    // Same proof the secondaries answer to: a checkout the session did not get is not named here.
-    if ((await this.fsFor(agent.id).stat(join(path, '.git'))) === 'missing') return undefined
+    // Same proof the secondaries answer to, of the filesystem that holds it: a checkout the session did not get is not named here.
+    if ((await this.fsFor(agent.id, { path }).stat(join(path, '.git'))) === 'missing') return undefined
     return {
       path: this.canonicalWorkspacePath(agent.id, path),
       repoFullName: gitRepoLabel(agent.workspace.gitRepo),
@@ -713,8 +713,10 @@ export class WorkspaceManager {
     const fs = this.fsFor(agent.id)
     const id = this.sessionWorktreeId(sessionKey)
     for (const entry of await this.secondarySubtreesFor(agent)) {
+      // The marker sits beside the AGENT's subtree, which its holder keeps; the checkout it attests is the SESSION's, wherever that runs (session-executors.md §7).
       if ((await fs.stat(sessionCwdMarkerIn(entry.subtree, id))) === 'missing') continue
-      if ((await fs.stat(join(this.sessionRootDirectory(agent, entry, sessionKey), '.git'))) === 'missing') continue
+      const cwd = this.sessionRootDirectory(agent, entry, sessionKey)
+      if ((await this.fsFor(agent.id, { path: cwd }).stat(join(cwd, '.git'))) === 'missing') continue
       return entry
     }
     return undefined
@@ -1243,8 +1245,9 @@ export class WorkspaceManager {
    * make. So the daemon only proves it composed the path under the mount it was given.
    */
   async validateWorktreesRoot(agent: Agent, worktreesPath: string): Promise<string> {
-    const mount = this.sandboxMountFor(agent.id)
-    if ((await this.fsFor(agent.id).stat(worktreesPath)) === 'other') {
+    // Of the filesystem the path is in — an executor's for a session placed there, and this disk for everything of the agent's own.
+    const mount = this.sandboxMountFor(agent.id, { path: worktreesPath })
+    if ((await this.fsFor(agent.id, { path: worktreesPath }).stat(worktreesPath)) === 'other') {
       throw new Error('session worktree root must not be a symlink')
     }
     if (mount !== undefined) {
@@ -1264,7 +1267,8 @@ export class WorkspaceManager {
   }
 
   async prepareWorktreesRoot(agent: Agent, worktreesPath: string): Promise<string> {
-    const fs = this.fsFor(agent.id)
+    // Of the filesystem that holds this parent: a confined session's is its own directory, wherever that session runs.
+    const fs = this.fsFor(agent.id, { path: worktreesPath })
     if ((await fs.stat(worktreesPath)) === 'other') {
       throw new Error('session worktree root must not be a symlink')
     }
@@ -1663,7 +1667,8 @@ export class WorkspaceManager {
    *  would otherwise let two names for one directory disagree; on a pod there is no symlink to
    *  resolve from here, and the shim's own descent is what decides where the name lands. */
   canonicalWorkspacePath(agentId: string, path: string): string {
-    return this.sandboxMountFor(agentId) === undefined ? realpathSync(path) : path
+    // Asked of the PATH: one agent's session can stand in a filesystem this daemon cannot resolve names in (session-executors.md §7).
+    return this.sandboxMountFor(agentId, { path }) === undefined ? realpathSync(path) : path
   }
 
   exactObjectId(value: string, label: string): string {
@@ -1767,7 +1772,8 @@ export class WorkspaceManager {
     id: string,
     worktreesPath = this.worktreesPathFor(agent)
   ): Promise<string> {
-    const fs = this.fsFor(agent.id)
+    // The stand-in goes where the session's own directory is, which for a confined one is the parent named here.
+    const fs = this.fsFor(agent.id, { path: worktreesPath })
     const root = await this.prepareSessionWorktreeRoot(agent, worktreesPath)
     const cwd = join(root, id)
     if ((await fs.stat(cwd)) === 'other') {
