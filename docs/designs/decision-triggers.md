@@ -42,9 +42,11 @@ and the independent [session mode](channel-session-mode.md).
 ## 2. Definition and trigger editor
 
 A **Decision** is an organization-owned, reusable resource containing a name,
-provider reference, one typed question, and its trigger selection. Identity and
-revision are assigned by the service. It contains no agent or channel selector;
-those belong to its conversation binding.
+provider reference, selected model, one typed question, and its trigger selection.
+The provider owns the connection and credentials; each Decision chooses the model
+to use through that connection. Two Decisions can therefore share a provider while
+using different models. It contains no agent or channel selector; those belong to
+its conversation binding.
 
 Reuse the [resource visibility policy](resource-visibility.md) for access and editing.
 Binding requires permission to configure the target integration and use the Decision;
@@ -85,6 +87,7 @@ For example, a moderator's definition can be:
 {
   "name": "Repeated violations",
   "providerId": "00000000-0000-4000-8000-000000000001",
+  "model": "jev-1.13.0",
   "question": {
     "type": "boolean",
     "instructions": "Using history and currentMessage, is the sender of currentMessage repeatedly violating the community rules and showing behavior that warrants a ban?",
@@ -106,8 +109,8 @@ spam, or classify the support topic.
 Save-time validation checks the question schema, matching trigger type, choice
 membership, and finite score threshold within the declared range. Editing criteria
 requires an explicitly valid trigger selection; obsolete choice keys are rejected
-instead of silently retained or remapped. Question and trigger changes publish as
-one revision. A bound definition cannot be deleted until its bindings are removed.
+instead of silently retained or remapped. Model, question, and trigger changes save
+atomically. A bound definition cannot be deleted until its bindings are removed.
 
 The editor also offers **Try with an example**: supply a sample current message and
 optional history, then see the typed answer and **Would trigger / Would skip**. It
@@ -240,9 +243,9 @@ not a prerequisite, so platforms without a history API remain usable.
 ### Supplying an activated agent
 
 On a match, the ordinary delivery includes the triggering message plus decision
-evidence: definition ID/revision, question and criteria, typed answer, actual model
-version, and the evaluated message ID. The question explains what the result means;
-the answer is evidence and does not grant action authority.
+evidence: definition ID, the evaluated question and criteria, typed answer, actual
+model version, and the evaluated message ID. The question explains what the result
+means; the answer is evidence and does not grant action authority.
 
 Supply retained conversation context the agent has not received through its normal
 prompt history, deduplicated by stable message IDs. Mark prior observations as
@@ -264,9 +267,10 @@ membership, probability values, and score bounds before matching. A successful
 answer and `unavailable` are separate outcomes.
 
 The daemon owns request deadlines, cancellation, bounded concurrency, and provider
-health. A request carries the Decision revision, evaluation purpose, and cancellation
-signal. SDK retries must fit within that deadline. Saturation, timeout, invalid
-responses, missing credentials, and unsupported input produce `unavailable`.
+health. An evaluation captures the Decision configuration, selected model, purpose,
+and cancellation signal. SDK retries must fit within that deadline. Saturation,
+timeout, invalid responses, missing credentials, and unsupported input produce
+`unavailable`.
 
 V1 uses **continue on evaluation failure** for an otherwise eligible ordinary
 message. Include the failure category without inventing an answer or reusing an
@@ -276,9 +280,10 @@ limits. This tradeoff preserves handling at the cost of more agent turns; surfac
 it when enabling the feature. Off, access denial, removed bindings, and stale
 ownership are not provider failures and never take this continuation path.
 
-Bind evaluation to the message identity, Decision revision, and current target
-ownership/configuration. Recheck current admission fences after the provider call
-and before dispatch so a late result cannot revive a removed or disabled binding.
+Bind evaluation to the message identity, frozen Decision configuration, and current
+target ownership. Recheck the locally applied configuration and existing admission
+fences after the provider call and before dispatch so a late result cannot revive
+a binding the daemon has removed or disabled.
 Reserve a durable place per conversation and target before provider I/O, then
 release eligible messages into existing dispatch in ingestion order. A faster
 result for B cannot admit B ahead of pending A, even when both are top-level
@@ -294,11 +299,12 @@ of that conversation's ordinary messages. A provider credential does not need to
 injected into the agent runtime. Endpoint configuration can accommodate a gateway
 without changing Decision semantics.
 
-Record model version, rule revision, latency, usage, match/skip/failure, and a message
-reference on the daemon. Evaluation inputs, answers, and history remain data-plane
-records or bounded authorized reads; CP telemetry is body-free. Saved definitions
-are configuration and may live in CP. Pin a model version
-for reproducible validation instead of assuming an alias never changes.
+Record requested and actual model IDs, the evaluated rule snapshot, latency, usage,
+match/skip/failure, and a message reference on the daemon. Evaluation inputs, answers,
+and history remain data-plane records or bounded authorized reads; CP telemetry is
+body-free. Saved definitions
+are configuration and may live in CP. Each Decision pins its selected model version
+for reproducible validation; changing that selection is an ordinary Decision edit.
 
 ## 6. Configuration contracts and persistence
 
@@ -324,8 +330,8 @@ type DecisionRule =
       trigger: { type: 'score'; operator: 'gte' | 'lt'; value: number }
     }
 
-type DecisionDraft = DecisionRule & { name: string; providerId: string }
-type DecisionDefinition = DecisionDraft & { id: string; orgId: string; revision: number }
+type DecisionDraft = DecisionRule & { name: string; providerId: string; model: string }
+type DecisionDefinition = DecisionDraft & { id: string; orgId: string }
 ```
 
 The actual Zod schema enforces the relationship between `question` and `trigger`,
@@ -334,15 +340,16 @@ visibility, creator, and timestamp fields; they are omitted from this sketch.
 
 Proposed save-time limits:
 
-| Field                      | Validation                                                                            |
-| -------------------------- | ------------------------------------------------------------------------------------- |
-| Name                       | Nonempty after trimming, at most 120 characters                                       |
-| Instructions and criteria  | Nonempty strings; complete question at most 16 KiB encoded as UTF-8 JSON              |
-| Choice criteria            | 2–32 distinct nonempty keys; keys at most 64 characters                               |
-| Choice / Boolean selection | Unique values, all belonging to the question; an empty set is valid                   |
-| Score criteria             | 2–10 ordered descriptions; reordering changes their numeric meaning                   |
-| Score threshold            | Finite number in `0..criteria.length - 1`; no rounding before matching                |
-| Provider                   | Existing, visible, same-organization provider usable by the binding's execution scope |
+| Field                      | Validation                                                                                     |
+| -------------------------- | ---------------------------------------------------------------------------------------------- |
+| Name                       | Nonempty after trimming, at most 120 characters                                                |
+| Instructions and criteria  | Nonempty strings; complete question at most 16 KiB encoded as UTF-8 JSON                       |
+| Choice criteria            | 2–32 distinct nonempty keys; keys at most 64 characters                                        |
+| Choice / Boolean selection | Unique values, all belonging to the question; an empty set is valid                            |
+| Score criteria             | 2–10 ordered descriptions; reordering changes their numeric meaning                            |
+| Score threshold            | Finite number in `0..criteria.length - 1`; no rounding before matching                         |
+| Provider                   | Existing, visible, same-organization provider usable by the binding's execution scope          |
+| Model                      | Supported model ID for the selected provider kind and question type; required on each Decision |
 
 The Choice limit of 32 is an editor limit. The Score range follows the provider's
 current supported rubric size. Validate edited definitions as a whole: renaming a
@@ -350,28 +357,45 @@ selected key, removing a score level, or switching question type requires an
 explicitly valid replacement trigger. Do not silently clamp a threshold or select
 new outcomes. This validation also applies to API writes.
 
-An update sends `expectedRevision` with the complete definition. The service
-increments `revision` once in the same transaction as question/trigger replacement;
-a stale edit returns `409`. Renaming or changing the provider also creates a new
-revision. There is no server-side draft or revision-history browser in V1.
+V1 uses ordinary resource updates: save the complete editable definition atomically,
+with the last successful write taking effect. Keep standard `createdAt` / `updatedAt`
+audit fields; they are not edit preconditions. Do not add `revision`,
+`expectedRevision`, binding versions, or a separate integration snapshot version
+for this feature. Cron, MCP provider, and conversation settings do not have a common
+optimistic-edit contract today. A shared resource revision/history scheme can be
+designed for those resources together later. Existing internal AgentSpec delivery
+versions and ownership fences remain in use; they serve a different purpose.
+
+The model selector reads a small host-maintained list of supported model IDs, labels,
+and question types from provider metadata. V1 offers **Jev 1.13** (`jev-1.13.0`),
+including when it is the only option. The exact ID is stored on the Decision and
+sent to the provider; there is no implicit provider-wide model or automatic switch
+to a newer model. The ID and response model reporting follow the
+[TypeSafe model contract](https://docs.typesafe.ai/models).
+
+Additional supported models extend that list and the adapter's validation as needed.
+A provider with a different API gets its own adapter behind the same typed decision
+contract. Neither change requires moving the model field or changing conversation
+bindings. This list is selection metadata, not a new model resource or a runtime
+plugin framework. Changing provider requires a compatible explicit model selection;
+keep the question and trigger in the draft and report incompatibilities before Save.
 
 ### 6.2 CP records
 
-| Record                   | Proposed fields / responsibility                                                                                       |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-| `DecisionProvider`       | `id`, `orgId`, `name`, `kind: typesafe`, `baseUrl`, pinned `model`, `revision`, normal visibility/ownership fields     |
-| `DecisionProviderSecret` | Provider ID and encrypted API key, accessed only through a secret-store port; excluded from list/detail queries        |
-| `Decision`               | `id`, `orgId`, `name`, `providerId`, `question` JSON, `trigger` JSON, `revision`, normal visibility/ownership fields   |
-| `IntegrationChannel`     | Add `decision` to `ChannelTrigger`; add nullable `decisionId` and a monotonically increasing `decisionBindingRevision` |
-| `Integration`            | Add `activationRevision` to fence full routing/Decision snapshots delivered out of order                               |
+| Record                   | Proposed fields / responsibility                                                                                                |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `DecisionProvider`       | `id`, `orgId`, `name`, `kind: typesafe`, `baseUrl`, normal visibility/ownership and timestamp fields                            |
+| `DecisionProviderSecret` | Provider ID and encrypted API key, accessed only through a secret-store port; excluded from list/detail queries                 |
+| `Decision`               | `id`, `orgId`, `name`, `providerId`, `model`, `question` JSON, `trigger` JSON, normal visibility/ownership and timestamp fields |
+| `IntegrationChannel`     | Add `decision` to `ChannelTrigger` and nullable `decisionId`; retain ordinary channel updates                                   |
 
 The binding invariant is `trigger == decision` if and only if `decisionId != null`.
 Writing Off / Mention / Any clears the reference atomically. An owner or session-mode
-change increments the binding revision too, because it can change the target or
-eventual session mapping of pending work. It does not silently replace the selected Decision.
+change preserves the selected Decision, while canceling affected pending evaluations
+when the daemon applies the updated configuration.
 
 Shared-bot updates lock the effective conversation and write the same trigger,
-Decision reference, binding revision, and session mode to its active sibling rows
+Decision reference and session mode to its active sibling rows
 in one transaction. Reconciliation and adding a sibling copy those fields together.
 Owner removal preserves the conversation's Decision when ownership converges, just
 as it preserves its trigger today. Deleting an unused sibling must not purge a
@@ -386,7 +410,7 @@ is an execution delegation, not a way for its viewers to read an otherwise hidde
 definition or key. Do not rely on the original editor remaining signed in.
 
 Reuse the existing `SecretCipher` and secret-store discipline. Key replacement is
-write-only and increments the provider revision; a DTO returns only
+write-only; a DTO returns only
 `credentialConfigured`, never a masked prefix or the key. A configured provider
 does not appear in the conversational runtime/model picker. Usage belongs to a
 separate Decision category, without attributing it to an ACP turn that never ran.
@@ -398,16 +422,16 @@ use existing authentication, resource visibility, error DTOs, and OpenAPI metada
 
 | Method and route                              | Input / result                                                                                                                              |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /decision-providers`                     | Visible provider metadata and credential availability                                                                                       |
-| `POST /decision-providers`                    | Name, endpoint, model, optional write-only `apiKey`; returns metadata                                                                       |
-| `PATCH /decision-providers/:id`               | Complete editable fields, `expectedRevision`, optional replacement key                                                                      |
+| `GET /decision-providers`                     | Visible provider metadata, supported model choices, and credential availability                                                             |
+| `POST /decision-providers`                    | Name, kind, endpoint, optional write-only `apiKey`; returns metadata                                                                        |
+| `PATCH /decision-providers/:id`               | Editable connection fields and optional replacement key; provider kind is fixed at creation                                                 |
 | `DELETE /decision-providers/:id`              | Refuse while referenced                                                                                                                     |
-| `GET /decisions`                              | Visible definitions, answer type, provider label, and visible binding count                                                                 |
-| `GET /decisions/:id`                          | Definition, revision, and permission-filtered bindings                                                                                      |
+| `GET /decisions`                              | Visible definitions, answer type, provider/model labels, and visible binding count                                                          |
+| `GET /decisions/:id`                          | Definition, including selected model, and permission-filtered bindings                                                                      |
 | `POST /decisions`                             | `DecisionDraft`; returns the saved definition                                                                                               |
-| `PATCH /decisions/:id`                        | `DecisionDraft` plus `expectedRevision`; atomic replacement                                                                                 |
+| `PATCH /decisions/:id`                        | Complete `DecisionDraft`; atomic replacement with ordinary last-write-wins semantics                                                        |
 | `DELETE /decisions/:id`                       | Refuse while bound                                                                                                                          |
-| `PATCH /integrations/:id/channels/:channelId` | Extend the existing route with `trigger: decision`, `decisionId`, and expected binding revision                                             |
+| `PATCH /integrations/:id/channels/:channelId` | Extend the existing route with `trigger: decision` and `decisionId`                                                                         |
 | `POST /decisions/preview`                     | Unsaved draft or saved definition ID, sample state, and an authorized execution daemon; returns an evaluation without binding or activation |
 
 For example, selecting a saved Decision updates a conversation with:
@@ -415,19 +439,18 @@ For example, selecting a saved Decision updates a conversation with:
 ```json
 {
   "trigger": "decision",
-  "decisionId": "00000000-0000-4000-8000-000000000002",
-  "expectedDecisionBindingRevision": 4
+  "decisionId": "00000000-0000-4000-8000-000000000002"
 }
 ```
 
 Omitted binding fields in an unrelated channel PATCH remain unchanged. A Decision
 selection without `trigger: decision`, or `trigger: decision` without a usable
-reference, is rejected. Return the effective binding revision, selected Decision's
-name/revision when visible, and deployment readiness in the channel DTO.
+reference, is rejected. Return the selected Decision's ID and name when visible,
+plus deployment readiness in the channel DTO.
 
 Use `400` for an invalid definition or unsupported conversation kind, `404` for a
 missing/invisible resource, `403` for a visible resource the caller cannot edit,
-and `409` for revision, reference, or consumer-capability conflicts. Offline preview
+and `409` for reference or consumer-capability conflicts. Offline preview
 execution returns `503`; a completed provider attempt can instead return a typed
 `unavailable` result. Preview must never label that result **Would skip**.
 
@@ -443,21 +466,19 @@ not cause the CP to call Jev itself.
 
 ### 7.1 One resolved snapshot
 
-Extend `IntegrationSpec.core` with a complete Decision bundle and
-`activationRevision`. The bundle contains channel bindings, their resolved
+Extend `IntegrationSpec.core` with a complete Decision bundle.
+The bundle contains channel bindings, their resolved
 definitions, and the referenced provider configurations. Resolve it when projecting
 the integration; do not fetch the definition from CP on each message.
 
 ```ts
 type DecisionBundle = {
-  bindings: Array<{ channel: string; decisionId: string; bindingRevision: number }>
+  bindings: Array<{ channel: string; decisionId: string }>
   definitions: DecisionDefinition[]
   providers: Array<{
     id: string
-    revision: number
     kind: 'typesafe'
     baseUrl: string
-    model: string
     apiKey: string
   }>
 }
@@ -466,18 +487,26 @@ type DecisionBundle = {
 This is a secret-bearing daemon projection, never a public DTO or relay payload.
 Definitions/providers are deduplicated within the bundle. An empty bundle clears
 previous bindings; missing data must not resurrect an older definition. The daemon
-validates the complete bundle before replacing it, ignores a lower
-`activationRevision`, and cancels pending work whose binding/definition changed.
+validates the complete bundle before replacing it and cancels pending work whose
+admission-relevant binding, definition, selected model, or provider connection changed.
 Use the same projection for hot updates, reconnect snapshots, and agent moves.
 Decrypted credentials follow the existing integration-secret lifetime and logging
 rules and are never written into the agent's prompt or runtime environment.
 
-Definition edits, provider changes, and binding/owner changes increment affected
-integration activation revisions in the same CP transaction as the configuration
-write. Convergence pushes the new snapshots afterward. A disconnected daemon may
-continue using its last valid snapshot, as it does for current integration routing;
-the UI reports **Pending sync** instead of claiming the new revision is active.
-Rechecks on a daemon can fence only revisions it has received, not an unseen CP edit.
+After definition, provider, or binding changes commit, the existing configuration
+convergence paths rebuild and push complete bundles to affected integrations. Reuse
+their existing parent-spec and ownership fences where present; do not add an
+independent Decision or integration revision domain. Each evaluation retains the
+configuration it used, and admission compares its relevant fields with the currently
+applied bundle (§8.3), rather than comparing resource version numbers.
+
+Delivery has the existing integration configuration's eventual-convergence semantics.
+A disconnected daemon may continue using its last valid snapshot; the UI reports
+**Pending sync** until application is confirmed. A successful CP save is not proof
+that every consumer has applied it. Local rechecks cannot detect unseen CP edits,
+and V1 does not add a cross-consumer guarantee against out-of-order configuration
+delivery. General configuration ordering and concurrent-editor protection belong
+to a shared resource design if introduced later.
 
 Add an explicit `decision` candidate kind to `BindMatch` and the pure routing
 contracts. It has Any-message candidate semantics for human messages, while the
@@ -504,11 +533,12 @@ receives an explicit observation-only disposition on `rd/msg`; the daemon must n
 interpret it as an activation. When both apply, send one envelope for that target.
 Shared daemon storage deduplicates the observation across sibling deliveries.
 
-Carry the target's `activationRevision` on the forwarding envelope. The daemon
-requires the corresponding complete local snapshot before considering activation;
-a missing or mismatched revision is **Pending sync** or stale delivery, never a
-provider error that falls open. Relay routing updates and daemon bundles need not
-arrive simultaneously for this rule to hold.
+For a Decision candidate, carry the selected `decisionId` alongside existing target
+and ownership coordinates. The daemon requires a matching enabled local binding
+and its complete definition/provider before considering activation. A missing
+bundle or different Decision ID is **Pending sync** or stale delivery, never a
+provider error that falls open. An edit to the same Decision ID uses the daemon's
+currently applied configuration; this identity check is not a version handshake.
 
 This is needed when nobody is mentioned, a message names another participant, or
 the daemon has muted the target: later judgments still need those messages. Off,
@@ -521,7 +551,7 @@ complete history. Evaluation remains entirely on the destination daemon.
 
 The adapter sends one question under a fixed `decision` key to
 `POST /v1/systemone`, authenticated with the selected provider's API key. The
-request is `{ model, state, questions: { decision: providerQuestion } }`; only
+request is `{ model: decision.model, state, questions: { decision: providerQuestion } }`; only
 Boolean needs its type translated to `noul`. No freeform parsing or extra LLM call
 is required. These provider fields follow the [TypeSafe API](https://docs.typesafe.ai/api).
 
@@ -569,8 +599,8 @@ Allow at most one transient retry inside the original deadline, honoring a usabl
 `Retry-After` and otherwise adding bounded backoff. Invalid credentials, invalid
 input, or an invalid answer are not retried. Cancellation aborts the HTTP request
 and releases its slot in `finally`. A revoked binding or shutdown is a cancellation,
-not a fail-open provider error. Repeated auth failures can be remembered until the
-provider revision changes, avoiding one doomed network call per message.
+not a fail-open provider error. A bounded auth-failure backoff avoids one doomed
+network call per message; applying replacement credentials resets it immediately.
 
 ## 8. Observation storage and delivery lifecycle
 
@@ -580,17 +610,17 @@ Implement the window through the existing `LocalStore` / `StoreDatabase` abstrac
 and migrations for both SQLite and PostgreSQL. Do not create another SQLite file
 that a pooled daemon cannot share.
 
-| Record                  | Identity and retained data                                                                                                                                                            |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `decision_conversation` | `(orgId, transportScope, platform, channelId)`; next ingestion sequence, observation start, last pruning time, known gap markers                                                      |
-| `decision_observation`  | Conversation key + stable platform post ID; ingestion sequence, sender, event/arrival times, thread/topic, text/quote/caption, truncation marker                                      |
-| `decision_lane`         | Conversation key + target agent; durable release cursor and current ownership fence; independent of ACP session and Decision revision                                                 |
-| `decision_delivery`     | Conversation key + normalized event ID/tag + target agent; lane sequence, binding/definition/provider revisions, owner fence, deadline, frozen input and result, terminal disposition |
+| Record                  | Identity and retained data                                                                                                                                               |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `decision_conversation` | `(orgId, transportScope, platform, channelId)`; next ingestion sequence, observation start, last pruning time, known gap markers                                         |
+| `decision_observation`  | Conversation key + stable platform post ID; ingestion sequence, sender, event/arrival times, thread/topic, text/quote/caption, truncation marker                         |
+| `decision_lane`         | Conversation key + target agent; durable release cursor and current ownership fence; independent of ACP session and Decision configuration                               |
+| `decision_delivery`     | Conversation key + normalized event ID/tag + target agent; lane sequence, owner fence, deadline, frozen configuration/input/result, terminal disposition; no credentials |
 
 The conversation key uses the existing bot-qualified `transportScope`; an
 unqualified channel ID is insufficient. No observation key contains an ACP session
 ID. The delivery key is target-specific but does **not** include the Decision
-revision: editing a definition must not cause a retried old delivery to activate
+configuration: editing a definition must not cause a retried old delivery to activate
 again. Distinguish the stable post ID used for history from an event tag used by
 normalization to distinguish a routable closing edit.
 
@@ -680,7 +710,7 @@ cross-channel history, exact violation counter, or retrieval of an ACP memory du
 Introduce one daemon `DecisionGate` used by direct ingress, primary/participant
 delivery, and relay IM delivery. It reserves a durable slot before starting provider
 I/O. The lane key is **organization + transport scope + platform conversation +
-target agent**, independent of `thread`, `msgId`, session mode, and Decision revision.
+target agent**, independent of `thread`, `msgId`, session mode, and Decision configuration.
 This is essential in the default `createNew` mode: two top-level messages have
 different session keys, so the current per-session dispatch queue cannot order them.
 Different conversations or agents have independent lanes.
@@ -730,18 +760,27 @@ bounded earlier decision, never for another conversation or an entire prior turn
 Control commands remain outside this wait: `!stop` must be able to cancel pending
 candidates immediately, with its existing target/thread scope.
 
-| Event                                                                | Required handling                                                                                              |
-| -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| Valid answer, selected outcome                                       | Persist result, recheck gates, enter normal admission                                                          |
-| Valid answer, unselected outcome                                     | Settle as skipped; release slot; create no session/inbox turn                                                  |
-| Timeout, overload, invalid provider result                           | Persist unavailable; continue only if current admission gates still permit it                                  |
-| Definition, binding, owner, or session-mode changed before admission | Cancel the old candidate; do not reinterpret its answer with the new rule or fall open                         |
-| Off, access revoked, agent paused, `!stop`, loop protection          | Cancel/suppress; never classify as provider failure                                                            |
-| Duplicate while evaluating                                           | Join the existing evaluation; no second provider request in this process                                       |
-| Duplicate after settlement                                           | Reuse the terminal delivery disposition; no new turn                                                           |
-| Process restarts with a pending evaluation                           | Recheck ownership/configuration; recover as unavailable without automatically issuing a fresh provider request |
-| Process restarts after successful inbox admission                    | Existing inbox replay owns execution; the gate cannot create another delivery                                  |
-| Observation/receipt persistence fails                                | Do not claim durable acceptance or dispatch untracked work; use existing ingress retry/rejection behavior      |
+Freeze the Decision ID, provider ID/kind/endpoint, requested model, question, trigger,
+binding, and session mode with the candidate, excluding credentials. Applying a
+relevant configuration change cancels affected pending candidates; immediately
+before admission, compare those fields against the current local configuration and
+recheck existing ownership/access/stop fences. A rename alone need not cancel work.
+Recovery uses the same stored comparison before releasing a pending candidate as
+unavailable. The retained snapshot also explains a historical answer after an edit;
+it is evaluation evidence, not a new resource revision or edit-conflict mechanism.
+
+| Event                                                                                                 | Required handling                                                                                              |
+| ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Valid answer, selected outcome                                                                        | Persist result, recheck gates, enter normal admission                                                          |
+| Valid answer, unselected outcome                                                                      | Settle as skipped; release slot; create no session/inbox turn                                                  |
+| Timeout, overload, invalid provider result                                                            | Persist unavailable; continue only if current admission gates still permit it                                  |
+| Relevant definition, model, provider, binding, or session-mode change applied locally; ownership lost | Cancel the old candidate; do not reinterpret its answer with the new rule or fall open                         |
+| Off, access revoked, agent paused, `!stop`, loop protection                                           | Cancel/suppress; never classify as provider failure                                                            |
+| Duplicate while evaluating                                                                            | Join the existing evaluation; no second provider request in this process                                       |
+| Duplicate after settlement                                                                            | Reuse the terminal delivery disposition; no new turn                                                           |
+| Process restarts with a pending evaluation                                                            | Recheck ownership/configuration; recover as unavailable without automatically issuing a fresh provider request |
+| Process restarts after successful inbox admission                                                     | Existing inbox replay owns execution; the gate cannot create another delivery                                  |
+| Observation/receipt persistence fails                                                                 | Do not claim durable acceptance or dispatch untracked work; use existing ingress retry/rejection behavior      |
 
 Decision cancellation leaves the observation available to later messages. Direct
 ingress can only recover events it durably received; this feature does not promise
@@ -766,8 +805,9 @@ store begins with partial history and cannot recover rows it does not possess.
 ### 8.4 Supplying evidence without duplicating chat history
 
 Attach a daemon-local `decisionEvidence` envelope to the admitted delivery. It holds
-the definition/question revision, typed result or failure category, model/usage,
-snapshot cut, partial-context flags, and IDs of supplied observations. It is not a
+the evaluated definition ID, question/criteria and trigger snapshot, typed result or
+failure category, requested/actual model and usage, snapshot cut, partial-context
+flags, and IDs of supplied observations. It is not a
 new `NormalizedMessage.trigger` value: a Decision is an admission condition, while
 the existing trigger field still describes the incoming message's source.
 
@@ -788,13 +828,15 @@ what action is appropriate, and uses separately authorized moderation tools.
 ### 9.1 Create and bind
 
 The Decisions list shows name, question type, provider/model, and binding count.
-The editor has Name, Provider, Question type, Instructions, Criteria, and
+The editor has Name, Provider, **Model**, Question type, Instructions, Criteria, and
 **Trigger when**. Boolean has two rubric text fields; Choice has editable keyed
 rows; Score has ordered levels labeled `0..N-1`. Changing type or criteria previews
 the resulting trigger controls and requires a valid selection before Save.
 
 ```text
 Decision: Support triage
+Provider: TypeSafe connection
+Model: Jev 1.13 (jev-1.13.0)
 Question type: Choice
 Instructions: Which support topic best describes currentMessage in context?
 
@@ -808,6 +850,12 @@ Explicit mentions always activate the addressed agent.
 
 [Try with an example]                                [Save]
 ```
+
+Show Model on the Decision editor even while Jev is the only supported choice.
+Provider settings contain the name, endpoint, and API key; they do not choose a
+shared model. Selecting another model preserves a compatible question and trigger,
+marks any preview stale, and takes effect for all bindings after Save and sync.
+Do not reuse the agent's conversational runtime/model picker for this field.
 
 For Score, show the operator, slider with rubric labels, and a numeric input; the
 input permits fractional thresholds and changes the same stored number. For
@@ -837,9 +885,11 @@ does not become retained conversation history. Editing the draft marks the displ
 preview stale until rerun.
 
 The first operational view is a bounded recent-evaluations panel reached from the
-binding: timestamp, message reference, Decision revision, matched/skipped/unavailable/
-canceled, model, and latency. Detailed question/answer/context reads are authorized
-daemon BFF reads; opening the panel does not copy them to CP storage. Apply the
+binding: timestamp, message reference, Decision name, matched/skipped/unavailable/
+canceled, requested/actual model, and latency. Detailed reads show the evaluated
+configuration snapshot, so an edited definition does not relabel an old answer.
+These question/answer/context reads are authorized daemon BFF reads; opening the
+panel does not copy them to CP storage. Apply the
 bound conversation's existing audience checks in addition to Decision visibility.
 An expired detailed snapshot displays **Details expired**, not a reconstruction
 using the latest question or newer channel history. Providers and
@@ -867,7 +917,7 @@ builder, matcher, and gate; a plugin registry is unnecessary for one provider.
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Shared contract       | Add `protocol/src/decision.ts`; extend `frames/integration.ts`, `frames/relay-cp.ts`, `frames/relay-daemon.ts`, capability constants, and their consuming schemas              |
 | Pure routing          | Extend `activation-policy/src/index.ts` and daemon `router/routing-rule.ts` with the explicit Decision candidate kind; preserve bot-author policy                              |
-| CP persistence        | Prisma models/migration, repository ports and implementations, encrypted provider secret store, binding replication and revision updates                                       |
+| CP persistence        | Prisma models/migration, repository ports and implementations, encrypted provider secret store, atomic definition/model saves and binding replication                          |
 | CP API/projection     | `http/dto/index.ts`, `http/routes/integrations.ts`, new Decision routes; `orchestrator/placement.ts`, `integrationPush.ts`, and `httpBot.ts` project/converge complete bundles |
 | Daemon ingress        | `daemon.ts` direct `onInboundOutcome`, participant fan-out, and relay `handleRelayIm` use one gate before dispatch/steering; `recordObservedInbound` stays session-scoped      |
 | Data-plane durability | `store/local-store.ts`, `store/store-database.ts`, and PostgreSQL migrations gain observation/receipt operations and atomic inbox handoff                                      |
@@ -880,7 +930,7 @@ builder, matcher, and gate; a plugin registry is unnecessary for one provider.
 1. **Contract and provider:** shared question/trigger schemas, pure matching, a Jev
    adapter, secret references, deadline handling, and example evaluation.
 2. **Configuration:** organization-scoped Decision CRUD and conversation references,
-   existing editor authorization, atomic revision projection to daemons, shared-bot
+   existing editor authorization, complete configuration projection to daemons, shared-bot
    replication, and the type-derived Console controls. New REST routes carry the
    standard OpenAPI metadata; admin tooling uses the same configuration contract.
    Reject activation of this mode on a route with unsupported daemon or relay
@@ -901,20 +951,22 @@ for judgment quality and latency, not deterministic queue correctness. Exercise 
 store backends where transactions, restart, or competing owners are the behavior
 under test. Prefer these focused scenarios over tests mirroring every helper.
 
-| Scenario                         | Evidence required                                                                                                                                               |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Typed controls                   | Choice membership, Boolean `0.5`, fractional Score boundaries, all/none selections, and edited criteria agree between UI, preview, and daemon                   |
-| Context before the first session | Skip A/B, match C; C sees A/B exactly once, correctly attributed, and only C creates an agent session                                                           |
-| Top-level arrival ordering       | With `createNew`, reserve distinct top-level A/B before provider I/O; finish B first; B cannot enter dispatch until A has skipped or received its admission ACK |
-| Ordering survives restart        | Restart with A pending and B settled; reload the lane and process A's recovery before releasing B; a different channel remains independent                      |
-| Explicit mention and commands    | Mention creates zero Jev calls; ordinary thread replies are gated; `!stop` can suppress pending work without waiting for Jev                                    |
-| Direct and relay parity          | Primary, participant, and observation-only paths retain the same context; a single delivery cannot bypass the gate through fan-out                              |
-| Configuration during evaluation  | Edit the definition, disable the binding, or move ownership while a request waits; its old result cannot activate the target or fall open                       |
-| Durable handoff                  | Crash after settling an answer and after writing inbox admission; replay produces one admission, with missing background and evidence preserved                 |
-| Provider failure and load        | Timeout/auth/invalid output continue only eligible deliveries; cancellation does not; deadlines release lanes and bounded queues apply backpressure             |
-| Retention and isolation          | Idle pruning removes expired content, shared sibling removal preserves still-used history, and another organization/bot/conversation cannot read the window     |
-| Preview and diagnostics          | Try writes no observation or session; unavailable differs from skip; changed drafts and expired details are labeled correctly                                   |
-| Rolling compatibility            | An old daemon/relay cannot receive a silently unfiltered route; unsupported bindings/placements are rejected visibly                                            |
+| Scenario                         | Evidence required                                                                                                                                                                                        |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Typed controls                   | Choice membership, Boolean `0.5`, fractional Score boundaries, all/none selections, and edited criteria agree between UI, preview, and daemon                                                            |
+| Model selection                  | The saved Decision model reaches preview/live requests; two Decisions sharing a provider retain independent selections; incompatible provider/model/type combinations are rejected                       |
+| Ordinary resource edits          | Create/edit/bind needs no expected revision; question, model, and trigger save atomically; later successful edits take effect without a new conflict protocol                                            |
+| Context before the first session | Skip A/B, match C; C sees A/B exactly once, correctly attributed, and only C creates an agent session                                                                                                    |
+| Top-level arrival ordering       | With `createNew`, reserve distinct top-level A/B before provider I/O; finish B first; B cannot enter dispatch until A has skipped or received its admission ACK                                          |
+| Ordering survives restart        | Restart with A pending and B settled; reload the lane and process A's recovery before releasing B; a different channel remains independent                                                               |
+| Explicit mention and commands    | Mention creates zero Jev calls; ordinary thread replies are gated; `!stop` can suppress pending work without waiting for Jev                                                                             |
+| Direct and relay parity          | Primary, participant, and observation-only paths retain the same context; a single delivery cannot bypass the gate through fan-out                                                                       |
+| Configuration during evaluation  | Apply a changed rule/model/provider or disabled binding locally, or revoke ownership while a request waits; its old result cannot activate or fall open; an unseen CP edit follows normal sync semantics |
+| Durable handoff                  | Crash after settling an answer and after writing inbox admission; replay produces one admission, with missing background and evidence preserved                                                          |
+| Provider failure and load        | Timeout/auth/invalid output continue only eligible deliveries; cancellation does not; deadlines release lanes and bounded queues apply backpressure                                                      |
+| Retention and isolation          | Idle pruning removes expired content, shared sibling removal preserves still-used history, and another organization/bot/conversation cannot read the window                                              |
+| Preview and diagnostics          | Try writes no observation or session; unavailable differs from skip; changed drafts and expired details are labeled correctly                                                                            |
+| Rolling compatibility            | An old daemon/relay cannot receive a silently unfiltered route; unsupported bindings/placements are rejected visibly                                                                                     |
 
 ### 10.4 Rollout and remaining implementation work
 
