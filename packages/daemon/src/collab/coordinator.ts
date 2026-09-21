@@ -2,6 +2,7 @@
 // orchestration, hoisted out of `Daemon` verbatim. Every delivery here is DIRECT (never a
 // visible channel post) and every ordering below — record-first, CAS, admission barrier — is
 // load-bearing against a fast worker replying before its record exists.
+import { isAppendCoordinate } from '../session/append-coordinate.js'
 import type { HostKey } from '../acp/host-key.js'
 import { randomUUID } from 'node:crypto'
 import type { Clock, TimerHandle } from '@agentconnect.md/connection'
@@ -899,7 +900,14 @@ export class CollabCoordinator {
         source: 'agent',
         platform: originPlatform,
         channel: local.channel,
-        ...(local.thread ? { thread: local.thread } : {}),
+        // The stored row's thread is the SESSION's. Where it is synthetic it carries the
+        // session, never the reply target — the resumed parent posts at the channel root
+        // rather than at a thread no platform has (channel-session-mode.md §3.1).
+        ...(isAppendCoordinate(local.thread)
+          ? { sessionThread: local.thread }
+          : local.thread
+            ? { thread: local.thread }
+            : {}),
         ...(local.transportScope ? { transportScope: local.transportScope } : {}),
         // A monotonic "now" ts so the reply is ordered as a NEW message in the origin session.
         // Without it, transcriptCoords derives the ts from the msgId's random UUID, which the

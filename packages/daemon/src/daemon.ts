@@ -9108,7 +9108,13 @@ export class Daemon {
         source: 'agent',
         platform: origin.platform,
         channel: origin.channel,
-        ...(origin.thread ? { thread: origin.thread } : {}),
+        // Same as the local branch: a synthetic stored thread is the session's, not a
+        // delivery target, so it rides `sessionThread` and the reply posts at the root.
+        ...(isAppendCoordinate(origin.thread)
+          ? { sessionThread: origin.thread }
+          : origin.thread
+            ? { thread: origin.thread }
+            : {}),
         ...(origin.transportScope ? { transportScope: origin.transportScope } : {}),
         // Ordered as NEW content in the origin session (see replyToSession's local branch).
         transcriptTs: monotonicTs(),
