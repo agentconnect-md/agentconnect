@@ -61,6 +61,7 @@ import {
   fetchMemberSets,
   createMemberSet,
   renameMemberSet,
+  setMemberSetSpreadSessions,
   deleteMemberSet,
   enrollDaemonInMemberSet,
   withdrawDaemonFromMemberSet,
@@ -180,6 +181,8 @@ interface ConsoleData {
   orgSetIds: ReadonlySet<string>
   createGroup: (name: string) => Promise<MemberSetRow>
   renameGroup: (setId: string, name: string) => Promise<void>
+  /** Let the group's agents run their isolated sessions on members other than their holder. */
+  setGroupSpreadSessions: (setId: string, enabled: boolean) => Promise<void>
   /** Delete an EMPTY group (409 while it has members or placed agents), then re-pull. */
   deleteGroup: (setId: string) => Promise<void>
   /** Enroll a daemon — agents pinned to it move onto the group with it. 409 when the machine
@@ -316,6 +319,11 @@ const EMPTY_SESSION_FACETS: SessionFacets = {
 }
 function settleInBackground(...tasks: Promise<unknown>[]): void {
   void Promise.allSettled(tasks)
+}
+
+/** A group DTO as the console holds it. The one default: a CP that predates the switch spreads nothing. */
+function groupRow(s: MemberSetDto): MemberSetRow {
+  return { ...s, spreadSessions: s.spreadSessions ?? false }
 }
 
 // Map a live integration DTO to the richer UI row, resolving the holding daemon
@@ -1107,7 +1115,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   )
   // The DTO IS the row here: a group has no derived state of its own, so projecting it would only
   // create a second shape to keep in step with the first.
-  const groups = useMemo<MemberSetRow[]>(() => memberSets.map((s) => ({ ...s })), [memberSets])
+  const groups = useMemo<MemberSetRow[]>(() => memberSets.map(groupRow), [memberSets])
   const orgSetIds = useMemo(() => new Set(groups.map((g) => g.setId)), [groups])
 
   // integrations: live rows (daemon resolved via the owning agent), plus the demo
@@ -1344,7 +1352,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     async (name: string): Promise<MemberSetRow> => {
       const created = await createMemberSet(name)
       settleGroupWrite()
-      return created
+      return groupRow(created)
     },
     [settleGroupWrite]
   )
@@ -1352,6 +1360,14 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const renameGroup = useCallback(
     async (setId: string, name: string) => {
       await renameMemberSet(setId, name)
+      settleGroupWrite()
+    },
+    [settleGroupWrite]
+  )
+
+  const setGroupSpreadSessions = useCallback(
+    async (setId: string, enabled: boolean) => {
+      await setMemberSetSpreadSessions(setId, enabled)
       settleGroupWrite()
     },
     [settleGroupWrite]
@@ -1665,6 +1681,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       orgSetIds,
       createGroup,
       renameGroup,
+      setGroupSpreadSessions,
       deleteGroup,
       enrollInGroup,
       withdrawFromGroup,
@@ -1748,6 +1765,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       orgSetIds,
       createGroup,
       renameGroup,
+      setGroupSpreadSessions,
       deleteGroup,
       enrollInGroup,
       withdrawFromGroup,

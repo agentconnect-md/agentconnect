@@ -296,6 +296,17 @@
       "cost": "Cost",
       "toolCalls": "Tool calls",
       "daemon": "Daemon",
+      "runsOn": "Runs on",
+      "stayedHome": {
+        "notOnGroup": "not on a group",
+        "groupSwitchOff": "spreading off",
+        "sharedSession": "shared workspace",
+        "memoryDaemonHomed": "memory kept here",
+        "noCandidate": "no member could run it",
+        "candidatesFull": "every member full",
+        "controlPlaneUnreachable": "control plane unreachable",
+        "holderLeastLoaded": "least loaded"
+      },
       "runtime": "Runtime",
       "tokenUsage": "Token usage",
       "effort": "Effort",
@@ -1912,6 +1923,11 @@
       "cpuShort": "cpu",
       "memoryShort": "mem"
     },
+    "executor": {
+      "sessions": "{hosted} sessions",
+      "sessionsOfCapacity": "{hosted} / {capacity} sessions",
+      "strategyUnavailable": "{strategy} unavailable"
+    },
     "pool": {
       "managed": "Managed by AgentConnect",
       "notServing": "Managed by AgentConnect · not serving",
@@ -1950,6 +1966,9 @@
       "newGroup": "New group",
       "daemons": "Daemons",
       "noDaemonsAvailable": "No daemons available. Connect one, or remove it from its current group first.",
+      "spreadSessions": "Spread sessions across the group",
+      "on": "On",
+      "off": "Off",
       "onlineStatus": "Online",
       "offlineStatus": "Offline",
       "save": "Save",

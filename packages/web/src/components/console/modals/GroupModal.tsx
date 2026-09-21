@@ -3,7 +3,7 @@
 import { useRef, useState } from 'react'
 import type { MemberSetRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
-import { Button, Icon } from '@/components/ui'
+import { Button, Icon, Toggle } from '@/components/ui'
 import { useTranslations } from 'next-intl'
 
 /**
@@ -18,13 +18,21 @@ import { useTranslations } from 'next-intl'
  * serves them. Leaving is the asymmetric one, refused while the machine still holds live work; that
  * lives on the daemon's own page next to the drain state. Each membership write is applied on its
  * own, so one refusal reports itself and leaves the rest of the edit intact.
+ *
+ * Session spreading (session-executors.md §10) joins them because it is the group's OWN setting and
+ * this is where a group is edited. It is the group admin's half of two consents: it lets the group's
+ * agents run their isolated sessions — with their repositories, credentials and secrets — on members
+ * other than their holder. The other half is each machine owner's `sandbox.share`, which lives in
+ * that machine's local config and is deliberately nothing the console can set.
  */
 export default function GroupModal({ group, onClose }: { group?: MemberSetRow; onClose: () => void }) {
   const t = useTranslations('Daemons.dialog')
-  const { createGroup, renameGroup, enrollInGroup, withdrawFromGroup, daemons } = useConsoleData()
+  const { createGroup, renameGroup, setGroupSpreadSessions, enrollInGroup, withdrawFromGroup, daemons } =
+    useConsoleData()
   const [name, setName] = useState(group?.name ?? '')
   // The membership this dialog is editing, seeded from the group and applied on save.
   const [members, setMembers] = useState<string[]>(group?.memberDaemonIds ?? [])
+  const [spread, setSpread] = useState(group?.spreadSessions ?? false)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   // A group created by a failed attempt. Names are not unique, so retrying without this would
@@ -51,6 +59,7 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
       // is indistinguishable from it.
       const setId = group ? group.setId : (createdSetId.current ??= (await createGroup(trimmed)).setId)
       if (group && trimmed !== group.name) await renameGroup(setId, trimmed)
+      if (spread !== (group?.spreadSessions ?? false)) await setGroupSpreadSessions(setId, spread)
       const before = new Set(group?.memberDaemonIds ?? [])
       const after = new Set(members)
       // Each membership write is its own request with its own precondition, applied one at a time,
@@ -131,6 +140,15 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
               })}
             </div>
           )}
+        </div>
+        <div className="fld mt-[14px]">
+          <span className="fldlbl">{t('spreadSessions')}</span>
+          <div className="inp min-w-0 justify-between gap-3">
+            <span className="truncate font-sans text-[13px] font-medium leading-normal text-(--text-secondary)">
+              {spread ? t('on') : t('off')}
+            </span>
+            <Toggle checked={spread} onChange={setSpread} ariaLabel={t('spreadSessions')} />
+          </div>
         </div>
         {err && (
           <div className="mt-[14px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[11px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)">

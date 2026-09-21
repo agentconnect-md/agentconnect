@@ -87,6 +87,7 @@ const group = (over: Partial<MemberSetRow> = {}): MemberSetRow => ({
   name: 'build-farm',
   memberDaemonIds: [],
   agentCount: 0,
+  spreadSessions: false,
   ...over
 })
 

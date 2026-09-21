@@ -117,7 +117,13 @@ describe('editAgentDaemonChoices', () => {
 })
 
 describe('editAgentCapabilitySource', () => {
-  const group = { setId: 'g1', name: 'Group 1', memberDaemonIds: ['grouped-offline', 'grouped'], agentCount: 0 }
+  const group = {
+    setId: 'g1',
+    name: 'Group 1',
+    memberDaemonIds: ['grouped-offline', 'grouped'],
+    agentCount: 0,
+    spreadSessions: false
+  }
 
   it('resolves the Cloud placement to a serving pool member', () => {
     // `POOL_PLACEMENT` matches no daemon row. Resolving it to nothing is what fell the runtime and

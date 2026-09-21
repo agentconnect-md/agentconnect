@@ -296,6 +296,17 @@
       "cost": "费用",
       "toolCalls": "工具调用",
       "daemon": "Daemon",
+      "runsOn": "运行于",
+      "stayedHome": {
+        "notOnGroup": "未加入组",
+        "groupSwitchOff": "未开启分散",
+        "sharedSession": "共享工作区",
+        "memoryDaemonHomed": "记忆留在本机",
+        "noCandidate": "没有成员能运行",
+        "candidatesFull": "成员均已满",
+        "controlPlaneUnreachable": "控制面不可达",
+        "holderLeastLoaded": "负载最低"
+      },
       "runtime": "Runtime",
       "tokenUsage": "Token 用量",
       "effort": "推理强度",
@@ -1912,6 +1923,11 @@
       "cpuShort": "cpu",
       "memoryShort": "内存"
     },
+    "executor": {
+      "sessions": "{hosted} 个会话",
+      "sessionsOfCapacity": "{hosted} / {capacity} 个会话",
+      "strategyUnavailable": "{strategy} 不可用"
+    },
     "pool": {
       "managed": "由 AgentConnect 管理",
       "notServing": "由 AgentConnect 管理 · 未提供服务",
@@ -1950,6 +1966,9 @@
       "newGroup": "新建组",
       "daemons": "Daemon",
       "noDaemonsAvailable": "暂无可用 Daemon。请先连接一个，或将其从当前组移除。",
+      "spreadSessions": "在组内分散会话",
+      "on": "开启",
+      "off": "关闭",
       "onlineStatus": "在线",
       "offlineStatus": "离线",
       "save": "保存",

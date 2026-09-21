@@ -229,6 +229,9 @@ export interface MemberSetRow {
   memberDaemonIds: string[]
   /** Agents placed on the group — the same count Cloud shows. */
   agentCount: number
+  /** Whether the group's agents may run their isolated sessions on members other than their holder
+   *  (session-executors.md §10). The group admin's consent; each machine's `sandbox.share` is its owner's. */
+  spreadSessions: boolean
 }
 
 /** One status for a group: online while any of its members is serving — the same rule the pool
@@ -2227,6 +2230,16 @@ export interface DaemonCaps {
   features: string[]
   /** Why a sandbox this daemon HAS is unusable right now; `features` still lists `sandbox`, since it refuses such a session rather than running it unconfined. */
   sandboxUnavailable?: string
+  /** What this daemon offers the group's sessions (session-executors.md §10); absent while its executor facet is off. */
+  executor?: DaemonExecutor
+}
+
+/** A sharing daemon's effective strategy table and session ceiling. No address: an executor's is topology, never configured or shown. */
+export interface DaemonExecutor {
+  enabled: boolean
+  /** Keyed by strategy — the `sandbox.backend` name — with the reason a strategy cannot run here. */
+  strategies?: Record<string, { available: true } | { available: false; reason: string }>
+  capacity?: number
 }
 
 /** One daemon-configured MCP server (protocol `FactsMcpServer`) — name +
@@ -2319,6 +2332,9 @@ export interface DaemonRow {
   mcpServers: McpServerInfo[]
   /** Active session count — NOT the hosted-agent count (derive that by filtering the agents list by daemon). */
   activeSessions: string
+  /** Session environments live on this machine, its own plus any it hosts for its group
+   *  (session-executors.md §6) — the numerator against `caps.executor.capacity`. Null until it reports one. */
+  hostedSessions: number | null
   conns: string
   uptime: string
   /** Creator's userId — resolved to a name / "You" at render via creatorLabel; '' for CLI/self-registered. */

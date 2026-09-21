@@ -16,7 +16,7 @@ import type {
   PlacementKindValue
 } from '@/lib/data'
 import { isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf, poolLabel } from '@/lib/data'
-import type { HookKind } from '@agentconnect.md/protocol'
+import type { HookKind, SessionStayedHomeReason } from '@agentconnect.md/protocol'
 import type { CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { hookKindFromIntegration, hookSourceLabel } from '@/lib/session-trigger'
 import type { AgentIcon } from '@/lib/agent-icon'
@@ -582,6 +582,10 @@ export interface SessionDetailDto {
   /** The shared-store pool set holding the rows; null ⇒ the recorder's private store. Absent on older CPs. */
   contentSetId?: string | null
   workspaceIsolation?: 'shared' | 'session' | null
+  /** Birth verdict (session-executors.md §7): the group member executing this session, or the
+   *  reason it stayed with its holder. At most one is set; both absent on an older CP. */
+  executorDaemonId?: string | null
+  stayedHomeReason?: SessionStayedHomeReason | null
   // Session visibility (docs/designs/session-visibility.md §5/§6). All three are
   // absent on a CP that predates the feature. `visibilityState` is the §5.1
   // tighten cutover: 'pending' until every affected daemon acked the change,
@@ -1124,6 +1128,9 @@ export interface DaemonViewDto {
   sessionEpoch: number
   maxAgents: number
   activeSessions: number
+  /** Session environments live on this machine, its own plus any it hosts for the group
+   *  (session-executors.md §6). Null until it reports one; absent on an older CP. */
+  hostedSessions?: number | null
   lastSeenAt: string | null
   createdAt: string // ISO-8601
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for CLI/self-registered
@@ -2267,6 +2274,7 @@ export function daemonFromDto(
     })),
     mcpServers: d.mcpServers ?? [],
     activeSessions: String(d.activeSessions),
+    hostedSessions: d.hostedSessions ?? null,
     conns: String(d.maxAgents),
     uptime: fmtSeen(d.lastSeenAt),
     createdBy: d.createdBy ?? '', // creator userId; creatorLabel resolves it to a name / "You" at render
@@ -4848,6 +4856,9 @@ export interface MemberSetDto {
   memberDaemonIds: string[]
   /** Agents placed on the set — the count shown beside Cloud's and a cluster's. */
   agentCount: number
+  /** Whether the set's agents may run their isolated sessions on members other than their holder
+   *  (session-executors.md §10). Off by default; absent on a CP that predates the switch. */
+  spreadSessions?: boolean
 }
 
 export async function fetchMemberSets(orgId?: string): Promise<MemberSetDto[]> {
@@ -4860,6 +4871,12 @@ export async function createMemberSet(name: string): Promise<MemberSetDto> {
 
 export async function renameMemberSet(setId: string, name: string): Promise<MemberSetDto> {
   return apiPatch<MemberSetDto>(`${orgBase()}/member-sets/${encodeURIComponent(setId)}`, { name })
+}
+
+/** The group admin's half of the two consents: may the set's agents run their isolated sessions on
+ *  members other than their holder. Each machine's own `sandbox.share` is the other half. */
+export async function setMemberSetSpreadSessions(setId: string, enabled: boolean): Promise<MemberSetDto> {
+  return apiPut<MemberSetDto>(`${orgBase()}/member-sets/${encodeURIComponent(setId)}/spread-sessions`, { enabled })
 }
 
 export async function deleteMemberSet(setId: string): Promise<void> {
