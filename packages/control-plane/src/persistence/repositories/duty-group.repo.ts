@@ -663,6 +663,24 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     return rows.map((r) => r.holder as DaemonId).sort()
   }
 
+  async confirmedHoldersOfMany(agentIds: readonly AgentId[], now: Date): Promise<Map<AgentId, DaemonId[]>> {
+    const holders = new Map<AgentId, DaemonId[]>()
+    if (agentIds.length === 0) return holders
+    // The same confirmed-hold predicate as `confirmedHoldersOf`, keyed by agent.
+    const rows = await this.prisma.$queryRaw<{ refId: string; holder: string }[]>(Prisma.sql`
+      SELECT DISTINCT m."refId" AS "refId", g."holder" AS holder FROM "duty_group_member" m
+      JOIN "duty_group" g ON g.id = m."groupId"
+      WHERE m."kind" = 'agent' AND m."refId" IN (${Prisma.join([...agentIds])})
+        AND g."holder" IS NOT NULL AND g."expiresAt" IS NOT NULL AND g."expiresAt" > ${now}
+        AND g."confirmedTerm" = g."term" AND g."confirmedHolder" = g."holder"
+    `)
+    for (const row of rows) {
+      const agentId = row.refId as AgentId
+      holders.set(agentId, [...(holders.get(agentId) ?? []), row.holder as DaemonId].sort())
+    }
+    return holders
+  }
+
   async holdersOf(agentId: AgentId, now: Date): Promise<DaemonId[]> {
     // Same unexpired-lease join as holdsAgent, read from the agent's side: an
     // update must reach every member actually serving it. Membership survives an

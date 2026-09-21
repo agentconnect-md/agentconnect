@@ -7121,6 +7121,8 @@ export interface DutyGroupRepo {
   /** {@link DutyGroupRepo.holdersOf} restricted to CONFIRMED holds — who INGRESS may be addressed
    *  at. A holder that is still installing is a live lease and not yet a route. */
   confirmedHoldersOf(agentId: AgentId, now: Date): Promise<DaemonId[]>
+  /** {@link DutyGroupRepo.confirmedHoldersOf} for a page of agents in one read; an agent nobody holds is absent. */
+  confirmedHoldersOfMany(agentIds: readonly AgentId[], now: Date): Promise<Map<AgentId, DaemonId[]>>
   /** Every member currently holding an unexpired lease on a group covering this
    *  agent — the delivery half of {@link DutyGroupRepo.holdsAgent}, so a live
    *  update reaches whoever serves the agent rather than only where it is placed

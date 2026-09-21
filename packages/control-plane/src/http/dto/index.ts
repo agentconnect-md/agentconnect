@@ -861,6 +861,8 @@ export const AgentDto = z.object({
    *  `set` placement it is "some live member could serve this", which is the question the console
    *  was answering with a dead Pod's id (#987). */
   placementReady: z.boolean(),
+  // A group agent's confirmed duty holder: the member its next turn reaches, so a session recorded there can resume. Absent for a daemon or pool placement.
+  holderDaemonId: z.string().nullable().optional(),
   workspace: AgentWorkspaceBody,
   /** Rename-proof numeric identity of the GitHub workspace repository. Null
    * for scratch/anonymous or legacy rows that have not been repaired yet. */

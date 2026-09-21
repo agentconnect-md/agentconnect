@@ -328,6 +328,8 @@ export interface AgentDto {
   // Placement is a TARGET: `set` names a member set through `setId` and carries no member id.
   placementKind?: PlacementKindValue
   placementReady?: boolean
+  // A group agent's confirmed duty holder; absent for a daemon or pool placement and from an older CP.
+  holderDaemonId?: string | null
   daemonId: string | null
   daemonName: string | null
   setId?: string | null
@@ -1954,6 +1956,7 @@ export function agentFromDto(d: AgentDto): Agent {
     // The set id rides along: `daemon` alone cannot tell the pool from one of the org's own groups,
     // and only a caller holding the org's set list can (daemon-groups.md §2).
     setId: d.setId ?? null,
+    ...(d.holderDaemonId ? { holderDaemonId: d.holderDaemonId } : {}),
     daemon: placementValueOf(d) ?? PLACEHOLDER,
     ...(d.daemonName ? { daemonName: d.daemonName } : {}),
     region: PLACEHOLDER,

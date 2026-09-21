@@ -3705,12 +3705,12 @@ export default function SessionDetailView() {
       continuationReason === 'daemon_offline' ||
       continuationReason === 'unavailable')
   const isLive = isPg || isWebchat || isContinuable || continuationBlocked
-  // Where each agent runs NOW: a machine for a `daemon` placement, the set otherwise (matched to the session's `contentSetId`, never a member id).
+  // Where each agent runs NOW: a machine for a `daemon` placement, the set otherwise (a pool matched by `contentSetId`, a group by its holder).
   const placementByAgent = new Map(
     agents.map((agent) => [
       agent.id,
       isSetPlacementKind(agent.placementKind)
-        ? { setId: agent.setId }
+        ? { setId: agent.setId, holderDaemonId: agent.holderDaemonId }
         : { daemonId: agent.daemon === '—' ? undefined : agent.daemon }
     ])
   )

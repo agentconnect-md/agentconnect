@@ -596,6 +596,8 @@ export interface Agent {
   /** Server-computed: can a session start right now? For a set placement that is "some member is
    *  live", which is the question the console used to answer with a dead member's liveness. */
   placementReady?: boolean
+  /** A group agent's confirmed duty holder: the member its next turn reaches, whose store holds what can resume. */
+  holderDaemonId?: string
   daemon: string
   /** Display name projected with the Agent; available even when the daemon itself is not visible. */
   daemonName?: string

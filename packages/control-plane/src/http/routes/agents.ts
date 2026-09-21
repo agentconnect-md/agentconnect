@@ -369,6 +369,7 @@ function toDto(
     daemonName: a.daemonId ? placementView.daemonName : null,
     setId: a.setId,
     placementReady: placementView.ready,
+    ...(placementView.holderDaemonId !== undefined ? { holderDaemonId: placementView.holderDaemonId } : {}),
     workspace: workspaceToDto(a.workspace, a.workspaceRepoId),
     workspaceRepoId: a.workspaceRepoId?.toString() ?? null,
     capabilities: a.capabilities,
@@ -402,6 +403,8 @@ interface PlacementView {
   daemonName: string | null
   sandbox: SandboxPolicy
   ready: boolean
+  /** Set only for an org's own group: the pool shares its store, and a machine placement names its daemon. */
+  holderDaemonId?: string | null
 }
 
 const NO_PLACEMENT: PlacementView = { daemonName: null, sandbox: NO_SANDBOX, ready: false }
@@ -475,7 +478,9 @@ async function placementViewFor(deps: HttpDeps, a: AgentRecord, setMembers?: Dae
     return placementViewOf(deps, await deps.registry.getAvailable(a.orgId, eligibility.daemonId))
   }
   const members = setMembers ?? (await readySetMembers(deps, OrgId(a.orgId), eligibility.setId))
-  return placementViewOf(deps, members[0] ?? null)
+  const view = placementViewOf(deps, members[0] ?? null)
+  if (eligibility.setId === (await deps.repos.memberSet.crossOrgSetId())) return view
+  return { ...view, holderDaemonId: await deps.placementResolver.routableDaemon(a) }
 }
 
 /** The dto's hook-kind marks for ONE agent (single-agent reads/writes). */
@@ -2182,11 +2187,19 @@ export function agentRoutes(deps: HttpDeps) {
             )
           )
         )
+        // And one ledger read for the holders of every agent on one of the org's own groups.
+        const poolSetId = await deps.repos.memberSet.crossOrgSetId()
+        const onGroup = (a: AgentRecord): boolean => {
+          const eligibility = dutyEligibility(a)
+          return eligibility.scope === 'set' && eligibility.setId !== poolSetId
+        }
+        const holders = await deps.placementResolver.routableHolders(rows.filter(onGroup).map((a) => a.id))
         const viewFor = (a: AgentRecord): PlacementView => {
           const eligibility = dutyEligibility(a)
           if (eligibility.scope === 'none') return NO_PLACEMENT
-          if (eligibility.scope === 'set') return setViews.get(eligibility.setId) ?? NO_PLACEMENT
-          return views.get(eligibility.daemonId) ?? NO_PLACEMENT
+          if (eligibility.scope === 'daemon') return views.get(eligibility.daemonId) ?? NO_PLACEMENT
+          const view = setViews.get(eligibility.setId) ?? NO_PLACEMENT
+          return onGroup(a) ? { ...view, holderDaemonId: holders.get(a.id) ?? null } : view
         }
         return rows.map((a) =>
           toDto(

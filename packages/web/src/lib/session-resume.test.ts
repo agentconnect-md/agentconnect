@@ -58,6 +58,16 @@ describe('sessionResumeState', () => {
     )
   })
 
+  it('allows resume on a group agent only while the member holding it is the recorder', () => {
+    const grouped = new Map([['agent-group', { setId: 'group-set', holderDaemonId: 'member-1' }]])
+    expect(sessionResumeState([{ agentId: 'agent-group', daemonId: 'member-1' }], grouped)).toBe('available')
+    // Failed over to another member: a group has no shared store, so the content stayed behind.
+    expect(sessionResumeState([{ agentId: 'agent-group', daemonId: 'member-2' }], grouped)).toBe('unavailable')
+    // No confirmed holder right now.
+    const unheld = new Map([['agent-group', { setId: 'group-set', holderDaemonId: null }]])
+    expect(sessionResumeState([{ agentId: 'agent-group', daemonId: 'member-1' }], unheld)).toBe('unavailable')
+  })
+
   it('checks every conversation member on a flat session route', () => {
     const selected = { agentId: 'agent-a', daemonId: 'daemon-1' }
     const members = sessionResumeMembers(

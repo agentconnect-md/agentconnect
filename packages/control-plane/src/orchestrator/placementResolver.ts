@@ -32,6 +32,8 @@ import { systemClock, type Clock } from '../domain/clock.js'
 export interface DutyHolderReader {
   holdersOf(agentId: AgentId, now: Date): Promise<DaemonId[]>
   confirmedHoldersOf(agentId: AgentId, now: Date): Promise<DaemonId[]>
+  /** One read for a page; absent ⇒ one `confirmedHoldersOf` per agent. */
+  confirmedHoldersOfMany?(agentIds: readonly AgentId[], now: Date): Promise<Map<AgentId, DaemonId[]>>
 }
 
 /** An agent as the resolver reads it: its identity plus the placement columns. */
@@ -77,6 +79,19 @@ export class PlacementResolver {
   /** The one daemon an ingress projection should name, or null when nothing may be addressed. */
   async routableDaemon(agent: ResolvableAgent): Promise<DaemonId | null> {
     return ((await this.routableDaemons(agent))[0] as DaemonId | undefined) ?? null
+  }
+
+  /** {@link PlacementResolver.routableDaemon} for a page of set agents, in one ledger read: a set names no machine, so it is the first confirmed holder. */
+  async routableHolders(agentIds: readonly string[]): Promise<Map<string, DaemonId | null>> {
+    const duties = this.deps.duties
+    const ids = [...new Set(agentIds)].map((id) => AgentId(id))
+    const now = new Date(this.deps.clock.now())
+    const held = !duties
+      ? new Map<AgentId, DaemonId[]>()
+      : duties.confirmedHoldersOfMany
+        ? await duties.confirmedHoldersOfMany(ids, now)
+        : new Map(await Promise.all(ids.map(async (id) => [id, await duties.confirmedHoldersOf(id, now)] as const)))
+    return new Map(ids.map((id) => [id as string, held.get(id)?.[0] ?? null]))
   }
 
   /** Every daemon that serves this agent: what placement names, then every live duty holder. */
