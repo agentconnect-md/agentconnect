@@ -436,7 +436,7 @@ export async function sendMessage(
       platform: ctx.platform,
       ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
       callerChannel: ctx.channel,
-      callerThread: ctx.deliveryThread,
+      callerThread: ctx.thread,
       sessionId,
       text: message,
       ...(correlationId !== undefined ? { correlationId } : {})
@@ -494,7 +494,7 @@ export async function sendMessage(
           ...(ctx.integrationId !== undefined ? { callerIntegrationId: ctx.integrationId } : {}),
           ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
           callerChannel: ctx.channel,
-          callerThread: ctx.deliveryThread,
+          callerThread: ctx.thread,
           toAgentId: toAgent,
           text: message,
           channel: channel ?? ctx.channel,
@@ -805,7 +805,7 @@ export async function sendMessage(
         originPlatform: ctx.platform,
         ...(ctx.transportScope !== undefined ? { originTransportScope: ctx.transportScope } : {}),
         originChannel: ctx.channel,
-        originThread: ctx.deliveryThread
+        originThread: ctx.thread
       })
       // A root post is a legitimate way to open a new topic, so this is never blocked — but
       // when it FORKS a conversation the agent is ALREADY part of, the intent was almost
@@ -829,7 +829,7 @@ export async function sendMessage(
               platform: ctx.platform,
               ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
               callerChannel: ctx.channel,
-              callerThread: ctx.deliveryThread,
+              callerThread: ctx.thread,
               targetPlatform: wantPlatform,
               targetChannel: postChannel,
               targetThread: postedThread,
@@ -871,6 +871,9 @@ export async function sendMessage(
   //     activation rendezvous that admits this delivery exactly once (§8.6).
   let wake: MessageAgentResult | undefined
   if (baseWakeReq !== undefined) {
+    // `callerThread` / `originThread` above are SESSION identity — the coordinator feeds them
+    // to `sessionKey()` to recompute `callerKey` and to route a cross-daemon reply — so they
+    // stay on the session coordinate. Only the wake's own thread is a delivery default.
     const threadForWake = channel !== undefined ? postedThread : ctx.deliveryThread
     wake = await deps.messageAgent({
       ...baseWakeReq,

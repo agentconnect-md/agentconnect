@@ -103,7 +103,9 @@ export async function startOrchestration(
     mainAgentId: ctx.agentId,
     platform: ctx.platform,
     channel: ctx.channel,
-    thread: ctx.deliveryThread,
+    // Session identity: the coordinator feeds this to `sessionKey()` for the requester and
+    // main-session lookups, so it is the session's coordinate, never a delivery target.
+    thread: ctx.thread,
     ...(ctx.integrationId !== undefined ? { integrationId: ctx.integrationId } : {}),
     ...(ctx.transportScope !== undefined ? { transportScope: ctx.transportScope } : {}),
     subtasks,
@@ -118,7 +120,7 @@ function ownerReq(ctx: SessionContext, args: Record<string, unknown>): Orchestra
     mainAgentId: ctx.agentId,
     platform: ctx.platform,
     channel: ctx.channel,
-    thread: ctx.deliveryThread,
+    thread: ctx.thread,
     ...(ctx.transportScope !== undefined ? { transportScope: ctx.transportScope } : {}),
     orchestrationId: parseArgs(ORCHESTRATION_OWNER_ARGS, args).orchestrationId
   }

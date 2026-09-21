@@ -10478,7 +10478,16 @@ export class Daemon {
       dispatch: (agentId, msg, integrationId, webchat, callMeta, opts) =>
         this.dispatch(agentId, msg, integrationId, webchat, callMeta, opts),
       webchatTransport: () => this.webchatTransport,
-      externalOriginForSession: (agentId, sessionKey) => this.externalOriginForSession(agentId, sessionKey)
+      externalOriginForSession: (agentId, sessionKey) => this.externalOriginForSession(agentId, sessionKey),
+      targetSessionCoordinate: async (agentId, platform, channel, transportScope) => {
+        const int = this.agents
+          .get(agentId)
+          ?.integrations?.find(
+            (candidate) => candidate.platform === platform && conversationSessionMode(candidate, channel) === 'append'
+          )
+        if (!int) return undefined
+        return await this.store.resolveAppendCoordinate(agentId, channel, transportScope)
+      }
     }
   }
 

@@ -109,6 +109,16 @@ export interface CollabTurnHost {
   ): Promise<string | null>
   webchatTransport(): WebchatTransport
   /** The external audience of a session, by its logical key. */
+  /** The TARGET's session coordinate in this conversation when it differs from the thread
+   *  the wake is delivered on (channel-session-mode.md §3.1). A direct peer wake never
+   *  enters the per-target ingress resolution, so it asks here instead; each agent holds its
+   *  own reservation, so this is the callee's answer, not the caller's. */
+  targetSessionCoordinate(
+    agentId: string,
+    platform: string,
+    channel: string,
+    transportScope?: string
+  ): Promise<string | undefined>
   externalOriginForSession(
     agentId: string,
     sessionKey: string | undefined
@@ -450,7 +460,22 @@ export class CollabCoordinator {
     const event = this.prepareAgentDelivery(req)
     const { deliveryId } = event
     const msgId = `agentcall:${coordChannel}:${deliveryId}`
-    const targetSession = sessionKey(platform, coordChannel, event.thread, req.toAgentId, targetTransportScope)
+    // Keyed on the CALLEE's coordinate where its conversation appends: this path dispatches a
+    // known target directly, so it never reaches the per-target ingress resolution, and
+    // keying on the delivery thread would open the peer a second session per caller.
+    const targetCoordinate = await this.host.targetSessionCoordinate(
+      req.toAgentId,
+      platform,
+      coordChannel,
+      targetTransportScope
+    )
+    const targetSession = sessionKey(
+      platform,
+      coordChannel,
+      targetCoordinate ?? event.thread,
+      req.toAgentId,
+      targetTransportScope
+    )
 
     const prior = this.agentCallDeliveries.get(deliveryId)
     if (prior) return observe('collaboration.delivery.deduplicated', prior, deliveryId)
@@ -552,6 +577,7 @@ export class CollabCoordinator {
       platform,
       channel: coordChannel,
       thread: event.thread,
+      ...(targetCoordinate !== undefined ? { sessionThread: targetCoordinate } : {}),
       ...(targetTransportScope !== undefined ? { transportScope: targetTransportScope } : {}),
       sender: { id: req.callerAgentId, isBot: true },
       text: event.text,
