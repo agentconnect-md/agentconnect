@@ -401,7 +401,8 @@ import type { ExecutionPlane, PlaneLaunch, PlaneScope } from './execution/plane.
 import { seedSessionHome, startExecutorFacet, type ExecutorFacet } from './execution/executor-facet.js'
 import { ExecutorPlane, executorMcpBridge, type PlacedSession } from './execution/executor-plane.js'
 import { placeSession, type PlacementAsk, type PlacementChoice } from './execution/executor-placement.js'
-import { effectiveStrategies } from './execution/strategies.js'
+import { microsandboxLauncher } from './execution/executor-vm.js'
+import { effectiveStrategies, hostLauncher } from './execution/strategies.js'
 import {
   declaredRuntimeCatalog,
   loadK8sRuntimeTable,
@@ -3432,6 +3433,8 @@ export class Daemon {
       daemonRoot: root,
       share: cfg.sandbox.share,
       strategies: () => this.executionStrategies(),
+      // Both are offered; the effective table above is what decides which of them a `prepare` may ask for.
+      launchers: { host: hostLauncher(), microsandbox: microsandboxLauncher({ manager: () => this.microsandbox }) },
       capacity: () => this.cfg.limits.maxConcurrentSessions,
       ownSessions: () => this.ownIsolatedSessions(),
       draining: () => this.draining,

@@ -4,6 +4,7 @@ import { createServer as createHttpServer } from 'node:http'
 import { connect as tcpConnect, createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Duplex } from 'node:stream'
 import { connect, type ConnectionOptions, type TLSSocket } from 'node:tls'
 import { ClientTransport } from '@agentconnect.md/connection'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -20,6 +21,8 @@ import { WAIT } from './wait-support.js'
 /** In place of a shim: a unix-socket server that echoes, and remembers who reached it and what they sent. */
 interface Stub {
   socketPath: string
+  /** What the `host` strategy's admission supplies: a connector that opens that socket. */
+  connect: () => Socket
   connections: Socket[]
   received: () => string
 }
@@ -64,7 +67,7 @@ describe('executor pipe listener', () => {
     })
     servers.push(server)
     await new Promise<void>((resolve) => server.listen(socketPath, resolve))
-    return { socketPath, connections, received: () => received }
+    return { socketPath, connect: () => tcpConnect(socketPath), connections, received: () => received }
   }
 
   async function listen(
@@ -105,10 +108,9 @@ describe('executor pipe listener', () => {
     const shim = await stubShim()
     const key = randomBytes(32)
     const pipes: Array<[string, boolean]> = []
-    const { port } = await listen(
-      (identity) => (identity === IDENTITY ? { key, socketPath: shim.socketPath } : undefined),
-      { onPipe: (identity, open) => pipes.push([identity, open]) }
-    )
+    const { port } = await listen((identity) => (identity === IDENTITY ? { key, connect: shim.connect } : undefined), {
+      onPipe: (identity, open) => pipes.push([identity, open])
+    })
     const socket = await dial(port, key)
     expect(socket.getProtocol()).toBe('TLSv1.3')
     expect(socket.getCipher().name).toBe('TLS_AES_128_GCM_SHA256')
@@ -133,6 +135,52 @@ describe('executor pipe listener', () => {
     ])
   })
 
+  // What a VM's admission supplies: a stream opened over agentd's TCP channel, which is no path and answers asynchronously.
+  it('pipes just as well through a connector that is not a socket path and answers only later', async () => {
+    const key = randomBytes(32)
+    let received = ''
+    const shim = new Duplex({
+      read() {},
+      write(chunk: Buffer, _encoding, callback) {
+        received += chunk.toString()
+        this.push(chunk)
+        callback()
+      }
+    })
+    const pipes: Array<[string, boolean]> = []
+    const { port } = await listen(() => ({ key, connect: async () => shim }), {
+      onPipe: (identity, open) => pipes.push([identity, open])
+    })
+    const socket = await dial(port, key)
+    let echoed = ''
+    socket.on('data', (chunk) => (echoed += chunk.toString()))
+    socket.write('over the guest stream')
+    await vi.waitFor(() => expect(echoed).toBe('over the guest stream'), WAIT)
+    expect(received).toBe('over the guest stream')
+    expect(listener!.piped(IDENTITY)).toBe(true)
+
+    socket.destroy()
+    await vi.waitFor(() => expect(shim.destroyed).toBe(true), WAIT)
+    expect(pipes).toEqual([
+      [IDENTITY, true],
+      [IDENTITY, false]
+    ])
+  })
+
+  it('ends the pipe when its connector cannot reach the shim, saying so without naming the session', async () => {
+    const key = randomBytes(32)
+    const pipes: boolean[] = []
+    const { port } = await listen(
+      () => ({ key, connect: () => Promise.reject(new Error('the guest stream did not connect')) }),
+      { onPipe: (_identity, open) => pipes.push(open) }
+    )
+    await closed(await dial(port, key))
+    await vi.waitFor(() => expect(listener!.pipeCount()).toBe(0), WAIT)
+    expect(pipes).toEqual([true, false])
+    expect(lines).toEqual([expect.stringContaining('the guest stream did not connect')])
+    expect(lines[0]).not.toContain(IDENTITY)
+  })
+
   it('carries an unmodified WebSocket client that is handed the TLS socket through createConnection', async () => {
     const socketPath = await socketPathFor('ws')
     const wss = new WebSocketServer({ noServer: true })
@@ -143,7 +191,7 @@ describe('executor pipe listener', () => {
     servers.push(upstream, wss)
     await new Promise<void>((resolve) => upstream.listen(socketPath, resolve))
     const key = randomBytes(32)
-    const { port } = await listen(() => ({ key, socketPath }))
+    const { port } = await listen(() => ({ key, connect: () => tcpConnect(socketPath) }))
     const transport = await ClientTransport.dial('ws://executor.example.test', {
       subprotocol: 'test.sub.v1',
       path: '/shim',
@@ -161,7 +209,7 @@ describe('executor pipe listener', () => {
     const key = randomBytes(32)
     let live = true
     const { port } = await listen((identity) =>
-      live && identity === IDENTITY ? { key, socketPath: shim.socketPath } : undefined
+      live && identity === IDENTITY ? { key, connect: shim.connect } : undefined
     )
     const outcome = (attempt: Promise<TLSSocket>): Promise<string> =>
       attempt.then(
@@ -184,7 +232,7 @@ describe('executor pipe listener', () => {
   it('accepts the pinned suite only, even from a peer that holds the key', async () => {
     const shim = await stubShim()
     const key = randomBytes(32)
-    const { port } = await listen(() => ({ key, socketPath: shim.socketPath }))
+    const { port } = await listen(() => ({ key, connect: shim.connect }))
     // Another SHA-256 suite, which a callback-supplied key would work with, and TLS 1.2 PSK: the right key, not the pin.
     await expect(dial(port, key, IDENTITY, { ciphers: 'TLS_CHACHA20_POLY1305_SHA256' })).rejects.toThrow()
     await expect(
@@ -200,7 +248,7 @@ describe('executor pipe listener', () => {
   it('closes the pipe admitted under a rotated key, and stops admitting that key', async () => {
     const shim = await stubShim()
     let key = randomBytes(32)
-    const { port } = await listen(() => ({ key, socketPath: shim.socketPath }))
+    const { port } = await listen(() => ({ key, connect: shim.connect }))
     const old = await dial(port, key)
     await vi.waitFor(() => expect(listener!.piped(IDENTITY)).toBe(true), WAIT)
     const oldKey = key
@@ -218,7 +266,7 @@ describe('executor pipe listener', () => {
     const shim = await stubShim()
     const key = randomBytes(32)
     const events: boolean[] = []
-    const { port } = await listen(() => ({ key, socketPath: shim.socketPath }), {
+    const { port } = await listen(() => ({ key, connect: shim.connect }), {
       onPipe: (_identity, open) => events.push(open)
     })
     const first = await dial(port, key)
@@ -238,7 +286,7 @@ describe('executor pipe listener', () => {
     const first = randomBytes(32)
     let asked = 0
     // The first lookup is the handshake's and the second the admission's: a rotation landed in between.
-    const { port } = await listen(() => ({ key: asked++ === 0 ? first : randomBytes(32), socketPath: shim.socketPath }))
+    const { port } = await listen(() => ({ key: asked++ === 0 ? first : randomBytes(32), connect: shim.connect }))
     await closed(await dial(port, first))
     expect(shim.connections).toHaveLength(0)
     expect(listener!.pipeCount()).toBe(0)
@@ -247,7 +295,7 @@ describe('executor pipe listener', () => {
   it('bounds what an unauthenticated peer costs: a cap on waiting sockets, and only a count in the log', async () => {
     const shim = await stubShim()
     const key = randomBytes(32)
-    const { port } = await listen(() => ({ key, socketPath: shim.socketPath }), { maxPending: 2 })
+    const { port } = await listen(() => ({ key, connect: shim.connect }), { maxPending: 2 })
     const waiting = [0, 1, 2].map(() => tcpConnect({ host: '127.0.0.1', port }))
     clients.push(...waiting)
     for (const socket of waiting) socket.on('error', () => {})
@@ -270,7 +318,7 @@ describe('executor pipe listener', () => {
 
   it('closes a peer that never starts its handshake once the deadline passes', async () => {
     const shim = await stubShim()
-    const { port } = await listen(() => ({ key: randomBytes(32), socketPath: shim.socketPath }), {
+    const { port } = await listen(() => ({ key: randomBytes(32), connect: shim.connect }), {
       handshakeTimeoutMs: 50
     })
     const socket = tcpConnect({ host: '127.0.0.1', port })
@@ -284,9 +332,7 @@ describe('executor pipe listener', () => {
   it('opens the holder side with the key its `prepare` returned, and fails with any other', async () => {
     const shim = await stubShim()
     const key = randomBytes(32)
-    const { port } = await listen((identity) =>
-      identity === IDENTITY ? { key, socketPath: shim.socketPath } : undefined
-    )
+    const { port } = await listen((identity) => (identity === IDENTITY ? { key, connect: shim.connect } : undefined))
     const socket = await dialPipe({
       host: '127.0.0.1',
       port,

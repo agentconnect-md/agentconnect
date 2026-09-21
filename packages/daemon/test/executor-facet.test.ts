@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
-import { createServer, type Server, type Socket } from 'node:net'
+import { connect as netConnect, createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { connect, type TLSSocket } from 'node:tls'
@@ -18,6 +18,8 @@ import {
   type ExecutorFacetDeps
 } from '../src/execution/executor-facet.js'
 import { PIPE_TLS } from '../src/execution/executor-pipe.js'
+import type { SessionSeed, StrategyLauncher } from '../src/execution/strategies.js'
+import { DEFAULT_SHIM_RUNTIME_ROOT } from '../src/shim/sandbox-paths.js'
 import { WAIT } from './wait-support.js'
 
 const AGENT = '11111111-1111-4111-8111-111111111111'
@@ -49,15 +51,17 @@ describe('executor facet', () => {
   const keep = (line: string): void => void lines.push(line)
   const log = { trace: keep, debug: keep, info: keep, warn: keep, error: keep }
 
-  // What the stub launcher did, and the two ways a test bends it.
+  // What the stub launchers did, and the two ways a test bends them.
   const starts: string[] = []
+  const vmStarts: string[] = []
+  const vmDiscards: string[] = []
   const shims = new Map<string, StubShim>()
   let inFlight = 0
   let mostInFlight = 0
   let hold: Promise<void> | undefined
   let fail: Error | undefined
   let seeded: string[] = []
-  const seedEnvs: Array<Record<string, string> | undefined> = []
+  const seeds: Array<SessionSeed | undefined> = []
 
   const leftovers: ChildProcess[] = []
 
@@ -77,18 +81,20 @@ describe('executor facet', () => {
     }
     root = undefined
     starts.length = 0
+    vmStarts.length = 0
+    vmDiscards.length = 0
     shims.clear()
     inFlight = mostInFlight = 0
     hold = fail = undefined
     seeded = []
-    seedEnvs.length = 0
+    seeds.length = 0
     lines.length = 0
     minted.clear()
   })
 
-  const startShim: NonNullable<ExecutorFacetDeps['startShim']> = async ({ daemonRoot, sessionLeaf, seedEnv }) => {
+  const startShim: StrategyLauncher['start'] = async ({ daemonRoot, sessionLeaf, seed }) => {
     starts.push(sessionLeaf)
-    seedEnvs.push(seedEnv)
+    seeds.push(seed)
     mostInFlight = Math.max(mostInFlight, ++inFlight)
     try {
       await hold
@@ -125,7 +131,7 @@ describe('executor facet', () => {
       }
       shims.set(sessionLeaf, stub)
       return {
-        socketPath,
+        connect: () => netConnect(socketPath),
         runtimeRoot,
         helperRoot: '/opt/example/dist',
         missingHelpers: ['gitCredentialHelper'],
@@ -138,6 +144,23 @@ describe('executor facet', () => {
     } finally {
       inFlight -= 1
     }
+  }
+
+  /** A VM launcher with the manager and its guest stubbed out: the same echo socket, the image's own roots. */
+  const vmLauncher: StrategyLauncher = {
+    start: async (input) => {
+      const environment = await startShim(input)
+      vmStarts.push(input.sessionLeaf)
+      return {
+        connect: environment.connect,
+        // What a VM reports (§5): the image's fixed layout, and no helper root at all.
+        runtimeRoot: DEFAULT_SHIM_RUNTIME_ROOT,
+        missingHelpers: [],
+        exited: environment.exited,
+        stop: environment.stop
+      }
+    },
+    discard: async (sessionLeaf) => void vmDiscards.push(sessionLeaf)
   }
 
   async function start(over: Partial<ExecutorFacetDeps> = {}): Promise<{ facet: ExecutorFacet; clock: FakeClock }> {
@@ -159,7 +182,7 @@ describe('executor facet', () => {
       retentionMs: () => null,
       log,
       clock,
-      startShim,
+      launchers: { host: { start: startShim }, microsandbox: vmLauncher },
       listen: { host: '127.0.0.1' },
       ...over
     })
@@ -209,7 +232,9 @@ describe('executor facet', () => {
 
   const closed = (socket: TLSSocket): Promise<void> =>
     new Promise((resolve) => (socket.destroyed ? resolve() : socket.once('close', () => resolve())))
-  const record = (leaf = LEAF): { agentId: string; generation: number; launchId: string; lastUsedAt: number } =>
+  const record = (
+    leaf = LEAF
+  ): { agentId: string; generation: number; launchId: string; lastUsedAt: number; strategy: string } =>
     JSON.parse(readFileSync(join(root!, 'sessions', `${leaf}.json`), 'utf8'))
 
   describe('the switch', () => {
@@ -226,21 +251,24 @@ describe('executor facet', () => {
       const { facet } = await start({
         strategies: () => ({
           host: { available: false, reason: 'the host strategy needs Linux' },
-          microsandbox: { available: true }
+          microsandbox: { available: false, reason: 'microsandbox is not the configured sandbox backend' }
         })
       })
       expect(facet.facts()).toBeUndefined()
       expect(await facet.prepare(req(1))).toEqual({ status: 'refused', reason: 'facet_off' })
-      expect(lines.join('\n')).toMatch(/sandbox\.share is on but the facet stays off.*needs Linux/)
+      // Every strategy's own reason, so an operator reads what to fix rather than "no strategy".
+      expect(lines.join('\n')).toMatch(
+        /sandbox\.share is on but the facet stays off.*needs Linux.*not the configured sandbox backend/
+      )
     })
 
-    it('reports its facts once on: the host strategy only, the endpoint, and the capacity as it reads now', async () => {
+    it('reports its facts once on: every strategy it prepares, the endpoint, and the capacity as it reads now', async () => {
       let capacity = 4
       const { facet } = await start({ capacity: () => capacity, ownSessions: () => 2 })
       const facts = facet.facts()!
       expect(facts).toEqual({
         enabled: true,
-        strategies: { host: { available: true }, microsandbox: { available: false, reason: expect.any(String) } },
+        strategies: { host: { available: true }, microsandbox: { available: true } },
         endpoint: { host: '192.0.2.10', port: expect.any(Number) },
         capacity: 4
       })
@@ -281,15 +309,20 @@ describe('executor facet', () => {
     })
 
     // §8: only this machine can say where the sign-in its HOME seed points at lives, so its shim says it for the runtime.
-    it('hands the launcher what the HOME seed points a runtime at', async () => {
+    it('hands whichever launcher the strategy names what the HOME seed points a runtime at', async () => {
+      const seed = { env: { CLAUDE_SECURESTORAGE_CONFIG_DIR: '/home/op/.claude' }, paths: ['/home/op/.claude'] }
       const { facet } = await start({
         seedHome: (home) => {
           mkdirSync(home, { recursive: true })
-          return { CLAUDE_SECURESTORAGE_CONFIG_DIR: '/home/op/.claude' }
+          return seed
         }
       })
       ready(await facet.prepare(req(3)))
-      expect(seedEnvs).toEqual([{ CLAUDE_SECURESTORAGE_CONFIG_DIR: '/home/op/.claude' }])
+      ready(
+        await facet.prepare(req(4, { sessionKey: `slack:C2:1700000000.000200:${AGENT}`, strategy: 'microsandbox' }))
+      )
+      expect(seeds).toEqual([seed, seed])
+      expect(vmStarts).toHaveLength(1)
     })
 
     it('answers the same launch again with the same key and generation, rotating nothing and closing no pipe', async () => {
@@ -369,9 +402,13 @@ describe('executor facet', () => {
         )
         let staleAtStart: boolean | undefined
         const { facet } = await start({
-          startShim: (input) => {
-            staleAtStart = existsSync(stale)
-            return startShim(input)
+          launchers: {
+            host: {
+              start: (input) => {
+                staleAtStart = existsSync(stale)
+                return startShim(input)
+              }
+            }
           }
         })
         ready(await facet.prepare(req(1)))
@@ -391,16 +428,68 @@ describe('executor facet', () => {
       await vi.waitFor(() => expect(shims.get(LEAF)!.received()).toBe('still mine'), WAIT)
     })
 
-    it('prepares the host strategy only, and nothing while the daemon drains', async () => {
+    it('prepares only what the effective table offers, and nothing while the daemon drains', async () => {
       let draining = false
-      const { facet } = await start({ draining: () => draining })
+      const { facet } = await start({
+        draining: () => draining,
+        strategies: () => ({ host: { available: true }, microsandbox: { available: false, reason: 'no KVM here' } })
+      })
       expect(await facet.prepare(req(1, { strategy: 'microsandbox' }))).toEqual({
         status: 'refused',
         reason: 'strategy_unavailable'
       })
+      // The table's own reason travels to a holder, rather than this facet inventing one.
+      expect(facet.facts()?.strategies?.microsandbox).toEqual({ available: false, reason: 'no KVM here' })
       draining = true
       expect(await facet.prepare(req(1))).toEqual({ status: 'refused', reason: 'draining' })
       expect(starts).toEqual([])
+      expect(vmStarts).toEqual([])
+    })
+
+    it('refuses a strategy the table offers but no launcher here prepares, and says which', async () => {
+      const { facet } = await start({ launchers: { host: { start: startShim } } })
+      expect(await facet.prepare(req(1, { strategy: 'microsandbox' }))).toEqual({
+        status: 'refused',
+        reason: 'strategy_unavailable'
+      })
+      expect(facet.facts()?.strategies).toEqual({
+        host: { available: true },
+        microsandbox: { available: false, reason: 'the executor facet prepares no microsandbox environments' }
+      })
+    })
+
+    it('picks the launcher the asked-for strategy names, and a VM names the image roots rather than a session root', async () => {
+      const { facet } = await start()
+      const reply = ready(await facet.prepare(req(1, { strategy: 'microsandbox' })))
+      expect(vmStarts).toEqual([LEAF])
+      expect(starts).toEqual([LEAF])
+      // Inside a VM the shim owns its filesystem namespace, so the reply names no per-session root and no helper root (§5).
+      expect(reply.runtimeRoot).toBe(DEFAULT_SHIM_RUNTIME_ROOT)
+      expect(reply.helperRoot).toBeUndefined()
+      expect(reply.missingHelpers).toBeUndefined()
+      // Its pipe reaches the environment through the connector its launcher supplied, not through a path.
+      const socket = await admitted(reply)
+      socket.write('through the guest')
+      await vi.waitFor(() => expect(shims.get(LEAF)!.received()).toBe('through the guest'), WAIT)
+      expect(record()).toMatchObject({ strategy: 'microsandbox' })
+
+      // Release takes what the strategy owns beyond the directory: the VM and its disks.
+      expect(
+        await facet.release({ agentId: AGENT, sessionKey: KEY, executorDaemonId: SELF, launchId: LAUNCH(1) })
+      ).toEqual({
+        status: 'released'
+      })
+      expect(vmDiscards).toEqual([LEAF])
+      expect(existsSync(join(root!, 'sessions', LEAF))).toBe(false)
+    })
+
+    it('leaves a host environment to the host launcher, whose release discards no VM', async () => {
+      const { facet } = await start()
+      ready(await facet.prepare(req(1)))
+      expect(vmStarts).toEqual([])
+      expect(record()).toMatchObject({ strategy: 'host' })
+      await facet.release({ agentId: AGENT, sessionKey: KEY, executorDaemonId: SELF, launchId: LAUNCH(1) })
+      expect(vmDiscards).toEqual([])
     })
 
     it('reserves a slot atomically, counting preparations in flight and its own sessions, and answers full with the live count', async () => {
@@ -774,7 +863,7 @@ describe('seedSessionHome', () => {
       writeFileSync(join(machineHome, '.codex', 'config.toml'), 'model = "example"\n')
       writeFileSync(join(machineHome, '.codex', 'auth.json'), '{"last_refresh":"2026-01-01T00:00:00Z"}\n')
       const warnings: string[] = []
-      seedSessionHome(
+      const seed = seedSessionHome(
         sessionHome,
         {
           'codex-acp': { command: 'codex-acp', args: [], env: [] },
@@ -789,6 +878,10 @@ describe('seedSessionHome', () => {
       // Where the shared sign-in applies it is a link to the machine's own file, never a second copy that a token refresh would split.
       if (process.platform === 'linux') {
         expect(lstatSync(join(sessionHome, '.codex', 'auth.json')).isSymbolicLink()).toBe(true)
+        // That link names a file on this machine, so the seed reports it for a strategy whose runtime does not share this filesystem.
+        expect(seed.paths).toEqual([realpathSync(join(machineHome, '.codex', 'auth.json'))])
+      } else {
+        expect(seed).toEqual({ env: {}, paths: [] })
       }
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -801,17 +894,18 @@ describe('seedSessionHome', () => {
       const machineHome = join(root, 'machine')
       mkdirSync(join(machineHome, '.claude'), { recursive: true })
       writeFileSync(join(machineHome, '.claude', '.credentials.json'), '{"claudeAiOauth":{}}\n')
-      const env = seedSessionHome(
+      const seed = seedSessionHome(
         join(root, 'sessions', LEAF, 'home'),
         { 'claude-acp': { command: 'claude-agent-acp', args: [], env: [] } },
         { warn: () => {} },
         { HOME: machineHome }
       )
       // Shared sign-in is Linux-only; elsewhere the seed copies what it has and points at nothing.
-      expect(env).toEqual(
+      const dir = realpathSync(join(machineHome, '.claude'))
+      expect(seed).toEqual(
         process.platform === 'linux'
-          ? { CLAUDE_SECURESTORAGE_CONFIG_DIR: realpathSync(join(machineHome, '.claude')) }
-          : {}
+          ? { env: { CLAUDE_SECURESTORAGE_CONFIG_DIR: dir }, paths: [dir] }
+          : { env: {}, paths: [] }
       )
     } finally {
       await rm(root, { recursive: true, force: true })

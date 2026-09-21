@@ -1,6 +1,7 @@
 // The executor facet's one network surface (session-executors.md §6): a certificate-less TLS-PSK listener that, after the handshake, pipes bytes to a session's shim socket and parses nothing.
 import { randomBytes } from 'node:crypto'
-import { connect, type Socket } from 'node:net'
+import type { Socket } from 'node:net'
+import type { Duplex } from 'node:stream'
 import { connect as tlsConnect, createServer, type TLSSocket } from 'node:tls'
 import type { Logger } from '../log.js'
 
@@ -18,8 +19,8 @@ const REFUSAL_REPORT_MS = 60_000
 export interface PipeAdmission {
   /** Compared by reference once the handshake ends, so a rotation also fails a handshake already under way. */
   key: Buffer
-  /** The session's shim socket; an admitted dial is piped to it byte for byte. */
-  socketPath: string
+  /** Opens the session's shim; an admitted dial is piped to it byte for byte. A `host` shim is a unix socket, a VM's is agentd's TCP stream into the guest (§6). */
+  connect: () => Duplex | Promise<Duplex>
 }
 
 export interface PipeListenerOptions {
@@ -80,6 +81,8 @@ export function dialPipe(input: {
   })
 }
 
+const message = (error: unknown): string => (error instanceof Error ? error.message : String(error))
+
 export interface PipeListener {
   port: number
   /** Whether the identity has an admitted pipe. */
@@ -113,29 +116,43 @@ export async function startPipeListener(options: PipeListenerOptions): Promise<P
     report.unref()
   }
 
-  const admit = (identity: string, socket: TLSSocket, socketPath: string): void => {
+  const admit = (identity: string, socket: TLSSocket, open: PipeAdmission['connect']): void => {
     // One pipe per environment: the one before goes first, so neither a half-dead socket nor a deposed holder sits in the shim's single slot.
     pipes.get(identity)?.(true)
     admitted += 1
-    let open = true
-    const upstream = connect(socketPath)
+    let live = true
+    let upstream: Duplex | undefined
     const close = (replaced = false): void => {
-      if (!open) return
-      open = false
+      if (!live) return
+      live = false
       admitted -= 1
       socket.destroy()
-      upstream.destroy()
+      upstream?.destroy()
       if (pipes.get(identity) === close) pipes.delete(identity)
       // A replacement is not an idle moment: the dial that took over reports the pipe open.
       if (!replaced) options.onPipe(identity, false)
     }
     pipes.set(identity, close)
-    for (const end of [socket, upstream]) end.on('error', () => close()).once('close', () => close())
+    socket.on('error', () => close()).once('close', () => close())
     socket.setNoDelay(true)
     socket.setKeepAlive(true, KEEPALIVE_IDLE_MS)
-    socket.pipe(upstream)
-    upstream.pipe(socket)
     options.onPipe(identity, true)
+    // Opening a VM's stream is a round trip, so the socket stays paused until it answers; a failure ends the pipe as a refused unix connect does.
+    void (async () => {
+      let shim: Duplex
+      try {
+        shim = await open()
+      } catch (error) {
+        options.log.warn(`executor: a dial could not be piped to its session's shim (${message(error)})`)
+        close()
+        return
+      }
+      if (!live) return void shim.destroy()
+      upstream = shim
+      shim.on('error', () => close()).once('close', () => close())
+      socket.pipe(shim)
+      shim.pipe(socket)
+    })()
   }
 
   const server = createServer({
@@ -171,7 +188,7 @@ export async function startPipeListener(options: PipeListenerOptions): Promise<P
       socket.destroy()
       return
     }
-    admit(claim.identity, socket, admission.socketPath)
+    admit(claim.identity, socket, admission.connect)
   })
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
+import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
@@ -16,7 +17,7 @@ import { ExecutorPlane } from '../src/execution/executor-plane.js'
 import type { PlacementChoice } from '../src/execution/executor-placement.js'
 import { hostShimEnv } from '../src/execution/host-shim.js'
 import type { PlaneLaunch } from '../src/execution/plane.js'
-import { effectiveStrategies } from '../src/execution/strategies.js'
+import { effectiveStrategies, type SessionSeed, type StrategyLauncher } from '../src/execution/strategies.js'
 import { assembleRuntimeLaunch } from '../src/launch/assemble.js'
 import { sessionSandboxSubject } from '../src/remote/sandbox-subject.js'
 import { ShimClient } from '../src/shim/client.js'
@@ -87,26 +88,12 @@ describe('a session on another machine of the group', () => {
    * socket instead of the `host` launcher's child process — which needs Linux and is exercised
    * on its own by the facet's end-to-end case.
    */
-  async function machine(daemonId: string, root?: string, seed?: Record<string, string>): Promise<Machine> {
+  async function machine(daemonId: string, root?: string, seed?: SessionSeed): Promise<Machine> {
     const daemonRoot = root ?? (await mkdtemp(join(tmpdir(), 'ac-xs-')))
     if (!root) dirs.push(daemonRoot)
     const exec: GitExecPayload[] = []
-    const facet = await startExecutorFacet({
-      daemonRoot,
-      share: true,
-      strategies: () => ({
-        ...effectiveStrategies({ microsandbox: { configured: false } }),
-        host: { available: true }
-      }),
-      capacity: () => 4,
-      ownSessions: () => 0,
-      draining: () => false,
-      endpointHost: () => '127.0.0.1',
-      seedHome: () => seed,
-      agentsExist: async (agentIds) => new Set(agentIds),
-      retentionMs: () => null,
-      log: quiet,
-      startShim: async ({ sessionLeaf, seedEnv }) => {
+    const launcher: StrategyLauncher = {
+      start: async ({ sessionLeaf, seed: handed }) => {
         const server = new ShimServer()
         servers.push(server)
         const socketPath = join(await mkdtemp(join(tmpdir(), 'ac-xsk-')), 's.sock')
@@ -122,7 +109,7 @@ describe('a session on another machine of the group', () => {
           // The environment the `host` launcher starts its shim with, which is what a runtime here fills in from.
           podEnv: hostShimEnv({
             machineEnv: { PATH: '/executor/bin', LANG: 'C.UTF-8' },
-            ...(seedEnv ? { seedEnv } : {}),
+            ...(handed ? { seedEnv: handed.env } : {}),
             home: join(workspaceRoot, 'home'),
             socketPath,
             runtimeRoot: join(daemonRoot, 'hs', sessionLeaf),
@@ -140,11 +127,9 @@ describe('a session on another machine of the group', () => {
         clients.push(client)
         void client.start().catch(() => undefined)
         let resolveExit!: () => void
-        const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-          resolveExit = () => resolve({ code: 0, signal: null })
-        })
+        const exited = new Promise<void>((resolve) => (resolveExit = resolve))
         return {
-          socketPath,
+          connect: () => connect(socketPath),
           runtimeRoot: join(daemonRoot, 'hs', sessionLeaf),
           helperRoot: '/opt/agentconnect',
           missingHelpers: [],
@@ -155,7 +140,24 @@ describe('a session on another machine of the group', () => {
             resolveExit()
           }
         }
-      },
+      }
+    }
+    const facet = await startExecutorFacet({
+      daemonRoot,
+      share: true,
+      strategies: () => ({
+        ...effectiveStrategies({ microsandbox: { configured: false } }),
+        host: { available: true }
+      }),
+      capacity: () => 4,
+      ownSessions: () => 0,
+      draining: () => false,
+      endpointHost: () => '127.0.0.1',
+      seedHome: () => seed,
+      agentsExist: async (agentIds) => new Set(agentIds),
+      retentionMs: () => null,
+      log: quiet,
+      launchers: { host: launcher },
       listen: { host: '127.0.0.1' }
     })
     const entry: Machine = {
@@ -258,7 +260,10 @@ describe('a session on another machine of the group', () => {
 
   it("launches a real prepared runtime under the HOME its executor seeded, with none of the holder's environment", async () => {
     const signIn = '/executor/home/.claude'
-    const executor = await machine(EXECUTOR_A, undefined, { CLAUDE_SECURESTORAGE_CONFIG_DIR: signIn })
+    const executor = await machine(EXECUTOR_A, undefined, {
+      env: { CLAUDE_SECURESTORAGE_CONFIG_DIR: signIn },
+      paths: [signIn]
+    })
     const holder = holderPlane(HOLDER, new Relay(new Map([[EXECUTOR_A, executor]])))
     await holder.prepareAt(AGENT, KEY, [choice(EXECUTOR_A)])
     await holder.ensureChannel(SUBJECT)

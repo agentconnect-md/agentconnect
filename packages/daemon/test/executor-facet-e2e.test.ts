@@ -13,7 +13,7 @@ import { startExecutorFacet, type ExecutorFacet, type ExecutorFacetDeps } from '
 import { PIPE_TLS } from '../src/execution/executor-pipe.js'
 import { executorMount } from '../src/execution/executor-plane.js'
 import { startHostShim } from '../src/execution/host-shim.js'
-import { effectiveStrategies } from '../src/execution/strategies.js'
+import { effectiveStrategies, hostLauncher } from '../src/execution/strategies.js'
 import { assembleRuntimeLaunch } from '../src/launch/assemble.js'
 import { ShimDialer } from '../src/shim/dialer.js'
 import { ShimSession } from '../src/shim/session.js'
@@ -155,7 +155,7 @@ describe('executor facet, end to end', () => {
     agentsExist: async (agentIds) => new Set(agentIds),
     retentionMs: () => null,
     log: quiet,
-    startShim: (input) => startHostShim({ ...input, entry }),
+    launchers: { host: hostLauncher((input) => startHostShim({ ...input, entry })) },
     listen: { host: '127.0.0.1' },
     ...over
   })
@@ -232,7 +232,7 @@ describe('executor facet, end to end', () => {
       root = await mkdtemp(join(tmpdir(), 'ac-xe-'))
       const signIn = join(root, 'machine', '.claude')
       facet = await startExecutorFacet(
-        facetDeps(root, { seedHome: () => ({ CLAUDE_SECURESTORAGE_CONFIG_DIR: signIn }) })
+        facetDeps(root, { seedHome: () => ({ env: { CLAUDE_SECURESTORAGE_CONFIG_DIR: signIn }, paths: [signIn] }) })
       )
       const reply = ready(await facet.prepare(req(1)))
       const holder = await bind(reply, reply.generation)
