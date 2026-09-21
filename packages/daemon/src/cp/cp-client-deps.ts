@@ -337,6 +337,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     // The facet's only way in: its listener parses nothing, so a `prepare` reaches it over this connection or not at all.
     executorPrepare: (req) =>
       host.executorFacet()?.prepare(req) ?? Promise.resolve({ status: 'refused', reason: 'facet_off' }),
+    executorRelease: (req) => host.executorFacet()?.release(req) ?? Promise.resolve({ status: 'unknown' }),
     orgForAgent: (agentId) => host.cpAgents()?.orgForAgent(agentId) ?? host.cpCollab().orgForAgent(agentId),
     orgForIntegration: (integrationId) => {
       const agentId = host.cpIntegrations()?.agentForIntegration(integrationId)

@@ -18,7 +18,9 @@ import type {
   ExecutorFacts,
   ExecutorPrepareRefusal,
   ExecutorPrepareReq,
-  ExecutorPrepareResult
+  ExecutorPrepareResult,
+  ExecutorReleaseReq,
+  ExecutorReleaseResult
 } from '@agentconnect.md/protocol'
 import { sessionKeyDirName } from '../acp/host-key.js'
 import type { RuntimeDef } from '../config/config-schema.js'
@@ -40,11 +42,14 @@ const MIN_PENDING_HANDSHAKES = 8
 const RECORD_FILE = /^(session-[a-f0-9]{24})\.json$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-/** The inventory entry kept beside an environment: the pool's claim labels, plus the highest generation applied and when. */
+/** The inventory entry kept beside an environment: the pool's claim labels, the generation applied and the launch it belongs to, and the two times the backstop reads. */
 interface EnvironmentRecord {
   agentId: string
   generation: number
+  launchId: string
   preparedAt: number
+  /** Last prepare or admitted dial. Persisted so a restart does not reset the retention clock. */
+  lastUsedAt: number
 }
 
 type RunningShim = Pick<HostShim, 'socketPath' | 'runtimeRoot' | 'helperRoot' | 'missingHelpers' | 'exited' | 'stop'>
@@ -78,12 +83,8 @@ export interface ExecutorFacetDeps {
   seedHome: (home: string) => void
   /** The CP's `agent/exists`; a throw is "cannot answer". */
   agentsExist: (agentIds: string[]) => Promise<Set<string>>
-  /** The SHARED data-plane store. A daemon that mounts none can answer for no session, so its reconcile retains everything. */
-  sessions?: {
-    keysForAgent: (agentId: string) => Promise<string[]>
-    executorOf: (sessionKey: string) => Promise<{ executorDaemonId?: string } | undefined>
-  }
-  daemonId: () => string | undefined
+  /** This machine's `sessions.retention` as a window; null ⇒ `never`, and an environment nobody uses is kept forever. */
+  retentionMs: () => number | null
   log: Logger
   clock?: Clock
   /** Test seams: a stub in place of the Linux-only launcher, and the listener's bind address and handshake budget. */
@@ -98,6 +99,8 @@ export interface ExecutorFacet {
   hostedSessions(): number | undefined
   /** A relayed `executor/prepare`. Its `ready` answer carries the pipe's key: never log it. */
   prepare(req: ExecutorPrepareReq): Promise<ExecutorPrepareResult>
+  /** A relayed `executor/release`: the holder retired the session, so the environment goes. Answered even while the facet is dark. */
+  release(req: ExecutorReleaseReq): Promise<ExecutorReleaseResult>
   /** One orphan sweep; the facet also runs it on its own schedule. */
   reconcile(): Promise<void>
   /** The shutdown drain's share: hosted environments get `deadlineMs`, then their shims stop. */
@@ -107,6 +110,15 @@ export interface ExecutorFacet {
 
 const refused = (reason: ExecutorPrepareRefusal): ExecutorPrepareResult => ({ status: 'refused', reason })
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error))
+
+/** An environment's record fields alone — never the live half, whose `key` must not reach the disk. */
+const applied = (env: Environment): EnvironmentRecord => ({
+  agentId: env.agentId,
+  generation: env.generation,
+  launchId: env.launchId,
+  preparedAt: env.preparedAt,
+  lastUsedAt: env.lastUsedAt
+})
 
 /** Seed a session HOME the way the local confined tier does, for every runtime this machine admits: the `prepare` names none. */
 export function seedSessionHome(
@@ -170,8 +182,15 @@ function loadRecords(dir: string, log: Pick<Logger, 'warn'>): Map<string, Enviro
       const raw = JSON.parse(readFileSync(join(dir, name), 'utf8')) as Partial<EnvironmentRecord>
       if (typeof raw.agentId !== 'string' || !UUID.test(raw.agentId)) throw new Error('agent')
       if (!Number.isSafeInteger(raw.generation) || raw.generation! < 1) throw new Error('generation')
-      if (!Number.isFinite(raw.preparedAt)) throw new Error('preparedAt')
-      records.set(leaf, { agentId: raw.agentId, generation: raw.generation!, preparedAt: raw.preparedAt! })
+      if (typeof raw.launchId !== 'string' || !UUID.test(raw.launchId)) throw new Error('launch')
+      if (!Number.isFinite(raw.preparedAt) || !Number.isFinite(raw.lastUsedAt)) throw new Error('times')
+      records.set(leaf, {
+        agentId: raw.agentId,
+        generation: raw.generation!,
+        launchId: raw.launchId,
+        preparedAt: raw.preparedAt!,
+        lastUsedAt: raw.lastUsedAt!
+      })
     } catch {
       unreadable += 1
     }
@@ -234,9 +253,6 @@ class Facet implements ExecutorFacet {
         deps.log.info(
           `executor: hosting sessions of this machine's group — TLS-PSK listener on port ${this.listener.port}`
         )
-        if (!deps.sessions) {
-          deps.log.warn('executor: no shared data plane is mounted, so the orphan reconcile keeps every environment')
-        }
       } catch (error) {
         deps.log.warn(
           `executor: sandbox.share is on but the facet stays off — its listener could not bind (${message(error)})`
@@ -267,19 +283,18 @@ class Facet implements ExecutorFacet {
 
   async prepare(req: ExecutorPrepareReq): Promise<ExecutorPrepareResult> {
     const leaf = sessionKeyDirName(req.sessionKey)
-    // A discard under way owns the directory; the session it makes way for is created once it is gone.
-    for (let gone = this.environments.get(leaf); gone?.discarding; gone = this.environments.get(leaf))
-      await gone.discarding
-    // Nothing below awaits before the launch is recorded, so the reservation and the generation rule are atomic.
+    // NOTHING above the record may await: prepares are applied in arrival order, which the CP made authorization order (§6),
+    // and one that yields here could be overtaken by a later holder's. A discard owns the directory, so rather than waiting for
+    // it — the wait that used to reorder exactly this — the launch is retired and the holder's next one, moments later, creates it.
+    const known = this.environments.get(leaf)
+    if (known?.discarding) return refused('launch_retired')
     if (!this.listener) return refused('facet_off')
     if (this.stopped || this.deps.draining()) return refused('draining')
     if (req.strategy !== 'host') return refused('strategy_unavailable')
-    const known = this.environments.get(leaf)
     if (known) {
       // The CP vouched that the asker holds `req.agentId`; that says nothing about another agent's environment.
       if (known.agentId !== req.agentId) return refused('not_holder')
-      if (req.generation < known.generation) return refused('stale_generation')
-      if (req.generation === known.generation) {
+      if (known.launchId === req.launchId) {
         // The same launch asked again: its answer in flight or as given — the same key, nothing rotated — or none at all once it is gone.
         if (known.launching) return known.launching
         return known.reply ? { ...known.reply, liveCount: this.liveCount() } : refused('launch_retired')
@@ -289,13 +304,16 @@ class Facet implements ExecutorFacet {
     if (!known?.shim && !known?.launching && this.liveCount() >= this.capacity()) {
       return { status: 'full', liveCount: this.liveCount() }
     }
-    const record = { agentId: req.agentId, generation: req.generation, preparedAt: this.clock.now() }
+    // The executor allocates the generation, because it is the single writer of this environment and knows what it last applied.
+    const now = this.clock.now()
+    const generation = (known?.generation ?? 0) + 1
+    const record = { agentId: req.agentId, generation, launchId: req.launchId, preparedAt: now, lastUsedAt: now }
     writeRecord(this.sessionsDir, leaf, record)
     const env: Environment = Object.assign(known ?? { leaf }, record)
     this.environments.set(leaf, env)
     // Rotation is the fence (§6): the old key, its cached answer and the pipe it admitted go before the new launch starts.
     this.retire(env)
-    const launching = this.launch(env, req.generation)
+    const launching = this.launch(env, generation)
     env.launching = launching
     const settled = (): void => {
       if (env.launching !== launching) return
@@ -326,12 +344,13 @@ class Facet implements ExecutorFacet {
       void shim.exited.then(() => this.shimExited(env, shim))
     })
     // A newer launch took the environment while this one was starting it, and owns the key now.
-    if (env.generation !== generation || !env.shim || !this.listener) return refused('stale_generation')
+    if (env.generation !== generation || !env.shim || !this.listener) return refused('launch_retired')
     const host = this.deps.endpointHost()
     if (!host) throw new Error('the control connection has no local address to publish')
     env.key = randomBytes(PIPE_KEY_BYTES)
     env.reply = {
       status: 'ready',
+      generation,
       endpoint: { host, port: this.listener.port },
       psk: env.key.toString('base64url'),
       runtimeRoot: env.shim.runtimeRoot,
@@ -375,9 +394,22 @@ class Facet implements ExecutorFacet {
 
   private onPipe(leaf: string, open: boolean): void {
     const env = this.environments.get(leaf)
-    if (env && open) this.clearIdle(env)
-    else if (env?.key) this.armIdle(env)
+    if (env && open) {
+      this.clearIdle(env)
+      this.touch(env)
+    } else if (env?.key) this.armIdle(env)
     if (!open && this.listener?.pipeCount() === 0) this.noPipes?.()
+  }
+
+  /** A dial is use, and the backstop measures from it. Persisted, so a restart does not reset an environment's retention clock. */
+  private touch(env: Environment): void {
+    env.lastUsedAt = this.clock.now()
+    try {
+      writeRecord(this.sessionsDir, env.leaf, applied(env))
+    } catch (error) {
+      // A stamp that will not persist costs at worst an early backstop discard; it must not cost the session its pipe.
+      this.deps.log.warn(`executor: recording the last use of ${env.leaf} failed (${message(error)})`)
+    }
   }
 
   private armIdle(env: Environment): void {
@@ -430,53 +462,58 @@ class Facet implements ExecutorFacet {
     }, ORPHAN_GRACE_MS)
   }
 
+  /** The backstop (§7). A holder's `release` is how an environment normally goes; this is what survives a holder that never sends one. */
   async reconcile(): Promise<void> {
-    const { sessions, log } = this.deps
+    const { log } = this.deps
     const now = this.clock.now()
+    const retention = this.deps.retentionMs()
     const unused = (env: Environment): boolean =>
       !env.shim && !env.launching && !env.discarding && !this.listener?.piped(env.leaf)
-    // Never one in use, and never one younger than the grace: its session row may not have been written yet.
+    // Never one in use, and never one younger than the grace: a session born moments ago has not had time to be dialed.
     const candidates = [...this.environments.values()].filter(
       (env) => unused(env) && now - env.preparedAt >= ORPHAN_GRACE_MS
     )
-    if (candidates.length === 0 || !sessions) return
-    const orphans: Array<{ env: Environment; applied: EnvironmentRecord; why: string }> = []
+    if (candidates.length === 0) return
+    let known: Set<string>
     try {
-      const known = await this.deps.agentsExist([...new Set(candidates.map((env) => env.agentId))])
-      const keysOf = new Map<string, string[]>()
-      const self = this.deps.daemonId()
-      for (const env of candidates) {
-        const applied = { agentId: env.agentId, generation: env.generation, preparedAt: env.preparedAt }
-        // Asked even for an agent that is gone: a store that cannot answer retains everything, not only what it would have vouched for.
-        if (!keysOf.has(env.agentId)) keysOf.set(env.agentId, await sessions.keysForAgent(env.agentId))
-        if (!known.has(env.agentId)) {
-          orphans.push({ env, applied, why: 'the control plane no longer knows its agent' })
-          continue
-        }
-        const sessionKey = keysOf.get(env.agentId)!.find((key) => sessionKeyDirName(key) === env.leaf)
-        if (sessionKey === undefined) {
-          orphans.push({ env, applied, why: 'the shared store no longer lists its session' })
-          continue
-        }
-        const executor = (await sessions.executorOf(sessionKey))?.executorDaemonId
-        if (self && executor && executor !== self) {
-          orphans.push({ env, applied, why: 'its session row names another executor' })
-        }
-      }
+      known = await this.deps.agentsExist([...new Set(candidates.map((env) => env.agentId))])
     } catch (error) {
-      // Either authority failing to answer keeps everything: a lookup that cannot be made is not an absence.
+      // The one authority failing to answer keeps everything: a lookup that cannot be made is not an absence.
       log.warn(`executor: the orphan reconcile could not ask (${message(error)}) — keeping every environment`)
       return
     }
-    for (const { env, applied, why } of orphans) {
-      // Checked again with no await in between: an environment a `prepare` re-created or attached since the lookups is never the one deleted.
-      if (!unused(env) || env.generation !== applied.generation || env.preparedAt !== applied.preparedAt) continue
+    const orphans: Array<{ env: Environment; was: EnvironmentRecord; why: string }> = []
+    for (const env of candidates) {
+      const was = applied(env)
+      if (!known.has(env.agentId)) orphans.push({ env, was, why: 'the control plane no longer knows its agent' })
+      else if (retention !== null && now - env.lastUsedAt >= retention)
+        orphans.push({ env, was, why: "nothing dialed or prepared it within this machine's session retention" })
+    }
+    for (const { env, was, why } of orphans) {
+      // Checked again with no await in between: an environment a `prepare` or a dial touched since the lookup is never the one deleted.
+      if (!unused(env) || env.generation !== was.generation || env.lastUsedAt !== was.lastUsedAt) continue
       env.discarding = this.discard(env, why)
       await env.discarding
     }
   }
 
-  // Dirtiness is never judged here: the deletion upstream, by the holder's retirement or the agent's removal, is the only evidence.
+  async release(req: ExecutorReleaseReq): Promise<ExecutorReleaseResult> {
+    const env = this.environments.get(sessionKeyDirName(req.sessionKey))
+    if (!env) return { status: 'unknown' }
+    // The CP vouched that the asker holds `req.agentId`; that says nothing about another agent's environment.
+    if (env.agentId !== req.agentId) return { status: 'refused', reason: 'not_holder' }
+    if (env.discarding) {
+      await env.discarding
+      return { status: 'released' }
+    }
+    // The holder judged the session retired, pipe and all; nothing here outranks that.
+    await this.stopEnvironment(env)
+    env.discarding = this.discard(env, 'its holder released it')
+    await env.discarding
+    return { status: 'released' }
+  }
+
+  // Dirtiness is never judged here: a holder's `release`, a removed agent or an expired retention is the only evidence acted on.
   private async discard(env: Environment, why: string): Promise<void> {
     try {
       await rm(join(this.sessionsDir, env.leaf), { recursive: true, force: true })

@@ -326,6 +326,7 @@ export class CpClient {
       autoMerge: deps.autoMerge,
       sandboxKeepAlive: deps.sandboxKeepAlive,
       executorPrepare: deps.executorPrepare,
+      executorRelease: deps.executorRelease,
       agentWake: deps.agentWake,
       memoryReader: deps.memoryReader,
       memoryEntriesRead: deps.memoryEntriesRead,

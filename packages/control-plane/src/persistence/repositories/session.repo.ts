@@ -49,6 +49,7 @@ import type {
   ExternalAccessPolicyState
 } from '../ports.js'
 import { AgentId, BotId, DaemonId, LaunchId, OrgId, SessionId } from '../../domain/ids.js'
+import type { SessionKey } from '../../domain/sessionKey.js'
 import { sessionViewerSql } from './session-access-sql.js'
 
 /** Webchat conversation ids are CP-minted UUIDs; any other `channel` shape can
@@ -1349,6 +1350,22 @@ export class PgSessionRepo implements SessionRepo {
       select: { id: true }
     })
     return row ? SessionId(row.id) : null
+  }
+
+  async executorForKey(agentId: AgentId, key: SessionKey): Promise<DaemonId | null> {
+    // Newest row wins, the same tie-break as every session listing; only a row that names an executor answers.
+    const row = await this.db.sessionMeta.findFirst({
+      where: {
+        agentId,
+        platform: key.platform,
+        channel: key.channel,
+        thread: key.thread ?? null,
+        executorDaemonId: { not: null }
+      },
+      orderBy: [{ lastActivityAt: 'desc' }, { startedAt: 'desc' }, { id: 'desc' }],
+      select: { executorDaemonId: true }
+    })
+    return row?.executorDaemonId ? DaemonId(row.executorDaemonId) : null
   }
 
   async listFacets(q: SessionFacetQuery): Promise<SessionFacetIndex> {

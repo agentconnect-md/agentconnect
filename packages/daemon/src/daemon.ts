@@ -3429,19 +3429,8 @@ export class Daemon {
         if (!this.cpClient) throw new Error('no control plane connection')
         return this.cpClient.agentsExist(agentIds)
       },
-      // Only the SHARED store answers for a session another member holds; this daemon's own SQLite knows none of them.
-      ...(this.dataPlane
-        ? {
-            sessions: {
-              keysForAgent: (agentId) => this.store.sessionKeysForAgent(agentId),
-              executorOf: async (key) => {
-                const verdict = await this.store.getSessionExecutor(key)
-                return verdict && 'executorDaemonId' in verdict ? verdict : undefined
-              }
-            }
-          }
-        : {}),
-      daemonId: () => this.cfg.daemonId,
+      // This machine's own retention, the second backstop rule: no store is read, so sharing compute needs no shared store (§7).
+      retentionMs: () => sessionRetentionMs(this.cfg.sessions.retention),
       log: this.log,
       clock: this.clock
     })

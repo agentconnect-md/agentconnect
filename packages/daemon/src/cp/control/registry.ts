@@ -33,7 +33,7 @@ import {
   type DreamControlDeps
 } from './dream.js'
 import { dutyGrant, dutyRenewed, dutyRevoke, type DutyControlDeps } from './duty.js'
-import { executorPrepare, type ExecutorControlDeps } from './executor.js'
+import { executorPrepare, executorRelease, type ExecutorControlDeps } from './executor.js'
 import { integrationForget, integrationLeave, integrationRemove, integrationUpsert } from './integration.js'
 import { mcpServerRemove, mcpServerUpsert } from './mcpserver.js'
 import {
@@ -116,6 +116,7 @@ export const CONTROL_HANDLERS: Map<string, ControlHandler<ControlDeps>> = new Ma
   ['duty/renewed', dutyRenewed],
   ['duty/revoke', dutyRevoke],
   ['executor/prepare', executorPrepare],
+  ['executor/release', executorRelease],
   ['cron/upsert', cronUpsert],
   ['cron/remove', cronRemove],
   ['cron/run', cronRun],

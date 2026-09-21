@@ -1423,6 +1423,9 @@ export interface SessionRepo {
    *  agent with one checkout has one branch, so that branch only speaks for the session using it now
    *  (webchat-side-panels.md §12.6). Rides `session_meta_agent_activity_page_idx`. */
   latestSessionIdForAgent(orgId: OrgId, agentId: AgentId): Promise<SessionId | null>
+  /** The executor the newest row for one agent's session key names (session-executors.md §6). A HINT for a successor
+   *  holder — the row is written asynchronously and kept after the session retires, so stale is expected and harmless. */
+  executorForKey(agentId: AgentId, key: SessionKey): Promise<DaemonId | null>
   /** One latest representative per distinct facet value after applying every
    *  other active facet. The database reduces the full history before returning
    *  this compact index to the HTTP layer. */
