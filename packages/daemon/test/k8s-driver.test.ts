@@ -227,7 +227,9 @@ describe('cluster spawn driver', () => {
           'skills-wide',
           'skills-receipts'
         ],
-        podName: 'sb-1'
+        podName: 'sb-1',
+        // The pool's peer is a pod, and its identity is the TokenReview's (session-executors.md §6).
+        peer: 'pod'
       }
     ])
     expect(connectChannel).toHaveBeenCalledWith(expect.objectContaining({ podName: 'sb-1' }), '10.0.0.8', 90_000)

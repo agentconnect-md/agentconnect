@@ -3604,11 +3604,12 @@ export class Daemon {
     if (verdict === undefined) return
     try {
       if (!(await this.store.getSession(sessionKey))) return
-      this.sessionExecutorVerdicts.delete(sessionKey)
       await this.store.setSessionExecutor(
         sessionKey,
         typeof verdict === 'string' ? { stayedHomeReason: verdict } : verdict
       )
+      // Dropped only once it is written, and only when nothing replaced it while the write was in flight.
+      if (this.sessionExecutorVerdicts.get(sessionKey) === verdict) this.sessionExecutorVerdicts.delete(sessionKey)
     } catch (err) {
       this.log.warn(`executor: recording where session ${sessionKey} runs failed: ${formatErr(err)}`)
     }

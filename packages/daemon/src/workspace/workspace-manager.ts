@@ -1407,18 +1407,23 @@ export class WorkspaceManager {
     const id = this.sessionWorktreeId(sessionKey)
     const results: SessionWorktreeRemoval[] = []
     // The session's own directory first (§11), then any worktree left from before the agent was confined — the legacy loop also drops the shared roots' review refs, registrations and cwd attestation.
-    if (sessionDir !== undefined) results.push(await this.removeSessionClones(agent, sessionDir, id))
+    if (sessionDir !== undefined) results.push(await this.removeSessionClones(agent, sessionDir, id, sessionKey))
     for (const root of roots) results.push(await this.removeRootSessionWorktree(agent, root, id))
     return foldSessionRemovals(results)
   }
 
   // Remove one confined session's directory with every clone in it (§11) under a session worktree's rules — clean tree, no commit unreachable from a remote, review snapshots exempt — over EVERY local ref, not just HEAD: this removes the object store, so a side branch or a stash is work the checked-out branch cannot speak for.
-  private async removeSessionClones(agent: Agent, sessionDir: string, id: string): Promise<SessionWorktreeRemoval> {
-    const fs = this.fsFor(agent.id)
+  private async removeSessionClones(
+    agent: Agent,
+    sessionDir: string,
+    id: string,
+    sessionKey?: string
+  ): Promise<SessionWorktreeRemoval> {
+    // Asked of the filesystem holding it: a pool session's directory is on its pod, an executor's on that machine, never on this disk.
+    const fs = this.fsFor(agent.id, sessionKey === undefined ? { path: sessionDir } : { sessionKey })
     try {
-      // Asked of the filesystem holding it: a pool session's directory is on its pod, never on this disk.
       if ((await fs.stat(sessionDir)) === 'missing') return { outcome: 'absent' }
-      const canonical = await this.validateSessionDir(agent, sessionDir)
+      const canonical = await this.validateSessionDir(agent, sessionDir, sessionKey)
       for (const clone of await sessionClonesUnder(fs, canonical)) {
         if ((await fs.stat(join(clone.path, '.git'))) === 'missing') {
           // No `.git` to interrogate: reclaim only a provably empty leftover, in one operation.
@@ -1454,11 +1459,13 @@ export class WorkspaceManager {
   }
 
   /** Canonicalize a session directory and prove it still resolves inside the agent directory, as every destructive worktree path does through {@link validateWorktreesRoot}. */
-  private async validateSessionDir(agent: Agent, sessionDir: string): Promise<string> {
-    if ((await this.fsFor(agent.id).stat(sessionDir)) === 'other')
+  private async validateSessionDir(agent: Agent, sessionDir: string, sessionKey?: string): Promise<string> {
+    // Asked of the machine this session runs on: its own, a pod's, or an executor's, which is not the agent's (session-executors.md §7).
+    const scope = sessionKey === undefined ? { path: sessionDir } : { sessionKey }
+    if ((await this.fsFor(agent.id, scope).stat(sessionDir)) === 'other')
       throw new Error('session directory must not be a symlink')
     // On a pod the shim's fd-anchored descent is the containment (see validateWorktreesRoot); this side proves only that it composed the path under the mount.
-    const mount = this.sandboxMountFor(agent.id)
+    const mount = this.sandboxMountFor(agent.id, scope)
     if (mount !== undefined) {
       if (escapesRoot(mount, sessionDir)) throw new Error('session directory resolves outside the mount')
       return sessionDir
@@ -1871,7 +1878,8 @@ export class WorkspaceManager {
   /** The ACP cwd inside one prepared root: validated against this disk locally, composed lexically on
    *  a pod — where the same join `clusterWorkspaceCwd` makes is what the shim's descent re-checks. */
   private resolveRootAcpCwd(agentId: string, root: string, agentDir: string | undefined): string {
-    if (this.sandboxMountFor(agentId) === undefined) return this.resolveAcpCwd(root, agentDir)
+    // Asked of the ROOT's placement: a session on an executor stands in that machine's coordinates, not this one's.
+    if (this.sandboxMountFor(agentId, { path: root }) === undefined) return this.resolveAcpCwd(root, agentDir)
     return agentDir === undefined ? root : join(root, ...agentDir.split('/'))
   }
 
@@ -2047,12 +2055,13 @@ export class WorkspaceManager {
     request: PrepareSessionWorkspaceRequest,
     discover?: (read: () => Promise<Set<string>>) => Promise<void>
   ): Promise<string> {
-    const fs = this.fsFor(agent.id)
+    // By the SESSION, not the agent: its clones may live on a machine that holds nothing else of it (session-executors.md §7).
+    const fs = this.fsFor(agent.id, { sessionKey: request.sessionKey })
     const id = this.sessionWorktreeId(request.sessionKey)
     const sessionDir = this.sessionDir(agent, request.sessionKey)
     if ((await fs.stat(sessionDir)) === 'other') throw new Error('session directory must not be a symlink')
     await fs.mkdir(sessionDir, 0o700)
-    const canonicalSessionDir = await this.validateSessionDir(agent, sessionDir)
+    const canonicalSessionDir = await this.validateSessionDir(agent, sessionDir, request.sessionKey)
     const cwd = sessionRootCloneIn(canonicalSessionDir, root.subtreeName)
     if ((await fs.stat(cwd)) === 'other') throw new Error('session clone path must not be a symlink')
     // A clone's `.git` is a directory; a link file there is a worktree, which is never this tier's.
@@ -2645,7 +2654,11 @@ export class WorkspaceManager {
   /** The directory this session's cwd must sit under: the reviewed secondary root's, else the
    *  primary's. Undefined when the agent has no primary checkout and no review named a root. */
   private async sessionCwdRootPath(agent: Agent, request?: SessionRootScope): Promise<string | undefined> {
-    const mount = this.sandboxMountFor(agent.id)
+    // The session's own mount: the machine it runs on is not always the one its agent is held by (session-executors.md §7).
+    const mount = this.sandboxMountFor(
+      agent.id,
+      request?.sessionKey === undefined ? {} : { sessionKey: request.sessionKey }
+    )
     const reviewed = await this.sessionCwdSubtreeName(agent, request)
     if (reviewed !== undefined) {
       const key = repoKey(reviewed)
