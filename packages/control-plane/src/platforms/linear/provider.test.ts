@@ -156,7 +156,13 @@ function integration(over: Partial<IntegrationRecord> = {}): IntegrationRecord {
   }
 }
 
-const CORE: IntegrationCoreEnvelope = { mode: 'shared', bindRules: [], mutedChannels: [], gated: false }
+const CORE: IntegrationCoreEnvelope = {
+  mode: 'shared',
+  bindRules: [],
+  mutedChannels: [],
+  gated: false,
+  sessionModes: []
+}
 
 describe('validateConfig — the credential path is refused, not validated', () => {
   it('points at the connect flow with a definitive 400 and a machine code', async () => {

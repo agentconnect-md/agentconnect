@@ -76,7 +76,13 @@ export const IntegrationSchema = z.object({
   // missed integration/remove without touching hand-authored local entries.
   origin: z.literal('cp').optional(),
   platform: z.string().min(1),
-  core: IntegrationCoreEnvelope.default({ mode: 'direct', bindRules: [], mutedChannels: [], gated: false }),
+  core: IntegrationCoreEnvelope.default({
+    mode: 'direct',
+    bindRules: [],
+    mutedChannels: [],
+    gated: false,
+    sessionModes: []
+  }),
   config: z.unknown().optional()
 })
 export type Integration = z.infer<typeof IntegrationSchema>

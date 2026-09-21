@@ -112,6 +112,7 @@ function channel(over: Partial<IntegrationChannelRecord>): IntegrationChannelRec
     kind: 'channel',
     trigger: 'mention',
     dmUserId: null,
+    sessionMode: 'createNew',
     triggerChosen: false,
     agentId: null,
     ...over
@@ -213,7 +214,13 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     }
     const chRepo: Pick<
       IntegrationChannelRepo,
-      'listForBot' | 'replaceSnapshot' | 'setAgent' | 'setTrigger' | 'upsertAgent' | 'upsertConversation'
+      | 'listForBot'
+      | 'replaceSnapshot'
+      | 'setAgent'
+      | 'setTrigger'
+      | 'setSessionMode'
+      | 'upsertAgent'
+      | 'upsertConversation'
     > = {
       listForBot: async () => {
         const block = blockNextChannelList
@@ -239,6 +246,12 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         const row = channels.find((c) => c.integrationId === integrationId && c.channelId === channelId)
         if (!row) return null
         row.agentId = agentId
+        return row
+      },
+      setSessionMode: async (integrationId, channelId, sessionMode) => {
+        const row = channels.find((c) => c.integrationId === integrationId && c.channelId === channelId)
+        if (!row) return null
+        row.sessionMode = sessionMode
         return row
       },
       setTrigger: async (integrationId, channelId, trigger, opts) => {
@@ -936,6 +949,49 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     // lifecycle the backfill exists for: the row that RECORDED the decision goes away
     // with its integration, and a surviving sibling must not read the value it inherited
     // as an undecided default.
+    // The session mode replicates on exactly the paths the trigger does, and for the same
+    // reason (channel-session-mode.md §5): the row that recorded the choice can be deleted
+    // with its integration, so a surviving sibling must already carry it.
+    it('replicates the session mode onto every sibling, including one the update backfills', async () => {
+      channels = [channel({ integrationId: INT_A, channelId: 'C1', trigger: 'any', agentId: ALICE })]
+      const orch = makeOrch(PLATFORMS)
+
+      await orch.updateConversation(BOT, 'C1', { sessionMode: 'append' })
+
+      expect(channels.find((c) => c.integrationId === INT_A && c.channelId === 'C1')?.sessionMode).toBe('append')
+      expect(channels.find((c) => c.integrationId === INT_B && c.channelId === 'C1')?.sessionMode).toBe('append')
+    })
+
+    it('keeps an existing append when a later patch only moves the owner', async () => {
+      channels = [
+        channel({ integrationId: INT_A, channelId: 'C1', trigger: 'any', sessionMode: 'append', agentId: ALICE })
+      ]
+      const orch = makeOrch(PLATFORMS)
+
+      // The in-Slack modal changes the owner and nothing else; the conversation's mode
+      // is not the mover's to reset.
+      await orch.setChannelAgent(BOT, 'C1', BOB)
+
+      for (const row of channels.filter((c) => c.channelId === 'C1')) expect(row.sessionMode).toBe('append')
+    })
+
+    it('carries the session mode onto a sibling backfilled by ordinary convergence', async () => {
+      channels = [
+        channel({ integrationId: INT_A, channelId: 'C1', trigger: 'any', sessionMode: 'append', agentId: ALICE })
+      ]
+      const orch = makeOrch(PLATFORMS)
+
+      // Convergence — not a console patch — is what backfills the sibling here.
+      await orch.prepareIntegrationRemoval(BOT)
+      expect(channels.find((c) => c.integrationId === INT_B && c.channelId === 'C1')?.sessionMode).toBe('append')
+
+      // And it survives the owner integration being deleted with the row that held it.
+      channels = channels.filter((c) => c.integrationId !== INT_A)
+      integrations = integrations.filter((i) => i.id !== INT_A)
+      await orch.syncBot(BOT)
+      expect(channels.find((c) => c.integrationId === INT_B && c.channelId === 'C1')?.sessionMode).toBe('append')
+    })
+
     it('carries the human decision onto a sibling backfilled long after it (§14.8)', async () => {
       gatedAgents = new Set([ALICE, BOB])
       channels = [

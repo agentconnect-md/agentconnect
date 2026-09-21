@@ -92,7 +92,13 @@ describe('integrationRouting (§6.4 core-envelope read)', () => {
       })
       // The envelope read and the self-id strategy are separable: core owns one,
       // the platform owns the other.
-      expect(integrationCore(int)).toEqual({ mode: 'direct', bindRules, mutedChannels: ['C9'], gated: true })
+      expect(integrationCore(int)).toEqual({
+        mode: 'direct',
+        bindRules,
+        mutedChannels: ['C9'],
+        gated: true,
+        sessionModes: []
+      })
       expect(configuredBotSelfId(int)).toBe(selfId)
       // The opaque config is the MODULE-VALIDATED parse (schema defaults applied),
       // resolved through the platform registry — not the raw stored value.
@@ -104,7 +110,7 @@ describe('integrationRouting (§6.4 core-envelope read)', () => {
     const foreign = {
       id: 'i-x',
       platform: 'mastodon',
-      core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
+      core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
       config: { botToken: 'x' }
     } as unknown as Integration
     expect(integrationConfig(foreign)).toBeUndefined()
@@ -113,14 +119,14 @@ describe('integrationRouting (§6.4 core-envelope read)', () => {
     const legacy = {
       id: 'i-legacy',
       platform: 'slack',
-      core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false }
+      core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] }
     } as unknown as Integration
     expect(integrationConfig(legacy)).toBeUndefined()
     // Malformed payload (missing the required botToken) => no config, no self id.
     const malformed = {
       id: 'i-bad',
       platform: 'slack',
-      core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
+      core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
       config: { botUserId: 'U-ONLY' }
     } as unknown as Integration
     expect(integrationConfig(malformed)).toBeUndefined()
@@ -132,7 +138,7 @@ describe('integrationRouting (§6.4 core-envelope read)', () => {
       const proto = {
         id: `i-${platform}`,
         platform,
-        core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
+        core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
         config: { botToken: 'x' }
       } as unknown as Integration
       expect(integrationConfig(proto)).toBeUndefined()
@@ -208,7 +214,7 @@ describe('resolveAgentIntegration', () => {
         {
           id: 'int1',
           platform: 'slack',
-          core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
+          core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
           config: { botToken: 'x', botUserId: 'STATIC' } as any
         }
       ]
@@ -237,13 +243,13 @@ describe('resolveAgentIntegration', () => {
         {
           id: 'slack1',
           platform: 'slack',
-          core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
+          core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
           config: { botToken: 'x', botUserId: 'BSLACK' } as any
         },
         {
           id: 'tg1',
           platform: 'telegram',
-          core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
+          core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
           config: { botToken: 'x', botUserId: 'BTG' } as any
         }
       ]

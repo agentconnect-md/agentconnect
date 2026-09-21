@@ -42,7 +42,8 @@ import type {
   AgentRepo,
   AgentRecord,
   ThreadAffinityStore,
-  SessionRepo
+  SessionRepo,
+  ChannelSessionMode
 } from '../persistence/ports.js'
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 import { ControlSender, NoConnection } from './outbound.js'
@@ -707,7 +708,7 @@ export class HttpBotOrchestrator {
   async updateConversation(
     botId: string,
     channelId: string,
-    patch: { agentId?: string; trigger?: ChannelTrigger },
+    patch: { agentId?: string; trigger?: ChannelTrigger; sessionMode?: ChannelSessionMode },
     options: { expectedOwnerAgentId?: string; source?: 'console' | 'slack' } = {}
   ): Promise<IntegrationChannelRecord | null> {
     return this.serializeConversationMutation(botId, channelId, async () => {
@@ -747,6 +748,11 @@ export class HttpBotOrchestrator {
       // resulting trigger is a decision on every sibling row, not a default (§14.8).
       await this.syncConversationTrigger(installs, channelId, trigger, rows, { chosen: true })
       updated = { ...updated, trigger }
+      // The session mode is bot-scoped for the same reason the trigger is: every sibling
+      // row repeats it, so deleting the canonical owner does not discard the choice.
+      const sessionMode = patch.sessionMode ?? currentRow?.sessionMode ?? rows[0]?.sessionMode ?? updated.sessionMode
+      await this.syncConversationSessionMode(installs, channelId, sessionMode, rows)
+      updated = { ...updated, sessionMode }
       await this.syncRoutes(botId)
       return updated
     })
@@ -877,6 +883,23 @@ export class HttpBotOrchestrator {
     }
   }
 
+  /** Repeat the conversation's session mode across every sibling install, so deleting the
+   *  canonical owner leaves the choice on the rows that survive. Runs after
+   *  {@link syncConversationTrigger}, which is what backfills a missing sibling row — this
+   *  only writes rows that already exist, and skips the ones already carrying the value. */
+  private async syncConversationSessionMode(
+    installs: IntegrationRecord[],
+    channelId: string,
+    sessionMode: ChannelSessionMode,
+    knownRows: IntegrationChannelRecord[]
+  ): Promise<void> {
+    const known = new Map(knownRows.map((row) => [row.integrationId, row]))
+    for (const integration of installs) {
+      if (known.get(integration.id)?.sessionMode === sessionMode) continue
+      await this.channels.setSessionMode(integration.id, channelId, sessionMode)
+    }
+  }
+
   /** Converge every observed conversation to one canonical owner. */
   private async ensureConversationOwners(botId: BotId, installs: IntegrationRecord[]): Promise<void> {
     if (installs.length === 0) return
@@ -928,8 +951,19 @@ export class HttpBotOrchestrator {
       // Replicating, not introducing: `chosen` came from the rows themselves, so a
       // sibling backfilled here — including one added long after the decision — carries
       // the same provenance as the value it is given.
-      if (trigger !== undefined)
+      if (trigger !== undefined) {
         await this.syncConversationTrigger(installs, channelId, trigger, conversationRows, { chosen })
+        // The session mode replicates on the SAME backfill, and for the same reason the
+        // trigger does: an install added after the choice (or the only one left after the
+        // owner is deleted) must not silently read back the createNew default. Read from
+        // any sibling, like `chosen` above — the row that recorded the choice can be gone.
+        await this.syncConversationSessionMode(
+          installs,
+          channelId,
+          conversationRows.find((row) => row.sessionMode !== 'createNew')?.sessionMode ?? 'createNew',
+          conversationRows
+        )
+      }
     }
   }
 

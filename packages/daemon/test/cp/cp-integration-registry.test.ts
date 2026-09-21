@@ -11,7 +11,7 @@ const integration = (id: string, agentId = A1, token = 'xoxb-one'): IntegrationS
   integrationId: id,
   agentId,
   platform: 'slack',
-  core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
+  core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
   config: { botToken: token, appToken: 'xapp-one' }
 })
 
@@ -43,7 +43,13 @@ describe('CpIntegrationRegistry (memory-only)', () => {
 
   it('rejects an unusable envelope without retaining secret material', () => {
     const { reg, warn } = makeReg()
-    const core: IntegrationSpec['core'] = { mode: 'direct', bindRules: [], mutedChannels: [], gated: false }
+    const core: IntegrationSpec['core'] = {
+      mode: 'direct',
+      bindRules: [],
+      mutedChannels: [],
+      gated: false,
+      sessionModes: []
+    }
     // No config at all.
     reg.upsert({ integrationId: 'bad', agentId: A1, platform: 'slack', core } as IntegrationSpec)
     // A payload the module schema refuses.

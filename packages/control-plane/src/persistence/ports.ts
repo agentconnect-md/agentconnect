@@ -5043,6 +5043,9 @@ export interface ChannelPlacementRecord {
 
 export type ChannelTrigger = 'off' | 'mention' | 'any'
 
+/** Which session an activation in a conversation joins (channel-session-mode.md §5). */
+export type ChannelSessionMode = 'createNew' | 'append'
+
 /** Member channel vs direct conversation (resource-visibility.md §14.3). `mpim` is a
  *  Slack group DM: observed like an `im`, mention-gated like a channel. */
 export type ConversationKind = 'channel' | 'im' | 'mpim'
@@ -5075,6 +5078,8 @@ export interface IntegrationChannelRecord {
   kind: ConversationKind
   /** Repeated across shared-bot sibling rows; per-integration for non-shared bots. */
   trigger: ChannelTrigger
+  /** Which session a message here joins. Replicated across sibling rows like `trigger`. */
+  sessionMode: ChannelSessionMode
   /** The 1:1 DM counterpart's platform member id (§14.8); null on rooms and on rows
    *  discovered before the reporter carried it. */
   dmUserId: string | null
@@ -5173,6 +5178,13 @@ export interface IntegrationChannelRepo {
     channelId: string,
     trigger: ChannelTrigger,
     opts?: { chosen?: boolean }
+  ): Promise<IntegrationChannelRecord | null>
+  /** Per-conversation session mode; returns null when the row doesn't exist. No `chosen`
+   *  twin: the stored default is unambiguous, so nothing has to tell it from a decision. */
+  setSessionMode(
+    integrationId: IntegrationId,
+    channelId: string,
+    sessionMode: ChannelSessionMode
   ): Promise<IntegrationChannelRecord | null>
   /** Set or clear this integration row's owner marker. The orchestrator keeps
    *  exactly one row marked per shared conversation. Returns null when missing. */

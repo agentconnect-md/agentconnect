@@ -34,7 +34,8 @@ import type {
   ReportedChannel,
   ChannelTrigger,
   ConversationKind,
-  ViewCtx
+  ViewCtx,
+  ChannelSessionMode
 } from '../ports.js'
 import { visibilityWhere } from '../../authorization/policy.js'
 import { toDbPlatform } from '../platform.js'
@@ -725,6 +726,7 @@ function toChannelRecord(c: IntegrationChannel): IntegrationChannelRecord {
     isPrivate: c.isPrivate,
     kind: c.kind as ConversationKind,
     trigger: c.trigger as ChannelTrigger,
+    sessionMode: c.sessionMode as ChannelSessionMode,
     dmUserId: c.dmUserId,
     triggerChosen: c.triggerChosen,
     agentId: c.agentId ? AgentId(c.agentId) : null
@@ -963,6 +965,23 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
     const res = await this.db.integrationChannel.updateMany({
       where: { integrationId, channelId },
       data: { trigger, ...(opts?.chosen ? { triggerChosen: true } : {}) }
+    })
+    if (res.count === 0) return null
+    const row = await this.db.integrationChannel.findUnique({
+      where: { integrationId_channelId: { integrationId, channelId } }
+    })
+    return row ? toChannelRecord(row) : null
+  }
+
+  async setSessionMode(
+    integrationId: IntegrationId,
+    channelId: string,
+    sessionMode: ChannelSessionMode
+  ): Promise<IntegrationChannelRecord | null> {
+    // updateMany → no throw on a missing row, matching setTrigger above.
+    const res = await this.db.integrationChannel.updateMany({
+      where: { integrationId, channelId },
+      data: { sessionMode }
     })
     if (res.count === 0) return null
     const row = await this.db.integrationChannel.findUnique({

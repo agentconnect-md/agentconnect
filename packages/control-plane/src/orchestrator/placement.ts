@@ -32,6 +32,7 @@ import type {
   BindRule,
   IntegrationSpec,
   IntegrationBindRule,
+  IntegrationSessionMode,
   IntegrationCoreEnvelope,
   McpServerSpec,
   MemoryConnectionSpec
@@ -259,6 +260,20 @@ function mutedChannelIds(channels: IntegrationChannelRecord[], gated: boolean): 
 }
 
 /**
+ * Per-conversation session modes for the core envelope (channel-session-mode.md §4).
+ *
+ * Sparse — only conversations that depart from `createNew` are listed, so a large
+ * conversation list costs the common spec nothing. Emitted UNCONDITIONALLY, unlike
+ * `bindRules`: a relay-managed shared bot ships no bind rules, but session keying stays on
+ * the daemon in every mode, so the daemon needs this in both.
+ */
+function sessionModeEntries(channels: IntegrationChannelRecord[]): IntegrationSessionMode[] {
+  return channels
+    .filter((c) => c.sessionMode !== 'createNew')
+    .map((c) => ({ channel: c.channelId, mode: c.sessionMode }))
+}
+
+/**
  * Assemble the wire {@link IntegrationSpec} the daemon opens its socket from —
  * metadata from the `integration` row + tokens from the {@link BotSecretStore}
  * (keyed by the integration's bot) + the per-channel trigger config folded into
@@ -299,7 +314,7 @@ export async function integrationToSpec(
   // the Feishu WSClient). The 'shared' envelope is assembled by
   // {@link httpIntegrationToSpec}; the two differ ONLY in this envelope, which is
   // why the fork stays core and the payload behind it does not.
-  const core = { mode: 'direct' as const, bindRules, mutedChannels, gated }
+  const core = { mode: 'direct' as const, bindRules, mutedChannels, gated, sessionModes: sessionModeEntries(channels) }
   return projectSpec(platforms, i, bot, core, secret)
 }
 
@@ -337,7 +352,8 @@ export async function httpIntegrationToSpec(
     mode: 'shared' as const,
     bindRules: gated ? gatedBindRules(channels) : [],
     mutedChannels: mutedChannelIds(channels, gated),
-    gated
+    gated,
+    sessionModes: sessionModeEntries(channels)
   }
   return projectSpec(platforms, i, bot, httpCore, secret)
 }

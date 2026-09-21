@@ -921,6 +921,9 @@ export const IntegrationChannelDto = z.object({
   isPrivate: z.boolean(),
   kind: z.enum(['channel', 'im', 'mpim']),
   trigger: z.enum(['off', 'mention', 'any']),
+  /** Which session a message here joins (channel-session-mode.md): a new one per thread,
+   *  or the conversation's one long-lived session. */
+  sessionMode: z.enum(['createNew', 'append']),
   /** Effective per-conversation owner for a shared bot (§10.1); null before convergence
    *  or when ownership does not apply. */
   agentId: z.string().nullable()
@@ -1796,10 +1799,11 @@ export const SlackAppFinalizeBody = z.object({
 export const UpdateIntegrationChannelBody = z
   .object({
     trigger: z.enum(['off', 'mention', 'any']).optional(),
+    sessionMode: z.enum(['createNew', 'append']).optional(),
     agentId: z.string().min(1).optional()
   })
-  .refine((b) => b.trigger !== undefined || b.agentId !== undefined, {
-    message: 'provide trigger and/or agentId'
+  .refine((b) => b.trigger !== undefined || b.sessionMode !== undefined || b.agentId !== undefined, {
+    message: 'provide trigger, sessionMode and/or agentId'
   })
 
 /**

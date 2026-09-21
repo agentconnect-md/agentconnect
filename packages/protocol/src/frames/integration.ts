@@ -138,16 +138,38 @@ export const IntegrationLinearConfig = z.object({
 export type IntegrationLinearConfig = z.infer<typeof IntegrationLinearConfig>
 
 /**
+ * Which session an activation in a conversation joins (channel-session-mode.md §4).
+ * `createNew` is today's behavior — a message opens a session, a thread reply continues
+ * that thread's. `append` joins the conversation's one long-lived session instead.
+ */
+export const ChannelSessionMode = z.enum(['createNew', 'append'])
+export type ChannelSessionMode = z.infer<typeof ChannelSessionMode>
+
+/** One conversation's session mode. Only conversations that depart from the default are sent. */
+export const IntegrationSessionMode = z.object({
+  channel: z.string(),
+  mode: ChannelSessionMode
+})
+export type IntegrationSessionMode = z.infer<typeof IntegrationSessionMode>
+
+/**
  * §6.3 core routing ENVELOPE (integration-plugin-architecture.md D4): the knobs CORE
  * reads — routing, gating, ingress mode — platform-independent. This is the ONLY
  * carrier of these knobs on the wire: the opaque per-platform `config` payload
  * never duplicates them (the daemon reads routing exclusively from here).
+ *
+ * `sessionModes` rides here rather than on `bindRules` because a relay-managed shared
+ * bot ships no bindRules unless gated, while session keying stays on the daemon in every
+ * mode — the same reason `mutedChannels` is a field of its own. An older daemon ignores
+ * it — it carries the key but nothing reads it, since the envelope is consumed by named
+ * field — so it keeps `createNew`, which is exactly today's behavior.
  */
 export const IntegrationCoreEnvelope = z.object({
   mode: z.enum(['direct', 'shared']).default('direct'),
   bindRules: z.array(IntegrationBindRule).default([]),
   mutedChannels: z.array(z.string()).default([]),
-  gated: z.boolean().default(false)
+  gated: z.boolean().default(false),
+  sessionModes: z.array(IntegrationSessionMode).default([])
 })
 export type IntegrationCoreEnvelope = z.infer<typeof IntegrationCoreEnvelope>
 

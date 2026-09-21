@@ -329,6 +329,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
         url: null,
         isPrivate: false,
         kind: 'channel',
+        sessionMode: 'createNew',
         trigger: 'mention',
         agentId: null
       },
@@ -343,6 +344,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
         url: null,
         isPrivate: true,
         kind: 'channel',
+        sessionMode: 'createNew',
         trigger: 'mention',
         agentId: null
       }
@@ -1755,6 +1757,7 @@ describe('PATCH /integrations/:id/channels/:channelId', () => {
       url: null,
       isPrivate: false,
       kind: 'channel',
+      sessionMode: 'createNew',
       trigger: 'any',
       agentId: null
     })
@@ -1800,6 +1803,130 @@ describe('PATCH /integrations/:id/channels/:channelId', () => {
       payload: { trigger: 'any' }
     })
     expect(missIntegration.statusCode).toBe(404)
+  })
+})
+
+/**
+ * The per-conversation SESSION MODE (channel-session-mode.md §5). It rides beside the
+ * trigger on the same row and the same PATCH, but answers a different question — which
+ * session an activation joins, not whether one happens — so what is pinned here is that
+ * the two never disturb each other, and that the choice reaches the daemon's spec.
+ */
+describe('PATCH /integrations/:id/channels/:channelId — session mode', () => {
+  const modesOf = async (id: string): Promise<Map<string, string>> =>
+    new Map(
+      (await new PgIntegrationChannelRepo(prisma).listForIntegration(IntegrationId(id))).map((row) => [
+        row.channelId,
+        row.sessionMode
+      ])
+    )
+
+  it('defaults to createNew and is absent from the pushed spec until someone departs from it', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    await report(DAEMON, id, [{ id: 'C1', name: 'deploys' }])
+    spy.upserts.length = 0
+
+    expect((await modesOf(id)).get('C1')).toBe('createNew')
+
+    // A trigger-only patch must not mint a sessionModes entry: the sparse list is what
+    // keeps the common spec free of a row per conversation.
+    const res = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${id}/channels/C1`,
+      payload: { trigger: 'any' }
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().sessionMode).toBe('createNew')
+    expect(spy.upserts[0]!.u.core!.sessionModes).toEqual([])
+    expect((await modesOf(id)).get('C1')).toBe('createNew')
+  })
+
+  it('a sessionMode-only patch persists, echoes, and reaches the daemon without touching the trigger', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    await report(DAEMON, id, [{ id: 'C1', name: 'deploys' }])
+    await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${id}/channels/C1`,
+      payload: { trigger: 'any' }
+    })
+    spy.upserts.length = 0
+
+    const res = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${id}/channels/C1`,
+      payload: { sessionMode: 'append' }
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ channelId: 'C1', trigger: 'any', sessionMode: 'append' })
+    expect((await modesOf(id)).get('C1')).toBe('append')
+    // The trigger the earlier patch chose survives, and still drives its own bindRule.
+    const pushed = spy.upserts[0]!.u
+    expect(pushed.core!.sessionModes).toEqual([{ channel: 'C1', mode: 'append' }])
+    expect(pushed.core!.bindRules).toEqual(expect.arrayContaining([{ channel: 'C1', match: { kind: 'auto' } }]))
+  })
+
+  it('a patch carrying both fields commits both', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    await report(DAEMON, id, [{ id: 'C1', name: 'deploys' }])
+    spy.upserts.length = 0
+
+    const res = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${id}/channels/C1`,
+      payload: { trigger: 'off', sessionMode: 'append' }
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ trigger: 'off', sessionMode: 'append' })
+    const pushed = spy.upserts[0]!.u
+    expect(pushed.core!.mutedChannels).toEqual(['C1'])
+    expect(pushed.core!.sessionModes).toEqual([{ channel: 'C1', mode: 'append' }])
+  })
+
+  it('404s on a conversation the integration does not have', async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
+    const id = await install(running)
+    await report(DAEMON, id, [{ id: 'C1', name: 'deploys' }])
+
+    const res = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${id}/channels/C_MISSING`,
+      payload: { sessionMode: 'append' }
+    })
+    expect(res.statusCode).toBe(404)
+  })
+
+  // The choice is the operator's, exactly like the trigger: a daemon re-reporting its
+  // conversations refreshes metadata and must never reset it.
+  it('survives a re-report of the conversation', async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
+    const id = await install(running)
+    await report(DAEMON, id, [{ id: 'C1', name: 'deploys' }])
+    await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${id}/channels/C1`,
+      payload: { sessionMode: 'append' }
+    })
+
+    await report(DAEMON, id, [{ id: 'C1', name: 'deploys-renamed' }])
+    expect((await modesOf(id)).get('C1')).toBe('append')
+  })
+
+  it('returns null rather than throwing when the row is gone', async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
+    const id = await install(running)
+    expect(await new PgIntegrationChannelRepo(prisma).setSessionMode(IntegrationId(id), 'C_GONE', 'append')).toBeNull()
   })
 })
 

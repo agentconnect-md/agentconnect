@@ -2487,6 +2487,14 @@ enum ChannelTrigger {
   any
 }
 
+// Which session an activation in a conversation joins (channel-session-mode.md §5).
+// `createNew` is today's behavior; `append` joins the conversation's one long-lived
+// session. `auto` is reserved by the design and deliberately absent until it exists.
+enum ChannelSessionMode {
+  createNew
+  append
+}
+
 // Conversation kind (resource-visibility.md §14.3): a member channel vs a direct
 // conversation. Direct rows are observed incrementally for every integration.
 // `mpim` is a Slack multi-person DM — reported on observation like `im` (Slack
@@ -2532,6 +2540,10 @@ model IntegrationChannel {
   // integration so deleting the canonical owner does not discard conversation state.
   // Classic integrations keep their trigger per integration.
   trigger       ChannelTrigger   @default(mention)
+  // Which session a message here joins (channel-session-mode.md). Replicated across a
+  // shared bot's sibling rows like `trigger`, so deleting the canonical owner keeps it.
+  // No `chosen` twin: unlike a stored Off, the default is never mistaken for a decision.
+  sessionMode   ChannelSessionMode @default(createNew)
   // True once a HUMAN chose this conversation's trigger (resource-visibility.md §14.8).
   // A stored Off is otherwise indistinguishable from a default nobody has decided yet,
   // and the two need opposite treatment: §14.8's catch-up may open a defaulted row and

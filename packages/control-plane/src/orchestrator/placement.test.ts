@@ -87,7 +87,8 @@ const specOf = async (
 const channel = (
   channelId: string,
   trigger: 'off' | 'mention' | 'any',
-  kind: 'channel' | 'im' | 'mpim' = 'channel'
+  kind: 'channel' | 'im' | 'mpim' = 'channel',
+  sessionMode: 'createNew' | 'append' = 'createNew'
 ): IntegrationChannelRecord => ({
   integrationId: INTEGRATION.id,
   channelId,
@@ -102,8 +103,47 @@ const channel = (
   kind,
   trigger,
   dmUserId: null,
+  sessionMode,
   triggerChosen: false,
   agentId: null
+})
+
+describe('integrationToSpec sessionModes', () => {
+  it('omits conversations left on the default', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'mention'), channel('C2', 'any')])
+    expect(spec.core.sessionModes).toEqual([])
+  })
+
+  it('lists only the conversations that depart from createNew', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [
+      channel('C1', 'mention'),
+      channel('C2', 'mention', 'channel', 'append'),
+      channel('C3', 'any', 'channel', 'append')
+    ])
+    expect(spec.core.sessionModes).toEqual([
+      { channel: 'C2', mode: 'append' },
+      { channel: 'C3', mode: 'append' }
+    ])
+  })
+
+  // Unlike bindRules, this ships for a gated agent too: session keying is the daemon's
+  // in every mode, so withholding it would silently downgrade a restricted agent to
+  // createNew while the console shows append.
+  it('ships for a gated agent, whose bindRules carry no unscoped defaults', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'mention', 'channel', 'append')], true)
+    expect(spec.core.gated).toBe(true)
+    expect(spec.core.sessionModes).toEqual([{ channel: 'C1', mode: 'append' }])
+  })
+
+  // The relay arbitrates activation for a shared bot, so its bindRules are empty — but
+  // the daemon still owns session keying, which is why this rides its own field.
+  it('ships for a relay-managed bot whose bindRules are empty', async () => {
+    const spec = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, bot({ transport: 'http' }), SECRET, [
+      channel('C1', 'mention', 'channel', 'append')
+    ])
+    expect(spec?.core.bindRules).toEqual([])
+    expect(spec?.core.sessionModes).toEqual([{ channel: 'C1', mode: 'append' }])
+  })
 })
 
 describe('integrationToSpec bindRules', () => {

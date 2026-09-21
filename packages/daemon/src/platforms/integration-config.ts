@@ -24,6 +24,7 @@
  */
 import type { z, ZodType } from 'zod'
 import type { BindRuleConfig, Integration } from '../agents/agent-schema.js'
+import type { IntegrationSessionMode } from '@agentconnect.md/protocol'
 import {
   DiscordConfigSchema,
   FeishuConfigSchema,
@@ -74,6 +75,9 @@ export interface IntegrationCore {
    *  partial spec) still reads as "nothing muted" when the field is absent. */
   mutedChannels: string[]
   gated: boolean
+  /** Conversations whose session mode departs from `createNew` (channel-session-mode.md).
+   *  Sparse, and normalized to [] here so a hand-assembled integration reads as all-default. */
+  sessionModes: IntegrationSessionMode[]
 }
 
 /**
@@ -146,6 +150,7 @@ export function integrationCore(int: Integration): IntegrationCore {
     mode: core?.mode ?? 'direct',
     bindRules: core?.bindRules ?? [],
     mutedChannels: core?.mutedChannels ?? [],
-    gated: core?.gated ?? false
+    gated: core?.gated ?? false,
+    sessionModes: core?.sessionModes ?? []
   }
 }

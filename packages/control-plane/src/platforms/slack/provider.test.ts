@@ -141,6 +141,7 @@ const channel = (
   kind,
   trigger,
   dmUserId: null,
+  sessionMode: 'createNew',
   triggerChosen: false,
   agentId: null
 })
@@ -526,7 +527,7 @@ describe('slack projection equivalence with the live integrationToSpec path (dir
       integrationId: INTEGRATION.id,
       agentId: INTEGRATION.agentId,
       platform: 'slack',
-      core: { mode: 'direct', bindRules, mutedChannels: ['C3'], gated: false },
+      core: { mode: 'direct', bindRules, mutedChannels: ['C3'], gated: false, sessionModes: [] },
       // §6.4 final shape: platform-private material ONLY — the routing knobs
       // and the ingress mode ride the core envelope, never the config payload.
       config: {
@@ -597,7 +598,7 @@ describe('slack projection equivalence with the live httpIntegrationToSpec path 
       agentId: INTEGRATION.agentId,
       platform: 'slack',
       // Ungated shared installs ship NO bindRules — the relay arbitrates.
-      core: { mode: 'shared', bindRules: [], mutedChannels: ['C2'], gated: false },
+      core: { mode: 'shared', bindRules: [], mutedChannels: ['C2'], gated: false, sessionModes: [] },
       config: {
         shareable: true,
         botToken: 'xoxb-test-token',

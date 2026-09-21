@@ -91,6 +91,7 @@ const channel = (
   kind,
   trigger,
   dmUserId: null,
+  sessionMode: 'createNew',
   triggerChosen: false,
   agentId: null
 })
@@ -287,7 +288,7 @@ describe('discord projection equivalence with the live integrationToSpec path', 
       integrationId: INTEGRATION.id,
       agentId: INTEGRATION.agentId,
       platform: 'discord',
-      core: { mode: 'direct', bindRules, mutedChannels: ['C3'], gated: false },
+      core: { mode: 'direct', bindRules, mutedChannels: ['C3'], gated: false, sessionModes: [] },
       // §6.4 final shape: platform-private material ONLY — the routing knobs
       // ride the core envelope, never the config payload.
       config: { botToken: TOKEN_WITH_APP_ID }

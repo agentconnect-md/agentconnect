@@ -64,6 +64,7 @@ function toChannelDto(c: IntegrationChannelRecord): IntegrationChannelDtoT {
     isPrivate: c.isPrivate,
     kind: c.kind,
     trigger: c.trigger,
+    sessionMode: c.sessionMode,
     agentId: c.agentId
   }
 }
@@ -735,7 +736,8 @@ export function integrationRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Integrations],
           summary: 'Update a conversation',
-          description: "Set a conversation's trigger or default agent, then push the updated routing configuration.",
+          description:
+            "Set a conversation's trigger, session mode, or default agent, then push the updated routing configuration.",
           operationId: 'updateIntegrationChannel',
           params: IdParam.extend({ channelId: z.string().min(1) }),
           body: UpdateIntegrationChannelBody,
@@ -848,7 +850,8 @@ export function integrationRoutes(deps: HttpDeps) {
               req.params.channelId,
               {
                 ...(req.body.agentId !== undefined ? { agentId: req.body.agentId } : {}),
-                ...(req.body.trigger !== undefined ? { trigger: req.body.trigger } : {})
+                ...(req.body.trigger !== undefined ? { trigger: req.body.trigger } : {}),
+                ...(req.body.sessionMode !== undefined ? { sessionMode: req.body.sessionMode } : {})
               },
               {
                 expectedOwnerAgentId: effectiveOwner!.id,
@@ -871,13 +874,27 @@ export function integrationRoutes(deps: HttpDeps) {
                 message: 'default agent applies only to shared bot conversations'
               })
             }
-            // A human picked this, so it outranks every later default (§14.8).
-            updated = await deps.repos.integrationChannel.setTrigger(
-              integration.id,
-              req.params.channelId,
-              req.body.trigger!,
-              { chosen: true }
-            )
+            // One write per field the patch carries; a body may set either or both. Not a
+            // transaction: the console sends one field at a time, and a failure between the
+            // two leaves the first persisted with the reconcile roster as the backstop —
+            // the same exposure every other single-field write on this route already has.
+            updated = existingChannel
+            if (req.body.trigger !== undefined) {
+              // A human picked this, so it outranks every later default (§14.8).
+              updated = await deps.repos.integrationChannel.setTrigger(
+                integration.id,
+                req.params.channelId,
+                req.body.trigger,
+                { chosen: true }
+              )
+            }
+            if (updated && req.body.sessionMode !== undefined) {
+              updated = await deps.repos.integrationChannel.setSessionMode(
+                integration.id,
+                req.params.channelId,
+                req.body.sessionMode
+              )
+            }
           }
           if (!updated)
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'channel not found' })

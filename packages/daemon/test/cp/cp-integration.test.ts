@@ -81,7 +81,13 @@ const INTEGRATION: IntegrationSpec = {
   agentId: 'bot-a',
   platform: 'slack',
   // §6.4 final shape: envelope + platform-private config (no duplicated knobs).
-  core: { mode: 'direct', bindRules: [{ match: { kind: 'mention' } }], mutedChannels: [], gated: false },
+  core: {
+    mode: 'direct',
+    bindRules: [{ match: { kind: 'mention' } }],
+    mutedChannels: [],
+    gated: false,
+    sessionModes: []
+  },
   config: {
     botToken: 'xoxb-secret-abc',
     appToken: 'xapp-1-secret-def'

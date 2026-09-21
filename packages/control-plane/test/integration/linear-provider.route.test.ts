@@ -32,7 +32,13 @@ import type {
   IntegrationUpsert
 } from '@agentconnect.md/protocol'
 
-const CORE: IntegrationCoreEnvelope = { mode: 'shared', bindRules: [], mutedChannels: [], gated: false }
+const CORE: IntegrationCoreEnvelope = {
+  mode: 'shared',
+  bindRules: [],
+  mutedChannels: [],
+  gated: false,
+  sessionModes: []
+}
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const APP = { clientId: 'lin_client_id', clientSecret: 'lin_client_secret', signingSecret: 'lin_signing_secret' }
