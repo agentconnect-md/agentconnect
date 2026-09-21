@@ -16,7 +16,7 @@ export function flatten(value, prefix = '', result = {}) {
   return result
 }
 
-function inspectAst(elements, placeholders = new Set(), plurals = []) {
+function inspectAst(elements, placeholders = new Set(), plurals = [], tags = new Set()) {
   for (const element of elements) {
     if (
       element.type === TYPE.argument ||
@@ -34,12 +34,15 @@ function inspectAst(elements, placeholders = new Set(), plurals = []) {
           categories: Object.keys(element.options).filter((key) => !key.startsWith('='))
         })
       }
-      for (const option of Object.values(element.options)) inspectAst(option.value, placeholders, plurals)
+      for (const option of Object.values(element.options)) inspectAst(option.value, placeholders, plurals, tags)
     } else if (element.type === TYPE.tag) {
-      inspectAst(element.children, placeholders, plurals)
+      // A rich-text tag name is a runtime input to `t.rich`, so it belongs to the
+      // same contract as a placeholder: a renamed one has no renderer.
+      tags.add(element.value)
+      inspectAst(element.children, placeholders, plurals, tags)
     }
   }
-  return { placeholders, plurals }
+  return { placeholders, plurals, tags }
 }
 
 function sameSet(left, right) {
@@ -99,14 +102,14 @@ export function pseudoMessages(value) {
   )
 }
 
-async function readMessages(locale) {
-  return JSON.parse(await readFile(resolve(messagesDir, locale + '.json'), 'utf8'))
+async function readMessages(locale, dir = messagesDir) {
+  return JSON.parse(await readFile(resolve(dir, locale + '.json'), 'utf8'))
 }
 
-export async function checkI18n() {
+export async function checkI18n({ dir = messagesDir } = {}) {
   const failures = []
   const warnings = []
-  const english = flatten(await readMessages('en'))
+  const english = flatten(await readMessages('en', dir))
   const parsedEnglish = new Map()
 
   for (const [key, message] of Object.entries(english)) {
@@ -131,7 +134,7 @@ export async function checkI18n() {
   for (const [locale, meta] of Object.entries(LOCALES)) {
     let translated
     try {
-      translated = flatten(await readMessages(locale))
+      translated = flatten(await readMessages(locale, dir))
     } catch (error) {
       failures.push(locale + ': unable to read messages: ' + error.message)
       continue
@@ -153,6 +156,9 @@ export async function checkI18n() {
         const source = parsedEnglish.get(key)
         if (source && !sameSet(source.placeholders, current.placeholders)) {
           failures.push(locale + ':' + key + ': placeholder set differs from English')
+        }
+        if (source && !sameSet(source.tags, current.tags)) {
+          failures.push(locale + ':' + key + ': rich-text tag set differs from English')
         }
         for (const sourcePlural of source?.plurals ?? []) {
           const plural = current.plurals.find(
