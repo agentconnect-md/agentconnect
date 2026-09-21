@@ -341,8 +341,9 @@ try {
   const echo = await hostedDriver.launch({
     command: '/usr/local/bin/node',
     args: ['-e', HOSTED_RUNTIME],
+    // The HOME a holder composes on the executor's root, which resolves in the guest because the session is mounted there (§7).
     // Deliberately no PATH: a holder describes a different machine, so the guest's own is filled in (§6).
-    env: { AC_AGENT_ID: AGENT },
+    env: { AC_AGENT_ID: AGENT, HOME: join(hostedDir, 'home') },
     hostKey: HOST_KEY
   })
   const writer = echo.toAgent.getWriter()
@@ -358,6 +359,9 @@ try {
     agent: string
   }
   assert.equal(inGuest.agent, AGENT, 'the launch environment did not reach the runtime')
+  // The mount is at the same path in the guest, so a HOME the holder composed on the executor's root is the seeded one.
+  assert.equal(inGuest.home, join(hostedDir, 'home'))
+  assert.ok(existsSync(join(hostedDir, 'home')), 'the session HOME is not on this machine')
   // AC_SHIM_COMPLETE_ENV is never set for a remote holder, so that PATH is the guest's fill-in, not this machine's (§6).
   assert.ok(inGuest.path, 'the guest filled in no PATH of its own')
   assert.notEqual(inGuest.path, process.env.PATH)
