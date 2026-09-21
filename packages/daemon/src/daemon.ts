@@ -1179,6 +1179,8 @@ export class Daemon {
   private executorFacet?: ExecutorFacet
   // The holder half (§7): this daemon's own sessions placed on other machines of its group. Empty until one is.
   private executorPlane?: ExecutorPlane
+  /** Birth verdicts waiting for their session's row, which is written after placement decides its host key. */
+  private readonly sessionExecutorVerdicts = new Map<string, SessionStayedHomeReason | { executorDaemonId: string }>()
   /** The plane every scope of this daemon falls back to — its VMs or its pods; a spread session resolves to the executor plane instead. */
   private localPlane?: ExecutionPlane
   private k8sRuntimeProbed = false
@@ -3539,7 +3541,10 @@ export class Daemon {
    */
   private async placeSessionOnExecutor(agent: LoadedAgent, sessionKey: string): Promise<void> {
     const plane = this.executorPlane
-    if (!plane || plane.placementOf(sessionKey)) return
+    if (!plane) return
+    // A verdict this daemon reached for a turn that never recorded it: the row exists by now.
+    await this.flushSessionExecutorVerdict(sessionKey)
+    if (plane.placementOf(sessionKey)) return
     const recorded = await this.store.getSessionExecutor(sessionKey).catch(() => undefined)
     if (recorded && 'stayedHomeReason' in recorded) return
     const ask = this.placementAsk(agent, sessionKey)
@@ -3553,8 +3558,10 @@ export class Daemon {
       })
       return
     }
+    // A daemon with no control plane has no group to spread onto and nobody to report a verdict to.
+    if (!this.cpClient) return
     if (ask.isolation !== 'session') return await this.recordSessionExecutor(sessionKey, 'shared_session')
-    if (!this.cpClient?.memberSet()) return await this.recordSessionExecutor(sessionKey, 'not_on_group')
+    if (!this.cpClient.memberSet()) return await this.recordSessionExecutor(sessionKey, 'not_on_group')
     const answer = await this.executorCandidates(agent.id, sessionKey)
     const placement = placeSession({
       ask,
@@ -3575,16 +3582,36 @@ export class Daemon {
     await this.recordSessionExecutor(sessionKey, { executorDaemonId: landed.placed.executorDaemonId })
   }
 
-  /** The birth verdict on this daemon's own row; the Control Plane's copy rides the session's metadata (§7). */
+  /**
+   * The birth verdict on this daemon's own row; the Control Plane's copy rides the session's
+   * metadata (§7).
+   *
+   * Held until the row exists: placement is decided BEFORE `SessionManager` records the session,
+   * because the host key it decides is what that call needs, and a write for a key the store does
+   * not know yet is a no-op that would lose the verdict for good.
+   */
   private async recordSessionExecutor(
     sessionKey: string,
     verdict: SessionStayedHomeReason | { executorDaemonId: string }
   ): Promise<void> {
-    await this.store
-      .setSessionExecutor(sessionKey, typeof verdict === 'string' ? { stayedHomeReason: verdict } : verdict)
-      .catch((err: unknown) =>
-        this.log.warn(`executor: recording where session ${sessionKey} runs failed: ${formatErr(err)}`)
+    this.sessionExecutorVerdicts.set(sessionKey, verdict)
+    await this.flushSessionExecutorVerdict(sessionKey)
+  }
+
+  /** Write a held verdict once its session has a row; anything still held is retried at the next turn's placement. */
+  private async flushSessionExecutorVerdict(sessionKey: string): Promise<void> {
+    const verdict = this.sessionExecutorVerdicts.get(sessionKey)
+    if (verdict === undefined) return
+    try {
+      if (!(await this.store.getSession(sessionKey))) return
+      this.sessionExecutorVerdicts.delete(sessionKey)
+      await this.store.setSessionExecutor(
+        sessionKey,
+        typeof verdict === 'string' ? { stayedHomeReason: verdict } : verdict
       )
+    } catch (err) {
+      this.log.warn(`executor: recording where session ${sessionKey} runs failed: ${formatErr(err)}`)
+    }
   }
 
   /** `executor/candidates` — facts, never a choice; undefined when the Control Plane could not be asked at all (§6). */
@@ -12516,6 +12543,8 @@ export class Daemon {
       // after a restart, when `msg` is long gone — still carry the same facts.
       await this.classifyNewSession(agentId, key, sessionId, msg, callMeta, hookContext, webchat?.evaluation === true)
     }
+    // The row exists now, so the birth verdict this turn reached lands before the milestone that reports it (§7).
+    await this.flushSessionExecutorVerdict(key)
     // Turn-start metadata snapshot — EVERY turn, not only `created`. The row is
     // already `prompting` (sessions.handle), and the CP-stored state is the only
     // active-turn signal a console watching a platform session has: the end-of-turn
