@@ -975,6 +975,24 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       for (const row of channels.filter((c) => c.channelId === 'C1')) expect(row.sessionMode).toBe('append')
     })
 
+    // Convergence is NOT serialized against a console patch (only `updateConversation` takes
+    // the per-conversation chain), so it can observe a patch mid-flight: one sibling already
+    // cleared, another still carrying the old value. Reading the owner row rather than
+    // scanning for any non-default is what stops the stale one winning.
+    it('does not resurrect a cleared append from a sibling the downgrade has not reached', async () => {
+      channels = [
+        // The owner row the patch has already written back to createNew.
+        channel({ integrationId: INT_A, channelId: 'C1', trigger: 'any', sessionMode: 'createNew', agentId: ALICE }),
+        // The sibling the same patch has not reached yet.
+        channel({ integrationId: INT_B, channelId: 'C1', trigger: 'any', sessionMode: 'append' })
+      ]
+      const orch = makeOrch(PLATFORMS)
+
+      await orch.syncBot(BOT)
+
+      for (const row of channels.filter((c) => c.channelId === 'C1')) expect(row.sessionMode).toBe('createNew')
+    })
+
     it('carries the session mode onto a sibling backfilled by ordinary convergence', async () => {
       channels = [
         channel({ integrationId: INT_A, channelId: 'C1', trigger: 'any', sessionMode: 'append', agentId: ALICE })

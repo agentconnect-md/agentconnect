@@ -954,13 +954,22 @@ export class HttpBotOrchestrator {
       if (trigger !== undefined) {
         await this.syncConversationTrigger(installs, channelId, trigger, conversationRows, { chosen })
         // The session mode replicates on the SAME backfill, and for the same reason the
-        // trigger does: an install added after the choice (or the only one left after the
-        // owner is deleted) must not silently read back the createNew default. Read from
-        // any sibling, like `chosen` above — the row that recorded the choice can be gone.
+        // trigger does: an install added after the choice — or the only one left after the
+        // owner is deleted — must not silently read back the createNew default.
+        //
+        // The OWNER ROW is authoritative, exactly as `trigger` above reads it, and for a
+        // reason `chosen` does not share: `chosen` is monotonic, so ORing it across rows
+        // can only ever be right, while a session mode can be turned BACK to createNew.
+        // Scanning every row for a non-default would let a sibling this conversation's own
+        // downgrade has not reached yet resurrect the `append` the operator just cleared.
+        // The sibling scan survives only for the case it was written for: no owner row
+        // exists yet, so there is no authoritative value to prefer.
         await this.syncConversationSessionMode(
           installs,
           channelId,
-          conversationRows.find((row) => row.sessionMode !== 'createNew')?.sessionMode ?? 'createNew',
+          ownerRow?.sessionMode ??
+            conversationRows.find((row) => row.sessionMode !== 'createNew')?.sessionMode ??
+            'createNew',
           conversationRows
         )
       }
