@@ -138,6 +138,13 @@ beforeEach(() => {
   })
 })
 
+/** Neither machine may hold a path composed for the other: that is what a wrongly scoped question creates. */
+function expectNoCrossedPaths(): void {
+  const entries = (fs: PodWorkspaceFs): string[] => [...fs.dirs, ...fs.files.keys()]
+  expect(entries(holder).filter((path) => path.startsWith(executorRoot))).toEqual([])
+  expect(entries(executor).filter((path) => path.startsWith(agentDir))).toEqual([])
+}
+
 afterEach(() => {
   workspaces.setPlaneResolver(undefined)
   for (const dir of [holderRoot, executorRoot]) rmSync(dir, { recursive: true, force: true })
@@ -155,6 +162,7 @@ describe('a session prepared on an executor', () => {
     // …and nothing of the session was created on the holder, which is what an agent-scoped question would have done.
     expect(await holder.stat(join(agentDir, 'sessions'))).toBe('missing')
     expect(existsSync(join(executorRoot, 'sessions'))).toBe(false)
+    expectNoCrossedPaths()
   })
 
   it('resumes the clone that machine already holds, without cloning again', async () => {
@@ -175,6 +183,9 @@ describe('a session prepared on an executor', () => {
     // …and it is the directory the runtime is handed; an agent-scoped read would have found none and dropped it.
     const roots = await workspaces.readySecondaryRoots(withRepo, { sessionKey: KEY, isolation: 'session' })
     expect(roots.map((root) => root.path)).toEqual([sessionClone])
+    // The reference subtree it was resolved through is the holder's own, in the holder's coordinates.
+    expect(await holder.stat(join(agentDir, 'repos', 'example-org', 'library'))).toBe('dir')
+    expectNoCrossedPaths()
   })
 
   it('retires the session’s clones on that machine, and asks nothing of this one', async () => {

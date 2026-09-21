@@ -2432,6 +2432,12 @@ export class WorkspaceManager {
     opts: PrepareWorkspaceOptions
   ): Promise<string> {
     const secondaries = this.secondaryRootsAt(agent, mount)
+    // The reference subtree belongs to the AGENT, so it is materialized where the agent is held; only
+    // this session's clone of it is on the machine the session runs on (session-executors.md §7). On a
+    // pod and on this disk the two coordinates are one root, so this is the same object there.
+    const references = this.secondaryRootsFor(agent)
+    const referenceOf = (root: SecondaryWorkspaceRoot): SecondaryWorkspaceRoot =>
+      references.find((entry) => repoKey(entry.subtreeName) === repoKey(root.subtreeName)) ?? root
     const plans = [
       ...(agent.workspace.mode === 'git-repo'
         ? [{ root: this.primaryRootAt(agent, mount), secondary: undefined, required: !cwdRoot }]
@@ -2460,7 +2466,9 @@ export class WorkspaceManager {
         discovered = resolve
       })
       const preparation = (async () => {
-        const root = plan.secondary ? await this.prepareSecondaryRoot(agent, plan.secondary, false) : plan.root
+        const root = plan.secondary
+          ? await this.prepareSecondaryRoot(agent, referenceOf(plan.secondary), false)
+          : plan.root
         if (!root) throw new Error(`session repository ${plan.root.cloneUrl} is unavailable`)
         const path = await this.prepareRootSessionClone(
           agent,
