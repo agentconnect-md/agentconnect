@@ -302,6 +302,16 @@ export class RuntimeFactsRegistry {
       ...(r.caps.defaultEffort ? { defaultEffort: r.caps.defaultEffort } : {}),
       ...(r.caps.fastMode !== undefined ? { fastMode: r.caps.fastMode } : {})
     }))
+    // A runtime whose models live only in a driver-owned catalog advertises none over ACP.
+    // The console picker reads the ADVERTISEMENT and merely enriches it from the catalog, so
+    // publish the catalog's ids as the advertisement — never overriding a real one.
+    if (meta.source === 'native' && models.length > 0 && (this.models.get(id) ?? []).length === 0) {
+      this.models.set(
+        id,
+        models.map((m) => m.id)
+      )
+      this.modelsSource.set(id, 'cached')
+    }
     this.catalogs.set(id, {
       models: models.slice(0, 128),
       ...(meta.defaultModel ? { defaultModel: meta.defaultModel } : {}),
@@ -557,11 +567,18 @@ export class RuntimeFactsRegistry {
     // startup probe failures: disposable probe homes can fail while established
     // agent homes remain usable. Cached provenance keeps model gates permissive
     // until a later successful probe supplies live knowledge.
+    // A driver-owned catalog IS the advertisement for a runtime that exposes no ACP model
+    // selector (gemini): a SUCCESSFUL probe advertising nothing must not erase it, or the
+    // picker empties again on every sweep.
+    const catalog = this.catalogs.get(r.runtime)
+    const nativeCatalogOwnsAdvertisement =
+      r.ok && r.models.length === 0 && catalog?.source === 'native' && catalog.models.length > 0
     const keepCachedAdvertisement =
-      !r.ok &&
-      !r.authRequired &&
-      this.modelsSource.get(r.runtime) === 'cached' &&
-      (this.models.get(r.runtime)?.length ?? 0) > 0
+      nativeCatalogOwnsAdvertisement ||
+      (!r.ok &&
+        !r.authRequired &&
+        this.modelsSource.get(r.runtime) === 'cached' &&
+        (this.models.get(r.runtime)?.length ?? 0) > 0)
     if (!keepCachedAdvertisement) {
       this.models.set(r.runtime, r.ok ? r.models : [])
       this.modelsSource.set(r.runtime, 'probed')

@@ -51,7 +51,7 @@ therefore be a daemon-side discovery and caching problem, not one protocol call.
    and use native catalog APIs.** When a lower layer exposes a stable catalog
    API, a dedicated driver collects every model and its capabilities in one
    discovery task without switching models. The first runtimes are Claude,
-   Codex, OpenCode, and Kilo. This class will **continue expanding**: whenever a
+   Codex, OpenCode, Kilo, and Gemini CLI. This class will **continue expanding**: whenever a
    runtime's native interface becomes known, add a driver. The long-term goal is
    one-pass discovery for as many runtimes as possible.
 2. **Runtimes without drivers fall back to per-model discovery.** The generic
@@ -77,7 +77,7 @@ latest value persisted by the CP.**
 ```mermaid
 flowchart LR
   subgraph daemon
-    D1[catalog driver<br/>codex/opencode/kilo<br/>bulk discovery] --> M
+    D1[catalog driver<br/>codex/opencode/kilo/gemini<br/>bulk discovery] --> M
     D2[generic ACP enumerator<br/>per-model set_config_option<br/>Claude completes in one session] --> M
     M[runtime_model_catalog<br/>SQLite last-good cache] --> R[facts/daemon-runtimes<br/>modelCatalog field]
   end
@@ -135,11 +135,12 @@ interface ModelCatalogDriver {
 Initial drivers use the same lower-layer data each adapter uses to construct
 `configOptions`, ensuring that native and ACP paths have one source:
 
-| Runtime  | Interface                                                                                                                                                                                    | Returned in one task                                                                                                                                                                            |
-| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| codex    | Spawn `codex app-server`; JSON-RPC `initialize` + `model/list`                                                                                                                               | All models × `supportedReasoningEfforts` (including descriptions) × `defaultReasoningEffort` × `additionalSpeedTiers` (fast)                                                                    |
-| opencode | Derive `serve --port <random> --hostname 127.0.0.1` from RuntimeDef → `GET /config/providers` (verified against OpenCode 1.18.3 source)                                                      | Providers × all models × `variants` (keys are effort levels); catalog ID is `provider.id/model.id`, **exactly matching** ACP model-select values because neither side includes a variant suffix |
-| kilo     | Same as OpenCode (fork retains the serve surface, source-verified in KiloCode 7.4.11; distribution is `npx -y @kilocode/cli acp`, so derive serve from RuntimeDef rather than a bare binary) | Same as above, from Kilo's backend. If the Kilo provider has auth state, the catalog GET may return 401; treat 401 as a hard failure and immediately fall back to enumeration                   |
+| Runtime  | Interface                                                                                                                                                                                                                                                                                                                                                                                                             | Returned in one task                                                                                                                                                                                                                                                |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| codex    | Spawn `codex app-server`; JSON-RPC `initialize` + `model/list`                                                                                                                                                                                                                                                                                                                                                        | All models × `supportedReasoningEfforts` (including descriptions) × `defaultReasoningEffort` × `additionalSpeedTiers` (fast)                                                                                                                                        |
+| opencode | Derive `serve --port <random> --hostname 127.0.0.1` from RuntimeDef → `GET /config/providers` (verified against OpenCode 1.18.3 source)                                                                                                                                                                                                                                                                               | Providers × all models × `variants` (keys are effort levels); catalog ID is `provider.id/model.id`, **exactly matching** ACP model-select values because neither side includes a variant suffix                                                                     |
+| kilo     | Same as OpenCode (fork retains the serve surface, source-verified in KiloCode 7.4.11; distribution is `npx -y @kilocode/cli acp`, so derive serve from RuntimeDef rather than a bare binary)                                                                                                                                                                                                                          | Same as above, from Kilo's backend. If the Kilo provider has auth state, the catalog GET may return 401; treat 401 as a hard failure and immediately fall back to enumeration                                                                                       |
+| gemini   | `GET https://generativelanguage.googleapis.com/v1beta/models` with the daemon's `GEMINI_API_KEY` — an HTTP read, no child process. Gemini CLI advertises **no ACP model selector**, so this is the runtime's only catalog source; the chosen model is applied at launch through `GEMINI_MODEL` (`runtimes/model-env.ts`, via `cpRuntimeEnv`), never `set_config_option`, so a change takes effect on the next session | Every `generateContent`-capable model as id + display name (the `models/` prefix stripped). The API exposes no effort or fast tiers, so caps stop at the name. Models that cannot drive an agent (tts, image, embedding, transcribe, computer-use) are filtered out |
 
 **Claude's "bulk discovery" is single-session enumeration, without an SDK
 dependency (evidence-based decision).** The real adapter
@@ -290,6 +291,12 @@ phase 2, controlled by a discovery gate rather than rerun on every TTL:
   fingerprint but leaves `complete` false. Otherwise, phase 1 would close the
   gate on first install and the catalog would forever contain only the default
   model.
+
+  **An empty advertisement enters phase 2 only through a driver.** A runtime
+  whose probe advertised no models gives the enumerator nothing to iterate, so
+  it is skipped — unless a driver `supports()` it, in which case the driver is
+  the catalog and runs regardless. Gemini CLI is the first such runtime: it has
+  no ACP model selector at all, and its list comes from the Gemini API.
 
 - **Single flight per runtime**: one runtime has at most one in-flight discovery
   task. This is not per fingerprint: if a fingerprint changes while discovery

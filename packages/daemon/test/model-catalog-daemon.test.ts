@@ -202,6 +202,125 @@ describe('daemon model-catalog cache hydrate', () => {
   })
 })
 
+describe('daemon native catalog for a runtime with no ACP model selector', () => {
+  it('advertises the driver-owned catalog ids after a successful probe that advertised none', async () => {
+    const dir = root()
+    const clock = new FakeClock()
+    clock.advance(10_000)
+    // A successful probe advertising ZERO models — gemini-cli's shape: it offers no ACP
+    // model selector at all, so without the native catalog there is nothing to pick.
+    const probe = async (): Promise<RuntimeProbeResult[]> => [
+      { runtime: 'fake', ok: true, models: [], probedVersion: '1.0.0' } as RuntimeProbeResult
+    ]
+    const daemon = daemonWith({ root: dir, catalog: catalogOf({ fake: FAKE_RT }), clock, probe })
+    try {
+      await daemon.start()
+      stubCatalogSvc(daemon)
+      await (daemon as any).runtimeFacts.probeAndEmit(true)
+      // The probe alone leaves the picker empty.
+      expect((daemon as any).runtimeFacts.profileFor('fake').models).toEqual([])
+
+      // A driver commits its catalog, then the registry rebuilds from it.
+      const store = (daemon as any).store as LocalStore
+      await store.recordRuntimeCatalogMeta({
+        runtimeId: 'fake',
+        fingerprint: 'fp-native',
+        source: 'native',
+        observedAt: clock.now()
+      })
+      for (const id of ['g-flash', 'g-pro'])
+        await store.upsertRuntimeModelCap({
+          runtimeId: 'fake',
+          modelId: id,
+          fingerprint: 'fp-native',
+          caps: { name: id.toUpperCase() },
+          observedAt: clock.now()
+        })
+      await (daemon as any).runtimeFacts.rebuildCatalog('fake')
+
+      const profile = (daemon as any).runtimeFacts.profileFor('fake')
+      expect(profile.models).toEqual(['g-flash', 'g-pro'])
+      expect(profile.modelsSource).toBe('cached')
+      expect(profile.modelCatalog.source).toBe('native')
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('keeps the catalog advertisement across later sweeps that again advertise nothing', async () => {
+    const dir = root()
+    const clock = new FakeClock()
+    clock.advance(10_000)
+    const probe = async (): Promise<RuntimeProbeResult[]> => [
+      { runtime: 'fake', ok: true, models: [], probedVersion: '1.0.0' } as RuntimeProbeResult
+    ]
+    const daemon = daemonWith({ root: dir, catalog: catalogOf({ fake: FAKE_RT }), clock, probe })
+    try {
+      await daemon.start()
+      stubCatalogSvc(daemon)
+      const store = (daemon as any).store as LocalStore
+      await store.recordRuntimeCatalogMeta({
+        runtimeId: 'fake',
+        fingerprint: 'fp-native',
+        source: 'native',
+        observedAt: clock.now()
+      })
+      await store.upsertRuntimeModelCap({
+        runtimeId: 'fake',
+        modelId: 'g-flash',
+        fingerprint: 'fp-native',
+        caps: {},
+        observedAt: clock.now()
+      })
+      await (daemon as any).runtimeFacts.rebuildCatalog('fake')
+      expect((daemon as any).runtimeFacts.profileFor('fake').models).toEqual(['g-flash'])
+
+      // A later sweep probes fine and again advertises nothing — the picker must not empty.
+      await (daemon as any).runtimeFacts.probeAndEmit(true)
+      const profile = (daemon as any).runtimeFacts.profileFor('fake')
+      expect(profile.models).toEqual(['g-flash'])
+      expect(profile.modelsSource).toBe('cached')
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('never overrides an advertisement the runtime really made', async () => {
+    const dir = root()
+    const clock = new FakeClock()
+    clock.advance(10_000)
+    const probe = async (): Promise<RuntimeProbeResult[]> => [
+      { runtime: 'fake', ok: true, models: ['real-a'], probedVersion: '1.0.0' } as RuntimeProbeResult
+    ]
+    const daemon = daemonWith({ root: dir, catalog: catalogOf({ fake: FAKE_RT }), clock, probe })
+    try {
+      await daemon.start()
+      stubCatalogSvc(daemon)
+      await (daemon as any).runtimeFacts.probeAndEmit(true)
+      const store = (daemon as any).store as LocalStore
+      await store.recordRuntimeCatalogMeta({
+        runtimeId: 'fake',
+        fingerprint: 'fp-native',
+        source: 'native',
+        observedAt: clock.now()
+      })
+      await store.upsertRuntimeModelCap({
+        runtimeId: 'fake',
+        modelId: 'g-flash',
+        fingerprint: 'fp-native',
+        caps: {},
+        observedAt: clock.now()
+      })
+      await (daemon as any).runtimeFacts.rebuildCatalog('fake')
+      const profile = (daemon as any).runtimeFacts.profileFor('fake')
+      expect(profile.models).toEqual(['real-a'])
+      expect(profile.modelsSource).toBe('probed')
+    } finally {
+      await daemon.stop()
+    }
+  })
+})
+
 describe('daemon activation gate provenance rule', () => {
   it('is permissive for a cache-hydrated model list and turns strict after the first live probe', async () => {
     const dir = root()

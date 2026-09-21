@@ -6,6 +6,7 @@ import {
   catalogFingerprint,
   modelsHash,
   codexModelsFromListResult,
+  geminiModelsFromList,
   opencodeModelsFromProviders,
   serveInvocationFor,
   type CatalogStorePort,
@@ -292,6 +293,31 @@ describe('ModelCatalogService driver path', () => {
     expect(h.updated).toEqual(['fake'])
   })
 
+  it('runs a driver-owned runtime even when the probe advertised no models (gemini has no ACP selector)', async () => {
+    const driver: ModelCatalogDriver = {
+      supports: (id) => id === 'fake',
+      discover: async () => ({ models: [{ id: 'g-flash', name: 'Flash' }, { id: 'g-pro' }] })
+    }
+    const h = harness({ drivers: [driver] })
+    await h.probe([])
+    await settle()
+    expect(h.calls).toHaveLength(0) // nothing advertised ⇒ nothing to enumerate; the driver is the catalog
+    const meta = (await h.store.getRuntimeCatalogMeta('fake'))!
+    expect(meta.source).toBe('native')
+    expect(meta.complete).toBe(true)
+    expect((await h.store.listRuntimeModelCaps('fake')).map((r) => r.modelId).sort()).toEqual(['g-flash', 'g-pro'])
+    expect(h.updated).toEqual(['fake'])
+  })
+
+  it('still skips discovery for an empty advertisement when no driver owns the runtime', async () => {
+    const h = harness()
+    await h.probe([])
+    await settle()
+    expect(h.calls).toHaveLength(0)
+    expect(await h.store.getRuntimeCatalogMeta('fake')).toBeUndefined()
+    expect(h.updated).toEqual([])
+  })
+
   it('a driver result matching fewer than half the advertised ids is discarded for enumeration', async () => {
     const driver: ModelCatalogDriver = {
       supports: (id) => id === 'fake',
@@ -550,5 +576,66 @@ describe('serveInvocationFor', () => {
     const rt: RuntimeDef = { command: 'weird', args: ['--serve-acp'], env: [] }
     expect(serveInvocationFor('opencode', rt, serveArgs)).toEqual({ command: 'opencode', args: serveArgs })
     expect(serveInvocationFor('kilo', undefined, serveArgs)).toEqual({ command: 'kilo', args: serveArgs })
+  })
+})
+
+describe('geminiModelsFromList', () => {
+  const model = (name: string, methods: string[], displayName?: string) => ({
+    name,
+    supportedGenerationMethods: methods,
+    ...(displayName ? { displayName } : {})
+  })
+
+  it('keeps generateContent agent models, strips the models/ prefix, carries displayName', () => {
+    expect(
+      geminiModelsFromList({
+        models: [
+          model('models/gemini-3.8-flash', ['generateContent', 'countTokens'], 'Gemini 3.8 Flash'),
+          model('models/gemini-3.1-pro-preview', ['generateContent'])
+        ]
+      })
+    ).toEqual({
+      models: [{ id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' }, { id: 'gemini-3.1-pro-preview' }]
+    })
+  })
+
+  it('keeps only the gemini- family: other Google model lines on the same key are not agent runtimes', () => {
+    expect(
+      geminiModelsFromList({
+        models: [
+          model('models/gemma-4-31b-it', ['generateContent']),
+          model('models/lyria-3.5', ['generateContent']),
+          model('models/nano-banana-pro-preview', ['generateContent']),
+          model('models/antigravity-preview-09-2026', ['generateContent']),
+          model('models/deep-research-preview-04-2026', ['generateContent']),
+          model('models/gemini-3.1-pro-preview', ['generateContent'])
+        ]
+      })
+    ).toEqual({ models: [{ id: 'gemini-3.1-pro-preview' }] })
+  })
+
+  it('drops models that cannot drive an agent: no generateContent, or tts/image/embedding/transcribe/computer-use', () => {
+    expect(
+      geminiModelsFromList({
+        models: [
+          model('models/gemini-embedding-001', ['embedContent']),
+          model('models/gemini-2.5-flash-preview-tts', ['generateContent']),
+          model('models/gemini-3.1-flash-image', ['generateContent']),
+          model('models/gemini-3.5-transcribe', ['generateContent']),
+          model('models/gemini-2.5-computer-use-preview-10-2025', ['generateContent']),
+          model('models/gemini-omni-flash-preview', ['generateContent']),
+          model('models/gemini-robotics-er-2-preview', ['generateContent']),
+          model('models/gemini-3.8-flash', ['generateContent'])
+        ]
+      })
+    ).toEqual({ models: [{ id: 'gemini-3.8-flash' }] })
+  })
+
+  it('tolerates garbage payloads', () => {
+    expect(geminiModelsFromList(undefined)).toEqual({ models: [] })
+    expect(geminiModelsFromList({ models: 'nope' })).toEqual({ models: [] })
+    expect(
+      geminiModelsFromList({ models: [null, 42, { name: 7, supportedGenerationMethods: ['generateContent'] }] })
+    ).toEqual({ models: [] })
   })
 })

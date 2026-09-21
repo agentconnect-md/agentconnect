@@ -8,6 +8,7 @@
  * environment the daemon surfaces to the ACP child.
  */
 import type { Agent } from './agent-schema.js'
+import { runtimeModelEnv } from '../runtimes/model-env.js'
 
 /**
  * Runtime config surfaced to the ACP child as environment variables, under
@@ -27,6 +28,8 @@ import type { Agent } from './agent-schema.js'
 export function cpRuntimeEnv(agent: Agent): Record<string, string> {
   const out: Record<string, string> = {}
   if (agent.runtimeOverrides?.model) out.AGENTCONNECT_MODEL = agent.runtimeOverrides.model
+  // Runtimes with no ACP model selector read their own variable instead (applied at launch only).
+  Object.assign(out, runtimeModelEnv(agent.runtime, agent.runtimeOverrides?.model))
   if (agent.reasoningEffort) out.AGENTCONNECT_REASONING_EFFORT = agent.reasoningEffort
   if (agent.executionMode) out.AGENTCONNECT_EXECUTION_MODE = agent.executionMode
   return out

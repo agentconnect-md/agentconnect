@@ -1308,8 +1308,8 @@ existing host probe; this switch does not add another probe sweep.
 Installation and login are independent. Each view shows an installed runtime even
 without a stored login, with **Login required** in that case. A stored login, or
 provider credentials Claude Code accepts without that login (an API key, auth
-token, or OAuth token in host env or `settings.json` env), keeps a missing runtime
-visible with **Binary not installed on host** or **Binary not installed in image**,
+token, or OAuth token in host env or `settings.json` env), or `GEMINI_API_KEY` in
+the daemon environment for Gemini CLI, keeps a missing runtime visible with **Binary not installed on host** or **Binary not installed in image**,
 according to the selected view. Only a runtime with neither an installation in that
 environment nor credentials is hidden. Missing binaries take precedence over login
 warnings. Enumerating models does not prove that the runtime is signed in; expired
@@ -1341,3 +1341,16 @@ in that mode is an accepted, documented trade-off, closed later by per-runtime
 credential brokering, not by refusing to run. Independent, sandbox-agnostic
 mitigations (for example excluding an agent's tool credentials from a dream's
 environment entirely) still apply in both modes.
+
+## Model selection for runtimes without an ACP model selector
+
+Some runtimes offer no model selector over ACP. Gemini CLI is the first: it reads
+its model from `GEMINI_MODEL` when its process starts. For such a runtime the
+console's model list comes from a native catalog driver rather than the ACP
+selector (for Gemini CLI, the Gemini API's own model list, read with the daemon's
+`GEMINI_API_KEY`), and the agent's configured model is applied when the runtime is
+launched for a session. Changing the model on such an agent takes effect on its
+next session; a session that is already running keeps the model it started with.
+This is the same contract `ultracode` effort already follows, applying only when a
+session is created or resumed. A runtime that advertises an ACP model selector is
+unchanged: its model switches live within a running session.
