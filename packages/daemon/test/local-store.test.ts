@@ -165,7 +165,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect(cronColumns).toContain('definition')
     // Purge receipts are leased per pool member (#1032).
     expect(purgeColumns).toEqual(expect.arrayContaining(['ownerId', 'claimedAt']))
-    expect(userVersion(path)).toBe(20)
+    expect(userVersion(path)).toBe(21)
   })
 
   it.skipIf(pg)('never persists the CP routing map on a shared store, and still does on an owned one', async () => {
@@ -232,7 +232,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect(await upgraded.isCaptureExcluded('bot-c', 'c')).toBe(true)
     await upgraded.close()
 
-    expect(userVersion(path)).toBe(20)
+    expect(userVersion(path)).toBe(21)
   })
 
   it('re-keys the runtime catalog cache on its owning member when upgrading a v7 store', async () => {
@@ -288,7 +288,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
         .map((column) => column.name)
     expect(primaryKey(metaColumns)).toEqual(['ownerId', 'runtimeId'])
     expect(primaryKey(capColumns)).toEqual(['ownerId', 'runtimeId', 'modelId'])
-    expect(userVersion(path)).toBe(20)
+    expect(userVersion(path)).toBe(21)
   })
 
   it('backfills a v11 store with the outward id its sessions were already reported under', async () => {
@@ -316,7 +316,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect((await upgraded.getSession('k2'))?.sessionId).toBeNull()
     expect(await upgraded.ensureOutwardSessionId('k2', 'bot-a')).toMatch(/^[0-9a-f-]{36}$/)
     await upgraded.close()
-    expect(userVersion(path)).toBe(20)
+    expect(userVersion(path)).toBe(21)
   })
 
   // The regression that made `directDestination` reachable on fresh databases only: the step was
@@ -342,7 +342,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     await upgraded.setSessionClassification('k1', { sourceBindingKind: 'external', directDestination: true })
     expect(await upgraded.getSessionClassification('bot-a', 'acp-1')).toMatchObject({ directDestination: true })
     await upgraded.close()
-    expect(userVersion(path)).toBe(20)
+    expect(userVersion(path)).toBe(21)
   })
 
   it('refuses a store written by a newer daemon WITHOUT touching it first', async () => {
@@ -2756,6 +2756,124 @@ describe.skipIf(pg)('transcript org migration from a v10 store', () => {
   })
 })
 
+// Thread affinity moved off the session row onto its own record (channel-session-mode.md
+// §6.4). The upgrade has to carry the existing rows across, or every conversation that
+// already has a session silently loses continuity — an unmentioned follow-up in a thread
+// the agent has been answering in would stop routing the moment the daemon is upgraded.
+it.skipIf(pg)('backfills thread affinity from the sessions a v20 store already has', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-affinity-migration-')), 'local.sqlite')
+  const initial = await openTestStore(path)
+  const seed = async (thread: string, agentId: string, state: 'idle' | 'closed', scope?: string): Promise<void> =>
+    await initial.upsertSession({
+      key: sessionKey('slack', 'C1', thread, agentId, scope),
+      agentId,
+      platform: 'slack',
+      channel: 'C1',
+      thread,
+      ...(scope ? { transportScope: scope } : {}),
+      acpSessionId: `acp-${agentId}`,
+      state,
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+  await seed('T1', 'bot-a', 'idle')
+  await seed('T2', 'bot-b', 'closed')
+  await seed('T3', 'bot-c', 'idle', 'scope-x')
+  await initial.close()
+
+  // Rewind to the shape a daemon without the table wrote.
+  const legacy = new DatabaseSync(path)
+  legacy.exec('DROP TABLE thread_participation; PRAGMA user_version = 20;')
+  legacy.close()
+
+  const upgraded = await openTestStore(path)
+  expect(await upgraded.openSessionAgents('C1', 'T1')).toEqual(['bot-a'])
+  // A dormant session is the case the backfill exists for most: continuity revival is
+  // precisely what a follow-up into a TTL-closed thread depends on.
+  expect(await upgraded.closedSessionAgents('C1', 'T2')).toEqual(['bot-b'])
+  // And a scoped session keeps its scope across the COALESCE.
+  expect(await upgraded.openSessionAgents('C1', 'T3', 'scope-x')).toEqual(['bot-c'])
+  expect(await upgraded.openSessionAgents('C1', 'T3')).toEqual([])
+  await upgraded.close()
+})
+
+it.skipIf(pg)('lists both agents sharing one thread, which is what keeps it mention-gated', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-affinity-two-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  for (const agentId of ['bot-a', 'bot-b'])
+    await s.upsertSession({
+      key: sessionKey('slack', 'C1', 'T1', agentId),
+      agentId,
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T1',
+      acpSessionId: `acp-${agentId}`,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+  expect((await s.openSessionAgents('C1', 'T1')).sort()).toEqual(['bot-a', 'bot-b'])
+  await s.close()
+})
+
+// `upsertSession` rewrites a session's transportScope (hydration, the corruption fence),
+// and affinity is keyed by it — so the row left at the old scope has to be retired, or a
+// lookup there keeps naming this agent for the rest of the session's life.
+it.skipIf(pg)('retires the affinity row a session left at its previous transport scope', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-affinity-scope-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
+  const row = {
+    key,
+    agentId: 'bot-a',
+    platform: 'slack',
+    channel: 'C1',
+    thread: 'T1',
+    acpSessionId: 'acp-1',
+    state: 'idle' as const,
+    lastDeliveredTs: null,
+    updatedAt: 1
+  }
+  await s.upsertSession(row)
+  expect(await s.openSessionAgents('C1', 'T1')).toEqual(['bot-a'])
+
+  await s.upsertSession({ ...row, transportScope: 'scope-x' })
+  expect(await s.openSessionAgents('C1', 'T1', 'scope-x')).toEqual(['bot-a'])
+  expect(await s.openSessionAgents('C1', 'T1')).toEqual([])
+  await s.close()
+})
+
+it.skipIf(pg)('reads thread affinity from the participation record, and drops it with the session', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-affinity-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
+  await s.upsertSession({
+    key,
+    agentId: 'bot-a',
+    platform: 'slack',
+    channel: 'C1',
+    thread: 'T1',
+    acpSessionId: 'acp-1',
+    state: 'idle',
+    lastDeliveredTs: null,
+    updatedAt: 1
+  })
+  expect(await s.openSessionAgents('C1', 'T1')).toEqual(['bot-a'])
+  expect(await s.closedSessionAgents('C1', 'T1')).toEqual([])
+
+  // Liveness stays a property of the SESSION, not of the affinity row.
+  await s.setSessionState(key, 'closed', 2)
+  expect(await s.openSessionAgents('C1', 'T1')).toEqual([])
+  expect(await s.closedSessionAgents('C1', 'T1')).toEqual(['bot-a'])
+
+  // The record's whole meaning is the session it names, so it goes with it — and the
+  // thread reads as unowned again rather than naming an agent with nothing behind it.
+  await s.deleteSession(key)
+  expect(await s.openSessionAgents('C1', 'T1')).toEqual([])
+  expect(await s.closedSessionAgents('C1', 'T1')).toEqual([])
+  await s.close()
+})
+
 it.skipIf(pg)('upgrades a v17 store to durable memory continuations without changing existing sessions', async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'ac-memory-migration-')), 'local.sqlite')
   const initial = await openTestStore(path)
@@ -2770,6 +2888,6 @@ it.skipIf(pg)('upgrades a v17 store to durable memory continuations without chan
   expect(await upgraded.getMemoryEntryContinuation('bot-a', token, 999)).toBe('{"page":2}')
   await upgraded.close()
   const check = new DatabaseSync(path)
-  expect(check.prepare('PRAGMA user_version').get()).toEqual({ user_version: 20 })
+  expect(check.prepare('PRAGMA user_version').get()).toEqual({ user_version: 21 })
   check.close()
 })

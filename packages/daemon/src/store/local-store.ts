@@ -928,7 +928,35 @@ function restrictPath(path: string, mode: number): void {
  * fresh databases and every established one fails at query time. `SCHEMA_MIGRATIONS`
  * asserts the two stay in lockstep for exactly that reason.
  */
-const SCHEMA_VERSION = 20
+// Which agents are active in a PHYSICAL thread (channel-session-mode.md §6.4). The session
+// row answered this while a session WAS a thread; `append` puts a session at a coordinate
+// that is no thread's, so the question needs its own record. `sessionKey` is what the
+// affinity lookups join back to, so liveness stays the session's property, decided in one place.
+const THREAD_PARTICIPATION_SCHEMA = `
+      CREATE TABLE IF NOT EXISTS thread_participation (
+        channel TEXT NOT NULL,
+        thread TEXT NOT NULL,
+        agentId TEXT NOT NULL,
+        transportScope TEXT NOT NULL DEFAULT '',
+        sessionKey TEXT NOT NULL,
+        updatedAt INTEGER,
+        PRIMARY KEY (channel, thread, agentId, transportScope)
+      );
+      CREATE INDEX IF NOT EXISTS thread_participation_session ON thread_participation (sessionKey);
+`
+
+// Seeds affinity from the sessions that predate the table. It must START with the INSERT:
+// the PostgreSQL rewrite converts `INSERT OR IGNORE` only when it opens the statement, so
+// folding this into the CREATE above would ship SQLite syntax to a pool store. The NOT NULL
+// filter makes both dialects skip the same legacy rows — SQLite's OR IGNORE swallows a NOT
+// NULL violation, PostgreSQL's ON CONFLICT covers only unique ones.
+export const THREAD_PARTICIPATION_BACKFILL = `
+      INSERT OR IGNORE INTO thread_participation (channel, thread, agentId, transportScope, sessionKey, updatedAt)
+      SELECT channel, thread, agentId, COALESCE(transportScope, ''), key, updatedAt FROM sessions
+      WHERE channel IS NOT NULL AND thread IS NOT NULL AND agentId IS NOT NULL
+`
+
+const SCHEMA_VERSION = 21
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1114,7 +1142,15 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<v
     await db.exec(`
       ALTER TABLE sessions ADD COLUMN executorDaemonId TEXT;
       ALTER TABLE sessions ADD COLUMN stayedHomeReason TEXT;
-    `)
+    `),
+  // Thread participation (channel-session-mode.md §6.4), backfilled from the session rows
+  // it replaces: an upgraded daemon must not lose continuity for every existing session.
+  async (db) => {
+    // Two execs on purpose: the PostgreSQL rewrite only converts `INSERT OR IGNORE` when
+    // it STARTS the statement, so folding this into the CREATE would ship SQLite syntax.
+    await db.exec(THREAD_PARTICIPATION_SCHEMA)
+    await db.exec(THREAD_PARTICIPATION_BACKFILL)
+  }
 ]
 
 // The list and the version are two halves of one fact: step `i` moves a database from
@@ -1257,6 +1293,7 @@ export class LocalStore {
         updatedAt INTEGER,
         PRIMARY KEY (agentId, sessionKey)
       );
+      ${THREAD_PARTICIPATION_SCHEMA}
       -- Latest-wins session metadata awaiting a correlated CP persistence ACK.
       -- This is deliberately separate from sessions: an upgrade starts with an
       -- empty outbox and never treats historical session rows as pending work.
@@ -2609,6 +2646,43 @@ export class LocalStore {
         needsParentReply: rec.needsParentReply === 1 ? 1 : null,
         platformStanding: rec.platformStanding ?? null
       })
+    // The session's coordinate IS its physical thread today, so recording affinity from the
+    // row just written is equivalent to the `sessions` lookup this replaces, for every writer.
+    // Not in one transaction with it: this is the hot path, and a failure between the two
+    // costs an unmentioned follow-up its routing only until the next upsert repairs it.
+    await this.recordThreadParticipation({
+      channel: rec.channel,
+      thread: rec.thread,
+      agentId: rec.agentId,
+      sessionKey: rec.key,
+      transportScope: rec.transportScope ?? null,
+      updatedAt: rec.updatedAt
+    })
+  }
+
+  /** Note that an agent is active in a PHYSICAL thread (channel-session-mode.md §6.4). */
+  async recordThreadParticipation(p: {
+    channel: string
+    thread: string
+    agentId: string
+    sessionKey: string
+    transportScope?: string | null
+    updatedAt?: number
+  }): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO thread_participation (channel, thread, agentId, transportScope, sessionKey, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (channel, thread, agentId, transportScope)
+         DO UPDATE SET sessionKey = excluded.sessionKey, updatedAt = excluded.updatedAt`
+      )
+      .run(p.channel, p.thread, p.agentId, p.transportScope ?? '', p.sessionKey, p.updatedAt ?? Date.now())
+    // A session's scope is the session's, not the thread's, and `upsertSession` rewrites it
+    // (scope hydration, the corruption fence). Retire the rows it left at the old scope, or
+    // a lookup at that scope keeps naming this agent for the rest of the session's life.
+    await this.db
+      .prepare('DELETE FROM thread_participation WHERE sessionKey = ? AND transportScope != ?')
+      .run(p.sessionKey, p.transportScope ?? '')
   }
 
   /** Record how the turn that just ended went (§7.3 companion of {@link setSessionState}):
@@ -3266,6 +3340,8 @@ export class LocalStore {
       // session on the same slot must be a new one, not this one's name reused.
       await tx.prepare('DELETE FROM session_outward_ids WHERE key = ?').run(key)
       await tx.prepare('DELETE FROM session_mutes WHERE key = ?').run(key)
+      // The affinity record outlives nothing: its whole meaning is the session it names.
+      await tx.prepare('DELETE FROM thread_participation WHERE sessionKey = ?').run(key)
       await tx.prepare('DELETE FROM inbox WHERE sessionKey = ? AND terminalReport IS NULL').run(key)
       if (rec.acpSessionId) {
         // Once the local session content is gone, creating a new CP metadata row
@@ -4874,10 +4950,33 @@ export class LocalStore {
   }
 
   async openSessionAgents(channel: string, thread: string, transportScope?: string | null): Promise<string[]> {
+    return await this.threadAgentsByState(channel, thread, transportScope, 'open')
+  }
+
+  /**
+   * Agents participating in a PHYSICAL thread, split by whether their session is live.
+   *
+   * Reads `thread_participation` rather than `sessions` (channel-session-mode.md §6.4):
+   * the two agree while a session IS a thread, but an `append` session lives at a
+   * coordinate that is no thread's, so the session row stops being able to answer "who is
+   * talking in this thread". Liveness still comes from the session the row points at, so
+   * open-vs-dormant is decided in exactly one place, as before. The join also drops a
+   * participation row whose session is gone, which is what made "no session row ⇒ not
+   * listed" true before this table existed.
+   */
+  private async threadAgentsByState(
+    channel: string,
+    thread: string,
+    transportScope: string | null | undefined,
+    want: 'open' | 'closed'
+  ): Promise<string[]> {
+    const predicate = want === 'open' ? "s.state != 'closed'" : "s.state = 'closed'"
     return (
       (await this.db
         .prepare(
-          "SELECT agentId FROM sessions WHERE channel = ? AND thread = ? AND COALESCE(transportScope, '') = ? AND state != 'closed'"
+          `SELECT DISTINCT p.agentId AS agentId FROM thread_participation p
+           JOIN sessions s ON s.key = p.sessionKey
+           WHERE p.channel = ? AND p.thread = ? AND p.transportScope = ? AND ${predicate}`
         )
         .all(channel, thread, transportScope ?? '')) as { agentId: string }[]
     ).map((r) => r.agentId)
@@ -4889,13 +4988,7 @@ export class LocalStore {
    *  resumes the ACP session. Kept separate from `openSessionAgents` so the live
    *  multi-agent disambiguation (2+ open owners → mention-gated) is never perturbed. */
   async closedSessionAgents(channel: string, thread: string, transportScope?: string | null): Promise<string[]> {
-    return (
-      (await this.db
-        .prepare(
-          "SELECT agentId FROM sessions WHERE channel = ? AND thread = ? AND COALESCE(transportScope, '') = ? AND state = 'closed'"
-        )
-        .all(channel, thread, transportScope ?? '')) as { agentId: string }[]
-    ).map((r) => r.agentId)
+    return await this.threadAgentsByState(channel, thread, transportScope, 'closed')
   }
 
   /** Count non-closed sessions in (channel, thread) touched at/after `sinceTs`

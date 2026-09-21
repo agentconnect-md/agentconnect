@@ -5,7 +5,7 @@
  */
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
-import { LocalStore } from '../src/store/local-store.js'
+import { LocalStore, THREAD_PARTICIPATION_BACKFILL } from '../src/store/local-store.js'
 import { tempStorePath } from './store-support.js'
 import {
   bind,
@@ -225,5 +225,17 @@ describe('schemaBootstrapStatements', () => {
       'CREATE TABLE IF NOT EXISTS _local_store_schema_version (' +
         'singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton), version BIGINT NOT NULL)'
     ])
+  })
+})
+
+// The v21 affinity backfill (channel-session-mode.md §6.4) is the first migration to use
+// `INSERT OR IGNORE` inside a multi-statement step. The rewrite only converts it when the
+// statement OPENS with it, so folding it into the CREATE would have shipped SQLite syntax
+// to every pool member with an existing store — which fails at boot, not at query time.
+describe('thread-participation backfill', () => {
+  it('rewrites to a conflict clause rather than reaching PostgreSQL as SQLite syntax', () => {
+    const out = rewrite(THREAD_PARTICIPATION_BACKFILL)
+    expect(out).not.toMatch(/INSERT\s+OR\s+IGNORE/i)
+    expect(out).toMatch(/ON CONFLICT DO NOTHING/)
   })
 })
