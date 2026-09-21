@@ -39,6 +39,7 @@ function fixture(reply: SlackTurn['reply'] = { responseId: 'resp-1' }, over: Rec
       channel: 'C1',
       thread: 'T1',
       statusThread: 'T1',
+      sessionThread: 'T1',
       transcriptChannel: 'C1',
       agentId: 'bot-a',
       agentName: 'Bot A',

@@ -41,6 +41,7 @@ export interface TelegramTurn {
     channel: string
     thread?: string
     statusThread: string
+    sessionThread: string
     transcriptChannel: string
     agentId: string
   }
@@ -104,7 +105,7 @@ export async function applyTelegramAction<TTurn extends TelegramTurn>(
       if (id) state.lastBody = { id, text: sent }
       await host.appendTranscript({
         channel: turn.plan.transcriptChannel,
-        thread: turn.plan.statusThread,
+        thread: turn.plan.sessionThread,
         ts: id ?? `local-${Date.now()}`,
         sender: turn.plan.agentId,
         kind: 'text',

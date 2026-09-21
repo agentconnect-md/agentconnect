@@ -23,6 +23,7 @@ import type { NormalizedMessage } from '../messages/normalized.js'
 import { routeRules, type RouteVia } from '../router/routing-table.js'
 import { conversationAdmitted, integrationRouting, type RoutingRule } from '../router/routing-rule.js'
 import { sessionKey, type LocalStore, type SessionRecord } from '../store/local-store.js'
+import { isAppendCoordinate } from '../session/append-coordinate.js'
 import {
   CommandChromeRegistry,
   type CommandChromeContext,
@@ -86,6 +87,14 @@ export interface CommandHost {
   sessionLinkSource(platform: string, integrationId?: string): string | undefined
   /** Thread affinity for the routing ladder a command reuses. */
   threadOwner(channel: string, thread: string, transportScope?: string | null): Promise<string | null>
+  /** The session coordinate a target keys on, when it is not the delivery thread
+   *  (channel-session-mode.md §3.1). Undefined ⇒ the session belongs to the thread. */
+  sessionCoordinateFor(
+    agentId: string,
+    integrationId: string | undefined,
+    msg: NormalizedMessage,
+    opts?: { mint?: boolean }
+  ): Promise<string | undefined>
   mergedRulesForSource(srcIntegrationIds?: readonly string[]): RoutingRule[]
   transportScopeForIntegrationIds(integrationIds?: readonly string[]): string | undefined
   integrationBelongsToSource(integrationId: string, srcIntegrationIds?: readonly string[]): boolean
@@ -521,7 +530,12 @@ export class CommandHandlers {
     // /cancel /status /fast /models /effort /permission /queue all operate on it rather
     // than on a phantom empty thread. `thread`/`key` follow the resolved session so a
     // `/queue` dispatch continues it and the sticky overrides land on the right key.
-    let thread = replyThread
+    // In a conversation that appends, the session is not the thread this command was typed
+    // in, and deriving the key from the thread would address a session that does not exist —
+    // reaching the right one only through the latest-session fallback below, which is luck
+    // rather than resolution.
+    let thread =
+      (await this.host.sessionCoordinateFor(target.agentId, target.integrationId, msg, { mint: false })) ?? replyThread
     let key = sessionKey(msg.platform, msg.channel, thread, target.agentId, msg.transportScope)
     let rec = await this.host.store().getSession(key)
     // A cold turn owns its logical key before SessionManager persists the session row.
@@ -530,7 +544,10 @@ export class CommandHandlers {
     // actual turn running. Check all gate representations because commands can race the
     // short hand-offs between them.
     let directGateActive = this.gateActiveFor(key)
-    if (!rec && !directGateActive) {
+    // The fallback exists for a command typed outside any session's thread. It must not fire
+    // once an append coordinate is resolved: the channel's latest session there may be a
+    // retired createNew-era thread, and retargeting onto it would act on the wrong session.
+    if (!rec && !directGateActive && !isAppendCoordinate(thread)) {
       const latest = await this.host.store().latestSessionForTransport(target.agentId, msg.channel, msg.transportScope)
       if (latest) {
         rec = latest
@@ -635,17 +652,24 @@ export class CommandHandlers {
 
   /** `!stop` — interrupt any in-flight turn AND mute the thread until the agent is @mentioned again. */
   private async runStop(ctx: CommandContext): Promise<boolean> {
-    const { target, key, rec, acpSessionId, inflight, reply } = ctx
+    const { target, key, thread, rec, acpSessionId, inflight, reply } = ctx
+    // A conversation that appends has ONE session, so the mute latch would silence the
+    // whole room until someone @mentions — a blast radius nobody typing `!stop` in a thread
+    // is asking for. There it interrupts the turn and nothing else (channel-session-mode.md
+    // §6.3); silencing the agent in such a conversation is the console's Off trigger.
+    const mutes = !isAppendCoordinate(thread)
     // Mute the session's thread whether or not a turn is in flight: `!stop` is an
     // explicit stand-down — implicit routing (thread affinity / keyword / auto)
     // stays off until the user @mentions the agent again (onInbound clears it).
-    if (rec || inflight) await this.setSessionMuted(key, true)
-    const muteNote = 'Muted in this thread — @mention me to resume.'
+    if (mutes && (rec || inflight)) await this.setSessionMuted(key, true)
+    const muteNote = mutes
+      ? 'Muted in this thread — @mention me to resume.'
+      : 'This conversation keeps one session, so nothing is muted.'
     if (!inflight) {
-      reply(rec ? `🔇 Nothing is running. ${muteNote}` : 'Nothing is running to stop.')
+      reply(rec ? `${mutes ? '🔇 ' : ''}Nothing is running. ${muteNote}` : 'Nothing is running to stop.')
       return true
     }
-    await this.host.interruptTurn(target.agentId, key, 'stop', acpSessionId ?? undefined, {
+    await this.host.interruptTurn(target.agentId, key, mutes ? 'stop' : 'cancel', acpSessionId ?? undefined, {
       actor: senderActor(ctx.msg)
     })
     reply(`🛑 Stopped. ${muteNote}`)
@@ -752,9 +776,13 @@ export class CommandHandlers {
       reply('Usage: `!queue <message>` — runs when the current turn finishes.')
       return true
     }
-    // Dispatch/queue into the resolved session's thread (the fallback may have retargeted
-    // it from the bare command thread to the channel's latest session).
-    const payload: NormalizedMessage = { ...msg, text: command.text, thread }
+    // Dispatch/queue into the resolved session (the fallback may have retargeted it from the
+    // bare command thread to the channel's latest session). A synthetic coordinate rides
+    // `sessionThread`, never `thread`: putting it there would make the reply and the status
+    // bar address `append:…` as a platform thread id.
+    const payload: NormalizedMessage = isAppendCoordinate(thread)
+      ? { ...msg, text: command.text, sessionThread: thread }
+      : { ...msg, text: command.text, thread }
     // Reject fast (matching the old depth-cap ACK) before admitting so the user sees the
     // "queue full" note rather than a silent drop; the gate would reject identically.
     if (inflight && (this.host.serialQueue().get(key)?.length ?? 0) >= MAX_QUEUED_PER_SESSION) {

@@ -60,6 +60,15 @@ export interface NormalizedMessage extends Omit<
    * It is internal metadata: user-facing channel/thread coordinates stay unchanged.
    */
   transportScope?: string
+  /**
+   * The SESSION coordinate when it differs from the delivery thread (channel-session-mode.md
+   * §3.1). Resolved per target, after routing picks it and before anything keys on the
+   * result — the inbox lane, the serial gate, the observer, the turn plan — and carried from
+   * there rather than re-derived, since one inbound message reaches several agents that may
+   * not share a mode. `thread` stays the delivery coordinate: an answer posts where the
+   * message that started the turn came from, in every mode.
+   */
+  sessionThread?: string
   /** Ingress-derived title applied only when this message creates a logical
    *  session. A later runtime title remains authoritative and replaces it. */
   initialSessionTitle?: string
@@ -113,6 +122,19 @@ export function fromPlatformMessage(message: NormalizedPlatformMessage, transpor
     ...message,
     ...(transportScope !== undefined ? { transportScope } : {})
   }
+}
+
+/**
+ * The SESSION coordinate a message keys on (channel-session-mode.md §3.1) — the resolved
+ * one where the conversation appends, else the thread it arrived in.
+ *
+ * Every site that builds a session key, an inbox lane, a gate entry or a transcript
+ * coordinate goes through this. Deriving it independently is what makes the dispatch gate
+ * and the session manager disagree about which session a message belongs to, and the
+ * delivery sites (`postMessage`, chrome) deliberately do NOT use it — they want `thread`.
+ */
+export function sessionThreadOf(msg: Pick<NormalizedMessage, 'sessionThread' | 'thread' | 'msgId'>): string {
+  return msg.sessionThread ?? msg.thread ?? msg.msgId
 }
 
 type MessageIdentityFields = Pick<NormalizedMessage, 'msgId' | 'platform' | 'traceId' | 'transportScope'>

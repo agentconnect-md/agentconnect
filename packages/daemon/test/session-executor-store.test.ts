@@ -4,7 +4,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { LocalStore, sessionKey, type SessionRecord } from '../src/store/local-store.js'
+import { LocalStore, sessionKey, type SessionRecord, SCHEMA_VERSION } from '../src/store/local-store.js'
 import { openTestStore, usingPostgresStore } from './store-support.js'
 
 const EXECUTOR = 'd2222222-2222-4222-8222-222222222222'
@@ -106,6 +106,6 @@ describe('LocalStore session executor', () => {
     const after = new DatabaseSync(path)
     const version = (after.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
     after.close()
-    expect(version).toBe(21)
+    expect(version).toBe(SCHEMA_VERSION)
   })
 })

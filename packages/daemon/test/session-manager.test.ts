@@ -83,6 +83,52 @@ describe('SessionManager', () => {
     await (await store).close()
   })
 
+  // §6.4: an append session lives at a coordinate no thread has, so the routing ladder can
+  // only find the agent again through a participation row filed under the thread the
+  // message actually arrived in. Without it, an unmentioned follow-up routes nowhere.
+  it('files thread affinity under the delivery thread when the session coordinate is synthetic', async () => {
+    const store = await newStore()
+    const sm = new SessionManager({ store, hostFor: async () => fakeHost(), agentById: () => agent, memory })
+
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'first', sessionThread: 'append:1700000000000' }))
+
+    const s = await store
+    // The session is keyed on the coordinate...
+    expect(await s.getSession(sessionKey('slack', 'C1', 'append:1700000000000', 'bot-a'))).toBeDefined()
+    // ...while the thread it arrived in resolves back to that agent.
+    expect(await s.openSessionAgents('C1', '100.1')).toEqual(['bot-a'])
+    // And the synthetic coordinate is not itself offered as a thread anyone is talking in.
+    expect(await s.openSessionAgents('C1', 'append:1700000000000')).toEqual([])
+    await s.close()
+  })
+
+  // §6.2: an append session's transcript must be ONE coherent read. The failure this pins
+  // is a split — the human turn filed at the coordinate while the agent's own reply lands
+  // under the thread it was posted to, leaving the session reading only half its own
+  // conversation and every revision fence blind to the agent's side.
+  it('keeps the human turn and the agent reply in one transcript for an append session', async () => {
+    const store = await newStore()
+    const sm = new SessionManager({ store, hostFor: async () => fakeHost(), agentById: () => agent, memory })
+    const coordinate = 'append:1700000000000'
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'first', sessionThread: coordinate }))
+
+    const s = await store
+    // The reply recorder writes at the session coordinate, the way every turn-output does.
+    await s.appendTranscript({
+      channel: 'C1',
+      thread: coordinate,
+      ts: '100.2',
+      sender: 'bot-a',
+      kind: 'text',
+      text: 'answer'
+    })
+    const rows = await s.threadTranscript('C1', coordinate, 'bot-a')
+    expect(rows.map((r) => r.sender)).toEqual(['U1', 'bot-a'])
+    // Nothing is filed under the delivery thread, which is what splitting would look like.
+    expect(await s.threadTranscript('C1', '100.1', 'bot-a')).toEqual([])
+    await s.close()
+  })
+
   it('seats a platform standing block with the agent meta, once, never beside the user text', async () => {
     const store = await newStore()
     const host = fakeHost()

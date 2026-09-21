@@ -251,6 +251,7 @@ import {
   rulesFromAgent,
   resolveCpRule,
   resolveAgentIntegration,
+  conversationSessionMode,
   integrationRouting,
   conversationAdmitted,
   type RoutingRule
@@ -528,7 +529,14 @@ import { SystemMetrics } from './metrics/system-metrics.js'
 import { estimateOpenAiTurnCost } from './usage/openai-public-pricing.js'
 import type { McpServer } from '@agentclientprotocol/sdk'
 import type { Agent, CronDef, Integration } from './agents/agent-schema.js'
-import { fromPlatformMessage, stableMessageId, stableTurnId, type NormalizedMessage } from './messages/normalized.js'
+import {
+  fromPlatformMessage,
+  stableMessageId,
+  stableTurnId,
+  type NormalizedMessage,
+  sessionThreadOf
+} from './messages/normalized.js'
+import { isAppendCoordinate } from './session/append-coordinate.js'
 import {
   ConnectionReconciler,
   type ConnectionReconcilerHost,
@@ -1700,6 +1708,8 @@ export class Daemon {
       sessionLinkSource: (platform, integrationId) => this.sessionLinkSource(platform, integrationId),
       threadOwner: async (channel, thread, transportScope) =>
         await this.sessions.threadOwner(channel, thread, transportScope),
+      sessionCoordinateFor: async (agentId, integrationId, msg, opts) =>
+        await this.sessionCoordinateFor(agentId, integrationId, msg, opts),
       mergedRulesForSource: (srcIntegrationIds) => this.mergedRulesForSource(srcIntegrationIds),
       transportScopeForIntegrationIds: (integrationIds) => this.transportScopeForIntegrationIds(integrationIds),
       integrationBelongsToSource: (integrationId, srcIntegrationIds) =>
@@ -7342,7 +7352,7 @@ export class Daemon {
    *    failure — never downgraded into an envelope-less child.
    */
   private async activateVerifiedAgentTarget(
-    msg: NormalizedMessage,
+    shared: NormalizedMessage,
     verified: NonNullable<ReturnType<Daemon['verifyAgentAuthor']>>,
     targetAgentId: string,
     deliveryHopCount: number,
@@ -7350,6 +7360,11 @@ export class Daemon {
   ): Promise<
     { kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle } | undefined
   > {
+    // One response can name several local agents, and this ladder walks them over ONE
+    // object — so every per-target field goes on a private copy. Without it a target's
+    // trigger, and now its session coordinate, leak into the next target and into the peer
+    // fan-out that follows, which is a per-target answer written to a shared place.
+    const msg: NormalizedMessage = { ...shared }
     // `!stop` means "stop reacting to this conversation implicitly", and an implicitly
     // selected agent continuation is exactly that — the fact that another AGENT rather
     // than a human produced the message does not exempt it. Checked here because this
@@ -7391,8 +7406,14 @@ export class Daemon {
     // this post. Keying on the observer would let the author's connection read an
     // unrelated scope's mute, dispatch the target anyway, and leave the real tombstone
     // standing — after which the target's own copy deduplicates before it can clear it.
-    const muteKey = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, targetAgentId, targetScope)
-    if (via === 'implicit' && (await this.commands.isSessionMuted(muteKey))) {
+    const targetCoordinate = await this.sessionCoordinateFor(targetAgentId, integrationId, msg)
+    if (targetCoordinate !== undefined) msg.sessionThread = targetCoordinate
+    const muteKey = sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), targetAgentId, targetScope)
+    // A conversation that appends is never muted: `!stop` there interrupts the turn and
+    // sets no latch (§6.3), and a latch left over from before the flip must not silence the
+    // one session the whole room now shares.
+    const appendSession = isAppendCoordinate(sessionThreadOf(msg))
+    if (!appendSession && via === 'implicit' && (await this.commands.isSessionMuted(muteKey))) {
       await this.recordUnrouted(msg)
       this.log.debug(
         `routing: agent-authored ${msg.msgId} → "${targetAgentId}" dropped (muted by !stop; awaiting @mention)`
@@ -7480,6 +7501,32 @@ export class Daemon {
       `routing: agent-authored mention ch=${msg.channel} "${verified.authorAgentId}" → "${targetAgentId}" (hop ${deliveryHopCount})`
     )
     return { kind: 'dispatched', handle }
+  }
+
+  /**
+   * The SESSION coordinate this target will key on, when it differs from the delivery
+   * thread (channel-session-mode.md §3.1). Undefined leaves today's behavior: the session
+   * belongs to the thread the message arrived in.
+   *
+   * Resolved HERE — after routing has picked the target, before the inbox lane and the
+   * serial gate key on the result — and per target, because one inbound message reaches
+   * several agents and two of them in one conversation may not share a mode. The same
+   * placement, and the same reason, as the target's own `muteKey` and transport scope.
+   */
+  private async sessionCoordinateFor(
+    agentId: string,
+    integrationId: string | undefined,
+    msg: NormalizedMessage,
+    opts: { mint?: boolean } = {}
+  ): Promise<string | undefined> {
+    if (integrationId === undefined) return undefined
+    const int = this.agents.get(agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
+    if (!int || conversationSessionMode(int, msg.channel) !== 'append') return undefined
+    // A delivery mints the coordinate; a reader only asks. Otherwise a `/status` typed into
+    // a conversation nobody has spoken in would create the reservation it reports on.
+    return opts.mint === false
+      ? await this.store.currentAppendCoordinate(agentId, msg.channel, msg.transportScope)
+      : await this.store.resolveAppendCoordinate(agentId, msg.channel, msg.transportScope)
   }
 
   private onInbound(msg: NormalizedMessage, srcIntegrationIds?: string[]): void {
@@ -7631,6 +7678,8 @@ export class Daemon {
     const targetMsg = { ...msg }
     if (result.via === 'mention') targetMsg.trigger = 'mention'
     else delete targetMsg.trigger
+    const primaryCoordinate = await this.sessionCoordinateFor(result.agentId, result.integrationId, targetMsg)
+    if (primaryCoordinate !== undefined) targetMsg.sessionThread = primaryCoordinate
     // Observation precedes activation gates and queue admission. A clarification
     // arriving while this logical thread is busy must be visible to the running
     // turn's final refresh even though its own SessionManager.handle() has not begun.
@@ -7649,11 +7698,14 @@ export class Daemon {
     const muteKey = sessionKey(
       targetMsg.platform,
       targetMsg.channel,
-      targetMsg.thread ?? targetMsg.msgId,
+      sessionThreadOf(targetMsg),
       result.agentId,
       targetMsg.transportScope
     )
-    if (await this.commands.isSessionMuted(muteKey)) {
+    // A conversation that appends is never muted: `!stop` there interrupts the turn and
+    // sets no latch (§6.3), and a latch left over from before the flip must not silence the
+    // one session the whole room now shares.
+    if (!isAppendCoordinate(sessionThreadOf(targetMsg)) && (await this.commands.isSessionMuted(muteKey))) {
       if (result.via !== 'mention') {
         await this.recordUnrouted(targetMsg)
         this.log.debug(
@@ -7782,10 +7834,12 @@ export class Daemon {
       const targetMsg = { ...msg }
       if (via === 'mention') targetMsg.trigger = 'mention'
       else delete targetMsg.trigger
+      const peerCoordinate = await this.sessionCoordinateFor(agentId, rule.integrationId, targetMsg)
+      if (peerCoordinate !== undefined) targetMsg.sessionThread = peerCoordinate
       if (this.cfg.features.turnFinalContextRefresh) await this.recordObservedInbound(targetMsg, agentId)
-      const targetThread = targetMsg.thread ?? targetMsg.msgId
+      const targetThread = sessionThreadOf(targetMsg)
       const muteKey = sessionKey(targetMsg.platform, targetMsg.channel, targetThread, agentId, targetMsg.transportScope)
-      if (await this.commands.isSessionMuted(muteKey)) {
+      if (!isAppendCoordinate(targetThread) && (await this.commands.isSessionMuted(muteKey))) {
         if (via === 'implicit') {
           await this.recordObservedInbound(targetMsg, agentId, this.cfg.features.turnFinalContextRefresh)
           outcomes.push({ kind: 'rejected', reason: 'gated' })
@@ -8082,14 +8136,23 @@ export class Daemon {
     // `handleRelayIm` applies the `!stop` gate only on the path this branch returns
     // before, so an implicit continuation is checked against it here — otherwise a muted
     // conversation would silence its humans and none of its agents.
+    const relayCoordinate = await this.sessionCoordinateFor(msg.agentId, msg.integrationId, normalized)
+    if (relayCoordinate !== undefined) normalized.sessionThread = relayCoordinate
     const muteKey = sessionKey(
       normalized.platform,
       normalized.channel,
-      normalized.thread ?? normalized.msgId,
+      sessionThreadOf(normalized),
       msg.agentId,
       normalized.transportScope
     )
-    if (via === 'implicit' && (await this.commands.isSessionMuted(muteKey))) {
+    // A conversation that appends is never muted: `!stop` there interrupts the turn and
+    // sets no latch (§6.3), and a latch left over from before the flip must not silence the
+    // one session the whole room now shares.
+    if (
+      !isAppendCoordinate(sessionThreadOf(normalized)) &&
+      via === 'implicit' &&
+      (await this.commands.isSessionMuted(muteKey))
+    ) {
       await this.recordUnrouted(normalized)
       this.log.debug(`relay: dropping agent-authored ${msg.msgId} for "${msg.agentId}" (muted by !stop)`)
       return false
@@ -8235,15 +8298,22 @@ export class Daemon {
     // while muted, implicit routing (thread affinity / keyword / auto / dm) never
     // dispatches — only an explicit @mention does, and it clears the mute. Muted traffic
     // still enters the transcript so the agent catches up when re-activated (§8.5).
+    // Pre-addressed to exactly one agent, so the coordinate resolves for it here — the
+    // relay path never reaches the per-target fan-out that resolves it for direct ingress.
+    const imCoordinate = await this.sessionCoordinateFor(msg.agentId, msg.integrationId, normalized)
+    if (imCoordinate !== undefined) normalized.sessionThread = imCoordinate
     const muteKey = sessionKey(
       normalized.platform,
       normalized.channel,
-      normalized.thread ?? normalized.msgId,
+      sessionThreadOf(normalized),
       msg.agentId,
       normalized.transportScope
     )
     trace.stage = 'mute'
-    if (await this.commands.isSessionMuted(muteKey)) {
+    // A conversation that appends is never muted: `!stop` there interrupts the turn and
+    // sets no latch (§6.3), and a latch left over from before the flip must not silence the
+    // one session the whole room now shares.
+    if (!isAppendCoordinate(sessionThreadOf(normalized)) && (await this.commands.isSessionMuted(muteKey))) {
       if (normalized.trigger !== 'mention') {
         await this.recordUnrouted(normalized)
         this.log.debug(`relay: dropping ${msg.msgId} for agent "${msg.agentId}" (muted by !stop; awaiting @mention)`)
@@ -8713,9 +8783,19 @@ export class Daemon {
       const routing = integrationRouting(integration)
       const unauthorized = !conversationAdmitted(routing, payload.channelId)
       const transportScope = this.transportScopeForIntegrationIds([integration.id])
+      // A conversation that appends has no session at the tapped thread — its session lives
+      // at the coordinate in force, so look there rather than reporting "no session".
+      const appendCoordinate = unauthorized
+        ? undefined
+        : await this.store.currentAppendCoordinate(msg.agentId, payload.channelId, transportScope)
       const rec = unauthorized
         ? undefined
-        : await this.store.latestSessionForTransport(msg.agentId, payload.channelId, transportScope, payload.threadTs)
+        : await this.store.latestSessionForTransport(
+            msg.agentId,
+            payload.channelId,
+            transportScope,
+            appendCoordinate ?? payload.threadTs
+          )
       const binding = rec ? this.sessionDeliveryBindings.get(rec.key) : undefined
       const validBinding =
         !binding ||
@@ -9532,9 +9612,43 @@ export class Daemon {
    *  transcript growth to threads with live work — without it, a thread that ever
    *  held a session would record forever (no session-`closed` lifecycle yet). */
   private async recordUnrouted(msg: NormalizedMessage): Promise<void> {
-    // Preserve the established default transcript shape until the rollout flag is
-    // enabled; the new observer folds attachment mentions into context prompts.
-    await this.recordObservedInbound(msg, undefined, this.cfg.features.turnFinalContextRefresh)
+    // A conversation that appends has no session at the thread this message arrived in, so
+    // an unrouted row filed there is invisible to the session that should catch up on it —
+    // and the recency and in-flight probes, which look for the SESSION, would drop it
+    // outright. §6.2: one row per agent holding a live append session here. Read-only: a
+    // message that routed to nobody must not create a conversation by being observed.
+    const appendTargets = await this.appendAgentsIn(msg)
+    if (appendTargets.length === 0) {
+      // Preserve the established default transcript shape until the rollout flag is
+      // enabled; the new observer folds attachment mentions into context prompts.
+      await this.recordObservedInbound(msg, undefined, this.cfg.features.turnFinalContextRefresh)
+      return
+    }
+    for (const { agentId, coordinate } of appendTargets)
+      await this.recordObservedInbound(
+        { ...msg, sessionThread: coordinate },
+        agentId,
+        this.cfg.features.turnFinalContextRefresh
+      )
+  }
+
+  /** Agents already holding an append session in this conversation, with the coordinate it
+   *  keys on. Empty for every conversation on `createNew`, which is the common case. */
+  private async appendAgentsIn(msg: NormalizedMessage): Promise<{ agentId: string; coordinate: string }[]> {
+    const out: { agentId: string; coordinate: string }[] = []
+    for (const [agentId, agent] of this.agents) {
+      const int = agent.integrations?.find(
+        (candidate) =>
+          candidate.platform === msg.platform && conversationSessionMode(candidate, msg.channel) === 'append'
+      )
+      if (!int) continue
+      // The coordinate is per transport scope, so an integration on another physical bot
+      // answers a different conversation even at the same channel id.
+      if ((this.transportScopeForIntegrationIds([int.id]) ?? '') !== (msg.transportScope ?? '')) continue
+      const coordinate = await this.store.currentAppendCoordinate(agentId, msg.channel, msg.transportScope)
+      if (coordinate !== undefined) out.push({ agentId, coordinate })
+    }
+    return out
   }
 
   /** Persist one conversational ingress for a live physical thread before routing
@@ -9555,8 +9669,11 @@ export class Daemon {
     const sinceTs = Date.now() - this.cfg.limits.agentIdleTimeoutMs
     const recentlyActive =
       (await this.store.activeSessionCountSince(msg.channel, thread, sinceTs, msg.transportScope)) > 0
+    // Compared against the SESSION coordinate `transcriptCoords` just returned, not the
+    // chrome target: in a conversation whose session belongs to no thread the two differ,
+    // and matching on `statusThread` would miss the very turn this row is catch-up for.
     const inFlightAgent = [...this.pending.values()].find(
-      (p) => p.plan.transcriptChannel === transcriptChannel && p.plan.statusThread === thread
+      (p) => p.plan.transcriptChannel === transcriptChannel && p.plan.sessionThread === thread
     )?.plan.agentId
     const initializingAgent = [...this.activeGateEntries.values()].find((entry) => {
       const coords = transcriptCoords(entry.msg)
@@ -9704,7 +9821,7 @@ export class Daemon {
         completeness: readState.truncated ? 'observed-only' : 'authoritative',
         events: history.map((event) => ({
           channel: pending.plan.transcriptChannel,
-          thread: pending.plan.statusThread,
+          thread: pending.plan.sessionThread,
           ts: event.ts,
           sender: event.sender,
           kind: 'text' as const,
@@ -9722,11 +9839,16 @@ export class Daemon {
     includeProviderSnapshot: boolean
   ): Promise<ContextRefresh> {
     const startedAt = this.clock.now()
-    const snapshot = includeProviderSnapshot ? this.finalThreadSnapshot(pending, providerCheckpoint) : undefined
+    // No provider snapshot for a session whose coordinate is synthetic (§6.3): it spans
+    // many threads, so there is no thread to fetch and importing one would misrepresent the
+    // conversation — and the fetch itself would address `append:…` as a platform ts.
+    const physical = !isAppendCoordinate(pending.plan.sessionThread)
+    const snapshot =
+      includeProviderSnapshot && physical ? this.finalThreadSnapshot(pending, providerCheckpoint) : undefined
     const refresh = await this.threadContext.refresh({
       agentId: pending.plan.agentId,
       transcriptChannel: pending.plan.transcriptChannel,
-      thread: pending.plan.statusThread,
+      thread: pending.plan.sessionThread,
       afterRevision,
       // Pairwise a2a threads are shared storage but private conversations:
       // scope the refresh to this agent's own rows (#967).
@@ -9756,13 +9878,13 @@ export class Daemon {
         // turn — a sibling's private delivery is not its context (#967).
         await this.store.transcriptSinceRevisionForAgent(
           pending.plan.transcriptChannel,
-          pending.plan.statusThread,
+          pending.plan.sessionThread,
           afterRevision,
           pending.plan.agentId
         )
       : await this.store.transcriptSinceRevision(
           pending.plan.transcriptChannel,
-          pending.plan.statusThread,
+          pending.plan.sessionThread,
           afterRevision,
           pending.plan.agentId
         )
@@ -10533,6 +10655,8 @@ export class Daemon {
       transcriptChannel: string
       thread?: string
       statusThread?: string
+      /** Session coordinate for transcript rows; `statusThread` above is the chrome target. */
+      sessionThread?: string
     }
   ): Promise<void> {
     // turnFailureReason digs the runtime's own message out of an ACP RequestError's
@@ -10572,7 +10696,10 @@ export class Daemon {
     if (ctx.statusThread) {
       await this.store.appendTranscript({
         channel: ctx.transcriptChannel,
-        thread: ctx.statusThread,
+        // Falls back to the chrome target so a caller that knows only that coordinate still
+        // records the notice: gating the WRITE on the session coordinate would drop it
+        // silently wherever it is not supplied, which is every failure path but one.
+        thread: ctx.sessionThread ?? ctx.statusThread,
         ts: monotonicTs(),
         sender: ctx.agentId,
         kind: 'text',
@@ -10645,6 +10772,8 @@ export class Daemon {
       transcriptChannel: string
       thread?: string
       statusThread: string
+      /** Session coordinate for transcript rows; `statusThread` above is the chrome target. */
+      sessionThread: string
     }
   ): Promise<void> {
     const notices = this.pendingSpawnNotices.get(agentId)
@@ -10658,7 +10787,7 @@ export class Daemon {
     }
     await this.store.appendTranscript({
       channel: ctx.transcriptChannel,
-      thread: ctx.statusThread,
+      thread: ctx.sessionThread,
       ts: monotonicTs(),
       sender: agentId,
       kind: 'text',
@@ -11225,7 +11354,7 @@ export class Daemon {
     // THIS promise, not vanish as an unhandled rejection while the caller waits forever.
     return new Promise<string | null>((resolve, reject) => {
       void (async () => {
-        const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
+        const key = sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), agentId, msg.transportScope)
         const reviewLane = reviewSubjectLane(hookContext, hookCoordinates(agentId, msg, integrationId))
         const safetyDrainByKey = this.safetyDrainAdmissionKeys.get(agentId)?.has(key) === true
         let admissionSettled = false
@@ -11261,7 +11390,7 @@ export class Daemon {
             if (result.accepted) {
               await this.store.admitActivation(
                 activationKey,
-                sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
+                sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), agentId, msg.transportScope)
               )
             } else {
               // Never admitted ⇒ give the claim back, so a retry is a first attempt rather
@@ -12490,7 +12619,8 @@ export class Daemon {
             sessionKey: plan.sessionKey,
             transcriptChannel: plan.transcriptChannel,
             thread: msg.thread,
-            statusThread: plan.statusThread
+            statusThread: plan.statusThread,
+            sessionThread: plan.sessionThread
           })
       } finally {
         releaseReplyConn()
@@ -12550,7 +12680,8 @@ export class Daemon {
       channel: msg.channel,
       transcriptChannel: plan.transcriptChannel,
       thread: msg.thread,
-      statusThread: plan.statusThread
+      statusThread: plan.statusThread,
+      sessionThread: plan.sessionThread
     })
     if (created) {
       // Classify for session visibility BEFORE the first milestone: the CP's
@@ -13087,7 +13218,7 @@ export class Daemon {
     let finalCaptureInput = handled.captureInput ?? msg.text
     let baseRevision =
       handled.contextRevision ??
-      (await this.store.threadTranscriptRevision(p.plan.transcriptChannel, p.plan.statusThread, p.plan.agentId))
+      (await this.store.threadTranscriptRevision(p.plan.transcriptChannel, p.plan.sessionThread, p.plan.agentId))
     let providerCheckpoint = handled.providerCheckpoint
     if (p.plan.stageAnswer || p.plan.webchatRefresh) {
       // Queue entries remain untouched until every gate above has succeeded.
@@ -13120,7 +13251,7 @@ export class Daemon {
       await this.coalesceQueuedContext(key, sessionId, representedEventTs)
       baseRevision = await this.store.threadTranscriptRevision(
         p.plan.transcriptChannel,
-        p.plan.statusThread,
+        p.plan.sessionThread,
         p.plan.agentId
       )
       providerCheckpoint = initialRefresh.providerCheckpoint ?? providerCheckpoint
@@ -13303,7 +13434,7 @@ export class Daemon {
         .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
       const finalRevision = await this.store.threadTranscriptRevision(
         p.plan.transcriptChannel,
-        p.plan.statusThread,
+        p.plan.sessionThread,
         p.plan.agentId
       )
 
@@ -13411,7 +13542,7 @@ export class Daemon {
       await this.coalesceQueuedContext(key, sessionId, eventTs)
       baseRevision = await this.store.threadTranscriptRevision(
         p.plan.transcriptChannel,
-        p.plan.statusThread,
+        p.plan.sessionThread,
         p.plan.agentId
       )
       generation += 1
@@ -13604,7 +13735,7 @@ export class Daemon {
     const { rec, sessionId, handled, memoryCaptureTarget } = turn
     const { stopReason, usage, finalCaptureInput } = turn.outcome
     // …and any trailing reasoning the agent emitted after its last reply.
-    for (const ev of rec.onFinal()) await this.recordEvent(agentId, plan.transcriptChannel, plan.statusThread, ev)
+    for (const ev of rec.onFinal()) await this.recordEvent(agentId, plan.transcriptChannel, plan.sessionThread, ev)
     // The turn is over, so nothing more will supersede a coalesced tool body: make the last
     // state of every streamed tool call durable now rather than on the buffer's own timer.
     await this.store.flushToolCallWrites()
@@ -13759,7 +13890,8 @@ export class Daemon {
         sessionKey: plan.sessionKey,
         transcriptChannel: plan.transcriptChannel,
         thread: msg.thread,
-        statusThread: plan.statusThread
+        statusThread: plan.statusThread,
+        sessionThread: plan.sessionThread
       })
       if (p.webchat.replyText.trim() && !isNoResponseBody(p.webchat.replyText.trim())) {
         const partialPostId = randomUUID()
@@ -14242,7 +14374,7 @@ export class Daemon {
     if (!anchor) return
     const coords =
       'plan' in anchor
-        ? { channel: anchor.plan.transcriptChannel, thread: anchor.plan.statusThread }
+        ? { channel: anchor.plan.transcriptChannel, thread: anchor.plan.sessionThread }
         : {
             channel: transcriptChannelKey(anchor.msg.channel, anchor.msg.transportScope),
             thread: transcriptCoords(anchor.msg).thread
@@ -14399,7 +14531,7 @@ export class Daemon {
   private async recordReplySegment(p: Pending, text: string): Promise<void> {
     await this.store.appendTranscript({
       channel: p.plan.transcriptChannel,
-      thread: p.plan.statusThread,
+      thread: p.plan.sessionThread,
       ts: monotonicTs(),
       sender: p.plan.agentId,
       kind: 'text',
@@ -14632,7 +14764,7 @@ export class Daemon {
     if (!posted.shown) return
     const row: AppRow = {
       channel: p.plan.transcriptChannel,
-      thread: p.plan.statusThread,
+      thread: p.plan.sessionThread,
       ts: monotonicTs(),
       sender: p.plan.agentId,
       appId,
@@ -14715,7 +14847,7 @@ export class Daemon {
       const row: AppRow | undefined = p
         ? {
             channel: p.plan.transcriptChannel,
-            thread: p.plan.statusThread,
+            thread: p.plan.sessionThread,
             // The monotonic internal-event clock, as every other non-conversational row uses: it
             // keeps the card where it was opened and cannot collide with a second card's row.
             ts: monotonicTs(),
@@ -15737,7 +15869,8 @@ export class Daemon {
     if (!conn) return
     const release = this.holdReplyConnection(conn)
     try {
-      await conn.setTitle(rec.channel, rec.thread, title)
+      // Slack titles a THREAD; a session that belongs to none has nothing to title.
+      if (!isAppendCoordinate(rec.thread)) await conn.setTitle(rec.channel, rec.thread, title)
     } catch (err) {
       // SlackConnection.setTitle is already failure-degrading; keep this boundary
       // defensive for test doubles and future gateway implementations.
@@ -16005,7 +16138,7 @@ export class Daemon {
     }
     // Full activity log (tool/reasoning), recorded regardless of output mode.
     for (const ev of p.rec.onUpdate(update))
-      await this.recordEvent(p.plan.agentId, p.plan.transcriptChannel, p.plan.statusThread, ev)
+      await this.recordEvent(p.plan.agentId, p.plan.transcriptChannel, p.plan.sessionThread, ev)
   }
 
   /** Persist one internal activity event (tool/reasoning/plan). Ordered by row `seq`, so its
@@ -17480,7 +17613,10 @@ export class Daemon {
         const sections = splitIntoSections(text)
         let lastTs: string | undefined
         for (const [i, section] of sections.entries()) {
-          lastTs = await (conn as SlackConnection).postMessage(rec.channel, section, rec.thread || undefined, {
+          // A synthetic coordinate is no platform thread: narrate at the channel root rather
+          // than handing Slack `append:…` as a thread ts, which it would reject.
+          const narrationThread = isAppendCoordinate(rec.thread) ? undefined : rec.thread || undefined
+          lastTs = await (conn as SlackConnection).postMessage(rec.channel, section, narrationThread, {
             ...options,
             ...(footer && i === sections.length - 1 ? { trailingBlocks: footer.blocks } : {})
           })
@@ -18311,7 +18447,8 @@ export class Daemon {
       sessionKey,
       transcriptChannel: p.plan.transcriptChannel,
       thread: msg.thread,
-      statusThread: p.plan.statusThread
+      statusThread: p.plan.statusThread,
+      sessionThread: p.plan.sessionThread
     })
   }
 
@@ -19318,7 +19455,7 @@ export class Daemon {
       const cleanup = codeHostThreadWorktreeCleanup(hookContext)
       const deleted = githubDeletedHookEvent(hookContext)
       if (hookContext && (cleanup || deleted)) {
-        const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, row.agentId, msg.transportScope)
+        const key = sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), row.agentId, msg.transportScope)
         const owner: HookCompletionOwner = { inboxId: row.id }
         this.liveInboxIds.add(row.id)
         if (cleanup) void this.githubReviews.completeGithubThreadWorktreeCleanup(hookContext, key, cleanup, owner)
@@ -19700,7 +19837,12 @@ export class Daemon {
     label: string,
     safetyReviewLane?: string
   ): Promise<AnchorTriggerResult> {
-    const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
+    // A cron firing into a conversation is "equivalent to a user posting the trigger
+    // in-channel", so it joins the same session a user's message would — resolved before
+    // the key below, which the gate and every later step read.
+    const anchorCoordinate = await this.sessionCoordinateFor(agentId, target?.integrationId, msg)
+    if (anchorCoordinate !== undefined) msg.sessionThread = anchorCoordinate
+    const key = sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), agentId, msg.transportScope)
     // Gate BEFORE the anchor side effect. Cron scheduling remains registered while an
     // agent is paused, but a paused/draining/safety-stopping agent must publish nothing
     // and start no turn.

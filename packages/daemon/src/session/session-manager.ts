@@ -1,3 +1,4 @@
+import { isAppendCoordinate } from './append-coordinate.js'
 import { createMemoryEntryService } from '../memory/entries/factory.js'
 import { memoryActivationContext } from '../memory/entries/activation.js'
 import type { ContentBlock, McpServer } from '@agentclientprotocol/sdk'
@@ -14,7 +15,7 @@ import { recallQueryFromBlocks } from '../memory/recall.js'
 import type { AcpHost } from '../acp/acp-host.js'
 import type { Agent } from '../agents/agent-schema.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
-import { stableTurnId, type Attachment, type NormalizedMessage } from '../messages/normalized.js'
+import { stableTurnId, type Attachment, type NormalizedMessage, sessionThreadOf } from '../messages/normalized.js'
 import { messageOrderingFor } from '../platforms/message-ordering.js'
 import { attachmentMention, buildAttachmentBlocks } from './attachment-block.js'
 import { DIRECT_AGENT_CALL_REMINDER, EXPLICIT_MENTION_REMINDER, NO_RESPONSE_REMINDER } from './no-response.js'
@@ -397,6 +398,19 @@ export class SessionManager {
     const key = sessionKey(msg.platform, msg.channel, thread, agentId, transportScope)
     let rec = await this.deps.store.getSession(key)
     const transcriptChannel = transcriptChannelKey(msg.channel, transportScope)
+    // Affinity is the PHYSICAL thread's (channel-session-mode.md §6.4), which is what the
+    // routing ladder looks this agent up by — `upsertSession` can only derive the session's
+    // own coordinate, and in a conversation that appends the two are different things.
+    const deliveryThread = msg.thread ?? msg.msgId
+    if (deliveryThread !== thread)
+      await this.deps.store.recordThreadParticipation({
+        channel: msg.channel,
+        thread: deliveryThread,
+        agentId,
+        sessionKey: key,
+        transportScope: transportScope ?? null,
+        updatedAt: Date.now()
+      })
 
     // Hydrate the inbound image and record the triggering message (turn/transcript-ingest.ts);
     // it returns the ts the row actually landed on (webchat slot probe) and the hydrated
@@ -733,7 +747,11 @@ export class SessionManager {
     const firstPromptAfterOwnRootInitialization = markerBefore === null && rec.triggeredBy === agentId
     // The warm-thread provider snapshot (§8.4/§8.5) lives in turn/thread-backfill.ts;
     // handle() only supplies the coordinates and consumes the stable window it returns.
-    const fetchThreadHistory = this.deps.fetchThreadHistory
+    // §6.3: an append session spans many threads and its coordinate is no thread's, so
+    // there is no provider history to fetch — and the fetch would address `append:…` as a
+    // platform ts. Withholding the reader is what makes the backfill degrade rather than
+    // mint a snapshot window for a snapshot that never happened.
+    const fetchThreadHistory = isAppendCoordinate(thread) ? undefined : this.deps.fetchThreadHistory
     const { snapshotCutoffTs, withinSnapshot } = await backfillThreadHistory({
       platform: msg.platform,
       agentId,
@@ -979,7 +997,9 @@ export class SessionManager {
  *  recorded from either site lands on the same (thread, ts) PK and dedups via
  *  INSERT OR IGNORE — never a divergent double row. */
 export function transcriptCoords(msg: NormalizedMessage): { thread: string; ts: string } {
-  const thread = msg.thread ?? msg.msgId
+  // The carried SESSION coordinate wins where one was resolved (channel-session-mode.md
+  // §3.1); everything session-side moves with it, while delivery keeps reading `thread`.
+  const thread = sessionThreadOf(msg)
   if (msg.transcriptTs) return { thread, ts: msg.transcriptTs }
   // NormalizedMessage.msgId is `slack:<channel>:<ts>`; recover the ts.
   const parts = msg.msgId.split(':')

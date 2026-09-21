@@ -4,6 +4,7 @@ import {
   MEMORY_CONTINUATION_MAX_BYTES
 } from '../memory/entries/state.js'
 import { randomUUID } from 'node:crypto'
+import { appendCoordinate, isAppendCoordinate, nextAppendCoordinate } from '../session/append-coordinate.js'
 import type { SQLInputValue } from 'node:sqlite'
 import { chmodSync, mkdirSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -945,6 +946,22 @@ const THREAD_PARTICIPATION_SCHEMA = `
       CREATE INDEX IF NOT EXISTS thread_participation_session ON thread_participation (sessionKey);
 `
 
+// The coordinate in force for an `append` conversation (channel-session-mode.md §3.3). It
+// is the authoritative source, read on its own and never checked against the sessions table:
+// a reservation legitimately has no session during the window between resolve and the first
+// turn, so inferring staleness from a missing row would split two simultaneous first
+// deliveries — the exact case the reservation exists to join.
+const APPEND_RESERVATION_SCHEMA = `
+      CREATE TABLE IF NOT EXISTS append_reservation (
+        agentId TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        transportScope TEXT NOT NULL DEFAULT '',
+        coordinate TEXT NOT NULL,
+        updatedAt INTEGER,
+        PRIMARY KEY (agentId, channel, transportScope)
+      );
+`
+
 // Seeds affinity from the sessions that predate the table. It must START with the INSERT:
 // the PostgreSQL rewrite converts `INSERT OR IGNORE` only when it opens the statement, so
 // folding this into the CREATE above would ship SQLite syntax to a pool store. The NOT NULL
@@ -956,7 +973,7 @@ export const THREAD_PARTICIPATION_BACKFILL = `
       WHERE channel IS NOT NULL AND thread IS NOT NULL AND agentId IS NOT NULL
 `
 
-const SCHEMA_VERSION = 21
+export const SCHEMA_VERSION = 22
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1150,7 +1167,11 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<v
     // it STARTS the statement, so folding this into the CREATE would ship SQLite syntax.
     await db.exec(THREAD_PARTICIPATION_SCHEMA)
     await db.exec(THREAD_PARTICIPATION_BACKFILL)
-  }
+  },
+  // Append reservations (channel-session-mode.md §3.3). Nothing to backfill: no
+  // conversation is in `append` until an operator says so, and the first message there
+  // mints the coordinate.
+  async (db) => await db.exec(APPEND_RESERVATION_SCHEMA)
 ]
 
 // The list and the version are two halves of one fact: step `i` moves a database from
@@ -1294,6 +1315,7 @@ export class LocalStore {
         PRIMARY KEY (agentId, sessionKey)
       );
       ${THREAD_PARTICIPATION_SCHEMA}
+      ${APPEND_RESERVATION_SCHEMA}
       -- Latest-wins session metadata awaiting a correlated CP persistence ACK.
       -- This is deliberately separate from sessions: an upgrade starts with an
       -- empty outbox and never treats historical session rows as pending work.
@@ -2646,10 +2668,13 @@ export class LocalStore {
         needsParentReply: rec.needsParentReply === 1 ? 1 : null,
         platformStanding: rec.platformStanding ?? null
       })
-    // The session's coordinate IS its physical thread today, so recording affinity from the
-    // row just written is equivalent to the `sessions` lookup this replaces, for every writer.
-    // Not in one transaction with it: this is the hot path, and a failure between the two
-    // costs an unmentioned follow-up its routing only until the next upsert repairs it.
+    // Affinity is the PHYSICAL thread's. Where the session's coordinate IS one — every
+    // conversation on `createNew` — deriving it from the row just written is equivalent to
+    // the `sessions` lookup this replaces, for every writer. Where it is synthetic the
+    // session manager records the delivery thread instead, and a row here would name a
+    // thread nobody can post in. Not in one transaction with the row: this is the hot path,
+    // and a failure between the two costs a follow-up its routing until the next upsert.
+    if (isAppendCoordinate(rec.thread)) return
     await this.recordThreadParticipation({
       channel: rec.channel,
       thread: rec.thread,
@@ -2658,6 +2683,97 @@ export class LocalStore {
       transportScope: rec.transportScope ?? null,
       updatedAt: rec.updatedAt
     })
+  }
+
+  /**
+   * The append coordinate in force for a conversation, minting one when there is none
+   * (channel-session-mode.md §3.3).
+   *
+   * `INSERT OR IGNORE` then read back, the shape `mintOutwardId` already uses: every
+   * concurrent caller converges on whichever insert won, and nobody trusts the value it
+   * proposed. Without that, two messages arriving together into a conversation with no
+   * append session would both read nothing and both mint — two coordinates, two sessions,
+   * for one conversation.
+   */
+  async resolveAppendCoordinate(
+    agentId: string,
+    channel: string,
+    transportScope?: string | null,
+    now = Date.now()
+  ): Promise<string> {
+    const scope = transportScope ?? ''
+    await this.db
+      .prepare(
+        `INSERT OR IGNORE INTO append_reservation (agentId, channel, transportScope, coordinate, updatedAt)
+         VALUES (?, ?, ?, ?, ?)`
+      )
+      .run(agentId, channel, scope, appendCoordinate(now), now)
+    const row = (await this.db
+      .prepare('SELECT coordinate FROM append_reservation WHERE agentId = ? AND channel = ? AND transportScope = ?')
+      .get(agentId, channel, scope)) as { coordinate: string } | undefined
+    // The read cannot miss: the insert either created the row or lost to one that exists.
+    return row?.coordinate ?? appendCoordinate(now)
+  }
+
+  /** The coordinate in force, WITHOUT minting one. For readers that must not create a
+   *  conversation by asking about it — a command typed before anyone spoke, or the observer
+   *  recording traffic that routed to nobody. */
+  async currentAppendCoordinate(
+    agentId: string,
+    channel: string,
+    transportScope?: string | null
+  ): Promise<string | undefined> {
+    const row = (await this.db
+      .prepare('SELECT coordinate FROM append_reservation WHERE agentId = ? AND channel = ? AND transportScope = ?')
+      .get(agentId, channel, transportScope ?? '')) as { coordinate: string } | undefined
+    return row?.coordinate
+  }
+
+  /**
+   * Rotate a conversation onto its next coordinate (`!new`), from the one the caller read.
+   *
+   * A caller that loses the compare-and-set does NOT advance again: it re-reads, finds a
+   * coordinate minted after its own, and concludes the rotation it wanted already happened.
+   * So two `!new` commands issued simultaneously rotate once while two issued in sequence
+   * rotate twice — which is what each pair of users meant. Retrying would rotate a second
+   * time and leave a coordinate nobody ever posts into.
+   */
+  async advanceAppendCoordinate(
+    agentId: string,
+    channel: string,
+    from: string,
+    transportScope?: string | null,
+    now = Date.now()
+  ): Promise<string> {
+    const scope = transportScope ?? ''
+    const minted = nextAppendCoordinate(from, now)
+    const res = await this.db
+      .prepare(
+        `UPDATE append_reservation SET coordinate = ?, updatedAt = ?
+         WHERE agentId = ? AND channel = ? AND transportScope = ? AND coordinate = ?`
+      )
+      .run(minted, now, agentId, channel, scope, from)
+    if (Number(res.changes) > 0) return minted
+    // Lost the CAS, or there was no reservation to rotate. Either way the current value is
+    // the answer — a rotation someone else just performed, or a freshly minted coordinate.
+    return await this.resolveAppendCoordinate(agentId, channel, scope, now)
+  }
+
+  /** Drop a conversation's reservation, but only while it still names `coordinate` — a
+   *  reservation a concurrent `!new` has already rotated is left alone. */
+  private async clearAppendReservation(
+    tx: StoreAccess,
+    agentId: string,
+    channel: string,
+    transportScope: string | null | undefined,
+    coordinate: string
+  ): Promise<void> {
+    await tx
+      .prepare(
+        `DELETE FROM append_reservation
+         WHERE agentId = ? AND channel = ? AND transportScope = ? AND coordinate = ?`
+      )
+      .run(agentId, channel, transportScope ?? '', coordinate)
   }
 
   /** Note that an agent is active in a PHYSICAL thread (channel-session-mode.md §6.4). */
@@ -3341,6 +3457,11 @@ export class LocalStore {
       await tx.prepare('DELETE FROM session_mutes WHERE key = ?').run(key)
       // The affinity record outlives nothing: its whole meaning is the session it names.
       await tx.prepare('DELETE FROM thread_participation WHERE sessionKey = ?').run(key)
+      // A reservation that survived its session would hand the next message a coordinate
+      // whose transcript is still on disk — the inheritance the timestamp exists to prevent.
+      // Conditional, so a reservation a concurrent `!new` already rotated is left alone.
+      if (isAppendCoordinate(rec.thread))
+        await this.clearAppendReservation(tx, rec.agentId, rec.channel, rec.transportScope, rec.thread)
       await tx.prepare('DELETE FROM inbox WHERE sessionKey = ? AND terminalReport IS NULL').run(key)
       if (rec.acpSessionId) {
         // Once the local session content is gone, creating a new CP metadata row

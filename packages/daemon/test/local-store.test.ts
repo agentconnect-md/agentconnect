@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { NoteProjectionRow } from '../src/gitlab/note-projection.js'
-import { LocalStore, sessionKey, type StoreDatabase } from '../src/store/local-store.js'
+import { LocalStore, sessionKey, type StoreDatabase, SCHEMA_VERSION } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { memoryStoreDatabase, openTestStore, usingPostgresStore } from './store-support.js'
 
@@ -165,7 +165,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect(cronColumns).toContain('definition')
     // Purge receipts are leased per pool member (#1032).
     expect(purgeColumns).toEqual(expect.arrayContaining(['ownerId', 'claimedAt']))
-    expect(userVersion(path)).toBe(21)
+    expect(userVersion(path)).toBe(SCHEMA_VERSION)
   })
 
   it.skipIf(pg)('never persists the CP routing map on a shared store, and still does on an owned one', async () => {
@@ -232,7 +232,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect(await upgraded.isCaptureExcluded('bot-c', 'c')).toBe(true)
     await upgraded.close()
 
-    expect(userVersion(path)).toBe(21)
+    expect(userVersion(path)).toBe(SCHEMA_VERSION)
   })
 
   it('re-keys the runtime catalog cache on its owning member when upgrading a v7 store', async () => {
@@ -288,7 +288,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
         .map((column) => column.name)
     expect(primaryKey(metaColumns)).toEqual(['ownerId', 'runtimeId'])
     expect(primaryKey(capColumns)).toEqual(['ownerId', 'runtimeId', 'modelId'])
-    expect(userVersion(path)).toBe(21)
+    expect(userVersion(path)).toBe(SCHEMA_VERSION)
   })
 
   it('backfills a v11 store with the outward id its sessions were already reported under', async () => {
@@ -316,7 +316,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect((await upgraded.getSession('k2'))?.sessionId).toBeNull()
     expect(await upgraded.ensureOutwardSessionId('k2', 'bot-a')).toMatch(/^[0-9a-f-]{36}$/)
     await upgraded.close()
-    expect(userVersion(path)).toBe(21)
+    expect(userVersion(path)).toBe(SCHEMA_VERSION)
   })
 
   // The regression that made `directDestination` reachable on fresh databases only: the step was
@@ -342,7 +342,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     await upgraded.setSessionClassification('k1', { sourceBindingKind: 'external', directDestination: true })
     expect(await upgraded.getSessionClassification('bot-a', 'acp-1')).toMatchObject({ directDestination: true })
     await upgraded.close()
-    expect(userVersion(path)).toBe(21)
+    expect(userVersion(path)).toBe(SCHEMA_VERSION)
   })
 
   it('refuses a store written by a newer daemon WITHOUT touching it first', async () => {
@@ -2797,7 +2797,7 @@ it.skipIf(pg)('backfills thread affinity from the sessions a v20 store already h
   await upgraded.close()
 })
 
-it.skipIf(pg)('lists both agents sharing one thread, which is what keeps it mention-gated', async () => {
+it('lists both agents sharing one thread, which is what keeps it mention-gated', async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'ac-affinity-two-')), 'local.sqlite')
   const s = await openTestStore(path)
   for (const agentId of ['bot-a', 'bot-b'])
@@ -2819,7 +2819,7 @@ it.skipIf(pg)('lists both agents sharing one thread, which is what keeps it ment
 // `upsertSession` rewrites a session's transportScope (hydration, the corruption fence),
 // and affinity is keyed by it — so the row left at the old scope has to be retired, or a
 // lookup there keeps naming this agent for the rest of the session's life.
-it.skipIf(pg)('retires the affinity row a session left at its previous transport scope', async () => {
+it('retires the affinity row a session left at its previous transport scope', async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'ac-affinity-scope-')), 'local.sqlite')
   const s = await openTestStore(path)
   const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
@@ -2847,7 +2847,109 @@ it.skipIf(pg)('retires the affinity row a session left at its previous transport
 // write and the retirement of the row at the old scope leaves one behind. The read fences
 // on the session's own scope so that row resolves nothing, rather than letting an
 // unmentioned message through the old bot keep reaching an agent that has moved.
-it.skipIf(pg)('ignores an affinity row whose scope the session no longer has', async () => {
+// The reservation (channel-session-mode.md §3.3) is the authoritative source for an
+// `append` conversation's coordinate. What matters is that concurrent callers converge on
+// ONE value, that a rotation is exactly once per intent, and that a purge does not leave a
+// coordinate behind whose transcript is still on disk.
+it('converges every concurrent resolver on one append coordinate', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-reservation-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  const resolved = await Promise.all(
+    Array.from({ length: 8 }, (_, i) => s.resolveAppendCoordinate('bot-a', 'C1', undefined, 1000 + i))
+  )
+  expect(new Set(resolved).size).toBe(1)
+  // And it stays that value for every later message, rather than drifting with the clock.
+  expect(await s.resolveAppendCoordinate('bot-a', 'C1', undefined, 9999)).toBe(resolved[0])
+  await s.close()
+})
+
+it('scopes the reservation to the agent, the channel and the transport', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-reservation-scope-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  const a = await s.resolveAppendCoordinate('bot-a', 'C1', undefined, 1000)
+  expect(await s.resolveAppendCoordinate('bot-b', 'C1', undefined, 2000)).not.toBe(a)
+  expect(await s.resolveAppendCoordinate('bot-a', 'C2', undefined, 3000)).not.toBe(a)
+  expect(await s.resolveAppendCoordinate('bot-a', 'C1', 'scope-x', 4000)).not.toBe(a)
+  await s.close()
+})
+
+it('rotates once for simultaneous !new commands and twice for sequential ones', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-reservation-advance-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  const first = await s.resolveAppendCoordinate('bot-a', 'C1', undefined, 1000)
+
+  // Two commands that both read `first` — the loser must not advance a second time.
+  const [x, y] = await Promise.all([
+    s.advanceAppendCoordinate('bot-a', 'C1', first, undefined, 2000),
+    s.advanceAppendCoordinate('bot-a', 'C1', first, undefined, 2001)
+  ])
+  expect(x).toBe(y)
+  expect(x).not.toBe(first)
+  expect(await s.resolveAppendCoordinate('bot-a', 'C1', undefined, 5000)).toBe(x)
+
+  // Sequential commands each read the coordinate in force, so each one rotates.
+  const third = await s.advanceAppendCoordinate('bot-a', 'C1', x!, undefined, 3000)
+  expect(third).not.toBe(x)
+  await s.close()
+})
+
+it('rotates above the coordinate in force even when the clock went backwards', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-reservation-clock-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  const first = await s.resolveAppendCoordinate('bot-a', 'C1', undefined, 5000)
+  const second = await s.advanceAppendCoordinate('bot-a', 'C1', first, undefined, 1000)
+  expect(second).toBe('append:5001')
+  await s.close()
+})
+
+// A reservation that outlived its session would rejoin a coordinate whose transcript
+// retention deliberately left behind — the inheritance the timestamp exists to prevent.
+it('drops the reservation with the session it named, and only then', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-reservation-purge-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  const coordinate = await s.resolveAppendCoordinate('bot-a', 'C1', undefined, 1000)
+  const key = sessionKey('slack', 'C1', coordinate, 'bot-a')
+  await s.upsertSession({
+    key,
+    agentId: 'bot-a',
+    platform: 'slack',
+    channel: 'C1',
+    thread: coordinate,
+    acpSessionId: 'acp-1',
+    state: 'idle',
+    lastDeliveredTs: null,
+    updatedAt: 1
+  })
+  await s.deleteSession(key)
+  expect(await s.resolveAppendCoordinate('bot-a', 'C1', undefined, 8000)).toBe('append:8000')
+  await s.close()
+})
+
+it('leaves a reservation a rotation already moved past when the old session is purged', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-reservation-purge-raced-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  const first = await s.resolveAppendCoordinate('bot-a', 'C1', undefined, 1000)
+  const key = sessionKey('slack', 'C1', first, 'bot-a')
+  await s.upsertSession({
+    key,
+    agentId: 'bot-a',
+    platform: 'slack',
+    channel: 'C1',
+    thread: first,
+    acpSessionId: 'acp-1',
+    state: 'idle',
+    lastDeliveredTs: null,
+    updatedAt: 1
+  })
+  const rotated = await s.advanceAppendCoordinate('bot-a', 'C1', first, undefined, 2000)
+
+  // Retention purges the session the rotation retired; the live coordinate must survive.
+  await s.deleteSession(key)
+  expect(await s.resolveAppendCoordinate('bot-a', 'C1', undefined, 8000)).toBe(rotated)
+  await s.close()
+})
+
+it('ignores an affinity row whose scope the session no longer has', async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'ac-affinity-stale-')), 'local.sqlite')
   const s = await openTestStore(path)
   const key = sessionKey('slack', 'C1', 'T1', 'bot-a', 'scope-b')
@@ -2875,7 +2977,7 @@ it.skipIf(pg)('ignores an affinity row whose scope the session no longer has', a
   await s.close()
 })
 
-it.skipIf(pg)('reads thread affinity from the participation record, and drops it with the session', async () => {
+it('reads thread affinity from the participation record, and drops it with the session', async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'ac-affinity-')), 'local.sqlite')
   const s = await openTestStore(path)
   const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
@@ -2920,6 +3022,6 @@ it.skipIf(pg)('upgrades a v17 store to durable memory continuations without chan
   expect(await upgraded.getMemoryEntryContinuation('bot-a', token, 999)).toBe('{"page":2}')
   await upgraded.close()
   const check = new DatabaseSync(path)
-  expect(check.prepare('PRAGMA user_version').get()).toEqual({ user_version: 21 })
+  expect(check.prepare('PRAGMA user_version').get()).toEqual({ user_version: SCHEMA_VERSION })
   check.close()
 })

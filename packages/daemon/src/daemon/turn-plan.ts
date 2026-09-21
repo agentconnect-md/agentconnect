@@ -9,6 +9,7 @@
  * so the whole plan is a total function of its input and can be unit-tested
  * without booting a daemon.
  */
+import { sessionThreadOf } from '../messages/normalized.js'
 import { hasReachedAgentCallHopLimit, originKindOf } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
@@ -55,7 +56,13 @@ export interface TurnPlan {
   readonly isDm: boolean
   readonly channel: string
   readonly thread?: string
+  /** Where turn chrome posts — the DELIVERY thread, so a status bar lands in the room the
+   *  message came from even when the session belongs to no thread. */
   readonly statusThread: string
+  /** The SESSION coordinate this turn was admitted on (channel-session-mode.md §3.1),
+   *  carried from the per-target resolution rather than re-derived. Matches `statusThread`
+   *  wherever a session IS a thread, which is every conversation on `createNew`. */
+  readonly sessionThread: string
   readonly transcriptChannel: string
   readonly integrationId?: string
   readonly requesterId: string
@@ -135,6 +142,7 @@ export function buildTurnPlan(input: TurnPlanInput): TurnPlan {
     channel: msg.channel,
     ...(msg.thread !== undefined ? { thread: msg.thread } : {}),
     statusThread: msg.thread ?? msg.msgId,
+    sessionThread: sessionThreadOf(msg),
     transcriptChannel: transcriptChannelKey(msg.channel, msg.transportScope),
     ...(integrationId !== undefined ? { integrationId } : {}),
     requesterId: msg.sender.id,
