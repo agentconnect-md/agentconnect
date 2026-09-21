@@ -596,6 +596,7 @@ describe('memory MCP tools (executeTool)', () => {
     isDm: false,
     channel: 'C1',
     thread: 'T1',
+    deliveryThread: 'T1',
     tools: []
   }
   const depsFor = (dir: string) =>

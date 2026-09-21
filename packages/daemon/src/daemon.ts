@@ -1710,6 +1710,7 @@ export class Daemon {
         await this.sessions.threadOwner(channel, thread, transportScope),
       sessionCoordinateFor: async (agentId, integrationId, msg, opts) =>
         await this.sessionCoordinateFor(agentId, integrationId, msg, opts),
+      conversationAppends: (agentId, integrationId, msg) => this.conversationAppends(agentId, integrationId, msg),
       mergedRulesForSource: (srcIntegrationIds) => this.mergedRulesForSource(srcIntegrationIds),
       transportScopeForIntegrationIds: (integrationIds) => this.transportScopeForIntegrationIds(integrationIds),
       integrationBelongsToSource: (integrationId, srcIntegrationIds) =>
@@ -3315,7 +3316,17 @@ export class Daemon {
       // ACP session to its exact channel/thread/delivery integration.
       // The agent's enabled daemon-configured MCP servers are appended AFTER the bridge entry, gated
       // on the runtime's probed transport caps.
-      mcpServersFor: ({ agent, platform, channel, thread, integrationId, transportScope, isDm, sessionKey }) => {
+      mcpServersFor: ({
+        agent,
+        platform,
+        channel,
+        thread,
+        deliveryThread,
+        integrationId,
+        transportScope,
+        isDm,
+        sessionKey
+      }) => {
         // An OpenClaw-style bridge rejects non-empty session mcpServers — skip assembly instead of failing session/new.
         if (this.runtimes[agent.runtime]?.sessionMcpServers === 'unsupported') {
           this.log.debug(
@@ -3370,6 +3381,7 @@ export class Daemon {
             isDm,
             channel,
             thread,
+            deliveryThread,
             tools,
             // Full integration set so sendPlatformMessage can route to ANY connected
             // platform, not only the one that delivered this turn.
@@ -6120,6 +6132,7 @@ export class Daemon {
           isDm: false,
           channel: 'memory',
           thread: 'distill',
+          deliveryThread: 'distill',
           tools: MEMORY_TOOLS,
           memoryBinding: {
             source: 'distill',
@@ -6600,6 +6613,7 @@ export class Daemon {
       isDm: false,
       channel: 'memory',
       thread: context.dreamId,
+      deliveryThread: context.dreamId,
       tools: [...KNOWLEDGE_TOOLS, ...MEMORY_TOOLS],
       memoryBinding: {
         source: 'dream',
@@ -7513,6 +7527,15 @@ export class Daemon {
    * several agents and two of them in one conversation may not share a mode. The same
    * placement, and the same reason, as the target's own `muteKey` and transport scope.
    */
+  /** Whether this conversation appends for this target. The mode alone — no store read —
+   *  so a caller can tell "nobody has spoken here yet" from "this is not an append
+   *  conversation", which decide opposite things about the latest-session fallback. */
+  private conversationAppends(agentId: string, integrationId: string | undefined, msg: NormalizedMessage): boolean {
+    if (integrationId === undefined) return false
+    const int = this.agents.get(agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
+    return int !== undefined && conversationSessionMode(int, msg.channel) === 'append'
+  }
+
   private async sessionCoordinateFor(
     agentId: string,
     integrationId: string | undefined,
@@ -7736,7 +7759,7 @@ export class Daemon {
             sessionKey: sessionKey(
               targetMsg.platform,
               targetMsg.channel,
-              targetMsg.thread ?? targetMsg.msgId,
+              sessionThreadOf(targetMsg),
               result.agentId,
               targetMsg.transportScope
             ),
@@ -9617,14 +9640,14 @@ export class Daemon {
     // and the recency and in-flight probes, which look for the SESSION, would drop it
     // outright. §6.2: one row per agent holding a live append session here. Read-only: a
     // message that routed to nobody must not create a conversation by being observed.
-    const appendTargets = await this.appendAgentsIn(msg)
-    if (appendTargets.length === 0) {
-      // Preserve the established default transcript shape until the rollout flag is
-      // enabled; the new observer folds attachment mentions into context prompts.
-      await this.recordObservedInbound(msg, undefined, this.cfg.features.turnFinalContextRefresh)
-      return
-    }
-    for (const { agentId, coordinate } of appendTargets)
+    // Preserve the established default transcript shape until the rollout flag is enabled;
+    // the new observer folds attachment mentions into context prompts. UNCONDITIONAL: a
+    // channel may hold both modes, and this is the only row a `createNew` agent's in-flight
+    // turn can catch up on.
+    await this.recordObservedInbound(msg, undefined, this.cfg.features.turnFinalContextRefresh)
+    // Plus one row per agent whose session here belongs to no thread, which the row above
+    // cannot reach (§6.2).
+    for (const { agentId, coordinate } of await this.appendAgentsIn(msg))
       await this.recordObservedInbound(
         { ...msg, sessionThread: coordinate },
         agentId,
@@ -12706,7 +12729,7 @@ export class Daemon {
       phase: 'start',
       platform: msg.platform,
       channel: msg.channel,
-      thread: plan.statusThread
+      thread: plan.sessionThread
     })
     if (
       created &&
@@ -14134,7 +14157,7 @@ export class Daemon {
         phase: settlement.finalPhase,
         platform: msg.platform,
         channel: msg.channel,
-        thread: plan.statusThread
+        thread: plan.sessionThread
       })
       p.signals.resolveDone()
     } else if (!settlement.propagatingTurnError) {
@@ -16854,7 +16877,11 @@ export class Daemon {
       source: 'system',
       platform: session.platform,
       channel: session.channel,
-      ...(session.thread ? { thread: session.thread } : {}),
+      ...(isAppendCoordinate(session.thread)
+        ? { sessionThread: session.thread }
+        : session.thread
+          ? { thread: session.thread }
+          : {}),
       ...(session.transportScope ? { transportScope: session.transportScope } : {}),
       sender: { id: 'github', name: 'GitHub', isBot: true },
       text,
@@ -17629,7 +17656,8 @@ export class Daemon {
           this.lastFooterReply.set(rec.key, { channel: rec.channel, ts: lastTs, text: sections.at(-1) ?? text })
         } else if (footer) this.lastFooterReply.delete(rec.key)
       } else {
-        await conn.postMessage(rec.channel, text, rec.thread || undefined)
+        // Same guard as the Slack branch above: a synthetic coordinate is no reply target.
+        await conn.postMessage(rec.channel, text, isAppendCoordinate(rec.thread) ? undefined : rec.thread || undefined)
       }
     }
     // Claimed only past the post: a throwing post above leaves no stamp, so the wake still
@@ -17909,7 +17937,7 @@ export class Daemon {
       source: 'agent',
       platform,
       channel: rec.channel,
-      ...(rec.thread ? { thread: rec.thread } : {}),
+      ...(isAppendCoordinate(rec.thread) ? { sessionThread: rec.thread } : rec.thread ? { thread: rec.thread } : {}),
       ...(rec.transportScope ? { transportScope: rec.transportScope } : {}),
       sender: { id: `background-task:${taskId}`, isBot: true },
       text:
@@ -18856,7 +18884,7 @@ export class Daemon {
       return (
         p.plan.platform === k.platform &&
         p.plan.channel === k.channel &&
-        (k.thread === undefined || p.plan.statusThread === k.thread)
+        (k.thread === undefined || p.plan.sessionThread === k.thread)
       )
     }
     if (scope.kind === 'daemon') this.draining = true

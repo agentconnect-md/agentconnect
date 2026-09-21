@@ -16,7 +16,16 @@ const AGENT = 'bot-a'
 const OWNER = agentHostKey(AGENT)
 
 function ctx(channel: string, over: Partial<SessionContext> = {}): SessionContext {
-  return { agentId: AGENT, platform: 'webchat', channel, thread: channel, isDm: true, tools: [], ...over }
+  return {
+    agentId: AGENT,
+    platform: 'webchat',
+    channel,
+    thread: channel,
+    deliveryThread: channel,
+    isDm: true,
+    tools: [],
+    ...over
+  } as SessionContext
 }
 
 /** A daemon with one live webchat turn on `conv-1`, whose store calls every session private. */

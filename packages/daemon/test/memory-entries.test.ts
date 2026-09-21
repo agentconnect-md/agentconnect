@@ -403,7 +403,15 @@ it('projects bounded entry reads through MCP without changing legacy file tools'
   const f = await fixture('managed', 3)
   const { executeTool } = await import('../src/mcp/ops.js')
   const { MEMORY_TOOLS } = await import('../src/memory/tools.js')
-  const ctx = { agentId: 'a', platform: 'slack', isDm: false, channel: 'C', thread: 'T', tools: MEMORY_TOOLS }
+  const ctx = {
+    agentId: 'a',
+    platform: 'slack',
+    isDm: false,
+    channel: 'C',
+    thread: 'T',
+    deliveryThread: 'T',
+    tools: MEMORY_TOOLS
+  }
   const provider = new ManagedMemoryProvider(() => localMemoryHome(f.root))
   const deps = { memory: provider, memoryEntryStore: f.db } as unknown as import('../src/mcp/ops.js').OpsDeps
   const page = (await executeTool(
@@ -489,6 +497,7 @@ it('pins synthetic MCP reads to the Dream draft even after the live provider cha
     isDm: false,
     channel: 'synthetic',
     thread: 'T',
+    deliveryThread: 'T',
     tools: [],
     memoryBinding: { source: 'dream' as const, scope: { agentId: 'a', root: draft } }
   }
@@ -668,7 +677,15 @@ describe('unified search', () => {
     await f.root.writeFile('memory/deploy.md', 'Deploy on Fridays.\n')
     const { executeTool } = await import('../src/mcp/ops.js')
     const { MEMORY_TOOLS } = await import('../src/memory/tools.js')
-    const ctx = { agentId: 'a', platform: 'slack', isDm: false, channel: 'C', thread: 'T', tools: MEMORY_TOOLS }
+    const ctx = {
+      agentId: 'a',
+      platform: 'slack',
+      isDm: false,
+      channel: 'C',
+      thread: 'T',
+      deliveryThread: 'T',
+      tools: MEMORY_TOOLS
+    }
     const deps = { memory: f.provider, memoryEntryStore: f.db } as unknown as import('../src/mcp/ops.js').OpsDeps
     expect(await executeTool(ctx, 'searchMemoryEntries', { query: 'fridays' }, deps)).toMatchObject({
       kind: 'lexical',

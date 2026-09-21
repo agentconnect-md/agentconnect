@@ -243,7 +243,10 @@ export class SessionManager {
         agent: Agent
         platform: string
         channel: string
+        /** The SESSION's coordinate — for key lookups, never for a post. */
         thread: string
+        /** Where a tool that posts should default to: the thread this turn arrived in. */
+        deliveryThread: string
         integrationId?: string
         transportScope?: string
         isDm: boolean
@@ -686,6 +689,11 @@ export class SessionManager {
           platform: msg.platform,
           channel: msg.channel,
           thread,
+          // `thread` above is the SESSION's coordinate, which the bridge's session-key
+          // lookups want and which a delivery must never use — it is no platform thread
+          // where the conversation appends. Tools that POST resolve their default target
+          // from this one instead (channel-session-mode.md §3.1).
+          deliveryThread,
           ...(integrationId !== undefined ? { integrationId } : {}),
           ...(transportScope !== undefined ? { transportScope } : {}),
           isDm: msg.isDm,

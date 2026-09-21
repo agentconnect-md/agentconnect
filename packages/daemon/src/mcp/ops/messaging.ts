@@ -436,7 +436,7 @@ export async function sendMessage(
       platform: ctx.platform,
       ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
       callerChannel: ctx.channel,
-      callerThread: ctx.thread,
+      callerThread: ctx.deliveryThread,
       sessionId,
       text: message,
       ...(correlationId !== undefined ? { correlationId } : {})
@@ -494,7 +494,7 @@ export async function sendMessage(
           ...(ctx.integrationId !== undefined ? { callerIntegrationId: ctx.integrationId } : {}),
           ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
           callerChannel: ctx.channel,
-          callerThread: ctx.thread,
+          callerThread: ctx.deliveryThread,
           toAgentId: toAgent,
           text: message,
           channel: channel ?? ctx.channel,
@@ -805,7 +805,7 @@ export async function sendMessage(
         originPlatform: ctx.platform,
         ...(ctx.transportScope !== undefined ? { originTransportScope: ctx.transportScope } : {}),
         originChannel: ctx.channel,
-        originThread: ctx.thread
+        originThread: ctx.deliveryThread
       })
       // A root post is a legitimate way to open a new topic, so this is never blocked — but
       // when it FORKS a conversation the agent is ALREADY part of, the intent was almost
@@ -829,7 +829,7 @@ export async function sendMessage(
               platform: ctx.platform,
               ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
               callerChannel: ctx.channel,
-              callerThread: ctx.thread,
+              callerThread: ctx.deliveryThread,
               targetPlatform: wantPlatform,
               targetChannel: postChannel,
               targetThread: postedThread,
@@ -871,7 +871,7 @@ export async function sendMessage(
   //     activation rendezvous that admits this delivery exactly once (§8.6).
   let wake: MessageAgentResult | undefined
   if (baseWakeReq !== undefined) {
-    const threadForWake = channel !== undefined ? postedThread : ctx.thread
+    const threadForWake = channel !== undefined ? postedThread : ctx.deliveryThread
     wake = await deps.messageAgent({
       ...baseWakeReq,
       ...(threadForWake !== undefined ? { thread: threadForWake } : {}),

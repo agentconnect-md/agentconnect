@@ -467,7 +467,15 @@ it('executes conditional MCP writes with trusted scope, approvals and synthetic-
   const f = await fixture()
   const { executeTool } = await import('../src/mcp/ops.js')
   const { MEMORY_TOOLS } = await import('../src/memory/tools.js')
-  const ctx = { agentId: 'agent', platform: 'slack', isDm: false, channel: 'C', thread: 'T', tools: MEMORY_TOOLS }
+  const ctx = {
+    agentId: 'agent',
+    platform: 'slack',
+    isDm: false,
+    channel: 'C',
+    thread: 'T',
+    deliveryThread: 'T',
+    tools: MEMORY_TOOLS
+  }
   let decision: 'allow' | 'ask' | 'deny' = 'allow'
   let approve = true
   let approvals = 0

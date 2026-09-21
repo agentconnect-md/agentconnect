@@ -365,6 +365,7 @@ describe('ExternalMemoryProvider', () => {
         isDm: false,
         channel: 'C',
         thread: 'T',
+        deliveryThread: 'T',
         tools: provider.toolsForAgent()
       }
       const deps = { memory: provider, memoryEntryStore: db } as unknown as import('../src/mcp/ops.js').OpsDeps

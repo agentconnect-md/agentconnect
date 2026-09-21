@@ -24,6 +24,7 @@ const ctx: SessionContext = {
   isDm: false,
   channel: 'C_CURRENT',
   thread: '111.1',
+  deliveryThread: '111.1',
   tools: toolsForIntegrations([
     {
       id: 'int-1',

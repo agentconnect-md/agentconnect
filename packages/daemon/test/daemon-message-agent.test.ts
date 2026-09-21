@@ -417,6 +417,7 @@ describe('messageAgent: same-daemon delivery', () => {
         isDm: false,
         channel: 'C1',
         thread: '100.1',
+        deliveryThread: '100.1',
         tools: [],
         integrations: [{ id: 'int-a', platform: 'slack' }]
       },

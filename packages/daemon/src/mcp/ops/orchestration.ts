@@ -103,7 +103,7 @@ export async function startOrchestration(
     mainAgentId: ctx.agentId,
     platform: ctx.platform,
     channel: ctx.channel,
-    thread: ctx.thread,
+    thread: ctx.deliveryThread,
     ...(ctx.integrationId !== undefined ? { integrationId: ctx.integrationId } : {}),
     ...(ctx.transportScope !== undefined ? { transportScope: ctx.transportScope } : {}),
     subtasks,
@@ -118,7 +118,7 @@ function ownerReq(ctx: SessionContext, args: Record<string, unknown>): Orchestra
     mainAgentId: ctx.agentId,
     platform: ctx.platform,
     channel: ctx.channel,
-    thread: ctx.thread,
+    thread: ctx.deliveryThread,
     ...(ctx.transportScope !== undefined ? { transportScope: ctx.transportScope } : {}),
     orchestrationId: parseArgs(ORCHESTRATION_OWNER_ARGS, args).orchestrationId
   }

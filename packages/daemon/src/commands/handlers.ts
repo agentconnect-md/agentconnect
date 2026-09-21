@@ -95,6 +95,10 @@ export interface CommandHost {
     msg: NormalizedMessage,
     opts?: { mint?: boolean }
   ): Promise<string | undefined>
+  /** Whether this conversation appends for this target — the MODE, read from the
+   *  integration and touching no store, so a command can tell "no coordinate yet" from
+   *  "not an append conversation". */
+  conversationAppends(agentId: string, integrationId: string | undefined, msg: NormalizedMessage): boolean
   mergedRulesForSource(srcIntegrationIds?: readonly string[]): RoutingRule[]
   transportScopeForIntegrationIds(integrationIds?: readonly string[]): string | undefined
   integrationBelongsToSource(integrationId: string, srcIntegrationIds?: readonly string[]): boolean
@@ -534,8 +538,18 @@ export class CommandHandlers {
     // in, and deriving the key from the thread would address a session that does not exist —
     // reaching the right one only through the latest-session fallback below, which is luck
     // rather than resolution.
-    let thread =
-      (await this.host.sessionCoordinateFor(target.agentId, target.integrationId, msg, { mint: false })) ?? replyThread
+    // `!queue` is a DELIVERY — it dispatches text — so it mints the coordinate like an
+    // ordinary message would. Every other command only reads, and must not create the
+    // conversation it is asking about. Both then take the same append/`createNew` path.
+    const mints = command.kind === 'queue'
+    const appendCoordinate = await this.host.sessionCoordinateFor(target.agentId, target.integrationId, msg, {
+      mint: mints
+    })
+    // An append conversation nobody has spoken in yet has no coordinate to read, and the
+    // fallback below must still not fire there — its candidates are createNew-era threads.
+    // So the MODE is asked directly rather than inferred from the read coming back empty.
+    const appendConversation = this.host.conversationAppends(target.agentId, target.integrationId, msg)
+    let thread = appendCoordinate ?? replyThread
     let key = sessionKey(msg.platform, msg.channel, thread, target.agentId, msg.transportScope)
     let rec = await this.host.store().getSession(key)
     // A cold turn owns its logical key before SessionManager persists the session row.
@@ -547,7 +561,7 @@ export class CommandHandlers {
     // The fallback exists for a command typed outside any session's thread. It must not fire
     // once an append coordinate is resolved: the channel's latest session there may be a
     // retired createNew-era thread, and retargeting onto it would act on the wrong session.
-    if (!rec && !directGateActive && !isAppendCoordinate(thread)) {
+    if (!rec && !directGateActive && !isAppendCoordinate(thread) && !appendConversation) {
       const latest = await this.host.store().latestSessionForTransport(target.agentId, msg.channel, msg.transportScope)
       if (latest) {
         rec = latest
@@ -1017,18 +1031,24 @@ export class CommandHandlers {
     srcIntegrationIds: readonly string[]
   ): Promise<string[]> {
     const transportScope = this.host.transportScopeForIntegrationIds(srcIntegrationIds)
-    const sessions = await this.admittedSessions(
+    const keys: string[] = []
+    for (const agentId of this.admittedAgentIds('slack', shortcut.channel, srcIntegrationIds)) {
+      // The tapped thread holds no session where the conversation appends — its session is
+      // at the coordinate in force — so Stop would cancel nothing. Read-only: a Stop click
+      // must not create the conversation it is trying to interrupt.
+      const coordinate = await this.host.store().currentAppendCoordinate(agentId, shortcut.channel, transportScope)
+      const thread = coordinate ?? shortcut.thread
+      const cold = sessionKey('slack', shortcut.channel, thread, agentId, transportScope)
+      if (!keys.includes(cold) && this.gateActiveFor(cold)) keys.push(cold)
+    }
+    for (const session of await this.admittedSessions(
       'slack',
       shortcut.channel,
       srcIntegrationIds,
       transportScope,
       shortcut.thread
-    )
-    const keys = sessions.map((s) => s.key)
-    for (const agentId of this.admittedAgentIds('slack', shortcut.channel, srcIntegrationIds)) {
-      const cold = sessionKey('slack', shortcut.channel, shortcut.thread, agentId, transportScope)
-      if (!keys.includes(cold) && this.gateActiveFor(cold)) keys.push(cold)
-    }
+    ))
+      if (!keys.includes(session.key)) keys.push(session.key)
     return keys
   }
 }

@@ -591,6 +591,7 @@ describe('the MCP surface validates arguments before the broker sees them', () =
     isDm: false,
     channel: 'hook-1',
     thread: 'thread-1',
+    deliveryThread: 'thread-1',
     tools: []
   }
 

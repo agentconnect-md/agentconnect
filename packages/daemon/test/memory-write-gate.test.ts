@@ -24,6 +24,7 @@ const ctx = (): SessionContext => ({
   platform: 'slack',
   channel: 'C1',
   thread: 'T1',
+  deliveryThread: 'T1',
   isDm: true,
   tools: []
 })
@@ -196,6 +197,7 @@ describe('a distillation-bound session writing through the shared tools', () => 
     platform: 'distill',
     channel: 'memory',
     thread: 'distill',
+    deliveryThread: 'distill',
     isDm: false,
     tools: [],
     memoryBinding: { source: 'distill', scope: { agentId: 'bot-a', channelKey: 'C1-abc123', channel: 'C1' } }
@@ -248,6 +250,7 @@ describe('the distillation binding is its own authorization', () => {
         platform: 'distill',
         channel: 'memory',
         thread: 'distill',
+        deliveryThread: 'distill',
         isDm: false,
         tools: [],
         memoryBinding: { source: 'distill', scope: { agentId: 'bot-a' } }
@@ -276,6 +279,7 @@ describe('the distillation binding is its own authorization', () => {
       platform: 'distill',
       channel: 'memory',
       thread: 'distill',
+      deliveryThread: 'distill',
       isDm: false,
       tools: [],
       memoryBinding: { source: 'distill', scope: { agentId: 'bot-a', channelKey } }
@@ -295,6 +299,7 @@ describe('a dream-bound session writing its staged store', () => {
     platform: 'dream',
     channel: 'memory',
     thread: 'drm-1',
+    deliveryThread: 'drm-1',
     isDm: false,
     tools: [],
     memoryBinding: {
