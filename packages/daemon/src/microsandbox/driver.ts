@@ -899,7 +899,11 @@ export class MicrosandboxManager {
           workspaceRoot: environment.workspaceRoot,
           completeEnv: false,
           runtimeStderr: (text) => this.options.log?.debug(`microsandbox ${id}: ${text.trimEnd()}`),
-          failed: (error) => this.options.log?.warn(`microsandbox: the hosted shim of ${id} ended — ${error.message}`),
+          failed: (error) => {
+            this.options.log?.error(`microsandbox: the hosted shim of ${id} ended — ${error.message}`)
+            // Fenced as a bound shim's loss is: the VM stops, and the executor facet's next prepare starts it again.
+            this.stopFailedEnvironment(id)
+          },
           ...(this.options.log ? { log: this.options.log } : {})
         })
       )
