@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,17 +8,22 @@ import type {
   ExecutorReleaseReq,
   ExecutorReleaseResult
 } from '@agentconnect.md/protocol'
-import { afterEach, describe, expect, it } from 'vitest'
-import { sessionKeyDirName } from '../src/acp/host-key.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { sessionHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
+import type { SpawnedRuntime } from '../src/acp/spawn-driver.js'
 import { startExecutorFacet, type ExecutorFacet } from '../src/execution/executor-facet.js'
 import { ExecutorPlane } from '../src/execution/executor-plane.js'
 import type { PlacementChoice } from '../src/execution/executor-placement.js'
+import { hostShimEnv } from '../src/execution/host-shim.js'
+import type { PlaneLaunch } from '../src/execution/plane.js'
 import { effectiveStrategies } from '../src/execution/strategies.js'
+import { assembleRuntimeLaunch } from '../src/launch/assemble.js'
 import { sessionSandboxSubject } from '../src/remote/sandbox-subject.js'
 import { ShimClient } from '../src/shim/client.js'
 import type { GitExecPayload } from '../src/shim/git-exec.js'
 import { ShimServer } from '../src/shim/server.js'
 import type { ShimTransport } from '../src/shim/client.js'
+import { WAIT } from './wait-support.js'
 
 /**
  * One holder and two other machines of its group, in one process (session-executors.md §7).
@@ -42,6 +48,13 @@ const LEAF = sessionKeyDirName(KEY)
 const SUBJECT = sessionSandboxSubject(AGENT, LEAF)
 const quiet = { trace() {}, debug() {}, info() {}, warn() {}, error() {} }
 const HEAD = 'a2f5f0d9f0a34a3d9b6f3b1d5a4e8c7b6d5e4f31'
+// A runtime that reports the environment it was started with, then exits.
+const REPORTER = [
+  "const fs = require('fs')",
+  'const report = process.env.AC_TEST_REPORT',
+  "fs.writeFileSync(report + '.tmp', JSON.stringify(process.env))",
+  "fs.renameSync(report + '.tmp', report)"
+].join('; ')
 
 interface Machine {
   daemonId: string
@@ -58,8 +71,10 @@ describe('a session on another machine of the group', () => {
   const planes: ExecutorPlane[] = []
   const servers: ShimServer[] = []
   const clients: ShimClient[] = []
+  const runtimes: SpawnedRuntime[] = []
 
   afterEach(async () => {
+    for (const runtime of runtimes.splice(0)) await runtime.stop(1_000)
     for (const plane of planes.splice(0)) await plane.stop()
     for (const machine of machines.splice(0)) await machine.stop()
     for (const client of clients.splice(0)) client.stop()
@@ -72,7 +87,7 @@ describe('a session on another machine of the group', () => {
    * socket instead of the `host` launcher's child process — which needs Linux and is exercised
    * on its own by the facet's end-to-end case.
    */
-  async function machine(daemonId: string, root?: string): Promise<Machine> {
+  async function machine(daemonId: string, root?: string, seed?: Record<string, string>): Promise<Machine> {
     const daemonRoot = root ?? (await mkdtemp(join(tmpdir(), 'ac-xs-')))
     if (!root) dirs.push(daemonRoot)
     const exec: GitExecPayload[] = []
@@ -87,22 +102,34 @@ describe('a session on another machine of the group', () => {
       ownSessions: () => 0,
       draining: () => false,
       endpointHost: () => '127.0.0.1',
-      seedHome: () => {},
+      seedHome: () => seed,
       agentsExist: async (agentIds) => new Set(agentIds),
       retentionMs: () => null,
       log: quiet,
-      startShim: async ({ sessionLeaf }) => {
+      startShim: async ({ sessionLeaf, seedEnv }) => {
         const server = new ShimServer()
         servers.push(server)
         const socketPath = join(await mkdtemp(join(tmpdir(), 'ac-xsk-')), 's.sock')
         dirs.push(socketPath)
         await server.startOnSocket(socketPath)
+        const workspaceRoot = join(daemonRoot, 'sessions', sessionLeaf)
         const client = new ShimClient({
           endpoint: 'accepted-daemon-channel',
           dial: () => server.nextTransport() as Promise<ShimTransport>,
           // Presented and ignored: for an executor the proof is the pipe the dial crossed, not this token (§6).
           readToken: () => 'presented-and-unreviewed',
-          workspaceRoot: join(daemonRoot, 'sessions', sessionLeaf),
+          workspaceRoot,
+          // The environment the `host` launcher starts its shim with, which is what a runtime here fills in from.
+          podEnv: hostShimEnv({
+            machineEnv: { PATH: '/executor/bin', LANG: 'C.UTF-8' },
+            ...(seedEnv ? { seedEnv } : {}),
+            home: join(workspaceRoot, 'home'),
+            socketPath,
+            runtimeRoot: join(daemonRoot, 'hs', sessionLeaf),
+            workspaceRoot,
+            helperRoot: '/opt/agentconnect',
+            mark: '0'.repeat(32)
+          }),
           handle: (capability, payload) => {
             if (capability !== 'exec') throw new Error(`unexpected ${capability}`)
             exec.push(payload as GitExecPayload)
@@ -227,6 +254,52 @@ describe('a session on another machine of the group', () => {
     ])
     expect(relay.released[0]!.launchId).toBe(launchId)
     expect(holder.placementOf(KEY)).toBeUndefined()
+  })
+
+  it("launches a real prepared runtime under the HOME its executor seeded, with none of the holder's environment", async () => {
+    const signIn = '/executor/home/.claude'
+    const executor = await machine(EXECUTOR_A, undefined, { CLAUDE_SECURESTORAGE_CONFIG_DIR: signIn })
+    const holder = holderPlane(HOLDER, new Relay(new Map([[EXECUTOR_A, executor]])))
+    await holder.prepareAt(AGENT, KEY, [choice(EXECUTOR_A)])
+    await holder.ensureChannel(SUBJECT)
+    const home = holder.homeFor(SUBJECT)!
+    expect(home).toBe(join(executor.root, 'sessions', LEAF, 'home'))
+
+    // The holder's own agent directory and HOME, which nothing in the launch may name.
+    const agentDir = await mkdtemp(join(tmpdir(), 'ac-xs-holder-'))
+    dirs.push(agentDir)
+    const holderEnv = { HOME: agentDir, PATH: '/holder/bin', HOLDER_ONLY: 'holder' }
+    const report = join(executor.root, 'report.json')
+    const hostKey = sessionHostKey(AGENT, KEY)
+    const { runtime, launch } = assembleRuntimeLaunch({
+      runtimeId: 'claude-acp',
+      runtime: { command: process.execPath, args: ['-e', REPORTER], env: [] },
+      provider: 'managed',
+      scopeDir: agentDir,
+      cwd: join(executor.root, 'sessions', LEAF, 'workspace'),
+      hostKey,
+      runInSandbox: false,
+      runtimeEnv: {},
+      agentEnv: { AC_AGENT_ID: AGENT, AC_TEST_REPORT: report },
+      hostEnv: holderEnv,
+      stateSourceEnv: holderEnv,
+      executor: { home }
+    })
+
+    // What AcpHost hands the driver a placed host is given, which opens the runtime through the pipe as a turn would.
+    const env = { ...(launch.inheritProcessEnv ? holderEnv : {}), ...launch.env }
+    const { driver } = holder.spawnFor({ hostKey } as PlaneLaunch)
+    runtimes.push(await driver.launch({ command: runtime.command, args: runtime.args, env, hostKey }))
+    await vi.waitFor(() => expect(existsSync(report)).toBe(true), WAIT)
+    const seen = JSON.parse(readFileSync(report, 'utf8')) as Record<string, string | undefined>
+    expect(seen.HOME).toBe(home)
+    expect(seen.XDG_CONFIG_HOME).toBe(join(home, '.config'))
+    expect(seen.CLAUDE_CONFIG_DIR).toBe(join(home, '.claude'))
+    // Where that machine keeps the sign-in its HOME points at is its own to say, and the machine's PATH its own.
+    expect(seen.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(signIn)
+    expect(seen.PATH).toBe('/executor/bin')
+    expect(seen.HOLDER_ONLY).toBeUndefined()
+    expect(Object.values(seen).filter((value) => value?.includes(agentDir))).toEqual([])
   })
 
   it('lets a successor holder attach to the environment its predecessor left', async () => {

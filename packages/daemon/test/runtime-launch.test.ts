@@ -61,6 +61,11 @@ function coveredBy(paths: string[], target: string): boolean {
   })
 }
 
+/** A session host whose session runs on another machine of the group. */
+const PLACED = sessionHostKey('bot-a', 'slack:C1:placed')
+/** Its HOME there, in that machine's coordinates. */
+const PLACED_HOME = `/srv/agentconnect/sessions/${hostKeyDirName(PLACED)}/home`
+
 describe('prepareRuntimeLaunch', () => {
   // The grant only exists in the child's argv otherwise; a spawn log line reads it from here.
   it('reports the Git metadata it reopened, on every launch shape', () => {
@@ -1136,6 +1141,71 @@ describe('prepareRuntimeLaunch', () => {
     expect(launch.env.HOME).toBe(join(scopeDir, 'home'))
     expect(launch.sandbox).toBeUndefined()
   })
+
+  // session-executors.md §7, §8: the executor seeded that HOME from its own sign-in, and its strategy is the boundary.
+  it("composes a placed session on its executor's HOME, with none of this machine's environment, sign-in or sandbox", () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    mkdirSync(join(hostHome, '.claude'), { recursive: true })
+    writeFileSync(join(hostHome, '.claude', 'settings.json'), '{"model":"holder"}\n')
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'claude-acp',
+      runtime: { command: 'npx', args: ['claude-agent-acp'], env: [] },
+      scopeDir,
+      cwd,
+      hostKey: PLACED,
+      // What this machine would otherwise have wrapped it in: an SRT policy, or its own VM.
+      runInSandbox: true,
+      sandboxMechanism: 'bwrap',
+      daemonRoot: dirname(scopeDir),
+      credentialPlatform: 'linux',
+      microsandbox: { mounts: [] },
+      explicitEnv: { ANTHROPIC_API_KEY: 'agent-secret', XDG_CONFIG_HOME: '/holder/config' },
+      hostEnv: { HOME: hostHome, PATH: '/holder/bin', SSH_AUTH_SOCK: '/holder/agent.sock' },
+      executor: { home: PLACED_HOME }
+    })
+
+    expect(launch).toEqual({
+      env: {
+        // The holder's own credential travels as the launch's value, never a placeholder whose secret could not follow.
+        ANTHROPIC_API_KEY: 'agent-secret',
+        HOME: PLACED_HOME,
+        XDG_CONFIG_HOME: `${PLACED_HOME}/.config`,
+        XDG_CACHE_HOME: `${PLACED_HOME}/.cache`,
+        XDG_DATA_HOME: `${PLACED_HOME}/.local/share`,
+        XDG_STATE_HOME: `${PLACED_HOME}/.local/state`,
+        CLAUDE_CONFIG_DIR: `${PLACED_HOME}/.claude`
+      },
+      inheritProcessEnv: false,
+      runtimeHome: PLACED_HOME,
+      gitMetadataWriteRoots: []
+    })
+    // Nothing was seeded, linked or written on this disk: the HOME and its sign-in are the executor's.
+    expect(readdirSync(scopeDir)).toEqual(['workspace'])
+  })
+
+  it("gives a placed Codex session the private-HOME profile in its executor's coordinates, and none of this disk's checkouts", () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    mkdirSync(join(cwd, '.git'))
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      hostKey: PLACED,
+      runInSandbox: false,
+      trustedPrimaryCheckout: cwd,
+      allowModelToolUnixSockets: true,
+      credentialPlatform: 'linux',
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' },
+      executor: { home: PLACED_HOME }
+    })
+
+    expect(launch.env.CODEX_HOME).toBe(`${PLACED_HOME}/.codex`)
+    expect(agentFilesystem(launch.env)).toContain(`"${PLACED_HOME}" = "write"`)
+    expect(agentFilesystem(launch.env)).toContain(`"${PLACED_HOME}/.codex" = "deny"`)
+    expect(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]).not.toContain(realpathSync(cwd))
+    expect(launch.gitMetadataWriteRoots).toEqual([])
+  })
 })
 
 const runtime = (command: string, args: string[] = ['acp']): RuntimeDef => ({ command, args, env: [] })
@@ -1339,6 +1409,45 @@ describe('composeRuntimeLaunch', () => {
         runInSandbox: false
       })
     ).not.toThrow()
+  })
+
+  it("leaves a placed runtime's command for its executor to resolve, whatever this machine's sandbox is", () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const composed = composeRuntimeLaunch({
+      runtimeId: 'claude-acp',
+      runtime: runtime('claude-agent-acp'),
+      provider: 'managed',
+      scopeDir,
+      cwd,
+      runInSandbox: true,
+      sandboxMechanism: 'bwrap',
+      daemonRoot: dirname(scopeDir),
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' },
+      executor: { home: PLACED_HOME }
+    })
+
+    expect(composed.runtime.command).toBe('claude-agent-acp')
+    expect(composed.launch.sandbox).toBeUndefined()
+    expect(composed.launch.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1')
+  })
+
+  it.each([
+    ['hermes-agent', 'hermes'],
+    ['omp', 'omp']
+  ])('refuses a placed %s session whose memory off-switch is a file on this disk', (runtimeId, command) => {
+    const { scopeDir, cwd } = fixture()
+    expect(() =>
+      composeRuntimeLaunch({
+        runtimeId,
+        runtime: runtime(command),
+        provider: 'managed',
+        scopeDir,
+        cwd,
+        runInSandbox: false,
+        executor: { home: PLACED_HOME }
+      })
+    ).toThrow(MemoryProviderUnavailableError)
+    expect(readdirSync(scopeDir)).toEqual(['workspace'])
   })
 
   it('keeps Maki managed but fails closed for none', () => {

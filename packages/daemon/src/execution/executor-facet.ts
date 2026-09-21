@@ -79,8 +79,8 @@ export interface ExecutorFacetDeps {
   draining: () => boolean
   /** The local address the control connection leaves from, which is where a LAN peer reaches this machine (§13). */
   endpointHost: () => string | undefined
-  /** Seed a session HOME from this machine's runtime sign-in (§8). */
-  seedHome: (home: string) => void
+  /** Seed a session HOME from this machine's runtime sign-in (§8), answering the environment that seed points a runtime at. */
+  seedHome: (home: string) => Record<string, string> | void
   /** The CP's `agent/exists`; a throw is "cannot answer". */
   agentsExist: (agentIds: string[]) => Promise<Set<string>>
   /** This machine's `sessions.retention` as a window; null ⇒ `never`, and an environment nobody uses is kept forever. */
@@ -88,7 +88,12 @@ export interface ExecutorFacetDeps {
   log: Logger
   clock?: Clock
   /** Test seams: a stub in place of the Linux-only launcher, and the listener's bind address and handshake budget. */
-  startShim?: (input: { daemonRoot: string; sessionLeaf: string; log: Logger }) => Promise<RunningShim>
+  startShim?: (input: {
+    daemonRoot: string
+    sessionLeaf: string
+    log: Logger
+    seedEnv?: Record<string, string>
+  }) => Promise<RunningShim>
   listen?: Pick<PipeListenerOptions, 'host' | 'handshakeTimeoutMs'>
 }
 
@@ -120,23 +125,27 @@ const applied = (env: Environment): EnvironmentRecord => ({
   lastUsedAt: env.lastUsedAt
 })
 
-/** Seed a session HOME the way the local confined tier does, for every runtime this machine admits: the `prepare` names none. */
+/** Seed a session HOME the way the local confined tier does, for every runtime this machine admits: the `prepare` names none. Answers where a shared sign-in the HOME only points at lives on this machine. */
 export function seedSessionHome(
   home: string,
   runtimes: Record<string, RuntimeDef>,
   log: Pick<Logger, 'warn'>,
   hostEnv: NodeJS.ProcessEnv = process.env
-): void {
+): Record<string, string> {
+  const env: Record<string, string> = {}
   for (const [runtimeId, runtime] of Object.entries(runtimes)) {
     try {
       const credentials = prepareSharedRuntimeCredentials({ runtimeId, runtime, hostEnv })
       prepareRuntimeHome(runtimeId, home, hostEnv, home, credentials?.seedExclusions)
       credentials?.preparePrivateHome(home)
+      // A holder cannot name these: they are paths on this machine, as a local launch's credential env is.
+      Object.assign(env, credentials?.env)
     } catch (error) {
       // One runtime's conflicting sign-in must not cost a session that runs another.
       log.warn(`executor: could not seed the ${runtimeId} sign-in into a session HOME (${message(error)})`)
     }
   }
+  return env
 }
 
 function syncPath(path: string): void {
@@ -330,11 +339,12 @@ class Facet implements ExecutorFacet {
       if (env.stopping) await env.stopping
       if (this.stopped) throw new Error('the executor facet is stopping')
       if (env.shim || env.generation !== generation) return
-      this.deps.seedHome(join(this.sessionsDir, env.leaf, 'home'))
+      const seedEnv = this.deps.seedHome(join(this.sessionsDir, env.leaf, 'home'))
       const shim = await (this.deps.startShim ?? startHostShim)({
         daemonRoot: this.deps.daemonRoot,
         sessionLeaf: env.leaf,
-        log: this.deps.log
+        log: this.deps.log,
+        ...(seedEnv ? { seedEnv } : {})
       })
       if (this.stopped) {
         await shim.stop()

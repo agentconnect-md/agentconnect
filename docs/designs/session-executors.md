@@ -818,6 +818,19 @@ snapshot (`authRequired`), the way the console already shows "Login required" pe
 runtime; `executor/candidates` answers from it, and a holder does not place a
 session whose runtime the executor cannot authenticate.
 
+**The holder composes the launch in the executor's coordinates.** A placed session's
+HOME, XDG directories and runtime state roots (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …)
+are the session HOME on the root its shim reported — `ExecutorPlane.homeFor`, the
+same derivation as the mount and the runtime root of §5 — which is the directory the
+executor seeded. None of the holder's own environment travels with the spawn
+request, nothing is seeded or linked on the holder's disk, and no boundary of the
+holder's own is composed around it, neither an SRT policy nor its own microsandbox VM:
+the executor's strategy is the session's boundary, whatever the holder's backend is.
+What only the executor can name comes from the executor: the HOME seed also answers
+where that machine keeps a sign-in the HOME only points at — Claude's credential
+directory, which the seed leaves out of the HOME — and the executor's shim fills that
+in beneath whatever the holder sent.
+
 **Provider credentials and agent secrets are two mechanisms**, and both cross the
 link — encrypted. The earlier text authenticated the dial and left the link itself
 optionally plaintext, while its own §6 noted that sandboxed agents share the LAN: a
@@ -826,11 +839,18 @@ can see the segment. TLS-PSK covers every byte above the handshake, which is eve
 byte these two mechanisms send.
 
 - _Recognized provider credentials_ — what `CREDENTIAL_PREPARERS` handles per
-  runtime, for known provider endpoints — are seeded as files into the session HOME,
-  and on a microsandbox executor are additionally protected by hostname-scoped
-  placeholder substitution on that executor's host, exactly as locally. The
-  distinction is the credential's handling, not where it was configured: a
-  recognized provider credential supplied as an agent secret still takes this path.
+  runtime, for known provider endpoints — travel in the launch's environment when the
+  holder supplies them, as an unconfined local launch carries them; the ones in the
+  executor's own sign-in are files in the HOME it seeded. The target is that a
+  microsandbox executor additionally protects them by hostname-scoped placeholder
+  substitution on its own host, as the local VM does. That substitution has to happen
+  where the VM runs, so the holder never substitutes placeholders for a placed session:
+  the secrets they stand for would not follow the spawn request, and the runtime would
+  get placeholders nothing replaces. No strategy performs it on an executor yet, so
+  until one does a VM strategy receives these credentials as values, the way `host`
+  exposes them to its process tree. The distinction is the credential's handling, not
+  where it was configured: a recognized provider credential supplied as an agent
+  secret still takes this path.
 - _Everything else_ configured as an agent secret (`runtimeOverrides.secrets`)
   enters the runtime's environment as a plain value on every backend today, with
   output masking as its only protection, and does so on an executor the same way.

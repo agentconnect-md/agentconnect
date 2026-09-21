@@ -22,7 +22,7 @@ import type { ShimSession } from '../shim/session.js'
 import { ShimWorkspaceFs } from '../shim/workspace-fs-channel.js'
 import type { TunnelName } from '../shim/tunnel.js'
 import type { GitRunner } from '../workspace/git-runner.js'
-import { SESSIONS_DIR } from '../workspace/session-layout.js'
+import { SESSIONS_DIR, sessionDirIn, sessionHomeIn } from '../workspace/session-layout.js'
 import type { WorkspacePlacement } from '../workspace/workspace-fs.js'
 import { ExecutorEndpoints, ExecutorUnavailableError, type ExecutorLaunch } from './executor-endpoint.js'
 import type { PlacementChoice } from './executor-placement.js'
@@ -272,6 +272,13 @@ export class ExecutorPlane implements ExecutionPlane {
   mountFor(subject: SandboxSubject): string | undefined {
     const leaf = sandboxSubjectSessionLeaf(subject)
     return leaf === undefined ? undefined : executorMount(this.binder.workspaceRootFor(subject), leaf)
+  }
+
+  /** The session's HOME on that root — the one its executor seeded from its own sign-in (§7, §8) — or undefined before a root is known. */
+  homeFor(subject: SandboxSubject): string | undefined {
+    const leaf = sandboxSubjectSessionLeaf(subject)
+    const mount = this.mountFor(subject)
+    return leaf === undefined || mount === undefined ? undefined : sessionHomeIn(sessionDirIn(mount, leaf))
   }
 
   /** The skills seam over one session's shim, as the pool's is over a pod's; undefined until its channel is bound. */

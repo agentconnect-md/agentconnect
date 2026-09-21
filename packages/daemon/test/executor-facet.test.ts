@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -57,6 +57,7 @@ describe('executor facet', () => {
   let hold: Promise<void> | undefined
   let fail: Error | undefined
   let seeded: string[] = []
+  const seedEnvs: Array<Record<string, string> | undefined> = []
 
   const leftovers: ChildProcess[] = []
 
@@ -80,12 +81,14 @@ describe('executor facet', () => {
     inFlight = mostInFlight = 0
     hold = fail = undefined
     seeded = []
+    seedEnvs.length = 0
     lines.length = 0
     minted.clear()
   })
 
-  const startShim: NonNullable<ExecutorFacetDeps['startShim']> = async ({ daemonRoot, sessionLeaf }) => {
+  const startShim: NonNullable<ExecutorFacetDeps['startShim']> = async ({ daemonRoot, sessionLeaf, seedEnv }) => {
     starts.push(sessionLeaf)
+    seedEnvs.push(seedEnv)
     mostInFlight = Math.max(mostInFlight, ++inFlight)
     try {
       await hold
@@ -275,6 +278,18 @@ describe('executor facet', () => {
       const socket = await dial(reply)
       socket.write('hello shim')
       await vi.waitFor(() => expect(shims.get(LEAF)!.received()).toBe('hello shim'), WAIT)
+    })
+
+    // §8: only this machine can say where the sign-in its HOME seed points at lives, so its shim says it for the runtime.
+    it('hands the launcher what the HOME seed points a runtime at', async () => {
+      const { facet } = await start({
+        seedHome: (home) => {
+          mkdirSync(home, { recursive: true })
+          return { CLAUDE_SECURESTORAGE_CONFIG_DIR: '/home/op/.claude' }
+        }
+      })
+      ready(await facet.prepare(req(3)))
+      expect(seedEnvs).toEqual([{ CLAUDE_SECURESTORAGE_CONFIG_DIR: '/home/op/.claude' }])
     })
 
     it('answers the same launch again with the same key and generation, rotating nothing and closing no pipe', async () => {
@@ -775,6 +790,29 @@ describe('seedSessionHome', () => {
       if (process.platform === 'linux') {
         expect(lstatSync(join(sessionHome, '.codex', 'auth.json')).isSymbolicLink()).toBe(true)
       }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('answers where the Claude sign-in it leaves out of the HOME lives on this machine', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-xf-seed-'))
+    try {
+      const machineHome = join(root, 'machine')
+      mkdirSync(join(machineHome, '.claude'), { recursive: true })
+      writeFileSync(join(machineHome, '.claude', '.credentials.json'), '{"claudeAiOauth":{}}\n')
+      const env = seedSessionHome(
+        join(root, 'sessions', LEAF, 'home'),
+        { 'claude-acp': { command: 'claude-agent-acp', args: [], env: [] } },
+        { warn: () => {} },
+        { HOME: machineHome }
+      )
+      // Shared sign-in is Linux-only; elsewhere the seed copies what it has and points at nothing.
+      expect(env).toEqual(
+        process.platform === 'linux'
+          ? { CLAUDE_SECURESTORAGE_CONFIG_DIR: realpathSync(join(machineHome, '.claude')) }
+          : {}
+      )
     } finally {
       await rm(root, { recursive: true, force: true })
     }

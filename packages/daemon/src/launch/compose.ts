@@ -174,6 +174,8 @@ export function composeRuntimeLaunch(opts: {
     trustedSessionDir?: string
     trustedMounts?: SandboxMount[]
   }
+  /** A session placed on another machine: its HOME there (see prepareRuntimeLaunch). */
+  executor?: { home: string }
 }): ComposedRuntimeLaunch {
   const policyId = runtimeMemoryPolicyId(opts.runtime, opts.runtimeId)
   const capabilities = runtimeMemoryCapabilities(opts.runtime, opts.runtimeId)
@@ -190,12 +192,13 @@ export function composeRuntimeLaunch(opts: {
   // externalExecution can never launch sandboxed — skip executable resolution so
   // prepareRuntimeLaunch reports the refusal instead of a resolution failure.
   const sandboxAccess =
-    opts.runInSandbox && !opts.microsandbox && opts.runtime.externalExecution !== true
+    opts.runInSandbox && !opts.microsandbox && !opts.executor && opts.runtime.externalExecution !== true
       ? runtimeSandboxReadRoots(opts.runtime, stateSourceEnv)
       : undefined
   const launch = prepareRuntimeLaunch({
     ...(opts.microsandbox ? { microsandbox: { ...opts.microsandbox, nativeMemory: opts.provider === 'native' } } : {}),
     ...(opts.k8s === true ? { k8s: true } : {}),
+    ...(opts.executor ? { executor: opts.executor } : {}),
     runtimeId: opts.runtimeId,
     runtime: opts.runtime,
     scopeDir: opts.scopeDir,
@@ -236,8 +239,15 @@ export function composeRuntimeLaunch(opts: {
   if (!protectedMemory) return { runtime: composed, launch }
 
   try {
-    const effectiveEnv: NodeJS.ProcessEnv = { ...(opts.hostEnv ?? process.env), ...launch.env }
+    // A placed launch inherits nothing, so its own env is all the runtime reads.
+    const effectiveEnv: NodeJS.ProcessEnv = { ...(opts.executor ? {} : (opts.hostEnv ?? process.env)), ...launch.env }
     Object.assign(launch.env, runtimeMemoryDisabledEnv(opts.runtime, effectiveEnv, opts.runtimeId) ?? {})
+    // Both policies are a file written on this disk, which a runtime on another machine cannot read.
+    if (opts.executor && (policyId === 'hermes-agent' || policyId === 'omp')) {
+      throw new MemoryProviderUnavailableError(
+        `${describeRuntime(opts.runtime, opts.runtimeId)} keeps its memory off-switch in a file this daemon writes, which a session on another machine cannot read`
+      )
+    }
 
     if (policyId === 'hermes-agent') sanitizeHermesConfig(opts.scopeDir, launch)
     if (policyId === 'open-interpreter') composed.args.push('--disable', 'memories')

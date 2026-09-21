@@ -167,6 +167,25 @@ export function effectiveRunInSandbox(
   return requireSandbox || (requested && mechanism !== undefined && runtime?.externalExecution !== true)
 }
 
+/** A session placed on another machine (session-executors.md §7, §8): HOME, XDG and runtime state under the HOME it seeded, and none of this machine's env, sign-in or sandbox. */
+function prepareExecutorLaunch(
+  opts: { runtimeId: string; runtime?: RuntimeDef; explicitEnv?: Record<string, string> },
+  home: string,
+  allowModelToolUnixSockets: boolean
+): PreparedRuntimeLaunch {
+  // An empty host env: this daemon's own variables describe a machine the runtime is not on.
+  const env = runtimeHomeEnvironment(opts.runtimeId, home, opts.explicitEnv, {})
+  if (sharedCredentialProfile(opts.runtimeId, opts.runtime) === 'codex') {
+    // The private-HOME profile of an unconfined launch; the clones' `.git` are not known here in the executor's coordinates.
+    applyCodexPermissionProfile(env, {
+      protectedRoots: [join(home, '.codex')],
+      sessionHomeRoot: home,
+      allowModelToolUnixSockets
+    })
+  }
+  return { env, inheritProcessEnv: false, runtimeHome: home, gitMetadataWriteRoots: [] }
+}
+
 /** Prepare one ACP adapter launch. A private HOME is normally part of sandbox
  * isolation, but security probes and runtimes with generated private policy may
  * request the same environment isolation without an OS sandbox. */
@@ -218,7 +237,10 @@ export function prepareRuntimeLaunch(opts: {
     trustedSessionDir?: string
     trustedMounts?: SandboxMount[]
   }
+  /** A session placed on another machine: its HOME there, which that machine's strategy — never this one's sandbox — confines. */
+  executor?: { home: string }
 }): PreparedRuntimeLaunch {
+  if (opts.executor) return prepareExecutorLaunch(opts, opts.executor.home, opts.allowModelToolUnixSockets === true)
   if (opts.runInSandbox && opts.microsandbox) {
     return prepareMicrosandboxLaunch({ ...opts, ...opts.microsandbox })
   }

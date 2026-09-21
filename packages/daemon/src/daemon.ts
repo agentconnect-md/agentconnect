@@ -3438,7 +3438,7 @@ export class Daemon {
       endpointHost: () => this.cpClient?.localAddress?.(),
       seedHome: (home) => {
         this.refreshAdmittedRuntimes()
-        seedSessionHome(home, this.runtimes, this.log)
+        return seedSessionHome(home, this.runtimes, this.log)
       },
       agentsExist: async (agentIds) => {
         if (!this.cpClient) throw new Error('no control plane connection')
@@ -5310,7 +5310,17 @@ export class Daemon {
     }
     const runtime = catalog?.runtimes[agent.runtime]
     if (!runtime) throw new Error(this.runtimeUnavailableMessage(agent.runtime))
-    const microPlacement = micro ? this.microsandboxPlacement(agent, opts.cwd, opts.hostKey) : undefined
+    // A session placed on another machine runs inside that machine's strategy, so this one's own VM composes none of it (§7).
+    const remoteSession = this.placedSession(hostKeySessionKey(opts.hostKey))
+    const microPlacement =
+      micro && !remoteSession ? this.microsandboxPlacement(agent, opts.cwd, opts.hostKey) : undefined
+    // Its HOME is the one its executor seeded, on the root that machine's shim reported; without it a launch would name this disk (§7, §8).
+    const remoteHome = remoteSession && this.executorPlane?.homeFor(remoteSession.subject)
+    if (remoteSession && !remoteHome) {
+      throw new Error(
+        `session ${remoteSession.leaf} has no environment on daemon ${remoteSession.executorDaemonId} to launch in — its next turn prepares one`
+      )
+    }
     // A dream reads only its materialized inputs to produce a memory proposal, so
     // it never needs the agent's TOOL credentials (github-app git helper, gh
     // wrapper, or materialized `*_DATA` config-file secrets like KUBECONFIG /
@@ -5345,22 +5355,25 @@ export class Daemon {
     // process tree inherits. sessionGitEnv additionally supplies GitHub App identity.
     // Keep this channel LAST so runtimeOverrides cannot replace either policy.
     const baseEnv: Record<string, string> = { ...agentChildEnv(agent), ...cpRuntimeEnv(agent) }
-    const runInSandbox = opts.runInSandbox
-    if (agent.runInSandbox && !runInSandbox && opts.warnOnSandboxDowngrade) {
+    // This machine wraps nothing around a placed session: the executor's strategy is its boundary.
+    const runInSandbox = opts.runInSandbox && !remoteSession
+    if (agent.runInSandbox && !opts.runInSandbox && opts.warnOnSandboxDowngrade) {
       this.log.warn(
         runtime.externalExecution
           ? `acp: agent "${agentId}" requested Run in sandbox but runtime "${agent.runtime}" executes in an external machine-local service — running without it`
           : `acp: agent "${agentId}" requested Run in sandbox but this host has no supported Linux sandbox — running without it (#312)`
       )
     }
-    // Native memory is redirected under the HOME this host actually launches with — a confined session's own (§11).
+    // Native memory is redirected under the HOME this host actually launches with — a confined session's own (§11), or its executor's.
     const memoryAgent =
-      memoryKindOf(agent) === 'native' && runInSandbox
+      memoryKindOf(agent) === 'native' && (runInSandbox || remoteHome)
         ? {
             ...agent,
-            dir: microPlacement
-              ? microsandboxRuntimeHome(agent.dir, opts.hostKey, microPlacement.trustedSessionDir)
-              : privateRuntimeHomeFor(agent.dir, opts.hostKey)
+            dir:
+              remoteHome ??
+              (microPlacement
+                ? microsandboxRuntimeHome(agent.dir, opts.hostKey, microPlacement.trustedSessionDir)
+                : privateRuntimeHomeFor(agent.dir, opts.hostKey))
           }
         : agent
     const runtimeEnv = {
@@ -5376,7 +5389,6 @@ export class Daemon {
     const sessionGitIdentity = managedCredentials ? this.gitCommitIdentity : undefined
     const needsSessionGit = managedCredentials || agent.workspace.mode === 'git-repo'
     // A session on an executor reads the same file in that machine's environment, at the roots its `prepare` named (§5).
-    const remoteSession = this.placedSession(hostKeySessionKey(opts.hostKey))
     const remoteRoots = remoteSession && this.executorPlane?.rootsFor(remoteSession.sessionKey)
     const sandboxGitTarget = remoteRoots
       ? sandboxGitCredentialTarget(remoteRoots.runtimeRoot, remoteRoots.helperRoot)
@@ -5473,6 +5485,7 @@ export class Daemon {
               }
             }
           : {}),
+        ...(remoteHome ? { executor: { home: remoteHome } } : {}),
         runtimeId: runtimeEntry?.aliasOf ?? agent.runtime,
         runtime,
         provider: memoryKindOf(agent),
@@ -5542,8 +5555,11 @@ export class Daemon {
       // The grant is computed once per host and lives only in the child's argv; name it here so a
       // session that later fails a Git write can be matched against what its host was given.
       const reopened = launch.gitMetadataWriteRoots.length > 0 ? launch.gitMetadataWriteRoots.join(', ') : 'none'
+      const boundary = remoteSession
+        ? `on daemon ${remoteSession.executorDaemonId} (${remoteSession.strategy})`
+        : `sandbox ${runInSandbox ? 'on' : 'off'}`
       this.log.info(
-        `acp: agent "${agentId}" host launch — sandbox ${runInSandbox ? 'on' : 'off'}, cwd ${opts.cwd}, git metadata reopened: ${reopened}`
+        `acp: agent "${agentId}" host launch — ${boundary}, cwd ${opts.cwd}, git metadata reopened: ${reopened}`
       )
     } catch (err) {
       if (err instanceof SandboxError) {

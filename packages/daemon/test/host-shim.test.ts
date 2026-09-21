@@ -281,6 +281,22 @@ describe('host strategy shim launcher', () => {
       AC_SHIM_PARENT_FD: '3'
     })
   })
+
+  it("carries what the HOME seed points at, which can name none of the shim's own sockets, roots or HOME", () => {
+    const env = hostShimEnv({
+      machineEnv: { PATH: '/usr/bin' },
+      seedEnv: { CLAUDE_SECURESTORAGE_CONFIG_DIR: '/home/op/.claude', HOME: '/home/op', AC_SHIM_SOCKET: '/tmp/x' },
+      home: '/d/sessions/s/home',
+      socketPath: '/d/hs/x/shim.sock',
+      runtimeRoot: '/d/hs/x',
+      workspaceRoot: '/d/sessions/s',
+      helperRoot: '/d/dist',
+      mark: 'm'
+    })
+    expect(env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe('/home/op/.claude')
+    expect(env.HOME).toBe('/d/sessions/s/home')
+    expect(env.AC_SHIM_SOCKET).toBe('/d/hs/x/shim.sock')
+  })
 })
 
 describe('effective strategy table', () => {

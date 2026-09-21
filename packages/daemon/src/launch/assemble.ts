@@ -58,6 +58,8 @@ export interface AssembleRuntimeLaunchOptions {
     trustedSessionDir?: string
     trustedMounts?: SandboxMount[]
   }
+  /** A session placed on another machine: its HOME in that machine's coordinates. */
+  executor?: { home: string }
 }
 
 /**
@@ -90,6 +92,7 @@ export function assembleRuntimeLaunch(opts: AssembleRuntimeLaunchOptions): Assem
 
   const composed = composeRuntimeLaunch({
     ...(opts.microsandbox ? { microsandbox: opts.microsandbox } : {}),
+    ...(opts.executor ? { executor: opts.executor } : {}),
     runtimeId: opts.runtimeId,
     runtime: opts.runtime,
     provider: opts.provider,
