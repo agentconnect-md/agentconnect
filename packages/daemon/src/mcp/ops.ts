@@ -465,6 +465,7 @@ async function executeRegisteredTool(
   if (!gw) throw new Error(`no live platform connection for integration ${ctx.integrationId ?? '(none)'}`)
 
   if (isAttachmentReadTool(name)) return await readAttachment(ctx, args, deps, gw)
-  if (name === 'getCurrentChannel') return await getCurrentChannel(ctx, gw)
+  if (name === 'getCurrentChannel')
+    return await getCurrentChannel(ctx, gw, deps.deliveryThreadNow?.(ctx) ?? ctx.deliveryThread)
   throw new Error(`unknown tool: ${name}`)
 }

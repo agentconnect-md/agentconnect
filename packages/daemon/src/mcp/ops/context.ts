@@ -190,8 +190,9 @@ export interface SessionContext {
   /** The SESSION's coordinate — session-key lookups and transcript rows read this. It is
    *  NOT a platform thread where the conversation appends (channel-session-mode.md §3.1). */
   thread: string
-  /** Where a tool that POSTS defaults to: the thread this turn arrived in. Equal to
-   *  `thread` wherever a session is a thread, which is every conversation on `createNew`. */
+  /** Where a tool that POSTS defaults to, as of the turn that OPENED this session. The
+   *  bridge is registered once per session, so a later turn in another physical thread needs
+   *  `deliveryThreadNow()` instead; this is the fallback when no turn is live. */
   deliveryThread: string
   tools: ToolDescriptor[]
   /**

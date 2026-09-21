@@ -2873,6 +2873,12 @@ export class Daemon {
       now: () => Date.now(),
       canRun: (ctx) => this.toolTurnRunnable(ctx),
       gatewayFor: (integrationId) => this.connForIntegration(integrationId),
+      // The live turn's own delivery thread, which `activeTurnShare` already records per
+      // turn from `plan.thread`. The bridge context froze the opening turn's value at
+      // registration, and a session that spans several threads outgrows it immediately.
+      deliveryThreadNow: (ctx) =>
+        this.activeTurnShare.get(sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope))
+          ?.thread,
       // A platform's own session tools act through ANY platform's connection — including the one
       // the reply-surface registry above omits (Linear, §4.6).
       sessionToolConnectionFor: (integrationId) => this.anyConnForIntegration(integrationId),
