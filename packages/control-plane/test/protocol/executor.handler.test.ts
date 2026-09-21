@@ -6,12 +6,14 @@ import {
   type ExecutorCandidatesResult,
   type ExecutorFacts,
   type ExecutorPrepareReq,
-  type ExecutorPrepareResult
+  type ExecutorPrepareResult,
+  type ExecutorReleaseReq,
+  type ExecutorReleaseResult
 } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { buildWsHarness, type WsHarness } from '../fakes/build-ws.js'
 import type { InMemoryDaemonStub } from '../fakes/daemon-stub.js'
-import { seedAgent, seedDutyGroup } from '../fixtures/seed.js'
+import { seedAgent, seedDutyGroup, seedSessionMeta } from '../fixtures/seed.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 const HOLDER = 'd1111111-1111-4111-8111-111111111111'
@@ -30,6 +32,7 @@ const FACTS: ExecutorFacts = {
 const PSK = 'cHNrLXRoYXQtbXVzdC1uZXZlci1iZS1sb2dnZWQ'
 const READY: ExecutorPrepareResult = {
   status: 'ready',
+  generation: 8,
   endpoint: { host: '192.0.2.10', port: 7443 },
   psk: PSK,
   runtimeRoot: '/home/agent/workspace/hs/0a1b2c3d4e5f',
@@ -38,13 +41,17 @@ const READY: ExecutorPrepareResult = {
   liveCount: 4
 }
 
+const LAUNCH = '55555555-5555-4555-8555-555555555551'
+const NEXT_LAUNCH = '55555555-5555-4555-8555-555555555552'
+const SESSION_KEY = 'slack:C1:1700000000.000100'
 const PREPARE: ExecutorPrepareReq = {
   agentId: AGENT,
-  sessionKey: 'slack:C1:1700000000.000100',
+  sessionKey: SESSION_KEY,
   executorDaemonId: EXECUTOR,
-  generation: 7,
+  launchId: LAUNCH,
   strategy: 'host'
 }
+const RELEASE: ExecutorReleaseReq = { agentId: AGENT, sessionKey: SESSION_KEY, executorDaemonId: EXECUTOR }
 
 const BEAT = { load: { cpu: 0.1, mem: 0.1, agents: 0 }, health: 'ok', activeSessions: 0 }
 
@@ -96,7 +103,11 @@ async function placedAgent(setId: string, holder = HOLDER): Promise<void> {
   await seedDutyGroup(prisma, GROUP, holder, [AGENT])
 }
 
-async function ask<T>(stub: InMemoryDaemonStub, type: 'executor/candidates' | 'executor/prepare', payload: unknown) {
+async function ask<T>(
+  stub: InMemoryDaemonStub,
+  type: 'executor/candidates' | 'executor/prepare' | 'executor/release',
+  payload: unknown
+) {
   const id = stub.inject(type, payload)
   await stub.settled()
   const replies = stub.sent.filter((f) => f.corr === id)
@@ -104,7 +115,7 @@ async function ask<T>(stub: InMemoryDaemonStub, type: 'executor/candidates' | 'e
   return replies[0]!.payload as T
 }
 
-const relayed = (stub: InMemoryDaemonStub) => stub.sent.filter((f) => f.type === 'executor/prepare')
+const relayed = (stub: InMemoryDaemonStub, type = 'executor/prepare') => stub.sent.filter((f) => f.type === type)
 
 /** Everything in `value` as one searchable string; rows carry BigInt epochs and ids, which plain JSON refuses. */
 const dump = (value: unknown): string => JSON.stringify(value, (_key, v) => (typeof v === 'bigint' ? String(v) : v))
@@ -263,6 +274,38 @@ describe('executor/candidates — facts the duty holder pulls (real Postgres)', 
     })
   })
 
+  it('hints where the session last ran, from the CP’s own row, and only when the holder names one', async () => {
+    const h = buildWsHarness(prisma)
+    const setId = await memberSet()
+    const holder = await member(h, HOLDER, { setId })
+    await member(h, EXECUTOR, { setId, executor: FACTS })
+    await placedAgent(setId)
+    await seedSessionMeta(prisma, `s-${randomUUID()}`, AGENT, {
+      platform: 'slack',
+      channel: 'C1',
+      thread: '1700000000.000100',
+      executorDaemonId: EXECUTOR
+    })
+
+    const unasked = await ask<ExecutorCandidatesResult>(holder, 'executor/candidates', { agentId: AGENT })
+    expect(unasked.currentExecutorDaemonId).toBeUndefined()
+
+    const asked = await ask<ExecutorCandidatesResult>(holder, 'executor/candidates', {
+      agentId: AGENT,
+      sessionKey: SESSION_KEY
+    })
+    // A hint, not a choice: it rides beside the candidates the holder still picks from.
+    expect(asked.currentExecutorDaemonId).toBe(EXECUTOR)
+    expect(asked.candidates.map((c) => c.daemonId)).toEqual([EXECUTOR])
+
+    // A session this Control Plane has no row for gets no hint rather than a wrong one.
+    const other = await ask<ExecutorCandidatesResult>(holder, 'executor/candidates', {
+      agentId: AGENT,
+      sessionKey: 'slack:C9:1700000000.000900'
+    })
+    expect(other.currentExecutorDaemonId).toBeUndefined()
+  })
+
   it('never lists a member that shares but does not speak the executor frames', async () => {
     const h = buildWsHarness(prisma)
     const setId = await memberSet()
@@ -320,15 +363,15 @@ describe('executor/prepare — checked against the ledger, then relayed (real Po
     const { holder, executor } = await pair(h)
     const answers: ExecutorPrepareResult[] = [
       { status: 'full', liveCount: 32 },
-      { status: 'refused', reason: 'stale_generation' }
+      { status: 'refused', reason: 'launch_retired' }
     ]
     executor.respondTo('executor/prepare', () => ({ type: 'executor/prepare/result', payload: answers.shift() }))
 
     expect(await ask(holder, 'executor/prepare', PREPARE)).toEqual({ status: 'full', liveCount: 32 })
     expect((await prisma.daemon.findUniqueOrThrow({ where: { id: EXECUTOR } })).hostedSessions).toBe(32)
-    expect(await ask(holder, 'executor/prepare', { ...PREPARE, generation: 8 })).toEqual({
+    expect(await ask(holder, 'executor/prepare', { ...PREPARE, launchId: NEXT_LAUNCH })).toEqual({
       status: 'refused',
-      reason: 'stale_generation'
+      reason: 'launch_retired'
     })
     expect((await prisma.daemon.findUniqueOrThrow({ where: { id: EXECUTOR } })).hostedSessions).toBe(32)
   })
@@ -400,7 +443,7 @@ describe('executor/prepare — checked against the ledger, then relayed (real Po
     expect(relayed(executor)).toEqual([])
   })
 
-  it('a resent request joins the relay in flight: one relay, one generation, one answer', async () => {
+  it('a resent request joins the relay in flight: one relay, one launch, one answer', async () => {
     const h = buildWsHarness(prisma)
     const { holder, executor } = await pair(h)
     const setIdOf = vi.spyOn(h.deps.memberSets, 'setIdOf')
@@ -416,7 +459,7 @@ describe('executor/prepare — checked against the ledger, then relayed (real Po
 
     executor.reply(frame.id, 'executor/prepare/result', READY)
     await holder.settled()
-    expect(relayed(executor).map((f) => (f.payload as ExecutorPrepareReq).generation)).toEqual([7])
+    expect(relayed(executor).map((f) => (f.payload as ExecutorPrepareReq).launchId)).toEqual([LAUNCH])
     expect(holder.sent.filter((f) => f.corr === id).map((f) => f.payload)).toEqual([READY, READY])
     expect(h.deps.connReg.get(EXECUTOR)!.executorPrepares?.size).toBe(0)
   })
@@ -460,5 +503,83 @@ describe('executor/prepare — checked against the ledger, then relayed (real Po
         'executor/prepare: relay failed'
       ]
     ])
+  })
+})
+
+describe('executor/release — deletion with an owner (real Postgres)', () => {
+  async function pair(h: WsHarness, opts: { spread?: boolean; holderOfDuty?: string } = {}) {
+    const setId = await memberSet(opts.spread ?? true)
+    const holder = await member(h, HOLDER, { setId })
+    const executor = await member(h, EXECUTOR, { setId, executor: FACTS })
+    await placedAgent(setId, opts.holderOfDuty ?? HOLDER)
+    return { setId, holder, executor }
+  }
+
+  it('relays the release over the executor’s own connection and returns its answer, idempotently', async () => {
+    const h = buildWsHarness(prisma)
+    const { holder, executor } = await pair(h)
+    const answers: ExecutorReleaseResult[] = [{ status: 'released' }, { status: 'unknown' }]
+    executor.respondTo('executor/release', () => ({ type: 'executor/release/result', payload: answers.shift() }))
+
+    expect(await ask(holder, 'executor/release', RELEASE)).toEqual({ status: 'released' })
+    // Asked again, the environment is already gone: `unknown` rather than an error, so a retry is free.
+    expect(await ask(holder, 'executor/release', RELEASE)).toEqual({ status: 'unknown' })
+
+    const frames = relayed(executor, 'executor/release')
+    expect(frames.map((f) => f.payload)).toEqual([RELEASE, RELEASE])
+    expect([frames[0]!.epoch, frames[0]!.orgId]).toEqual([h.deps.connReg.get(EXECUTOR)!.sessionEpoch, DEFAULT_ORG_ID])
+  })
+
+  it('is relayed with the group’s switch off and with the executor’s facet dark: withdrawn consent still lets a holder clean up', async () => {
+    const h = buildWsHarness(prisma)
+    const { setId, holder, executor } = await pair(h)
+    executor.respondTo('executor/release', () => ({
+      type: 'executor/release/result',
+      payload: { status: 'released' }
+    }))
+
+    await prisma.memberSet.update({ where: { id: setId }, data: { spreadSessions: false } })
+    expect(await ask(holder, 'executor/release', RELEASE)).toEqual({ status: 'released' })
+    // The same switch stops a prepare dead, which is the difference this test exists for.
+    expect(await ask(holder, 'executor/prepare', PREPARE)).toEqual({ status: 'refused', reason: 'group_switch_off' })
+
+    h.deps.connReg.get(EXECUTOR)!.capabilities!.executor = { enabled: false }
+    expect(await ask(holder, 'executor/release', RELEASE)).toEqual({ status: 'released' })
+    expect(relayed(executor, 'executor/release')).toHaveLength(2)
+  })
+
+  it('refuses a requester that does not hold the duty, and a target outside the agent’s set, without relaying', async () => {
+    const h = buildWsHarness(prisma)
+    const notHolder = await pair(h, { holderOfDuty: THIRD })
+    expect(await ask(notHolder.holder, 'executor/release', RELEASE)).toEqual({
+      status: 'refused',
+      reason: 'not_holder'
+    })
+    expect(relayed(notHolder.executor, 'executor/release')).toEqual([])
+
+    const h2 = buildWsHarness(prisma)
+    const own = await pair(h2)
+    const outsider = await member(h2, THIRD, { executor: FACTS })
+    expect(await ask(own.holder, 'executor/release', { ...RELEASE, executorDaemonId: THIRD })).toEqual({
+      status: 'refused',
+      reason: 'not_member'
+    })
+    expect(relayed(outsider, 'executor/release')).toEqual([])
+  })
+
+  it('tells a holder its executor is offline, so it knows the backstop owes the environment', async () => {
+    const h = buildWsHarness(prisma)
+    const setId = await memberSet()
+    const holder = await member(h, HOLDER, { setId })
+    await h.mintToken(EXECUTOR)
+    await prisma.memberSetMember.create({ data: { setId, daemonId: EXECUTOR } })
+    await placedAgent(setId)
+    const lastSeenAt = new Date('2026-09-20T12:00:00.000Z')
+    await prisma.daemon.update({ where: { id: EXECUTOR }, data: { lastSeenAt } })
+
+    expect(await ask(holder, 'executor/release', RELEASE)).toEqual({
+      status: 'offline',
+      lastSeenAt: lastSeenAt.toISOString()
+    })
   })
 })

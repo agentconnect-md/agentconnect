@@ -6,15 +6,17 @@ import {
   type AnyFrame,
   type ExecutorFacts,
   type ExecutorPrepareReq,
-  type ExecutorPrepareResult
+  type ExecutorPrepareResult,
+  type ExecutorReleaseReq
 } from '@agentconnect.md/protocol'
 import { ProtocolError } from '../../domain/errors.js'
 import type { DaemonConnection } from '../connection.js'
 import type { DaemonWsDeps } from '../deps.js'
 import { ConnectionClosed, type DaemonConnState } from '../registry.js'
-import { handleExecutorCandidates, handleExecutorPrepare } from './executor.js'
+import { handleExecutorCandidates, handleExecutorPrepare, handleExecutorRelease } from './executor.js'
 
 const HOLDER = 'd1111111-1111-4111-8111-111111111111'
+const SUCCESSOR = 'd7777777-7777-4777-8777-777777777777'
 const EXECUTOR = 'd2222222-2222-4222-8222-222222222222'
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
 const SET = '33333333-3333-4333-8333-333333333333'
@@ -29,20 +31,27 @@ const FACTS: ExecutorFacts = {
 }
 const READY: ExecutorPrepareResult = {
   status: 'ready',
+  generation: 8,
   endpoint: { host: '192.0.2.10', port: 7443 },
   psk: PSK,
   runtimeRoot: '/home/agent/workspace/hs/0a1b2c3d4e5f',
   liveCount: 4
 }
+const LAUNCH = '55555555-5555-4555-8555-555555555555'
 const PREPARE: ExecutorPrepareReq = {
   agentId: AGENT,
   sessionKey: 'slack:C1:1700000000.000100',
   executorDaemonId: EXECUTOR,
-  generation: 7,
+  launchId: LAUNCH,
   strategy: 'host'
 }
+const RELEASE: ExecutorReleaseReq = {
+  agentId: AGENT,
+  sessionKey: PREPARE.sessionKey,
+  executorDaemonId: EXECUTOR
+}
 
-function frame(type: 'executor/candidates' | 'executor/prepare', payload: unknown): AnyFrame {
+function frame(type: 'executor/candidates' | 'executor/prepare' | 'executor/release', payload: unknown): AnyFrame {
   return { v: 1, id: crypto.randomUUID(), ts: '2026-09-21T00:00:00.000Z', type, orgId: ORG, payload } as AnyFrame
 }
 
@@ -75,15 +84,20 @@ function member(daemonId: string, over: Partial<DaemonConnState> & { executor?: 
 
 function fakeDeps(over: {
   members?: DaemonConnState[]
-  holds?: () => boolean
+  holds?: (daemonId: string) => boolean
   spreadSessions?: boolean
   placement?: { placementKind: 'daemon' | 'set'; daemonId: string | null; setId: string | null }
   memberIds?: string[]
   lastSeenAt?: Date | null
+  executorForKey?: string | null
+  /** Held by the FIRST reader of the member set, so one asker can sit in its lookups while another runs past it. */
+  slowSetRead?: Promise<void>
 }) {
   const members = new Map((over.members ?? []).map((m) => [m.daemonId, m]))
+  let setReads = 0
   const log = vi.fn()
   const recordHostedSessions = vi.fn(async () => undefined)
+  const executorForKey = vi.fn(async () => over.executorForKey ?? null)
   const deps = {
     log: { error: log },
     agent: {
@@ -93,9 +107,13 @@ function fakeDeps(over: {
         ...(over.placement ?? { placementKind: 'set', daemonId: null, setId: SET })
       })
     },
-    dutyLease: { holdsAgent: async () => (over.holds ? over.holds() : true) },
+    dutyLease: { holdsAgent: async (daemonId: string) => (over.holds ? over.holds(daemonId) : true) },
+    session: { executorForKey },
     memberSets: {
-      get: async () => ({ id: SET, orgId: ORG, name: 'lab', spreadSessions: over.spreadSessions ?? true }),
+      get: async () => {
+        if (++setReads === 1 && over.slowSetRead) await over.slowSetRead
+        return { id: SET, orgId: ORG, name: 'lab', spreadSessions: over.spreadSessions ?? true }
+      },
       memberIdsOf: async () => over.memberIds ?? [...members.keys()],
       setIdOf: async (id: string) => ((over.memberIds ?? [...members.keys()]).includes(id) ? SET : null)
     },
@@ -109,7 +127,7 @@ function fakeDeps(over: {
       recordHostedSessions
     }
   } as unknown as DaemonWsDeps
-  return { deps, log, recordHostedSessions }
+  return { deps, log, recordHostedSessions, executorForKey, setReads: () => setReads }
 }
 
 const replied = (conn: ReturnType<typeof fakeConn>) => conn.replyTo.mock.calls.map((call) => call[2] as unknown)
@@ -157,6 +175,46 @@ describe('handleExecutorCandidates', () => {
       expect([reason, replied(conn)]).toEqual([reason, [{ candidates: [], reason }]])
     }
   })
+
+  it('hints where the session last ran only when the holder named one, and says nothing when no row does', async () => {
+    const unasked = fakeConn()
+    const quiet = fakeDeps({ members: [member(HOLDER)], executorForKey: EXECUTOR })
+    await handleExecutorCandidates(frame('executor/candidates', { agentId: AGENT }), unasked, quiet.deps)
+    expect(quiet.executorForKey).not.toHaveBeenCalled()
+    expect(replied(unasked)).toEqual([{ candidates: [], reason: 'no_member_shares' }])
+
+    const asked = fakeConn()
+    const hinted = fakeDeps({ members: [member(HOLDER)], executorForKey: EXECUTOR })
+    const ask = { agentId: AGENT, sessionKey: PREPARE.sessionKey }
+    await handleExecutorCandidates(frame('executor/candidates', ask), asked, hinted.deps)
+    // It rides an empty answer too: an executor the CP last saw may be nobody's candidate right now.
+    expect(replied(asked)).toEqual([{ candidates: [], reason: 'no_member_shares', currentExecutorDaemonId: EXECUTOR }])
+    expect(hinted.executorForKey).toHaveBeenCalledWith(AGENT, {
+      platform: 'slack',
+      channel: 'C1',
+      thread: '1700000000.000100'
+    })
+
+    const unknown = fakeConn()
+    await handleExecutorCandidates(
+      frame('executor/candidates', ask),
+      unknown,
+      fakeDeps({ members: [member(HOLDER)], executorForKey: null }).deps
+    )
+    expect(replied(unknown)).toEqual([{ candidates: [], reason: 'no_member_shares' }])
+  })
+
+  it('tells a non-holder nothing, the hint included', async () => {
+    const conn = fakeConn()
+    const { deps, executorForKey } = fakeDeps({ holds: () => false, executorForKey: EXECUTOR })
+    await handleExecutorCandidates(
+      frame('executor/candidates', { agentId: AGENT, sessionKey: PREPARE.sessionKey }),
+      conn,
+      deps
+    )
+    expect(replied(conn)).toEqual([{ candidates: [], reason: 'not_holder' }])
+    expect(executorForKey).not.toHaveBeenCalled()
+  })
 })
 
 describe('handleExecutorPrepare', () => {
@@ -185,13 +243,17 @@ describe('handleExecutorPrepare', () => {
     const resent = fakeConn()
     const newer = fakeConn()
 
+    const other = '66666666-6666-4666-8666-666666666666'
     const running = [
       handleExecutorPrepare(frame('executor/prepare', PREPARE), first, deps),
       handleExecutorPrepare(frame('executor/prepare', PREPARE), resent, deps),
-      handleExecutorPrepare(frame('executor/prepare', { ...PREPARE, generation: 8 }), newer, deps)
+      handleExecutorPrepare(frame('executor/prepare', { ...PREPARE, launchId: other }), newer, deps)
     ]
     await vi.waitFor(() => expect(answers).toHaveLength(2))
-    expect(executor.conn.request.mock.calls.map((call) => (call[1] as ExecutorPrepareReq).generation)).toEqual([7, 8])
+    expect(executor.conn.request.mock.calls.map((call) => (call[1] as ExecutorPrepareReq).launchId)).toEqual([
+      LAUNCH,
+      other
+    ])
 
     answers[0]!(READY)
     answers[1]!({ status: 'full' })
@@ -199,6 +261,36 @@ describe('handleExecutorPrepare', () => {
     // One preparation, one answer: the slow launch never reaches the holder as two different keys.
     expect([replied(first), replied(resent), replied(newer)]).toEqual([[READY], [READY], [{ status: 'full' }]])
     expect(executor.executorPrepares?.size).toBe(0)
+  })
+
+  it('never relays for a holder the ledger deposed while it was still looking things up', async () => {
+    const executor = member(EXECUTOR, { executor: FACTS })
+    executor.conn.request.mockResolvedValue(READY)
+    let release!: () => void
+    const slow = new Promise<void>((resolve) => (release = resolve))
+    let holder = HOLDER
+    const deposed = fakeConn(HOLDER)
+    const successor = fakeConn(SUCCESSOR)
+    const { deps, setReads } = fakeDeps({
+      members: [member(HOLDER), member(SUCCESSOR), executor],
+      holds: (id) => id === holder,
+      slowSetRead: slow
+    })
+
+    // The deposed holder is inside the lookups that used to sit between its duty check and the send.
+    const late = handleExecutorPrepare(frame('executor/prepare', PREPARE), deposed, deps)
+    await vi.waitFor(() => expect(setReads()).toBe(1))
+    holder = SUCCESSOR
+    const next = '66666666-6666-4666-8666-666666666666'
+    await handleExecutorPrepare(frame('executor/prepare', { ...PREPARE, launchId: next }), successor, deps)
+    release()
+    await late
+
+    // Authorization order is send order because nothing is awaited between the two: only the successor's reached the wire.
+    expect(executor.conn.request.mock.calls.map((call) => (call[1] as ExecutorPrepareReq).launchId)).toEqual([next])
+    expect(replied(successor)).toEqual([READY])
+    expect(replied(deposed)).toEqual([{ status: 'refused', reason: 'not_holder' }])
+    expect(JSON.stringify(deposed.replyTo.mock.calls)).not.toContain(PSK)
   })
 
   it('never hands the key to a holder deposed while the executor prepared', async () => {
@@ -286,5 +378,87 @@ describe('handleExecutorPrepare', () => {
 
     await handleExecutorPrepare(frame('executor/prepare', PREPARE), conn, deps)
     expect(replied(conn)).toEqual([{ status: 'full', liveCount: 32 }])
+  })
+})
+
+describe('handleExecutorRelease', () => {
+  it('relays the release to the executor and returns its answer', async () => {
+    const executor = member(EXECUTOR, { executor: FACTS })
+    executor.conn.request.mockResolvedValue({ status: 'released' })
+    const conn = fakeConn()
+    const { deps } = fakeDeps({ members: [member(HOLDER), executor] })
+
+    await handleExecutorRelease(frame('executor/release', RELEASE), conn, deps)
+
+    expect(executor.conn.request.mock.calls).toEqual([
+      ['executor/release', RELEASE, { epoch: 9 }, { maxTries: 1, ackTimeoutMs: EXECUTOR_PREPARE_RELAY_BUDGET_MS }, ORG]
+    ])
+    expect(replied(conn)).toEqual([{ status: 'released' }])
+  })
+
+  it('is gated by neither consent: the group’s switch is off, or the machine’s facet is dark, and it still relays', async () => {
+    const withdrawn: Array<[Partial<DaemonConnState> & { executor?: ExecutorFacts }, { spreadSessions?: boolean }]> = [
+      [{ executor: FACTS }, { spreadSessions: false }],
+      [{}, {}]
+    ]
+    for (const [state, group] of withdrawn) {
+      const executor = member(EXECUTOR, state)
+      executor.conn.request.mockResolvedValue({ status: 'released' })
+      const conn = fakeConn()
+      const { deps } = fakeDeps({ members: [member(HOLDER), executor], ...group })
+      await handleExecutorRelease(frame('executor/release', RELEASE), conn, deps)
+      expect(replied(conn)).toEqual([{ status: 'released' }])
+      expect(executor.conn.request).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('relays to a draining executor too, since its environments outlive the process', async () => {
+    const executor = member(EXECUTOR, { executor: FACTS, state: 'DRAINING' })
+    executor.conn.request.mockResolvedValue({ status: 'released' })
+    const conn = fakeConn()
+    const { deps } = fakeDeps({ members: [member(HOLDER), executor] })
+    await handleExecutorRelease(frame('executor/release', RELEASE), conn, deps)
+    expect(replied(conn)).toEqual([{ status: 'released' }])
+  })
+
+  it('refuses a non-holder, an agent on no group, and a target outside the group, without relaying', async () => {
+    const cases: Array<[Parameters<typeof fakeDeps>[0], string[] | undefined, string]> = [
+      [{ holds: () => false }, undefined, 'not_holder'],
+      [{ placement: { placementKind: 'daemon', daemonId: HOLDER, setId: null } }, undefined, 'not_on_group'],
+      [{}, [HOLDER], 'not_member']
+    ]
+    for (const [over, memberIds, reason] of cases) {
+      const executor = member(EXECUTOR, { executor: FACTS })
+      const conn = fakeConn()
+      const { deps } = fakeDeps({ members: [member(HOLDER), executor], ...over, ...(memberIds ? { memberIds } : {}) })
+      await handleExecutorRelease(frame('executor/release', RELEASE), conn, deps)
+      expect([reason, replied(conn)]).toEqual([reason, [{ status: 'refused', reason }]])
+      expect(executor.conn.request).not.toHaveBeenCalled()
+    }
+  })
+
+  it('answers an executor that is down from the CP’s own record, so the holder knows the backstop owes it', async () => {
+    const lastSeenAt = new Date('2026-09-20T12:00:00.000Z')
+    const conn = fakeConn()
+    await handleExecutorRelease(
+      frame('executor/release', RELEASE),
+      conn,
+      fakeDeps({ members: [member(HOLDER)], memberIds: [HOLDER, EXECUTOR], lastSeenAt }).deps
+    )
+    expect(replied(conn)).toEqual([{ status: 'offline', lastSeenAt: lastSeenAt.toISOString() }])
+  })
+
+  it('a relay that fails or answers nonsense is one retryable refusal', async () => {
+    for (const answer of [
+      async () => Promise.reject(new ProtocolError('INTERNAL', 'no ack after 1 tries')),
+      async () => ({ ok: true })
+    ]) {
+      const executor = member(EXECUTOR, { executor: FACTS })
+      executor.conn.request.mockImplementation(answer)
+      const conn = fakeConn()
+      const { deps } = fakeDeps({ members: [member(HOLDER), executor] })
+      await handleExecutorRelease(frame('executor/release', RELEASE), conn, deps)
+      expect(replied(conn)).toEqual([{ status: 'refused', reason: 'relay_failed' }])
+    }
   })
 })

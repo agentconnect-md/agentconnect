@@ -166,6 +166,9 @@ export async function seedSessionMeta(
     contentSetId?: string
     platform?: string
     channel?: string
+    thread?: string
+    /** The executor this session's environment ran on (session-executors.md §7). */
+    executorDaemonId?: string
     parentSessionId?: string
     lastActivityAt?: Date
     /** When the session BEGAN; defaults to now. What the per-org session-rate windows read. */
@@ -189,6 +192,8 @@ export async function seedSessionMeta(
       ...(opts.startedAt ? { startedAt: opts.startedAt } : {}),
       ...(opts.visibility ? { visibility: opts.visibility } : {}),
       ...(opts.ownerIdentity ? { ownerIdentity: opts.ownerIdentity } : {}),
+      ...(opts.thread ? { thread: opts.thread } : {}),
+      ...(opts.executorDaemonId ? { executorDaemonId: opts.executorDaemonId } : {}),
       ...(opts.daemonId ? { daemonId: opts.daemonId } : {}),
       ...(opts.contentSetId ? { contentSetId: opts.contentSetId } : {}),
       ...(opts.parentSessionId ? { parentSessionId: opts.parentSessionId } : {}),
