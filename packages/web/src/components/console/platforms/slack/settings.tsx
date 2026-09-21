@@ -390,12 +390,14 @@ function SlackRowSettings({ bot, canWrite }: { bot: BotDto; canWrite: boolean })
     <div className="mb-3 flex items-start justify-between gap-3 rounded-lg border border-(--border-subtle) bg-(--surface-card) px-3 py-2">
       <div className="min-w-0">
         <div className="font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)">
-          Join public channels on demand
+          Automatically join public channels
         </div>
+        {/* The scope is the point of this copy: a join is persistent, bot-wide membership, not a
+            one-time read for the agent that asked (review on #2180). */}
         <div className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
           {enabled
-            ? 'Agents can read and post in any public channel; the bot joins one the first time it is needed. Private channels still need an invite.'
-            : 'Agents reach only the channels this bot was added to.'}
+            ? 'When an agent reads or posts in a public channel this bot has not joined, the bot joins automatically and remains a member. Slack announces the join, and the membership applies to every agent using this bot. Private channels still require an invitation.'
+            : 'Agents can only read and post in channels this bot has already joined.'}
         </div>
         {error && (
           <div className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--status-error)">{error}</div>
@@ -405,7 +407,7 @@ function SlackRowSettings({ bot, canWrite }: { bot: BotDto; canWrite: boolean })
         checked={enabled}
         disabled={!canWrite || busy}
         onChange={(next) => void flip(next)}
-        ariaLabel="Join public channels on demand"
+        ariaLabel="Automatically join public channels"
       />
     </div>
   )

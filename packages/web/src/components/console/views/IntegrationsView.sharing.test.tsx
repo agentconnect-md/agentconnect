@@ -103,7 +103,7 @@ afterEach(async () => {
 // The join-public-channels switch is Slack's module fragment (`RowSettings`), rendered only
 // in the EXPANDED row and only on the platform whose manifest declares `publicChannelJoin`.
 describe('the join-public-channels switch', () => {
-  const JOIN = '[role="switch"][aria-label="Join public channels on demand"]'
+  const JOIN = '[role="switch"][aria-label="Automatically join public channels"]'
 
   it('appears in an expanded Slack row, reflecting the bot’s flag', async () => {
     mocks.bots = [bot({ id: 'sl-2', platform: 'slack', joinPublicChannels: false })]
