@@ -13,7 +13,7 @@ const PREPARE = {
   agentId: '11111111-1111-4111-8111-111111111111',
   sessionKey: 'slack:C1:1700000000.000100:11111111-1111-4111-8111-111111111111',
   executorDaemonId: '33333333-3333-4333-8333-333333333333',
-  generation: 1,
+  launchId: '55555555-5555-4555-8555-555555555555',
   strategy: 'host'
 }
 
@@ -124,6 +124,7 @@ describe('daemon wiring of the executor facet', () => {
       facts: () => undefined,
       hostedSessions: () => undefined,
       prepare: async () => ({ status: 'refused', reason: 'draining' }),
+      release: async () => ({ status: 'unknown' }),
       reconcile: async () => {},
       drain: async (deadlineMs) => void calls.push(`drain ${deadlineMs}`),
       stop: async () => void calls.push('stop')

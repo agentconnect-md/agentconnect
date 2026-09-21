@@ -1163,9 +1163,10 @@ describe('CpClient dispatch', () => {
     agentId: CRON_AGENT_ID,
     sessionKey: 'slack:C1:1700000000.000100',
     executorDaemonId: DAEMON_ID,
-    generation: 7,
+    launchId: '55555555-5555-4555-8555-555555555555',
     strategy: 'host'
   }
+  const RELEASE = { agentId: CRON_AGENT_ID, sessionKey: PREPARE.sessionKey, executorDaemonId: DAEMON_ID }
 
   // It advertises `session-executors-v1`, so a relayed prepare must be ANSWERED: an ignored frame costs the Control Plane its whole relay budget.
   it('refuses a relayed executor/prepare at once while it has no executor facet', async () => {
@@ -1184,6 +1185,7 @@ describe('CpClient dispatch', () => {
   it("hands a relayed executor/prepare to the executor facet and returns its answer as it came, the pipe's key included", async () => {
     const ready = {
       status: 'ready',
+      generation: 8,
       endpoint: { host: '192.0.2.10', port: 40123 },
       psk: 'test-only-pipe-key',
       runtimeRoot: '/home/agent/workspace/hs/0a1b2c3d4e5f',
@@ -1216,6 +1218,24 @@ describe('CpClient dispatch', () => {
     const rep = JSON.parse(t.sent[0]!)
     expect([rep.type, rep.corr]).toEqual(['error', f.id])
     expect(rep.payload).toMatchObject({ code: 'INTERNAL', retryable: true })
+  })
+
+  it('hands a relayed executor/release to the facet, and answers unknown while it has none', async () => {
+    const bare = await readyClient()
+    bare.t.pushInbound(frame('executor/release', RELEASE, { epoch: 5 }))
+    await tick()
+    expect(JSON.parse(bare.t.sent[0]!).payload).toEqual({ status: 'unknown' })
+
+    const executorRelease = vi.fn(async () => ({ status: 'released' }))
+    const { t } = await readyClient({ executorRelease: executorRelease as never })
+    const f = JSON.parse(frame('executor/release', RELEASE, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    expect(executorRelease).toHaveBeenCalledWith(RELEASE)
+    expect([JSON.parse(t.sent[0]!).type, JSON.parse(t.sent[0]!).payload]).toEqual([
+      'executor/release/result',
+      { status: 'released' }
+    ])
   })
 })
 

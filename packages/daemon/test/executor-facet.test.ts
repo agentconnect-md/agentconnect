@@ -23,9 +23,10 @@ import { WAIT } from './wait-support.js'
 const AGENT = '11111111-1111-4111-8111-111111111111'
 const OTHER_AGENT = '22222222-2222-4222-8222-222222222222'
 const SELF = '33333333-3333-4333-8333-333333333333'
-const ELSEWHERE = '44444444-4444-4444-8444-444444444444'
 const KEY = `slack:C1:1700000000.000100:${AGENT}`
 const LEAF = sessionKeyDirName(KEY)
+/** A holder's launch id. Distinct ids are distinct launches; the number itself means nothing to the executor. */
+const LAUNCH = (n: number): string => `55555555-5555-4555-8555-${String(n).padStart(12, '0')}`
 
 type Ready = Extract<ExecutorPrepareResult, { status: 'ready' }>
 
@@ -152,8 +153,7 @@ describe('executor facet', () => {
         mkdirSync(home, { recursive: true })
       },
       agentsExist: async (agentIds) => new Set(agentIds),
-      sessions: { keysForAgent: async () => [KEY], executorOf: async () => ({ executorDaemonId: SELF }) },
-      daemonId: () => SELF,
+      retentionMs: () => null,
       log,
       clock,
       startShim,
@@ -164,11 +164,11 @@ describe('executor facet', () => {
     return { facet, clock }
   }
 
-  const req = (generation: number, over: Partial<ExecutorPrepareReq> = {}): ExecutorPrepareReq => ({
+  const req = (launch: number, over: Partial<ExecutorPrepareReq> = {}): ExecutorPrepareReq => ({
     agentId: AGENT,
     sessionKey: KEY,
     executorDaemonId: SELF,
-    generation,
+    launchId: LAUNCH(launch),
     strategy: 'host',
     ...over
   })
@@ -206,7 +206,7 @@ describe('executor facet', () => {
 
   const closed = (socket: TLSSocket): Promise<void> =>
     new Promise((resolve) => (socket.destroyed ? resolve() : socket.once('close', () => resolve())))
-  const record = (leaf = LEAF): { agentId: string; generation: number } =>
+  const record = (leaf = LEAF): { agentId: string; generation: number; launchId: string; lastUsedAt: number } =>
     JSON.parse(readFileSync(join(root!, 'sessions', `${leaf}.json`), 'utf8'))
 
   describe('the switch', () => {
@@ -251,11 +251,13 @@ describe('executor facet', () => {
   })
 
   describe('prepare', () => {
-    it('creates the environment, seeds its HOME, starts the shim, persists the generation and admits the key it returns', async () => {
+    it('creates the environment, seeds its HOME, allocates the first generation and admits the key it returns', async () => {
       const { facet } = await start()
       const reply = ready(await facet.prepare(req(3)))
       expect(reply).toEqual({
         status: 'ready',
+        // The executor allocated it: the holder named a launch and no number at all.
+        generation: 1,
         endpoint: { host: '192.0.2.10', port: facet.facts()!.endpoint!.port },
         psk: expect.any(String),
         runtimeRoot: join(root!, 'hs', '1'),
@@ -266,8 +268,8 @@ describe('executor facet', () => {
       expect(Buffer.from(reply.psk, 'base64url')).toHaveLength(32)
       expect(starts).toEqual([LEAF])
       expect(seeded).toEqual([join(root!, 'sessions', LEAF, 'home')])
-      expect(record()).toMatchObject({ agentId: AGENT, generation: 3 })
-      // The inventory names the agent and the leaf, never the session key's coordinates or a key.
+      expect(record()).toMatchObject({ agentId: AGENT, generation: 1, launchId: LAUNCH(3) })
+      // The inventory names the agent, the leaf and the launch, never the session key's coordinates or a key.
       expect(readFileSync(join(root!, 'sessions', `${LEAF}.json`), 'utf8')).not.toMatch(/slack|psk|C1/)
 
       const socket = await dial(reply)
@@ -275,12 +277,13 @@ describe('executor facet', () => {
       await vi.waitFor(() => expect(shims.get(LEAF)!.received()).toBe('hello shim'), WAIT)
     })
 
-    it('answers an applied generation again with the same key, rotating nothing and closing no pipe', async () => {
+    it('answers the same launch again with the same key and generation, rotating nothing and closing no pipe', async () => {
       const { facet } = await start()
       const first = ready(await facet.prepare(req(3)))
       const socket = await admitted(first)
       const again = ready(await facet.prepare(req(3)))
       expect(again.psk).toBe(first.psk)
+      expect(again.generation).toBe(first.generation)
       expect(starts).toHaveLength(1)
       socket.write('still here')
       await vi.waitFor(() => expect(shims.get(LEAF)!.received()).toBe('still here'), WAIT)
@@ -298,44 +301,35 @@ describe('executor facet', () => {
       expect(starts).toHaveLength(1)
     })
 
-    it('rotates on a higher generation: a fresh key, the old pipe closed, the old key refused, the shim kept', async () => {
+    it('rotates on a new launch: the next generation, a fresh key, the old pipe closed, the old key refused, the shim kept', async () => {
       const { facet } = await start()
       const old = ready(await facet.prepare(req(3)))
       const deposed = await admitted(old)
       const next = ready(await facet.prepare(req(4)))
       expect(next.psk).not.toBe(old.psk)
+      expect(next.generation).toBe(old.generation + 1)
       await closed(deposed)
       await expect(dial(old)).rejects.toThrow(/decrypt error/i)
       const successor = await dial(next)
       successor.write('successor')
       await vi.waitFor(() => expect(shims.get(LEAF)!.received()).toBe('successor'), WAIT)
       expect(starts).toHaveLength(1)
-      expect(record().generation).toBe(4)
+      expect(record()).toMatchObject({ generation: 2, launchId: LAUNCH(4) })
     })
 
-    it('refuses a lower generation as stale and leaves the key, the pipe and the record alone', async () => {
-      const { facet } = await start()
-      const reply = ready(await facet.prepare(req(5)))
-      const socket = await admitted(reply)
-      expect(await facet.prepare(req(4))).toEqual({ status: 'refused', reason: 'stale_generation' })
-      expect(record().generation).toBe(5)
-      socket.write('unmoved')
-      await vi.waitFor(() => expect(shims.get(LEAF)!.received()).toBe('unmoved'), WAIT)
-      expect(ready(await facet.prepare(req(5))).psk).toBe(reply.psk)
-    })
-
-    it('remembers the applied generation across a restart, and gives a replay of it no second key', async () => {
+    it('remembers the generation and the launch across a restart, and gives the interrupted launch no second key', async () => {
       const first = await start()
-      ready(await first.facet.prepare(req(5)))
+      expect(ready(await first.facet.prepare(req(5))).generation).toBe(1)
       await first.facet.stop()
       facets = []
       const { facet } = await start()
+      // The reply died with the process, and minting a second key at the same generation would arm whoever replayed it.
       expect(await facet.prepare(req(5))).toEqual({ status: 'refused', reason: 'launch_retired' })
-      expect(await facet.prepare(req(4))).toEqual({ status: 'refused', reason: 'stale_generation' })
       expect(starts).toHaveLength(1)
-      // The holder answers a retired launch with a new one, which starts the environment again.
-      ready(await facet.prepare(req(6)))
+      // The holder answers a retired launch with a new one, which starts the environment again past the generation on disk.
+      expect(ready(await facet.prepare(req(6))).generation).toBe(2)
       expect(starts).toHaveLength(2)
+      expect(record()).toMatchObject({ generation: 2, launchId: LAUNCH(6) })
     })
 
     it.skipIf(process.platform !== 'linux')(
@@ -376,7 +370,7 @@ describe('executor facet', () => {
       const { facet } = await start()
       const socket = await admitted(ready(await facet.prepare(req(3))))
       expect(await facet.prepare(req(9, { agentId: OTHER_AGENT }))).toEqual({ status: 'refused', reason: 'not_holder' })
-      expect(record()).toMatchObject({ agentId: AGENT, generation: 3 })
+      expect(record()).toMatchObject({ agentId: AGENT, generation: 1, launchId: LAUNCH(3) })
       // The rightful holder's pipe is untouched by the attempt.
       socket.write('still mine')
       await vi.waitFor(() => expect(shims.get(LEAF)!.received()).toBe('still mine'), WAIT)
@@ -436,7 +430,7 @@ describe('executor facet', () => {
       const overtaken = facet.prepare(req(1))
       const newest = facet.prepare(req(2))
       release()
-      expect(await overtaken).toEqual({ status: 'refused', reason: 'stale_generation' })
+      expect(await overtaken).toEqual({ status: 'refused', reason: 'launch_retired' })
       const reply = ready(await newest)
       expect(starts).toHaveLength(1)
       await dial(reply)
@@ -449,9 +443,9 @@ describe('executor facet', () => {
       const forged = JSON.stringify({ type: 'executor/prepare', id: 'x', payload: req(99) })
       socket.write(forged)
       await vi.waitFor(() => expect(shims.get(LEAF)!.received()).toBe(forged), WAIT)
-      // Generation 99 was never applied: the record is untouched, and 2 is still a newer launch.
-      expect(record().generation).toBe(1)
-      ready(await facet.prepare(req(2)))
+      // Launch 99 was never applied: the record is untouched, and the next real launch still advances the generation.
+      expect(record()).toMatchObject({ generation: 1, launchId: LAUNCH(1) })
+      expect(ready(await facet.prepare(req(2))).generation).toBe(2)
     })
   })
 
@@ -467,7 +461,7 @@ describe('executor facet', () => {
       expect(await facet.prepare(req(1))).toEqual({ status: 'refused', reason: 'launch_retired' })
       await expect(dial(reply)).rejects.toThrow(/decrypt error/i)
       expect(existsSync(join(root!, 'sessions', LEAF, 'home'))).toBe(true)
-      expect(record().generation).toBe(1)
+      expect(record()).toMatchObject({ generation: 1, launchId: LAUNCH(1) })
     })
 
     it('never stops an environment with an admitted pipe, and starts the linger over when the pipe closes', async () => {
@@ -495,7 +489,7 @@ describe('executor facet', () => {
     })
   })
 
-  describe('orphan reconcile', () => {
+  describe('the backstop reconcile', () => {
     /** One environment, stopped and older than the grace — the only kind a sweep may judge — on a facet whose own schedule has not fired yet. */
     async function stale(over: Partial<ExecutorFacetDeps> = {}): Promise<{ facet: ExecutorFacet; dir: string }> {
       const earlier = await start()
@@ -509,56 +503,36 @@ describe('executor facet', () => {
 
     it.each([
       ['the Control Plane no longer knows its agent', { agentsExist: async () => new Set<string>() }],
-      [
-        'the shared store no longer lists its session',
-        { sessions: { keysForAgent: async () => [], executorOf: async () => undefined } }
-      ],
-      [
-        'its session row names another executor',
-        { sessions: { keysForAgent: async () => [KEY], executorOf: async () => ({ executorDaemonId: ELSEWHERE }) } }
-      ]
+      ['nothing has dialed or prepared it within this machine’s retention', { retentionMs: () => ORPHAN_GRACE_MS }]
     ] as Array<[string, Partial<ExecutorFacetDeps>]>)('discards an environment when %s', async (_why, over) => {
       const { facet, dir } = await stale(over)
       await facet.reconcile()
       await vi.waitFor(() => expect(gone(dir)).toBe(true), WAIT)
       // The generation went with it: a session recreated under the same key starts over.
-      ready(await facet.prepare(req(1)))
+      expect(ready(await facet.prepare(req(1))).generation).toBe(1)
     })
 
     it.each([
-      ['its session is listed and its row names this machine', {}],
+      ['its agent is still known and retention is off', {}],
+      ['its agent is still known and retention has not run out', { retentionMs: () => 10 * ORPHAN_GRACE_MS }],
       [
-        'its row names no executor yet',
-        { sessions: { keysForAgent: async () => [KEY], executorOf: async () => undefined } }
-      ],
-      [
-        'the Control Plane cannot answer',
+        'the Control Plane cannot answer, whatever retention says',
         {
           agentsExist: async () => Promise.reject(new Error('control plane unreachable')),
-          sessions: { keysForAgent: async () => [], executorOf: async () => undefined }
+          retentionMs: () => ORPHAN_GRACE_MS
         }
-      ],
-      [
-        'the store cannot answer',
-        {
-          agentsExist: async () => new Set<string>(),
-          sessions: {
-            keysForAgent: async () => Promise.reject(new Error('store unreachable')),
-            executorOf: async () => undefined
-          }
-        }
-      ],
-      ['no shared store is mounted at all', { agentsExist: async () => new Set<string>(), sessions: undefined }]
+      ]
     ] as Array<[string, Partial<ExecutorFacetDeps>]>)('retains an environment when %s', async (_why, over) => {
       const { facet, dir } = await stale(over)
       await facet.reconcile()
       expect(existsSync(join(dir, 'home'))).toBe(true)
-      expect(record().generation).toBe(1)
+      expect(record()).toMatchObject({ generation: 1, launchId: LAUNCH(1) })
     })
 
     it('never judges an environment inside the grace, one with a live shim, or one a holder is using', async () => {
       const asked = vi.fn(async () => new Set<string>())
-      const { facet, clock } = await start({ agentsExist: asked })
+      // Retention long past, so only "in use" can be what saves it.
+      const { facet, clock } = await start({ agentsExist: asked, retentionMs: () => 1 })
       const socket = await admitted(ready(await facet.prepare(req(1))))
       clock.advance(ORPHAN_GRACE_MS)
       await facet.reconcile()
@@ -568,7 +542,7 @@ describe('executor facet', () => {
       expect(asked).not.toHaveBeenCalled()
       expect(existsSync(join(root!, 'sessions', LEAF, 'home'))).toBe(true)
 
-      // Stopped a moment ago and re-prepared since: young again, whatever the authorities say.
+      // Stopped a moment ago and re-prepared since: young again, whatever the authority says.
       clock.advance(IDLE_LINGER_MS)
       await vi.waitFor(() => expect(facet.hostedSessions()).toBe(0), WAIT)
       ready(await facet.prepare(req(2)))
@@ -578,22 +552,43 @@ describe('executor facet', () => {
       expect(asked).not.toHaveBeenCalled()
     })
 
-    it('never deletes an environment a prepare re-attached after the lookups were made', async () => {
+    it('measures retention from the last dial, which a restart does not reset', async () => {
+      const retentionMs = (): number => ORPHAN_GRACE_MS
+      const earlier = await start({ retentionMs })
+      const reply = ready(await earlier.facet.prepare(req(1)))
+      // A whole window of holder traffic after the preparation: the re-dial is use, and it is what the clock runs from.
+      const socket = await admitted(reply)
+      earlier.clock.advance(ORPHAN_GRACE_MS)
+      socket.destroy()
+      await closed(socket)
+      await admitted(reply)
+      await vi.waitFor(() => expect(record().lastUsedAt).toBe(1_000_000 + ORPHAN_GRACE_MS), WAIT)
+      await earlier.facet.stop()
+      facets = []
+
+      // A moment short of a window since that dial, and two windows since the preparation: measured from the wrong one it would go.
+      const clock = new FakeClock(1_000_000 + 2 * ORPHAN_GRACE_MS - 1)
+      const { facet } = await start({ clock, retentionMs })
+      await facet.reconcile()
+      expect(existsSync(join(root!, 'sessions', LEAF, 'home'))).toBe(true)
+      clock.advance(1)
+      await facet.reconcile()
+      await vi.waitFor(() => expect(gone(join(root!, 'sessions', LEAF))).toBe(true), WAIT)
+    })
+
+    it('never deletes an environment a prepare re-attached after the lookup was made', async () => {
       const under: { facet?: ExecutorFacet } = {}
       const { facet, dir } = await stale({
-        sessions: {
-          // The store answers "gone" from a snapshot, and a new launch lands before the sweep acts on it.
-          keysForAgent: async () => {
-            ready(await under.facet!.prepare(req(2)))
-            return []
-          },
-          executorOf: async () => undefined
+        // The Control Plane answers "gone" from a snapshot, and a new launch lands before the sweep acts on it.
+        agentsExist: async () => {
+          ready(await under.facet!.prepare(req(2)))
+          return new Set<string>()
         }
       })
       under.facet = facet
       await facet.reconcile()
       expect(existsSync(join(dir, 'home'))).toBe(true)
-      expect(record().generation).toBe(2)
+      expect(record()).toMatchObject({ generation: 2, launchId: LAUNCH(2) })
       expect(facet.hostedSessions()).toBe(1)
     })
 
@@ -621,6 +616,68 @@ describe('executor facet', () => {
       expect(await facet.prepare(req(2))).toEqual({ status: 'refused', reason: 'facet_off' })
       clock.advance(ORPHAN_GRACE_MS)
       await vi.waitFor(() => expect(gone(join(root!, 'sessions', LEAF))).toBe(true), WAIT)
+    })
+  })
+
+  describe('release', () => {
+    const release = (over: Partial<{ agentId: string; sessionKey: string }> = {}) => ({
+      agentId: AGENT,
+      sessionKey: KEY,
+      executorDaemonId: SELF,
+      ...over
+    })
+
+    it('stops the shim, removes the environment and its record, and closes the holder’s pipe', async () => {
+      const { facet } = await start()
+      const socket = await admitted(ready(await facet.prepare(req(1))))
+      expect(await facet.release(release())).toEqual({ status: 'released' })
+      expect(shims.get(LEAF)!.stopped).toBe(true)
+      await closed(socket)
+      expect(existsSync(join(root!, 'sessions', LEAF))).toBe(false)
+      expect(existsSync(join(root!, 'sessions', `${LEAF}.json`))).toBe(false)
+      expect(facet.hostedSessions()).toBe(0)
+    })
+
+    it('is idempotent, and a session it never hosted is unknown rather than an error', async () => {
+      const { facet } = await start()
+      ready(await facet.prepare(req(1)))
+      expect(await facet.release(release())).toEqual({ status: 'released' })
+      expect(await facet.release(release())).toEqual({ status: 'unknown' })
+      expect(await facet.release(release({ sessionKey: `slack:C9:1700000000.000900:${AGENT}` }))).toEqual({
+        status: 'unknown'
+      })
+    })
+
+    it('refuses to release another agent’s environment, whoever the Control Plane vouched for', async () => {
+      const { facet } = await start()
+      ready(await facet.prepare(req(1)))
+      expect(await facet.release(release({ agentId: OTHER_AGENT }))).toEqual({
+        status: 'refused',
+        reason: 'not_holder'
+      })
+      expect(existsSync(join(root!, 'sessions', LEAF, 'home'))).toBe(true)
+    })
+
+    it('still collects for a holder whose machine owner has withdrawn consent', async () => {
+      const earlier = await start()
+      ready(await earlier.facet.prepare(req(1)))
+      await earlier.facet.stop()
+      facets = []
+      const { facet } = await start({ share: false })
+      expect(facet.facts()).toBeUndefined()
+      expect(await facet.release(release())).toEqual({ status: 'released' })
+      expect(existsSync(join(root!, 'sessions', LEAF))).toBe(false)
+    })
+
+    it('retires the launch of an environment a release is removing, rather than making it wait', async () => {
+      const { facet } = await start()
+      ready(await facet.prepare(req(1)))
+      const removing = facet.release(release())
+      // A prepare that waited here would let a later holder's overtake it, which is the one ordering the CP cannot fix.
+      expect(await facet.prepare(req(2))).toEqual({ status: 'refused', reason: 'launch_retired' })
+      expect(await removing).toEqual({ status: 'released' })
+      // Once it is gone the environment is created again, from the first generation.
+      expect(ready(await facet.prepare(req(2))).generation).toBe(1)
     })
   })
 

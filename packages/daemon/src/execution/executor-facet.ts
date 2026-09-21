@@ -497,20 +497,19 @@ class Facet implements ExecutorFacet {
     }
   }
 
-  async release(req: ExecutorReleaseReq): Promise<ExecutorReleaseResult> {
+  release(req: ExecutorReleaseReq): Promise<ExecutorReleaseResult> {
     const env = this.environments.get(sessionKeyDirName(req.sessionKey))
-    if (!env) return { status: 'unknown' }
+    if (!env) return Promise.resolve({ status: 'unknown' })
     // The CP vouched that the asker holds `req.agentId`; that says nothing about another agent's environment.
-    if (env.agentId !== req.agentId) return { status: 'refused', reason: 'not_holder' }
-    if (env.discarding) {
-      await env.discarding
-      return { status: 'released' }
-    }
-    // The holder judged the session retired, pipe and all; nothing here outranks that.
+    if (env.agentId !== req.agentId) return Promise.resolve({ status: 'refused', reason: 'not_holder' })
+    // Marked with nothing awaited first, so a prepare arriving meanwhile is retired rather than resurrecting what is going.
+    return (env.discarding ??= this.remove(env)).then(() => ({ status: 'released' }))
+  }
+
+  /** The holder judged the session retired, pipe and all; nothing here outranks that. A removal that fails is logged and left to the backstop. */
+  private async remove(env: Environment): Promise<void> {
     await this.stopEnvironment(env)
-    env.discarding = this.discard(env, 'its holder released it')
-    await env.discarding
-    return { status: 'released' }
+    await this.discard(env, 'its holder released it')
   }
 
   // Dirtiness is never judged here: a holder's `release`, a removed agent or an expired retention is the only evidence acted on.

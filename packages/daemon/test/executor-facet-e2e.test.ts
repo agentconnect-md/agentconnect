@@ -82,11 +82,11 @@ describe('executor facet, end to end', () => {
     root = undefined
   })
 
-  const req = (generation: number): ExecutorPrepareReq => ({
+  const req = (launch: number): ExecutorPrepareReq => ({
     agentId: AGENT,
     sessionKey: KEY,
     executorDaemonId: SELF,
-    generation,
+    launchId: `55555555-5555-4555-8555-${String(launch).padStart(12, '0')}`,
     strategy: 'host'
   })
 
@@ -143,7 +143,7 @@ describe('executor facet, end to end', () => {
         endpointHost: () => '127.0.0.1',
         seedHome: () => {},
         agentsExist: async (agentIds) => new Set(agentIds),
-        daemonId: () => SELF,
+        retentionMs: () => null,
         log: quiet,
         startShim: (input) => startHostShim({ ...input, entry }),
         listen: { host: '127.0.0.1' }
@@ -155,7 +155,8 @@ describe('executor facet, end to end', () => {
       expect(statSync(first.runtimeRoot).mode & 0o777).toBe(0o700)
       expect(statSync(join(first.runtimeRoot, 'shim.sock')).isSocket()).toBe(true)
 
-      const holder = await bind(first, 1)
+      // The holder binds at the generation the executor allocated and returned; it has no counter of its own.
+      const holder = await bind(first, first.generation)
       const workspace = join(root, 'sessions', LEAF, 'workspace')
       const opened = (await holder.session.request('acp', {
         op: 'open',
@@ -187,6 +188,7 @@ describe('executor facet, end to end', () => {
       // A newer launch rotates: the pipe admitted under the old key closes, and that key admits nobody.
       const second = ready(await facet.prepare(req(2)))
       expect(second.psk).not.toBe(first.psk)
+      expect(second.generation).toBe(first.generation + 1)
       expect(second.runtimeRoot).toBe(first.runtimeRoot)
       await holder.lost
       dialers.shift()!.stop()
@@ -194,7 +196,7 @@ describe('executor facet, end to end', () => {
         new Promise((resolve, reject) => pipe(first).once('secureConnect', resolve).once('error', reject))
       ).rejects.toThrow(/decrypt error/i)
       // The successor binds the same shim at its higher generation, through its own pipe.
-      await bind(second, 2)
+      await bind(second, second.generation)
 
       // Inside this case's budget, not the hook's: stopping ends the shim and the runtime it started.
       for (const dialer of dialers.splice(0)) dialer.stop()
