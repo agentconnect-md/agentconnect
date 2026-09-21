@@ -2313,11 +2313,20 @@ export class Daemon {
       // `targetFor` says about the agent's workspace git.
       daemonTarget: daemonCredentialTarget,
       capabilityFor: (agentId) => this.gitCredServer!.capabilityFor(agentId),
-      preWarm: async (agentId, reason) => {
+      preWarm: async (agentId, reason, repository) => {
+        // An additional repository warms the key its own helper ask lands on, never the workspace's — a scratch agent has none.
+        if (repository !== undefined) {
+          await this.gitCreds.get(agentId, reason, {
+            repo: repository.repoFullName,
+            ...(repository.provider === IMPLICIT_CREDENTIAL_PROVIDER
+              ? {}
+              : { provider: repository.provider, externalRepoId: repository.repoId })
+          })
+          return
+        }
         const agent = this.agents.get(agentId)
         const provider = agent ? this.workspaces.managedCredentialProvider(agent) : undefined
-        // A provider named on the wire pre-warms under its own numeric identity (§17.1); the
-        // implicit one keeps the v1 ask, which carries neither field.
+        // A provider named on the wire pre-warms under its own numeric identity (§17.1); the implicit one keeps the v1 ask.
         if (provider !== undefined && provider !== IMPLICIT_CREDENTIAL_PROVIDER) {
           const externalRepoId = this.managedWorkspaceRepo(agentId)?.repoId
           await this.gitCreds.get(agentId, reason, {

@@ -38,9 +38,16 @@ import { wireTestPlane } from './workspace-plane-support.js'
 const workspaces = new WorkspaceManager()
 
 const SHIM = join(mkdtempSync(join(tmpdir(), 'ac-session-clone-shim-')), 'git-credential-helper.sh')
+/** The repository each credential pre-warm named, in order; `workspace` when it named none. */
+const preWarms: string[] = []
+/** Refuse a repo-less pre-warm the way the CP does for a scratch agent, which has no workspace credential to mint. */
+let refuseWorkspacePreWarm = false
 initGitInjection({
   targetFor: () => daemonGitCredentialTarget({ shimPath: SHIM, runDir: join(SHIM, '..') }),
-  preWarm: async () => undefined,
+  preWarm: async (_agentId, _reason, repository) => {
+    preWarms.push(repository?.repoFullName ?? 'workspace')
+    if (repository === undefined && refuseWorkspacePreWarm) throw new Error('agent has no default github repository')
+  },
   capabilityFor: (agentId) => `cap-${agentId}`
 })
 
@@ -56,6 +63,8 @@ afterAll(() => rmSync(join(SHIM, '..'), { recursive: true, force: true }))
 afterEach(() => {
   vi.restoreAllMocks()
   gitRuns.length = 0
+  preWarms.length = 0
+  refuseWorkspacePreWarm = false
   workspaces.setPlaneResolver(undefined)
   remotes.clear()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -548,11 +557,14 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
       additionalRepos: [{ repoFullName: 'acme/infra', repoId: '42' }]
     })
     serveAll(agent)
+    refuseWorkspacePreWarm = true
 
     const installSkills = vi.fn(async () => [] as string[])
     const cwd = await workspaces.prepareSessionWorkspace(agent, confined(), { installSkills })
 
     expect(cwd).toBe(agent.workspace.path)
+    // A scratch agent has no workspace credential, so every warm names the repository its git reaches.
+    expect([...new Set(preWarms)]).toEqual(['acme/infra'])
     expect(installSkills.mock.calls).toEqual([[agent, cwd]])
     const infra = join(leafOf(agent), 'repos', 'acme', 'infra')
     expect(statSync(join(infra, '.git')).isDirectory()).toBe(true)

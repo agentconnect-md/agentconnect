@@ -492,10 +492,17 @@ export interface GitCredentialTarget {
   socketPath?: string
 }
 
+/** An additional repository as its own credential ask names it: the path its helper reads, on the host that numbers `repoId`. */
+export interface GitCredRepository {
+  repoFullName: string
+  provider: CodeHostProvider
+  repoId: string
+}
+
 /** Module-level init (workspace-manager is functional; mirrors cloneInFlight). */
 let targetFor: ((agentId: string, cwd?: string) => GitCredentialTarget) | undefined
 let daemonTarget: GitCredentialTarget | undefined
-let preWarm: ((agentId: string, reason: 'clone' | 'pull') => Promise<void>) | undefined
+let preWarm: ((agentId: string, reason: 'clone' | 'pull', repository?: GitCredRepository) => Promise<void>) | undefined
 let capabilityFor: ((agentId: string) => string) | undefined
 
 export function initGitInjection(opts: {
@@ -507,8 +514,8 @@ export function initGitInjection(opts: {
    * answers for those too, which is only right for a daemon that never sandboxes.
    */
   daemonTarget?: GitCredentialTarget
-  /** Warm the daemon credential cache BEFORE a timed git op (never inside its budget). */
-  preWarm: (agentId: string, reason: 'clone' | 'pull') => Promise<void>
+  /** Warm the daemon credential cache BEFORE a timed git op (never inside its budget): the named repository's own credential, else the workspace's. */
+  preWarm: (agentId: string, reason: 'clone' | 'pull', repository?: GitCredRepository) => Promise<void>
   /** Runtime-only local socket capability. Never written to a config file. */
   capabilityFor: (agentId: string) => string
 }): void {
@@ -735,10 +742,14 @@ export async function writeRepoHelperConfig(
   await git.raw(['config', `credential.${base}.useHttpPath`, 'true'])
 }
 
-/** Pre-warm hook for workspace-manager (no-op until initialized). */
-export async function preWarmGitCred(agentId: string, reason: 'clone' | 'pull'): Promise<void> {
+/** Pre-warm hook for workspace-manager (no-op until initialized); `repository` absent ⇒ the workspace's own credential. */
+export async function preWarmGitCred(
+  agentId: string,
+  reason: 'clone' | 'pull',
+  repository?: GitCredRepository
+): Promise<void> {
   if (!preWarm) return
-  await preWarm(agentId, reason)
+  await preWarm(agentId, reason, repository)
 }
 
 // The session channel (GIT_CONFIG_GLOBAL) needs git ≥ 2.32 and DEGRADES

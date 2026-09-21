@@ -52,6 +52,7 @@ import {
   managedCredentialScope,
   originOnManagedHost,
   scopeCodeHosts,
+  type GitCredRepository,
   type ManagedCredentialScope
 } from './git-injection.js'
 import { GitTransportError, LocalGitRunner, type GitRunner } from './git-runner.js'
@@ -131,6 +132,10 @@ export interface WorkspaceRoot {
   repoFullName?: string
   /** The `<a>/<b>` pair a secondary root's subtree hangs at under `repos/` (`owner/repo`, or `_gitlab/<id>`); absent for the primary. */
   subtreeName?: string
+  /** The host that numbers `repoId` — each numbers its own independently (gitlab-com-integration.md §8.1); absent for the primary. */
+  provider?: CodeHostProvider
+  /** The host's numeric repository or project id — the identity a rename cannot change; absent for the primary. */
+  repoId?: string
   /** Credentials ride the github-app helper (vs anonymous). */
   githubApp: boolean
   /** The managed host this root's credential channel pins, resolved from the spec (§24.4). */
@@ -144,9 +149,7 @@ export type SessionRootLocator = Pick<WorkspaceRoot, 'path' | 'worktreesPath' | 
 export interface SecondaryWorkspaceRoot extends WorkspaceRoot {
   repoFullName: string
   subtreeName: string
-  /** The host that numbers `repoId` — each numbers its own independently (gitlab-com-integration.md §8.1). */
   provider: CodeHostProvider
-  /** The host's numeric repository or project id — the identity a rename cannot change. */
   repoId: string
   /** Empty until `prepareSecondaryRoot` resolves the remote's default; nothing may clone before that. */
   branch: string
@@ -864,7 +867,7 @@ export class WorkspaceManager {
 
   /** The branch `origin/HEAD` points at, asked of the remote through the clone's own credentials. */
   async resolveRemoteDefaultBranch(agentId: string, root: SecondaryWorkspaceRoot): Promise<string> {
-    if (root.githubApp) await preWarmGitCred(agentId, 'clone')
+    if (root.githubApp) await preWarmGitCred(agentId, 'clone', additionalRepositoryOf(root))
     const env = root.githubApp
       ? { ...workspaceGitEnvBase(root.cloneUrl), ...cloneGitEnv(agentId, root.cloneUrl, root.managed) }
       : { ...workspaceGitEnvBase(root.cloneUrl), GIT_TERMINAL_PROMPT: '0' }
@@ -1132,7 +1135,7 @@ export class WorkspaceManager {
   /** Best-effort ff-only pull of one root's checkout; never block/throw on offline (design §4.3). */
   async pullRoot(agentId: string, root: WorkspaceRoot, cwd: string): Promise<void> {
     // github-app: warm the credential cache OUTSIDE the pull budget — a cold cache costs a CP round trip.
-    if (root.githubApp) await preWarmGitCred(agentId, 'pull').catch(() => undefined)
+    if (root.githubApp) await preWarmGitCred(agentId, 'pull', additionalRepositoryOf(root)).catch(() => undefined)
     // Abort-driven budget: the signal KILLS the git child at the deadline, so a wedged pull cannot hold .git/index.lock.
     const abort = new AbortController()
     const timer = setTimeout(() => abort.abort(), PULL_TIMEOUT_MS)
@@ -1712,7 +1715,7 @@ export class WorkspaceManager {
     const headRef = reviewHeadRefFor(worktreeId)
     const mergeRef = `${refRoot}/merge`
     await assertSafeWorkspaceGitConfig(this.runnerFor(agentId, root.path))
-    if (root.githubApp) await preWarmGitCred(agentId, 'pull')
+    if (root.githubApp) await preWarmGitCred(agentId, 'pull', additionalRepositoryOf(root))
     const pullTarget = workspaceGitRemoteTarget(root.cloneUrl, root.githubApp ? agentId : undefined, root.managed)
     const abort = new AbortController()
     const timer = setTimeout(() => abort.abort(), REVIEW_FETCH_TIMEOUT_MS)
@@ -2180,7 +2183,7 @@ export class WorkspaceManager {
 
   // A blobless partial clone of one root for a session (§11) — whole history, file contents on demand — straight from the remote through the daemon's credential path like a primary's first clone: never a hardlink of the primary (a session with write on its own `.git` could reach the shared inodes), never `--shared`; a remote that refuses the filter answers with a full clone, and a clone that fails fails the session.
   private async cloneSessionRootAt(agentId: string, root: WorkspaceRoot, cwd: string): Promise<void> {
-    if (root.githubApp) await preWarmGitCred(agentId, 'clone')
+    if (root.githubApp) await preWarmGitCred(agentId, 'clone', additionalRepositoryOf(root))
     // Run in the target's parent, which names the pod that owns it: a runner with no cwd is the agent pod's.
     const git = this.runnerFor(agentId, dirname(cwd)).withEnv(this.sessionCloneGitEnv(agentId, root, cwd))
     await withStartupPhase('clone', () =>
@@ -2942,9 +2945,8 @@ export class WorkspaceManager {
     const { cloneUrl, branch, githubApp, managed } = root
 
     const p = (async () => {
-      // github-app: credentials ride the env-injected helper (no repo config exists
-      // yet). SPREAD over process.env — withEnv REPLACES the child env, as .env() did.
-      if (githubApp) await preWarmGitCred(agentId, 'clone')
+      // github-app: credentials ride the env-injected helper (no repo config yet); SPREAD over process.env — withEnv REPLACES the child env.
+      if (githubApp) await preWarmGitCred(agentId, 'clone', additionalRepositoryOf(root))
       const git = githubApp
         ? this.runnerFor(agentId).withEnv({
             ...workspaceGitEnvBase(cloneUrl),
@@ -3026,6 +3028,13 @@ function repoIdentity(entry: { provider: CodeHostProvider; repoId: string }): st
 /** Whether an attestation names exactly this root's repository. */
 function attestsRoot(recorded: SecondaryMaterialization, root: SecondaryWorkspaceRoot): boolean {
   return repoIdentity(recorded) === repoIdentity(root)
+}
+
+/** The additional repository a root is, whose own credential its git asks for; undefined for the primary, which warms the workspace's. */
+function additionalRepositoryOf({ repoFullName, provider, repoId }: WorkspaceRoot): GitCredRepository | undefined {
+  return repoFullName !== undefined && provider !== undefined && repoId !== undefined
+    ? { repoFullName, provider, repoId }
+    : undefined
 }
 
 class UntrustedGithubWorkspaceOriginError extends Error {
