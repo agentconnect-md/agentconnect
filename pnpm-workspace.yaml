@@ -17,6 +17,8 @@ allowBuilds:
   '@playwright/browser-chromium': false
   '@swc/core': false
   core-js: false
+  # next-intl's message-extraction watcher; only its CLI needs the native binary.
+  '@parcel/watcher': false
 
 minimumReleaseAge: 60
 
