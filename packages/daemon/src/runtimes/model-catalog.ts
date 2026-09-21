@@ -443,10 +443,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   return Promise.race([p, timeout]).finally(() => clearTimeout(timer)) as Promise<T>
 }
 
-/** The API lists every Google model on the key, most of which Gemini CLI cannot run as a coding
- *  agent (Gemma, Lyria music, Nano Banana images, Deep Research, Antigravity, robotics). Keep the
- *  `gemini-` family and drop its non-text members rather than guessing from capability flags,
- *  which mark all of them `generateContent`. */
+/** The API lists every model on the key, all marked generateContent: keep the `gemini-` family minus non-text members. */
 const GEMINI_AGENT_MODEL = /^gemini-/
 const GEMINI_NON_AGENT_MODEL =
   /(?:^|-)(?:tts|embedding|transcribe|image|computer-use|robotics[a-z-]*|omni|live|native-audio|dialog)(?:-|$)/
@@ -491,9 +488,7 @@ class GeminiCatalogDriver implements ModelCatalogDriver {
 }
 
 // ── built-in drivers (design §3.1) ──────────────────────────────────────────
-// codex + opencode + kilo + gemini. claude has NO driver in this PR — the generic
-// enumerator covers its handful of models; the Agent-SDK driver is the
-// designated follow-up.
+// codex + opencode + kilo + gemini; claude has none — the generic enumerator covers its handful of models.
 
 function builtInCatalogDrivers(): ModelCatalogDriver[] {
   return [

@@ -421,8 +421,7 @@ export default function AddAgentModal({
       : effortChoices
   const fastModeAvailable = fastModeAvailableFor(effectiveRuntime, capability)
   const permissionChoices = permissionModeChoicesFor(effectiveRuntime, modelCatalog)
-  // Visibility follows the resolved vocabulary: catalog modes, the static fallback when no
-  // catalog has arrived, and nothing at all when the runtime reported it has no mode selector.
+  // Visibility follows the resolved vocabulary, which is empty for a runtime without permission modes.
   const showPermission = permissionChoices.length > 0
   // A statically-guessed initial mode the dynamic vocabulary doesn't offer is a
   // phantom, not user data — resolve it to the runtime's own default (probe

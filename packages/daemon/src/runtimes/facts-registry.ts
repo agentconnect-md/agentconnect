@@ -108,6 +108,8 @@ export class RuntimeFactsRegistry {
   // at boot (a live probe has not confirmed it this process) — the activation model
   // gate treats it as permissive; 'probed' = live result.
   private modelsSource = new Map<string, 'cached' | 'probed'>()
+  // Runtimes whose last successful probe advertised no models (gemini): a native catalog is their advertisement.
+  private selectorless = new Set<string>()
   // Runtimes whose last probe was rejected with the ACP auth-required error
   // (-32000): installed but needing an interactive login on this host. Feeds the
   // console's per-runtime login warning; cleared on any successful probe.
@@ -302,16 +304,6 @@ export class RuntimeFactsRegistry {
       ...(r.caps.defaultEffort ? { defaultEffort: r.caps.defaultEffort } : {}),
       ...(r.caps.fastMode !== undefined ? { fastMode: r.caps.fastMode } : {})
     }))
-    // A runtime whose models live only in a driver-owned catalog advertises none over ACP.
-    // The console picker reads the ADVERTISEMENT and merely enriches it from the catalog, so
-    // publish the catalog's ids as the advertisement — never overriding a real one.
-    if (meta.source === 'native' && models.length > 0 && (this.models.get(id) ?? []).length === 0) {
-      this.models.set(
-        id,
-        models.map((m) => m.id)
-      )
-      this.modelsSource.set(id, 'cached')
-    }
     this.catalogs.set(id, {
       models: models.slice(0, 128),
       ...(meta.defaultModel ? { defaultModel: meta.defaultModel } : {}),
@@ -320,6 +312,18 @@ export class RuntimeFactsRegistry {
       source: meta.source,
       observedAt: new Date(meta.observedAt).toISOString()
     })
+    this.adoptCatalogAdvertisement(id)
+  }
+
+  /** The console picker lists the advertisement, so a selectorless runtime advertises its current native catalog. */
+  private adoptCatalogAdvertisement(id: string): void {
+    const catalog = this.catalogs.get(id)
+    if (!this.selectorless.has(id) || catalog?.source !== 'native') return
+    this.models.set(
+      id,
+      catalog.models.map((m) => m.id)
+    )
+    this.modelsSource.set(id, catalog.models.length > 0 ? 'cached' : 'probed')
   }
 
   /** Admission freshness must not depend on CP reconnects: a CP-disabled or
@@ -562,27 +566,19 @@ export class RuntimeFactsRegistry {
     r = { ...r, runtime: this.canonicalId(r.runtime) }
     if (this.host.localProbeCatalog().entries[r.runtime]?.source === 'curated') this.host.curatedAdmission().record(r)
     this.host.refreshAdmitted()
-    // Successful probes (including empty selectors) and auth failures are
-    // authoritative. Preserve a non-empty cache-hydrated list across other
-    // startup probe failures: disposable probe homes can fail while established
-    // agent homes remain usable. Cached provenance keeps model gates permissive
-    // until a later successful probe supplies live knowledge.
-    // A driver-owned catalog IS the advertisement for a runtime that exposes no ACP model
-    // selector (gemini): a SUCCESSFUL probe advertising nothing must not erase it, or the
-    // picker empties again on every sweep.
-    const catalog = this.catalogs.get(r.runtime)
-    const nativeCatalogOwnsAdvertisement =
-      r.ok && r.models.length === 0 && catalog?.source === 'native' && catalog.models.length > 0
+    if (r.ok && r.models.length === 0) this.selectorless.add(r.runtime)
+    else if (r.ok || r.authRequired) this.selectorless.delete(r.runtime)
+    // Successes and auth failures are authoritative; other failures keep a cached list (a disposable probe home failed).
     const keepCachedAdvertisement =
-      nativeCatalogOwnsAdvertisement ||
-      (!r.ok &&
-        !r.authRequired &&
-        this.modelsSource.get(r.runtime) === 'cached' &&
-        (this.models.get(r.runtime)?.length ?? 0) > 0)
+      !r.ok &&
+      !r.authRequired &&
+      this.modelsSource.get(r.runtime) === 'cached' &&
+      (this.models.get(r.runtime)?.length ?? 0) > 0
     if (!keepCachedAdvertisement) {
       this.models.set(r.runtime, r.ok ? r.models : [])
       this.modelsSource.set(r.runtime, 'probed')
     }
+    this.adoptCatalogAdvertisement(r.runtime)
     if (r.ok && r.acpProtocolVersion !== undefined) this.acpVersions.set(r.runtime, r.acpProtocolVersion)
     else this.acpVersions.delete(r.runtime)
     if (r.ok && r.probedVersion) this.probedVersions.set(r.runtime, r.probedVersion)

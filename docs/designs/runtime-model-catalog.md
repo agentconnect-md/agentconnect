@@ -298,6 +298,15 @@ phase 2, controlled by a discovery gate rather than rerun on every TTL:
   the catalog and runs regardless. Gemini CLI is the first such runtime: it has
   no ACP model selector at all, and its list comes from the Gemini API.
 
+  **That catalog is also the runtime's advertisement.** The picker renders
+  `models[]` only (§5), so while the runtime's successful probes advertise
+  nothing, every catalog rebuild republishes `models[]` as the native catalog's
+  ids, with `cached` provenance so model gates stay permissive. A driver refresh
+  that adds or drops models therefore reaches the picker without a restart. The
+  catalog never replaces a list the runtime advertised itself, and an
+  authentication rejection clears it like any other list until a probe succeeds
+  again.
+
 - **Single flight per runtime**: one runtime has at most one in-flight discovery
   task. This is not per fingerprint: if a fingerprint changes while discovery
   runs, cancel the old task before starting another, preventing two enumerators
@@ -413,7 +422,8 @@ Lifecycle rules:
    upgraded.
 5. **Advertisement refresh failures preserve a cache-hydrated last-good list.**
    A successful probe replaces `models[]` authoritatively, including a successful
-   empty selector. A known authentication rejection also clears the list and
+   empty selector, which a native catalog then stands in for (§3.3). A known
+   authentication rejection also clears the list and
    carries `authRequired`, because the runtime cannot serve it until the operator
    signs in. Any other failure of the first background refresh keeps non-empty
    cache-hydrated `models[]` with `modelsSource: 'cached'`. Package-launch probes

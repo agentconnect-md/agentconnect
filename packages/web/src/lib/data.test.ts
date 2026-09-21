@@ -343,9 +343,12 @@ describe('permissionModeChoicesFor', () => {
     expect(permissionModeChoicesFor('claude', undefined)).toEqual(permissionModeOptions('claude'))
   })
 
+  it('offers no static fallback for a runtime that has no permission modes', () => {
+    expect(permissionModeChoicesFor('opencode', undefined)).toEqual([])
+  })
+
   it('offers nothing when a REPORTED catalog carries no modes (the runtime has no mode selector)', () => {
-    // Gemini CLI's shape. The static table would offer Claude's modes, which the daemon
-    // silently drops for a runtime that advertises no `mode` selector.
+    // Gemini CLI's shape: the static table would offer Claude's modes, which the daemon silently drops.
     expect(permissionModeChoicesFor('gemini', catalog({ permissionModes: [] }))).toEqual([])
     expect(permissionModeChoicesFor('gemini', catalog({}))).toEqual([])
   })

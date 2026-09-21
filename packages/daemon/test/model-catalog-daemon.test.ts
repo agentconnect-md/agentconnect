@@ -8,6 +8,7 @@ import { Daemon } from '../src/daemon.js'
 import { statePath } from '../src/paths.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { catalogFingerprint } from '../src/runtimes/model-catalog.js'
+import { PROBE_TTL_MS } from '../src/runtimes/facts-registry.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import type { RuntimeDef } from '../src/config/config-schema.js'
 import { preparedProbeLaunch, type ProbeOptions, type RuntimeProbeResult } from '../src/runtimes/runtime-prober.js'
@@ -203,118 +204,123 @@ describe('daemon model-catalog cache hydrate', () => {
 })
 
 describe('daemon native catalog for a runtime with no ACP model selector', () => {
-  it('advertises the driver-owned catalog ids after a successful probe that advertised none', async () => {
-    const dir = root()
+  // gemini-cli's shape: the probe succeeds but advertises no models, so only a native catalog can fill the picker.
+  const noSelector: RuntimeProbeResult = { runtime: 'fake', ok: true, models: [], probedVersion: '1.0.0' }
+  const loggedOut: RuntimeProbeResult = {
+    runtime: 'fake',
+    ok: false,
+    models: [],
+    error: 'Authentication required',
+    authRequired: true
+  }
+
+  /** Start a daemon whose sweeps answer with whatever `probes.results` holds at the time. */
+  async function startDaemon(probes: { results: RuntimeProbeResult[] }): Promise<{ daemon: Daemon; clock: FakeClock }> {
     const clock = new FakeClock()
     clock.advance(10_000)
-    // A successful probe advertising ZERO models — gemini-cli's shape: it offers no ACP
-    // model selector at all, so without the native catalog there is nothing to pick.
-    const probe = async (): Promise<RuntimeProbeResult[]> => [
-      { runtime: 'fake', ok: true, models: [], probedVersion: '1.0.0' } as RuntimeProbeResult
-    ]
-    const daemon = daemonWith({ root: dir, catalog: catalogOf({ fake: FAKE_RT }), clock, probe })
-    try {
-      await daemon.start()
-      stubCatalogSvc(daemon)
-      await (daemon as any).runtimeFacts.probeAndEmit(true)
-      // The probe alone leaves the picker empty.
-      expect((daemon as any).runtimeFacts.profileFor('fake').models).toEqual([])
+    const catalog = catalogOf({ fake: FAKE_RT })
+    const daemon = daemonWith({ root: root(), catalog, clock, probe: async () => probes.results })
+    await daemon.start()
+    stubCatalogSvc(daemon)
+    return { daemon, clock }
+  }
 
-      // A driver commits its catalog, then the registry rebuilds from it.
-      const store = (daemon as any).store as LocalStore
-      await store.recordRuntimeCatalogMeta({
+  /** Commit a driver catalog the way ModelCatalogService does (meta, caps, prune), then rebuild like onUpdated. */
+  async function commitNative(daemon: Daemon, clock: FakeClock, ids: string[]): Promise<void> {
+    const store = (daemon as any).store as LocalStore
+    await store.recordRuntimeCatalogMeta({
+      runtimeId: 'fake',
+      fingerprint: 'fp-native',
+      source: 'native',
+      observedAt: clock.now()
+    })
+    for (const id of ids)
+      await store.upsertRuntimeModelCap({
         runtimeId: 'fake',
+        modelId: id,
         fingerprint: 'fp-native',
-        source: 'native',
+        caps: { name: id.toUpperCase() },
         observedAt: clock.now()
       })
-      for (const id of ['g-flash', 'g-pro'])
-        await store.upsertRuntimeModelCap({
-          runtimeId: 'fake',
-          modelId: id,
-          fingerprint: 'fp-native',
-          caps: { name: id.toUpperCase() },
-          observedAt: clock.now()
-        })
-      await (daemon as any).runtimeFacts.rebuildCatalog('fake')
+    await store.pruneRuntimeModelCaps('fake', ids)
+    await (daemon as any).runtimeFacts.rebuildCatalog('fake')
+  }
 
-      const profile = (daemon as any).runtimeFacts.profileFor('fake')
-      expect(profile.models).toEqual(['g-flash', 'g-pro'])
-      expect(profile.modelsSource).toBe('cached')
-      expect(profile.modelCatalog.source).toBe('native')
+  /** A real re-probe: inside the probe TTL a sweep only re-emits the last snapshot. */
+  async function sweep(daemon: Daemon, clock: FakeClock): Promise<void> {
+    clock.advance(PROBE_TTL_MS + 1)
+    await (daemon as any).runtimeFacts.probeAndEmit(true)
+  }
+
+  const profile = (daemon: Daemon): FactsRuntimeProfile => (daemon as any).runtimeFacts.profileFor('fake')
+
+  it('advertises the native catalog after a successful probe that advertised none', async () => {
+    const { daemon, clock } = await startDaemon({ results: [noSelector] })
+    try {
+      await sweep(daemon, clock)
+      expect(profile(daemon).models).toEqual([])
+      await commitNative(daemon, clock, ['g-flash', 'g-pro'])
+      expect(profile(daemon)).toMatchObject({ models: ['g-flash', 'g-pro'], modelsSource: 'cached' })
+      expect(profile(daemon).modelCatalog?.source).toBe('native')
     } finally {
       await daemon.stop()
     }
   })
 
   it('keeps the catalog advertisement across later sweeps that again advertise nothing', async () => {
-    const dir = root()
-    const clock = new FakeClock()
-    clock.advance(10_000)
-    const probe = async (): Promise<RuntimeProbeResult[]> => [
-      { runtime: 'fake', ok: true, models: [], probedVersion: '1.0.0' } as RuntimeProbeResult
-    ]
-    const daemon = daemonWith({ root: dir, catalog: catalogOf({ fake: FAKE_RT }), clock, probe })
+    const { daemon, clock } = await startDaemon({ results: [noSelector] })
     try {
-      await daemon.start()
-      stubCatalogSvc(daemon)
-      const store = (daemon as any).store as LocalStore
-      await store.recordRuntimeCatalogMeta({
-        runtimeId: 'fake',
-        fingerprint: 'fp-native',
-        source: 'native',
-        observedAt: clock.now()
-      })
-      await store.upsertRuntimeModelCap({
-        runtimeId: 'fake',
-        modelId: 'g-flash',
-        fingerprint: 'fp-native',
-        caps: {},
-        observedAt: clock.now()
-      })
-      await (daemon as any).runtimeFacts.rebuildCatalog('fake')
-      expect((daemon as any).runtimeFacts.profileFor('fake').models).toEqual(['g-flash'])
-
-      // A later sweep probes fine and again advertises nothing — the picker must not empty.
-      await (daemon as any).runtimeFacts.probeAndEmit(true)
-      const profile = (daemon as any).runtimeFacts.profileFor('fake')
-      expect(profile.models).toEqual(['g-flash'])
-      expect(profile.modelsSource).toBe('cached')
+      await sweep(daemon, clock)
+      await commitNative(daemon, clock, ['g-flash'])
+      await sweep(daemon, clock)
+      expect(profile(daemon)).toMatchObject({ models: ['g-flash'], modelsSource: 'cached' })
     } finally {
       await daemon.stop()
     }
   })
 
-  it('never overrides an advertisement the runtime really made', async () => {
-    const dir = root()
-    const clock = new FakeClock()
-    clock.advance(10_000)
-    const probe = async (): Promise<RuntimeProbeResult[]> => [
-      { runtime: 'fake', ok: true, models: ['real-a'], probedVersion: '1.0.0' } as RuntimeProbeResult
-    ]
-    const daemon = daemonWith({ root: dir, catalog: catalogOf({ fake: FAKE_RT }), clock, probe })
+  it('follows the native catalog when a refresh adds and drops models', async () => {
+    const { daemon, clock } = await startDaemon({ results: [noSelector] })
     try {
-      await daemon.start()
-      stubCatalogSvc(daemon)
-      await (daemon as any).runtimeFacts.probeAndEmit(true)
-      const store = (daemon as any).store as LocalStore
-      await store.recordRuntimeCatalogMeta({
-        runtimeId: 'fake',
-        fingerprint: 'fp-native',
-        source: 'native',
-        observedAt: clock.now()
-      })
-      await store.upsertRuntimeModelCap({
-        runtimeId: 'fake',
-        modelId: 'g-flash',
-        fingerprint: 'fp-native',
-        caps: {},
-        observedAt: clock.now()
-      })
-      await (daemon as any).runtimeFacts.rebuildCatalog('fake')
-      const profile = (daemon as any).runtimeFacts.profileFor('fake')
-      expect(profile.models).toEqual(['real-a'])
-      expect(profile.modelsSource).toBe('probed')
+      await sweep(daemon, clock)
+      await commitNative(daemon, clock, ['g-flash', 'g-pro'])
+      await commitNative(daemon, clock, ['g-flash', 'g-ultra'])
+      expect(profile(daemon)).toMatchObject({ models: ['g-flash', 'g-ultra'], modelsSource: 'cached' })
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('never replaces an advertisement the runtime really made, even after an auth failure empties it', async () => {
+    const probes = { results: [{ ...noSelector, models: ['real-a'] }] }
+    const { daemon, clock } = await startDaemon(probes)
+    try {
+      await sweep(daemon, clock)
+      await commitNative(daemon, clock, ['g-flash'])
+      expect(profile(daemon)).toMatchObject({ models: ['real-a'], modelsSource: 'probed' })
+      probes.results = [loggedOut]
+      await sweep(daemon, clock)
+      // A discovery already in flight lands after the logout.
+      await commitNative(daemon, clock, ['g-flash'])
+      expect(profile(daemon)).toMatchObject({ models: [], modelsSource: 'probed', authRequired: true })
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('empties on an auth failure and advertises the catalog again once a probe succeeds', async () => {
+    const probes = { results: [noSelector] }
+    const { daemon, clock } = await startDaemon(probes)
+    try {
+      await sweep(daemon, clock)
+      await commitNative(daemon, clock, ['g-flash'])
+      probes.results = [loggedOut]
+      await sweep(daemon, clock)
+      await commitNative(daemon, clock, ['g-flash'])
+      expect(profile(daemon).models).toEqual([])
+      probes.results = [noSelector]
+      await sweep(daemon, clock)
+      expect(profile(daemon)).toMatchObject({ models: ['g-flash'], modelsSource: 'cached' })
     } finally {
       await daemon.stop()
     }
