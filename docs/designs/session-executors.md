@@ -4,9 +4,12 @@
 started. The revision replaced the hand-rolled holder–executor link with a `prepare`
 the Control Plane relays and a TLS-PSK byte pipe (§6), fixed an admission grant that
 would have ended running sessions during a Control Plane outage, and cut what v1
-does not need (§14, §15). The feature-independent groundwork has landed — #2154,
-#2155, #2157, #2158, #2160, #2161 and #2165 (§12); the feature itself is not
-implemented. Motivated by
+does not need (§14, §15). A second revision on 2026-09-21 took the group's shared
+data-plane store out of the design entirely: the executor allocates each launch's
+generation (§6), a relayed `release` retires an environment (§7), and the backstop
+reconcile asks only the Control Plane and this machine's own retention (§7). The
+feature-independent groundwork has landed — #2154, #2155, #2157, #2158, #2160,
+#2161 and #2165 — and so have F1, F2a and F2b (§12). Motivated by
 [#2111](https://github.com/agentconnect-md/agentconnect/issues/2111): a self-hosted
 team with a handful of Linux machines and no Kubernetes wants an agent's
 concurrent sessions to use the spare compute of the other machines in its daemon
@@ -22,21 +25,22 @@ pool's shape with the Kubernetes-specific parts removed.
 
 ## 0. Decision summary
 
-| #   | Decision                | Outcome                                                                                                                                                                                                                                                       |
-| --- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | Unit of ownership       | Unchanged: the whole agent, held by one daemon through the duty ledger. No session-level duty.                                                                                                                                                                |
-| D2  | Where a session runs    | On the holder itself, or on the **executor facet** of another daemon in the agent's group; the holder chooses, and the candidate hosting the fewest sessions wins. Only `session`-isolated sessions spread; `shared` ones stay with the primary checkout.     |
-| D3  | What the user sees      | One concept: the daemon. The executor facet is a seam inside it, switched by one key, `sandbox.share`, default off. No separate executor component, install or role.                                                                                          |
-| D4  | The contract            | The shim protocol, exactly as the pool uses it against a session pod. ACP, exec, fs, skills and the credential and MCP tunnels all ride it. The backend behind the shim is private.                                                                           |
-| D5  | Direction               | The executor facet listens; the holder dials. Same rule as the pool: the shim never dials.                                                                                                                                                                    |
-| D6  | Control plane role      | Orchestration only: facts a holder pulls at session birth, a `prepare` it relays after checking the ledger, the session's executor id, upgrades. Never on the data path. Placement is the holder's.                                                           |
-| D7  | Execution strategies    | `host` (Linux) and `microsandbox` in v1, in that order; `srt`, `docker` and non-Linux `host` later. Named after `sandbox.backend`. Capabilities are an effective strategy table; placement is a match against it.                                             |
-| D8  | State location          | Clones and HOME live in an executor-local directory mounted into the environment, the local confined layout; a replaced VM keeps them. No mounts across machines, no shared filesystem.                                                                       |
-| D9  | Credentials             | Each machine carries its own runtime sign-in or API-key configuration; the executor seeds a session's HOME from its own. Provider credentials and agent secrets travel from the holder over the encrypted link.                                               |
-| D10 | Upgrades                | The facet upgrades with the daemon through the existing CLI store and the CP-tracked `daemon/upgrade`. Hosted sessions join the daemon's existing shutdown drain; no phase is added. Environments survive as disks and directories; running processes do not. |
-| D11 | Local convergence       | Later, behind a flag: the holder's own machine becomes a loopback executor, and the direct local path retires. Not in this project.                                                                                                                           |
-| D12 | Network assumption (v1) | Group members share a LAN. No NAT traversal, no relay. The link is TLS-PSK regardless: the assumption buys reachability and latency headroom, never a plaintext link.                                                                                         |
-| D13 | The link                | Two machines share one thing: a TLS-PSK byte pipe per session, under the unchanged shim protocol. Its key is minted by the executor, relayed by the CP with the `prepare` reply, outlives dials, and is replaced only by a newer launch's `prepare`.          |
+| #   | Decision                | Outcome                                                                                                                                                                                                                                                                                                        |
+| --- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | Unit of ownership       | Unchanged: the whole agent, held by one daemon through the duty ledger. No session-level duty.                                                                                                                                                                                                                 |
+| D2  | Where a session runs    | On the holder itself, or on the **executor facet** of another daemon in the agent's group; the holder chooses, and the candidate hosting the fewest sessions wins. Only `session`-isolated sessions spread; `shared` ones stay with the primary checkout.                                                      |
+| D3  | What the user sees      | One concept: the daemon. The executor facet is a seam inside it, switched by one key, `sandbox.share`, default off. No separate executor component, install or role.                                                                                                                                           |
+| D4  | The contract            | The shim protocol, exactly as the pool uses it against a session pod. ACP, exec, fs, skills and the credential and MCP tunnels all ride it. The backend behind the shim is private.                                                                                                                            |
+| D5  | Direction               | The executor facet listens; the holder dials. Same rule as the pool: the shim never dials.                                                                                                                                                                                                                     |
+| D6  | Control plane role      | Orchestration only: facts a holder pulls at session birth, a `prepare` and a `release` it relays after checking the ledger, a hint at where a session last ran, upgrades. Never on the data path. Placement is the holder's.                                                                                   |
+| D7  | Execution strategies    | `host` (Linux) and `microsandbox` in v1, in that order; `srt`, `docker` and non-Linux `host` later. Named after `sandbox.backend`. Capabilities are an effective strategy table; placement is a match against it.                                                                                              |
+| D8  | State location          | Clones and HOME live in an executor-local directory mounted into the environment, the local confined layout; a replaced VM keeps them. No mounts across machines, no shared filesystem.                                                                                                                        |
+| D9  | Credentials             | Each machine carries its own runtime sign-in or API-key configuration; the executor seeds a session's HOME from its own. Provider credentials and agent secrets travel from the holder over the encrypted link.                                                                                                |
+| D10 | Upgrades                | The facet upgrades with the daemon through the existing CLI store and the CP-tracked `daemon/upgrade`. Hosted sessions join the daemon's existing shutdown drain; no phase is added. Environments survive as disks and directories; running processes do not.                                                  |
+| D11 | Local convergence       | Later, behind a flag: the holder's own machine becomes a loopback executor, and the direct local path retires. Not in this project.                                                                                                                                                                            |
+| D12 | Network assumption (v1) | Group members share a LAN. No NAT traversal, no relay. The link is TLS-PSK regardless: the assumption buys reachability and latency headroom, never a plaintext link.                                                                                                                                          |
+| D13 | The link                | Two machines share one thing: a TLS-PSK byte pipe per session, under the unchanged shim protocol. Its key is minted by the executor, relayed by the CP with the `prepare` reply, outlives dials, and is replaced only by a newer launch's `prepare`.                                                           |
+| D14 | No shared store         | Spreading depends on no shared data-plane store. The executor allocates its environment's generation, a relayed `release` retires it, and the backstop asks the CP for its agent and this machine for its retention (§6, §7). A shared store is optional and buys failover that carries session history (§13). |
 
 ## 1. Problem
 
@@ -318,10 +322,12 @@ design put it, and this design adds no exception:
   `executor/candidates` (below). The earlier text had holders "read" these facts,
   "plus fan-out", and named no mechanism — and none exists: the heartbeat is
   daemon→CP only (§15).
-- The CP **relays `executor/prepare`** (below) after checking the duty ledger.
-- The session row records `executorDaemonId` — in the shared data-plane store, so a
-  successor holder can find a session's environment after failover, and on the CP's
-  own session row, so the console can show it (§10).
+- The CP **relays `executor/prepare` and `executor/release`** (below) after checking
+  the duty ledger.
+- The CP's own session row records `executorDaemonId`, so the console can show it
+  (§10) and so `executor/candidates` can **hint** where a session last ran (below).
+  The holder also records it locally, for its own sessions; nothing reads that
+  column across machines.
 - Upgrades and restarts reuse `daemon/upgrade` and `daemon/lifecycle/progress`
   unchanged (§9).
 
@@ -341,16 +347,20 @@ with the pod's own rotating Kubernetes credential and a TokenReview, and there i
 deliberately no CP-signed shim grant or key set ([k8s-daemon-pool.md](k8s-daemon-pool.md)
 §7). A self-hosted executor has no such identity source, so the authority for the
 link is the one both ends already authenticate to: the CP, reached over the two
-control connections that already exist. It is used for exactly two requests, and
-then the machines talk to each other.
+control connections that already exist. It is used for three requests, and then
+the machines talk to each other.
 
-1. **`executor/candidates {agentId}`** — holder → CP, at session birth. The CP
-   answers the connected members of the agent's set whose executor facet is on, each
-   with its effective strategy table, endpoint, capacity, `hostedSessions` and the
-   runtimes it can authenticate. An empty answer carries its reason: the group's
-   switch is off (§10), or no member shares. These are **facts, never a choice**:
-   the CP ranks nothing and recommends nothing, and placement stays the holder's.
-2. **`executor/prepare {agentId, sessionKey, executorDaemonId, generation, strategy, resources, image}`**
+1. **`executor/candidates {agentId, sessionKey?}`** — holder → CP, at session birth
+   or when a successor picks the session up. The CP answers the connected members of
+   the agent's set whose executor facet is on, each with its effective strategy
+   table, endpoint, capacity, `hostedSessions` and the runtimes it can authenticate.
+   An empty answer carries its reason: the group's switch is off (§10), or no member
+   shares. When `sessionKey` is named and the CP's own session row for that
+   (agent, session) names an executor, the answer also carries
+   `currentExecutorDaemonId` — a **hint**, not an instruction (§7). These are
+   **facts, never a choice**: the CP ranks nothing and recommends nothing, and
+   placement stays the holder's.
+2. **`executor/prepare {agentId, sessionKey, executorDaemonId, launchId, strategy, resources, image}`**
    — holder → CP. The CP checks the ledger: the requester holds the agent's duty
    (`DutyLeaseService.holdsAgent`, the read that already authorizes `duty/fetch`),
    and the target is a member of the agent's set with its facet on. It then relays
@@ -358,12 +368,22 @@ then the machines talk to each other.
    already carries scoped request/reply frames to daemons
    (`packages/control-plane/src/orchestrator/outbound.ts`). The executor reserves
    capacity atomically, creates the environment, seeds its HOME from the executor's
-   own runtime sign-in (§8), starts the shim, mints a per-session pre-shared key,
-   and replies `{endpoint, psk, runtimeRoot, liveCount}` — `host` adds its helper
+   own runtime sign-in (§8), starts the shim, allocates the launch's binding
+   generation, mints a per-session pre-shared key, and replies
+   `{generation, endpoint, psk, runtimeRoot, liveCount}` — `host` adds its helper
    root (§5) — or `full`, or a refusal with its reason. The CP returns that reply to
-   the holder. `generation` is the launch's binding generation (below); `resources`
+   the holder. `launchId` is a uuid the holder mints per launch (below); `resources`
    and `image` matter to the `microsandbox` strategy only.
-3. **The holder dials the executor's listener with TLS, using that key**, with the
+3. **`executor/release {agentId, sessionKey, executorDaemonId}`** — holder → CP,
+   when the holder retires the session (§7). The same ledger checks as `prepare`
+   **except the two consents**: neither the group's switch nor the executor's facet
+   being on may block it, because withdrawn consent must still let a holder clean up
+   what it placed. The executor stops the shim, removes the environment and its
+   inventory record, and answers `released`, `unknown` (it has no such environment,
+   which makes a resend free) or a refusal. An executor whose control connection is
+   down answers `offline` from the CP's own record, and its backstop collects the
+   environment later.
+4. **The holder dials the executor's listener with TLS, using that key**, with the
    session leaf as the PSK identity. TLS-PSK authenticates both ends and encrypts
    the link with no certificates (the evidence closes this section): a dialer that
    does not hold the key fails the handshake, and so does a listener that does not.
@@ -372,7 +392,7 @@ then the machines talk to each other.
    `packages/daemon/src/microsandbox/shim.ts` already runs it over an injected
    socket (`createConnection`): the dialer is handed a connected socket instead of
    opening one.
-4. **Binding is unchanged where it matters.** The session's binding credential is
+5. **Binding is unchanged where it matters.** The session's binding credential is
    still minted locally by the holder's `ShimBindingRegistry`, scoped to a
    generation and a grant list — step 6 of cluster-spawn-and-shim.md §3. What
    replaces steps 1–5 of that proof, the pod's TokenReview, is one fact: _this pipe
@@ -383,37 +403,49 @@ then the machines talk to each other.
    are two things: the first opens the pipe and is the executor's, the second scopes
    a session and is the holder's.
 
-**`prepare` is idempotent per launch, which is what makes it one request.** Every
-launch the generic layer records already carries a binding generation, allocated per
-subject from the group's shared store before its endpoint is resolved
-(`LaunchRegistry.recordLaunch` in `remote/launch-registry.ts`), and `prepare` carries
-it. The executor applies generations monotonically per environment, and keeps the
-highest it has applied on disk beside the environment, so a restart does not forget
-it:
+**The executor allocates the generation, and `launchId` names the launch.** The
+binding generation belongs to the environment, and the executor is the single writer
+of its own environments — it already persists the applied generation beside each one,
+so a restart does not forget it. Nothing else has a counter that is both monotonic per
+environment and reachable without a shared store, so the executor allocates: a new
+launch gets **one past the last it applied**, and the `ready` reply names it so the
+holder binds the shim there (`RemoteShimDriver` binds at whatever generation its
+endpoint provider resolved). A holder mints instead a `launchId`, a uuid per launch,
+which is the only thing `prepare` carries about identity:
 
-- _A generation it has already applied_ is the same logical request: a
-  retransmission — both control connections' correlators resend an unanswered frame
-  — or `resolve` asked again for the same launch. It joins the preparation in flight
-  or returns the reply it already gave: the same key, no rotation, no pipe closed.
-  Without this a preparation slower than one acknowledgement timeout would run
-  twice, and the second run would rotate away the key the first had just returned.
-  The reply lives only as long as the launch does on the executor. Once the
-  executor has stopped the environment for idleness, or has restarted, there is no
-  reply to return, and it **refuses retryably** rather than minting a second key at
-  a generation it has already applied — which would hand a working key to whoever
-  replayed that generation, a deposed holder included. The holder discards the
-  launch and allocates a higher generation, so every wake and every recovery
-  advances the fence.
-- _A higher generation_ is a new launch. For an environment that already exists it
-  attaches: it starts the shim if the environment was stopped, and mints a fresh
-  key. So the same frame is session birth, the wake of an idle environment, recovery
-  after an executor restart, and holder failover — the successor sends it, and the
-  ledger check now names the successor.
-- _A lower generation_ is refused as stale. The ledger check runs at the CP, before
-  the relayed effect, so a deposed holder's `prepare` can pass it and still arrive
-  after its successor's. It carries a generation allocated before the successor's —
-  the successor allocates only once it is granted, from the same counter — so it can
-  never rotate the successor out.
+- _The same `launchId`_ is the same logical request: a retransmission — both control
+  connections' correlators resend an unanswered frame — or `resolve` asked again for
+  the same launch. It joins the preparation in flight or returns the reply it already
+  gave: the same generation, the same key, no rotation, no pipe closed. Without this a
+  preparation slower than one acknowledgement timeout would run twice, and the second
+  run would rotate away the key the first had just returned. The reply lives only as
+  long as the launch does on the executor. Once the executor has stopped the
+  environment for idleness, or has restarted, there is no reply to return, and it
+  **refuses retryably** (`launch_retired`) rather than minting a second key for a
+  launch it has already finished — which would hand a working key to whoever replayed
+  that launch, a deposed holder included. The holder discards the launch and mints a
+  new one, so every wake and every recovery advances the fence.
+- _A new `launchId`_ is a new launch: generation = last applied + 1. For an
+  environment that already exists it attaches — it starts the shim if the environment
+  was stopped, mints a fresh key, and closes the pipe admitted under the old one. So
+  the same frame is session birth, the wake of an idle environment, recovery after an
+  executor restart, and holder failover; the ledger check names whoever sends it.
+- _There is no stale generation to refuse._ A holder never proposes a number, so it
+  cannot propose one that is behind. What replaces that refusal is an ordering
+  argument, below.
+
+**A deposed holder's late `prepare` must not win, and the CP makes that true.** Every
+relay to one executor leaves over that executor's **one** control connection, so
+arrival order at the executor is send order. The CP's handler therefore puts its
+**last** duty read immediately before the send, with no await between the two
+(`ws/handlers/executor.ts`): if holder A's final check passed before the duty moved
+and holder B's passed after, A's relay is on the wire ahead of B's, and a holder that
+was deposed while it was still looking membership up never reaches the wire at all.
+The executor completes the picture by applying prepares in arrival order — nothing is
+awaited between entering `prepare()` and recording the launch, and an environment a
+`release` is removing retires the launch rather than making it wait, because a wait is
+exactly what would let a later holder's prepare overtake it. An await inserted
+anywhere in that chain is the bug; the tests on both sides pin it.
 
 Dial and prepare are one request: literally §4's sentence, and on the holder
 literally `ShimEndpointProvider.resolve`. The fence is the binding generation and
@@ -421,7 +453,7 @@ not the duty term, for the reason the pool gives at its own edge (k8s-daemon-poo
 §2, §7): the term is monotonic per duty _group_ and starts again with a new group,
 so a recompute that splits an agent's component would hand its rightful holder a
 lower term and have it refused. The generation is a different monotonic counter
-over the same ordering, and it belongs to the subject.
+over the same ordering, and it belongs to the environment.
 
 **The ordering comes free.** The holder learns the endpoint only from the
 executor's reply, so there is no window in which a holder dials an executor that has
@@ -441,8 +473,8 @@ renewal, which contradicts the invariant this architecture is built on: establis
 sessions keep running while the CP is down. So the key is not consumed. It admits
 dials for as long as the environment it was minted for keeps running, a re-dial by
 the same holder costs no CP round trip, and exactly one thing replaces it: a
-`prepare` at a higher generation, which the ledger check lets only the current
-holder send and the generation rule lets only a newer launch win.
+`prepare` naming a new launch, which the ledger check lets only the current holder
+send and the ordering argument lets only the current holder reach.
 
 Rotation is therefore also the executor-side fence. The executor closes the pipe
 admitted under the old key, and a deposed holder can neither keep its connection nor
@@ -654,59 +686,77 @@ suspend path already has (`K8sDriver.suspendIfIdle`), and with the launch goes t
 longer than a linger — longer than the dialer's reconnect backoff, so a blip is not
 an idle signal — has its shim, and its VM, stopped by the executor. That frees its
 slot, since capacity counts live shims and VMs; the directory stays. The next turn
-finds no launch, records one at a higher generation, and its `prepare` starts the
-environment again; a holder that kept the old launch would reuse a reply whose key
+finds no launch, mints a new one, and its `prepare` starts the environment again at
+the next generation; a holder that kept the old launch would reuse a reply whose key
 no longer opens anything, and no `prepare` would ever be sent. A dead holder's
 pipes close by themselves, so nothing keeps running for lack of a judge.
-_Retirement:_ the holder deletes the session's row in the shared store, and the
-executor's reconcile (below) removes the environment. There is no `release` message
-(§15), so the reconcile is part of the executor facet itself (§12), not a
-follow-up.
+_Retirement:_ the holder sends `executor/release` (§6), and the executor stops the
+shim, removes the environment and drops its inventory record. That is the whole of
+it when the executor is reachable; when it is not, the holder is told `offline` and
+the backstop below collects the environment later.
 
-**When there is no holder.** An executor cannot judge, and an agent may lose its
-holder for a long time or be removed outright. So the executor keeps an inventory
-of its environments labelled by agent id and session leaf — the pool's claim labels
-— and reconciles it on a schedule against the same two authorities the pool's
-reconciler uses (`cli/reconcile.ts`): the **shared data-plane store** for session
-existence, read directly through `sessionKeysForAgent`, and the **CP** for agent
-existence, through the `agent/exists` request that reconciler already sends, which
-answers an org-scoped connection for its own organization's agents. The CP is
-deliberately not asked about sessions: its `SessionMeta` row is created
-asynchronously from daemon reports and is kept after the data-plane session is
-purged, so a missing CP row can describe a retained session and a present one an
-already-purged session. The executor discards an environment whose agent the CP no
-longer knows, whose session key the store no longer lists, or whose row names
-another executor (the loss rule below can move a session while its old machine is
-away) — under the pool's orphan-reconciliation rules (a grace period, and a
-same-name replacement check so a session recreated after the query is never the one
-deleted) — and **retains** everything when either lookup cannot answer. Agent
-removal and session retirement delete the store's rows; the next reconcile removes
-the environments. Nothing is kept forever for lack of a judge.
+**When there is no holder.** A release can be lost, a holder can die between
+deciding and sending, and an agent can be removed outright. So the executor keeps an
+inventory of its environments labelled by agent id and session leaf — the pool's
+claim labels — plus the generation it applied and when the environment was last
+used, and reconciles it on a schedule as a **backstop**. It reads no store. Two
+rules, both under the pool's orphan-reconciliation conditions (a grace period, and a
+same-name replacement check so an environment a `prepare` or a dial touched after the
+lookup is never the one deleted), and never while an admitted pipe is using the
+environment:
 
-The store is authoritative the other way too. An environment whose session the
-store still lists on this executor is kept however long its agent goes without a
-holder: retaining a live agent's work is intentional, and unassignment is not an
-orphan signal. The executor discards only what the authorities no longer know
-**and** no admitted holder connection is using, and it never judges dirtiness — the
-deletion, produced by the holder's retirement or by agent removal, is the only
-evidence it acts on. That gives deletion an owner that survives the holder without
-giving the executor a duty.
+- _The agent is gone._ The **CP** answers `agent/exists`, the request the pool's
+  reconciler (`cli/reconcile.ts`) already sends, which an org-scoped connection
+  answers for its own organization's agents. An agent the CP no longer knows has no
+  sessions to retain.
+- _Nothing has used it within this machine's session retention._ Neither a `prepare`
+  nor an admitted dial for longer than the daemon's existing `sessions.retention`
+  window, measured from a last-use stamp kept in the inventory record so a restart
+  does not reset the clock. `retention: never` never discards.
 
-This has a configuration consequence. The reconcile reads the group's data-plane
-store directly, so a machine that only lends compute still needs the group's
-data-plane connection: the shared store of [daemon-groups.md](daemon-groups.md) §5 is
-a prerequisite of sharing, not only of holding. A sharing member without it could
-answer neither question and would retain every environment forever — the safe
-failure, and a full disk.
+The CP is deliberately not asked about sessions: its `SessionMeta` row is created
+asynchronously from daemon reports and is kept after the session's content is
+purged, so a missing row can describe a retained session and a present one an
+already-purged session. And the executor **retains** everything when the CP cannot
+answer: a lookup that cannot be made is not an absence.
+
+Retention is the rule that replaces the store's session list, and it is a weaker
+statement on purpose. It does not know that a session retired; it knows that this
+machine has not been asked about this environment for as long as it keeps sessions
+at all, which is the operator's own answer to "how long is work worth keeping". An
+environment in use is kept however long its agent goes without a holder: retaining a
+live agent's work is intentional, and unassignment is not an orphan signal. The
+executor never judges dirtiness — a holder's `release`, a removed agent or an expired
+retention is the only evidence it acts on.
+
+There is no configuration consequence any more. An earlier draft had this reconcile
+read the group's shared data-plane store, which would have made that store a
+prerequisite of **sharing** and not only of holding — and, because a daemon has one
+store for all its agents, would have put every ordinary agent on a lending machine
+onto PostgreSQL (§15). Neither rule above reads a store, so a machine can lend
+compute with nothing but its control connection.
 
 **Holder failover.** The successor member claims the agent through the ledger as
-today, reads the session's executor from its row, and sends the same `prepare` for
-its own launch, whose generation is higher than any its predecessor allocated. The
-ledger now names it, so the CP relays; the executor attaches, rotates the key and
-closes the deposed holder's pipe, and refuses any `prepare` of the predecessor's
-that arrives late (§6). The environment is still there — nothing on the executor
+today. It asks `executor/candidates` with the session's key; if the CP's row names an
+executor the answer carries it as `currentExecutorDaemonId`, and the successor sends
+its own launch's `prepare` there. The ledger now names the successor, so the CP
+relays; the executor attaches, allocates the next generation, rotates the key and
+closes the deposed holder's pipe, and a predecessor's `prepare` that was authorized
+before the duty moved is already on the wire ahead of it, while one authorized after
+never reaches the wire (§6). The environment is still there — nothing on the executor
 depended on which holder was driving it — so failover costs one relayed request and
 a dial, not a re-preparation.
+
+The hint is only a hint. Stale is harmless: a `prepare` at a machine that no longer
+has the environment simply creates one, and an executor that is offline follows the
+lazy loss rule below. Session keys are derived from the conversation's identity, so
+a successor preparing the same session on the hinted executor lands on the same
+environment leaf and attaches to the work already in it, uncommitted changes
+included. What the successor does **not** get, without a shared store, is the
+session's transcript or its ACP resume state: those live in the predecessor's own
+store. That is what a daemon group already costs today when a duty moves without a
+shared store, not a regression this design introduces — and it is the thing a shared
+store buys (§13).
 
 **Executor loss.** Decided lazily, at the next launch, from the answer to the
 `prepare` that launch already sends. There is no timer and no new state on the
@@ -801,11 +851,12 @@ restart is lost, which is what a daemon restart already costs. Adopting live VMs
 detached shims across a restart would change the backend's fencing rule and is not
 in scope. The keys die with the process too: a holder that lost its pipe re-dials,
 the handshake is refused, the launch is given up as lost, and the next one sends a
-`prepare` at a new binding generation, which starts the shim again and returns a
-fresh key. The highest generation each environment has applied is on disk (§6), so
-the restart does not reopen the door to a stale `prepare`, and a `prepare` replayed
-at the generation the restart interrupted is refused rather than given a second
-key.
+`prepare` naming a new launch, which starts the shim again, allocates the next
+generation and returns a fresh key. The generation each environment applied and the
+launch it belonged to are both on disk (§6), so the restart neither loses the fence
+nor reopens it: a `prepare` replayed for the launch the restart interrupted is
+refused as retired rather than given a second key at the same generation, and the
+next real launch is strictly above everything that environment ever handed out.
 
 Nothing version-sensitive is pushed from the holder. The executor runs its own shim
 bundle (§4), and the link has no protocol of its own to version: below the shim
@@ -894,19 +945,21 @@ feature shipping:
 | #2161 | The local microsandbox backend runs ACP and both helper tunnels through the VM's shim (§4); the AF_VSOCK bridges are gone.                                                |
 | #2165 | A local VM's binding credential lives a day rather than a pod's ten minutes, so the channel renewal — the re-dial §6's key has to survive — is rare rather than constant. |
 
-**The feature is six pull requests.** The earlier estimate of three weeks of focused
-work predates both the groundwork and the cuts, and each shortens it; the week of
-validation on a real multi-machine deployment, which the requester of #2111 offered
-to run, stands.
+**The feature is seven pull requests.** The earlier estimate of three weeks of
+focused work predates both the groundwork and the cuts, and each shortens it; the
+week of validation on a real multi-machine deployment, which the requester of #2111
+offered to run, stands. F1, F2a and F2b have landed; F1b is the revision that took
+the shared store out, and the rest follow it.
 
-| PR  | Scope                                                                                                                                                                                                                                                                                                                                                                          |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| F1  | Protocol and CP: the executor facet, effective strategy table, endpoint and session capacity at registration and in `capabilities/update`; `hostedSessions` in the heartbeat; `executor/candidates`; the relayed `executor/prepare` with its ledger check; the group's switch on the member set; `executorDaemonId` on the CP session row and on the shared-store session row. |
-| F2a | The `host`-strategy shim launcher — the executor's own bundle as a host process with a private runtime root, a helper root and a unix-socket listener — and the daemon-side path derivation: the Git config directory, git-credential socket variable, MCP endpoint and credential helper derived from the reply's roots instead of constants (§5).                            |
-| F2b | The executor facet: `sandbox.share`, the TLS-PSK listener and the byte pipe, `prepare` handling (reservation, environment, HOME seed, key, and the generation rule: join, attach and rotate, or refuse), the idle stop, the orphan reconcile, and joining the shutdown drain.                                                                                                  |
-| F3  | The holder: `ExecutorPlane` and its `ShimEndpointProvider`, per-session plane resolution, the birth predicate with its recorded reason, launch retirement at idle and on a retired-launch refusal, failover, the lazy loss rule; and a two-daemon, one-CP integration fixture covering holder failover, executor loss and executor restart.                                    |
-| F4  | The `microsandbox` strategy: "prepare an environment" split from "spawn the runtime" in the microsandbox driver, the pipe into the guest over agentd's TCP stream, the session's state in an executor-local mount.                                                                                                                                                             |
-| F5  | Console: the group switch, per-daemon hosting and capacity, a session's executor or the reason it stayed home.                                                                                                                                                                                                                                                                 |
+| PR  | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F1  | Protocol and CP: the executor facet, effective strategy table, endpoint and session capacity at registration and in `capabilities/update`; `hostedSessions` in the heartbeat; `executor/candidates`; the relayed `executor/prepare` with its ledger check; the group's switch on the member set; `executorDaemonId` on the CP session row and on the shared-store session row.                                                                                                                     |
+| F2a | The `host`-strategy shim launcher — the executor's own bundle as a host process with a private runtime root, a helper root and a unix-socket listener — and the daemon-side path derivation: the Git config directory, git-credential socket variable, MCP endpoint and credential helper derived from the reply's roots instead of constants (§5).                                                                                                                                                |
+| F2b | The executor facet: `sandbox.share`, the TLS-PSK listener and the byte pipe, `prepare` handling (reservation, environment, HOME seed, key, and the generation rule: join, attach and rotate, or refuse), the idle stop, the orphan reconcile, and joining the shutdown drain.                                                                                                                                                                                                                      |
+| F1b | The shared store leaves the design: `launchId` on `prepare` and the executor-allocated `generation` on its reply, the CP's adjacency of the last duty read and the send, the relayed `executor/release`, the `sessionKey` hint on `executor/candidates`, and the backstop reconcile on `agent/exists` plus this machine's retention. The holder side that SENDS a release is F3.                                                                                                                   |
+| F3  | The holder: `ExecutorPlane` and its `ShimEndpointProvider`, per-session plane resolution, the birth predicate with its recorded reason, minting a `launchId` per launch and binding at the generation the reply returns, launch retirement at idle and on a retired-launch refusal, sending `executor/release` at retirement, failover through the candidates hint, the lazy loss rule; and a two-daemon, one-CP integration fixture covering holder failover, executor loss and executor restart. |
+| F4  | The `microsandbox` strategy: "prepare an environment" split from "spawn the runtime" in the microsandbox driver, the pipe into the guest over agentd's TCP stream, the session's state in an executor-local mount.                                                                                                                                                                                                                                                                                 |
+| F5  | Console: the group switch, per-daemon hosting and capacity, a session's executor or the reason it stayed home.                                                                                                                                                                                                                                                                                                                                                                                     |
 
 Documents travel with the code that changes them: the pointers in the group and
 backend designs already exist, and the workspace model's tier rule gains its
@@ -939,8 +992,19 @@ reused as is. The shim, at twice the size of that whole path, is reused unchange
   owner switches `sandbox.share` off, or the group's switch goes off. Proposed: both
   switches gate `candidates` and the creation of environments, not attachment to
   one that exists, so nothing new is placed and existing sessions run until they
-  retire.
+  retire. Settled for deletion: neither switch gates `executor/release` (§6), because
+  a holder must be able to clean up what it placed while consent still stood.
 - **Default for the group switch** (proposed: off, explicit opt-in).
+- **What a shared data-plane store would still buy.** Nothing here needs one any
+  more, and a group that has one gains one thing: a successor holder inherits the
+  session's transcript and ACP resume state, instead of attaching to the environment
+  with the work in it but no history (§7). That is a property of the group, not of
+  spreading: a group without a shared store already loses a session's history when a
+  duty moves, spread or not. Making the daemon's store backend configurable is separate
+  ([#2188](https://github.com/agentconnect-md/agentconnect/issues/2188)): today a
+  daemon opens one store for all its agents and only does so under `--k8s`, which is
+  precisely why requiring it here would have put every ordinary agent on a lending
+  machine onto PostgreSQL (§15).
 
 ## 14. Non-goals
 
@@ -950,6 +1014,13 @@ reused as is. The shim, at twice the size of that whole path, is reused unchange
 - Turn-level migration or live movement of a running session.
 - Durable environment storage across executor loss. Uncommitted work on a lost
   machine is lost; there is no PVC equivalent and none is designed.
+- Carrying a session's transcript or ACP resume state across holder failover. That
+  needs the group's shared data-plane store, which this design deliberately does not
+  require (§13); without one a successor attaches to the environment and its work,
+  and starts a fresh conversation over it.
+- Making the daemon's store backend configurable, so a group could have a shared
+  store without Kubernetes. Separate, and tracked as
+  [#2188](https://github.com/agentconnect-md/agentconnect/issues/2188).
 - Adopting running VMs or detached shims across an executor restart (§9).
 - NAT traversal, relays, or an executor behind a firewall the holder cannot reach.
 - Changing `sandbox.backend`, `security.requireSandbox` or `runInSandbox`. §5 records
@@ -1057,14 +1128,37 @@ Removed by the 2026-09-20 revision, each with the reason it went:
   not have to change (§5).
 - **A `release` message.** A second way to say what deleting the session's row
   already says, with a failure mode of its own when the message is lost; the
-  reconcile acts on the row (§7).
+  reconcile acts on the row (§7). _Reinstated on 2026-09-21_, because the row it was
+  redundant with lived in a shared store this design no longer has; the failure mode
+  is real and is what the backstop reconcile now covers (§7).
+
+Removed by the 2026-09-21 revision:
+
+- **Allocating the launch's binding generation from the group's shared store.** It
+  was the natural place — `LaunchRegistry.recordLaunch` already allocates per subject
+  there — but the daemon opens **one** store for all its agents, and only under
+  `--k8s`: `startClusterPlanes` is the sole caller, and `store/postgres-config.ts`
+  states outright that no CLI or environment credential surface exists. Requiring it
+  would have made a machine that merely lends compute run every one of its own
+  agents on PostgreSQL, which is precisely the cost the requester of #2111 does not
+  want and #2188 exists to remove. Allocating on the executor needs no store at all,
+  and is better placed besides: the executor is the single writer of the environment
+  the generation fences.
+- **Reading a successor's executor from the shared store's session row.** Same store,
+  same cost. The CP already keeps `executorDaemonId` on its own row for the console,
+  so `executor/candidates` returns it as a hint — and a hint is all it has to be,
+  since a wrong one costs a `prepare` that creates rather than attaches (§7).
+- **Reading session existence from the shared store in the reconcile.** Same store,
+  same cost, and it made sharing depend on a connection the sharing machine has no
+  other use for. `agent/exists` plus this machine's own session retention answer the
+  same question conservatively, and both are already there (§7).
 
 ## 16. Relationship to other documents
 
 - [daemon-groups.md](daemon-groups.md) defines the member set this design places
-  into; §5's operational prerequisites (shared store, re-cloneable workspaces) apply
-  unchanged, and the shared store binds a member that only lends compute too,
-  because its reconcile reads it (§7).
+  into; §5's operational prerequisites apply unchanged to a member that **holds**,
+  and a member that only lends compute needs none of them: its executor facet reads
+  no store, so sharing costs nothing but the control connection it already has (§7).
 - [k8s-daemon-pool.md](k8s-daemon-pool.md) §4 and [git-workspace-model.md](git-workspace-model.md)
   §11 define the session-pod shape and the clone tier this design reuses; the
   workspace model's "tier a session is born in" gains an executor arm that always

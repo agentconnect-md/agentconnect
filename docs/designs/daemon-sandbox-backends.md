@@ -1077,20 +1077,23 @@ wrong has no override yet. On that port:
 **Preparing an environment.** A relayed `executor/prepare` reserves a slot against
 `limits.maxConcurrentSessions` — counting preparations in flight and this machine's
 own isolated sessions, and refusing only a `prepare`, never the machine's own
-births — and answers `full` with the live count when it cannot. It then applies the
-launch's binding generation, the highest of which is kept on disk beside the
-environment (`<daemonRoot>/sessions/<leaf>.json`, written durably before anything
-else happens):
+births — and answers `full` with the live count when it cannot. The request names
+the holder's `launchId` and no number: the facet **allocates** the binding
+generation itself, from the one it last applied, which it keeps on disk beside the
+environment with that launch's id (`<daemonRoot>/sessions/<leaf>.json`, written
+durably before anything else happens) and returns in the `ready` reply:
 
-- _The generation already applied_ joins the preparation in flight or returns the
-  same reply — the same key, nothing rotated, no pipe closed. Once that launch is
-  gone (the environment stopped for idleness, its shim exited, or the daemon
-  restarted) the answer is `launch_retired`, never a second key.
-- _A higher generation_ is a new launch: `<daemonRoot>/sessions/<leaf>/{workspace,repos,home}`
-  is created or attached, the shim is started if it is not running, a fresh key is
-  minted, and the pipe admitted under the old key is closed. Environment starts are
-  serialized, as VM starts are.
-- _A lower generation_ is `stale_generation` and changes nothing.
+- _The same `launchId`_ joins the preparation in flight or returns the same reply —
+  the same generation and key, nothing rotated, no pipe closed. Once that launch is
+  gone (the environment stopped for idleness, its shim exited, the daemon restarted,
+  or a `release` is removing it) the answer is `launch_retired`, never a second key.
+- _A new `launchId`_ is a new launch, at one past the last generation applied:
+  `<daemonRoot>/sessions/<leaf>/{workspace,repos,home}` is created or attached, the
+  shim is started if it is not running, a fresh key is minted, and the pipe admitted
+  under the old key is closed. Environment starts are serialized, as VM starts are.
+- _Nothing awaits_ between entering `prepare` and recording the launch, so prepares
+  apply in arrival order — which the Control Plane made authorization order
+  (session-executors.md §6).
 
 An environment is bound to the agent it was created for: a `prepare` that names
 another agent is refused, because the Control Plane vouched only for the agent the
@@ -1102,18 +1105,23 @@ holder dialer's capped reconnect delays, so a blip it is still retrying through 
 not read as idle — has its shim stopped. Its slot is freed, its key and cached
 reply are dropped, and its directory and applied generation stay.
 
-**Orphan reconcile.** Every ten minutes the facet sweeps its on-disk inventory,
-which is labelled by agent id and session leaf and nothing else, against the two
-authorities the pool's reconciler uses: the Control Plane's `agent/exists` and the
-**shared** data-plane store's session rows. It discards an environment whose agent
-is gone, whose session key the store no longer lists, or whose row names another
-executor — only when it is older than ten minutes, has no live shim and no admitted
-pipe, and was not re-prepared since the lookups. It never judges dirtiness, and it
-retains everything when either authority cannot answer. A daemon that mounts no
-shared data plane can answer for no session, so it retains every environment and
-says so at start; the shared store is a prerequisite of sharing
-([daemon-groups.md](daemon-groups.md) §5). The sweep also runs with `share` off, so
-what an earlier run left is still collected.
+**Release.** A holder that retires the session sends `executor/release`, which the
+Control Plane relays here: the shim stops, and the environment and its inventory
+record are removed. It answers `unknown` for an environment it does not have, so a
+resend is free, and it is deliberately NOT gated by `share` or the group's switch —
+withdrawn consent must still let a holder clean up what it placed.
+
+**Backstop reconcile.** Every ten minutes the facet sweeps its on-disk inventory,
+which is labelled by agent id and session leaf and nothing else. It reads **no
+store**: it discards an environment whose agent the Control Plane's `agent/exists`
+no longer knows, or that neither a `prepare` nor a dial has touched within this
+machine's own `sessions.retention` window (`never` ⇒ never) — only when it is older
+than ten minutes, has no live shim and no admitted pipe, and was not touched since
+the lookup. Last use is stamped in the record, so a restart does not reset that
+clock. It never judges dirtiness, and it retains everything when the Control Plane
+cannot answer. Lending compute therefore needs nothing but the control connection
+(session-executors.md §7). The sweep also runs with `share` off, so what an earlier
+run left is still collected.
 
 **Shutdown.** Hosted environments join the daemon's existing shutdown drain and
 add no phase: once it starts, `prepare` is refused, environments with a connected
