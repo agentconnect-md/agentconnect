@@ -1924,7 +1924,7 @@
       "memoryShort": "mem"
     },
     "executor": {
-      "sessions": "{hosted} sessions",
+      "sessions": "{hosted, plural, one {# session} other {# sessions}}",
       "sessionsOfCapacity": "{hosted} / {capacity} sessions",
       "strategyUnavailable": "{strategy} unavailable"
     },

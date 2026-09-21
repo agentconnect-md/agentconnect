@@ -159,4 +159,26 @@ describe('DaemonsView — what a daemon lends its group', () => {
 
     expect(render().innerHTML).toContain('0 / 6 sessions')
   })
+
+  it('states the count alone when the daemon named no ceiling', () => {
+    // `limits.maxConcurrentSessions` is what the capacity IS, so a daemon that reports none has no
+    // ceiling to show against — and inventing one would be a limit nothing enforces.
+    mocks.daemons = [
+      daemon({
+        hostedSessions: 1,
+        caps: {
+          platforms: [],
+          runtimes: [],
+          acp: true,
+          features: [],
+          executor: { enabled: true, strategies: { host: { available: true } } }
+        }
+      })
+    ]
+
+    const html = render().innerHTML
+
+    expect(html).toContain('1 session')
+    expect(html).not.toContain(' / ')
+  })
 })

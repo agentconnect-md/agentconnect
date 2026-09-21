@@ -1924,7 +1924,7 @@
       "memoryShort": "内存"
     },
     "executor": {
-      "sessions": "{hosted} 个会话",
+      "sessions": "{hosted, plural, other {# 个会话}}",
       "sessionsOfCapacity": "{hosted} / {capacity} 个会话",
       "strategyUnavailable": "{strategy} 不可用"
     },
