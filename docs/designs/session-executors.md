@@ -865,6 +865,13 @@ byte these two mechanisms send.
   output masking as its only protection, and does so on an executor the same way.
   A `host` executor exposes such values to the process tree; a microsandbox
   executor exposes them to the VM. Neither is a change from the local exposure.
+  The one exception is a config-file secret (`KUBECONFIG_DATA`, `DOCKER_CONFIG_DATA`),
+  whose value is a whole file and whose pointer names where that file is. The holder
+  plans it as it plans a local one, but the files travel with the launch: its driver
+  empties `<runtimeRoot>/config-files` on the executor and writes them there before the
+  runtime starts, as it writes the session gitconfig, and the pointers name that path.
+  Nothing lands on the holder's disk. A pool pod takes the same path under its image's
+  runtime root.
 
 ## 9. Upgrades
 

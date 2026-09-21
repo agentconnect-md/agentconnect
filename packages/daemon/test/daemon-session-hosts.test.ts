@@ -270,6 +270,63 @@ it.skipIf(process.platform === 'win32')(
   }
 )
 
+it.skipIf(process.platform === 'win32')(
+  "carries a pool or placed launch's config-file secrets to the runtime's own filesystem, writing none on this disk",
+  async () => {
+    const root = scaffold({ workspace: { mode: 'from-scratch', path: 'workspace' } })
+    const daemon = new Daemon({ root, sandboxMechanism: 'bwrap', probeRuntimes: async () => [] })
+    const kubeconfig = 'apiVersion: v1\nclusters: []\n'
+    try {
+      await daemon.start()
+      const agent = (daemon as any).agents.get('bot-a')
+      agent.runtimeOverrides = { secrets: [{ name: 'KUBECONFIG_DATA', value: kubeconfig }] }
+      const hostKey = sessionHostKey(agent.id, KEY('files'))
+      const build = () =>
+        (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
+          hostKey,
+          runInSandbox: false,
+          cwd: agent.workspace.path
+        })
+      const expectCarried = (built: any, dir: string) => {
+        const opts = built.host.opts
+        expect(opts.env.KUBECONFIG).toBe(`${dir}/kubeconfig`)
+        expect(opts.env.KUBECONFIG_DATA).toBeUndefined()
+        expect(opts.files).toContainEqual({ root: dir, relPath: ['kubeconfig'], content: kubeconfig })
+        expect(opts.clearDirs).toEqual([dir])
+        // Nothing of it rests here, so nothing here is left for the idle sweep to track.
+        expect(built.configFileState).toBeUndefined()
+        expect(existsSync(join(agent.dir, 'run', 'config-files'))).toBe(false)
+      }
+
+      // A pod reads them under its image's runtime root.
+      ;(daemon as any).k8sPlane = { spawnFor: () => ({ driver: {} }), stop: async () => {} }
+      expectCarried(build(), '/run/agentconnect/config-files')
+      ;(daemon as any).k8sPlane = undefined
+
+      // A session on another machine reads them under the runtime root its executor reported.
+      const placed = {
+        agentId: agent.id,
+        sessionKey: KEY('files'),
+        leaf: 'leaf',
+        subject: 'bot-a/leaf',
+        executorDaemonId: 'executor-a',
+        strategy: 'host'
+      }
+      ;(daemon as any).executorPlane = {
+        placementOf: (key: string) => (key === placed.sessionKey ? placed : undefined),
+        homeFor: () => '/srv/executor/sessions/leaf/home',
+        rootsFor: () => ({ runtimeRoot: '/srv/executor/hs/0a1b2c', missingHelpers: [] }),
+        spawnFor: () => ({ driver: {}, hostKey }),
+        stop: async () => {}
+      }
+      expectCarried(build(), '/srv/executor/hs/0a1b2c/config-files')
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+)
+
 const dm = (ts: string, text: string, thread: string) => ({
   msgId: `slack:C1:${ts}`,
   traceId: ts,

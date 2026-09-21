@@ -184,6 +184,8 @@ import {
   clearConfigFiles,
   materializeConfigFiles
 } from './shim/config-file-env.js'
+import { DEFAULT_SHIM_RUNTIME_ROOT, shimPaths } from './shim/sandbox-paths.js'
+import type { SpawnFile } from './acp/spawn-driver.js'
 import { writeGhShim } from './cp/gh-shim.js'
 import { glabSessionEnv, writeGlabShim } from './cp/glab-shim.js'
 import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
@@ -5277,7 +5279,7 @@ export class Daemon {
     this.hosts.set(key, built.host)
     this.hostLaunch.set(key, { agentDir: agent.dir, cwd: launchCwd })
     this.hostStartedAt.set(key, this.clock.now())
-    this.hostConfigFiles.set(agentId, { agentDir: agent.dir, ...built.configFileState })
+    if (built.configFileState) this.hostConfigFiles.set(agentId, { agentDir: agent.dir, ...built.configFileState })
     return built.host
   }
 
@@ -5309,7 +5311,8 @@ export class Daemon {
     }
   ): {
     host: AcpHost
-    configFileState: { childEnv?: Record<string, string | undefined>; materialized: boolean }
+    /** Undefined for a host whose config files travel with its launch: it keeps none on this disk. */
+    configFileState?: { childEnv?: Record<string, string | undefined>; materialized: boolean }
   } {
     const agentId = agent.id
     const onUpdate = (sid: string, u: any) => this.enqueueAcpUpdate(opts.hostKey, sid, u)
@@ -5333,7 +5336,7 @@ export class Daemon {
         this.externalMemoryAdmission(agent.id)
       ).runtimeEnv()
     }
-    let configFileState: { childEnv?: Record<string, string | undefined>; materialized: boolean } = {
+    let configFileState: { childEnv?: Record<string, string | undefined>; materialized: boolean } | undefined = {
       materialized: false
     }
     if (this.opts.hostFactory) {
@@ -5347,7 +5350,9 @@ export class Daemon {
       micro && !remoteSession ? this.microsandboxPlacement(agent, opts.cwd, opts.hostKey) : undefined
     // Its HOME is the one its executor seeded, on the root that machine's shim reported; without it a launch would name this disk (§7, §8).
     const remoteHome = remoteSession && this.executorPlane?.homeFor(remoteSession.subject)
-    if (remoteSession && !remoteHome) {
+    // The roots its `prepare` named, where the session gitconfig and config files land in that machine's environment (§5).
+    const remoteRoots = remoteSession && this.executorPlane?.rootsFor(remoteSession.sessionKey)
+    if (remoteSession && (!remoteHome || !remoteRoots)) {
       throw new Error(
         `session ${remoteSession.leaf} has no environment on daemon ${remoteSession.executorDaemonId} to launch in — its next turn prepares one`
       )
@@ -5420,7 +5425,6 @@ export class Daemon {
     const sessionGitIdentity = managedCredentials ? this.gitCommitIdentity : undefined
     const needsSessionGit = managedCredentials || agent.workspace.mode === 'git-repo'
     // A session on an executor reads the same file in that machine's environment, at the roots its `prepare` named (§5).
-    const remoteRoots = remoteSession && this.executorPlane?.rootsFor(remoteSession.sessionKey)
     const sandboxGitTarget = remoteRoots
       ? sandboxGitCredentialTarget(remoteRoots.runtimeRoot, remoteRoots.helperRoot)
       : sandboxGitCredentialTarget()
@@ -5495,6 +5499,14 @@ export class Daemon {
       env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? runtimeEnv.PATH ?? process.env.PATH ?? ''}`
     }
     const target = opts.modelCredential?.target ?? modelProviderTarget(agent, runtime)
+    // A runtime on another filesystem reads its config files there, so they travel with its launch as the gitconfig does (§8): the pod's image root, or the one an executor reported.
+    const launchFilesRoot = remoteRoots
+      ? remoteRoots.runtimeRoot
+      : this.k8sPlane
+        ? DEFAULT_SHIM_RUNTIME_ROOT
+        : undefined
+    if (launchFilesRoot !== undefined) configFileState = undefined
+    let launchConfigFiles: { dir: string; files: SpawnFile[] } | undefined
     // OS sandbox decision (issue #312). security.requireSandbox forces every agent
     // on; otherwise the per-agent preference is effective only when this host has a
     // mechanism. The writable set is derived from the TRUSTED agent dir
@@ -5529,7 +5541,11 @@ export class Daemon {
         runtimeEnv,
         agentEnv: env,
         // A dream host materializes nothing: it has no cleanup path and needs none of these secrets.
-        ...(excludeAgentToolCredentials ? {} : { configFileDir: agent.dir }),
+        ...(excludeAgentToolCredentials
+          ? {}
+          : launchFilesRoot !== undefined
+            ? { configFileLaunchDir: shimPaths(launchFilesRoot).configFilesDir }
+            : { configFileDir: agent.dir }),
         finalizeLaunchEnv: (launchEnv) => {
           // A dream host on OpenCode carries the daemon-authored `read-only` agent, which the extraction gate prefers over `plan`.
           // Every launch but a pod inherits this daemon's environment beneath the explicit env, so overlay that value too.
@@ -5577,7 +5593,8 @@ export class Daemon {
       })
       if (assembled.configFiles) {
         this.queueSpawnNotices(agentId, assembled.configFiles.notices)
-        if (Object.keys(assembled.configFiles.env).length > 0) {
+        launchConfigFiles = assembled.configFiles.launch
+        if (!launchConfigFiles && Object.keys(assembled.configFiles.env).length > 0) {
           configFileState = { childEnv: assembled.configFiles.sourceEnv, materialized: true }
         }
       }
@@ -5628,17 +5645,19 @@ export class Daemon {
       // Pairs the runtime's terminal exit with the ordinary rebuild — see reapTerminalHost.
       onTerminal: () => this.reapTerminalHost(opts.hostKey, constructed.host),
       env: launch.env,
-      ...(sandboxSessionGit
-        ? {
-            files: [
+      files: [
+        ...(sandboxSessionGit
+          ? [
               {
                 root: dirname(sandboxSessionGit.path),
                 relPath: [basename(sandboxSessionGit.path)],
                 content: sandboxSessionGit.content
               }
             ]
-          }
-        : {}),
+          : []),
+        ...(launchConfigFiles?.files ?? [])
+      ],
+      ...(launchConfigFiles ? { clearDirs: [launchConfigFiles.dir] } : {}),
       inheritProcessEnv: launch.inheritProcessEnv,
       runtimeId: runtimeEntry?.aliasOf ?? agent.runtime,
       isolateAccountApps: cfg.security.isolateAccountApps,
@@ -5844,7 +5863,7 @@ export class Daemon {
           }
         }
       })
-      if (configFileState.childEnv) {
+      if (configFileState?.childEnv) {
         this.hostConfigFiles.set(agent.id, { agentDir: agent.dir, ...configFileState })
       }
       this.hostLaunch.set(hostKey, { agentDir: agent.dir, cwd })

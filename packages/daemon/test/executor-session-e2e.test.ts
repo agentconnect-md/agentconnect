@@ -21,7 +21,9 @@ import { effectiveStrategies, type SessionSeed, type StrategyLauncher } from '..
 import { assembleRuntimeLaunch } from '../src/launch/assemble.js'
 import { sessionSandboxSubject } from '../src/remote/sandbox-subject.js'
 import { ShimClient } from '../src/shim/client.js'
+import { applyFileSinkPayload } from '../src/shim/file-sink.js'
 import type { GitExecPayload } from '../src/shim/git-exec.js'
+import { shimPaths } from '../src/shim/sandbox-paths.js'
 import { ShimServer } from '../src/shim/server.js'
 import type { ShimTransport } from '../src/shim/client.js'
 import { WAIT } from './wait-support.js'
@@ -117,7 +119,9 @@ describe('a session on another machine of the group', () => {
             helperRoot: '/opt/agentconnect',
             mark: '0'.repeat(32)
           }),
-          handle: (capability, payload) => {
+          handle: async (capability, payload) => {
+            // What a launch writes into the environment: the shim applies it to its own disk, as the image's does.
+            if (capability === 'materialize') return await applyFileSinkPayload(payload).then(() => null)
             if (capability !== 'exec') throw new Error(`unexpected ${capability}`)
             exec.push(payload as GitExecPayload)
             return Promise.resolve({ code: 0, stdout: `${HEAD}\n`, stderr: '' })
@@ -305,6 +309,54 @@ describe('a session on another machine of the group', () => {
     expect(seen.PATH).toBe('/executor/bin')
     expect(seen.HOLDER_ONLY).toBeUndefined()
     expect(Object.values(seen).filter((value) => value?.includes(agentDir))).toEqual([])
+  })
+
+  it("writes a placed launch's config-file secrets under its executor's runtime root, where the runtime reads them", async () => {
+    const executor = await machine(EXECUTOR_A)
+    const holder = holderPlane(HOLDER, new Relay(new Map([[EXECUTOR_A, executor]])))
+    await holder.prepareAt(AGENT, KEY, [choice(EXECUTOR_A)])
+    await holder.ensureChannel(SUBJECT)
+    const agentDir = await mkdtemp(join(tmpdir(), 'ac-xs-holder-'))
+    dirs.push(agentDir)
+    const holderEnv = { HOME: agentDir, PATH: '/holder/bin' }
+    const report = join(executor.root, 'report.json')
+    const hostKey = sessionHostKey(AGENT, KEY)
+    const kubeconfig = 'apiVersion: v1\nclusters: []\n'
+    const { runtime, launch, configFiles } = assembleRuntimeLaunch({
+      runtimeId: 'claude-acp',
+      runtime: { command: process.execPath, args: ['-e', REPORTER], env: [] },
+      provider: 'managed',
+      scopeDir: agentDir,
+      cwd: join(executor.root, 'sessions', LEAF, 'workspace'),
+      hostKey,
+      runInSandbox: false,
+      runtimeEnv: {},
+      agentEnv: { AC_AGENT_ID: AGENT, AC_TEST_REPORT: report, KUBECONFIG_DATA: kubeconfig },
+      configFileLaunchDir: shimPaths(holder.rootsFor(KEY)!.runtimeRoot).configFilesDir,
+      hostEnv: holderEnv,
+      stateSourceEnv: holderEnv,
+      executor: { home: holder.homeFor(SUBJECT)! }
+    })
+    const carried = configFiles!.launch!
+
+    const { driver } = holder.spawnFor({ hostKey } as PlaneLaunch)
+    runtimes.push(
+      await driver.launch({
+        command: runtime.command,
+        args: runtime.args,
+        env: launch.env,
+        hostKey,
+        files: carried.files,
+        clearDirs: [carried.dir]
+      })
+    )
+    await vi.waitFor(() => expect(existsSync(report)).toBe(true), WAIT)
+    const seen = JSON.parse(readFileSync(report, 'utf8')) as Record<string, string | undefined>
+    expect(seen.KUBECONFIG).toBe(join(executor.root, 'hs', LEAF, 'config-files', 'kubeconfig'))
+    expect(seen.KUBECONFIG_DATA).toBeUndefined()
+    expect(readFileSync(seen.KUBECONFIG!, 'utf8')).toBe(kubeconfig)
+    // Planned on the holder, written only where the runtime runs.
+    expect(existsSync(join(agentDir, 'run'))).toBe(false)
   })
 
   it('lets a successor holder attach to the environment its predecessor left', async () => {

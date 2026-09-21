@@ -29,8 +29,8 @@
  * least-privilege tokens) remains the real permission boundary.
  */
 import { chmodSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-import type { FileSink } from './file-sink.js'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, posix, resolve } from 'node:path'
+import type { SpawnFile } from '../acp/spawn-driver.js'
 
 export interface ConfigFileConvention {
   /** Secret env var carrying the file CONTENT. */
@@ -165,43 +165,22 @@ export function materializeConfigFiles(agentDir: string, env: Record<string, str
   return out
 }
 
-/**
- * Materialize the planned config files through a {@link FileSink}, so the same policy runs
- * whether the files land on this daemon's disk or inside a sandbox pod.
- *
- * The plan is identical either way — which secrets become files is the daemon's decision.
- * Only the writing moves, because only the driver knows whose filesystem the runtime reads.
- * Failure handling matches the synchronous path: a write failure leaves that convention's
- * env untouched (the raw data var stays visible — degraded, but strictly more usable than
- * losing both) and reports a notice.
- */
-export async function materializeConfigFilesThrough(
-  agentDir: string,
-  env: Record<string, string | undefined>,
-  sink: FileSink
-): Promise<MaterializeResult> {
+/** The plan for a runtime on another filesystem (a pool pod, another machine of the group): what its launch carries. */
+export interface LaunchConfigFiles extends MaterializeResult {
+  /** Emptied by the launch's driver before it writes `files`, so a secret removed since the last launch goes too. */
+  dir: string
+  files: SpawnFile[]
+}
+
+/** {@link materializeConfigFiles}'s plan with its pointers at `dir` in the runtime's own filesystem; nothing is written here, and the driver writes the files at launch. */
+export function configFilesForLaunch(dir: string, env: Record<string, string | undefined>): LaunchConfigFiles {
   const plan = planConfigFiles(env)
-  const out: MaterializeResult = { env: {}, strip: [], notices: [...plan.notices] }
-  const dir = configFilesDir(agentDir)
-  const clearError = await sink.clear(dir)
-  if (clearError) {
-    if (plan.materialize.length === 0) return out
-    out.notices.push(`${clearError} — secrets left as env vars.`)
-    return out
-  }
+  const out: LaunchConfigFiles = { env: {}, strip: [], notices: [...plan.notices], dir, files: [] }
   for (const entry of plan.materialize) {
-    const file = join(dir, ...entry.convention.relPath)
-    try {
-      await sink.write(dir, entry.convention.relPath, entry.value)
-    } catch (err) {
-      out.notices.push(
-        `${entry.sourceVar} could not be materialized to a file (${(err as Error).message}) — left as an env var.`
-      )
-      continue
-    }
-    out.env[entry.convention.pointerVar] = entry.convention.pointerTo === 'dir' ? dirname(file) : file
-    // Strip every name that carries this content, not just the winning source —
-    // a legacy alias must not survive alongside the materialized new name.
+    // POSIX whatever this daemon runs on: the path names a place in the runtime's filesystem, not this one.
+    const file = posix.join(dir, ...entry.convention.relPath)
+    out.files.push({ root: dir, relPath: [...entry.convention.relPath], content: entry.value })
+    out.env[entry.convention.pointerVar] = entry.convention.pointerTo === 'dir' ? posix.dirname(file) : file
     for (const name of [entry.convention.dataVar, ...(entry.convention.aliases ?? [])]) {
       if (env[name]) out.strip.push(name)
     }

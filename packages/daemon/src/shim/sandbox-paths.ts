@@ -22,6 +22,8 @@ export interface ShimPaths {
   ghWrapperDir: string
   dshPresetDir: string
   gitConfigDir: string
+  /** Where a launch's config-file secrets (`KUBECONFIG_DATA`, …) are written; per launch, like the Git config. */
+  configFilesDir: string
   skillStagingDir: string
   tunnels: Readonly<Record<SandboxTunnelName, string>>
 }
@@ -40,6 +42,7 @@ export function shimPaths(runtimeRoot = DEFAULT_SHIM_RUNTIME_ROOT, helperRoot = 
     ghWrapperDir: `${helperRoot}/pathbin`,
     dshPresetDir: `${helperRoot}/dsh/agent-presets/${SANDBOX_DSH_PRESET_ID}`,
     gitConfigDir: `${runtimeRoot}/git`,
+    configFilesDir: `${runtimeRoot}/config-files`,
     skillStagingDir: `${runtimeRoot}/skills-staging`,
     tunnels: Object.freeze({ gitcred: `${runtimeRoot}/gitcred.sock`, mcp: `${runtimeRoot}/mcp.sock` })
   })

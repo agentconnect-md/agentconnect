@@ -1,6 +1,6 @@
 import { LaunchTimer, type ClusterMetrics } from '../metrics/cluster-metrics.js'
 import type { Clock } from '@agentconnect.md/connection'
-import type { SpawnDriver, SpawnRequest, SpawnedRuntime } from '../acp/spawn-driver.js'
+import { clearSpawnDirs, type SpawnDriver, type SpawnRequest, type SpawnedRuntime } from '../acp/spawn-driver.js'
 import type { ShimCapability } from '../shim/protocol.js'
 import type { ShimConnection } from '../shim/connection.js'
 import { ShimFileSink } from '../shim/channels.js'
@@ -77,6 +77,7 @@ export class RemoteShimDriver<L extends Launch = Launch> implements SpawnDriver 
       if (!session) throw new Error(`no shim session for ${subject} after binding its channel`)
       // Fail-closed and per-launch: the env points at these files and a resumed sandbox starts with an empty tmpfs, so the write belongs to every launch, not to the bind.
       const sink = new ShimFileSink(session)
+      await clearSpawnDirs(sink, request.clearDirs)
       for (const file of request.files ?? []) await sink.write(file.root, file.relPath, file.content)
       const runtime = createRemoteRuntime({
         session,

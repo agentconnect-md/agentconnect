@@ -764,6 +764,18 @@ describe('cluster spawn driver', () => {
     })
   })
 
+  it('empties the launch directories before writing its files, so a removed secret does not outlive its launch', async () => {
+    const served: Array<{ capability: string; payload: unknown }> = []
+    const { api } = fakeApi()
+    const { instance } = driver(api, { connectChannel: async () => answeringConnection(served) })
+    const files = [{ root: '/run/agentconnect/config-files', relPath: ['kubeconfig'], content: 'apiVersion: v1\n' }]
+    const clearDirs = ['/run/agentconnect/config-files']
+    await instance.launch({ ...(launchRequest as object), files, clearDirs } as never)
+    expect(served.map((request) => request.capability)).toEqual(['materialize', 'materialize', 'acp'])
+    expect(served[0]!.payload).toEqual({ op: 'clear', root: '/run/agentconnect/config-files' })
+    expect(served[1]!.payload).toMatchObject({ op: 'write', relPath: ['kubeconfig'] })
+  })
+
   it('fails the launch when a file cannot be materialized, releasing the hold', async () => {
     const served: Array<{ capability: string; payload: unknown }> = []
     const { api } = fakeApi()
