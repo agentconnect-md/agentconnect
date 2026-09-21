@@ -9,11 +9,8 @@ import type { StrategyLauncher } from './strategies.js'
 /** Hosted environments are keyed apart from every agent-owned one: this machine holds none of their agents. */
 const HOSTED_PREFIX = 'executor/'
 
-/**
- * A hosted session's VM, whose durable state is an executor-local directory MOUNTED into it rather
- * than anything on its own disks (§7): the manager's `replace()` retires and destroys a VM whenever
- * its spec or image identity changes, with no dirty check, so work on those disks would go with it.
- */
+/** A hosted session's VM, whose durable state is an executor-local directory MOUNTED into it, never on its own disks (§7). */
+// `replace()` retires and destroys a VM whenever its spec or image identity changes, with no dirty check, so work on those disks would go with it.
 export function hostedEnvironment(daemonRoot: string, sessionLeaf: string): MicrosandboxEnvironment {
   const directory = join(daemonRoot, SESSIONS_DIR, sessionLeaf)
   return {
@@ -44,10 +41,9 @@ export function microsandboxLauncher(deps: { manager: () => MicrosandboxManager 
       if (!guest) throw new Error(`the hosted VM of ${sessionLeaf} started no shim`)
       return {
         connect: () => guest.connect(),
-        // The image's fixed layout, NOT a per-session root: inside a VM the shim owns its filesystem
-        // namespace, which is exactly why #2155's parameterization was needed for `host` alone (§5).
-        // The reply names no helper root either, so a holder derives the image's own entries.
+        // The image's fixed layout, NOT a per-session root: in a VM the shim owns its filesystem namespace, which is why #2155's parameterization was needed for `host` alone (§5).
         runtimeRoot: DEFAULT_SHIM_RUNTIME_ROOT,
+        // No helper root either, for the same reason: a holder derives the image's own entries from `shimPaths` defaults.
         missingHelpers: [],
         exited: guest.exited,
         // The VM stops and its disks stay, which is what an idle environment's stop must leave behind (§7).

@@ -403,7 +403,11 @@ the machines talk to each other.
    parses nothing. Above the pipe runs the existing shim protocol, exactly as
    `packages/daemon/src/microsandbox/shim.ts` already runs it over an injected
    socket (`createConnection`): the dialer is handed a connected socket instead of
-   opening one.
+   opening one. How the executor reaches that shim is its strategy's, so the
+   admission supplies a **connector** rather than a path: `host` connects the unix
+   socket in the session's runtime root, and a VM opens agentd's TCP stream to the
+   guest's loopback port (`microsandbox/tcp.ts`), which is the same stream the
+   local backend already binds its own shim over.
 5. **Binding is unchanged where it matters.** The session's binding credential is
    still minted locally by the holder's `ShimBindingRegistry`, scoped to a
    generation and a grant list — step 6 of cluster-spawn-and-shim.md §3. What
@@ -696,7 +700,9 @@ in the same step drops the session and forgets the launch — the coupling the p
 suspend path already has (`K8sDriver.suspendIfIdle`), and with the launch goes the
 `prepare` reply the provider kept for it. An environment with no admitted pipe for
 longer than a linger — longer than the dialer's reconnect backoff, so a blip is not
-an idle signal — has its shim, and its VM, stopped by the executor. That frees its
+an idle signal — has its shim, and its VM, stopped by the executor. That linger is
+the only idle judge a hosted environment has: the machine's own sandbox idle sweep
+skips it, because nothing local holds it and its holder is elsewhere. That frees its
 slot, since capacity counts live shims and VMs; the directory stays. The next turn
 finds no launch, mints a new one, and its `prepare` starts the environment again at
 the next generation; a holder that kept the old launch would reuse a reply whose key
@@ -982,8 +988,8 @@ feature shipping:
 **The feature is seven pull requests.** The earlier estimate of three weeks of
 focused work predates both the groundwork and the cuts, and each shortens it; the
 week of validation on a real multi-machine deployment, which the requester of #2111
-offered to run, stands. F1, F2a, F2b and F3 have landed; F1b is the revision that took
-the shared store out, and the rest follow it.
+offered to run, stands. F1, F2a, F2b, F3 and F4 have landed; F1b is the revision that
+took the shared store out, and F5 follows it.
 
 | PR  | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -1,16 +1,24 @@
-// Real-VM smoke test and measurement for the microsandbox backend; needs Linux with a usable /dev/kvm and a built daemon.
+// Real-VM smoke test and measurement for the microsandbox backend and the executor facet's VM strategy; needs Linux with a usable /dev/kvm and a built daemon.
 // Usage: pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-microsandbox-runtime.mts <image> [transfer-MiB]
 // It reads the guest socket paths from the launch environment and calls only what both sides of the move onto the shim have, so the same file measures the previous mechanism from a checkout of it.
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { sessionHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
 import type { SpawnedRuntime } from '../src/acp/spawn-driver.js'
+import { startExecutorFacet } from '../src/execution/executor-facet.js'
+import { ExecutorPlane } from '../src/execution/executor-plane.js'
+import { microsandboxLauncher } from '../src/execution/executor-vm.js'
+import type { PlaneLaunch } from '../src/execution/plane.js'
 import { makeLogger } from '../src/log.js'
 import { installMicrosandbox } from '../src/microsandbox/install.js'
 import { prepareMicrosandboxLaunch } from '../src/microsandbox/launch.js'
 import { microsandboxSupportMounts } from '../src/microsandbox/support.js'
+import { sessionSandboxSubject } from '../src/remote/sandbox-subject.js'
+import { DEFAULT_SHIM_RUNTIME_ROOT } from '../src/shim/sandbox-paths.js'
 
 const [image, transferArg] = process.argv.slice(2)
 if (!image) throw new Error('usage: smoke-microsandbox-runtime.mts <image> [transfer-MiB]')
@@ -134,6 +142,67 @@ const manager = await installMicrosandbox({
 })
 let passed = false
 const environmentId = 'smoke/session-000000000000000000000000'
+// The executor facet's half: one session this machine hosts for a group member, over the `microsandbox` strategy.
+const AGENT = '11111111-1111-4111-8111-111111111111'
+const EXECUTOR = '22222222-2222-4222-8222-222222222222'
+const SESSION_KEY = `webchat:smoke:1700000000.000100:${AGENT}`
+const LEAF = sessionKeyDirName(SESSION_KEY)
+const SUBJECT = sessionSandboxSubject(AGENT, LEAF)
+const HOST_KEY = sessionHostKey(AGENT, SESSION_KEY)
+const hostedDir = join(root, 'sessions', LEAF)
+/** Reports what the shim gave it into the mounted workspace, then echoes: the file is read back from THIS machine's disk. */
+const HOSTED_RUNTIME = [
+  `require('fs').writeFileSync(${JSON.stringify(join(hostedDir, 'workspace', 'from-the-guest'))}, JSON.stringify({ home: process.env.HOME, path: process.env.PATH, agent: process.env.AC_AGENT_ID }))`,
+  'process.stdin.pipe(process.stdout)'
+].join('; ')
+const facet = await startExecutorFacet({
+  daemonRoot: root,
+  share: true,
+  // The one strategy under test here; `host` has its own end-to-end case and needs no VM.
+  strategies: () => ({
+    host: { available: false, reason: 'not part of this smoke test' },
+    microsandbox: { available: true }
+  }),
+  launchers: { microsandbox: microsandboxLauncher({ manager: () => manager }) },
+  capacity: () => 2,
+  ownSessions: () => 0,
+  draining: () => false,
+  endpointHost: () => '127.0.0.1',
+  seedHome: () => {},
+  agentsExist: async (ids: string[]) => new Set(ids),
+  retentionMs: () => null,
+  log: makeLogger('info'),
+  listen: { host: '127.0.0.1' }
+})
+/** The holder, unmodified: its own plane, dialing the facet's pipe. The Control Plane's relay is the call below. */
+const plane = new ExecutorPlane({
+  prepare: (launch) =>
+    facet.prepare({
+      agentId: launch.agentId,
+      sessionKey: launch.sessionKey,
+      executorDaemonId: launch.executorDaemonId,
+      launchId: launch.launchId,
+      strategy: launch.strategy
+    }),
+  release: (placed, launchId) =>
+    facet.release({
+      agentId: placed.agentId,
+      sessionKey: placed.sessionKey,
+      executorDaemonId: placed.executorDaemonId,
+      launchId
+    }),
+  replace: async () => undefined,
+  log: { info: () => {}, warn: (m: string) => console.error(m) }
+})
+
+/** Birth or a new launch: prepare on the executor and bind its shim through the pipe. */
+async function hostedLaunch(): Promise<number> {
+  const landed = await plane.prepareAt(AGENT, SESSION_KEY, [{ daemonId: EXECUTOR, strategy: 'microsandbox' }])
+  assert.ok('placed' in landed, `nothing was prepared: ${JSON.stringify(landed)}`)
+  await plane.ensureChannel(SUBJECT)
+  return plane.shimGenerationFor(SUBJECT)!
+}
+
 try {
   const since = performance.now()
   await manager.prepare()
@@ -254,9 +323,64 @@ try {
     throw new Error(`bulk transfer through the mcp endpoint did not complete (${stalled})`)
   }
 
+  // The local environment's VM is stopped first, so only the hosted one is running for the rest.
+  await manager.suspend(environmentId)
+
+  const hosted = performance.now()
+  const firstGeneration = await hostedLaunch()
+  summary.hostedLaunchMs = elapsed(hosted)
+  assert.equal(firstGeneration, 1)
+  // The shim reports the executor-local mount, which is what the holder composes this session's paths on (§7).
+  assert.equal(plane.mountFor(SUBJECT), root)
+  // Inside a VM the shim owns its filesystem namespace, so the reply names the image's roots and no per-session one (§5).
+  assert.deepEqual(plane.rootsFor(SESSION_KEY), { runtimeRoot: DEFAULT_SHIM_RUNTIME_ROOT, missingHelpers: [] })
+  step('hosted-vm-prepared-and-its-shim-bound-through-the-pipe', { ms: summary.hostedLaunchMs })
+
+  // Only the host key is read; the rest of a launch belongs to an agent this script does not load.
+  const hostedDriver = plane.spawnFor({ hostKey: HOST_KEY } as unknown as PlaneLaunch).driver
+  const echo = await hostedDriver.launch({
+    command: '/usr/local/bin/node',
+    args: ['-e', HOSTED_RUNTIME],
+    // Deliberately no PATH: a holder describes a different machine, so the guest's own is filled in (§6).
+    env: { AC_AGENT_ID: AGENT },
+    hostKey: HOST_KEY
+  })
+  const writer = echo.toAgent.getWriter()
+  await writer.write(Buffer.from(`${JSON.stringify({ hello: 'executor' })}\n`))
+  writer.releaseLock()
+  assert.deepEqual(await firstJsonLine(echo), { hello: 'executor' })
+  await echo.stop(10_000)
+
+  // The session's work is on THIS machine's disk, in the mount, never on the VM's own disks (§7).
+  const inGuest = JSON.parse(await readFile(join(hostedDir, 'workspace', 'from-the-guest'), 'utf8')) as {
+    home: string
+    path: string
+    agent: string
+  }
+  assert.equal(inGuest.agent, AGENT, 'the launch environment did not reach the runtime')
+  // AC_SHIM_COMPLETE_ENV is never set for a remote holder, so that PATH is the guest's fill-in, not this machine's (§6).
+  assert.ok(inGuest.path, 'the guest filled in no PATH of its own')
+  assert.notEqual(inGuest.path, process.env.PATH)
+  step('hosted-acp-echo-and-mounted-state-verified', inGuest)
+
+  // Idle drops the launch, and the next one is a NEW launchId: the executor rotates the key and allocates the next generation.
+  await plane.suspendIdle(SUBJECT)
+  assert.equal(await hostedLaunch(), firstGeneration + 1)
+  // The same environment, so the first launch's work is still in the mount.
+  assert.ok(existsSync(join(hostedDir, 'workspace', 'from-the-guest')), 'the relaunch did not reuse the environment')
+  step('a-second-launch-rotated-the-key-and-bound-the-same-shim', { generation: firstGeneration + 1 })
+
+  await plane.retire(AGENT, SESSION_KEY)
+  assert.ok(!(await manager.environmentIds()).includes(`executor/${LEAF}`), 'the released VM was kept')
+  assert.equal(existsSync(hostedDir), false, 'the released session directory was kept')
+  step('the-release-took-the-vm-its-disks-and-the-session-directory')
+
   passed = true
 } finally {
+  await plane.stop().catch((error: unknown) => console.error(error))
+  await facet.stop().catch((error: unknown) => console.error(error))
   await manager.discard(environmentId).catch((error: unknown) => console.error(error))
+  await manager.discard(`executor/${LEAF}`).catch((error: unknown) => console.error(error))
   await manager.stopAll().catch((error: unknown) => console.error(error))
   await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
   if (passed) await rm(root, { recursive: true, force: true })
