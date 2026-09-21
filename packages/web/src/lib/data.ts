@@ -1029,6 +1029,11 @@ export function permissionModeChoicesFor(
   catalog: RuntimeModelCatalog | undefined
 ): { v: string; l: string; description?: string }[] {
   const modes = catalog?.permissionModes
+  // A REPORTED catalog carrying no permission modes is authoritative: the runtime exposes no
+  // mode selector at all (Gemini CLI). The static table would offer Claude's modes, which the
+  // daemon then silently drops — planConfigSelection skips an unadvertised selector — so an
+  // editor would pick a mode that never reaches the runtime. Offer nothing instead.
+  if (catalog && !modes?.length) return []
   if (!modes?.length) return permissionModeOptions(runtime)
   const staticLabels = new Map(permissionModeOptions(runtime).map((o) => [o.v, o.l]))
   const labels = stripSharedLabelChrome(modes.map((m) => m.name ?? staticLabels.get(m.value) ?? capitalize(m.value)))

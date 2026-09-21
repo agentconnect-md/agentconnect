@@ -67,6 +67,27 @@ describe('isBuiltinSystemTool — auto-approve the daemon’s own MCP tools', ()
     expect(isBuiltinSystemTool(req({ toolCallId: 'other-42' }), new Set(['opaque-42']))).toBe(false)
   })
 
+  it('auto-approves Gemini CLI’s shapes: the display title and the single-underscore FQN', () => {
+    // Gemini sends ONLY `${tool} (${server} MCP Server)` as toolCall.title, and asks
+    // before emitting the tool_call update that would correlate an id.
+    for (const name of ALL_TOOL_NAMES) {
+      expect(isBuiltinSystemTool(req({ title: `${name} (agentconnect MCP Server)` }))).toBe(true)
+      expect(isBuiltinSystemTool(req({ title: `mcp_agentconnect_${name}` }))).toBe(true)
+    }
+  })
+
+  it('does NOT let another MCP server spoof the Gemini display title', () => {
+    // A third-party tool literally named "sendMessage (agentconnect MCP Server)" still gets
+    // ITS own server suffix appended, so the anchored whole-string match refuses it.
+    expect(isBuiltinSystemTool(req({ title: 'sendMessage (agentconnect MCP Server) (othersrv MCP Server)' }))).toBe(
+      false
+    )
+    expect(isBuiltinSystemTool(req({ title: 'sendMessage (othersrv MCP Server)' }))).toBe(false)
+    expect(isBuiltinSystemTool(req({ title: 'mcp_othersrv_sendMessage' }))).toBe(false)
+    // Not one of our tool names.
+    expect(isBuiltinSystemTool(req({ title: 'rmRf (agentconnect MCP Server)' }))).toBe(false)
+  })
+
   it('does NOT auto-approve the runtime’s dangerous built-ins (still card them)', () => {
     expect(isBuiltinSystemTool(req({ title: 'Bash' }))).toBe(false)
     expect(isBuiltinSystemTool(req({ title: 'Edit' }))).toBe(false)

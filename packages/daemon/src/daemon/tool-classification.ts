@@ -11,12 +11,26 @@ const BUILTIN_PERMISSION_TOOL_FQNS = new Set(ALL_TOOL_NAMES.map((name) => `mcp__
 const BUILTIN_TOOL_FQNS = new Set(
   ALL_TOOL_NAMES.flatMap((name) => [
     `mcp__${RESERVED_MCP_SERVER_NAME}__${name}`,
-    `mcp.${RESERVED_MCP_SERVER_NAME}.${name}`
+    `mcp.${RESERVED_MCP_SERVER_NAME}.${name}`,
+    // Gemini CLI flattens with a SINGLE underscore (`MCP_TOOL_PREFIX` + its
+    // `MCP_QUALIFIED_NAME_SEPARATOR`), so its function name is mcp_<server>_<tool>.
+    `mcp_${RESERVED_MCP_SERVER_NAME}_${name}`
   ])
 )
 
+/**
+ * Gemini CLI identifies an MCP tool over ACP ONLY by its display title — DiscoveredMCPTool's
+ * `${tool} (${server} MCP Server)` — and it asks for permission BEFORE emitting the tool_call
+ * update that would correlate an id, so neither the FQN nor the id path can match. Accept that
+ * exact title, anchored as a whole-string set membership: another server's tool gains its OWN
+ * ` (<that server> MCP Server)` suffix, so it cannot spoof one of ours by naming itself after it.
+ */
+const BUILTIN_TOOL_DISPLAY_TITLES = new Set(
+  ALL_TOOL_NAMES.map((name) => `${name} (${RESERVED_MCP_SERVER_NAME} MCP Server)`)
+)
+
 function containsBuiltinToolFqn(id: string): boolean {
-  if (BUILTIN_TOOL_FQNS.has(id)) return true
+  if (BUILTIN_TOOL_FQNS.has(id) || BUILTIN_TOOL_DISPLAY_TITLES.has(id)) return true
   // Some ACP adapters suffix an opaque invocation id to the flattened MCP name.
   for (const fqn of BUILTIN_PERMISSION_TOOL_FQNS) if (id.includes(fqn)) return true
   return false
