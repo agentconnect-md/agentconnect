@@ -184,10 +184,18 @@ describe('knowledge entry page', () => {
     expect(host.textContent).toContain('Viewing rev 1.')
     expect(host.textContent).toContain('Proposed by dreamer · reviewed by Ada')
     expect(host.textContent).not.toContain('dream-1')
+    // The header's summary, tags, and date follow the revision on screen; the title and rev badge stay the entry's.
+    expect(host.textContent).toContain('Initial summary')
+    expect(host.textContent).not.toContain('Current summary')
+    expect(host.textContent).toContain('history')
+    expect(host.textContent).toContain('Jul 30, 2026')
+    expect(host.textContent).toContain('Release policy')
     expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/revisions'))).toHaveLength(1)
 
     await act(async () => button('Show current').click())
     expect(host.textContent).toContain('# Current')
+    expect(host.textContent).toContain('Current summary')
+    expect(host.textContent).not.toContain('Initial summary')
     expect(host.textContent).not.toContain('Viewing rev')
 
     // Publishing from the page: the editor carries the current text, and the new revision takes over.

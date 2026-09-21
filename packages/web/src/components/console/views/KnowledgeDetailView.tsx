@@ -87,7 +87,14 @@ export default function KnowledgeDetailView() {
 
   const viewing = selectedRevision ?? record.currentRevision
   const isCurrent = viewing === record.currentRevision
-  const shown = isCurrent ? record : history.data?.find((revision) => revision.revision === viewing)
+  const older = isCurrent ? null : history.data?.find((revision) => revision.revision === viewing)
+  const shown = isCurrent ? record : older
+  // Summary, provenance, date, and tags belong to the revision on screen; title and archive state to the entry.
+  const meta = isCurrent
+    ? { summary: record.summary, tags: record.tags, date: record.revisionCreatedAt, source: record }
+    : older
+      ? { summary: older.summary, tags: older.tags, date: older.createdAt, source: older }
+      : null
   const revisionLabel = t('revision', { value: record.currentRevision })
   const historyError = history.error instanceof Error ? history.error.message : null
 
@@ -117,7 +124,7 @@ export default function KnowledgeDetailView() {
               <span className="badge bg-(--surface-sunken) text-(--text-disabled)">{t('archived')}</span>
             )}
           </div>
-          {record.summary && <p className="psub">{record.summary}</p>}
+          {meta?.summary && <p className="psub">{meta.summary}</p>}
         </div>
         {canManage && (
           <div className="flex flex-none items-center gap-2">
@@ -136,9 +143,13 @@ export default function KnowledgeDetailView() {
       </div>
       <div className="mt-[9px] mb-5 flex flex-wrap items-center gap-x-3 gap-y-2 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
         <span className="desktop:hidden">{revisionLabel}</span>
-        <span>{provenance(record)}</span>
-        <span>{fmtDate(record.revisionCreatedAt)}</span>
-        <TagChips values={record.tags} />
+        {meta && (
+          <>
+            <span>{provenance(meta.source)}</span>
+            <span>{fmtDate(meta.date)}</span>
+            <TagChips values={meta.tags} />
+          </>
+        )}
       </div>
       {error && (
         <div className="mb-3 rounded-md bg-(--status-error-soft) px-3 py-2 font-sans text-[12px] text-(--status-error)">

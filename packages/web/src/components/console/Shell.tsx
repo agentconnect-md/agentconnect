@@ -48,6 +48,8 @@ import { MOBILE_NAV, MORE_ROWS, NAV_GROUPS, SECTIONS, navVisible } from './nav'
 // every other route is a "push" screen (back-button app bar, no bottom nav) on mobile.
 // Home is a top-level surface (the default landing), not a push screen.
 const LIST_ROUTES = ['/home', '/agents', '/sessions', '/crons', '/daemons']
+// Push sections that still own nested detail routes, so Back from a deep link lands on them, not Home.
+const NESTED_PARENTS = ['/knowledge']
 const CONSOLE_SWR_CONFIG = {
   dedupingInterval: 2_000,
   focusThrottleInterval: 5_000,
@@ -649,7 +651,8 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
 
   // Back from a push screen: pop in-app history when there is any, else (deep-link /
   // hard refresh — no history) route to the parent list so "back" never leaves the app.
-  const hasParentList = LIST_ROUTES.includes(`/${seg[0] ?? ''}`)
+  const hasParentList =
+    LIST_ROUTES.includes(`/${seg[0] ?? ''}`) || (seg.length > 1 && NESTED_PARENTS.includes(`/${seg[0]}`))
   const parentList = hasParentList ? `/${seg[0]}` : '/home'
   const parentListHref = orgPath(parentList + (seg[0] === 'sessions' ? sessionFilterSearch(locationSearch) : ''))
   const goBack = () => {
