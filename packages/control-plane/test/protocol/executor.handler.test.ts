@@ -451,15 +451,17 @@ describe('executor/prepare — checked against the ledger, then relayed (real Po
   it('a resent request joins the relay in flight: one relay, one launch, one answer', async () => {
     const h = buildWsHarness(prisma)
     const { holder, executor } = await pair(h)
-    const setIdOf = vi.spyOn(h.deps.memberSets, 'setIdOf')
+    const holdsAgent = vi.spyOn(h.deps.dutyLease, 'holdsAgent')
 
     const id = holder.inject('executor/prepare', PREPARE)
     const frame = await executor.expectFrame('executor/prepare')
     // The holder's correlator lapses while the executor is still preparing, and resends the identical frame.
     holder.inject('executor/prepare', PREPARE, { id })
-    // Membership is the resend's last read before it reaches the relay, so once it settles the join has happened.
+    // The duty is the LAST read before the relay (§6), two per request, so four settled means the resend got that far.
     // A bounded deadline, not a fixed pause: a loaded runner costs latency here, never a red test.
-    await vi.waitFor(() => expect(setIdOf.mock.settledResults).toHaveLength(2), { timeout: 10_000, interval: 5 })
+    await vi.waitFor(() => expect(holdsAgent.mock.settledResults).toHaveLength(4), { timeout: 10_000, interval: 5 })
+    // ...and nothing separates that read from the send, so one drained turn later the join has happened.
+    await new Promise((resolve) => setImmediate(resolve))
     expect(relayed(executor)).toHaveLength(1)
 
     executor.reply(frame.id, 'executor/prepare/result', READY)
