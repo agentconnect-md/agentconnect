@@ -1,6 +1,6 @@
 import { Backoff, ClientTransport, systemClock, type BackoffOpts, type Clock } from '@agentconnect.md/connection'
 import { noopClusterMetrics, type ClusterMetrics } from '../metrics/cluster-metrics.js'
-import { ShimBindingRegistry, spawnSubject, type Binding, type SpawnRecord } from './binding.js'
+import { ShimBindingRegistry, spawnSubject, type Binding, type PeerProof, type SpawnRecord } from './binding.js'
 import {
   DEFAULT_CREDENTIAL_TTL_MS,
   sanitizeWorkspaceRoot,
@@ -29,13 +29,19 @@ export const STARTUP_DIAL_BACKOFF: BackoffOpts = { baseMs: 100 }
 /** First startup handshake's budget, doubling after it: a dropped SYN reaches the pacing above, not the 10s default. */
 export const STARTUP_HANDSHAKE_TIMEOUT_MS = 1_000
 
+/** What a launch's peer presented, as the variant that proved it reports it. */
+type PeerReview = { authenticated: boolean; podName?: string; podUid?: string; error?: string }
+
 export interface ShimDialerDeps {
-  verifier: PodIdentityVerifier
+  /** The `pod` variant's proof: the pool's TokenReview, or a local VM's constant-time token compare. Absent ⇒ this dialer dials executors only, and a pod's identity is accepted from nobody. */
+  verifier?: PodIdentityVerifier
   now?: () => number
   clock?: Clock
+  /** The record is handed over so a dialer serving several launches can open this one's own transport — an executor's TLS-PSK pipe is keyed per session (session-executors.md §6). */
   dial?: (
     url: string,
-    opts: { subprotocol: string; path: string; handshakeTimeoutMs?: number }
+    opts: { subprotocol: string; path: string; handshakeTimeoutMs?: number },
+    record: SpawnRecord
   ) => Promise<ShimTransport>
   /** Per-phase backoff factory. Injected so tests dial and reconnect in milliseconds. */
   backoff?: (phase: ShimDialPhase) => Backoff
@@ -66,6 +72,14 @@ export class ShimDialer {
   private readonly clock: Clock
   private readonly now: () => number
   private readonly dials = new Map<string, SupervisedDial>()
+  /** One proof per peer variant (session-executors.md §6). The pod's is the injected verifier's, unchanged; an executor's environment presents nothing further, because the pipe this dial crossed was keyed by its executor for this session alone and is replaced by the next launch's. */
+  private readonly peerProofs: Record<PeerProof, (token: string, record: SpawnRecord) => Promise<PeerReview>> = {
+    pod: (token) =>
+      this.deps.verifier?.reviewToken(token, [SHIM_TOKEN_AUDIENCE]) ??
+      Promise.resolve({ authenticated: false, error: 'this dialer verifies no pod identity' }),
+    executor: (_token, record) =>
+      Promise.resolve({ authenticated: true, podName: record.podName, podUid: record.sandboxUid })
+  }
 
   constructor(private readonly deps: ShimDialerDeps) {
     const now = deps.now ?? (() => Date.now())
@@ -205,11 +219,15 @@ export class ShimDialer {
       }, boundedMs)
     })
     const attempt = (async () => {
-      transport = await (this.deps.dial ?? defaultDial)(dial.endpoint, {
-        subprotocol: SHIM_SUBPROTOCOL,
-        path: SHIM_WS_PATH,
-        ...(handshakeTimeoutMs === undefined ? {} : { handshakeTimeoutMs })
-      })
+      transport = await (this.deps.dial ?? defaultDial)(
+        dial.endpoint,
+        {
+          subprotocol: SHIM_SUBPROTOCOL,
+          path: SHIM_WS_PATH,
+          ...(handshakeTimeoutMs === undefined ? {} : { handshakeTimeoutMs })
+        },
+        dial.record
+      )
       if (timedOut || dial.stopped) {
         transport.close(4408, timedOut ? 'binding timeout' : 'dial no longer current')
         throw new Error(timedOut ? `binding timed out after ${boundedMs}ms` : 'dial no longer current')
@@ -403,7 +421,7 @@ export class ShimDialer {
   ): Promise<
     { ok: true; credential: string; binding: Binding; superseded: Binding[] } | { ok: false; rejected: ShimRejected }
   > {
-    const review = await this.deps.verifier.reviewToken(token, [SHIM_TOKEN_AUDIENCE])
+    const review = await this.peerProofs[record.peer ?? 'pod'](token, record)
     if (!review.authenticated || !review.podName || !review.podUid) {
       this.metrics.tokenReviewRejected()
       this.metrics.handshakeRejected('unauthenticated')

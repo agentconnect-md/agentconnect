@@ -34,6 +34,8 @@ import {
   ORGANIZATION_KNOWLEDGE_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   SESSION_EXECUTORS_V1_FEATURE,
+  type ExecutorCandidatesResult,
+  type SessionStayedHomeReason,
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
   MAX_TASK_DESCRIPTION,
@@ -395,8 +397,10 @@ import {
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { runtimeCredentialsConfigured } from './runtimes/runtime-credential-discovery.js'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
-import { wireWorkspacePlane, type ExecutionPlane, type PlaneLaunch } from './execution/plane.js'
+import { wireWorkspacePlane, type ExecutionPlane, type PlaneLaunch, type PlaneScope } from './execution/plane.js'
 import { seedSessionHome, startExecutorFacet, type ExecutorFacet } from './execution/executor-facet.js'
+import { ExecutorPlane, executorMcpBridge, type PlacedSession } from './execution/executor-plane.js'
+import { placeSession, type PlacementAsk, type PlacementChoice } from './execution/executor-placement.js'
 import { effectiveStrategies } from './execution/strategies.js'
 import {
   declaredRuntimeCatalog,
@@ -481,6 +485,7 @@ import {
 } from './memory/provider.js'
 import { memoryChannelKey, MemoryHomeUnavailableError, type MemoryFs } from './memory/store.js'
 import {
+  memoryHomeOf,
   memoryHomeUnavailable,
   resolveMemoryHomePorts,
   type MemoryHomeDeps,
@@ -1172,6 +1177,10 @@ export class Daemon {
   private readiness?: ReadinessGate
   // The executor facet (session-executors.md §3): dark unless `sandbox.share`, and all of its logic lives in `execution/executor-facet.ts`.
   private executorFacet?: ExecutorFacet
+  // The holder half (§7): this daemon's own sessions placed on other machines of its group. Empty until one is.
+  private executorPlane?: ExecutorPlane
+  /** The plane every scope of this daemon falls back to — its VMs or its pods; a spread session resolves to the executor plane instead. */
+  private localPlane?: ExecutionPlane
   private k8sRuntimeProbed = false
   private startupComplete = false
   // The shutdown duty drain in progress: its deadline, its counters, and the release of every grant
@@ -2031,7 +2040,7 @@ export class Daemon {
   private async sandboxPreflight(cfg: Config, root: string): Promise<void> {
     if (cfg.sandbox.backend === 'microsandbox') {
       if (this.k8s) throw new Error('sandbox.backend=microsandbox cannot be combined with --k8s')
-      wireWorkspacePlane(this.workspaces, this.microsandboxPlane)
+      this.wirePlaneResolver(this.microsandboxPlane)
       try {
         this.microsandbox = await installMicrosandbox({
           root,
@@ -2120,7 +2129,7 @@ export class Daemon {
         throw error
       }
       // Workspace git, files, path clearing and session retirement then run where the workspace is; an agent with no bound channel answers undefined for those, yet its workspace still reads as off this disk, which decides what operations exist at all: an in-place conversion has no pod-side rollback.
-      wireWorkspacePlane(this.workspaces, this.k8sPlane)
+      this.wirePlaneResolver(this.k8sPlane)
       this.log.info('k8s: execution plane ready — daemon-to-sandbox shim dialing enabled')
     }
   }
@@ -2257,8 +2266,12 @@ export class Daemon {
       // Off the SAME predicate the workspace git runner uses, so the pointers always describe the
       // filesystem the git that reads them will run in. Derived per call rather than fixed at boot:
       // a cluster agent's channel comes and goes, and both resolvers follow it together.
-      targetFor: (agentId) =>
-        this.k8sPlane?.runsInSandbox(agentId) ? sandboxGitCredentialTarget() : daemonCredentialTarget,
+      targetFor: (agentId, cwd) => {
+        // A session placed on another machine runs its git there, at the roots that session's `prepare` named (§5).
+        const remote = this.executorPlane?.rootsForPath(agentId, cwd)
+        if (remote) return sandboxGitCredentialTarget(remote.runtimeRoot, remote.helperRoot)
+        return this.k8sPlane?.runsInSandbox(agentId) ? sandboxGitCredentialTarget() : daemonCredentialTarget
+      },
       // Git the daemon runs itself (skill acquisition) reads these on THIS filesystem, whatever
       // `targetFor` says about the agent's workspace git.
       daemonTarget: daemonCredentialTarget,
@@ -3290,7 +3303,7 @@ export class Daemon {
       // ACP session to its exact channel/thread/delivery integration.
       // The agent's enabled daemon-configured MCP servers are appended AFTER the bridge entry, gated
       // on the runtime's probed transport caps.
-      mcpServersFor: ({ agent, platform, channel, thread, integrationId, transportScope, isDm }) => {
+      mcpServersFor: ({ agent, platform, channel, thread, integrationId, transportScope, isDm, sessionKey }) => {
         // An OpenClaw-style bridge rejects non-empty session mcpServers — skip assembly instead of failing session/new.
         if (this.runtimes[agent.runtime]?.sessionMcpServers === 'unsupported') {
           this.log.debug(
@@ -3354,7 +3367,7 @@ export class Daemon {
             agentName: agent.displayName?.trim() || agent.name,
             ...(agent.iconUrl ? { iconUrl: agent.iconUrl } : {})
           })
-          servers.push(...this.mcpToolServerSpec(token, agent))
+          servers.push(...this.mcpToolServerSpec(token, agent, sessionKey))
         }
         servers.push(
           ...resolveAgentMcpServers({
@@ -3418,7 +3431,7 @@ export class Daemon {
       share: cfg.sandbox.share,
       strategies: () => this.executionStrategies(),
       capacity: () => this.cfg.limits.maxConcurrentSessions,
-      ownSessions: () => [...this.hosts.keys()].filter((key) => hostKeySessionKey(key) !== undefined).length,
+      ownSessions: () => this.ownIsolatedSessions(),
       draining: () => this.draining,
       endpointHost: () => this.cpClient?.localAddress?.(),
       seedHome: (home) => {
@@ -3434,6 +3447,183 @@ export class Daemon {
       log: this.log,
       clock: this.clock
     })
+    this.startExecutorPlane(root)
+  }
+
+  /**
+   * The holder half of the same feature (§7): where this daemon's own isolated sessions execute when
+   * the group lends it compute. It owns no listener and no timer, so a daemon that never spreads a
+   * session pays nothing for having one.
+   */
+  private startExecutorPlane(root: string): void {
+    // Under --k8s every isolated session already gets a pod of the install's own pool; nothing spreads (§11).
+    if (this.k8s) return
+    this.executorPlane = new ExecutorPlane({
+      prepare: (launch) =>
+        this.requireCp('executor/prepare').executorPrepare(
+          {
+            agentId: launch.agentId,
+            sessionKey: launch.sessionKey,
+            executorDaemonId: launch.executorDaemonId,
+            launchId: launch.launchId,
+            strategy: launch.strategy
+          },
+          this.orgForAgent(launch.agentId)
+        ),
+      release: (placed, launchId) =>
+        this.requireCp('executor/release').executorRelease(
+          {
+            agentId: placed.agentId,
+            sessionKey: placed.sessionKey,
+            executorDaemonId: placed.executorDaemonId,
+            launchId
+          },
+          this.orgForAgent(placed.agentId)
+        ),
+      replace: (placed) => this.replaceLostExecutor(placed),
+      // The same policy the pool's plane is given: only the daemon knows which of its own sockets this agent needs.
+      tunnelsFor: (agentId) => {
+        const agent = this.agents.get(agentId)
+        if (!agent) return []
+        return this.workspaces.helperBackedCredential(agent) ? ['mcp', 'gitcred'] : ['mcp']
+      },
+      tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
+      log: {
+        info: (m) => this.log.info(m),
+        warn: (m) => this.log.warn(m),
+        debug: (m) => this.log.debug?.(m)
+      },
+      clock: this.clock
+    })
+    this.wirePlaneResolver()
+  }
+
+  /** The control connection an executor request needs; a holder that cannot ask does not spread, and its turn waits (§6). */
+  private requireCp(op: string): CpClient {
+    const cp = this.cpClient
+    if (!cp?.connected()) throw new Error(`${op} needs a control plane connection`)
+    return cp
+  }
+
+  /** What this machine hosts, counted as a candidate's `hostedSessions` is — its own isolated sessions included, so the number means the same for every candidate (§6). */
+  private hostedSessionCount(): number {
+    return this.executorFacet?.hostedSessions() ?? this.ownIsolatedSessions()
+  }
+
+  private ownIsolatedSessions(): number {
+    return [...this.hosts.keys()].filter((key) => hostKeySessionKey(key) !== undefined).length
+  }
+
+  /** What the holder knows about a session being born, in the vocabulary the birth predicate reads (§7). */
+  private placementAsk(agent: LoadedAgent, sessionKey: string): PlacementAsk {
+    return {
+      isolation: this.sessionIsolation.get(sessionKey),
+      runInSandbox: this.agentRunsInSandbox(agent),
+      runtime: agent.runtime,
+      // The only memory condition left: a binding the Control Plane's boot-time flip has not reached yet (§7).
+      memoryDaemonHomed: memoryKindOf(agent) === 'managed' && memoryHomeOf(agent) === 'daemon'
+    }
+  }
+
+  /** The strategy v1's ask names: `runInSandbox` true asks for a sandboxing one, false for `host` (§5). */
+  private askedStrategy(ask: PlacementAsk): string {
+    return ask.runInSandbox ? 'microsandbox' : 'host'
+  }
+
+  /**
+   * Where this session executes, decided once at its birth and kept for its whole life (§6, §7).
+   *
+   * Nothing is asked for a session already placed here, for one whose verdict this daemon recorded,
+   * or on a connection that belongs to no member set — the two consents are the group's and each
+   * machine's, and a daemon in no group has neither to read.
+   */
+  private async placeSessionOnExecutor(agent: LoadedAgent, sessionKey: string): Promise<void> {
+    const plane = this.executorPlane
+    if (!plane || plane.placementOf(sessionKey)) return
+    const recorded = await this.store.getSessionExecutor(sessionKey).catch(() => undefined)
+    if (recorded && 'stayedHomeReason' in recorded) return
+    const ask = this.placementAsk(agent, sessionKey)
+    if (recorded) {
+      // Sticky, and a restart does not re-decide: the next launch prepares the environment again where the session was born.
+      plane.place({
+        agentId: agent.id,
+        sessionKey,
+        executorDaemonId: recorded.executorDaemonId,
+        strategy: this.askedStrategy(ask)
+      })
+      return
+    }
+    if (ask.isolation !== 'session') return await this.recordSessionExecutor(sessionKey, 'shared_session')
+    if (!this.cpClient?.memberSet()) return await this.recordSessionExecutor(sessionKey, 'not_on_group')
+    const answer = await this.executorCandidates(agent.id, sessionKey)
+    const placement = placeSession({
+      ask,
+      holderHostedSessions: this.hostedSessionCount(),
+      ...(answer ? { answer } : {})
+    })
+    if ('stayedHome' in placement) return await this.recordSessionExecutor(sessionKey, placement.stayedHome)
+    const landed = await plane.prepareAt(agent.id, sessionKey, placement.spread)
+    if ('refused' in landed) {
+      return await this.recordSessionExecutor(
+        sessionKey,
+        landed.refused === 'full' ? 'candidates_full' : 'no_candidate'
+      )
+    }
+    this.log.info(
+      `executor: session ${landed.placed.leaf} of agent ${agent.id} runs on daemon ${landed.placed.executorDaemonId}`
+    )
+    await this.recordSessionExecutor(sessionKey, { executorDaemonId: landed.placed.executorDaemonId })
+  }
+
+  /** The birth verdict on this daemon's own row; the Control Plane's copy rides the session's metadata (§7). */
+  private async recordSessionExecutor(
+    sessionKey: string,
+    verdict: SessionStayedHomeReason | { executorDaemonId: string }
+  ): Promise<void> {
+    await this.store
+      .setSessionExecutor(sessionKey, typeof verdict === 'string' ? { stayedHomeReason: verdict } : verdict)
+      .catch((err: unknown) =>
+        this.log.warn(`executor: recording where session ${sessionKey} runs failed: ${formatErr(err)}`)
+      )
+  }
+
+  /** `executor/candidates` — facts, never a choice; undefined when the Control Plane could not be asked at all (§6). */
+  private async executorCandidates(agentId: string, sessionKey: string): Promise<ExecutorCandidatesResult | undefined> {
+    const cp = this.cpClient
+    if (!cp?.connected()) return undefined
+    return await cp.executorCandidates({ agentId, sessionKey }, this.orgForAgent(agentId)).catch((err: unknown) => {
+      this.log.warn(`executor: asking the control plane for candidates failed: ${formatErr(err)}`)
+      return undefined
+    })
+  }
+
+  /** The loss rule's second branch (§7): the executor has been out of touch past the grace, so the session is prepared elsewhere and the user is told the previous environment is gone. */
+  private async replaceLostExecutor(placed: PlacedSession): Promise<PlacementChoice | undefined> {
+    const agent = this.agents.get(placed.agentId)
+    if (!agent) return undefined
+    const answer = await this.executorCandidates(placed.agentId, placed.sessionKey)
+    const placement = placeSession({
+      ask: this.placementAsk(agent, placed.sessionKey),
+      holderHostedSessions: this.hostedSessionCount(),
+      ...(answer ? { answer } : {})
+    })
+    // Nowhere else to put it: the session stays where it is and the turn fails, which is what a machine that comes back needs.
+    if ('stayedHome' in placement) return undefined
+    const next = placement.spread.find((choice) => choice.daemonId !== placed.executorDaemonId)
+    if (!next) return undefined
+    await this.recordSessionExecutor(placed.sessionKey, { executorDaemonId: next.daemonId })
+    this.noteEnvironmentLost(placed)
+    return next
+  }
+
+  /** Told in the conversation, as a pinned daemon's death is: the work in the old environment is not coming back. */
+  private noteEnvironmentLost(placed: PlacedSession): void {
+    const text =
+      'The machine this session was running on has been out of touch, so it starts again on another one — anything uncommitted in the previous environment is gone.'
+    for (const pending of this.pending.values()) {
+      if (pending.plan.agentId !== placed.agentId || pending.plan.sessionKey !== placed.sessionKey) continue
+      if (pending.conn) this.enqueueApply(pending, { kind: 'notice', text })
+    }
   }
 
   /** Phase 26 — under --k8s the CP organization registry MUST arrive before ingress opens; otherwise the connect is deferred to the last phase. */
@@ -4142,9 +4332,22 @@ export class Daemon {
 
   /** Where one host's runtime executes; undefined is this daemon's own host, where AcpHost keeps its LocalDriver. */
   private planeFor(launch: PlaneLaunch): ExecutionPlane | undefined {
+    // A session placed on another machine runs there for its whole life, whatever this machine would have done with it (§7).
+    if (this.placedSession(hostKeySessionKey(launch.hostKey))) return this.executorPlane
     if (this.k8sPlane) return this.k8sPlane
     // Only a launch prepared for a VM runs in one: an agent that runs unsandboxed beside it stays on this host.
     return launch.prepared.microsandbox ? this.microsandboxPlane : undefined
+  }
+
+  /** Every workspace scope's plane: a session this holder placed on another machine, else this daemon's own — a VM, a pod, or its disk. */
+  private wirePlaneResolver(local?: ExecutionPlane): void {
+    if (local) this.localPlane = local
+    this.workspaces.setPlaneResolver((scope: PlaneScope) => this.executorPlane?.planeFor(scope) ?? this.localPlane)
+  }
+
+  /** Where a session is placed, or undefined for one that runs on this machine. */
+  private placedSession(sessionKey: string | undefined): PlacedSession | undefined {
+    return sessionKey === undefined ? undefined : this.executorPlane?.placementOf(sessionKey)
   }
 
   private workspaceFilesFor(agentId: string) {
@@ -4296,6 +4499,8 @@ export class Daemon {
    */
   private confinedSession(agent: Agent, sessionKey?: string): boolean {
     if (sessionKey === undefined) return false
+    // A session placed on another machine is always the clone tier: the primary checkout is not on it (§2).
+    if (this.placedSession(sessionKey)) return true
     // Workspace isolation is independent of whether the runtime owns a VM.
     if (!this.sessionIsolated(agent, sessionKey)) return false
     return this.workspaces.confinedSessionTier(agent, sessionKey, this.k8s || this.agentRunsInSandbox(agent))
@@ -4454,7 +4659,13 @@ export class Daemon {
   }
 
   /** That tool server's `session/new` spec, in the coordinates of wherever the runtime runs. */
-  private mcpToolServerSpec(token: string, agent?: Agent): McpStdioServer[] {
+  private mcpToolServerSpec(token: string, agent?: Agent, sessionKey?: string): McpStdioServer[] {
+    // A session on an executor reaches this daemon through its own environment's `mcp` tunnel, and runs that machine's bridge (§5).
+    const remote = sessionKey === undefined ? undefined : this.executorPlane?.rootsFor(sessionKey)
+    if (remote) {
+      const bridge = executorMcpBridge(remote)
+      return bridge ? buildSandboxMcpServers({ bridge, token, runtimeRoot: remote.runtimeRoot }) : []
+    }
     if (agent && this.usesMicrosandbox(agent)) {
       const bridge = this.microsandboxTable?.mcpBridge
       if (!bridge) throw new Error('microsandbox image does not provide the AgentConnect MCP bridge')
@@ -4479,6 +4690,20 @@ export class Daemon {
     // and none of the local preparation below may run — its mkdir/existsSync/skills work would
     // land on this daemon's disk, describing a filesystem the runtime never sees. Skills and
     // git-repo checkouts for cluster agents arrive with the materialize/runner phases.
+    // A session placed on another machine prepares IN that machine's environment, over the shim: its clones,
+    // its skills, its HOME. The agent's primary checkout is not there and is not consulted (§7).
+    const placed = request && this.placedSession(request.sessionKey)
+    if (placed && this.executorPlane) {
+      const plane = this.executorPlane
+      return await plane.withEnvironment(placed.subject, async () => {
+        const cwd = await this.workspaces.prepareExecutorWorkspace(agent, plane.mountFor(placed.subject), {
+          ...request!,
+          confined: true
+        })
+        await this.reconcileClusterSkills(agent, placed.subject, plane)
+        return cwd
+      })
+    }
     if (this.k8sPlane) {
       const plane = this.k8sPlane
       // The pod's own preparation: clone and pull happen on its volume through the runner, and
@@ -4539,8 +4764,13 @@ export class Daemon {
     )
   }
 
-  private async reconcileClusterSkills(agent: Agent, pod: SandboxSubject): Promise<void> {
-    const plane = this.k8sPlane
+  /** Skills through a shim, whichever plane holds the environment: a pod of the pool, or a session's on an executor. */
+  private async reconcileClusterSkills(
+    agent: Agent,
+    pod: SandboxSubject,
+    plane: Pick<K8sRuntimePlane, 'skillClientFor' | 'workspaceIncarnationFor' | 'shimGenerationFor'> | undefined = this
+      .k8sPlane
+  ): Promise<void> {
     const workspaceIncarnation = plane?.workspaceIncarnationFor?.(pod)
     const shimGeneration = plane?.shimGenerationFor?.(pod)
     await this.reconcileSandboxSkills(agent, {
@@ -5117,9 +5347,15 @@ export class Daemon {
     const sessionGitScope = managedCredentials ? managedScope : null
     const sessionGitIdentity = managedCredentials ? this.gitCommitIdentity : undefined
     const needsSessionGit = managedCredentials || agent.workspace.mode === 'git-repo'
+    // A session on an executor reads the same file in that machine's environment, at the roots its `prepare` named (§5).
+    const remoteSession = this.placedSession(hostKeySessionKey(opts.hostKey))
+    const remoteRoots = remoteSession && this.executorPlane?.rootsFor(remoteSession.sessionKey)
+    const sandboxGitTarget = remoteRoots
+      ? sandboxGitCredentialTarget(remoteRoots.runtimeRoot, remoteRoots.helperRoot)
+      : sandboxGitCredentialTarget()
     const sandboxSessionGit =
-      this.k8sPlane && needsSessionGit
-        ? sessionGitConfig(agent.id, sessionGitIdentity, sandboxGitCredentialTarget(), sessionGitScope)
+      (this.k8sPlane || remoteRoots) && needsSessionGit
+        ? sessionGitConfig(agent.id, sessionGitIdentity, sandboxGitTarget, sessionGitScope)
         : undefined
     // Held as its own value: the sandbox read grant must come from the path the DAEMON authored,
     // never read back out of the merged child env, where runtimeOverrides.env could name any file.
@@ -5164,12 +5400,12 @@ export class Daemon {
         delete runtimeEnv[secret.name]
       }
     }
-    // The cluster driver routes every pod launch by AC_AGENT_ID, credentials or not.
-    if (this.k8sPlane || micro) env.AC_AGENT_ID = agent.id
+    // Every shim driver routes its launch by AC_AGENT_ID — a pod's, a VM's, and an executor environment's.
+    if (this.k8sPlane || micro || remoteSession) env.AC_AGENT_ID = agent.id
     const shimDirs = new Set<string>()
     // The gh wrapper is a DAEMON path: prepending it to a pod launch would name a dir the pod
     // never had, and the pod image ships no wrapper (gh there degrades to unauthenticated).
-    if (githubAppCredentials && this.ghBinDir && !this.k8sPlane && !micro) {
+    if (githubAppCredentials && this.ghBinDir && !this.k8sPlane && !micro && !remoteSession) {
       // gh wrapper (multi-repo #457): PATH prepend + the agent identity the
       // wrapper hands to the hidden token helper. sessionGitEnv supplies the
       // matching runtime-only capability; a user PATH override must not
@@ -5177,7 +5413,7 @@ export class Daemon {
       env.AC_AGENT_ID = agent.id
       shimDirs.add(this.ghBinDir)
     }
-    if (gitlabCredentials && this.glabBinDir && !this.k8sPlane && !micro) {
+    if (gitlabCredentials && this.glabBinDir && !this.k8sPlane && !micro && !remoteSession) {
       // glab wrapper (§13.3): read-only project tokens for the managed workspace.
       env.AC_AGENT_ID = agent.id
       // §24.4: point the real CLI at the deployment's instance, prefix and port included.
@@ -12109,6 +12345,8 @@ export class Daemon {
     const persistedSessionId = persisted?.acpSessionId
     // §11: this session's OWN isolation, learned here because the model-session host below claims its pod before `sessions.handle` records the row — its row, else this turn's explicit choice, else the agent's default, which is the order SessionManager decides it in.
     this.sessionIsolation.set(key, persisted?.workspaceIsolation ?? effectiveSessionIsolation(agent, webchatIsolation))
+    // …and WHERE it runs, which the host key below reads: decided once at birth, recorded, and kept for the session's life (session-executors.md §7).
+    await this.placeSessionOnExecutor(agent, key)
     let remoteMcpServer: import('@agentclientprotocol/sdk').McpServer | undefined
     try {
       const reviewWorkspace = await this.githubReviews.prepareGithubReviewWorkspace(entry, key, agent)
@@ -18213,6 +18451,8 @@ export class Daemon {
    */
   private async sweepIdleSandboxes(now: number, ttl: number): Promise<void> {
     await this.microsandbox?.suspendIdle(now - ttl)
+    // A spread session's environment is judged by the same rule: closing its pipe drops the launch with it, so the next turn prepares again (§7).
+    if (this.executorPlane) await this.sweepIdleRemoteSessions(now, ttl, this.executorPlane)
     const plane = this.k8sPlane
     if (!plane) return
     for (const { subject, agentId, since } of plane.launched()) {
@@ -18264,6 +18504,33 @@ export class Daemon {
     }
   }
 
+  /**
+   * The same judgement for a session placed on another machine (§7): its pipe closes and its launch
+   * goes with it, so the executor's own linger stops the environment and the next turn's new launch
+   * id prepares it again. The environment's directories stay; only the holder's retirement removes them.
+   */
+  private async sweepIdleRemoteSessions(now: number, ttl: number, plane: ExecutorPlane): Promise<void> {
+    for (const { subject, agentId, since } of plane.launched()) {
+      // Idle is the holder's decision: an ex-holder must not close a pipe its successor is using.
+      if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(agentId)) continue
+      const sessionKey = plane.sessionKeyFor(subject)
+      if (sessionKey === undefined) continue
+      const hostKey = sessionHostKey(agentId, sessionKey)
+      if (this.hosts.has(hostKey) || this.hostStarts.has(hostKey)) continue
+      if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
+      if ([...this.pending.values()].some((p) => p.plan.agentId === agentId && p.plan.sessionKey === sessionKey))
+        continue
+      const activity = await this.store.sessionLastActivityTs(sessionKey)
+      if (now - Math.max(activity ?? 0, since) <= ttl) continue
+      // A console page watching this session's files would lose them to a closed pipe; the hold lapses on its own.
+      if (this.sandboxHolds.holds(subject)) continue
+      const outcome = await plane.suspendIdle(subject)
+      if (outcome === 'suspended') {
+        this.log.info(`idle: closed the pipe to the executor of session ${subject} — its next turn prepares it again`)
+      }
+    }
+  }
+
   /** Cluster only: take over the sandbox of an agent this member just started serving, from the cluster. */
   // So a Running pod nobody here launched (a rollout, a moved duty) has a holder that can suspend it.
   // Behind any teardown still settling for the agent, so a lose-then-regain cannot forget the adoption.
@@ -18285,6 +18552,8 @@ export class Daemon {
   /** Cluster only: the sandbox half of "no longer served here"; the claim and volume stay. */
   private releaseClusterSandbox(agentId: string): void {
     this.k8sPlane?.releaseAgent(agentId)
+    // The same for a spread session: this holder drops its launches, and the successor attaches to the environments they left (§7).
+    this.executorPlane?.releaseAgent(agentId)
   }
 
   /**
@@ -18340,6 +18609,8 @@ export class Daemon {
   private async discardSessionSandbox(agentId: string, sessionKey: string): Promise<void> {
     const key = sessionHostKey(agentId, sessionKey)
     const leaf = hostKeyDirName(key)
+    // A session on another machine is retired by naming the launch this holder prepared; what it cannot name, that executor's backstop collects (§7).
+    await this.executorPlane?.retire(agentId, sessionKey)
     if (this.microsandbox) {
       if (this.legacyMicrosandboxSessions.has(key)) {
         if ([...this.legacyMicrosandboxSessions].some((other) => other !== key && hostKeyAgentId(other) === agentId))
@@ -20360,6 +20631,9 @@ export class Daemon {
     // The drain above already stopped every hosted shim; this closes the listener and whatever a late launch left.
     await this.executorFacet?.stop().catch((error: unknown) => errors.push(error))
     this.executorFacet = undefined
+    // The environments stay: they survive a restart as directories, and the next launch prepares them again (§9).
+    await this.executorPlane?.stop().catch(() => undefined)
+    this.executorPlane = undefined
     await this.k8sPlane?.stop().catch(() => undefined)
     await this.readiness?.stop().catch(() => undefined)
     this.readiness = undefined

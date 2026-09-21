@@ -246,6 +246,8 @@ export class SessionManager {
         integrationId?: string
         transportScope?: string
         isDm: boolean
+        /** The logical session: its runtime may execute somewhere this agent's others do not (session-executors.md §5). */
+        sessionKey: string
       }) => McpServer[]
       /**
        * Download an inbound attachment's bytes (§9.2) — resolved by the daemon
@@ -672,7 +674,8 @@ export class SessionManager {
           thread,
           ...(integrationId !== undefined ? { integrationId } : {}),
           ...(transportScope !== undefined ? { transportScope } : {}),
-          isDm: msg.isDm
+          isDm: msg.isDm,
+          sessionKey: key
         }) ?? [],
       ...(options.additionalMcpServers !== undefined ? { additionalMcpServers: options.additionalMcpServers } : {}),
       // The sticky per-session effort override rides session `_meta` on new/load so the

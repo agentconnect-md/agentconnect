@@ -264,14 +264,14 @@ export class WorkspaceManager {
     return this.planeFor({ agentId, path: cwd })?.gitRunnerFor(agentId, cwd, abort)
   }
 
-  /** The filesystem this agent's workspace files live in — this daemon's own when nothing claims it. */
-  fsFor(agentId: string): WorkspaceFs {
-    return this.planeFor({ agentId })?.workspaceFsFor(agentId)?.fs ?? localWorkspaceFs
+  /** The filesystem this agent's workspace files live in — this daemon's own when nothing claims it. A caller holding a session's scope names it, so a session placed apart from its agent answers for itself. */
+  fsFor(agentId: string, scope?: Omit<PlaneScope, 'agentId'>): WorkspaceFs {
+    return this.planeFor({ agentId, ...scope })?.workspaceFsFor(agentId, scope)?.fs ?? localWorkspaceFs
   }
 
   /** The mount this agent's workspace paths are composed in; undefined ⇒ this daemon's own disk. */
-  sandboxMountFor(agentId: string): string | undefined {
-    return this.planeFor({ agentId })?.workspaceFsFor(agentId)?.mount
+  sandboxMountFor(agentId: string, scope?: Omit<PlaneScope, 'agentId'>): string | undefined {
+    return this.planeFor({ agentId, ...scope })?.workspaceFsFor(agentId, scope)?.mount
   }
 
   /** The plane's error message, or undefined when it emptied the path or has no clearer for it. */
@@ -1289,9 +1289,9 @@ export class WorkspaceManager {
 
   /** `<agentDir>/sessions/<leaf>` — the directory a confined session owns, whether or not it exists yet (§11); the leaf is the session key's, the same one its host's policy directory takes. */
   sessionDir(agent: Agent, sessionKey: string): string {
-    // On a pool it is on the session's OWN pod, under the mount the install's pods share; the leaf routes it there.
+    // On a pool it is on the session's OWN pod, under the mount the install's pods share; on an executor, under that machine's own root. The leaf routes it there, and the mount is asked for THIS session, which is the one placed.
     const root = this.offDisk({ agentId: agent.id, sessionKey })
-      ? (this.sandboxMountFor(agent.id) ?? DEFAULT_SHIM_WORKSPACE_ROOT)
+      ? (this.sandboxMountFor(agent.id, { sessionKey }) ?? DEFAULT_SHIM_WORKSPACE_ROOT)
       : this.agentRootFor(agent)
     return sessionDirIn(root, sessionKeyDirName(sessionKey))
   }
@@ -2119,7 +2119,7 @@ export class WorkspaceManager {
     } else if (review) {
       // Tracked files alone follow the revision, as on the worktree tier: the session keeps its untracked and ignored intermediates across deliveries.
       await this.runnerFor(agentId, cwd)
-        .withEnv(this.sessionCloneGitEnv(agentId, root))
+        .withEnv(this.sessionCloneGitEnv(agentId, root, cwd))
         .raw(['reset', '--hard', target])
     }
     if (review && (await this.revParse(agentId, cwd, 'HEAD')).toLowerCase() !== review.checkout) {
@@ -2134,7 +2134,7 @@ export class WorkspaceManager {
     cwd: string,
     revision: string
   ): Promise<Set<string>> {
-    const git = this.runnerFor(agentId, cwd).withEnv(this.sessionCloneGitEnv(agentId, root))
+    const git = this.runnerFor(agentId, cwd).withEnv(this.sessionCloneGitEnv(agentId, root, cwd))
     const oid = (await git.raw(['rev-parse', '--revs-only', `${revision}:.gitmodules`])).trim()
     if (!oid) return new Set()
     const { out, overflow } = await git.readBounded(
@@ -2157,7 +2157,7 @@ export class WorkspaceManager {
   private async cloneSessionRootAt(agentId: string, root: WorkspaceRoot, cwd: string): Promise<void> {
     if (root.githubApp) await preWarmGitCred(agentId, 'clone')
     // Run in the target's parent, which names the pod that owns it: a runner with no cwd is the agent pod's.
-    const git = this.runnerFor(agentId, dirname(cwd)).withEnv(this.sessionCloneGitEnv(agentId, root))
+    const git = this.runnerFor(agentId, dirname(cwd)).withEnv(this.sessionCloneGitEnv(agentId, root, cwd))
     await withStartupPhase('clone', () =>
       git.clone(root.cloneUrl, cwd, ['--filter=blob:none', '--no-checkout', '--branch', root.branch, '--single-branch'])
     )
@@ -2165,9 +2165,10 @@ export class WorkspaceManager {
   }
 
   /** The env for daemon-run Git that materializes a session clone's tree (the clone, the branch checkout, a review reset): a blobless clone fetches file contents on demand from the promisor remote, which the usual `GIT_NO_LAZY_FETCH=1` refuses, so these permit it and carry the credential channel; everything local keeps `workspaceGitLocalEnv`. */
-  private sessionCloneGitEnv(agentId: string, root: WorkspaceRoot): Record<string, string> {
+  // The cwd travels with it: a session's clone may run in a filesystem this agent's other sessions do not share (session-executors.md §5).
+  private sessionCloneGitEnv(agentId: string, root: WorkspaceRoot, cwd?: string): Record<string, string> {
     const base = root.githubApp
-      ? { ...workspaceGitEnvBase(root.cloneUrl), ...cloneGitEnv(agentId, root.cloneUrl, root.managed) }
+      ? { ...workspaceGitEnvBase(root.cloneUrl), ...cloneGitEnv(agentId, root.cloneUrl, root.managed, cwd) }
       : { ...workspaceGitEnvBase(root.cloneUrl), GIT_TERMINAL_PROMPT: '0' }
     return { ...base, GIT_NO_LAZY_FETCH: '0' }
   }
@@ -2185,7 +2186,7 @@ export class WorkspaceManager {
       initiatedBy
     )
     // Three admitted subcommands rather than `checkout -b`, which the sandbox refuses by design: create the branch, point HEAD at it, then materialize the tree HEAD now names.
-    const git = this.runnerFor(agentId, cwd).withEnv(this.sessionCloneGitEnv(agentId, root))
+    const git = this.runnerFor(agentId, cwd).withEnv(this.sessionCloneGitEnv(agentId, root, cwd))
     await git.raw(['branch', '--no-track', branch, target])
     await git.raw(['symbolic-ref', 'HEAD', `refs/heads/${branch}`])
     // The materialization is what may lazily fetch, so it runs under the clone env like the review reset below.
@@ -2243,6 +2244,18 @@ export class WorkspaceManager {
     await this.prepareClusterCheckout(agent, root, confined)
     if (confined) return await this.prepareClusterConfinedSession(agent, root, confined)
     return await this.prepareClusterSessionCwd(agent, root, request)
+  }
+
+  /** A session placed on an executor (session-executors.md §7): the confined half alone, because the agent's primary checkout stays on its holder and that machine's environment holds only this session's clones. */
+  async prepareExecutorWorkspace(
+    agent: Agent,
+    mount: string | undefined,
+    request: PrepareSessionWorkspaceRequest
+  ): Promise<string> {
+    return await this.prepareClusterConfinedSession(agent, mount ?? DEFAULT_SHIM_WORKSPACE_ROOT, {
+      ...request,
+      confined: true
+    })
   }
 
   // The agent pod's half: run a due conversion, clone or converge the primary checkout, and prove the marker; the cwd is the caller's.

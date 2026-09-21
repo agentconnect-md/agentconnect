@@ -23,7 +23,7 @@ function stubConnection(generation: number, workspaceRoot?: string): ShimConnect
 
 /** An endpoint that is already up, so resolving it costs the bind nothing. */
 const endpoints: ShimEndpointProvider = {
-  resolve: async () => ({ address: '10.0.0.8', peer: { podName: 'p' } }),
+  resolve: async () => ({ address: '10.0.0.8', peer: { name: 'p', proof: 'pod' as const } }),
   retain: () => {},
   release: () => {}
 }

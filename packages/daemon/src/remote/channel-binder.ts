@@ -82,7 +82,8 @@ export class ChannelBinder<L extends Launch = Launch> {
           sandboxUid: launch.sandboxUid,
           generation: launch.generation,
           grants: [...grants],
-          podName: endpoint.peer.podName
+          podName: endpoint.peer.name,
+          peer: endpoint.peer.proof
         },
         endpoint.address,
         channelTimeoutMs

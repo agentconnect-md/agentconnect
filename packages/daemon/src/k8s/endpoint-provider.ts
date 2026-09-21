@@ -27,7 +27,7 @@ export function sandboxEndpointProvider(deps: SandboxEndpointProviderDeps): Shim
       timer?.mark('mode_running')
       const pod = await deps.awaitReady(launch.sandboxName)
       timer?.mark('pod_ready')
-      return { address: pod.podIp, peer: { podName: pod.podName } }
+      return { address: pod.podIp, peer: { name: pod.podName, proof: 'pod' } }
     }
   }
 }

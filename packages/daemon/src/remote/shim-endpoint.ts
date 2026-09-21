@@ -1,9 +1,11 @@
 import type { LaunchTimer } from '../metrics/cluster-metrics.js'
+import type { PeerProof } from '../shim/binding.js'
 import type { Launch } from './launch-registry.js'
 
-/** What the dialed peer must prove — today the pod name the shim's TokenReview identity is matched against. */
+/** What the dialed peer must prove: the name its shim has to answer to, and how that name is proved — a pod's TokenReview identity, or the TLS-PSK pipe an executor admitted this dial on (session-executors.md §6). */
 export interface PeerExpectation {
-  podName: string
+  name: string
+  proof: PeerProof
 }
 
 /** Where a launch's shim can be dialed right now, and who must answer there. */
