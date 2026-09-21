@@ -44,6 +44,10 @@ Normalization remains pure in the message package. Registration may span
 packages; QQ-specific policies must not become core branches. This transport
 requires no relay module.
 
+The console offers QQ only where the deployment turns on the `qq` feature flag
+(the chart's `features.qq`, on by default); the Control Plane and daemon serve
+it either way.
+
 ```mermaid
 flowchart LR
     Q[QQ group or DM] -->|Official events| X[QQ adapter]

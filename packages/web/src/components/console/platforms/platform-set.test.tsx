@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { larkFeishuBrand } from '@/components/LarkFeishuSwitcher'
 import { PlatformMark } from '@/components/marks'
 import { chatRoomSigil, PLATFORM_LABEL_IDS, platformLabel } from '@/lib/platform-labels'
@@ -10,7 +10,9 @@ import {
   PLATFORMS,
   botMatchesPlatformTab,
   isCoreTriggerKind,
-  platformTiles
+  platformOffered,
+  platformTiles,
+  visibleBotPlatformTabs
 } from './host-projections'
 import { PLATFORM_MARK_IDS, platformMark } from './marks'
 import { botCardCopy, channelListSemantics, platformRegistry } from './registry'
@@ -123,6 +125,30 @@ describe('platform set', () => {
     // covers, not its row count.
     expect([...new Set(BOT_PLATFORM_TABS.map((tab) => tab.platform))]).toEqual([...platformRegistry.ids()])
     expect(new Set(BOT_PLATFORM_TABS.map((tab) => tab.key)).size).toBe(BOT_PLATFORM_TABS.length)
+  })
+
+  describe('a flag-gated platform', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs()
+    })
+
+    it('is offered only where its flag is on; ungated modules and trigger kinds always are', () => {
+      vi.stubEnv('FEATURE_FLAGS', '')
+      expect(platformOffered('qq')).toBe(false)
+      expect(platformOffered('slack')).toBe(true)
+      expect(platformOffered('webhook')).toBe(true)
+      vi.stubEnv('FEATURE_FLAGS', 'git-url,qq')
+      expect(platformOffered('qq')).toBe(true)
+    })
+
+    it('keeps its Bots tab for an org that already has a bot there, flag or not', () => {
+      vi.stubEnv('FEATURE_FLAGS', '')
+      const shown = (bots: { platform: string }[]) => visibleBotPlatformTabs(bots).map((tab) => tab.platform)
+      expect(shown([])).not.toContain('qq')
+      expect(shown([{ platform: 'qq' }])).toContain('qq')
+      vi.stubEnv('FEATURE_FLAGS', 'qq')
+      expect(visibleBotPlatformTabs([])).toEqual(BOT_PLATFORM_TABS)
+    })
   })
 
   it('takes every tab label from the display-name table, or from the cloud on a region row', () => {

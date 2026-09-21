@@ -96,6 +96,7 @@ import type { UserTurnBody } from '@agentconnect.md/protocol'
 import type { ComponentType, ReactNode } from 'react'
 import type { BotDto, CreateIntegrationInput, SessionMessageDto } from '@/lib/api'
 import type { Agent, IntegrationRow } from '@/lib/data'
+import type { FeatureFlagId } from '@/lib/feature-flags'
 
 /** Inbound transport chosen in the wizard — same value set the create DTOs
  *  carry (api.ts:654-672) and the CP persists. */
@@ -641,6 +642,8 @@ export interface WebAgentIntegrationCardFacet {
 export interface WebPlatformModule<TApi = unknown> {
   /** Platform id (§6.1 vocabulary). Never parsed. */
   readonly platformId: string
+  /** Feature flag a deployment must turn on before the console offers installing this platform. Absent ⇒ always offered. */
+  readonly requires?: FeatureFlagId
   /** Display-only label for an unresolved human sender; stored identities and known names take precedence. */
   senderFallback?(senderId: string): string | undefined
   /**

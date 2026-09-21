@@ -50,7 +50,12 @@ import {
   platformSharingFixed,
   platformSupportsSharing
 } from '@/components/console/platforms/registry'
-import { BOT_PLATFORMS, PLATFORMS, isCoreTriggerKind } from '@/components/console/platforms/host-projections'
+import {
+  BOT_PLATFORMS,
+  PLATFORMS,
+  isCoreTriggerKind,
+  platformOffered
+} from '@/components/console/platforms/host-projections'
 import { agentCapabilitySource, agentLabel, MOCK_MODE, workspaceSourceOf, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
@@ -681,15 +686,14 @@ export default function AddIntegrationModal({
     onFailed?.(message)
   }
 
-  // A bot integration is runnable only where the PLACEMENT reported that adapter on register — resolved as a
-  // placement, since a set names no member and an id lookup found none, offering a pool agent every platform.
-  // Not `maxAgents`: that is a concurrency ceiling, while `caps.platforms` is the adapter-capability declaration.
-  // No caps source at all keeps the bot platforms selectable — the platform "Add to Slack" card and the funnel
-  // mint CP-side rows whose delivery converges at placement, and the server backstops what needs a daemon.
+  // Bot platforms need the placement's advertised adapter; with no caps source every offered one stays selectable.
   const daemon = agentCapabilitySource(agent, daemons, memberSets)
   const capsUnknown = !daemon
+  const offeredBotPlatforms = BOT_PLATFORMS.filter((p) => platformOffered(p.key))
   const supportedBotPlatforms =
-    daemonsLoading || capsUnknown ? BOT_PLATFORMS : BOT_PLATFORMS.filter((p) => daemon.caps.platforms.includes(p.key))
+    daemonsLoading || capsUnknown
+      ? offeredBotPlatforms
+      : offeredBotPlatforms.filter((p) => daemon.caps.platforms.includes(p.key))
   const firstSupportedBotPlatform = supportedBotPlatforms[0]?.key
   // webhook + github are relay/CP-backed triggers — always available, never
   // gated by the daemon's adapter capabilities.
@@ -697,7 +701,7 @@ export default function AddIntegrationModal({
     isCoreTriggerKind(candidate) || supportedBotPlatforms.some((supported) => supported.key === candidate)
   const selectedBotPlatformSupported = isPlatformAvailable(platform)
 
-  const platformTiles = PLATFORMS
+  const platformTiles = PLATFORMS.filter((p) => platformOffered(p.key))
 
   // The active platform module — undefined for the core trigger sections.
   const activeModule = platformRegistry.get(platform)

@@ -30,7 +30,11 @@ import {
   platformRegistry,
   platformSharingFixed
 } from '@/components/console/platforms/registry'
-import { BOT_PLATFORM_TABS, botMatchesPlatformTab } from '@/components/console/platforms/host-projections'
+import {
+  BOT_PLATFORM_TABS,
+  botMatchesPlatformTab,
+  visibleBotPlatformTabs
+} from '@/components/console/platforms/host-projections'
 import { useOwnerChangeGuard } from '@/components/console/OwnerChangeGuard'
 import DeleteBotModal from '@/components/console/modals/DeleteBotModal'
 import GithubCard from '@/components/console/GithubCard'
@@ -234,7 +238,8 @@ function BotsCard({
   const { bots, integrations, getAgent, setBotShareable, setChannelAgent, loading: dataLoading } = useConsoleData()
   // On an owner-as-default platform the seat IS a private agent's grant, so moving it is confirmed first.
   const ownerGuard = useOwnerChangeGuard()
-  const [platformTabKey, setPlatformTabKey] = useState<string>(BOT_PLATFORM_TABS[0]?.key ?? '')
+  const tabs = visibleBotPlatformTabs(bots)
+  const [platformTabKey, setPlatformTabKey] = useState<string>(tabs[0]?.key ?? '')
   // Bot row expanded to its channel roster (one at a time), the bot whose
   // shareable PATCH is in flight, and the last toggle denial to surface (the CP
   // 409s with a reason: no relay connected / still shared by several agents).
@@ -247,13 +252,9 @@ function BotsCard({
   const [inUseOnly, setInUseOnly] = useState(false)
 
   const targetBot = bots.find((bot) => bot.id === targetBotId)
-  const targetBotPlatformTabKey = targetBot
-    ? BOT_PLATFORM_TABS.find((tab) => botMatchesPlatformTab(targetBot, tab))?.key
-    : undefined
-  // The registry always registers modules, so the strip is never empty; falling
-  // back to the first tab is what keeps this lookup total, where the hand-written
-  // table simply assumed the key resolved.
-  const platformTab = (BOT_PLATFORM_TABS.find((tab) => tab.key === platformTabKey) ?? BOT_PLATFORM_TABS[0])!
+  const targetBotPlatformTabKey = targetBot ? tabs.find((tab) => botMatchesPlatformTab(targetBot, tab))?.key : undefined
+  // Ungated modules keep the strip non-empty, so falling back to the first tab keeps this lookup total.
+  const platformTab = (tabs.find((tab) => tab.key === platformTabKey) ?? tabs[0])!
   const { label } = platformTab
   const platformBots = bots.filter((bot) => botMatchesPlatformTab(bot, platformTab))
   const shownBots = inUseOnly ? platformBots.filter((bot) => bot.agentIds.length > 0) : platformBots
@@ -267,9 +268,8 @@ function BotsCard({
     return counts
   }, [bots])
 
-  // Runs before the bot effect below, so `?bot=` still wins when both are given:
-  // an unknown platform is simply ignored rather than emptying the strip.
-  const targetPlatformTabKey = BOT_PLATFORM_TABS.find((tab) => tab.platform === targetPlatform)?.key
+  // Runs before the bot effect below, so `?bot=` still wins; a platform with no visible tab is ignored.
+  const targetPlatformTabKey = tabs.find((tab) => tab.platform === targetPlatform)?.key
   useEffect(() => {
     if (!targetPlatformTabKey) return
     setPlatformTabKey(targetPlatformTabKey)
@@ -326,7 +326,7 @@ function BotsCard({
           role="tablist"
           aria-label={t('botPlatform')}
         >
-          {BOT_PLATFORM_TABS.map((item) => {
+          {tabs.map((item) => {
             const selected = item.key === platformTabKey
             return (
               <button

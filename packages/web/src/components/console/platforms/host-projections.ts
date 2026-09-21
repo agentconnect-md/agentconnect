@@ -5,6 +5,7 @@ import { type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { larkFeishuBrand, type LarkFeishuTarget } from '@/components/LarkFeishuSwitcher'
 import type { BotDto } from '@/lib/api'
 import { CODE_HOST_PROJECTION, PICKABLE_CODE_HOST_PROVIDERS } from '@/lib/code-hosts'
+import { featureFlagEnabled } from '@/lib/feature-flags'
 import { platformLabel } from '@/lib/platform-labels'
 import { platformRegistry } from './registry'
 
@@ -76,6 +77,12 @@ export const PLATFORMS: readonly PlatformTile[] = [
  *  capabilities gate them; every picker must treat them as always available. */
 export function isCoreTriggerKind(key: string): boolean {
   return !BOT_PLATFORMS.some((tile) => tile.key === key) && PLATFORMS.some((tile) => tile.key === key)
+}
+
+/** Whether this deployment offers installing a picker choice: on unless its module `requires` a flag that is off. */
+export function platformOffered(key: string): boolean {
+  const flag = platformRegistry.get(key)?.requires
+  return !flag || featureFlagEnabled(flag)
 }
 
 /** What watching a code host does for the agent, in that host's own subject vocabulary. */
@@ -155,4 +162,11 @@ export const BOT_PLATFORM_TABS: readonly BotPlatformTab[] = platformRegistry
 export function botMatchesPlatformTab(bot: Pick<BotDto, 'platform' | 'feishuRegion'>, tab: BotPlatformTab): boolean {
   if (bot.platform !== tab.platform) return false
   return tab.region === null || (bot.feishuRegion ?? 'feishu') === tab.region
+}
+
+/** The tabs this deployment shows: every offered platform, plus a flag-gated one the org already has bots on. */
+export function visibleBotPlatformTabs(bots: readonly Pick<BotDto, 'platform' | 'feishuRegion'>[]): BotPlatformTab[] {
+  return BOT_PLATFORM_TABS.filter(
+    (tab) => platformOffered(tab.platform) || bots.some((bot) => botMatchesPlatformTab(bot, tab))
+  )
 }

@@ -85,7 +85,12 @@ import LarkFeishuSwitcher from '@/components/LarkFeishuSwitcher'
 import { AgentMark, GiteaMark, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import type { Platform } from '@/components/console/modals/AddIntegrationModal'
-import { INTEGRATION_BLURB, PLATFORMS, isCoreTriggerKind } from '@/components/console/platforms/host-projections'
+import {
+  INTEGRATION_BLURB,
+  PLATFORMS,
+  isCoreTriggerKind,
+  platformOffered
+} from '@/components/console/platforms/host-projections'
 import { platformAgentCard } from '@/components/console/platforms/registry'
 import {
   GT_TRIGGER_MODES,
@@ -2438,10 +2443,9 @@ export default function AgentDetailView() {
                     post. It can&apos;t receive messages until you do.
                   </div>
                 </div>
-                {/* Identical grid to the Add-integration modal's platform picker —
-                    same list, order, tile size and disabled treatment. */}
+                {/* Identical grid to the Add-integration modal's picker: same list, order, tiles and disabled look. */}
                 <div className="mt-4 grid grid-cols-2 gap-[10px] desktop:flex desktop:flex-wrap desktop:justify-center">
-                  {PLATFORMS.map((p) => {
+                  {PLATFORMS.filter((p) => platformOffered(p.key)).map((p) => {
                     const available = integrationPlatformAvailable(p.key)
                     return (
                       <div
