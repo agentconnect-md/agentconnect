@@ -188,6 +188,21 @@ describe('a session prepared on an executor', () => {
     expectNoCrossedPaths()
   })
 
+  it('lists the `.git` of the clones that machine holds, refusing one the runtime turned into a link', async () => {
+    const withRepo = agent([{ repoFullName: 'example-org/library', repoId: '42' }])
+    await workspaces.prepareExecutorWorkspace(withRepo, executorRoot, request)
+    const primary = join(sessionDir, 'workspace', '.git')
+    const library = join(sessionDir, 'repos', 'example-org', 'library', '.git')
+    expect(await workspaces.offDiskSessionGitDirs(withRepo, KEY)).toEqual([primary, library])
+    // A linked `.git` could point anywhere on that machine, so a write grant never follows it.
+    executor.dirs.delete(library)
+    executor.links.add(library)
+    expect(await workspaces.offDiskSessionGitDirs(withRepo, KEY)).toEqual([primary])
+    // A session on this disk is not asked about here: its launch reads its own clones.
+    expect(await workspaces.offDiskSessionGitDirs(withRepo, 'slack:C1:1700000000.000900:agent-spread')).toBeUndefined()
+    expectNoCrossedPaths()
+  })
+
   it('retires the session’s clones on that machine, and asks nothing of this one', async () => {
     await workspaces.prepareExecutorWorkspace(agent(), executorRoot, request)
     const removal = await workspaces.removeSessionWorktree(agent(), KEY, 'clones')

@@ -176,6 +176,8 @@ export function composeRuntimeLaunch(opts: {
   }
   /** A session placed on another machine: its HOME there (see prepareRuntimeLaunch). */
   executor?: { home: string }
+  /** A session whose clones are off this disk: their `.git` where they are (see prepareRuntimeLaunch). */
+  sessionGitDirs?: string[]
 }): ComposedRuntimeLaunch {
   const policyId = runtimeMemoryPolicyId(opts.runtime, opts.runtimeId)
   const capabilities = runtimeMemoryCapabilities(opts.runtime, opts.runtimeId)
@@ -199,6 +201,7 @@ export function composeRuntimeLaunch(opts: {
     ...(opts.microsandbox ? { microsandbox: { ...opts.microsandbox, nativeMemory: opts.provider === 'native' } } : {}),
     ...(opts.k8s === true ? { k8s: true } : {}),
     ...(opts.executor ? { executor: opts.executor } : {}),
+    ...(opts.sessionGitDirs ? { sessionGitDirs: opts.sessionGitDirs } : {}),
     runtimeId: opts.runtimeId,
     runtime: opts.runtime,
     scopeDir: opts.scopeDir,

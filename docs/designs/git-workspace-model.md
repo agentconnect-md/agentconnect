@@ -367,7 +367,11 @@ time on shared filesystems.
   it. `home/.codex` is carved back out of that grant and stays denied: its
   `auth.json` is a link to the shared host credential the outer layer keeps
   writable for the ACP parent, and the rest is that parent's own state, written
-  from outside the inner sandbox.
+  from outside the inner sandbox. When the clones are not on this daemon's disk
+  (a pool pod's, or a session placed on another machine of its group), the daemon
+  lists them through that filesystem before the launch, refusing a `.git` that is
+  a link there just as it does here, and names them in that filesystem's
+  coordinates.
 - **HOME is per session.** `home/` is the runtime's private HOME — `HOME`,
   `XDG_*`, `CODEX_HOME` and the other runtime-state env point there — seeded
   from the host and protected exactly as the agent's `home/` is, and removed

@@ -1206,6 +1206,65 @@ describe('prepareRuntimeLaunch', () => {
     expect(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]).not.toContain(realpathSync(cwd))
     expect(launch.gitMetadataWriteRoots).toEqual([])
   })
+
+  // What Codex's `:workspace` pins read-only, and so what a commit there needs back.
+  function expectSessionGitReopened(env: Record<string, string>, gitDirs: string[]): void {
+    const table = agentFilesystem(env)
+    for (const gitDir of gitDirs) {
+      expect(table).toContain(`"${gitDir}" = "write"`)
+      expect(table).toContain(`"${gitDir}/hooks" = "read"`)
+      expect(table).toContain(`"${gitDir}/config" = "read"`)
+    }
+    // Exact entries: a session clone's `.git` has no worktrees hanging off it, unlike an owner checkout's.
+    expect(table).not.toContain('worktrees')
+  }
+
+  it("reopens a placed Codex session's clones' `.git` in its executor's coordinates, as that machine listed them", () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const session = dirname(PLACED_HOME)
+    const gitDirs = [`${session}/workspace/.git`, `${session}/repos/example-org/library/.git`]
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      hostKey: PLACED,
+      runInSandbox: false,
+      credentialPlatform: 'linux',
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' },
+      executor: { home: PLACED_HOME },
+      sessionGitDirs: gitDirs
+    })
+
+    expectSessionGitReopened(launch.env, gitDirs)
+    expect(agentFilesystem(launch.env)).toContain(`"${PLACED_HOME}/.codex" = "deny"`)
+    expect(launch.gitMetadataWriteRoots).toEqual(gitDirs)
+  })
+
+  it("reopens a pool Codex session's clones' `.git` in its pod's coordinates, never this disk's checkout", () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    // A checkout on this disk, which the pod does not have and must not be told about.
+    mkdirSync(join(cwd, '.git'))
+    const gitDirs = ['/agent/sessions/0a1b2c/workspace/.git']
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      runtime: { command: 'codex-acp', args: [], env: [] },
+      scopeDir,
+      cwd,
+      hostKey: PLACED,
+      runInSandbox: false,
+      k8s: true,
+      trustedPrimaryCheckout: cwd,
+      credentialPlatform: 'linux',
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' },
+      sessionGitDirs: gitDirs
+    })
+
+    expectSessionGitReopened(launch.env, gitDirs)
+    expect(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]).not.toContain(realpathSync(cwd))
+    expect(launch.gitMetadataWriteRoots).toEqual(gitDirs)
+    expect(launch.inheritProcessEnv).toBe(false)
+  })
 })
 
 const runtime = (command: string, args: string[] = ['acp']): RuntimeDef => ({ command, args, env: [] })

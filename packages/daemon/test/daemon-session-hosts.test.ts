@@ -376,6 +376,54 @@ it.skipIf(process.platform === 'win32')(
   }
 )
 
+it.skipIf(process.platform === 'win32')(
+  "reopens a placed Codex session's clones' `.git` where they run, through the whole launch assembly",
+  async () => {
+    const root = scaffold({ runtime: 'codex-acp', workspace: { mode: 'from-scratch', path: 'workspace' } })
+    const path = join(root, 'config.json')
+    const config = JSON.parse(readFileSync(path, 'utf8'))
+    config.runtimes = { 'codex-acp': { command: 'node', args: ['unused'] } }
+    writeFileSync(path, JSON.stringify(config))
+    const daemon = new Daemon({ root, sandboxMechanism: 'bwrap', probeRuntimes: async () => [] })
+    try {
+      await daemon.start()
+      const agent = (daemon as any).agents.get('bot-a')
+      const sessionKey = KEY('codex')
+      const hostKey = sessionHostKey(agent.id, sessionKey)
+      const placed = {
+        agentId: agent.id,
+        sessionKey,
+        leaf: 'leaf',
+        subject: 'bot-a/leaf',
+        executorDaemonId: 'executor-a',
+        strategy: 'host'
+      }
+      ;(daemon as any).executorPlane = {
+        placementOf: (key: string) => (key === sessionKey ? placed : undefined),
+        homeFor: () => '/srv/executor/sessions/leaf/home',
+        rootsFor: () => ({ runtimeRoot: '/srv/executor/hs/0a1b2c', missingHelpers: [] }),
+        runtimeDefFor: (_key: string, runtime: unknown) => runtime,
+        spawnFor: () => ({ driver: {}, hostKey }),
+        stop: async () => {}
+      }
+      const gitDir = '/srv/executor/sessions/leaf/workspace/.git'
+      const { host } = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
+        hostKey,
+        runInSandbox: false,
+        cwd: '/srv/executor/sessions/leaf/workspace',
+        sessionGitDirs: [gitDir]
+      })
+      const profile = JSON.parse(host.opts.env.CODEX_ACP_PERMISSION_PROFILE_CONFIG) as { configOverrides: string[] }
+      const table = profile.configOverrides.find((value) => value.includes('protected-workspace.filesystem='))!
+      expect(table).toContain(`"${gitDir}" = "write"`)
+      expect(table).toContain(`"${gitDir}/hooks" = "read"`)
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+)
+
 const dm = (ts: string, text: string, thread: string) => ({
   msgId: `slack:C1:${ts}`,
   traceId: ts,
@@ -459,6 +507,29 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
       expect(launch.cwd).toBeTypeOf('string')
       expect((hosts[index]!.newSession.mock.calls[0] as unknown as [string])[0]).toBe(launch.cwd)
     }
+    await daemon.stop()
+  })
+
+  it('hands a session host the `.git` of its clones where they run, and nothing when they cannot be listed', async () => {
+    const { daemon } = await startDaemon(scaffold())
+    const build = vi.spyOn(daemon as any, 'buildAcpHost')
+    const gitDir = '/srv/executor/sessions/leaf/workspace/.git'
+    const listed = vi
+      .spyOn((daemon as any).workspaces, 'offDiskSessionGitDirs')
+      .mockImplementation(async (_agent: unknown, sessionKey: unknown) => {
+        if (sessionKey === KEY('T1')) return [gitDir]
+        throw new Error('the shim channel dropped')
+      })
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+    await (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
+
+    expect(listed.mock.calls.map((call) => call[1])).toEqual([KEY('T1'), KEY('T2')])
+    const optsFor = (thread: string) =>
+      build.mock.calls.find((call) => (call[2] as any).hostKey === sessionHostKey('bot-a', KEY(thread)))![2]
+    expect(optsFor('T1')).toMatchObject({ sessionGitDirs: [gitDir] })
+    // A listing that failed grants nothing rather than failing the start.
+    expect(optsFor('T2')).toMatchObject({ sessionGitDirs: [] })
     await daemon.stop()
   })
 

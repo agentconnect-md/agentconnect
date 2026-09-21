@@ -76,6 +76,7 @@ import {
   isRealDir,
   sessionClonesUnder,
   sessionDirIn,
+  sessionGitDirsUnder,
   sessionRootCloneIn,
   sessionsDirIn,
   sessionDirsIn
@@ -1305,6 +1306,15 @@ export class WorkspaceManager {
     // A pool member is always the confined tier (§11): every isolated session has its own pod and directory, so the policy answers where no disk can be asked.
     if (this.offDisk({ agentId: agent.id, sessionKey })) return this.sessionDir(agent, sessionKey)
     return confinedSessionDirIn(this.agentRootFor(agent), sessionKey)
+  }
+
+  /** The `.git` of every clone a session holds off this disk, asked of the filesystem that holds them; undefined, with no round trip, for one on this disk, whose launch reads them itself. */
+  offDiskSessionGitDirs(agent: Agent, sessionKey: string): Promise<string[]> | undefined {
+    const scope = { agentId: agent.id, sessionKey }
+    if (!this.offDisk(scope)) return undefined
+    // Never this disk in its place: a path in another filesystem's coordinates says nothing about it.
+    const placement = this.planeFor(scope)?.workspaceFsFor(agent.id, { sessionKey })
+    return placement ? sessionGitDirsUnder(placement.fs, this.sessionDir(agent, sessionKey)) : Promise.resolve([])
   }
 
   /**

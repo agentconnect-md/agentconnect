@@ -833,6 +833,12 @@ executor seeded. None of the holder's own environment travels with the spawn
 request, nothing is seeded or linked on the holder's disk, and no boundary of the
 holder's own is composed around it, neither an SRT policy nor its own microsandbox VM:
 the executor's strategy is the session's boundary, whatever the holder's backend is.
+The runtime's own tool sandbox is still the holder's to compose. A Codex session gets
+the private-HOME profile under that HOME, and the exact write grants on its clones'
+`.git` directories that a confined local session gets. The holder lists those clones
+over the pipe before the launch and refuses a `.git` that is a link, as
+[git-workspace-model.md](git-workspace-model.md) §11 does on its own disk. A pool
+session's pod gets the same grants.
 What only the executor can name comes from the executor: the HOME seed also answers
 where that machine keeps a sign-in the HOME only points at — Claude's credential
 directory, which the seed leaves out of the HOME — and the executor's shim fills that

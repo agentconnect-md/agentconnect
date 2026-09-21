@@ -64,6 +64,8 @@ export interface AssembleRuntimeLaunchOptions {
   }
   /** A session placed on another machine: its HOME in that machine's coordinates. */
   executor?: { home: string }
+  /** A session whose clones are off this disk: their `.git` where they are (see prepareRuntimeLaunch). */
+  sessionGitDirs?: string[]
 }
 
 /** The single launch-assembly entry: turn `*_DATA` secrets (from either env, so an explicit pointer anywhere wins) into files and pointers, merge the child env, then compose the launch. */
@@ -96,6 +98,7 @@ export function assembleRuntimeLaunch(opts: AssembleRuntimeLaunchOptions): Assem
   const composed = composeRuntimeLaunch({
     ...(opts.microsandbox ? { microsandbox: opts.microsandbox } : {}),
     ...(opts.executor ? { executor: opts.executor } : {}),
+    ...(opts.sessionGitDirs ? { sessionGitDirs: opts.sessionGitDirs } : {}),
     runtimeId: opts.runtimeId,
     runtime: opts.runtime,
     provider: opts.provider,

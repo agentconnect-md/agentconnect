@@ -5275,8 +5275,13 @@ export class Daemon {
     await this.stopHost(agentId)
   }
 
-  /** Construct + memoize the host for `key`; `cwd` is the session directory for a session-bound host. */
-  private ensureHost(key: HostKey, cfg: ReturnType<typeof loadConfig>, cwd?: string): AcpHost {
+  /** Construct + memoize the host for `key`; `cwd` is the session directory for a session-bound host, `sessionGitDirs` its clones' `.git` when they are off this disk. */
+  private ensureHost(
+    key: HostKey,
+    cfg: ReturnType<typeof loadConfig>,
+    cwd?: string,
+    sessionGitDirs?: string[]
+  ): AcpHost {
     const host = this.hosts.get(key)
     if (host) return host
     const agentId = hostKeyAgentId(key)
@@ -5286,7 +5291,8 @@ export class Daemon {
       hostKey: key,
       runInSandbox: this.agentRunsInSandbox(agent),
       cwd: launchCwd,
-      warnOnSandboxDowngrade: true
+      warnOnSandboxDowngrade: true,
+      ...(sessionGitDirs ? { sessionGitDirs } : {})
     })
     this.hosts.set(key, built.host)
     this.hostLaunch.set(key, { agentDir: agent.dir, cwd: launchCwd })
@@ -5320,6 +5326,8 @@ export class Daemon {
       warnOnSandboxDowngrade?: boolean
       excludeAgentToolCredentials?: boolean
       modelCredential?: { target: ModelProviderTarget; credential: ModelCredential }
+      /** A session whose clones are off this disk: their `.git`, as the filesystem holding them answered. */
+      sessionGitDirs?: string[]
     }
   ): {
     host: AcpHost
@@ -5543,6 +5551,7 @@ export class Daemon {
             }
           : {}),
         ...(remoteHome ? { executor: { home: remoteHome } } : {}),
+        ...(opts.sessionGitDirs ? { sessionGitDirs: opts.sessionGitDirs } : {}),
         runtimeId: runtimeEntry?.aliasOf ?? agent.runtime,
         runtime: launchDef,
         provider: memoryKindOf(agent),
@@ -16401,11 +16410,20 @@ export class Daemon {
       )
       if (!this.usesMicrosandbox(agent))
         await withStartupPhase('runtime', () => this.ensureRuntimeInstalled(agent.runtime, true))
+      // Clones off this disk are listed where they are, since the launch cannot read them itself; no answer grants nothing.
+      const boundKey = bound && hostKeySessionKey(key)
+      const listing = boundKey ? this.workspaces.offDiskSessionGitDirs(agent, boundKey) : undefined
+      const sessionGitDirs = listing
+        ? await listing.catch((err: unknown) => {
+            this.log.warn(`acp: could not list the clones of "${label}" where it runs: ${formatErr(err)}`)
+            return []
+          })
+        : undefined
       if (this.hostStartGeneration.get(key) !== generation) {
         throw new Error(`host start superseded for ${label}`)
       }
       // Constructs + memoizes into this.hosts, in the session directory for a session-bound host.
-      const host = this.ensureHost(key, this.cfg, bound ? (bound.cwd ?? prepared) : undefined)
+      const host = this.ensureHost(key, this.cfg, bound ? (bound.cwd ?? prepared) : undefined, sessionGitDirs)
       try {
         await withStartupPhase('runtime', () => host.start())
         if (this.hostStartGeneration.get(key) !== generation) {
