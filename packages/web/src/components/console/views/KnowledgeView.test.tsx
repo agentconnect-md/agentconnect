@@ -13,6 +13,7 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'org-test' }, myRole: 'owner', orgPath: (path: string) => path })
 }))
+vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ agents: [] }) }))
 
 vi.mock('next/dynamic', () => ({
   default: () =>

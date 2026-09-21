@@ -5,9 +5,12 @@
 // connection is one account/config. Secret values remain write-only.
 
 import { useMemo, useState } from 'react'
+import Link from 'next/link'
 import useSWR from 'swr'
 import { useTranslations } from 'next-intl'
 import { useOrgs } from '@/lib/org-context'
+import { useConsoleData } from '@/lib/data-context'
+import { agentLabel, type Agent } from '@/lib/data'
 import { consoleKeys } from '@/lib/swr-keys'
 import {
   createExternalMemoryConnection,
@@ -22,7 +25,7 @@ import {
   type MemoryPluginInstallationDto,
   type MemoryPluginSecretHeaderDto
 } from '@/lib/api'
-import { LoadingState } from '@/components/marks'
+import { AgentIconView, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 
 type SecretRow = MemoryPluginSecretHeaderDto & { value: string }
@@ -67,6 +70,7 @@ export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
     isLoading: connectionsLoading,
     mutate: mutateConnections
   } = useSWR(connectionKey, ([, orgId]) => fetchExternalMemoryConnections(orgId))
+  const { agents } = useConsoleData()
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<ExternalMemoryConnectionDto | null>(null)
   const [actionId, setActionId] = useState<string | null>(null)
@@ -76,6 +80,18 @@ export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
     () => new Map(installations.map((installation) => [installation.id, installation])),
     [installations]
   )
+  // Reverse index of the bindings the console already holds (memory-evolution.md §6): no connection-scoped endpoint.
+  const agentsByConnection = useMemo(() => {
+    const index = new Map<string, Agent[]>()
+    for (const agent of agents) {
+      if (agent.memoryProvider !== 'external' || !agent.memoryConnectionId) continue
+      const bound = index.get(agent.memoryConnectionId) ?? []
+      bound.push(agent)
+      index.set(agent.memoryConnectionId, bound)
+    }
+    for (const bound of index.values()) bound.sort((a, b) => agentLabel(a).localeCompare(agentLabel(b)))
+    return index
+  }, [agents])
   const refresh = async () => {
     await Promise.all([mutateInstallations(), mutateConnections()])
   }
@@ -165,6 +181,7 @@ export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
                 key={connection.id}
                 connection={connection}
                 installation={installation}
+                agents={agentsByConnection.get(connection.id) ?? []}
                 canManage={canManage}
                 busy={actionId === connection.id}
                 onEdit={() => setEditing(connection)}
@@ -257,6 +274,7 @@ export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
 function ConnectionCard({
   connection,
   installation,
+  agents,
   canManage,
   busy,
   onEdit,
@@ -265,6 +283,8 @@ function ConnectionCard({
 }: {
   connection: ExternalMemoryConnectionDto
   installation?: MemoryPluginInstallationDto
+  /** Agents bound to this connection, in label order; each links to its Memory tab. */
+  agents: Agent[]
   canManage: boolean
   busy: boolean
   onEdit: () => void
@@ -272,6 +292,7 @@ function ConnectionCard({
   onDelete: () => void
 }) {
   const t = useTranslations('Knowledge.memoryConnections')
+  const { orgPath } = useOrgs()
   const [actionsOpen, setActionsOpen] = useState(false)
   const downstream = connection.declaredEgressHosts
   const operations = Array.isArray(connection.capabilities?.operations)
@@ -291,7 +312,10 @@ function ConnectionCard({
       : t('waitingForPluginReport')
 
   return (
-    <div className="overflow-hidden rounded-lg border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs)">
+    <div
+      data-connection={connection.id}
+      className="overflow-hidden rounded-lg border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs)"
+    >
       <div className="flex items-start gap-3 px-[14px] py-[13px] desktop:items-center">
         <span className="flex h-9 w-9 flex-none items-center justify-center rounded-md bg-(--brand-soft) text-(--brand)">
           <Icon name="database" size={17} />
@@ -315,6 +339,11 @@ function ConnectionCard({
             <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
               {isRemote ? t('remotePlugin') : t('localPlugin')}
             </span>
+            {agents.length > 0 && (
+              <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                {t('usedByCount', { count: agents.length })}
+              </span>
+            )}
           </div>
         </div>
         {canManage && (
@@ -421,6 +450,44 @@ function ConnectionCard({
               </div>
             </div>
           </div>
+        </div>
+
+        <div className="rounded-md border border-(--border-subtle) bg-(--surface-card) p-3 desktop:col-span-2">
+          <div className="flex items-center gap-[6px] font-sans text-[10.5px] font-semibold leading-normal tracking-[.04em] text-(--text-tertiary) uppercase">
+            <Icon name="users" size={13} />
+            {t('usedBySectionTitle')}
+          </div>
+          {agents.length === 0 ? (
+            <div className="mt-2 font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
+              {t('usedByNone')}
+            </div>
+          ) : (
+            <ul className="mt-2 flex flex-col gap-1">
+              {agents.map((agent) => {
+                const label = agentLabel(agent)
+                return (
+                  <li key={agent.id}>
+                    <Link
+                      href={orgPath(`/agents/${encodeURIComponent(agent.id)}?tab=memory`)}
+                      aria-label={t('openAgentMemory', { name: label })}
+                      className="flex items-center gap-2 rounded-md px-2 py-[6px] no-underline hover:bg-(--surface-hover) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
+                    >
+                      <span className="av h-[22px] w-[22px] rounded-[6px]">
+                        <AgentIconView icon={agent.icon} runtime={agent.runtime || agent.model || ''} size={22} />
+                      </span>
+                      <span className="min-w-0 flex-1 truncate font-sans text-[12px] font-medium leading-normal text-(--text-primary)">
+                        {label}
+                      </span>
+                      <span className="flex flex-none items-center gap-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                        {t('viewMemory')}
+                        <Icon name="arrow-right" size={13} />
+                      </span>
+                    </Link>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
         </div>
 
         {operations.length > 0 && (

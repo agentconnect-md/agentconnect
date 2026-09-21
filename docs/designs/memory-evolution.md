@@ -926,6 +926,13 @@ type MemoryConfig =
   connection and presents plugin/backend, recall/capture egress, and
   capabilities. `capture.mode` requires explicit confirmation and may not send a
   turn body through a hidden default.
+- The reverse relation is read, never stored. The Knowledge page's connection
+  card lists the agents bound to each connection ("Used by") and links each one
+  to that agent's Memory tab, where the unified entry browser (§3.3.7) reads the
+  connection's entries through the owning daemon. The console derives the list
+  from the agent bindings it already holds, so it is visibility-scoped exactly
+  like the agents page and needs no connection-scoped endpoint; the CP's own
+  reverse scan stays private to its daemon fan-out and delete refusal.
 - **V1 does not support seamless provider switching** (product decision).
   Changing a provider or external connection is an **explicit
   reconfiguration**. The console warns: "Memory in the old backend will not be
