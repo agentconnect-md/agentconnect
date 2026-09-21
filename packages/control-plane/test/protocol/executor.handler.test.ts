@@ -548,23 +548,20 @@ describe('executor/release — deletion with an owner (real Postgres)', () => {
     expect(relayed(executor, 'executor/release')).toHaveLength(2)
   })
 
-  it('refuses a requester that does not hold the duty, and a target outside the agent’s set, without relaying', async () => {
+  it('refuses a target outside the agent’s set and a requester that does not hold the duty, without relaying', async () => {
     const h = buildWsHarness(prisma)
-    const notHolder = await pair(h, { holderOfDuty: THIRD })
-    expect(await ask(notHolder.holder, 'executor/release', RELEASE)).toEqual({
-      status: 'refused',
-      reason: 'not_holder'
-    })
-    expect(relayed(notHolder.executor, 'executor/release')).toEqual([])
-
-    const h2 = buildWsHarness(prisma)
-    const own = await pair(h2)
-    const outsider = await member(h2, THIRD, { executor: FACTS })
-    expect(await ask(own.holder, 'executor/release', { ...RELEASE, executorDaemonId: THIRD })).toEqual({
+    const { holder, executor } = await pair(h)
+    // Shares, and is connected, but belongs to no set at all.
+    const outsider = await member(h, THIRD, { executor: FACTS })
+    expect(await ask(holder, 'executor/release', { ...RELEASE, executorDaemonId: THIRD })).toEqual({
       status: 'refused',
       reason: 'not_member'
     })
-    expect(relayed(outsider, 'executor/release')).toEqual([])
+
+    await prisma.dutyGroup.update({ where: { id: GROUP }, data: { holder: THIRD } })
+    expect(await ask(holder, 'executor/release', RELEASE)).toEqual({ status: 'refused', reason: 'not_holder' })
+
+    expect([relayed(executor, 'executor/release'), relayed(outsider, 'executor/release')]).toEqual([[], []])
   })
 
   it('tells a holder its executor is offline, so it knows the backstop owes the environment', async () => {
