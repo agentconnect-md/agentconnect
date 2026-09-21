@@ -16,6 +16,13 @@ describe('negotiateLocale', () => {
   it('does not map Traditional Chinese to Simplified Chinese', () => {
     expect(negotiateLocale(undefined, 'zh-TW')).toBe('en')
     expect(negotiateLocale(undefined, 'zh-Hant-HK')).toBe('en')
+    // A declared script must not reach the opposite one through its region alias.
+    expect(negotiateLocale(undefined, 'zh-Hant-SG')).toBe('en')
+  })
+
+  it('still resolves a Simplified script and the region that implies it', () => {
+    expect(negotiateLocale(undefined, 'zh-Hans-SG')).toBe('zh-CN')
+    expect(negotiateLocale(undefined, 'zh-SG')).toBe('zh-CN')
   })
 
   it('ignores invalid preferences', () => {

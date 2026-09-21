@@ -17,7 +17,9 @@ function resolveTag(value: string): Locale | undefined {
   const candidates = [
     tag,
     parsed.script ? `${parsed.language}-${parsed.script}` : undefined,
-    parsed.region ? `${parsed.language}-${parsed.region}` : undefined
+    // A declared script must not reach the other one through a region alias:
+    // `zh-Hant-SG` is Traditional, while `zh-SG` is Simplified.
+    parsed.script || !parsed.region ? undefined : `${parsed.language}-${parsed.region}`
   ]
   for (const candidate of candidates) {
     if (candidate && LOCALE_ALIASES[candidate]) return LOCALE_ALIASES[candidate]
