@@ -1,6 +1,7 @@
 // No 'use client' here: rendered only by ModalProvider (the client boundary).
 
 import { useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { isCodeHostProvider, type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { useConsoleData } from '@/lib/data-context'
 import type { HookDto } from '@/lib/api'
@@ -27,15 +28,6 @@ const CODE_HOST_FAMILY_PILL: Record<CodeHostProvider, (hook: HookDto) => string 
   }
 }
 
-// What removing one subscription leaves behind, in each host's own terms.
-const CODE_HOST_REMOVAL_NOTE: Record<CodeHostProvider, string> = {
-  github: 'those GitHub events are ignored from now on. Past runs and their sessions stay.',
-  gitlab:
-    'those GitLab events are ignored from now on. The project itself, its bot and its webhook are untouched. Past runs and their sessions stay.',
-  gitea:
-    'those Gitea events are ignored from now on. The repository itself, its bot and its webhook are untouched. Past runs and their sessions stay.'
-}
-
 // Confirm-delete a trigger. The CP drops the row and the relay pool drops its
 // rule — a webhook's inbound URL stops accepting deliveries immediately (senders
 // get a uniform 404); a github subscription stops matching that repo's events;
@@ -43,6 +35,7 @@ const CODE_HOST_REMOVAL_NOTE: Record<CodeHostProvider, string> = {
 // a gitlab or gitea subscription stops matching that project's or repository's events.
 // An ARRAY target removes a set in one confirm — one repo's whole family set, or every repo; the repos named decide.
 export default function DeleteHookModal({ hook, onClose }: { hook: HookDto | HookDto[]; onClose: () => void }) {
+  const t = useTranslations('Integrations.dialog.deleteHook')
   const { deleteHook } = useConsoleData()
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -81,10 +74,10 @@ export default function DeleteHookModal({ hook, onClose }: { hook: HookDto | Hoo
         </span>
         <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">
           {group
-            ? `Disconnect ${hostName}`
+            ? t('disconnectTitle', { host: hostName })
             : provider
-              ? `Remove ${CODE_HOST_PROJECTION[provider].repoNoun}`
-              : 'Delete webhook'}
+              ? t('removeTitle', { noun: CODE_HOST_PROJECTION[provider].repoNoun })
+              : t('deleteWebhookTitle')}
         </span>
         <button className="iconbtn" onClick={onClose}>
           <Icon name="x" size={16} />
@@ -92,24 +85,18 @@ export default function DeleteHookModal({ hook, onClose }: { hook: HookDto | Hoo
       </div>
       <div className="modalbody">
         <p className="m-0 font-sans text-[13.5px] font-normal leading-[1.6] text-(--text-secondary)">
-          {group ? (
-            <>
-              Removes all {repoNames.length} repository subscriptions (
-              <span className="mono text-(--text-primary)">{repoNames.join(', ')}</span>) — {hostName} events stop
-              triggering this agent. Past runs and their sessions stay.
-            </>
-          ) : provider ? (
-            <>
-              <span className="mono text-(--text-primary)">{subject}</span>&#32;stops triggering this agent —{' '}
-              {CODE_HOST_REMOVAL_NOTE[provider]}
-            </>
-          ) : (
-            <>
-              <span className="mono text-(--text-primary)">{first.name}</span>&#32;will be removed and its inbound URL
-              stops accepting deliveries immediately — anything still POSTing it gets a 404. Past runs and their
-              sessions stay.
-            </>
-          )}
+          {group
+            ? t.rich('groupBody', {
+                count: repoNames.length,
+                host: hostName,
+                repos: () => <span className="mono text-(--text-primary)">{repoNames.join(', ')}</span>
+              })
+            : provider
+              ? t.rich('providerBody', {
+                  subject: () => <span className="mono text-(--text-primary)">{subject}</span>,
+                  note: t(`removalNote.${provider}`)
+                })
+              : t.rich('webhookBody', { name: () => <span className="mono text-(--text-primary)">{first.name}</span> })}
         </p>
         {err && (
           <div className="mt-[10px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>
@@ -118,11 +105,11 @@ export default function DeleteHookModal({ hook, onClose }: { hook: HookDto | Hoo
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button variant="danger" onClick={onDelete} className={busy ? 'pointer-events-none opacity-50' : undefined}>
           <Icon name={group ? 'unplug' : 'trash'} size={15} />
-          {busy ? (group ? 'Disconnecting…' : 'Deleting…') : group ? 'Disconnect' : 'Delete'}
+          {busy ? (group ? t('disconnecting') : t('deleting')) : group ? t('disconnect') : t('delete')}
         </Button>
       </div>
     </>

@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import useSWR from 'swr'
+import { useFormatter, useTranslations } from 'next-intl'
 import { Bar, BarChart, Legend, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
 import { SEG_FILL, bucketLabel, tickInterval } from '@/lib/spend-chart'
 import { useRouter, useSearchParams } from 'next/navigation'
@@ -15,21 +16,16 @@ import { Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { consoleKeys } from '@/lib/swr-keys'
+import { formatNumber } from '@/i18n/format'
 
-const RANGES: { key: UsageRange; label: string }[] = [
-  { key: 'd1', label: '24 hours' },
-  { key: 'd7', label: '7 days' },
-  { key: 'd30', label: '30 days' },
-  { key: 'd90', label: '90 days' }
-]
+// Display text for these lives in the `Usage` message catalog, keyed by `key`.
+const RANGES = [{ key: 'd1' }, { key: 'd7' }, { key: 'd30' }, { key: 'd90' }] as const satisfies {
+  key: UsageRange
+}[]
 
 // The mobile segmented control shows only three ranges (the design has no 90-day
 // segment) and uses a compact "24h" label for the first one.
-const MOBILE_RANGES: { key: UsageRange; label: string }[] = [
-  { key: 'd1', label: '24h' },
-  { key: 'd7', label: '7 days' },
-  { key: 'd30', label: '30 days' }
-]
+const MOBILE_RANGES = [{ key: 'd1' }, { key: 'd7' }, { key: 'd30' }] as const satisfies { key: UsageRange }[]
 
 const GRID = 'grid-cols-[2fr_1fr_1fr_1fr_1.4fr]'
 
@@ -54,13 +50,11 @@ type SourceFilter = 'all' | 'gateway' | 'daemon'
 // aggregate; model comes from the server's per-session execution snapshots so
 // changing an Agent's current default cannot rewrite historical usage.
 type GroupBy = 'agent' | 'runtime' | 'model'
-const GROUPS: { key: GroupBy; label: string }[] = [
-  { key: 'agent', label: 'By agent' },
-  { key: 'runtime', label: 'By runtime' },
-  { key: 'model', label: 'By model' }
-]
+const GROUPS: { key: GroupBy }[] = [{ key: 'agent' }, { key: 'runtime' }, { key: 'model' }]
 
 export default function UsageView() {
+  const t = useTranslations('Usage')
+  const format = useFormatter()
   const { orgPath, activeOrg, orgs, loading: orgLoading, error: orgError } = useOrgs()
   // Behavior-only mobile check (layout differences are CSS-gated below): the
   // mobile segmented control has no 90-day option (MOBILE_RANGES), so clamp a
@@ -86,11 +80,11 @@ export default function UsageView() {
   // and the filter would be a control with one meaningful segment.
   const showSourceFilter = featureFlagEnabled('daemon-pool')
   const sourceOptions: { key: SourceFilter; label: string }[] = [
-    { key: 'all', label: 'All' },
+    { key: 'all', label: t('sourceOptions.all') },
     // Gateway-metered IS the hosted product: named as the placement picker names it —
     // the pool is the product on managed, the operator's own cluster elsewhere.
-    { key: 'gateway', label: featureFlagEnabled('managed') ? 'Cloud' : 'Cluster' },
-    { key: 'daemon', label: 'Daemons' }
+    { key: 'gateway', label: featureFlagEnabled('managed') ? t('sourceOptions.cloud') : t('sourceOptions.cluster') },
+    { key: 'daemon', label: t('sourceOptions.daemons') }
   ]
   const selectSource = (k: SourceFilter) => {
     setSourceFilter(k)
@@ -108,7 +102,7 @@ export default function UsageView() {
 
   const selectRange = (k: UsageRange) => router.replace(orgPath(`/usage?range=${k}`))
 
-  const rangeLabel = RANGES.find((r) => r.key === range)?.label ?? '30 days'
+  const rangeLabel = t(`ranges.${range}`)
   // Skeleton bar count = the range's real bucket count, so placeholder bar widths
   // match the incoming chart and swapping skeleton→data causes no layout shift.
   const skelBars = range === 'd1' ? 24 : range === 'd7' ? 7 : range === 'd90' ? 90 : 30
@@ -139,7 +133,7 @@ export default function UsageView() {
   // formatter falls back to USD). Amounts are summed as-is, so a mixed-currency
   // workspace shows an unlabeled total — acceptable until per-currency rollups.
   const currency = data?.totals.costCurrency ?? undefined
-  const avgLabel = totalSessions > 0 ? `${fmtCost(totalSpend / totalSessions, currency)} avg / session` : '—'
+  const avgLabel = totalSessions > 0 ? t('avgPerSession', { cost: fmtCost(totalSpend / totalSessions, currency) }) : '—'
 
   // Roll up to the selected grouping. Grouped rows omit `navId`, so only raw
   // Agent rows navigate. Model rows arrive pre-aggregated from session metadata.
@@ -211,7 +205,7 @@ export default function UsageView() {
         key: '\0unattributed',
         kind: groupBy,
         residual: true,
-        name: 'Restricted usage',
+        name: t('restrictedUsage'),
         runtime: '',
         model: '',
         totalTokens: data.unattributed.totalTokens,
@@ -234,7 +228,7 @@ export default function UsageView() {
     icon: e.icon,
     runtime: e.runtime,
     model: e.model,
-    sessions: e.sessions.toLocaleString('en-US'),
+    sessions: formatNumber(format, e.sessions),
     tokens: fmtCompact(e.totalTokens),
     spend: fmtCost(amountToNumber(e.costAmount), currency),
     pct: totalTokens > 0 ? Math.round((e.totalTokens / totalTokens) * 100) : 0,
@@ -249,7 +243,7 @@ export default function UsageView() {
       {/* Desktop header: description + 4-range pillbar */}
       <div className="mb-4 hidden min-h-[34px] items-center gap-4 desktop:flex">
         <div className="flex-1">
-          <p className="psub mt-0">Tokens and spend across agents. Metered by the daemon per session.</p>
+          <p className="psub mt-0">{t('description')}</p>
         </div>
         {showSourceFilter && (
           <div className="pillbar">
@@ -267,7 +261,7 @@ export default function UsageView() {
         <div className="pillbar">
           {RANGES.map((r) => (
             <button key={r.key} className={range === r.key ? 'pill on' : 'pill'} onClick={() => selectRange(r.key)}>
-              {r.label}
+              {t(`ranges.${r.key}`)}
             </button>
           ))}
         </div>
@@ -287,7 +281,7 @@ export default function UsageView() {
                   : 'font-medium text-(--text-secondary)'
               }`}
             >
-              {r.label}
+              {t(`mobileRanges.${r.key}`)}
             </button>
           )
         })}
@@ -319,9 +313,9 @@ export default function UsageView() {
           p95 latency, it's not in the UsageDto) */}
       <div className="mx-4 my-3 grid grid-cols-3 overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs) desktop:hidden">
         {[
-          { label: 'Sessions', value: totalSessions.toLocaleString('en-US') },
-          { label: 'Tokens', value: fmtCompact(totalTokens) },
-          { label: 'Spend', value: fmtCost(totalSpend, currency) }
+          { label: t('sessions'), value: formatNumber(format, totalSessions) },
+          { label: t('tokens'), value: fmtCompact(totalTokens) },
+          { label: t('spend'), value: fmtCost(totalSpend, currency) }
         ].map((m, i, arr) => (
           <div
             key={m.label}
@@ -340,16 +334,16 @@ export default function UsageView() {
       {/* Desktop stat cards */}
       <div className="mb-[18px] hidden gap-[14px] desktop:grid desktop:grid-cols-3">
         <div className="card stat">
-          <div className="statlbl">Total tokens · {rangeLabel}</div>
+          <div className="statlbl">{t('totalTokensRange', { range: rangeLabel })}</div>
           <div className="statval">{fmtCompact(totalTokens)}</div>
         </div>
         <div className="card stat">
-          <div className="statlbl">Total spend · {rangeLabel}</div>
+          <div className="statlbl">{t('totalSpendRange', { range: rangeLabel })}</div>
           <div className="statval">{fmtCost(totalSpend, currency)}</div>
         </div>
         <div className="card stat">
-          <div className="statlbl">Sessions · {rangeLabel}</div>
-          <div className="statval">{totalSessions.toLocaleString('en-US')}</div>
+          <div className="statlbl">{t('sessionsRange', { range: rangeLabel })}</div>
+          <div className="statval">{formatNumber(format, totalSessions)}</div>
           <div className="mt-1 font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">{avgLabel}</div>
         </div>
       </div>
@@ -363,7 +357,7 @@ export default function UsageView() {
       {loading && !data && (
         <div className="card mb-[18px] max-desktop:mx-4 max-desktop:mb-3 max-desktop:rounded-lg">
           <div className="cardhead">
-            <span className="cardtitle">Spend over time</span>
+            <span className="cardtitle">{t('spendOverTime')}</span>
             <span className="ml-auto h-[11px] w-12 rounded-full bg-(--surface-active)" />
           </div>
           <div
@@ -421,7 +415,7 @@ export default function UsageView() {
           const topKeys = rankedKeys.slice(0, 6)
           const stackKeys = rankedKeys.length > 6 ? [...topKeys, OTHER] : topKeys
           const keyName = (k: string) => {
-            if (k === OTHER) return 'Other'
+            if (k === OTHER) return t('other')
             if (!hasBreakdown) return ''
             if (groupBy === 'model') return modelLabel(k)
             if (groupBy === 'runtime') return runtimeLabel(k)
@@ -477,7 +471,7 @@ export default function UsageView() {
                     type="button"
                     onClick={() => toggleKey(k)}
                     aria-pressed={!off}
-                    title={off ? `Show ${keyName(k)}` : `Hide ${keyName(k)}`}
+                    title={off ? t('showSeries', { name: keyName(k) }) : t('hideSeries', { name: keyName(k) })}
                     className={`flex cursor-pointer items-center gap-[5px] border-0 bg-transparent p-0 font-sans text-[11px] leading-normal ${
                       off ? 'text-(--text-disabled)' : 'text-(--text-secondary)'
                     }`}
@@ -526,7 +520,7 @@ export default function UsageView() {
           return (
             <div className="card mb-[18px] max-desktop:mx-4 max-desktop:mb-3 max-desktop:rounded-lg">
               <div className="cardhead">
-                <span className="cardtitle">Spend over time</span>
+                <span className="cardtitle">{t('spendOverTime')}</span>
                 <span className="mono text-[11px] text-(--text-tertiary)">{tzName}</span>
                 {/* The series is scoped to the agents this viewer may attribute, so it does
                     not reach the org total in the card above. Said out loud, and only when
@@ -535,7 +529,7 @@ export default function UsageView() {
                     figures side by side: neither is a bug, so name which is which. */}
                 {data.unattributed && (
                   <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                    · visible usage only
+                    {t('visibleUsageOnly')}
                   </span>
                 )}
                 <span className="mono ml-auto text-[11px] text-(--text-tertiary)">
@@ -594,7 +588,7 @@ export default function UsageView() {
           <div className="pillbar">
             {GROUPS.map((g) => (
               <button key={g.key} className={groupBy === g.key ? 'pill on' : 'pill'} onClick={() => selectGroup(g.key)}>
-                {g.label}
+                {t(`groups.${g.key}`)}
               </button>
             ))}
           </div>
@@ -602,10 +596,10 @@ export default function UsageView() {
 
         {/* Desktop table header */}
         <div className={`row h hidden desktop:grid ${GRID}`}>
-          <span>{groupBy === 'agent' ? 'Agent' : groupBy === 'runtime' ? 'Runtime' : 'Model'}</span>
-          <span className="text-right">Sessions</span>
-          <span className="text-right">Tokens</span>
-          <span className="text-right">Spend</span>
+          <span>{t(`columns.${groupBy}`)}</span>
+          <span className="text-right">{t('sessions')}</span>
+          <span className="text-right">{t('tokens')}</span>
+          <span className="text-right">{t('spend')}</span>
           <span />
         </div>
 
@@ -617,14 +611,12 @@ export default function UsageView() {
 
         {!data && err && (
           <div className="px-4 py-7 text-[13px] text-(--status-error) desktop:px-[18px]">
-            Couldn’t load usage: {err}
+            {t('loadError', { error: err })}
           </div>
         )}
 
         {data && rows.length === 0 && (
-          <div className="px-4 py-7 text-[13px] text-(--text-tertiary) desktop:px-[18px]">
-            No usage recorded in this range yet. Token usage appears here once agents run sessions.
-          </div>
+          <div className="px-4 py-7 text-[13px] text-(--text-tertiary) desktop:px-[18px]">{t('emptyState')}</div>
         )}
 
         {/* Mobile stacked rows: max-normalized bar. Per-agent rows tap through to
@@ -656,7 +648,7 @@ export default function UsageView() {
                 </span>
               </span>
               <span className="pl-[34px] font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                {r.tokens} tok · {r.sessions} sessions
+                {t('tokensAndSessions', { tokens: r.tokens, sessions: r.sessions })}
               </span>
               <span className="ml-[34px] block h-1 w-[calc(100%_-_34px)] overflow-hidden rounded-[2px] bg-(--surface-active)">
                 <span className="block h-full rounded-[2px] bg-(--brand)" style={{ width: `${r.barPct}%` }} />

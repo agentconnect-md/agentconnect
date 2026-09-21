@@ -11,6 +11,7 @@ import { useState } from 'react'
 import useSWR from 'swr'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
+import { useLocale, useTranslations } from 'next-intl'
 import { agentLabel, platName } from '@/lib/data'
 import { chatRoomSigil } from '@/lib/platform-labels'
 import { creatorLabel, fetchCronRuns, fmtDate, runCronNow } from '@/lib/api'
@@ -43,16 +44,12 @@ function fmtDuration(ms: number | null): string {
   return `${m}m ${String(s).padStart(2, '0')}s`
 }
 
-const RUN_STYLE = {
-  running: { dot: 'var(--status-paused)', color: 'var(--text-secondary)', label: 'Running' },
-  success: { dot: 'var(--status-online)', color: 'var(--text-primary)', label: 'Success' },
-  failed: { dot: 'var(--status-error)', color: 'var(--status-error)', label: 'Failed' }
-} as const
-
 const RUN_GRID = 'grid-cols-[1.3fr_1.3fr_1.2fr_0.8fr_1.1fr]'
 const RUN_REFRESH_MS = 10_000
 
 export default function ScheduleDetailView() {
+  const t = useTranslations('Crons.detail')
+  const locale = useLocale()
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
   const { me } = useProfile()
@@ -64,6 +61,11 @@ export default function ScheduleDetailView() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const clock = useScheduleTimeZone()
+  const runStyle = {
+    running: { dot: 'var(--status-paused)', color: 'var(--text-secondary)', label: t('running') },
+    success: { dot: 'var(--status-online)', color: 'var(--text-primary)', label: t('success') },
+    failed: { dot: 'var(--status-error)', color: 'var(--status-error)', label: t('failed') }
+  } as const
 
   const c = crons.find((x) => x.id === id)
 
@@ -87,13 +89,13 @@ export default function ScheduleDetailView() {
           <NotFound
             icon="calendar-off"
             kind="SCHEDULE"
-            title="Schedule not found"
+            title={t('scheduleNotFound')}
             pre="No schedule "
             chip={id}
             post=" in this organization. It may have been removed by its owner."
-            actionLabel="Back to schedules"
+            actionLabel={t('backToSchedules')}
             actionHref={orgPath('/crons')}
-            searchLabel="Search schedules"
+            searchLabel={t('searchSchedules')}
           />
         )}
       </div>
@@ -104,7 +106,7 @@ export default function ScheduleDetailView() {
   const agentName = owner ? agentLabel(owner) : c.agentId ? c.agentId.slice(0, 8) : '—'
   const agentRuntime = owner?.runtime || owner?.model || ''
   // The expression is never converted, so its reading names the zone it is interpreted in.
-  const human = cronHuman(c.schedule)
+  const human = cronHuman(c.schedule, locale)
   const humanInZone = human ? `${human} · ${c.timezone}` : human
   const zone = clock.zoneFor(c.timezone)
   // The sigil is the target platform's own — a Linear team's label carries no "#".
@@ -138,7 +140,7 @@ export default function ScheduleDetailView() {
     setNotice(null)
     try {
       await runCronNow(c.id)
-      setNotice('Run started — it will appear below when the daemon reports it.')
+      setNotice(t('runStarted'))
       void mutateRuns().catch(() => undefined)
     } catch (e) {
       setNotice(e instanceof Error ? e.message : String(e))
@@ -172,7 +174,7 @@ export default function ScheduleDetailView() {
           <div className="min-w-0 flex-1">
             <div className="font-sans text-[15px] font-semibold leading-normal">{humanInZone ?? c.schedule}</div>
             <div className="mt-[2px] font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
-              next run <span className="text-(--text-primary)">{next}</span>
+              {t('nextRun')} <span className="text-(--text-primary)">{next}</span>
             </div>
             <div className="mt-[2px]">
               <ZoneSwitch clock={clock} scheduleZone={c.timezone} />
@@ -184,8 +186,8 @@ export default function ScheduleDetailView() {
           {/* Single Edit affordance, at the top-right corner (opens the schedule editor). */}
           <button
             onClick={() => openModal('cron', c)}
-            aria-label="Edit schedule"
-            title="Edit schedule"
+            aria-label={t('editSchedule')}
+            title={t('editSchedule')}
             className="iconbtn flex-none"
           >
             <Icon name="pencil" size={15} />
@@ -203,7 +205,7 @@ export default function ScheduleDetailView() {
           {/* B3. Task card */}
           <div className={cardStyle}>
             <div className="border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal">
-              Task
+              {t('task')}
             </div>
             <div className="whitespace-pre-wrap px-4 py-3 font-sans text-[14px] font-normal leading-[1.55] text-(--text-primary)">
               {c.trigger}
@@ -213,7 +215,7 @@ export default function ScheduleDetailView() {
           {/* B4. Configuration card */}
           <div className={cardStyle}>
             <div className="border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal">
-              Configuration
+              {t('configuration')}
             </div>
             <button
               onClick={() => c.agentId && router.push(orgPath(`/agents/${c.agentId}`))}
@@ -232,14 +234,19 @@ export default function ScheduleDetailView() {
             </button>
             {channelName && (
               <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
-                <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">Post to</span>
+                <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
+                  {t('postTo')}
+                </span>
                 {c.targetPlatform === 'slack' && c.targetChannel ? (
                   <a
                     className="lnk inline-flex items-center gap-[6px] font-mono text-[12px] font-medium leading-normal text-(--text-link)"
                     href={`https://slack.com/app_redirect?channel=${c.targetChannel}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    title={`Open ${sigil}${channelName} in ${platName(c.targetPlatform)}`}
+                    title={t('openChannelIn', {
+                      channel: `${sigil}${channelName}`,
+                      platform: platName(c.targetPlatform)
+                    })}
                   >
                     <span className="imark h-[14px] w-[14px]">
                       <PlatformMark platform={c.targetPlatform} fillPct={100} />
@@ -261,7 +268,9 @@ export default function ScheduleDetailView() {
               </div>
             )}
             <div className="flex items-center justify-between gap-4 px-4 py-3">
-              <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">Created</span>
+              <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
+                {t('created')}
+              </span>
               <span className="font-sans text-[14px] font-medium leading-normal">
                 {creatorLabel(c.createdBy, me)}{' '}
                 <span className="font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
@@ -270,7 +279,9 @@ export default function ScheduleDetailView() {
               </span>
             </div>
             <div className="flex items-center justify-between gap-4 border-t border-(--border-subtle) px-4 py-3">
-              <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">Modified</span>
+              <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
+                {t('modified')}
+              </span>
               <span className="font-sans text-[14px] font-medium leading-normal">
                 {creatorLabel(c.lastModifiedBy, me)}{' '}
                 <span className="font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
@@ -280,7 +291,7 @@ export default function ScheduleDetailView() {
             </div>
             <div className="flex items-center justify-between gap-4 border-t border-(--border-subtle) px-4 py-3">
               <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
-                Visibility
+                {t('visibility')}
               </span>
               <VisibilityValue visibility={c.visibility} sharedWith={c.sharedWith} />
             </div>
@@ -290,7 +301,7 @@ export default function ScheduleDetailView() {
           <div className={cardStyle}>
             <div className="flex items-center justify-between border-b border-(--border-subtle) px-4 py-3">
               <div className="flex min-w-0 flex-col">
-                <span className="font-sans text-[14px] font-semibold leading-normal">Recent runs</span>
+                <span className="font-sans text-[14px] font-semibold leading-normal">{t('recentRuns')}</span>
                 {runs !== null && runs.length > 0 && (
                   <span className="truncate font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">
                     {runSummary}
@@ -304,22 +315,22 @@ export default function ScheduleDetailView() {
                 }`}
               >
                 <Icon name="play" size={14} />
-                Run now
+                {t('runNow')}
               </button>
             </div>
             {runsLoadError ? (
               <div className="px-4 py-5 text-center font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
-                Couldn’t load recent runs.
+                {t('runsLoadError')}
               </div>
             ) : runs === null ? (
               <LoadingState />
             ) : runs.length === 0 ? (
               <div className="px-4 py-5 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-                No runs yet — they appear here after the schedule fires (or Run now).
+                {t('noRuns')}
               </div>
             ) : (
               runs.map((r, i) => {
-                const st = RUN_STYLE[r.status]
+                const st = runStyle[r.status]
                 // Two lines carry what the desktop table's columns do: started + status
                 // on top, the named session below; duration/reason stays right-pinned.
                 const rowContent = (
@@ -341,7 +352,7 @@ export default function ScheduleDetailView() {
                           </span>
                         ) : (
                           <span className="flex-none font-sans text-[11px] font-normal leading-normal text-(--text-disabled)">
-                            {channelName ? 'posted, no session' : 'headless'}
+                            {channelName ? t('postedNoSession') : t('headless')}
                           </span>
                         )}
                         {r.reason && (
@@ -388,7 +399,7 @@ export default function ScheduleDetailView() {
             className="flex h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-md border border-(--border-default) bg-(--surface-card) font-sans text-[14px] font-semibold leading-normal text-(--red-600)"
           >
             <Icon name="trash" size={16} />
-            Delete schedule
+            {t('deleteSchedule')}
           </button>
         </div>
       </div>
@@ -409,7 +420,7 @@ export default function ScheduleDetailView() {
               }`}
             >
               <span className={`dot h-[6px] w-[6px] ${c.enabled ? 'bg-(--status-online)' : 'bg-(--text-disabled)'}`} />
-              {c.enabled ? 'Enabled' : 'Disabled'}
+              {c.enabled ? t('enabled') : t('disabled')}
             </span>
           </div>
         </div>
@@ -419,10 +430,10 @@ export default function ScheduleDetailView() {
           </span>
           <Button size="sm" onClick={() => void runNow()} className={busy ? 'opacity-60' : undefined}>
             <Icon name="play" size={14} />
-            Run now
+            {t('runNow')}
           </Button>
           <div className="relative flex-none">
-            <button className="iconbtn" onClick={() => setMenuOpen((v) => !v)} title="Schedule actions">
+            <button className="iconbtn" onClick={() => setMenuOpen((v) => !v)} title={t('scheduleActions')}>
               <Icon name="ellipsis" size={16} />
             </button>
             {menuOpen && (
@@ -476,7 +487,9 @@ export default function ScheduleDetailView() {
         </span>
         <span className="inline-flex items-center gap-[6px]">
           <Icon name="clock" size={13} color="var(--text-tertiary)" />
-          <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">next run</span>
+          <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+            {t('nextRun')}
+          </span>
           <span className="mono text-[12px] text-(--text-secondary)">
             {c.enabled ? fmtNextRun(cronNext(c.schedule, c.timezone), zone) : '—'}
           </span>
@@ -489,7 +502,7 @@ export default function ScheduleDetailView() {
               href={`https://slack.com/app_redirect?channel=${c.targetChannel}`}
               target="_blank"
               rel="noopener noreferrer"
-              title={`Open ${sigil}${channelName} in ${platName(c.targetPlatform)}`}
+              title={t('openChannelIn', { channel: `${sigil}${channelName}`, platform: platName(c.targetPlatform) })}
             >
               <span className="imark h-[13px] w-[13px]">
                 <PlatformMark platform={c.targetPlatform} />
@@ -526,7 +539,7 @@ export default function ScheduleDetailView() {
 
       <div className="card mb-[18px]">
         <div className="cardhead">
-          <span className="cardtitle">Task</span>
+          <span className="cardtitle">{t('task')}</span>
         </div>
         <div className="whitespace-pre-wrap px-4 py-[14px] font-sans text-[13.5px] font-normal leading-[1.6] text-(--text-primary)">
           {c.trigger}
@@ -535,30 +548,30 @@ export default function ScheduleDetailView() {
 
       <div className="card">
         <div className="cardhead justify-between">
-          <span className="cardtitle">Runs</span>
+          <span className="cardtitle">{t('runs')}</span>
           <span className="mono text-[11px] text-(--text-tertiary)">{runSummary}</span>
         </div>
         {runsLoadError ? (
           <div className="px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
-            Couldn’t load recent runs.
+            {t('runsLoadError')}
           </div>
         ) : runs === null ? (
           <LoadingState />
         ) : runs.length === 0 ? (
           <div className="px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-            No runs yet — they appear here after the schedule fires (or Run now).
+            {t('noRuns')}
           </div>
         ) : (
           <>
             <div className={`row h ${RUN_GRID}`}>
-              <span>Started</span>
-              <span>Status</span>
-              <span>Target</span>
-              <span>Duration</span>
-              <span>Session</span>
+              <span>{t('started')}</span>
+              <span>{t('status')}</span>
+              <span>{t('target')}</span>
+              <span>{t('duration')}</span>
+              <span>{t('session')}</span>
             </div>
             {runs.map((r) => {
-              const st = RUN_STYLE[r.status]
+              const st = runStyle[r.status]
               return (
                 <div key={r.id} className={`row items-center ${RUN_GRID}`}>
                   <span className="mono text-[12px] text-(--text-primary)">{fmtStarted(r.startedAt, zone)}</span>
@@ -587,14 +600,14 @@ export default function ScheduleDetailView() {
                     </span>
                   ) : (
                     <span className="font-sans text-[12px] font-normal leading-normal text-(--text-disabled)">
-                      headless
+                      {t('headless')}
                     </span>
                   )}
                   <span className="mono text-[12px] text-(--text-secondary)">{fmtDuration(r.durationMs)}</span>
                   {r.sessionId ? (
                     <button
                       onClick={() => router.push(orgPath(`/sessions/${r.sessionId}`))}
-                      title="Open session"
+                      title={t('openSession')}
                       className="inline-flex min-w-0 max-w-full cursor-pointer items-center justify-self-start gap-[5px] border-0 bg-transparent p-0 font-sans text-[12px] font-medium leading-normal text-(--brand)"
                     >
                       <span className="truncate">{sessionName(r.sessionId) ?? `${r.sessionId.slice(0, 8)}…`}</span>

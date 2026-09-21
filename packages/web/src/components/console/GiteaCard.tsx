@@ -9,6 +9,7 @@
 // Connections and repositories are org-level infrastructure — visible to all, writable by non-viewers.
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { SQUARE_MARK_FILL_PCT } from '@/components/mark-box'
 import { GiteaMark, LoadingState } from '@/components/marks'
@@ -203,6 +204,7 @@ function RepositoryRow({
 }
 
 export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
+  const t = useTranslations('Integrations')
   // Gate on the active org like the other code-host cards: before it resolves `orgBase()` throws
   // and the card would read "not enabled".
   const { activeOrg } = useOrgs()
@@ -451,7 +453,7 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
         {enabled === true && canWrite && connection !== null && (
           <Button variant="ghost" size="xs" onClick={openPicker}>
             <Icon name="plus" size={13} />
-            Add repository
+            {t('codeHostActions.addRepository')}
           </Button>
         )}
       </div>
@@ -541,7 +543,7 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
                 {tokenPanel === null && (
                   <Button variant="ghost" size="xs" onClick={() => setTokenPanel('replace')}>
                     <Icon name="key-round" size={13} />
-                    Replace token
+                    {t('codeHostActions.replaceToken')}
                   </Button>
                 )}
                 <Button
@@ -552,7 +554,7 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
                   onClick={() => setDisconnecting(connection)}
                 >
                   <Icon name="unplug" size={13} />
-                  Disconnect
+                  {t('codeHostActions.disconnect')}
                 </Button>
               </span>
             )}
@@ -584,7 +586,7 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
       {/* Desktop only: below the breakpoint the row stacks, where a two-track header would label nothing. */}
       {enabled === true && bindings.length > 0 && (
         <div className="row h hidden grid-cols-[minmax(0,1fr)_auto] gap-[11px] desktop:grid">
-          <span>Repository</span>
+          <span>{t('repository')}</span>
           <span />
         </div>
       )}

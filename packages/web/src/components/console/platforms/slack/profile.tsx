@@ -20,6 +20,7 @@
 // registry instead of importing a Slack-named component.
 
 import { useEffect, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { fmtDate, type SlackConfigDto } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
@@ -37,6 +38,7 @@ const EMPTY: SlackConfigDto = {
 }
 
 export function SlackConfigCard() {
+  const t = useTranslations('Profile.slack')
   // Gate the org-scoped fetch on the active org: on a hard refresh `orgBase()` throws
   // "no active organization" until OrgProvider resolves it, so a bare mount-fetch would
   // catch → show "Not configured" even when it IS. Re-fetch when it resolves.
@@ -113,12 +115,14 @@ export function SlackConfigCard() {
   return (
     <div className="card mt-[18px]">
       <div className="cardhead">
-        <span className="cardtitle">Slack config token</span>
+        <span className="cardtitle">{t('title')}</span>
       </div>
 
       <div className="px-4 py-[13px]">
         {status === 'loading' ? (
-          <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">Loading…</div>
+          <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+            {t('loading')}
+          </div>
         ) : (
           <>
             {configured && !editing ? (
@@ -137,33 +141,35 @@ export function SlackConfigCard() {
                     className="flex-none"
                   />
                   <span className="flex-none font-sans text-[12.5px] font-semibold leading-normal text-(--text-secondary)">
-                    {accessExpired ? 'Expired' : 'Stored'}
+                    {accessExpired ? t('expired') : t('stored')}
                   </span>
                   <span className="truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                     {!status.funnelEnabled
-                      ? 'quick install is unavailable on this server'
+                      ? t('quickInstallUnavailable')
                       : accessExpired
-                        ? 're-enter your config token to run quick installs again'
+                        ? t('reenterQuickInstall')
                         : status.durable
-                          ? `auto-renews — quick Slack installs stay ready${status.updatedAt ? ` · updated ${fmtDate(status.updatedAt)}` : ''}`
-                          : `expires ${status.accessExpiresAt ? fmtDate(status.accessExpiresAt) : 'soon'} — add a refresh token so it never expires`}
+                          ? `${t('autoRenews')}${status.updatedAt ? ` · ${t('updated', { date: fmtDate(status.updatedAt) })}` : ''}`
+                          : status.accessExpiresAt
+                            ? t('expires', { date: fmtDate(status.accessExpiresAt) })
+                            : t('expiresSoon')}
                   </span>
                 </div>
                 <span className="flex flex-none items-center gap-2">
                   <Button variant="ghost" onClick={() => setEditing(true)}>
                     <Icon name="pencil" size={13} />
-                    {accessExpired ? 'Re-enter' : 'Replace'}
+                    {accessExpired ? t('reenter') : t('replace')}
                   </Button>
                   <Button variant="ghost" onClick={() => void clear()}>
                     <Icon name="trash" size={13} />
-                    {busy ? 'Clearing…' : 'Clear'}
+                    {busy ? t('clearing') : t('clear')}
                   </Button>
                 </span>
               </div>
             ) : (
               !showForm && (
                 <div className="font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-tertiary)">
-                  Not configured.
+                  {t('notConfigured')}
                 </div>
               )
             )}
@@ -171,15 +177,15 @@ export function SlackConfigCard() {
             {showForm && (
               <div className={configured ? 'mt-1' : ''}>
                 <div className="mb-3 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-tertiary)">
-                  A config token works for about 12 hours; add the refresh token to auto-renew. Generate both at{' '}
+                  {t('hintBefore')}{' '}
                   <a href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer" className="lnk">
                     api.slack.com/apps
                   </a>{' '}
-                  → Your App Configuration Tokens.
+                  {t('hintAfter')}
                 </div>
                 <div className="grid grid-cols-1 gap-[10px] min-[440px]:grid-cols-2">
                   <div className="fld">
-                    <span className="fldlbl">Config token</span>
+                    <span className="fldlbl">{t('configToken')}</span>
                     <input
                       className="inp mn"
                       placeholder="xoxe.xoxp-…"
@@ -189,7 +195,7 @@ export function SlackConfigCard() {
                   </div>
                   <div className="fld">
                     <span className="fldlbl">
-                      Refresh token <span className="font-normal text-(--text-tertiary)">(optional)</span>
+                      {t('refreshToken')} <span className="font-normal text-(--text-tertiary)">({t('optional')})</span>
                     </span>
                     <input
                       className="inp mn"
@@ -205,11 +211,11 @@ export function SlackConfigCard() {
                     className={access.trim() && !busy ? undefined : 'cursor-default opacity-50'}
                   >
                     <Icon name="check" size={14} />
-                    {busy ? 'Saving…' : 'Save'}
+                    {busy ? t('saving') : t('save')}
                   </Button>
                   {configured && (
                     <Button variant="ghost" onClick={() => setEditing(false)}>
-                      Cancel
+                      {t('cancel')}
                     </Button>
                   )}
                 </div>

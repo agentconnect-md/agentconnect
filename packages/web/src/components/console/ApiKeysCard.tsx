@@ -11,6 +11,7 @@
 
 import { useState } from 'react'
 import useSWR from 'swr'
+import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { MOCK_MODE } from '@/lib/data'
 import {
@@ -25,12 +26,12 @@ import {
 import { profileKeys } from '@/lib/swr-keys'
 
 // `days: null` mints a non-expiring key (server accepts `expiresInDays: null`).
-const EXPIRY_OPTIONS: { days: number | null; label: string }[] = [
-  { days: 30, label: '30 days' },
-  { days: 60, label: '60 days' },
-  { days: 90, label: '90 days' },
-  { days: 365, label: '1 year' },
-  { days: null, label: 'Never' }
+const EXPIRY_OPTIONS: { days: number | null }[] = [
+  { days: 30 },
+  { days: 60 },
+  { days: 90 },
+  { days: 365 },
+  { days: null }
 ]
 
 type KeyState = 'active' | 'expired'
@@ -42,11 +43,6 @@ function keyState(k: UserApiKeyDto): KeyState {
 
 const orgLabel = (k: UserApiKeyDto) => k.orgName ?? k.orgSlug
 
-function lastUsedLabel(k: UserApiKeyDto): string {
-  if (!k.lastUsedAt) return 'never used'
-  return `used ${fmtDate(k.lastUsedAt)}`
-}
-
 // ── the card ────────────────────────────────────────────────────────────────
 export default function ApiKeysCard({
   orgs,
@@ -55,7 +51,7 @@ export default function ApiKeysCard({
   scopeOrgId,
   defaultName,
   embedded = false,
-  title = 'API keys',
+  title,
   description
 }: {
   orgs: OrgDto[]
@@ -70,6 +66,8 @@ export default function ApiKeysCard({
   title?: string
   description?: string
 }) {
+  const t = useTranslations('Profile')
+  const resolvedTitle = title ?? t('apiKeys.title')
   const [creating, setCreating] = useState(false)
   const [revoking, setRevoking] = useState<UserApiKeyDto | null>(null)
   const {
@@ -90,14 +88,16 @@ export default function ApiKeysCard({
   const newBtn = canCreate ? (
     <Button variant="secondary" size="xs" onClick={() => setCreating(true)}>
       <Icon name="key" size={14} />
-      New key
+      {t('apiKeys.newKey')}
     </Button>
   ) : null
 
   const rows = visibleKeys.map((k) => {
     const state = keyState(k)
     const stateBadge =
-      state === 'expired' ? { text: 'expired', bg: 'var(--surface-active)', fg: 'var(--text-tertiary)' } : null
+      state === 'expired'
+        ? { text: t('apiKeys.expired'), bg: 'var(--surface-active)', fg: 'var(--text-tertiary)' }
+        : null
     return (
       <div
         key={k.id}
@@ -114,7 +114,7 @@ export default function ApiKeysCard({
             {!scopeOrgId && (
               <span
                 className="badge bg-(--surface-active) text-(--text-secondary)"
-                title="the organization this key acts in"
+                title={t('apiKeys.organizationHint')}
               >
                 {orgLabel(k)}
               </span>
@@ -126,21 +126,25 @@ export default function ApiKeysCard({
             )}
           </div>
           <div className="mt-[3px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-            {lastUsedLabel(k)}
+            {k.lastUsedAt ? t('apiKeys.used', { date: fmtDate(k.lastUsedAt) }) : t('apiKeys.neverUsed')}
             {state === 'active' && (
               <span className="desktop:hidden">
                 {' · '}
-                {k.expiresAt ? `expires ${fmtDate(k.expiresAt)}` : 'never expires'}
+                {k.expiresAt ? t('apiKeys.expires', { date: fmtDate(k.expiresAt) }) : t('apiKeys.neverExpires')}
               </span>
             )}
           </div>
         </div>
         <span className="hidden font-sans text-[12px] font-normal leading-normal whitespace-nowrap text-(--text-tertiary) desktop:block">
-          {state === 'active' ? (k.expiresAt ? `expires ${fmtDate(k.expiresAt)}` : 'never expires') : ''}
+          {state === 'active'
+            ? k.expiresAt
+              ? t('apiKeys.expires', { date: fmtDate(k.expiresAt) })
+              : t('apiKeys.neverExpires')
+            : ''}
         </span>
         {state === 'active' ? (
           <button className="lnk text-(--red-600)" onClick={() => setRevoking(k)}>
-            Revoke
+            {t('apiKeys.revoke')}
           </button>
         ) : (
           <span className="w-12" />
@@ -151,18 +155,16 @@ export default function ApiKeysCard({
 
   const empty = (
     <div className="px-4 py-[22px] text-center">
-      <div className="font-sans text-[13px] font-semibold leading-normal">No API keys yet</div>
+      <div className="font-sans text-[13px] font-semibold leading-normal">{t('apiKeys.emptyTitle')}</div>
       <div className="mt-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-        {MOCK_MODE
-          ? 'API key creation is unavailable in mock mode.'
-          : 'Create a key to call the AgentConnect API as yourself.'}
+        {MOCK_MODE ? t('apiKeys.mockUnavailable') : t('apiKeys.emptyBody')}
       </div>
     </div>
   )
 
   const loadFailure = (
     <div className="px-4 py-[18px] font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
-      Couldn’t load API keys. Try refreshing the page.
+      {t('apiKeys.loadError')}
     </div>
   )
 
@@ -171,7 +173,7 @@ export default function ApiKeysCard({
       loadFailure
     ) : loading ? (
       <div className="px-4 py-[18px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-        Loading…
+        {t('apiKeys.loading')}
       </div>
     ) : visibleKeys.length === 0 ? (
       empty
@@ -211,7 +213,7 @@ export default function ApiKeysCard({
     return (
       <div className="overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs)">
         <div className="flex items-center justify-between gap-3 border-b border-(--border-subtle) px-4 py-3">
-          <span className="font-sans text-[14px] font-semibold leading-normal">{title}</span>
+          <span className="font-sans text-[14px] font-semibold leading-normal">{resolvedTitle}</span>
           {newBtn}
         </div>
         {description && (
@@ -229,7 +231,7 @@ export default function ApiKeysCard({
   return (
     <div className={embedded ? 'card overflow-hidden' : 'card mt-[18px]'}>
       <div className="cardhead justify-between">
-        <span className="cardtitle">{title}</span>
+        <span className="cardtitle">{resolvedTitle}</span>
         {newBtn}
       </div>
       {description && (
@@ -257,6 +259,7 @@ function CreateApiKeyModal({
   onClose: () => void
   onCreated: () => void
 }) {
+  const t = useTranslations('Profile')
   const [orgId, setOrgId] = useState(defaultOrgId ?? orgs[0]?.id ?? '')
   const [name, setName] = useState(defaultName ?? '')
   const [expiresInDays, setExpiresInDays] = useState<number | null>(90)
@@ -301,7 +304,7 @@ function CreateApiKeyModal({
           <Icon name="key" size={16} color="var(--brand)" />
         </span>
         <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">
-          {minted ? 'API key created' : 'Create API key'}
+          {minted ? t('apiKeys.createdTitle') : t('apiKeys.createTitle')}
         </span>
         <button className="iconbtn" onClick={onClose}>
           <Icon name="x" size={16} />
@@ -314,14 +317,14 @@ function CreateApiKeyModal({
             <div className="mb-[14px] flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[11px]">
               <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
               <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                Copy this key now — it is shown only once and cannot be retrieved. Store it somewhere safe.
+                {t('apiKeys.copyWarning')}
               </span>
             </div>
             <div className="overflow-hidden rounded-[9px] border border-(--gray-800) bg-(--gray-1000)">
               <div className="flex items-center gap-2 border-b border-(--gray-800) px-[13px] py-[9px]">
                 <Icon name="key" size={13} color="var(--text-inverse-dim)" />
                 <span className="font-mono text-[11px] font-medium leading-normal text-(--text-inverse-dim)">
-                  API key
+                  {t('apiKeys.apiKey')}
                 </span>
                 <button
                   type="button"
@@ -329,7 +332,7 @@ function CreateApiKeyModal({
                   className="ml-auto inline-flex cursor-pointer items-center gap-[5px] border-0 bg-transparent font-mono text-[11px] font-medium leading-normal text-(--text-inverse-dim)"
                 >
                   <Icon name={copied ? 'check' : 'copy'} size={12} />
-                  {copied ? 'copied' : 'copy'}
+                  {copied ? t('apiKeys.copied') : t('apiKeys.copy')}
                 </button>
               </div>
               <div className="break-all px-[14px] py-[13px] font-mono text-[12px] leading-[1.7] text-[#cdd6e0]">
@@ -340,12 +343,11 @@ function CreateApiKeyModal({
         ) : (
           <>
             <p className="mb-4 font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
-              This key calls the AgentConnect API as you, with your role in the chosen organization. Treat it like a
-              password.
+              {t('apiKeys.description')}
             </p>
             <div className="flex flex-col gap-[14px]">
               <div className="flex flex-col gap-[6px]">
-                <span className="fldlbl">Organization</span>
+                <span className="fldlbl">{t('apiKeys.organization')}</span>
                 <select className="dsinput-field" value={orgId} onChange={(e) => setOrgId(e.target.value)}>
                   {orgs.map((o) => (
                     <option key={o.id} value={o.id}>
@@ -355,25 +357,29 @@ function CreateApiKeyModal({
                 </select>
               </div>
               <div className="flex flex-col gap-[6px]">
-                <span className="fldlbl">Name (optional)</span>
+                <span className="fldlbl">{t('apiKeys.nameOptional')}</span>
                 <input
                   className="dsinput-field"
-                  placeholder="e.g. ci-runner"
+                  placeholder={t('apiKeys.namePlaceholder')}
                   value={name}
                   maxLength={120}
                   onChange={(e) => setName(e.target.value)}
                 />
               </div>
               <div className="flex flex-col gap-[6px]">
-                <span className="fldlbl">Expires</span>
+                <span className="fldlbl">{t('apiKeys.expiresLabel')}</span>
                 <select
                   className="dsinput-field"
                   value={expiresInDays === null ? 'never' : String(expiresInDays)}
                   onChange={(e) => setExpiresInDays(e.target.value === 'never' ? null : Number(e.target.value))}
                 >
                   {EXPIRY_OPTIONS.map((o) => (
-                    <option key={o.label} value={o.days === null ? 'never' : String(o.days)}>
-                      {o.label}
+                    <option key={String(o.days)} value={o.days === null ? 'never' : String(o.days)}>
+                      {o.days === null
+                        ? t('apiKeys.never')
+                        : o.days === 365
+                          ? t('apiKeys.oneYear')
+                          : t('apiKeys.days', { count: o.days })}
                     </option>
                   ))}
                 </select>
@@ -389,17 +395,17 @@ function CreateApiKeyModal({
       <div className="modalfoot">
         {minted ? (
           <>
-            <span className="mono text-[11px] text-(--text-tertiary)">shown only once</span>
+            <span className="mono text-[11px] text-(--text-tertiary)">{t('apiKeys.shownOnce')}</span>
             <div className="flex-1" />
             <Button variant="primary" onClick={onClose}>
-              Done
+              {t('apiKeys.done')}
             </Button>
           </>
         ) : (
           <>
             <div className="flex-1" />
             <Button variant="ghost" onClick={onClose}>
-              Cancel
+              {t('apiKeys.cancel')}
             </Button>
             <Button
               variant="primary"
@@ -407,7 +413,7 @@ function CreateApiKeyModal({
               className={busy || !orgId ? 'pointer-events-none opacity-50' : undefined}
             >
               <Icon name="key" size={14} />
-              {busy ? 'Creating…' : 'Create'}
+              {busy ? t('apiKeys.creating') : t('apiKeys.create')}
             </Button>
           </>
         )}
@@ -426,6 +432,7 @@ function RevokeApiKeyModal({
   onClose: () => void
   onRevoked: () => void
 }) {
+  const t = useTranslations('Profile')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
@@ -449,7 +456,7 @@ function RevokeApiKeyModal({
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--status-error-soft)">
           <Icon name="trash" size={16} color="var(--status-error)" />
         </span>
-        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Revoke API key</span>
+        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('apiKeys.revokeTitle')}</span>
         <button className="iconbtn" onClick={onClose}>
           <Icon name="x" size={16} />
         </button>
@@ -457,10 +464,7 @@ function RevokeApiKeyModal({
       <div className="modalbody">
         <p className="m-0 font-sans text-[13.5px] font-normal leading-[1.6] text-(--text-secondary)">
           <span className="mono text-(--text-primary)">{apiKey.displayTail}</span>
-          {apiKey.name ? ` (${apiKey.name})` : ''}
-          {
-            ' will stop working immediately. Any script or integration using it will start getting 401s. This can’t be undone.'
-          }
+          {apiKey.name ? ` (${apiKey.name})` : ''} {t('apiKeys.revokeBody')}
         </p>
         {err && (
           <div className="mt-[10px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>
@@ -469,7 +473,7 @@ function RevokeApiKeyModal({
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('apiKeys.cancel')}
         </Button>
         <Button
           variant="danger"
@@ -477,7 +481,7 @@ function RevokeApiKeyModal({
           className={busy ? 'pointer-events-none opacity-50' : undefined}
         >
           <Icon name="trash" size={15} />
-          {busy ? 'Revoking…' : 'Revoke'}
+          {busy ? t('apiKeys.revoking') : t('apiKeys.revoke')}
         </Button>
       </div>
     </>

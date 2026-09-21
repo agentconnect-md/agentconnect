@@ -7,6 +7,7 @@
 
 import { type ReactNode } from 'react'
 import Link from 'next/link'
+import { useTranslations } from 'next-intl'
 import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
@@ -89,7 +90,7 @@ function SessionRowSkeleton({ i, rowClassName }: { i: number; rowClassName?: str
 }
 
 export function RecentSessionsCard({
-  title = 'Recent',
+  title,
   sessions,
   loading,
   allHref,
@@ -113,11 +114,16 @@ export function RecentSessionsCard({
    * the rows size to their content. */
   rowClassName?: string
 }) {
+  const t = useTranslations('Home.dashboard')
   const { orgPath } = useOrgs()
   const { getAgent, crons } = useConsoleData()
   const recent = sessions.slice(0, limit)
   return (
-    <Card title={title} action={<CardLink href={allHref}>All sessions</CardLink>} className={className}>
+    <Card
+      title={title ?? t('recent')}
+      action={<CardLink href={allHref}>{t('allSessions')}</CardLink>}
+      className={className}
+    >
       <>
         {loading && recent.length === 0 ? (
           Array.from({ length: Math.min(4, limit) }, (_, i) => (

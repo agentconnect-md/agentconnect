@@ -6,6 +6,7 @@
 
 import { useMemo, useState } from 'react'
 import useSWR from 'swr'
+import { useTranslations } from 'next-intl'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
 import {
@@ -25,20 +26,21 @@ import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 
 type SecretRow = MemoryPluginSecretHeaderDto & { value: string }
+type MemoryConnectionsTranslator = ReturnType<typeof useTranslations<'Knowledge.memoryConnections'>>
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-function parseObjectJson(text: string, label: string): Record<string, unknown> {
+function parseObjectJson(text: string, label: string, t: MemoryConnectionsTranslator): Record<string, unknown> {
   let value: unknown
   try {
     value = JSON.parse(text)
   } catch {
-    throw new Error(`${label} must be valid JSON.`)
+    throw new Error(t('errors.mustBeValidJson', { label }))
   }
   if (!value || Array.isArray(value) || typeof value !== 'object') {
-    throw new Error(`${label} must be a JSON object.`)
+    throw new Error(t('errors.mustBeObject', { label }))
   }
   return value as Record<string, unknown>
 }
@@ -50,14 +52,8 @@ function statusClasses(status: ExternalMemoryConnectionDto['status']): string {
   return 'bg-(--status-info-soft) text-(--status-info)'
 }
 
-function statusLabel(status: ExternalMemoryConnectionDto['status']): string {
-  if (status === 'ready') return 'Ready'
-  if (status === 'probing') return 'Connecting'
-  if (status === 'degraded') return 'Degraded'
-  return 'Invalid'
-}
-
 export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
+  const t = useTranslations('Knowledge.memoryConnections')
   const { activeOrg } = useOrgs()
   const installationKey = consoleKeys.memoryPluginInstallations(activeOrg?.id)
   const connectionKey = consoleKeys.externalMemoryConnections(activeOrg?.id)
@@ -85,12 +81,7 @@ export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
   }
 
   const rotate = async (connection: ExternalMemoryConnectionDto) => {
-    if (
-      !window.confirm(
-        "Rotate this connection's access key? Active agents will receive the replacement before the old key is retired."
-      )
-    )
-      return
+    if (!window.confirm(t('rotateConfirm'))) return
     setActionId(connection.id)
     setError(null)
     try {
@@ -104,10 +95,7 @@ export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
   }
 
   const removeConnection = async (connection: ExternalMemoryConnectionDto) => {
-    if (
-      !window.confirm('Delete this external-memory connection? Unbind every agent first. Backend data is not deleted.')
-    )
-      return
+    if (!window.confirm(t('deleteConnectionConfirm'))) return
     setActionId(connection.id)
     setError(null)
     try {
@@ -121,7 +109,7 @@ export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
   }
 
   const removeInstallation = async (installation: MemoryPluginInstallationDto) => {
-    if (!window.confirm(`Remove the reviewed installation “${installation.pluginId}”?`)) return
+    if (!window.confirm(t('deleteInstallationConfirm', { pluginId: installation.pluginId }))) return
     setActionId(installation.id)
     setError(null)
     try {
@@ -139,17 +127,17 @@ export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
     <div id="external-memory" className="card mt-[18px]">
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1 border-b border-(--border-subtle) px-4 py-[14px] desktop:items-center">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <span className="cardtitle">External memory</span>
+          <span className="cardtitle">{t('title')}</span>
           {!loading && connections.length > 0 && (
             <span className="rounded-full bg-(--surface-active) px-2 py-[2px] font-sans text-[10.5px] font-semibold leading-normal text-(--text-secondary)">
-              {connections.length} {connections.length === 1 ? 'connection' : 'connections'}
+              {t('connectionsCount', { count: connections.length })}
             </span>
           )}
         </div>
         {canManage && (
           <Button variant="secondary" size="xs" className="flex-none" onClick={() => setCreating(true)}>
             <Icon name="plus" size={14} />
-            Add connection
+            {t('addConnection')}
           </Button>
         )}
       </div>
@@ -162,10 +150,10 @@ export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
             <Icon name="database" size={18} color="var(--text-tertiary)" />
           </span>
           <div className="mt-1 font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-            No external-memory connections yet
+            {t('emptyTitle')}
           </div>
           <div className="max-w-[420px] text-center font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-            Register a plugin and create an account connection. Secret values are never shown again.
+            {t('emptyDescription')}
           </div>
         </div>
       ) : (
@@ -192,10 +180,10 @@ export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
         installations.some((installation) => !connections.some((c) => c.installationId === installation.id)) && (
           <div className="border-t border-(--border-subtle) bg-(--surface-sunken) px-4 py-[14px]">
             <div className="font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
-              Ready to connect
+              {t('readyToConnect')}
             </div>
             <div className="mt-1 font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
-              These approved plugins do not have an account connection yet.
+              {t('readyToConnectDescription')}
             </div>
             <div className="mt-3 flex flex-col gap-2">
               {installations
@@ -214,8 +202,8 @@ export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
                       </span>
                       <span className="mt-[3px] block truncate font-mono text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
                         {installation.transport === 'stdio'
-                          ? `Local · ${installation.commandRef ?? 'Command unavailable'}`
-                          : `Remote · ${installation.endpoint ?? 'Endpoint unavailable'}`}
+                          ? t('localTransport', { ref: installation.commandRef ?? t('commandUnavailable') })
+                          : t('remoteTransport', { endpoint: installation.endpoint ?? t('endpointUnavailable') })}
                       </span>
                     </span>
                     <button
@@ -224,7 +212,7 @@ export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
                       disabled={actionId === installation.id}
                       onClick={() => void removeInstallation(installation)}
                     >
-                      Remove
+                      {t('remove')}
                     </button>
                   </div>
                 ))}
@@ -283,6 +271,7 @@ function ConnectionCard({
   onRotate: () => void
   onDelete: () => void
 }) {
+  const t = useTranslations('Knowledge.memoryConnections')
   const [actionsOpen, setActionsOpen] = useState(false)
   const downstream = connection.declaredEgressHosts
   const operations = Array.isArray(connection.capabilities?.operations)
@@ -290,16 +279,16 @@ function ConnectionCard({
     : []
   const isRemote = installation?.transport === 'streamable-http'
   const connectionLocation = isRemote
-    ? (installation?.endpoint ?? 'Endpoint unavailable')
-    : (installation?.commandRef ?? 'Command unavailable')
+    ? (installation?.endpoint ?? t('endpointUnavailable'))
+    : (installation?.commandRef ?? t('commandUnavailable'))
   const credentialsLabel = connection.secretKeys.length
-    ? `${connection.secretKeys.length} ${connection.secretKeys.length === 1 ? 'credential' : 'credentials'} configured`
-    : 'No credentials required'
+    ? t('credentialsConfigured', { count: connection.secretKeys.length })
+    : t('noCredentialsRequired')
   const egressLabel = downstream.length
     ? downstream.join(', ')
     : connection.status === 'ready'
-      ? 'No downstream hosts declared'
-      : 'Waiting for plugin report'
+      ? t('noDownstreamHosts')
+      : t('waitingForPluginReport')
 
   return (
     <div className="overflow-hidden rounded-lg border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs)">
@@ -310,7 +299,7 @@ function ConnectionCard({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span className="truncate font-mono text-[12.5px] font-semibold leading-normal text-(--text-primary)">
-              {installation?.pluginId ?? 'Unknown plugin'}
+              {installation?.pluginId ?? t('unknownPlugin')}
             </span>
             {connection.pluginVersion && (
               <span className="font-mono text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
@@ -321,16 +310,16 @@ function ConnectionCard({
           <div className="mt-1 flex flex-wrap items-center gap-2">
             <span className={`badge ${statusClasses(connection.status)}`}>
               <span className="h-1.5 w-1.5 rounded-full bg-current" />
-              {statusLabel(connection.status)}
+              {t(`status.${connection.status}`)}
             </span>
             <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-              {isRemote ? 'Remote plugin' : 'Local plugin'}
+              {isRemote ? t('remotePlugin') : t('localPlugin')}
             </span>
           </div>
         </div>
         {canManage && (
           <div className="flex flex-none items-center gap-[6px]">
-            <button className="iconbtn" disabled={busy} onClick={onEdit} title="Edit connection">
+            <button className="iconbtn" disabled={busy} onClick={onEdit} title={t('editConnection')}>
               <Icon name="pencil" size={15} />
             </button>
             <div className="relative">
@@ -338,7 +327,7 @@ function ConnectionCard({
                 className="iconbtn"
                 disabled={busy}
                 onClick={() => setActionsOpen((open) => !open)}
-                title="Connection actions"
+                title={t('connectionActions')}
               >
                 <Icon name="ellipsis" size={16} />
               </button>
@@ -355,7 +344,7 @@ function ConnectionCard({
                         }}
                       >
                         <Icon name="key-round" size={15} />
-                        Rotate access key
+                        {t('rotateAccessKey')}
                       </button>
                     )}
                     {isRemote && <div className="dmsep" />}
@@ -367,7 +356,7 @@ function ConnectionCard({
                       }}
                     >
                       <Icon name="trash" size={15} />
-                      Delete connection
+                      {t('deleteConnection')}
                     </button>
                   </div>
                 </>
@@ -381,7 +370,7 @@ function ConnectionCard({
         <div className="mx-[14px] mb-3 flex items-start gap-2 rounded-md bg-(--status-error-soft) px-3 py-[9px] font-sans text-[11.5px] font-normal leading-[1.45] text-(--status-error)">
           <Icon name="triangle-alert" size={15} className="mt-[1px] flex-none" />
           <span>
-            This connection needs attention. <span className="font-mono">{connection.reasonCode}</span>
+            {t.rich('attentionNeeded', { code: () => <span className="font-mono">{connection.reasonCode}</span> })}
           </span>
         </div>
       )}
@@ -390,10 +379,10 @@ function ConnectionCard({
         <div className="min-w-0 rounded-md border border-(--border-subtle) bg-(--surface-card) p-3">
           <div className="flex items-center gap-[6px] font-sans text-[10.5px] font-semibold leading-normal tracking-[.04em] text-(--text-tertiary) uppercase">
             <Icon name={isRemote ? 'earth' : 'square-terminal'} size={13} />
-            Connection
+            {t('connectionSectionTitle')}
           </div>
           <div className="mt-2 font-sans text-[12px] font-medium leading-normal text-(--text-primary)">
-            {isRemote ? 'Reviewed remote endpoint' : 'Operator-installed command'}
+            {isRemote ? t('reviewedRemoteEndpoint') : t('operatorInstalledCommand')}
           </div>
           <div
             className="mt-1 break-all font-mono text-[10.5px] font-normal leading-[1.5] text-(--text-tertiary) desktop:truncate"
@@ -406,7 +395,7 @@ function ConnectionCard({
         <div className="rounded-md border border-(--border-subtle) bg-(--surface-card) p-3">
           <div className="flex items-center gap-[6px] font-sans text-[10.5px] font-semibold leading-normal tracking-[.04em] text-(--text-tertiary) uppercase">
             <Icon name="shield-check" size={13} />
-            Access
+            {t('accessSectionTitle')}
           </div>
           <div className="mt-2 flex items-start gap-2">
             <Icon name="key-round" size={13} color="var(--text-tertiary)" className="mt-[1px] flex-none" />
@@ -425,7 +414,7 @@ function ConnectionCard({
             <Icon name="network" size={13} color="var(--text-tertiary)" className="mt-[1px] flex-none" />
             <div className="min-w-0">
               <div className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                Network access
+                {t('networkAccess')}
               </div>
               <div className="mt-[2px] break-words font-sans text-[11.5px] font-medium leading-[1.4] text-(--text-primary)">
                 {egressLabel}
@@ -437,7 +426,7 @@ function ConnectionCard({
         {operations.length > 0 && (
           <div className="desktop:col-span-2">
             <div className="font-sans text-[10.5px] font-semibold leading-normal tracking-[.04em] text-(--text-tertiary) uppercase">
-              Capabilities
+              {t('capabilities')}
             </div>
             <div className="mt-2 flex flex-wrap gap-[6px]">
               {operations.map((operation) => (
@@ -455,11 +444,11 @@ function ConnectionCard({
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-(--border-subtle) px-[14px] py-[9px] font-mono text-[10px] font-normal leading-normal text-(--text-disabled)">
         <span className="min-w-0 truncate" title={connection.id}>
-          Connection {connection.id}
+          {t('connectionIdLabel', { id: connection.id })}
         </span>
-        <span className="flex-none">Revision {connection.revision}</span>
+        <span className="flex-none">{t('revisionLabel', { revision: connection.revision })}</span>
         {connection.probedRevision !== null && (
-          <span className="flex-none">Checked revision {connection.probedRevision}</span>
+          <span className="flex-none">{t('checkedRevisionLabel', { revision: connection.probedRevision })}</span>
         )}
       </div>
     </div>
@@ -475,12 +464,13 @@ function SecretRowsEditor({
   onChange: (rows: SecretRow[]) => void
   collectValues: boolean
 }) {
+  const t = useTranslations('Knowledge.memoryConnections')
   const set = (index: number, patch: Partial<SecretRow>) =>
     onChange(rows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row)))
   return (
     <div className="fld desktop:col-span-2">
-      <span className="fldlbl">Credential fields</span>
-      <span className="mb-2 text-[11px] text-(--text-tertiary)">Values are write-only.</span>
+      <span className="fldlbl">{t('credentialFields')}</span>
+      <span className="mb-2 text-[11px] text-(--text-tertiary)">{t('valuesWriteOnly')}</span>
       <div className="flex flex-col gap-2">
         {rows.map((row, index) => (
           <div key={index} className="grid grid-cols-1 gap-2 desktop:grid-cols-[1fr_1fr_1fr_auto]">
@@ -501,7 +491,7 @@ function SecretRowsEditor({
                 className="dsinput-field mono"
                 type="password"
                 autoComplete="new-password"
-                placeholder="secret value"
+                placeholder={t('secretValuePlaceholder')}
                 value={row.value}
                 onChange={(event) => set(index, { value: event.target.value })}
               />
@@ -515,12 +505,12 @@ function SecretRowsEditor({
                   checked={row.required}
                   onChange={(event) => set(index, { required: event.target.checked })}
                 />
-                required
+                {t('required')}
               </label>
               <button
                 type="button"
                 className="iconbtn"
-                aria-label="Remove credential field"
+                aria-label={t('removeCredentialField')}
                 onClick={() => onChange(rows.filter((_, i) => i !== index))}
               >
                 <Icon name="x" size={14} />
@@ -534,7 +524,7 @@ function SecretRowsEditor({
         className="lnk mt-2 text-[12px]"
         onClick={() => onChange([...rows, { name: '', header: '', required: true, value: '' }])}
       >
-        + Add credential field
+        {t('addCredentialField')}
       </button>
     </div>
   )
@@ -549,6 +539,7 @@ function CreateMemoryConnectionModal({
   onClose: () => void
   onSaved: () => Promise<void>
 }) {
+  const t = useTranslations('Knowledge.memoryConnections')
   const [installationId, setInstallationId] = useState(installations[0]?.id ?? 'new')
   const [pluginId, setPluginId] = useState('')
   const [transport, setTransport] = useState<MemoryPluginInstallationDto['transport']>('streamable-http')
@@ -567,16 +558,16 @@ function CreateMemoryConnectionModal({
     setError(null)
     let createdInstallation: MemoryPluginInstallationDto | undefined
     try {
-      const config = parseObjectJson(configText, 'Configuration')
+      const config = parseObjectJson(configText, t('configLabel'), t)
       let target = selected
       let secrets: Record<string, string>
       if (!target) {
         const rows = newSecretRows.filter((row) => row.name.trim() || row.header.trim() || row.value)
-        if (!pluginId.trim()) throw new Error('Plugin id is required.')
-        if (transport === 'streamable-http' && !endpoint.trim()) throw new Error('Plugin endpoint is required.')
-        if (transport === 'stdio' && !commandRef.trim()) throw new Error('Operator command reference is required.')
+        if (!pluginId.trim()) throw new Error(t('errors.pluginIdRequired'))
+        if (transport === 'streamable-http' && !endpoint.trim()) throw new Error(t('errors.endpointRequired'))
+        if (transport === 'stdio' && !commandRef.trim()) throw new Error(t('errors.commandRefRequired'))
         if (rows.some((row) => !row.name.trim() || !row.header.trim() || (row.required && !row.value))) {
-          throw new Error('Every credential field needs a logical name and header; required fields also need a value.')
+          throw new Error(t('errors.credentialFieldsInvalid'))
         }
         const common = {
           pluginId: pluginId.trim(),
@@ -597,7 +588,7 @@ function CreateMemoryConnectionModal({
       } else {
         const missing = target.secretHeaders.filter((field) => field.required && !existingSecretValues[field.name])
         if (missing.length)
-          throw new Error(`Enter required secret value(s): ${missing.map((field) => field.name).join(', ')}.`)
+          throw new Error(t('errors.missingSecretValues', { names: missing.map((field) => field.name).join(', ') }))
         secrets = Object.fromEntries(Object.entries(existingSecretValues).filter(([, value]) => value))
       }
       await createExternalMemoryConnection({ installationId: target.id, config, secrets })
@@ -615,14 +606,14 @@ function CreateMemoryConnectionModal({
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--brand-soft)">
           <Icon name="database" size={16} color="var(--brand)" />
         </span>
-        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Add memory connection</span>
-        <button className="iconbtn" onClick={onClose} aria-label="Close">
+        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('addTitle')}</span>
+        <button className="iconbtn" onClick={onClose} aria-label={t('close')}>
           <Icon name="x" size={16} />
         </button>
       </div>
       <div className="modalbody grid grid-cols-1 gap-4 desktop:grid-cols-2">
         <div className="fld desktop:col-span-2">
-          <span className="fldlbl">Reviewed plugin installation</span>
+          <span className="fldlbl">{t('reviewedInstallation')}</span>
           <select
             className="dsinput-field"
             value={installationId}
@@ -635,25 +626,23 @@ function CreateMemoryConnectionModal({
               <option key={installation.id} value={installation.id}>
                 {installation.pluginId} —{' '}
                 {installation.transport === 'stdio'
-                  ? `local:${installation.commandRef ?? 'unavailable'}`
+                  ? `local:${installation.commandRef ?? t('unavailable')}`
                   : installation.endpoint}
               </option>
             ))}
-            <option value="new">Register a new plugin…</option>
+            <option value="new">{t('registerNewPlugin')}</option>
           </select>
         </div>
         {selected ? (
           <>
             <div className="desktop:col-span-2 rounded-md border border-(--border-subtle) bg-(--surface-sunken) p-3 text-[12px] text-(--text-secondary)">
-              {selected.transport === 'stdio' ? (
-                <>
-                  Runs <span className="mono">{selected.commandRef}</span> from the daemon&rsquo;s operator allowlist.
-                </>
-              ) : (
-                <>
-                  Sends recall and capture traffic to <span className="mono">{selected.endpoint}</span>.
-                </>
-              )}
+              {selected.transport === 'stdio'
+                ? t.rich('runsCommandDescription', {
+                    command: () => <span className="mono">{selected.commandRef}</span>
+                  })
+                : t.rich('sendsTrafficDescription', {
+                    endpoint: () => <span className="mono">{selected.endpoint}</span>
+                  })}
             </div>
             {selected.secretHeaders.map((field) => (
               <label key={field.name} className="fld">
@@ -666,7 +655,9 @@ function CreateMemoryConnectionModal({
                   type="password"
                   autoComplete="new-password"
                   placeholder={
-                    selected.transport === 'stdio' ? 'injected by operator mapping' : `sent as ${field.header}`
+                    selected.transport === 'stdio'
+                      ? t('injectedByOperator')
+                      : t('sentAsHeader', { header: field.header })
                   }
                   value={existingSecretValues[field.name] ?? ''}
                   onChange={(event) =>
@@ -679,18 +670,18 @@ function CreateMemoryConnectionModal({
         ) : (
           <>
             <label className="fld desktop:col-span-2">
-              <span className="fldlbl">Plugin transport</span>
+              <span className="fldlbl">{t('pluginTransport')}</span>
               <select
                 className="dsinput-field"
                 value={transport}
                 onChange={(event) => setTransport(event.target.value as MemoryPluginInstallationDto['transport'])}
               >
-                <option value="streamable-http">Remote · Streamable HTTP</option>
-                <option value="stdio">Local · operator-installed stdio</option>
+                <option value="streamable-http">{t('remoteStreamableHttp')}</option>
+                <option value="stdio">{t('localStdio')}</option>
               </select>
             </label>
             <label className="fld">
-              <span className="fldlbl">Plugin id</span>
+              <span className="fldlbl">{t('pluginId')}</span>
               <input
                 className="dsinput-field mono"
                 placeholder="ai.mem0.memory"
@@ -700,20 +691,18 @@ function CreateMemoryConnectionModal({
             </label>
             {transport === 'stdio' ? (
               <label className="fld">
-                <span className="fldlbl">Operator command reference</span>
+                <span className="fldlbl">{t('operatorCommandReference')}</span>
                 <input
                   className="dsinput-field mono"
                   placeholder="mem0-oss"
                   value={commandRef}
                   onChange={(event) => setCommandRef(event.target.value)}
                 />
-                <span className="mt-1 text-[11px] text-(--text-tertiary)">
-                  Allowlist key only — no paths or arguments.
-                </span>
+                <span className="mt-1 text-[11px] text-(--text-tertiary)">{t('allowlistKeyHint')}</span>
               </label>
             ) : (
               <label className="fld">
-                <span className="fldlbl">Streamable HTTP endpoint</span>
+                <span className="fldlbl">{t('streamableHttpEndpoint')}</span>
                 <input
                   className="dsinput-field mono"
                   type="url"
@@ -725,7 +714,8 @@ function CreateMemoryConnectionModal({
             )}
             <label className="fld desktop:col-span-2">
               <span className="fldlbl">
-                Expected manifest digest <span className="font-normal text-(--text-tertiary)">(optional pin)</span>
+                {t('expectedManifestDigest')}{' '}
+                <span className="font-normal text-(--text-tertiary)">{t('optionalPin')}</span>
               </span>
               <input
                 className="dsinput-field mono"
@@ -738,7 +728,7 @@ function CreateMemoryConnectionModal({
           </>
         )}
         <label className="fld desktop:col-span-2">
-          <span className="fldlbl">Non-secret connection config (JSON)</span>
+          <span className="fldlbl">{t('nonSecretConfig')}</span>
           <textarea
             className="dsinput-field mono min-h-[120px] resize-y"
             spellCheck={false}
@@ -747,18 +737,18 @@ function CreateMemoryConnectionModal({
           />
         </label>
         <div className="desktop:col-span-2 rounded-md border border-(--border-subtle) bg-(--surface-sunken) p-3 text-[11.5px] leading-[1.5] text-(--text-secondary)">
-          Verified when an agent first selects it.
+          {t('verifiedOnFirstUse')}
         </div>
         {error && <div className="desktop:col-span-2 text-[12px] text-(--red-600)">{error}</div>}
       </div>
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" disabled={busy} onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button disabled={busy} onClick={() => void submit()}>
           <Icon name="database" size={14} />
-          {busy ? 'Creating…' : 'Create connection'}
+          {busy ? t('creating') : t('createConnection')}
         </Button>
       </div>
     </>
@@ -776,6 +766,7 @@ function EditMemoryConnectionModal({
   onClose: () => void
   onSaved: () => Promise<void>
 }) {
+  const t = useTranslations('Knowledge.memoryConnections')
   const [configText, setConfigText] = useState(JSON.stringify(connection.config, null, 2))
   const [replaceSecrets, setReplaceSecrets] = useState(false)
   const [secretValues, setSecretValues] = useState<Record<string, string>>({})
@@ -785,13 +776,13 @@ function EditMemoryConnectionModal({
     setBusy(true)
     setError(null)
     try {
-      const config = parseObjectJson(configText, 'Configuration')
+      const config = parseObjectJson(configText, t('configLabel'), t)
       let secrets: Record<string, string> | undefined
       if (replaceSecrets) {
         const fields = installation?.secretHeaders ?? []
         const missing = fields.filter((field) => field.required && !secretValues[field.name])
         if (missing.length)
-          throw new Error(`Enter required secret value(s): ${missing.map((field) => field.name).join(', ')}.`)
+          throw new Error(t('errors.missingSecretValues', { names: missing.map((field) => field.name).join(', ') }))
         secrets = Object.fromEntries(Object.entries(secretValues).filter(([, value]) => value))
       }
       await updateExternalMemoryConnection(connection.id, { config, ...(secrets ? { secrets } : {}) })
@@ -807,22 +798,22 @@ function EditMemoryConnectionModal({
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--brand-soft)">
           <Icon name="database" size={16} color="var(--brand)" />
         </span>
-        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Edit memory connection</span>
-        <button className="iconbtn" onClick={onClose} aria-label="Close">
+        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('editTitle')}</span>
+        <button className="iconbtn" onClick={onClose} aria-label={t('close')}>
           <Icon name="x" size={16} />
         </button>
       </div>
       <div className="modalbody flex flex-col gap-4">
         <div className="rounded-md border border-(--border-subtle) bg-(--surface-sunken) p-3 text-[12px] text-(--text-secondary)">
-          {installation?.transport === 'stdio' ? 'Operator command ref' : 'Plugin endpoint'}:{' '}
+          {installation?.transport === 'stdio' ? t('operatorCommandRef') : t('pluginEndpoint')}:{' '}
           <span className="mono">
             {installation?.transport === 'stdio'
-              ? (installation.commandRef ?? 'unavailable')
-              : (installation?.endpoint ?? 'unavailable')}
+              ? (installation.commandRef ?? t('unavailable'))
+              : (installation?.endpoint ?? t('unavailable'))}
           </span>
         </div>
         <label className="fld">
-          <span className="fldlbl">Non-secret connection config (JSON)</span>
+          <span className="fldlbl">{t('nonSecretConfig')}</span>
           <textarea
             className="dsinput-field mono min-h-[140px] resize-y"
             spellCheck={false}
@@ -836,7 +827,7 @@ function EditMemoryConnectionModal({
             checked={replaceSecrets}
             onChange={(event) => setReplaceSecrets(event.target.checked)}
           />
-          Replace the complete write-only secret set
+          {t('replaceSecrets')}
         </label>
         {replaceSecrets &&
           (installation?.secretHeaders ?? []).map((field) => (
@@ -850,7 +841,9 @@ function EditMemoryConnectionModal({
                 type="password"
                 autoComplete="new-password"
                 placeholder={
-                  installation?.transport === 'stdio' ? 'injected by operator mapping' : `sent as ${field.header}`
+                  installation?.transport === 'stdio'
+                    ? t('injectedByOperator')
+                    : t('sentAsHeader', { header: field.header })
                 }
                 value={secretValues[field.name] ?? ''}
                 onChange={(event) => setSecretValues((values) => ({ ...values, [field.name]: event.target.value }))}
@@ -862,10 +855,10 @@ function EditMemoryConnectionModal({
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" disabled={busy} onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button disabled={busy} onClick={() => void submit()}>
-          {busy ? 'Saving…' : 'Save and check compatibility'}
+          {busy ? t('saving') : t('saveAndCheck')}
         </Button>
       </div>
     </>

@@ -23,13 +23,13 @@ describe('balanceBanner', () => {
   it('tells a never-funded org how the model works, rather than that it is blocked', () => {
     // Same gateway state as spent-out; only the ledger tells them apart.
     const banner = balanceBanner(acct({ balanceMicro: 0, state: 'suspended' }), { hasHistory: false })
-    expect(banner).toMatchObject({ tone: 'brand', icon: 'sparkles', cta: 'Add credits' })
-    expect(banner?.title).toContain('start serving')
+    expect(banner).toMatchObject({ tone: 'brand', icon: 'sparkles', ctaKey: 'addCredits' })
+    expect(banner?.titleKey).toBe('neverFundedTitle')
   })
 
   it('says traffic is paused once an org that HAS paid runs out', () => {
     const banner = balanceBanner(acct({ balanceMicro: 0, state: 'suspended' }), funded)
-    expect(banner).toMatchObject({ tone: 'red', icon: 'circle-slash', cta: 'Add credits' })
+    expect(banner).toMatchObject({ tone: 'red', icon: 'circle-slash', ctaKey: 'addCredits' })
   })
 
   it('does not call an org never-funded while the ledger has not answered', () => {
@@ -44,15 +44,16 @@ describe('balanceBanner', () => {
   it('keeps the low-balance banner even while the gateway answer is unconfirmed', () => {
     const banner = balanceBanner(acct({ balanceMicro: 4_180_000, state: 'unknown' }), funded)
     expect(banner).toMatchObject({ tone: 'amber', icon: 'triangle-alert' })
-    expect(banner?.title).toBe('Low balance — $4.18 remaining')
-    expect(banner?.text).toContain('$10.00')
+    expect(banner?.titleKey).toBe('lowBalanceTitle')
+    expect(banner?.titleValues).toMatchObject({ balance: '$4.18' })
+    expect(banner?.textValues).toMatchObject({ threshold: '$10.00' })
   })
 
   it('falls back to the unconfirmed notice only when nothing more useful applies', () => {
     const banner = balanceBanner(acct({ state: 'unknown' }), funded)
     expect(banner).toMatchObject({ tone: 'blue', icon: 'clock' })
     // No CTA: there is nothing for the user to do about it.
-    expect(banner?.cta).toBeUndefined()
+    expect(banner?.ctaKey).toBeUndefined()
   })
 
   it('lets suspended outrank low balance — worse news, and the same call to action', () => {

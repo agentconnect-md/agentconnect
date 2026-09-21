@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import Link from 'next/link'
+import { useTranslations } from 'next-intl'
 import { liveBotTurnKey, sameBotSpeaker } from '@/lib/bot-turn-grouping'
 import { PendingActionsBanner, usePendingAction } from '@/components/console/PendingActions'
 import { selfConversationPath } from '@/lib/conversation-addressing'
@@ -94,6 +95,7 @@ import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
+import { permissionModeLabelKey } from '@/lib/permission-mode-i18n'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
 import { MentionMenu, type MentionOption } from '@/components/console/MentionMenu'
 import { useMentionAutocomplete } from '@/components/console/useMentionAutocomplete'
@@ -213,9 +215,10 @@ const EMPTY_CONVERSATION_FAMILY: ConversationLineage['family'] = { parentSession
 
 // The "fast" tag shown inside the model pill when fast mode is on.
 function FastBadge() {
+  const t = useTranslations('Sessions.detail')
   return (
     <span className="rounded-sm bg-(--brand-soft) px-[5px] py-px font-mono text-[10px] font-semibold uppercase tracking-[.04em] text-(--brand-soft-text)">
-      fast
+      {t('fast')}
     </span>
   )
 }
@@ -432,11 +435,12 @@ function ComposerSendButton({
   onSend: () => void
   onStop: () => void
 }) {
+  const t = useTranslations('Sessions.detail')
   const hasText = usePgDraftHasText(sessionId)
   return (
     <button
       className="sendbtn ml-1 h-[26px] w-[26px] flex-none rounded-[7px]"
-      aria-label={busy ? 'Stop response' : 'Send message'}
+      aria-label={busy ? t('stopResponse') : t('sendMessage')}
       onClick={() => (busy ? onStop() : onSend())}
       disabled={!busy && (imagePreparing || mentionJoining || (!hasText && !hasImage))}
     >
@@ -642,6 +646,7 @@ function thinkStep(text: string, time?: string, platform?: string): FmtStep {
 // `group/turn` hover, so the affordance stays out of the transcript until
 // pointed at; keyboard focus reveals it too.
 function CopyTurnButton({ text }: { text: string }) {
+  const t = useTranslations('Sessions.detail')
   const [copied, setCopied] = useState(false)
   return (
     <button
@@ -651,7 +656,7 @@ function CopyTurnButton({ text }: { text: string }) {
         setCopied(true)
         setTimeout(() => setCopied(false), 1600)
       }}
-      title={copied ? 'Copied' : 'Copy message'}
+      title={copied ? t('copied') : t('copyMessage')}
       className="inline-flex h-[20px] w-[20px] flex-none items-center justify-center rounded-sm border-0 bg-transparent p-0 text-(--text-tertiary) opacity-0 transition-opacity hover:text-(--text-secondary) focus-visible:opacity-100 group-hover/turn:opacity-100 max-desktop:opacity-100"
     >
       <Icon name={copied ? 'check' : 'copy'} size={12} />
@@ -2423,6 +2428,8 @@ function sessionUnavailableReasons(providerName: string | undefined, profileLink
 }
 
 export default function SessionDetailView() {
+  const t = useTranslations('Sessions.detail')
+  const permissionT = useTranslations('Common.permissionModes')
   const acpRegistry = useAcpRegistry()
   const { activeOrg, orgPath, myRole } = useOrgs()
   const router = useRouter()
@@ -3172,50 +3179,75 @@ export default function SessionDetailView() {
   const tasksStatus = tasksTabStatus(tasksVerdict.settled)
   // PR: `loading` until the probe's first answer, `ready` after — and a `none` answer removes the tab below, so `empty` never has a state left to describe.
   const prStatus = pullRequestTabStatus(prVerdict.answer)
+  const localizedDockTabs = useMemo<DockTab[]>(
+    () =>
+      DOCK_TABS.map((tab) => ({
+        ...tab,
+        label:
+          tab.key === 'sessions'
+            ? t('sessions')
+            : tab.key === 'files'
+              ? t('files')
+              : tab.key === 'git'
+                ? t('git')
+                : tab.key === 'pr'
+                  ? t('pullRequest')
+                  : t('tasks'),
+        ...(tab.key === 'files'
+          ? { actionLabel: t('refreshFiles') }
+          : tab.key === 'git'
+            ? { actionLabel: t('refreshGit') }
+            : tab.key === 'tasks'
+              ? { actionLabel: t('refreshTasks') }
+              : {})
+      })),
+    [t]
+  )
   // Each tab's own verdict, spliced onto the static descriptors. Files is dropped outright rather than left `loading` forever when there is no agent behind it — a tab that can never answer is not a tab — and the demo tour has no daemon to read a checkout from at all, so it does not get one either.
   const dockTabs = useMemo<DockTab[]>(
     () =>
-      DOCK_TABS.filter((tab) =>
-        tab.key === 'files' || tab.key === 'git'
-          ? filesAgentId !== null && !MOCK_MODE
-          : tab.key === 'tasks'
-            ? // Dropped on the same terms and for the same reason, but against its OWN scope: no agent to ask, or no canonical session for the lease to be keyed by.
-              filesAgentId !== null && tasksSessionId !== null && !MOCK_MODE
-            : // PR keeps its tab without one: a 404 only means no pull-request run owns this session, and the panel then draws that branch's state and the action that opens one. That state is drawn only off a git read of THIS session's worktree (`prBranchScoped`) — the focused participant's checkout must not put session A's action on screen — and only when that read found a checkout (`changed !== null` is exactly "the settled read found one"). A linked PR keeps its tab whatever the git scope is: its identity comes from the run, not from a checkout.
-              tab.key !== 'pr' ||
-              (prSessionId !== null && (prVerdict.answer !== 'none' || (prBranchScoped && gitVerdict.changed !== null)))
-      ).map((tab) =>
-        tab.key === 'sessions'
-          ? { ...tab, status: sessionsStatus, loadingPlaceholder: <SessionsPanelSkeleton /> }
-          : tab.key === 'files'
-            ? { ...tab, status: filesStatus }
-            : tab.key === 'git'
-              ? {
-                  ...tab,
-                  status: gitStatus,
-                  // The badge is the changed-file count, omitted rather than shown as `0`: a clean tree wears no pill, and neither does a workspace whose status could not be read.
-                  ...(gitVerdict.changed ? { badge: gitVerdict.changed } : {})
-                }
-              : tab.key === 'pr'
+      localizedDockTabs
+        .filter((tab) =>
+          tab.key === 'files' || tab.key === 'git'
+            ? filesAgentId !== null && !MOCK_MODE
+            : tab.key === 'tasks'
+              ? // Dropped on the same terms and for the same reason, but against its OWN scope: no agent to ask, or no canonical session for the lease to be keyed by.
+                filesAgentId !== null && tasksSessionId !== null && !MOCK_MODE
+              : // PR keeps its tab without one: a 404 only means no pull-request run owns this session, and the panel then draws that branch's state and the action that opens one. That state is drawn only off a git read of THIS session's worktree (`prBranchScoped`) — the focused participant's checkout must not put session A's action on screen — and only when that read found a checkout (`changed !== null` is exactly "the settled read found one"). A linked PR keeps its tab whatever the git scope is: its identity comes from the run, not from a checkout.
+                tab.key !== 'pr' ||
+                (prSessionId !== null &&
+                  (prVerdict.answer !== 'none' || (prBranchScoped && gitVerdict.changed !== null)))
+        )
+        .map((tab) =>
+          tab.key === 'sessions'
+            ? { ...tab, status: sessionsStatus, loadingPlaceholder: <SessionsPanelSkeleton /> }
+            : tab.key === 'files'
+              ? { ...tab, status: filesStatus }
+              : tab.key === 'git'
                 ? {
                     ...tab,
-                    status: prStatus,
-                    // Unresolved review threads (§1's table), omitted rather than shown as `0` — and omitted while degraded, where the count is unknown rather than zero.
-                    ...(prVerdict.unresolved ? { badge: prVerdict.unresolved } : {}),
-                    // The design's header action opens the PR's own page; withheld until an answer has carried a URL to open.
-                    ...(prVerdict.url
-                      ? { actionIcon: 'external-link', actionLabel: 'Open the pull request on GitHub' }
-                      : {})
+                    status: gitStatus,
+                    // The badge is the changed-file count, omitted rather than shown as `0`: a clean tree wears no pill, and neither does a workspace whose status could not be read.
+                    ...(gitVerdict.changed ? { badge: gitVerdict.changed } : {})
                   }
-                : tab.key === 'tasks'
+                : tab.key === 'pr'
                   ? {
                       ...tab,
-                      status: tasksStatus,
-                      // Running tasks only, and omitted rather than shown as `0`: an idle session wears no pill, and neither does an untracked one, whose count is null rather than zero.
-                      ...(tasksVerdict.running ? { badge: tasksVerdict.running } : {})
+                      status: prStatus,
+                      // Unresolved review threads (§1's table), omitted rather than shown as `0` — and omitted while degraded, where the count is unknown rather than zero.
+                      ...(prVerdict.unresolved ? { badge: prVerdict.unresolved } : {}),
+                      // The design's header action opens the PR's own page; withheld until an answer has carried a URL to open.
+                      ...(prVerdict.url ? { actionIcon: 'external-link', actionLabel: t('openPullRequest') } : {})
                     }
-                  : tab
-      ),
+                  : tab.key === 'tasks'
+                    ? {
+                        ...tab,
+                        status: tasksStatus,
+                        // Running tasks only, and omitted rather than shown as `0`: an idle session wears no pill, and neither does an untracked one, whose count is null rather than zero.
+                        ...(tasksVerdict.running ? { badge: tasksVerdict.running } : {})
+                      }
+                    : tab
+        ),
     [
       filesAgentId,
       filesStatus,
@@ -3228,6 +3260,7 @@ export default function SessionDetailView() {
       prVerdict.unresolved,
       prVerdict.url,
       sessionsStatus,
+      localizedDockTabs,
       tasksSessionId,
       tasksStatus,
       tasksVerdict.running
@@ -3526,14 +3559,14 @@ export default function SessionDetailView() {
         <div className="card p-6">
           <div className="font-sans text-[13.5px] leading-[1.55] text-(--text-secondary)">{notice.message}</div>
           <div className="mt-4 flex flex-wrap items-center gap-2">
-            {notice.retry && <Button onClick={() => void retryConversation()}>Try again</Button>}
+            {notice.retry && <Button onClick={() => void retryConversation()}>{t('tryAgain')}</Button>}
             {notice.action && (
               <Link className="dsbtn dsbtn-primary no-underline" href={notice.action.href}>
                 {notice.action.label}
               </Link>
             )}
             <Link className="lnk font-sans text-[12.5px] font-medium leading-normal" href={orgPath('/sessions')}>
-              Back to sessions
+              {t('backToSessions')}
             </Link>
           </div>
         </div>
@@ -3548,11 +3581,11 @@ export default function SessionDetailView() {
         <NotFound
           icon="message-square-off"
           kind="CONVERSATION"
-          title="Conversation not found"
-          pre="No conversation "
+          title={t('conversationNotFound')}
+          pre={t('noConversation')}
           chip={conversationKey}
-          post=" in this organization — or none of its participants are visible to you."
-          actionLabel="Back to sessions"
+          post={t('conversationUnavailable')}
+          actionLabel={t('backToSessions')}
           actionHref={orgPath('/sessions')}
         />
       </SessionDetailFrame>
@@ -3575,14 +3608,14 @@ export default function SessionDetailView() {
         <NotFound
           icon="message-square-off"
           kind="SESSION"
-          title="Session unavailable"
-          pre="Session "
+          title={t('sessionUnavailable')}
+          pre={t('session')}
           chip={id}
           post={
             <>
-              <span className="desktop:whitespace-nowrap"> isn’t available to you.</span>
+              <span className="desktop:whitespace-nowrap">{t('notAvailable')}</span>
               <div className="mx-auto mt-3 w-fit max-w-full text-left">
-                <div className="font-medium text-(--text-primary)">Possible reasons:</div>
+                <div className="font-medium text-(--text-primary)">{t('possibleReasons')}</div>
                 <ul className="mt-1 list-disc space-y-1 pl-5">
                   {unavailableReasons.map((reason) => (
                     <li key={reason} className="desktop:whitespace-nowrap">
@@ -3593,12 +3626,14 @@ export default function SessionDetailView() {
               </div>
             </>
           }
-          actionLabel="Back to sessions"
+          actionLabel={t('backToSessions')}
           actionHref={orgPath('/sessions')}
           secondaryAction={
             profileIdentityReady && profileLinkProviderName && profileLinkProvider
               ? {
-                  label: `${profileNeedsLink ? 'Link' : 'Review'} ${profileLinkProviderName} profile`,
+                  label: profileNeedsLink
+                    ? t('linkProfile', { provider: profileLinkProviderName })
+                    : t('reviewProfile', { provider: profileLinkProviderName }),
                   href: orgPath('/profile#sign-in-methods'),
                   icon: <SocialLoginMark target={profileLinkProvider} size={15} />
                 }
@@ -4568,6 +4603,10 @@ export default function SessionDetailView() {
           ...selectablePermissionModes
         ]
       : selectablePermissionModes
+  const localizedPermissionPresets = pgPermissionPresets.map((mode) => {
+    const key = permissionModeLabelKey(mode.v)
+    return key ? { ...mode, l: permissionT(key) } : mode
+  })
   // Stage the fast selection locally like model/effort/permission: an adopted
   // (persisted webchat) session has no synthetic provider entry for pgSetFast to
   // mutate, and an idle daemon session emits no status frame — without this the
@@ -4581,22 +4620,22 @@ export default function SessionDetailView() {
   // here: it rides the top-bar crumb as a pill next to the session name. Both form
   // factors read this one list (see detailPanel below).
   const headerFacts: { icon: string; label: string; value: string }[] = [
-    { icon: 'clock', label: 'Duration', value: displayDuration },
-    { icon: 'coins', label: 'Tokens', value: focusedSession?.tokens ?? '—' },
-    { icon: 'circle-dollar-sign', label: 'Cost', value: focusedSession?.cost ?? '—' },
-    { icon: 'wrench', label: 'Tool calls', value: String(displayToolCount) }
+    { icon: 'clock', label: t('duration'), value: displayDuration },
+    { icon: 'coins', label: t('tokens'), value: focusedSession?.tokens ?? '—' },
+    { icon: 'circle-dollar-sign', label: t('cost'), value: focusedSession?.cost ?? '—' },
+    { icon: 'wrench', label: t('toolCalls'), value: String(displayToolCount) }
   ]
-  if (focusedDaemonName) headerFacts.push({ icon: focusedDaemonIcon, label: 'Daemon', value: focusedDaemonName })
+  if (focusedDaemonName) headerFacts.push({ icon: focusedDaemonIcon, label: t('daemon'), value: focusedDaemonName })
   if (focusedAgentRuntime)
     headerFacts.push({
       icon: 'cpu',
-      label: 'Runtime',
+      label: t('runtime'),
       value: runtimeLabel(focusedAgentRuntime, focusedRuntimeMeta?.name)
     })
   if (focusedSession?.model ?? focusedAgent?.model)
     headerFacts.push({
       icon: 'box',
-      label: 'Model',
+      label: t('model'),
       value: modelLabel(focusedSession?.model ?? focusedAgent?.model ?? '')
     })
 
@@ -4617,7 +4656,7 @@ export default function SessionDetailView() {
         <>
           <div className="my-1 border-t border-(--border-subtle)" />
           <div className="px-3 pt-1 pb-[2px] font-mono text-[10px] font-semibold uppercase tracking-[.06em] text-(--text-tertiary)">
-            Token usage
+            {t('tokenUsage')}
           </div>
           {usageEntries.map((e) => (
             <div key={e.label} className="flex items-center gap-[9px] py-1 pr-3 pl-[34px]">
@@ -4819,14 +4858,14 @@ export default function SessionDetailView() {
                     aria-controls={requestsTooltipId}
                   >
                     <Icon name="shield-check" size={14} />
-                    Requests
+                    {t('requests')}
                   </button>
                   {/* dialog, not tooltip: Allow/Deny live inside, and a tooltip role
                 misrepresents interactive content to assistive tech. */}
                   <div
                     id={requestsTooltipId}
                     role="dialog"
-                    aria-label="Approval requests"
+                    aria-label={t('approvalRequests')}
                     className={`absolute top-full left-0 z-50 pt-[5px] transition-[opacity,visibility] ${
                       requestsPopover.open
                         ? 'pointer-events-auto visible opacity-100'
@@ -4842,8 +4881,8 @@ export default function SessionDetailView() {
               <button
                 className="ml-auto flex h-[19px] w-[19px] flex-none cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
                 onClick={onCopyLink}
-                title={copied ? 'Copied' : 'Copy a link to this session'}
-                aria-label="Copy a link to this session"
+                title={copied ? t('copied') : t('copyLink')}
+                aria-label={t('copyLink')}
               >
                 <Icon name={copied ? 'check' : 'link'} size={12} />
               </button>
@@ -4852,7 +4891,7 @@ export default function SessionDetailView() {
 
           {currentSessionDetail?.accessSyncDegraded && (
             <div className="mb-3 rounded-md border border-(--status-paused) bg-(--status-paused-soft) px-3 py-2 font-sans text-[12px] font-medium leading-normal text-(--text-secondary) max-desktop:mx-4 max-desktop:mt-3">
-              External access could not be verified. Related sessions remain hidden until access checks succeed.
+              {t('externalAccessWarning')}
             </div>
           )}
 
@@ -4862,8 +4901,7 @@ export default function SessionDetailView() {
               data-viewer-stale-link=""
               className="mb-3 rounded-md border border-(--status-paused) bg-(--status-paused-soft) px-3 py-2 font-sans text-[12px] font-medium leading-normal text-(--text-secondary) max-desktop:mx-4 max-desktop:mt-3"
             >
-              This link points at an agent that is not part of this conversation, so its file was not opened. Pick an
-              agent in the header and open the file from the Files tab.
+              {t('staleLinkWarning')}
             </div>
           )}
 
@@ -4904,7 +4942,7 @@ export default function SessionDetailView() {
               className="inline-flex h-[26px] flex-none items-center gap-1 rounded-md border-0 bg-transparent px-0 font-sans text-[12px] font-medium leading-normal text-(--text-secondary) active:bg-(--surface-active)"
             >
               <Icon name="info" size={14} />
-              Details
+              {t('details')}
             </button>
             {requestsPanel && (
               <button
@@ -4912,7 +4950,7 @@ export default function SessionDetailView() {
                 onClick={requestsPopover.toggleTap}
                 aria-expanded={requestsPopover.open}
                 aria-controls={`${requestsTooltipId}-mobile`}
-                aria-label="Approval requests"
+                aria-label={t('approvalRequests')}
                 className="inline-flex h-[26px] flex-none items-center gap-1 rounded-md border-0 bg-transparent px-0 font-sans text-[12px] font-medium leading-normal text-(--text-secondary) active:bg-(--surface-active)"
               >
                 <Icon name="shield-check" size={14} />
@@ -4926,7 +4964,7 @@ export default function SessionDetailView() {
                 <div
                   id={`${detailTooltipId}-mobile`}
                   role="dialog"
-                  aria-label="Session details"
+                  aria-label={t('sessionDetails')}
                   className="absolute top-full right-4 z-50 max-h-[60vh] w-[min(280px,calc(100vw-32px))] overflow-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) py-[5px] shadow-(--shadow-lg)"
                 >
                   {detailPanel}
@@ -4939,7 +4977,7 @@ export default function SessionDetailView() {
                 <div
                   id={`${requestsTooltipId}-mobile`}
                   role="dialog"
-                  aria-label="Approval requests"
+                  aria-label={t('approvalRequests')}
                   className="absolute top-full right-4 z-50 max-h-[60vh] w-[min(360px,calc(100vw-32px))] overflow-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-lg)"
                 >
                   {requestsPanel}
@@ -5023,36 +5061,32 @@ export default function SessionDetailView() {
               {conversationOffline > 0 && (
                 <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
                   <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
-                  <span>
-                    Some participants&apos; records are on an offline daemon — this view may be missing part of the
-                    conversation until it reconnects.
-                  </span>
+                  <span>{t('offlineParticipants')}</span>
                 </div>
               )}
               {wantTranscript && visibleMsgErr && !transcriptPurged && (
                 <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
                   <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
-                  <span>Couldn&apos;t load the transcript — the owning daemon may be offline.</span>
+                  <span>{t('transcriptLoadError')}</span>
                 </div>
               )}
               {transcriptPurged && (
                 <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
                   <Icon name="trash" size={15} color="var(--text-tertiary)" />
-                  <span>
-                    This transcript was deleted on {fmtDate(purgedAt)} by the session retention policy, together with
-                    any workspace created just for it. The details on this page are all that remain.
-                  </span>
+                  <span>{t('transcriptPurged', { date: fmtDate(purgedAt) })}</span>
                 </div>
               )}
               {transcriptPartiallyPurged && (
                 <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
                   <Icon name="trash" size={15} color="var(--text-tertiary)" />
                   <span>
-                    Part of this history is missing:{' '}
                     {memberCount > 1
-                      ? `${purgedMemberCount} of ${memberCount} participants had their transcript deleted`
-                      : 'this transcript was deleted'}{' '}
-                    on {fmtDate(purgedAt)} by the session retention policy.
+                      ? t('transcriptPartiallyPurged', {
+                          purged: purgedMemberCount,
+                          total: memberCount,
+                          date: fmtDate(purgedAt)
+                        })
+                      : t('transcriptDeleted', { date: fmtDate(purgedAt) })}
                   </span>
                 </div>
               )}
@@ -5060,7 +5094,7 @@ export default function SessionDetailView() {
                 <div className="card m-4 flex flex-col items-center gap-[6px] px-6 py-[34px] text-center desktop:m-0">
                   <Icon name="message-square-dashed" size={20} color="var(--text-tertiary)" />
                   <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-                    No messages in this session yet.
+                    {t('noMessages')}
                   </div>
                 </div>
               )}
@@ -5072,14 +5106,14 @@ export default function SessionDetailView() {
                     onClick={() => void loadEarlierConversation()}
                     disabled={pagingEarlier}
                   >
-                    {pagingEarlier ? 'Loading earlier activity…' : 'Load earlier activity'}
+                    {pagingEarlier ? t('loadingEarlier') : t('loadEarlier')}
                   </button>
                 </div>
               )}
               {visibleMsgPaging && (
                 <div className="flex items-center justify-center gap-2 pt-[10px] font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary) desktop:pt-1 desktop:pb-3">
                   <Spinner size={14} />
-                  Loading earlier activity…
+                  {t('loadingEarlier')}
                 </div>
               )}
               {/* TRANSCRIPT — one shared tree. Mobile adds the 16px gutter column around
@@ -5362,7 +5396,7 @@ export default function SessionDetailView() {
                                             size={13}
                                             color="var(--text-tertiary)"
                                           />
-                                          <span className="flex-none">{summary || 'Details'}</span>
+                                          <span className="flex-none">{summary || t('details')}</span>
                                           {liveLine && (
                                             // Keyed by step identity + content: a new step (or a new
                                             // first line within one) remounts the span, replaying the
@@ -5502,8 +5536,8 @@ export default function SessionDetailView() {
                         <button
                           type="button"
                           onClick={() => stickToBottom()}
-                          aria-label="Scroll to latest messages"
-                          title="Scroll to latest"
+                          aria-label={t('scrollLatest')}
+                          title={t('scrollLatest')}
                           className="absolute -top-3 left-1/2 z-10 flex h-8 w-8 -translate-x-1/2 -translate-y-full cursor-pointer items-center justify-center rounded-full border border-(--border-default) bg-(--surface-card) text-(--text-secondary) shadow-(--shadow-md) transition-colors hover:border-(--border-strong) hover:bg-(--surface-hover) hover:text-(--text-primary)"
                         >
                           <Icon name="chevron-down" size={16} />
@@ -5557,8 +5591,8 @@ export default function SessionDetailView() {
                               <button
                                 type="button"
                                 className="flex h-6 w-6 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100 hover:bg-(--surface-hover) hover:text-(--text-secondary)"
-                                aria-label="Cancel queued message"
-                                title="Cancel queued message"
+                                aria-label={t('cancelQueued')}
+                                title={t('cancelQueued')}
                                 onClick={() => pgCancelQueued(session.id, q.queueId)}
                               >
                                 <Icon name="x" size={13} />
@@ -5609,8 +5643,8 @@ export default function SessionDetailView() {
                             <button
                               type="button"
                               className="iconbtn absolute -right-2 -top-2 h-6 w-6 rounded-full shadow-(--shadow-xs)"
-                              title="Remove image"
-                              aria-label="Remove image"
+                              title={t('removeImage')}
+                              aria-label={t('removeImage')}
                               onClick={() => setPgImage(session.id)}
                             >
                               <Icon name="x" size={14} />
@@ -5644,10 +5678,10 @@ export default function SessionDetailView() {
                               <button
                                 type="button"
                                 className="flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-secondary)"
-                                aria-label="Attach a file"
+                                aria-label={t('attachFile')}
                                 aria-haspopup="menu"
                                 aria-expanded={attachMenuOpen}
-                                title="Attach a file"
+                                title={t('attachFile')}
                                 disabled={imagePreparing}
                                 onClick={() => {
                                   setComposerMenuOpen(null)
@@ -5677,7 +5711,7 @@ export default function SessionDetailView() {
                                       }}
                                     >
                                       <Icon name="image" size={16} color="var(--text-secondary)" />
-                                      Add photos
+                                      {t('addPhotos')}
                                     </button>
                                   </div>
                                 </>
@@ -5699,7 +5733,7 @@ export default function SessionDetailView() {
                               liveRoster.map((p) => {
                                 const rosterAgent = agents.find((a) => a.id === p.agentId)
                                 return (
-                                  <span key={p.agentId} className={COMPOSER_PILL_STATIC} title="Participant">
+                                  <span key={p.agentId} className={COMPOSER_PILL_STATIC} title={t('participant')}>
                                     {rosterAgent && (
                                       <span className="av h-[14px] w-[14px] flex-none rounded-xs">
                                         <AgentIconView
@@ -5719,11 +5753,11 @@ export default function SessionDetailView() {
                         line box, which left it a hair low. */}
                             {isPg && addAgentOptions.length > 0 && (
                               <ComposerMenu
-                                title="Add agents"
+                                title={t('addAgents')}
                                 value=""
                                 options={addAgentOptions}
                                 searchable
-                                searchPlaceholder="Search agents…"
+                                searchPlaceholder={t('searchAgents')}
                                 iconOnly
                                 open={composerMenuOpen === 'addAgent'}
                                 align="left"
@@ -5743,7 +5777,7 @@ export default function SessionDetailView() {
                             {!multiLive &&
                               (runtimeChangesEnabled && pgModelOptions.length > 0 ? (
                                 <ComposerMenu
-                                  title="Model"
+                                  title={t('model')}
                                   value={pgModel}
                                   options={pgModelOptions.map((model) => {
                                     const description = modelTooltip(owningDaemon, agentRuntime, model)
@@ -5770,8 +5804,8 @@ export default function SessionDetailView() {
                                           type="button"
                                           role="switch"
                                           aria-checked={pgFastMode}
-                                          aria-label="Fast mode"
-                                          title="Fast mode trades depth for latency"
+                                          aria-label={t('fastMode')}
+                                          title={t('fastModeHint')}
                                           className={`relative h-[15px] w-[26px] flex-none cursor-pointer rounded-full border-0 p-0 transition-colors ${
                                             pgFastMode ? 'bg-(--brand)' : 'bg-(--border-strong)'
                                           }`}
@@ -5788,10 +5822,10 @@ export default function SessionDetailView() {
                                           />
                                         </button>
                                         <span className="flex-1 font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
-                                          Fast mode
+                                          {t('fastMode')}
                                         </span>
                                         <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                                          lower latency
+                                          {t('lowerLatency')}
                                         </span>
                                       </div>
                                     ) : undefined
@@ -5818,7 +5852,7 @@ export default function SessionDetailView() {
                                 />
                               ) : (
                                 pgModel && (
-                                  <span className={COMPOSER_PILL_STATIC} title="Model">
+                                  <span className={COMPOSER_PILL_STATIC} title={t('model')}>
                                     <span className="inline-flex h-[14px] w-[14px] flex-none items-center justify-center">
                                       <ModelMark model={pgModel} fallbackRuntime={agentRuntime} />
                                     </span>
@@ -5830,7 +5864,7 @@ export default function SessionDetailView() {
                             {!multiLive &&
                               (runtimeChangesEnabled && pgEffortOptions.length > 0 ? (
                                 <ComposerMenu
-                                  title="Effort"
+                                  title={t('effort')}
                                   value={pgEffort}
                                   options={pgEffortOptions.map((effort) => ({
                                     value: effort.value,
@@ -5852,7 +5886,7 @@ export default function SessionDetailView() {
                                 />
                               ) : (
                                 pgEffort && (
-                                  <span className={COMPOSER_CHIP_STATIC} title="Effort">
+                                  <span className={COMPOSER_CHIP_STATIC} title={t('effort')}>
                                     <span className="truncate">
                                       {pgEffortChoices.find((choice) => choice.value === pgEffort)?.label ??
                                         effortLabel(agentRuntime, pgEffort)}
@@ -5861,11 +5895,11 @@ export default function SessionDetailView() {
                                 )
                               ))}
                             {!multiLive &&
-                              (runtimeChangesEnabled && pgPermissionPresets.length > 0 ? (
+                              (runtimeChangesEnabled && localizedPermissionPresets.length > 0 ? (
                                 <ComposerMenu
-                                  title="Permission"
+                                  title={t('permission')}
                                   value={pgPermissionPreset}
-                                  options={pgPermissionPresets.map((mode) => ({
+                                  options={localizedPermissionPresets.map((mode) => ({
                                     value: mode.v,
                                     label: mode.l,
                                     description: mode.description
@@ -5889,9 +5923,14 @@ export default function SessionDetailView() {
                                 />
                               ) : (
                                 pgPermissionPreset && (
-                                  <span className={COMPOSER_CHIP_STATIC} title="Permission">
+                                  <span className={COMPOSER_CHIP_STATIC} title={t('permission')}>
                                     <span className="truncate">
-                                      {agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionPreset)}
+                                      {(() => {
+                                        const key = permissionModeLabelKey(pgPermissionPreset)
+                                        return key
+                                          ? permissionT(key)
+                                          : agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionPreset)
+                                      })()}
                                     </span>
                                   </span>
                                 )
@@ -5945,7 +5984,7 @@ export default function SessionDetailView() {
           if (key === 'tasks') setTasksRefreshTick((tick) => tick + 1)
         }}
         overlayKey={`${session.id}:${viewerPath ?? ''}`}
-        label="Panels"
+        label={t('panels')}
       >
         {/* Both panels stay mounted; only the active one draws. Sessions owns the verdict that sets its own tab status, and Files owns the tree, the filter and the scroll position a tab switch must not spend. */}
         <DockPanel active={dockTabKey === 'sessions'}>

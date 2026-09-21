@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { useTranslations } from 'next-intl'
 import LarkFeishuSwitcher, { type LarkFeishuTarget } from '@/components/LarkFeishuSwitcher'
 import { SocialLoginMark } from '@/components/marks'
 import type { SocialLoginProvider, SocialLoginTarget } from '@/lib/social-login-providers'
@@ -11,12 +12,14 @@ const isLarkOrFeishu = (
   provider.target === 'lark' || provider.target === 'feishu'
 
 function ProviderContent({ provider }: { provider: SocialLoginProvider }) {
+  const t = useTranslations('Auth.login')
+
   return (
     <span className="grid w-[220px] grid-cols-[18px_minmax(0,1fr)] items-center gap-2.5 text-left">
       <span className="flex h-[18px] w-[18px] items-center justify-center">
         <SocialLoginMark target={provider.target} size={18} />
       </span>
-      <span className="whitespace-nowrap">Continue with {provider.name}</span>
+      <span className="whitespace-nowrap">{t('continueWith', { provider: provider.name })}</span>
     </span>
   )
 }
@@ -30,6 +33,7 @@ export default function SocialLoginButtons({
   onContinue: (target: SocialLoginTarget) => void
   darkTarget?: SocialLoginTarget
 }) {
+  const t = useTranslations('Auth.login')
   const regionalProviders = providers.filter(isLarkOrFeishu)
   const firstRegionalProvider = regionalProviders[0]
   const [selectedRegionalTarget, setSelectedRegionalTarget] = useState<LarkFeishuTarget>(
@@ -46,7 +50,7 @@ export default function SocialLoginButtons({
         <div key="lark-feishu" className="sso relative">
           <button
             type="button"
-            aria-label={`Continue with ${selectedRegionalProvider.name}`}
+            aria-label={t('continueWith', { provider: selectedRegionalProvider.name })}
             className="absolute inset-0 flex cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 text-inherit [font:inherit] focus-visible:outline-2 focus-visible:outline-offset-[-3px] focus-visible:outline-(--brand)"
             onClick={() => onContinue(selectedRegionalProvider.target)}
           />
@@ -57,7 +61,7 @@ export default function SocialLoginButtons({
             <span className="ml-2.5">
               <LarkFeishuSwitcher
                 value={selectedRegionalProvider.target}
-                prefix="Continue with "
+                prefix={t('continueWithPrefix')}
                 variant="login"
                 onSwitch={setSelectedRegionalTarget}
               />

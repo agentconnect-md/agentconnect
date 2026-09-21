@@ -1,5 +1,6 @@
 'use client'
 
+import { useTranslations } from 'next-intl'
 import { CodeHostReviewSettings, ReviewNotice } from '@/components/console/CodeHostReviewSettings'
 import type { CodeHostReviewSettingsValue, HookReportingMode, HookReviewPolicy } from '@/lib/code-host-review-settings'
 
@@ -20,30 +21,27 @@ export function GitlabReviewSettings({
   layout?: 'disclosure' | 'format'
   defaultExpanded?: boolean
 }) {
+  const t = useTranslations('Integrations.dialog.codeHostReview.gitlab')
   const botMissing = !projectBotReady && (value.reviewPolicy !== 'off' || value.reportingMode === 'check')
   return (
     <CodeHostReviewSettings
-      title="MR review"
+      title={t('title')}
       value={value}
       onReviewPolicyChange={onReviewPolicyChange}
       onReportingModeChange={onReportingModeChange}
       layout={layout}
       defaultExpanded={defaultExpanded}
-      statusCheckLabel="Run note"
+      statusCheckLabel={t('statusCheckLabel')}
       help={{
-        inlineComments: 'Submit formal COMMENT reviews with optional comments on specific changed lines.',
-        requestChanges:
-          'Allow formal REQUEST_CHANGES reviews. GitLab records them only while the project bot is a current reviewer — otherwise the finding is recorded as a COMMENT that does not pass.',
-        approve:
-          'Allow the project bot to record an approval. That is a separate act from a review, and project rules may still refuse it.',
-        statusCheck:
-          'Post one status note on the merge request for queued, running, and final results. It does not block merging.'
+        inlineComments: t('helpInlineComments'),
+        requestChanges: t('helpRequestChanges'),
+        approve: t('helpApprove'),
+        statusCheck: t('helpStatusCheck')
       }}
       notices={
         botMissing ? (
           <ReviewNotice icon="triangle-alert" tone="error">
-            This project is still being set up. Reviews and run notes are posted by the agent’s own bot account, so
-            finish connecting the project first.
+            {t('botMissing')}
           </ReviewNotice>
         ) : undefined
       }

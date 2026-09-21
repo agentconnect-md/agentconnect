@@ -11,6 +11,7 @@ import {
   type ReactNode
 } from 'react'
 import useSWR from 'swr'
+import { useTranslations } from 'next-intl'
 import { isCodeHostProvider, type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import LarkFeishuSwitcher, { type LarkFeishuTarget } from '@/components/LarkFeishuSwitcher'
 import { AgentIconView, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
@@ -452,6 +453,7 @@ export default function AddIntegrationModal({
   onFailed?: (message: string) => void
   onClose: () => void
 }) {
+  const t = useTranslations('Integrations.dialog')
   const {
     createIntegration,
     bots,
@@ -1402,16 +1404,14 @@ export default function AddIntegrationModal({
           <Icon name="plug" size={17} color="var(--brand)" />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="font-sans text-[16px] font-semibold leading-normal">Add integration</div>
+          <div className="font-sans text-[16px] font-semibold leading-normal">{t('addIntegration')}</div>
           <div className="mt-[1px] truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
             {agentChoices ? (
               // The Agent field below names the target — repeating it here would
               // read as fixed, which is the one thing this arm is not.
-              'Connect a chat platform, webhook or repository to one of your agents'
+              t('connectDescription')
             ) : (
-              <>
-                for <span className="mono">{agentLabel(agent)}</span> — this agent answers on the workspace
-              </>
+              <>{t('forAgentWorkspace', { agent: agentLabel(agent) })}</>
             )}
           </div>
         </div>
@@ -1422,14 +1422,14 @@ export default function AddIntegrationModal({
       <div className="modalbody">
         {agentChoices && onPickAgent && (
           <div className="mb-[18px]">
-            <div className="fldlbl mb-2">Agent</div>
+            <div className="fldlbl mb-2">{t('agent')}</div>
             <AgentPicker agents={agentChoices} value={agent.id} onPick={onPickAgent} />
             <div className="mt-[7px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-              <span className="mono">{agentLabel(agent)}</span> handles messages from this integration.
+              {t('agentHandles', { agent: agentLabel(agent) })}
             </div>
           </div>
         )}
-        <div className="fldlbl mb-2">Platform</div>
+        <div className="fldlbl mb-2">{t('platform')}</div>
         {/* One column per offered tile — complete literal strings, so every tile shares
             the one row (the flagged GitLab tile widens it rather than wrapping below). */}
         <div
@@ -1453,7 +1453,7 @@ export default function AddIntegrationModal({
                   available ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
                 }`}
                 aria-disabled={!available}
-                title={available ? undefined : 'Not supported by this daemon'}
+                title={available ? undefined : t('notSupportedByDaemon')}
                 onClick={available ? () => pickPlatform(candidate.key) : undefined}
               >
                 {candidate.key === 'github' ? (
@@ -1487,7 +1487,7 @@ export default function AddIntegrationModal({
         {platform === 'webhook' && !createdHook && (
           <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
             <div className="fld">
-              <span className="fldlbl">Name</span>
+              <span className="fldlbl">{t('name')}</span>
               <input
                 className="inp mn"
                 placeholder={`${agent.name}-webhook`}
@@ -1496,19 +1496,19 @@ export default function AddIntegrationModal({
               />
             </div>
             <div className="fld mt-3">
-              <span className="fldlbl">Session continuity</span>
+              <span className="fldlbl">{t('sessionContinuity')}</span>
               <select
                 className="inp mn"
                 value={hookSessionMode}
                 onChange={(e) => setHookSessionMode(e.target.value as 'perDelivery' | 'perSubject' | 'shared')}
               >
-                <option value="perDelivery">New session per delivery</option>
-                <option value="perSubject">One session per subject (X-AC-Session-Key header)</option>
-                <option value="shared">One shared session for the whole hook</option>
+                <option value="perDelivery">{t('newSessionPerDelivery')}</option>
+                <option value="perSubject">{t('sessionPerSubject')}</option>
+                <option value="shared">{t('sharedSession')}</option>
               </select>
               {hookSessionMode === 'perSubject' && (
                 <div className="mt-1.5 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                  Deliveries with the same <span className="mono">X-AC-Session-Key</span> header share one session.
+                  {t('sameSessionKeyPrefix')} <span className="mono">X-AC-Session-Key</span> {t('sameSessionKeySuffix')}
                 </div>
               )}
             </div>
@@ -1520,21 +1520,20 @@ export default function AddIntegrationModal({
                 onChange={(e) => setHookHmac(e.target.checked)}
               />
               <span className="font-sans text-[12px] font-medium leading-[1.5] text-(--text-secondary)">
-                Require HMAC signature
+                {t('requireHmac')}
               </span>
             </label>
             <div className="mt-3 flex items-start gap-2 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
               <Icon name="info" size={13} className="mt-[1px] flex-none" />
               <span>
-                POST JSON with a <span className="mono">message</span> field. Keep the URL private — its token is the
-                credential.
+                {t('postJsonPrefix')} <span className="mono">message</span> {t('postJsonSuffix')}
               </span>
             </div>
           </div>
         )}
         {platform === 'webhook' && createdHook && (
           <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
-            <div className="fldlbl mb-2">Inbound endpoint</div>
+            <div className="fldlbl mb-2">{t('inboundEndpoint')}</div>
             <div className="flex items-center gap-2 rounded-[9px] border border-(--border-default) bg-(--surface-card) py-[6px] pr-[6px] pl-3">
               <span className="mono flex-none rounded bg-(--surface-active) px-[7px] py-[2px] text-[11px] font-semibold text-(--text-secondary)">
                 POST
@@ -1542,27 +1541,26 @@ export default function AddIntegrationModal({
               <span className="mono min-w-0 flex-1 truncate text-[12.5px]">{createdHook.url ?? '—'}</span>
               <button
                 className="iconbtn flex-none"
-                title="Copy URL"
+                title={t('copyUrl')}
                 onClick={() => createdHook.url && void copyHookField('url', createdHook.url)}
               >
                 <Icon name={copiedHook === 'url' ? 'check' : 'copy'} size={14} />
               </button>
             </div>
             <div className="mt-2 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-              POST JSON with a <span className="mono">message</span> field. Keep the URL private — its token is the
-              credential.
+              {t('postJsonPrefix')} <span className="mono">message</span> {t('postJsonSuffix')}
             </div>
             {createdHook.hmacSecret && (
               <div className="mt-[14px] border-t border-dashed border-(--border-default) pt-[13px]">
                 <div className="mb-2 flex items-center gap-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
                   <Icon name="shield-check" size={14} color="var(--brand)" className="flex-none" />
-                  Signing secret — sign every request
+                  {t('signingSecret')}
                 </div>
                 <div className="flex items-center gap-2 rounded-[9px] border border-(--border-default) bg-(--surface-card) py-[6px] pr-[6px] pl-3">
                   <span className="mono min-w-0 flex-1 truncate text-[12.5px]">{createdHook.hmacSecret}</span>
                   <button
                     className="iconbtn flex-none"
-                    title="Copy secret"
+                    title={t('copySecret')}
                     onClick={() => void copyHookField('secret', createdHook.hmacSecret!)}
                   >
                     <Icon name={copiedHook === 'secret' ? 'check' : 'copy'} size={14} />
@@ -1743,7 +1741,7 @@ export default function AddIntegrationModal({
                   const typedAuthorized = !!typedLc && authByName.has(typedLc)
                   return (
                     <div className="fld relative mb-[18px] min-w-0">
-                      <span className="fldlbl">Repository</span>
+                      <span className="fldlbl">{t('repository')}</span>
                       <div
                         className="inp min-w-0 cursor-pointer gap-2"
                         onClick={() => {
@@ -1773,7 +1771,7 @@ export default function AddIntegrationModal({
                                 <GithubMark color="var(--text-secondary)" />
                               </span>
                               <span className="truncate text-(--text-tertiary)">
-                                {loading ? 'Loading repositories…' : 'Pick a repository'}
+                                {loading ? t('loadingRepositories') : t('pickRepository')}
                               </span>
                             </>
                           )}
@@ -2270,7 +2268,7 @@ export default function AddIntegrationModal({
         )}
         {wizard && !identityHidden && (
           <div className="mb-2 flex items-center justify-between gap-3">
-            <div className="fldlbl">Bot identity</div>
+            <div className="fldlbl">{t('botIdentity')}</div>
             {/* The fragment's way back to its own simpler pane (Slack's built-in
                 app). Presentation is the chassis's; the action is the module's. */}
             {identityView?.actionLabel && (
@@ -2295,13 +2293,13 @@ export default function AddIntegrationModal({
                 {
                   key: 'create' as const,
                   icon: 'key-round',
-                  title: 'Create a new bot',
+                  title: t('createNewBot'),
                   desc: wizard.identityCards(region).create
                 },
                 {
                   key: 'existing' as const,
                   icon: 'bot',
-                  title: 'Use an existing bot',
+                  title: t('useExistingBot'),
                   desc: wizard.identityCards(region).existing
                 }
               ] as const
@@ -2340,7 +2338,7 @@ export default function AddIntegrationModal({
           <div className="mb-4 overflow-hidden rounded-[9px] border border-(--border-subtle)">
             {freeBots.length === 0 && (
               <div className="px-[14px] py-[18px] text-center font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                No free bots — create a new one.
+                {t('noFreeBots')}
               </div>
             )}
             {freeBots.map((b) => {
@@ -2363,16 +2361,18 @@ export default function AddIntegrationModal({
                       <span className="mono text-[13px] font-semibold">{b.name}</span>
                       {b.freedFromAgent && (
                         <span className="badge bg-(--surface-active) text-(--text-tertiary)">
-                          freed from {b.freedFromAgent}
+                          {t('freedFrom', { agent: b.freedFromAgent })}
                         </span>
                       )}
                       {b.prebuilt && (
-                        <span className="badge bg-(--surface-active) text-(--text-tertiary)">builtin</span>
+                        <span className="badge bg-(--surface-active) text-(--text-tertiary)">{t('builtin')}</span>
                       )}
                     </div>
                     <div className="mt-[2px] font-sans text-[12px] font-normal leading-[1.4] text-(--text-tertiary)">
-                      created by {b.createdBy ? creatorLabel(b.createdBy, me) : b.prebuilt ? 'AgentConnect' : '—'} ·{' '}
-                      {fmtAgo(b.lastUsedAt)}
+                      {t('createdBy', {
+                        creator: b.createdBy ? creatorLabel(b.createdBy, me) : b.prebuilt ? 'AgentConnect' : '—'
+                      })}{' '}
+                      · {fmtAgo(b.lastUsedAt)}
                     </div>
                   </div>
                   <span
@@ -2408,8 +2408,8 @@ export default function AddIntegrationModal({
               onChange={(e) => setShared(e.target.checked)}
             />
             <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-2)">
-              <span className="font-medium text-(--text-1)">Shared bot</span> — let multiple agents use this one bot.
-              {mode === 'existing' && selectedBot?.shareable ? ' This bot is already shared.' : ''}
+              <span className="font-medium text-(--text-1)">{t('sharedBot')}</span> — {t('sharedBotDescription')}
+              {mode === 'existing' && selectedBot?.shareable ? ` ${t('alreadyShared')}` : ''}
             </span>
           </label>
         )}
@@ -2423,7 +2423,7 @@ export default function AddIntegrationModal({
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         {/* A fragment whose commit is an inline button of its own (Slack's
             built-in pane, the Feishu deeplink) publishes the primary away. */}
@@ -2618,6 +2618,7 @@ export function AddIntegrationForOrgModal({
   onFailed?: (message: string) => void
   onClose: () => void
 }) {
+  const t = useTranslations('Integrations.dialog')
   const { agents } = useConsoleData()
   // Creating an integration writes the agent's spec, so only offer the ones this
   // viewer may edit — the CP would 403 the rest.
@@ -2633,7 +2634,7 @@ export function AddIntegrationForOrgModal({
             <Icon name="plug" size={17} color="var(--brand)" />
           </span>
           <div className="min-w-0 flex-1">
-            <div className="font-sans text-[16px] font-semibold leading-normal">Add integration</div>
+            <div className="font-sans text-[16px] font-semibold leading-normal">{t('addIntegration')}</div>
           </div>
           <button className="iconbtn" onClick={onClose}>
             <Icon name="x" size={16} />
@@ -2641,12 +2642,12 @@ export function AddIntegrationForOrgModal({
         </div>
         <div className="modalbody">
           <div className="rounded-[9px] border border-(--border-subtle) bg-(--surface-app) px-4 py-5 text-center font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-tertiary)">
-            Create an agent first — integrations are added from the agent&rsquo;s page.
+            {t('createAgentFirst')}
           </div>
         </div>
         <div className="modalfoot">
           <Button variant="secondary" onClick={onClose}>
-            Close
+            {t('close')}
           </Button>
         </div>
       </>

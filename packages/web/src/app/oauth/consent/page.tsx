@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { isAuthConfigured, getUser, login } from '@/lib/auth'
 import { getOAuthConsentContext, postOAuthConsent, type OAuthConsentContext } from '@/lib/api'
 import { Spinner } from '@/components/marks'
@@ -21,12 +22,8 @@ interface AuthzParams {
   resource?: string
 }
 
-const SCOPE_LABEL: Record<string, string> = {
-  'mcp:read': 'View your agents, daemons, schedules, sessions, and usage',
-  'mcp:write': 'Create and modify your agents, schedules, and integrations'
-}
-
 export default function OAuthConsentPage() {
+  const t = useTranslations('Auth.oauth')
   const [params, setParams] = useState<AuthzParams | null>(null)
   const [ctx, setCtx] = useState<OAuthConsentContext | null>(null)
   const [orgId, setOrgId] = useState('')
@@ -38,7 +35,7 @@ export default function OAuthConsentPage() {
     const clientId = q.get('client_id') ?? ''
     const redirectUri = q.get('redirect_uri') ?? ''
     if (!clientId || !redirectUri) {
-      setError('Invalid authorization request — missing client or redirect.')
+      setError(t('invalidRequest'))
       return
     }
     const p: AuthzParams = {
@@ -68,15 +65,15 @@ export default function OAuthConsentPage() {
         setCtx(c)
         setOrgId(c.organizations[0]?.id ?? '')
       } catch (e) {
-        setError(e instanceof Error ? e.message : 'Failed to load the authorization request.')
+        setError(e instanceof Error ? e.message : t('loadError'))
       }
     })()
-  }, [])
+  }, [t])
 
   async function decide(decision: 'allow' | 'deny') {
     if (!params) return
     if (decision === 'allow' && !orgId) {
-      setError('Select an organization to continue.')
+      setError(t('selectOrganization'))
       return
     }
     setSubmitting(decision)
@@ -85,12 +82,16 @@ export default function OAuthConsentPage() {
       const { redirectUrl } = await postOAuthConsent({ ...params, orgId, decision })
       window.location.href = redirectUrl
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Something went wrong.')
+      setError(e instanceof Error ? e.message : t('genericError'))
       setSubmitting(null)
     }
   }
 
-  const appName = ctx?.clientName || 'An application'
+  const appName = ctx?.clientName || t('application')
+  const scopeLabels: Record<string, string> = {
+    'mcp:read': t('scopes.read'),
+    'mcp:write': t('scopes.write')
+  }
 
   return (
     <div className="authpage">
@@ -100,26 +101,25 @@ export default function OAuthConsentPage() {
         ) : !ctx ? (
           <div className="flex flex-col items-center gap-[16px] py-[24px] text-[14px] text-(--text-secondary)">
             <Spinner size={40} />
-            Preparing authorization…
+            {t('preparing')}
           </div>
         ) : (
           <>
             <div className="flex flex-col gap-[6px]">
-              <h1 className="text-[18px] font-semibold leading-tight text-(--text-primary)">Authorize {appName}</h1>
-              <p className="text-[13px] leading-normal text-(--text-secondary)">
-                {appName} wants to access AgentConnect on your behalf. It will act with your permissions in the
-                organization you choose.
-              </p>
+              <h1 className="text-[18px] font-semibold leading-tight text-(--text-primary)">
+                {t('title', { appName })}
+              </h1>
+              <p className="text-[13px] leading-normal text-(--text-secondary)">{t('description', { appName })}</p>
             </div>
 
             <div className="flex flex-col gap-[8px]">
               <span className="text-[12px] font-medium uppercase tracking-wide text-(--text-tertiary)">
-                It will be able to
+                {t('permissions')}
               </span>
               <ul className="flex flex-col gap-[6px]">
                 {ctx.scopes.map((s) => (
                   <li key={s} className="text-[13px] leading-normal text-(--text-primary)">
-                    • {SCOPE_LABEL[s] ?? s}
+                    • {scopeLabels[s] ?? s}
                   </li>
                 ))}
               </ul>
@@ -127,7 +127,7 @@ export default function OAuthConsentPage() {
 
             <label className="flex flex-col gap-[6px]">
               <span className="text-[12px] font-medium uppercase tracking-wide text-(--text-tertiary)">
-                Organization
+                {t('organization')}
               </span>
               <select
                 value={orgId}
@@ -135,7 +135,7 @@ export default function OAuthConsentPage() {
                 disabled={submitting !== null}
                 className="rounded-[8px] border border-(--border-default) bg-(--surface-card) px-[10px] py-[8px] text-[14px] text-(--text-primary)"
               >
-                {ctx.organizations.length === 0 && <option value="">No organizations</option>}
+                {ctx.organizations.length === 0 && <option value="">{t('noOrganizations')}</option>}
                 {ctx.organizations.map((o) => (
                   <option key={o.id} value={o.id}>
                     {o.name || o.slug} ({o.role})
@@ -153,7 +153,7 @@ export default function OAuthConsentPage() {
                 disabled={submitting !== null}
                 className="flex-1 rounded-[8px] border border-(--border-default) px-[14px] py-[9px] text-[14px] font-medium text-(--text-primary) disabled:opacity-50"
               >
-                Deny
+                {t('deny')}
               </button>
               <button
                 type="button"
@@ -161,7 +161,7 @@ export default function OAuthConsentPage() {
                 disabled={submitting !== null || ctx.organizations.length === 0}
                 className="flex-1 rounded-[8px] bg-(--brand) px-[14px] py-[9px] text-[14px] font-medium text-white disabled:opacity-50"
               >
-                {submitting === 'allow' ? 'Authorizing…' : 'Authorize'}
+                {submitting === 'allow' ? t('authorizing') : t('authorize')}
               </button>
             </div>
           </>

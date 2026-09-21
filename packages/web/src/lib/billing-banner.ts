@@ -13,12 +13,16 @@ export function ledgerHistory(page: { items: unknown[] } | undefined): boolean |
   return page ? page.items.length > 0 : null
 }
 
+/** The banner's copy as message keys under `Billing.banners`, not English text — the
+ *  caller resolves them through `t`, so this decision stays testable without one. */
 export type BalanceBanner = {
   tone: 'brand' | 'red' | 'amber' | 'blue'
   icon: string
-  title: string
-  text: string
-  cta?: string
+  titleKey: string
+  titleValues?: Record<string, unknown>
+  textKey: string
+  textValues?: Record<string, unknown>
+  ctaKey?: string
 }
 
 export function balanceBanner(
@@ -39,9 +43,9 @@ export function balanceBanner(
     return {
       tone: 'brand',
       icon: 'sparkles',
-      title: 'Add credits to start serving traffic',
-      text: 'AgentConnect is prepaid: you buy credits, and usage is deducted at the provider’s actual cost. Until the balance is above zero, agents in this org won’t take sessions.',
-      cta: 'Add credits'
+      titleKey: 'neverFundedTitle',
+      textKey: 'neverFundedText',
+      ctaKey: 'addCredits'
     }
   }
   // Spent out, or history unknown.
@@ -49,9 +53,9 @@ export function balanceBanner(
     return {
       tone: 'red',
       icon: 'circle-slash',
-      title: 'Agent traffic is paused — balance is empty',
-      text: 'LLM requests from this org are being rejected at the gateway. Adding credits resumes service within a minute.',
-      cta: 'Add credits'
+      titleKey: 'spentOutTitle',
+      textKey: 'spentOutText',
+      ctaKey: 'addCredits'
     }
   }
   // Hoisted to a plain number so nothing below needs narrowing, and `> 0` covers absent, null,
@@ -64,9 +68,11 @@ export function balanceBanner(
     return {
       tone: 'amber',
       icon: 'triangle-alert',
-      title: `Low balance — ${fmtMicroUsd(acct.balanceMicro)} remaining`,
-      text: `This balance is below the ${fmtMicroUsd(threshold)} alert threshold. Agents keep serving until it reaches zero.`,
-      cta: 'Add credits'
+      titleKey: 'lowBalanceTitle',
+      titleValues: { balance: fmtMicroUsd(acct.balanceMicro) },
+      textKey: 'lowBalanceText',
+      textValues: { threshold: fmtMicroUsd(threshold) },
+      ctaKey: 'addCredits'
     }
   }
   // The design's blue slot is "we treat it as unconfirmed until we are told otherwise", which is
@@ -76,8 +82,8 @@ export function balanceBanner(
     return {
       tone: 'blue',
       icon: 'clock',
-      title: 'Confirming access status',
-      text: 'A change to this org’s access is still unconfirmed at the gateway, so we are not claiming either way yet. This resolves on its own.'
+      titleKey: 'unconfirmedTitle',
+      textKey: 'unconfirmedText'
     }
   }
   // Active, no usage yet, and a service too old to report `state` all land here.

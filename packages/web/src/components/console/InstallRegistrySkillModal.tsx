@@ -14,6 +14,7 @@
 // persists anything — the create at the end is the only write.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
 import { searchSkillRegistry, type SkillRegistryHitDto, type SkillSourceDto } from '@/lib/api'
@@ -23,11 +24,13 @@ import { Button, Icon } from '@/components/ui'
 const DEBOUNCE_MS = 300
 const MIN_QUERY = 2
 
-function fmtInstalls(n: number | null): string | null {
+type InstallRegistryTranslator = ReturnType<typeof useTranslations<'Tools.skills.registry'>>
+
+function fmtInstalls(n: number | null, t: InstallRegistryTranslator): string | null {
   if (!n || n <= 0) return null
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M installs`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1).replace(/\.0$/, '')}K installs`
-  return `${n} install${n === 1 ? '' : 's'}`
+  if (n >= 1_000_000) return t('installsMillions', { value: (n / 1_000_000).toFixed(1).replace(/\.0$/, '') })
+  if (n >= 1_000) return t('installsThousands', { value: (n / 1_000).toFixed(1).replace(/\.0$/, '') })
+  return t('installsCount', { count: n })
 }
 
 /** A library name for a registry hit: the skill's own name, coerced to the
@@ -66,6 +69,7 @@ export function InstallRegistrySkillModal({
   /** Why a submitted install did not land — a native card reports a refusal as well as a save. */
   onFailed?: (message: string) => void
 }) {
+  const t = useTranslations('Tools.skills.registry')
   const { createSkillSource } = useConsoleData()
   const { me } = useProfile()
   const [q, setQ] = useState(initialQuery ?? '')
@@ -158,9 +162,9 @@ export function InstallRegistrySkillModal({
           <Icon name="search" size={16} color="var(--brand)" />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="font-sans text-[16px] font-semibold leading-normal">Install from skills.sh</div>
+          <div className="font-sans text-[16px] font-semibold leading-normal">{t('title')}</div>
           <div className="mt-[1px] truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-            search the public registry, then install by name
+            {t('subtitle')}
           </div>
         </div>
         <button className="iconbtn" onClick={onClose}>
@@ -187,21 +191,23 @@ export function InstallRegistrySkillModal({
                 target="_blank"
                 rel="noreferrer noopener"
               >
-                View
+                {t('view')}
               </a>
               <button className="lnk flex-none text-[11.5px]" onClick={() => setPicked(null)}>
-                Change
+                {t('change')}
               </button>
             </div>
             <div className="fld">
-              <span className="fldlbl">Name in your library</span>
+              <span className="fldlbl">{t('nameInLibrary')}</span>
               <input className="inp mn" value={name} maxLength={64} onChange={(e) => setName(e.target.value)} />
               <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                Agents enable skills by this name. Installs{' '}
-                <span className="mono">
-                  {picked.source} -s {picked.name}
-                </span>{' '}
-                on the daemon.
+                {t.rich('installHint', {
+                  command: () => (
+                    <span className="mono">
+                      {picked.source} -s {picked.name}
+                    </span>
+                  )
+                })}
               </span>
             </div>
             <VisibilityField value={sharing} onChange={setSharing} />
@@ -209,10 +215,10 @@ export function InstallRegistrySkillModal({
         ) : (
           <>
             <div className="fld">
-              <span className="fldlbl">Search skills</span>
+              <span className="fldlbl">{t('searchLabel')}</span>
               <input
                 className="inp"
-                placeholder="pdf, code review, changelog…"
+                placeholder={t('searchPlaceholder')}
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
                 autoFocus
@@ -221,29 +227,26 @@ export function InstallRegistrySkillModal({
             <div className="mt-3 flex flex-col gap-[6px]">
               {q.trim().length < MIN_QUERY ? (
                 <div className="px-1 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                  Type at least {MIN_QUERY} characters.
+                  {t('minChars', { min: MIN_QUERY })}
                 </div>
               ) : !shown ? (
                 <div className="flex items-center gap-2 px-1 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                   <Icon name="loader" size={14} className="animate-spin" />
-                  Searching…
+                  {t('searching')}
                 </div>
               ) : !shown.reachable ? (
                 <div className="flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
                   <Icon name="info" size={14} className="mt-[1px] flex-none" />
-                  <span>
-                    Couldn&rsquo;t reach the skills.sh index. Try again, or import the repository directly with
-                    &ldquo;Import from GitHub&rdquo;.
-                  </span>
+                  <span>{t('unreachable')}</span>
                 </div>
               ) : shown.skills.length === 0 ? (
                 <div className="px-1 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                  No skills match &ldquo;{q.trim()}&rdquo;.
+                  {t('noMatches', { query: q.trim() })}
                 </div>
               ) : (
                 shown.skills.map((hit) => {
                   const covered = coveredBy(hit)
-                  const installs = fmtInstalls(hit.installs)
+                  const installs = fmtInstalls(hit.installs, t)
                   return (
                     <button
                       key={hit.id}
@@ -259,11 +262,13 @@ export function InstallRegistrySkillModal({
                           {hit.name}
                         </span>
                         <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                          {covered ? `already in your library as ${covered.name}` : hit.source}
+                          {covered ? t('alreadyInLibrary', { name: covered.name }) : hit.source}
                         </span>
                       </span>
                       {covered ? (
-                        <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">added</span>
+                        <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
+                          {t('added')}
+                        </span>
                       ) : (
                         installs && (
                           <span className="mono flex-none text-[10.5px] text-(--text-tertiary)">{installs}</span>
@@ -281,10 +286,10 @@ export function InstallRegistrySkillModal({
 
       <div className="modalfoot">
         <span className="flex-1 truncate font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-          Skills run inside your agents — install only sources you trust.
+          {t('trustHint')}
         </span>
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button
           variant="primary"
@@ -292,7 +297,7 @@ export function InstallRegistrySkillModal({
           className={valid && !busy ? undefined : 'pointer-events-none opacity-50'}
         >
           <Icon name="download" size={14} />
-          {busy ? 'Installing…' : 'Install'}
+          {busy ? t('installing') : t('install')}
         </Button>
       </div>
     </>

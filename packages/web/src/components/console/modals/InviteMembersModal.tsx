@@ -6,25 +6,9 @@
 // time they sign in with SSO; an existing user gains access immediately.
 
 import { useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { addMember, ApiError, type MemberRole } from '@/lib/api'
-
-const ROLE_TILES: { role: MemberRole; icon: string; title: string; desc: string; recommended?: boolean }[] = [
-  {
-    role: 'owner',
-    icon: 'shield',
-    title: 'Owner',
-    desc: 'Edit everything, plus add/remove members and change organization info.'
-  },
-  {
-    role: 'collaborator',
-    icon: 'users',
-    title: 'Collaborator',
-    desc: 'Create, edit & run agents, manage sessions. No member or organization changes.',
-    recommended: true
-  },
-  { role: 'viewer', icon: 'eye', title: 'Viewer', desc: 'Read-only — view agents, sessions and usage.' }
-]
 
 const dotOn = 'mt-[3px] h-[14px] w-[14px] flex-none rounded-full border-4 border-(--brand) bg-(--surface-card)'
 const dotOff =
@@ -33,6 +17,7 @@ const dotOff =
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export default function InviteMembersModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
+  const t = useTranslations('Settings.members.inviteDialog')
   const [role, setRole] = useState<MemberRole>('collaborator')
   const [raw, setRaw] = useState('')
   const [busy, setBusy] = useState(false)
@@ -53,7 +38,7 @@ export default function InviteMembersModal({ onClose, onAdded }: { onClose: () =
       try {
         await addMember(email, role)
       } catch (e) {
-        if (e instanceof ApiError && e.status === 409) failures.push(`${email} is already a member`)
+        if (e instanceof ApiError && e.status === 409) failures.push(t('alreadyMember', { email }))
         else failures.push(`${email}: ${e instanceof Error ? e.message : String(e)}`)
       }
     }
@@ -66,20 +51,32 @@ export default function InviteMembersModal({ onClose, onAdded }: { onClose: () =
     }
   }
 
+  const roleTiles = [
+    { role: 'owner' as const, icon: 'shield', title: t('roles.owner.title'), desc: t('roles.owner.description') },
+    {
+      role: 'collaborator' as const,
+      icon: 'users',
+      title: t('roles.collaborator.title'),
+      desc: t('roles.collaborator.description'),
+      recommended: true
+    },
+    { role: 'viewer' as const, icon: 'eye', title: t('roles.viewer.title'), desc: t('roles.viewer.description') }
+  ]
+
   return (
     <>
       <div className="modalhead">
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--brand-soft)">
           <Icon name="user-plus" size={17} color="var(--brand)" />
         </span>
-        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Invite members</span>
+        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('title')}</span>
         <button className="iconbtn" onClick={onClose}>
           <Icon name="x" size={16} />
         </button>
       </div>
       <div className="modalbody">
         <div className="fld">
-          <span className="fldlbl">Email addresses</span>
+          <span className="fldlbl">{t('emailAddresses')}</span>
           <div className="inp">
             <input
               className="mono min-w-0 flex-1 border-0 bg-transparent font-[inherit] normal-nums text-[12.5px] outline-none"
@@ -89,35 +86,35 @@ export default function InviteMembersModal({ onClose, onAdded }: { onClose: () =
             />
           </div>
           <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-            Separate addresses with commas.
+            {t('emailHelp')}
           </span>
         </div>
-        <div className="fldlbl mx-0 mt-[18px] mb-2">Role</div>
+        <div className="fldlbl mx-0 mt-[18px] mb-2">{t('role')}</div>
         <div className="flex flex-col gap-[10px]">
-          {ROLE_TILES.map((t) => {
-            const on = role === t.role
+          {roleTiles.map((tile) => {
+            const on = role === tile.role
             return (
               <div
-                key={t.role}
+                key={tile.role}
                 className={on ? 'ptile on cursor-pointer items-start' : 'ptile cursor-pointer items-start'}
-                onClick={() => setRole(t.role)}
+                onClick={() => setRole(tile.role)}
               >
                 <span
                   className={`flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border bg-(--surface-card) ${
                     on ? 'border-(--brand)' : 'border-(--border-default)'
                   }`}
                 >
-                  <Icon name={t.icon} size={16} color={on ? 'var(--brand)' : 'var(--text-tertiary)'} />
+                  <Icon name={tile.icon} size={16} color={on ? 'var(--brand)' : 'var(--text-tertiary)'} />
                 </span>
                 <div className="flex-1">
                   <div className="flex items-center gap-[7px]">
-                    <span className="font-sans text-[13px] font-semibold leading-normal">{t.title}</span>
-                    {t.recommended && (
-                      <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">recommended</span>
+                    <span className="font-sans text-[13px] font-semibold leading-normal">{tile.title}</span>
+                    {tile.recommended && (
+                      <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">{t('recommended')}</span>
                     )}
                   </div>
                   <div className="mt-[2px] font-sans text-[12px] font-normal leading-[1.4] text-(--text-tertiary)">
-                    {t.desc}
+                    {tile.desc}
                   </div>
                 </div>
                 <span className={on ? dotOn : dotOff} />
@@ -127,7 +124,7 @@ export default function InviteMembersModal({ onClose, onAdded }: { onClose: () =
         </div>
         <div className="mt-[14px] flex items-start gap-2 rounded-md bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
           <Icon name="mail" size={14} className="mt-[1px] flex-none" />
-          <span>No email is sent; access starts at their first sign-in.</span>
+          <span>{t('noEmail')}</span>
         </div>
         {err && (
           <div className="mt-3 font-sans text-[12px] font-normal leading-normal text-(--status-error)">{err}</div>
@@ -136,11 +133,11 @@ export default function InviteMembersModal({ onClose, onAdded }: { onClose: () =
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button onClick={() => void submit()}>
           <Icon name="user-plus" size={14} />
-          {busy ? 'Adding…' : 'Add'}
+          {busy ? t('adding') : t('add')}
         </Button>
       </div>
     </>

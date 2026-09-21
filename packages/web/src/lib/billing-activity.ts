@@ -23,15 +23,16 @@ const HOUR_MS = 60 * 60 * 1000
 export type ActivityRange = 'h24' | 'd7' | 'd30' | 'd90'
 export type ActivityMode = 'usage' | 'topups'
 
+// `label`/`note` display text lives in the `Billing.activity.ranges` message catalog, keyed
+// by `key` — the caller (`BillingView.tsx`) resolves it through `t`, so this stays testable
+// without one.
 export const ACTIVITY_RANGES = [
-  { key: 'h24', label: '24h', note: 'last 24 hours', buckets: 24, unit: 'hour' },
-  { key: 'd7', label: '7d', note: 'last 7 days', buckets: 7, unit: 'day' },
-  { key: 'd30', label: '30d', note: 'last 30 days', buckets: 30, unit: 'day' },
-  { key: 'd90', label: '90d', note: 'last 90 days', buckets: 90, unit: 'day' }
+  { key: 'h24', buckets: 24, unit: 'hour' },
+  { key: 'd7', buckets: 7, unit: 'day' },
+  { key: 'd30', buckets: 30, unit: 'day' },
+  { key: 'd90', buckets: 90, unit: 'day' }
 ] as const satisfies readonly {
   key: ActivityRange
-  label: string
-  note: string
   buckets: number
   unit: 'hour' | 'day'
 }[]

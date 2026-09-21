@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import {
   fetchAgentDto,
   fetchAgentSkillSources,
@@ -62,6 +63,7 @@ export function AgentSkillsCard({
   /** Reports a write in flight, so a host dialog can hold its own completion until the row settles. */
   onBusyChange?: (busy: boolean) => void
 }) {
+  const t = useTranslations('Agents.detail.tools')
   const { updateAgent, skillSources, skillSourcesLoading } = useConsoleData()
   const [enabled, setEnabled] = useState<string[] | null>(null) // saved refs; null ⇒ not loaded
   const [managedEnabled, setManagedEnabled] = useState<string[] | null>(null)
@@ -222,11 +224,11 @@ export function AgentSkillsCard({
 
   const menu = canEdit ? (
     <AttachMenu
-      ariaLabel="Add a skill to this agent"
+      ariaLabel={t('addCustomSkillSource')}
       disabled={!interactive || managedEnabled === null}
       groups={[
         {
-          heading: 'Managed skills',
+          heading: t('addManagedSkills'),
           icon: 'package',
           options: library
             .filter((skill) => !skill.archivedAt && !managedIds.includes(skill.id))
@@ -239,7 +241,7 @@ export function AgentSkillsCard({
           emptyLabel: 'No further approved managed skills to add.'
         },
         {
-          heading: 'Git skill sources',
+          heading: t('gitSkillSources'),
           icon: 'book-open',
           // Only registry sources are offerable — the CP rejects enabling a ref to a
           // source this caller can't see.
@@ -255,8 +257,8 @@ export function AgentSkillsCard({
         }
       ]}
       actions={[
-        { key: 'registry', label: 'Search skills.sh…', icon: 'search', onPick: () => setBrowsing(true) },
-        { key: 'custom', label: 'Add custom skill source…', icon: 'plus', onPick: () => setCreating(true) }
+        { key: 'registry', label: t('searchSkills'), icon: 'search', onPick: () => setBrowsing(true) },
+        { key: 'custom', label: t('addCustomSkillSource'), icon: 'plus', onPick: () => setCreating(true) }
       ]}
     />
   ) : undefined
@@ -264,19 +266,19 @@ export function AgentSkillsCard({
   return (
     <div className="card overflow-hidden max-desktop:rounded-lg desktop:max-w-[760px]">
       <div className="cardhead flex-wrap gap-2">
-        <span className="cardtitle">Skills</span>
-        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">managed bundles · Git sources</span>
+        <span className="cardtitle">{t('skills')}</span>
+        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">{t('managedBundlesGitSources')}</span>
         {menu}
       </div>
 
       {empty ? (
         <AttachedEmpty
-          title={loading ? 'Loading skills…' : 'No skills'}
+          title={loading ? t('loading') : t('noSkills')}
           hint={
             loading
               ? 'Reading this agent’s enabled skills.'
               : canEdit
-                ? 'Enable a managed bundle or a Git source from your organization, or register a new one.'
+                ? t('enableSkillsHint')
                 : 'This agent has no skills enabled.'
           }
           action={loading ? undefined : menu}
@@ -295,7 +297,7 @@ export function AgentSkillsCard({
                   <span
                     className={`badge flex-none ${skill.archivedAt ? 'bg-(--surface-sunken) text-(--text-disabled)' : 'bg-(--status-online-soft) text-(--status-online)'}`}
                   >
-                    {skill.archivedAt ? 'archived' : 'managed'}
+                    {skill.archivedAt ? t('archived') : t('managed')}
                   </span>
                 }
                 onRemove={
@@ -316,7 +318,7 @@ export function AgentSkillsCard({
                   meta={<SkillSourceLine source={s.source} subDir={s.subDir} />}
                   badge={
                     <span className="badge flex-none bg-(--status-info-soft) text-(--status-info)">
-                      {sel.all ? 'all skills' : `${sel.skills.size} selected`}
+                      {sel.all ? t('allSkills') : t('selectedSkills', { count: sel.skills.size })}
                     </span>
                   }
                   // An agent-scoped source has no per-skill picker: the CP would reject

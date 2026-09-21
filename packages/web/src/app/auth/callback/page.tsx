@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import { completeLogin, currentSubject, isAuthConfigured } from '@/lib/auth'
 import { takeFlowState } from '@/lib/flow-state'
 import { promoteActivationProof } from '@/lib/activation-handshake'
@@ -12,6 +13,7 @@ import { Spinner } from '@/components/marks'
 // with auth disabled it just bounces home.
 export default function AuthCallback() {
   const router = useRouter()
+  const t = useTranslations('Auth.callback')
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -35,14 +37,14 @@ export default function AuthCallback() {
         if (stashed && stashed.startsWith('/') && !stashed.startsWith('//')) dest = stashed
         router.replace(dest)
       })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'sign-in failed'))
-  }, [router])
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : t('genericError')))
+  }, [router, t])
 
   return (
     <div className="authpage">
       <div className="m-auto flex flex-col items-center gap-[18px] text-center font-sans text-[14px] font-normal leading-normal text-(--text-secondary)">
         {!error && <Spinner size={48} />}
-        {error ? `Sign-in failed: ${error}` : 'Signing you in…'}
+        {error ? t('failed', { error }) : t('signingIn')}
       </div>
     </div>
   )

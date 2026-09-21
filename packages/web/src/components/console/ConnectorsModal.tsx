@@ -9,6 +9,7 @@
 // connections — it never shows or manages existing ones.
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import {
   fetchConnectorCatalog,
   type ConnectorAuthDefinition,
@@ -42,6 +43,7 @@ export function ConnectorsModal({
   /** Fired with the connection's provider row, so a caller can attach it to an agent. */
   onCreated?: (created: ConnectorConnectionCreatedDto) => void
 }) {
+  const t = useTranslations('Tools.connectors')
   const [providers, setProviders] = useState<ConnectorProviderDto[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
@@ -66,7 +68,7 @@ export function ConnectorsModal({
     <>
       <div className="modalhead">
         {provider ? (
-          <button className="iconbtn" onClick={() => setSelected(null)} aria-label="Back to connectors">
+          <button className="iconbtn" onClick={() => setSelected(null)} aria-label={t('backToConnectors')}>
             <Icon name="arrow-left" size={16} />
           </button>
         ) : (
@@ -75,9 +77,9 @@ export function ConnectorsModal({
           </span>
         )}
         <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">
-          {provider ? provider.displayName : 'Add connectors'}
+          {provider ? provider.displayName : t('addConnectors')}
         </span>
-        <button className="iconbtn" onClick={onClose} aria-label="Close">
+        <button className="iconbtn" onClick={onClose} aria-label={t('close')}>
           <Icon name="x" size={16} />
         </button>
       </div>
@@ -89,7 +91,7 @@ export function ConnectorsModal({
             <div className="font-sans text-[13px] font-normal leading-[1.5] text-(--text-secondary)">{error}</div>
             <Button variant="secondary" size="sm" onClick={() => void load()}>
               <Icon name="refresh-cw" size={14} />
-              Retry
+              {t('retry')}
             </Button>
           </div>
         ) : !providers ? (
@@ -112,6 +114,7 @@ function ProviderBrowser({
   providers: ConnectorProviderDto[]
   onSelect: (service: string) => void
 }) {
+  const t = useTranslations('Tools.connectors')
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<string>('')
   const categories = useMemo(() => providerCategories(providers), [providers])
@@ -126,10 +129,10 @@ function ProviderBrowser({
         <aside className="hidden w-[176px] flex-none border-r border-(--border-subtle) pr-4 desktop:block">
           <nav
             className="sticky top-0 flex max-h-[calc(88vh-105px)] flex-col gap-1 overflow-y-auto"
-            aria-label="Connector categories"
+            aria-label={t('categoriesAriaLabel')}
           >
             <span className="mb-1 px-[10px] font-sans text-[11px] font-semibold leading-normal text-(--text-tertiary)">
-              Categories
+              {t('categoriesHeading')}
             </span>
             <button
               type="button"
@@ -137,7 +140,7 @@ function ProviderBrowser({
               onClick={() => setCategory('')}
               aria-pressed={category === ''}
             >
-              All categories
+              {t('allCategories')}
             </button>
             {categories.map((c) => (
               <button
@@ -165,10 +168,10 @@ function ProviderBrowser({
             />
             <input
               className="inp mn pl-[34px]"
-              placeholder="Search connectors…"
+              placeholder={t('searchPlaceholder')}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              aria-label="Search connectors"
+              aria-label={t('searchAriaLabel')}
             />
           </label>
           {categories.length > 0 && (
@@ -176,9 +179,9 @@ function ProviderBrowser({
               className="inp mn w-[40%] max-w-[190px] desktop:hidden"
               value={category}
               onChange={(e) => setCategory(e.target.value)}
-              aria-label="Filter by category"
+              aria-label={t('filterByCategoryAriaLabel')}
             >
-              <option value="">All categories</option>
+              <option value="">{t('allCategories')}</option>
               {categories.map((c) => (
                 <option key={c} value={c}>
                   {c}
@@ -190,14 +193,14 @@ function ProviderBrowser({
 
         {providers.length === 0 ? (
           <div className="px-4 py-9 text-center">
-            <div className="font-sans text-[13px] font-semibold leading-normal">No connectors available</div>
+            <div className="font-sans text-[13px] font-semibold leading-normal">{t('emptyTitle')}</div>
             <div className="mx-auto mt-1 max-w-[430px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-              Configure a connector upstream, or adjust the catalog filters.
+              {t('emptyDescription')}
             </div>
           </div>
         ) : shown.length === 0 ? (
           <div className="px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-            No connectors match your filters.
+            {t('noMatches')}
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-2 desktop:grid-cols-2">
@@ -218,6 +221,7 @@ function categoryButtonClass(active: boolean): string {
 }
 
 function ProviderCard({ provider, onSelect }: { provider: ConnectorProviderDto; onSelect: () => void }) {
+  const t = useTranslations('Tools.connectors')
   return (
     <button
       onClick={onSelect}
@@ -232,7 +236,7 @@ function ProviderCard({ provider, onSelect }: { provider: ConnectorProviderDto; 
           {provider.service}
         </span>
       </span>
-      <span className="badge bg-(--surface-active) text-(--text-secondary)">Add</span>
+      <span className="badge bg-(--surface-active) text-(--text-secondary)">{t('add')}</span>
       <Icon name="chevron-right" size={15} color="var(--text-tertiary)" className="flex-none" />
     </button>
   )
@@ -277,6 +281,7 @@ function ProviderDetail({
   onDone: () => void
   onCreated?: (created: ConnectorConnectionCreatedDto) => void
 }) {
+  const t = useTranslations('Tools.connectors')
   const [authType, setAuthType] = useState<ConnectorAuthDefinition['type'] | undefined>(() => initialAuthType(provider))
   const auth = provider.auth.find((a) => a.type === authType) ?? provider.auth[0]
   const hasMultiple = provider.auth.length > 1
@@ -302,7 +307,7 @@ function ProviderDetail({
             rel="noreferrer"
             className="lnk flex flex-none items-center gap-[5px] text-[12px]"
           >
-            Homepage
+            {t('homepage')}
             <Icon name="arrow-up-right" size={13} />
           </a>
         )}
@@ -320,7 +325,7 @@ function ProviderDetail({
                   : 'bg-transparent text-(--text-secondary)'
               }`}
             >
-              {authLabel(a.type)}
+              {t(`authTypes.${a.type}`)}
             </button>
           ))}
         </div>
@@ -336,7 +341,7 @@ function ProviderDetail({
         />
       ) : (
         <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          This connector has no supported connection method.
+          {t('noAuthMethod')}
         </div>
       )}
     </div>
@@ -354,6 +359,7 @@ function ConnectionForm({
   onDone: () => void
   onCreated?: (created: ConnectorConnectionCreatedDto) => void
 }) {
+  const t = useTranslations('Tools.connectors')
   const { createConnectorConnection } = useConsoleData()
   const { me } = useProfile()
   const fields = credentialFieldsFor(auth)
@@ -367,7 +373,7 @@ function ConnectionForm({
   const submit = async () => {
     if (busy || !nameValid) return
     setBusy(true)
-    setStatus(auth.type === 'oauth2' ? 'Opening authorization…' : 'Saving…')
+    setStatus(auth.type === 'oauth2' ? t('openingAuthorization') : t('savingStatus'))
     try {
       const created = await createConnectorConnection({
         service: provider.service,
@@ -386,9 +392,9 @@ function ConnectionForm({
       if (auth.type === 'oauth2') {
         if (created.authorizationUrl) {
           window.open(created.authorizationUrl, 'connectors_oauth', oauthPopupFeatures())
-          setStatus('Complete the sign-in in the popup window…')
+          setStatus(t('completeSignIn'))
         } else {
-          setStatus('Connection created, but authorization did not start.')
+          setStatus(t('connectionCreatedNoAuth'))
         }
         // The connection (and its MCP tool) is already recorded; close and let the
         // popup finish independently.
@@ -397,7 +403,7 @@ function ConnectionForm({
       }
       onDone()
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : 'Failed to create connection.')
+      setStatus(e instanceof Error ? e.message : t('createFailed'))
     } finally {
       setBusy(false)
     }
@@ -406,7 +412,7 @@ function ConnectionForm({
   return (
     <div className="flex flex-col gap-[14px]">
       <label className="fld">
-        <span className="fldlbl">Connection name</span>
+        <span className="fldlbl">{t('connectionName')}</span>
         <input
           className="inp"
           value={connectionName}
@@ -415,7 +421,7 @@ function ConnectionForm({
           onChange={(e) => setConnectionName(e.target.value)}
         />
         <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-          Unique within your organization · letters, digits, <code>_</code> or <code>-</code> (max 32).
+          {t.rich('connectionNameHint', { underscore: () => <code>_</code>, hyphen: () => <code>-</code> })}
         </span>
       </label>
 
@@ -423,14 +429,14 @@ function ConnectionForm({
         <div className="flex items-start gap-[9px] rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px]">
           <Icon name="shield-check" size={15} color="var(--brand)" className="mt-[1px] flex-none" />
           <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-            Sign in with {provider.displayName} in a popup to authorize this connection.
+            {t('signInToAuthorize', { name: provider.displayName })}
           </span>
         </div>
       ) : auth.type === 'no_auth' ? (
         <div className="flex items-start gap-[9px] rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px]">
           <Icon name="circle-check" size={15} color="var(--status-online-text)" className="mt-[1px] flex-none" />
           <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-            This connector needs no credentials — just name it and add.
+            {t('noAuthNote')}
           </span>
         </div>
       ) : null}
@@ -453,7 +459,7 @@ function ConnectionForm({
           className={busy || !nameValid ? 'pointer-events-none opacity-50' : undefined}
         >
           <Icon name={auth.type === 'oauth2' ? 'external-link' : 'plus'} size={14} />
-          {auth.type === 'oauth2' ? `Connect ${provider.displayName}` : 'Add connection'}
+          {auth.type === 'oauth2' ? t('connectButton', { name: provider.displayName }) : t('addConnectionButton')}
         </Button>
       </div>
       {status && <div className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">{status}</div>}
@@ -500,13 +506,6 @@ function CredentialInput({
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
-function authLabel(type: ConnectorAuthDefinition['type']): string {
-  if (type === 'api_key') return 'API key'
-  if (type === 'oauth2') return 'OAuth'
-  if (type === 'custom_credential') return 'Custom'
-  return 'No auth'
-}
-
 function oauthPopupFeatures(): string {
   const width = 520
   const height = 720

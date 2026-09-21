@@ -8,8 +8,10 @@ import { listManagedSkills } from '@/lib/api'
 import { consoleKeys } from '@/lib/swr-keys'
 import { McpServersCard } from '@/components/console/McpServersCard'
 import { SkillSourcesCard } from '@/components/console/SkillSourcesCard'
+import { useTranslations } from 'next-intl'
 
 export default function ToolsHubView() {
+  const t = useTranslations('Tools')
   const { mcpProviders, skillSources } = useConsoleData()
   const { activeOrg, myRole } = useOrgs()
   const managedSkillsKey = consoleKeys.managedSkills(activeOrg?.id, false)
@@ -24,9 +26,7 @@ export default function ToolsHubView() {
     <div className="wrap max-desktop:p-4">
       <div className="mb-4 flex min-h-[34px] items-center gap-4">
         <div className="flex-1">
-          <p className="psub mt-0">
-            Shared across every agent in your organization — MCP tools they can call and skills they can run.
-          </p>
+          <p className="psub mt-0">{t('description')}</p>
         </div>
       </div>
       <div
@@ -37,18 +37,18 @@ export default function ToolsHubView() {
         }
       >
         <div className="card stat">
-          <div className="statlbl">MCP servers</div>
+          <div className="statlbl">{t('mcpServers')}</div>
           <div className="statval">{mcpProviders.length}</div>
         </div>
         <div className="card stat">
-          <div className="statlbl">Skills library</div>
+          <div className="statlbl">{t('skillsLibrary')}</div>
           <div className="statval">{skillSources.length + managedSkills.length}</div>
         </div>
         {/* Tool-call metering has no backend yet — the design's demo stat renders
             only in mock mode with its demo value. */}
         {MOCK_MODE && (
           <div className="card stat">
-            <div className="statlbl">Tool calls · 24h</div>
+            <div className="statlbl">{t('toolCalls')}</div>
             <div className="statval">4,812</div>
           </div>
         )}

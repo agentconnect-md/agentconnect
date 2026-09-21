@@ -24,6 +24,7 @@
 // endpoints, so two owners adding different agents cannot overwrite each other.
 
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import {
   assignOrganizationEnvironmentEntry,
@@ -44,10 +45,6 @@ import { LoadingState } from '@/components/marks'
 
 /** Same rule as the CP's ENV_VAR_NAME, so a bad name fails inline, not as a 400. */
 const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/
-
-/** The one place the standing picker disclosure is worded (§8.1). */
-const PICKER_HELP =
-  'Only agents you can manage are shown. Existing assignments to other private agents are left unchanged.'
 
 const FIELD =
   'w-full min-w-0 rounded-md border border-(--border-default) bg-(--surface-card) px-[9px] font-mono text-[12px] font-medium text-(--text-primary) outline-none focus:border-(--border-focus) focus:ring-[3px] focus:ring-(--brand-ring)'
@@ -76,6 +73,7 @@ export function OrganizationEnvironmentCard({
   /** The org's agents as the viewer sees them; the picker filters to `canEdit`. */
   agents: Agent[]
 }) {
+  const t = useTranslations('Settings.environment')
   const key = isOwner ? consoleKeys.organizationEnvironment(orgId) : null
   const {
     data: entries,
@@ -116,33 +114,30 @@ export function OrganizationEnvironmentCard({
     <div className="card mt-[18px]" id="environment">
       <div className="cardhead justify-between">
         <span className="inline-flex min-w-0 items-baseline gap-[7px]">
-          <span className="cardtitle">Variables &amp; secrets</span>
+          <span className="cardtitle">{t('title')}</span>
           {entries && entries.length > 0 && (
             <span className="mono text-[11px] text-(--text-tertiary)">{entries.length}</span>
           )}
         </span>
         <Button variant="secondary" size="xs" onClick={() => setSheet({ mode: 'create' })}>
           <Icon name="plus" size={14} />
-          Add
+          {t('add')}
         </Button>
       </div>
 
       <div className="px-4 pb-[2px] pt-[13px]">
-        <div className={HELP}>
-          Define a value once and apply it to every agent or a chosen set. Assigned rows appear on each agent&apos;s
-          Variables and Secrets cards, where they are read-only.
-        </div>
+        <div className={HELP}>{t('description')}</div>
       </div>
 
       {entries === undefined && !loadError ? (
         <LoadingState size={22} padding={20} />
       ) : loadError ? (
         <div className="px-4 py-[15px] font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
-          Couldn&apos;t load the organization variables and secrets.
+          {t('loadError')}
         </div>
       ) : !entries || entries.length === 0 ? (
         <div className="px-4 py-[15px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          No organization variables or secrets yet.
+          {t('empty')}
         </div>
       ) : (
         <div className="py-1">
@@ -175,17 +170,16 @@ export function OrganizationEnvironmentCard({
 
       {deleting && (
         <ConfirmationDialog
-          title={`Delete ${deleting.key}?`}
-          confirmLabel="Delete"
+          title={t('deleteTitle', { key: deleting.key })}
+          confirmLabel={t('delete')}
           busy={deleteBusy}
-          busyLabel="Deleting…"
+          busyLabel={t('deleting')}
           error={deleteError}
           onConfirm={() => void confirmDelete()}
           onClose={() => (deleteBusy ? undefined : setDeleting(null))}
         >
-          Every agent this {deleting.kind === 'secret' ? 'secret' : 'variable'} was assigned to stops receiving it. If
-          an agent defines its own <span className="mono">{deleting.key}</span>, that value becomes effective again.
-          {deleting.kind === 'secret' && ' The value cannot be recovered afterwards.'}
+          {t('deleteBody', { kind: t(`kinds.${deleting.kind}`), key: deleting.key })}
+          {deleting.kind === 'secret' && ` ${t('deleteSecretWarning')}`}
           <RunningProcessNote />
         </ConfirmationDialog>
       )}
@@ -199,9 +193,10 @@ export function OrganizationEnvironmentCard({
  * running process cannot be clawed back — and the UI must not imply it was.
  */
 function RunningProcessNote() {
+  const t = useTranslations('Settings.environment')
   return (
     <span className="mt-[10px] block font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-      Applies on the agent&rsquo;s next restart.
+      {t('restartNote')}
     </span>
   )
 }
@@ -215,6 +210,7 @@ function EntryRow({
   onEdit: () => void
   onDelete: () => void
 }) {
+  const t = useTranslations('Settings.environment')
   const secret = entry.kind === 'secret'
   return (
     <div className="flex flex-col gap-[6px] px-4 py-[10px] desktop:flex-row desktop:items-center desktop:gap-3">
@@ -224,24 +220,26 @@ function EntryRow({
           {entry.key}
         </span>
         <span className="badge flex-none bg-(--surface-active) text-(--text-secondary)">
-          {secret ? 'Secret' : 'Variable'}
+          {secret ? t('kinds.secret') : t('kinds.variable')}
         </span>
       </span>
       <span
         className="mono min-w-0 truncate text-[12px] text-(--text-tertiary) desktop:flex-1 desktop:text-right"
-        title={secret ? 'Write-only — value can’t be viewed' : entry.variableValue}
+        title={secret ? t('writeOnly') : entry.variableValue}
       >
         {secret ? '••••••••' : entry.variableValue}
       </span>
       <span className="flex items-center gap-3">
         <span className="flex-none font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-          {entry.audience === 'all' ? 'All agents' : `Selected agents (${entry.visibleAgentIds.length})`}
+          {entry.audience === 'all'
+            ? t('audiences.all.label')
+            : t('selectedAgents', { count: entry.visibleAgentIds.length })}
         </span>
         <span className="ml-auto flex flex-none items-center gap-1 desktop:ml-0">
-          <button type="button" className="iconbtn h-[26px] w-[26px]" title="Edit" onClick={onEdit}>
+          <button type="button" className="iconbtn h-[26px] w-[26px]" title={t('edit')} onClick={onEdit}>
             <Icon name="pencil" size={12} />
           </button>
-          <button type="button" className="iconbtn h-[26px] w-[26px]" title="Delete" onClick={onDelete}>
+          <button type="button" className="iconbtn h-[26px] w-[26px]" title={t('delete')} onClick={onDelete}>
             <Icon name="trash" size={12} />
           </button>
         </span>
@@ -270,7 +268,9 @@ function EntrySheet({
   onSaved: () => Promise<void>
   onBindingsChanged: () => void
 }) {
+  const t = useTranslations('Settings.environment')
   const editing = target.mode === 'edit' ? target.entry : null
+  const pickerHelp = t('pickerHelp')
   const [key, setKey] = useState(editing?.key ?? '')
   const [kind, setKind] = useState<OrganizationEnvironmentKind>(editing?.kind ?? 'variable')
   const [value, setValue] = useState(editing?.kind === 'variable' ? (editing.variableValue ?? '') : '')
@@ -299,7 +299,7 @@ function EntrySheet({
 
   const validation = useMemo(() => {
     const trimmed = key.trim()
-    if (!ENV_KEY.test(trimmed)) return `“${trimmed || '(empty)'}” is not a valid name`
+    if (!ENV_KEY.test(trimmed)) return t('invalidName', { name: trimmed || t('emptyName') })
     // Only the NAME is validated here. The empty string is a value the API accepts
     // for both kinds, so the Console must not make an API-valid entry unreachable —
     // on create or on rotation. "Replace" being an explicit action is what removed
@@ -378,20 +378,20 @@ function EntrySheet({
         className="modal max-w-[560px]"
         role="dialog"
         aria-modal="true"
-        aria-label={editing ? 'Edit entry' : 'Add entry'}
+        aria-label={editing ? t('editEntry') : t('addEntry')}
       >
         <div className="modalhead">
           <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">
-            {editing ? `Edit ${editing.key}` : 'Add variable or secret'}
+            {editing ? t('editTitle', { key: editing.key }) : t('addEntry')}
           </span>
-          <button type="button" className="iconbtn" aria-label="Close" disabled={busy} onClick={onClose}>
+          <button type="button" className="iconbtn" aria-label={t('close')} disabled={busy} onClick={onClose}>
             <Icon name="x" size={16} />
           </button>
         </div>
 
         <div className="modalbody flex flex-col gap-[18px]">
           <label className="flex flex-col gap-[6px]">
-            <span className={LABEL}>Name</span>
+            <span className={LABEL}>{t('name')}</span>
             <input
               className={INPUT}
               placeholder="API_KEY"
@@ -400,17 +400,15 @@ function EntrySheet({
               // so an edit can never silently change which credential this is.
               disabled={editing !== null}
               onChange={(e) => setKey(e.target.value)}
-              aria-label="Name"
+              aria-label={t('name')}
               autoFocus={editing === null}
             />
-            {editing !== null && (
-              <span className={HELP}>The name and type can&apos;t change. Delete and re-create to rename.</span>
-            )}
+            {editing !== null && <span className={HELP}>{t('nameLocked')}</span>}
           </label>
 
           <div className="flex flex-col gap-[6px]">
-            <span className={LABEL}>Type</span>
-            <div className="grid grid-cols-2 gap-[6px]" role="radiogroup" aria-label="Type">
+            <span className={LABEL}>{t('type')}</span>
+            <div className="grid grid-cols-2 gap-[6px]" role="radiogroup" aria-label={t('type')}>
               {(['variable', 'secret'] as const).map((option) => (
                 <button
                   key={option}
@@ -426,10 +424,10 @@ function EntrySheet({
                   } ${editing !== null ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
                 >
                   <span className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
-                    {option === 'variable' ? 'Variable' : 'Secret'}
+                    {option === 'variable' ? t('kinds.variable') : t('kinds.secret')}
                   </span>
                   <span className="font-sans text-[11px] font-normal leading-[1.4] text-(--text-tertiary)">
-                    {option === 'variable' ? 'Plain configuration, readable here' : 'Write-only — never shown again'}
+                    {option === 'variable' ? t('variableDescription') : t('secretDescription')}
                   </span>
                 </button>
               ))}
@@ -437,7 +435,7 @@ function EntrySheet({
           </div>
 
           <label className="flex flex-col gap-[6px]">
-            <span className={LABEL}>{replaceMode && editing ? 'New value' : 'Value'}</span>
+            <span className={LABEL}>{replaceMode && editing ? t('newValue') : t('value')}</span>
             {/* A saved secret needs an EXPLICIT replace action rather than an
                 empty-field sentinel. Treating "" as "keep the current value" makes
                 the empty string — which the API accepts — impossible to set, so
@@ -446,18 +444,18 @@ function EntrySheet({
               <div className="flex items-center gap-3">
                 <span className="mono flex-1 text-[12px] text-(--text-tertiary)">••••••••</span>
                 <Button variant="secondary" size="xs" onClick={() => setReplaceMode(true)}>
-                  Replace value
+                  {t('replaceValue')}
                 </Button>
               </div>
             ) : (
               <textarea
                 className={TEXTAREA}
-                placeholder="Value"
+                placeholder={t('value')}
                 value={value}
                 onChange={(e) => setValue(e.target.value)}
                 spellCheck={false}
                 autoComplete="off"
-                aria-label={replaceMode && editing ? 'New value' : 'Value'}
+                aria-label={replaceMode && editing ? t('newValue') : t('value')}
                 autoFocus={replaceMode && editing !== null}
               />
             )}
@@ -470,14 +468,14 @@ function EntrySheet({
                   setValue('')
                 }}
               >
-                Keep the current value instead
+                {t('keepCurrentValue')}
               </button>
             )}
           </label>
 
           <div className="flex flex-col gap-[6px]">
-            <span className={LABEL}>Applies to</span>
-            <div className="grid grid-cols-2 gap-[6px]" role="radiogroup" aria-label="Applies to">
+            <span className={LABEL}>{t('appliesTo')}</span>
+            <div className="grid grid-cols-2 gap-[6px]" role="radiogroup" aria-label={t('appliesTo')}>
               {(['all', 'selected'] as const).map((option) => (
                 <button
                   key={option}
@@ -492,27 +490,25 @@ function EntrySheet({
                   }`}
                 >
                   <span className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
-                    {option === 'all' ? 'All agents' : 'Selected agents'}
+                    {option === 'all' ? t('audiences.all.label') : t('audiences.selected.label')}
                   </span>
                   <span className="font-sans text-[11px] font-normal leading-[1.4] text-(--text-tertiary)">
-                    {option === 'all'
-                      ? 'Every agent you can manage, now and as new ones are configured'
-                      : 'Only the agents you pick below'}
+                    {option === 'all' ? t('audiences.all.description') : t('audiences.selected.description')}
                   </span>
                 </button>
               ))}
             </div>
-            {audience === 'all' && <span className={HELP}>{PICKER_HELP}</span>}
+            {audience === 'all' && <span className={HELP}>{pickerHelp}</span>}
           </div>
 
           {audience === 'selected' && (
             <div className="flex flex-col gap-[6px]">
-              <span className={LABEL}>Agents</span>
-              <span className={HELP}>{PICKER_HELP}</span>
+              <span className={LABEL}>{t('agents')}</span>
+              <span className={HELP}>{pickerHelp}</span>
               <div className="mt-[4px] max-h-[220px] overflow-y-auto rounded-lg border border-(--border-subtle)">
                 {manageableAgents.length === 0 ? (
                   <div className="px-[11px] py-[10px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                    You don&apos;t manage any agents yet. You can save this entry now and assign it later.
+                    {t('noManagedAgents')}
                   </div>
                 ) : (
                   manageableAgents.map((agent) => {
@@ -548,32 +544,26 @@ function EntrySheet({
 
         <div className="modalfoot">
           <Button variant="secondary" onClick={onClose} disabled={busy}>
-            Cancel
+            {t('cancel')}
           </Button>
           <Button onClick={() => void save()} disabled={busy || validation !== null}>
-            {busy ? 'Saving…' : editing ? 'Save' : 'Add'}
+            {busy ? t('saving') : editing ? t('save') : t('add')}
           </Button>
         </div>
       </div>
 
       {pendingConfirm && (
         <ConfirmationDialog
-          title={pendingConfirm === 'all' ? 'Apply to all agents?' : `Replace the value of ${editing?.key}?`}
-          confirmLabel={pendingConfirm === 'all' ? 'Apply to all' : 'Replace'}
+          title={pendingConfirm === 'all' ? t('applyAllTitle') : t('replaceTitle', { key: editing?.key ?? '' })}
+          confirmLabel={pendingConfirm === 'all' ? t('applyAll') : t('replace')}
           busy={busy}
           onConfirm={() => void save()}
           onClose={() => (busy ? undefined : setPendingConfirm(null))}
         >
           {pendingConfirm === 'all' ? (
-            <>
-              This assigns <span className="mono">{key.trim()}</span> to every agent you can manage, and to agents you
-              configure later. Agents you cannot manage are not affected, and existing assignments are kept.
-            </>
+            <>{t('applyAllBody', { key: key.trim() })}</>
           ) : (
-            <>
-              Agents assigned <span className="mono">{editing?.key}</span> will receive the new value. The previous
-              value cannot be recovered.
-            </>
+            <>{t('replaceBody', { key: editing?.key ?? '' })}</>
           )}
           <RunningProcessNote />
         </ConfirmationDialog>

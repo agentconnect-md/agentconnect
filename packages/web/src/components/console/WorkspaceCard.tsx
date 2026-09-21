@@ -24,6 +24,7 @@
 // summary instead of owning a second add/revoke flow.
 
 import { useEffect, useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import { isCodeHostProvider } from '@agentconnect.md/protocol/code-host'
@@ -69,6 +70,7 @@ export function WorkspaceCard({
   header?: WorkspaceHeaderInfo
   className?: string
 }) {
+  const t = useTranslations('Agents.detail.workspace')
   const { activeOrg } = useOrgs()
   const { me } = useProfile()
   const { refresh, orgSetIds } = useConsoleData()
@@ -134,7 +136,7 @@ export function WorkspaceCard({
       {/* Source row — the workspace identity and its live git actions; the pencil
           owns conversion. Wraps on narrow viewports; nothing is truncated away. */}
       <div className="flex flex-wrap items-center gap-[10px] px-4 py-[9px]">
-        <span className="eyebrow flex-none text-[10.5px]">Source</span>
+        <span className="eyebrow flex-none text-[10.5px]">{t('source')}</span>
 
         {isGit ? (
           <span
@@ -143,7 +145,7 @@ export function WorkspaceCard({
               source === 'giturl'
                 ? 'Cloned from a Git URL with the host\u2019s own credentials'
                 : ws.provider === undefined
-                  ? 'Public repository, cloned anonymously'
+                  ? t('publicRepository')
                   : undefined
             }
           >
@@ -157,17 +159,14 @@ export function WorkspaceCard({
           <Icon name="folder" size={16} color="var(--text-tertiary)" />
         )}
         <span className="mono min-w-0 truncate text-[13px] font-semibold text-(--text-primary)">
-          {ws.mode === 'scratch' ? 'Scratch workspace' : ws.repo}
+          {ws.mode === 'scratch' ? t('scratchWorkspace') : ws.repo}
         </span>
         {/* Effective workspace access stays visible next to the repository
             (product-conventions.md §Workspace navigation and repository access) —
             it is the blast radius of everything the agent pushes. */}
         {workspaceAccess && <span className={REPOSITORY_ACCESS_BADGE[workspaceAccess]}>{workspaceAccess}</span>}
         {isGit && ws.provider === undefined && source !== 'giturl' && (
-          <span
-            className="badge flex-none bg-(--surface-active) text-(--text-tertiary)"
-            title="Public repository, cloned anonymously"
-          >
+          <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)" title={t('publicRepository')}>
             public
           </span>
         )}
@@ -214,7 +213,7 @@ export function WorkspaceCard({
             onClick={() => setEditState({ mode: source })}
           >
             <Icon name="pencil" size={12} />
-            Edit workspace
+            {t('editWorkspace')}
           </button>
         )}
         {header?.pullMsg && (
@@ -227,7 +226,7 @@ export function WorkspaceCard({
       {/* Authorized repos — chips, since a workspace rarely has more than a
           handful; the tier lives in each chip's tooltip. */}
       <div className="flex flex-wrap items-center gap-2 border-t border-(--border-subtle) px-4 py-[9px]">
-        <span className="eyebrow flex-none text-[10.5px]">Authorized repos</span>
+        <span className="eyebrow flex-none text-[10.5px]">{t('authorizedRepos')}</span>
 
         {/* Only an App-backed workspace carries implicit authority over its own
             repository. A manual checkout has none: its effective access comes
@@ -247,7 +246,7 @@ export function WorkspaceCard({
 
         {loadError ? (
           <span className="font-sans text-[12px] font-normal leading-normal text-(--status-error)">
-            Couldn&rsquo;t load repository grants.
+            {t('repositoryGrantsError')}
           </span>
         ) : isLoading && reposData === undefined ? (
           <LoadingState padding={0} />
@@ -268,7 +267,7 @@ export function WorkspaceCard({
             ))}
             {repos.length === 0 && !isGithubApp && (
               <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                None explicitly authorized.
+                {t('noneAuthorized')}
               </span>
             )}
           </>
@@ -285,7 +284,7 @@ export function WorkspaceCard({
             }
           >
             <Icon name={manualWorkspaceAuthorized ? 'settings-2' : 'plus'} size={12} />
-            {manualWorkspaceAuthorized ? 'Manage repository' : 'Authorize repository'}
+            {manualWorkspaceAuthorized ? t('manageRepository') : t('authorizeRepository')}
           </button>
         )}
       </div>

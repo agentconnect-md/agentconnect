@@ -23,7 +23,7 @@ describe('secret validation and patching', () => {
 
     const error = envSecretsError([], rows)
     expect(error).not.toBeNull() // null here means the save would go through
-    expect(error).toMatch(/not a valid secret name/)
+    expect(error?.key).toBe('invalidSecretName')
     // Why validation has to catch it: the patch builder would delete the secret.
     expect(secretsPatchFromRows(rows, ['GITHUB_TOKEN'])).toEqual({ GITHUB_TOKEN: null })
   })
@@ -50,7 +50,7 @@ describe('secret validation and patching', () => {
   it('requires a value when an existing secret is renamed', () => {
     const rows = secretRowsFromKeys(['GITHUB_TOKEN'])
     rows[0] = { ...rows[0]!, k: 'GH_TOKEN' }
-    expect(envSecretsError([], rows)).toMatch(/Enter a value/)
+    expect(envSecretsError([], rows)?.key).toBe('secretValueRequired')
   })
 
   it('ignores a fully blank new row (an abandoned "Add secret")', () => {
@@ -60,17 +60,19 @@ describe('secret validation and patching', () => {
   })
 
   it('rejects duplicate secret names', () => {
-    expect(envSecretsError([], [newSecret('API_KEY', 'a'), newSecret('API_KEY', 'b')])).toBe('Duplicate secret names')
+    expect(envSecretsError([], [newSecret('API_KEY', 'a'), newSecret('API_KEY', 'b')])?.key).toBe(
+      'duplicateSecretNames'
+    )
   })
 
   it('rejects a new secret with no value', () => {
-    expect(envSecretsError([], [newSecret('API_KEY', '')])).toMatch(/Enter a value/)
+    expect(envSecretsError([], [newSecret('API_KEY', '')])?.key).toBe('secretValueRequired')
   })
 })
 
 describe('variable validation and records', () => {
   it('rejects an invalid variable name', () => {
-    expect(envSecretsError([{ k: '9BAD', v: 'x', editing: false }], [])).toMatch(/not a valid variable name/)
+    expect(envSecretsError([{ k: '9BAD', v: 'x', editing: false }], [])?.key).toBe('invalidVariableName')
   })
 
   it('rejects duplicate variable names', () => {
@@ -81,8 +83,8 @@ describe('variable validation and records', () => {
           { k: 'LOG_LEVEL', v: 'debug', editing: false }
         ],
         []
-      )
-    ).toBe('Duplicate variable names')
+      )?.key
+    ).toBe('duplicateVariableNames')
   })
 
   it('round-trips variables and drops unnamed rows', () => {

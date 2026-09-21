@@ -1,20 +1,9 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { useNotifications, type NotificationItem, type NotificationSeverity } from '@/lib/notifications'
-
-function formatRelativeTime(isoString: string): string {
-  const ms = Date.now() - new Date(isoString).getTime()
-  const sec = Math.floor(ms / 1000)
-  if (sec < 60) return 'just now'
-  const min = Math.floor(sec / 60)
-  if (min < 60) return `${min}m ago`
-  const hr = Math.floor(min / 60)
-  if (hr < 24) return `${hr}h ago`
-  const days = Math.floor(hr / 24)
-  return `${days}d ago`
-}
 
 function SeverityIcon({ severity }: { severity: NotificationSeverity }) {
   switch (severity) {
@@ -60,6 +49,7 @@ export function notificationBellLabel(unreadCount: number): string {
 }
 
 export function NotificationBell({ variant }: { variant: 'rail' | 'mobile' }) {
+  const t = useTranslations('Notifications')
   const { notifications, unreadCount, markAllAsRead, clearAll, markAsRead } = useNotifications()
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState<'all' | 'unread'>('all')
@@ -83,14 +73,23 @@ export function NotificationBell({ variant }: { variant: 'rail' | 'mobile' }) {
   const dropdownPositionCls = rail
     ? 'absolute bottom-[calc(100%_+_8px)] left-0 z-50'
     : 'absolute right-0 top-[calc(100%_+_8px)] z-50'
+  const formatRelativeTime = (isoString: string) => {
+    const sec = Math.floor((Date.now() - new Date(isoString).getTime()) / 1000)
+    if (sec < 60) return t('justNow')
+    const min = Math.floor(sec / 60)
+    if (min < 60) return t('minutesAgo', { count: min })
+    const hr = Math.floor(min / 60)
+    if (hr < 24) return t('hoursAgo', { count: hr })
+    return t('daysAgo', { count: Math.floor(hr / 24) })
+  }
 
   return (
     <div ref={menuRef} className="relative inline-flex flex-none">
       <button
         type="button"
         className={`${rail ? 'railiconbtn' : 'mappbtn'} relative`}
-        aria-label={notificationBellLabel(unreadCount)}
-        title="Notifications"
+        aria-label={unreadCount > 0 ? `${t('title')} (${t('unread', { count: unreadCount })})` : t('title')}
+        title={t('title')}
         onClick={() => setOpen((prev) => !prev)}
       >
         <Icon name="bell" size={rail ? 16 : 20} />
@@ -109,11 +108,11 @@ export function NotificationBell({ variant }: { variant: 'rail' | 'mobile' }) {
           <div className="flex items-center justify-between border-b border-(--border-subtle) px-4 py-3">
             <div className="flex items-center gap-2">
               <span className="font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
-                Notifications
+                {t('title')}
               </span>
               {unreadCount > 0 && (
                 <span className="rounded-full bg-(--magenta-100) px-2 py-[1px] font-sans text-[11px] font-semibold text-(--magenta-700)">
-                  {unreadCount} unread
+                  {t('unread', { count: unreadCount })}
                 </span>
               )}
             </div>
@@ -124,7 +123,7 @@ export function NotificationBell({ variant }: { variant: 'rail' | 'mobile' }) {
                   className="font-sans text-[12px] font-medium text-(--brand) cursor-pointer transition-opacity hover:opacity-80"
                   onClick={markAllAsRead}
                 >
-                  Mark all read
+                  {t('markAllRead')}
                 </button>
               )}
               {notifications.length > 0 && (
@@ -133,7 +132,7 @@ export function NotificationBell({ variant }: { variant: 'rail' | 'mobile' }) {
                   className="font-sans text-[12px] font-medium text-(--text-tertiary) cursor-pointer transition-opacity hover:text-(--text-primary)"
                   onClick={clearAll}
                 >
-                  Clear
+                  {t('clear')}
                 </button>
               )}
             </div>
@@ -150,7 +149,7 @@ export function NotificationBell({ variant }: { variant: 'rail' | 'mobile' }) {
               }`}
               onClick={() => setFilter('all')}
             >
-              All ({notifications.length})
+              {t('all', { count: notifications.length })}
             </button>
             <button
               type="button"
@@ -161,7 +160,7 @@ export function NotificationBell({ variant }: { variant: 'rail' | 'mobile' }) {
               }`}
               onClick={() => setFilter('unread')}
             >
-              Unread ({unreadCount})
+              {t('unreadTab', { count: unreadCount })}
             </button>
           </div>
 
@@ -169,7 +168,7 @@ export function NotificationBell({ variant }: { variant: 'rail' | 'mobile' }) {
           <div className="max-h-[360px] overflow-y-auto divide-y divide-(--border-subtle)">
             {items.length === 0 ? (
               <div className="p-6 text-center text-[13px] text-(--text-tertiary)">
-                {filter === 'unread' ? 'No unread notifications' : 'No notifications yet'}
+                {filter === 'unread' ? t('emptyUnread') : t('emptyAll')}
               </div>
             ) : (
               items.map((item) => (
@@ -197,18 +196,20 @@ export function NotificationBell({ variant }: { variant: 'rail' | 'mobile' }) {
                     </p>
                     {item.daemonName && (
                       <span className="mt-1 inline-block rounded-xs bg-(--surface-sunken) px-1.5 py-[1px] font-mono text-[10.5px] text-(--text-tertiary)">
-                        Daemon: {item.daemonName}
+                        {t('daemon', { name: item.daemonName })}
                       </span>
                     )}
                     {item.resolvedAt ? (
                       <span className="mt-1 inline-flex rounded-full bg-(--status-online-soft) px-2 py-[1px] font-sans text-[10.5px] font-semibold leading-normal text-(--status-online)">
-                        Resolved
+                        {t('resolved')}
                       </span>
                     ) : (
                       <NotificationActionLink item={item} onActivate={markAsRead} />
                     )}
                   </div>
-                  {!item.read && <span className="mt-1 h-2 w-2 flex-none rounded-full bg-(--brand)" title="Unread" />}
+                  {!item.read && (
+                    <span className="mt-1 h-2 w-2 flex-none rounded-full bg-(--brand)" title={t('unreadIndicator')} />
+                  )}
                 </div>
               ))
             )}
@@ -242,6 +243,7 @@ function ToastItem({
   onDismiss: (id: string) => void
   onMarkAsRead: (id: string) => void
 }) {
+  const t = useTranslations('Notifications')
   const id = toast.id
 
   useEffect(() => {
@@ -275,7 +277,7 @@ function ToastItem({
       <button
         type="button"
         className="iconbtn -m-1 h-6 w-6 flex-none items-center justify-center rounded-xs text-(--text-tertiary) hover:text-(--text-primary)"
-        aria-label="Dismiss toast"
+        aria-label={t('dismissToast')}
         onClick={() => onDismiss(id)}
       >
         <Icon name="x" size={14} />

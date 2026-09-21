@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { Avatar, Button, Icon, Toggle } from '@/components/ui'
 import { AgentIconView, LoadingState, PlatformMark } from '@/components/marks'
@@ -28,7 +29,6 @@ import {
   fetchSessionExternalAccess,
   memberDisplayName,
   revokeOrgInviteLink,
-  ROLE_LABELS,
   putSessionExternalAccess,
   updateOrg,
   uploadOrgIcon,
@@ -69,64 +69,6 @@ import { OrganizationEnvironmentCard } from '@/components/console/OrganizationEn
 // reads"), so promising "anyone who can view the agent" understated it.
 // `Everyone` is the audience word for the internal `org` value — see
 // docs/product-conventions.md.
-const SESSION_ACCESS_HINT =
-  "On — session visibility follows the platform's own access. Off — new sessions are visible to Everyone, and sessions synced while it was on stop showing."
-
-const SESSION_ACCESS_COPY: Record<
-  SessionAccessProvider,
-  {
-    name: string
-    label: string
-    details: string
-    unavailable: string
-    unresolved: (count: number) => string
-    degraded: string
-  }
-> = {
-  slack: {
-    name: 'Slack',
-    label: 'Follow Slack access',
-    details: [
-      'Public channels follow Slack workspace access; private channels, group DMs, guests and Slack Connect users need current membership.',
-      'DMs stay private, and agent memory learned earlier is not erased.',
-      'Sessions that predate this setting stay hidden until new trusted activity rebinds them to a Slack conversation.',
-      'Turning this off hides the sessions synced while it was on — they are not deleted, and turning it back on restores them.'
-    ].join('\n'),
-    unavailable:
-      'Unavailable until console sign-in is configured for this deployment — without it a viewer has no linked Slack identity to check.',
-    unresolved: (count) => `${count} session${count === 1 ? '' : 's'} hidden — no trusted Slack scope.`,
-    degraded: 'Slack scopes stopped resolving — new sessions are being hidden.'
-  },
-  github: {
-    name: 'GitHub',
-    label: 'Follow GitHub access',
-    details: [
-      'Public-repository sessions stay visible to Everyone; private-repository sessions need a linked GitHub profile with current access.',
-      'Agent memory learned earlier is not erased.',
-      'Sessions that predate this setting stay hidden until new trusted activity rebinds them to a repository.',
-      'Turning this off hides the sessions synced while it was on — they are not deleted, and turning it back on restores them.'
-    ].join('\n'),
-    unavailable:
-      'Unavailable until console sign-in and GitHub access checks are configured for this deployment — without them a viewer has no linked GitHub profile to check.',
-    unresolved: (count) => `${count} session${count === 1 ? '' : 's'} hidden — no trusted repository scope.`,
-    degraded: 'Repository scopes stopped resolving — new sessions are being hidden.'
-  },
-  feishu: {
-    name: 'Feishu/Lark',
-    label: 'Follow Feishu/Lark access',
-    details: [
-      'Group sessions created through the matching AgentConnect app follow current chat membership.',
-      'DMs stay private, and agent memory learned earlier is not erased.',
-      'User-built apps with a different App ID keep the ordinary organization visibility model.',
-      'Turning this off hides the sessions synced while it was on — they are not deleted, and turning it back on restores them.'
-    ].join('\n'),
-    unavailable:
-      'Unavailable until console sign-in is configured for this deployment — without it a viewer has no linked Feishu/Lark profile to check.',
-    unresolved: (count) => `${count} session${count === 1 ? '' : 's'} hidden — no trusted chat scope.`,
-    degraded: 'Feishu/Lark scopes stopped resolving — new sessions are being hidden.'
-  }
-}
-
 /** The live policy for one provider, plus the owner's write path. */
 function useSessionAccess(provider: SessionAccessProvider, orgId: string | undefined, isOwner: boolean) {
   const key = consoleKeys.sessionAccess(orgId, provider)
@@ -193,8 +135,34 @@ function SessionAccessRow({
   isOwner: boolean
   bordered?: boolean
 }) {
+  const t = useTranslations('Settings.sessionAccess')
   const { provider, access, loadError, busy, actionError } = state
-  const copy = SESSION_ACCESS_COPY[provider]
+  const copy = {
+    slack: {
+      name: t('providers.slack.name'),
+      label: t('providers.slack.label'),
+      details: t('providers.slack.details'),
+      unavailable: t('providers.slack.unavailable'),
+      unresolved: (count: number) => t('providers.slack.unresolved', { count }),
+      degraded: t('providers.slack.degraded')
+    },
+    github: {
+      name: t('providers.github.name'),
+      label: t('providers.github.label'),
+      details: t('providers.github.details'),
+      unavailable: t('providers.github.unavailable'),
+      unresolved: (count: number) => t('providers.github.unresolved', { count }),
+      degraded: t('providers.github.degraded')
+    },
+    feishu: {
+      name: t('providers.feishu.name'),
+      label: t('providers.feishu.label'),
+      details: t('providers.feishu.details'),
+      unavailable: t('providers.feishu.unavailable'),
+      unresolved: (count: number) => t('providers.feishu.unresolved', { count }),
+      degraded: t('providers.feishu.degraded')
+    }
+  }[provider]
   const hiddenSessions = access?.hiddenSessions ?? 0
   // The wiring disappeared under a live policy (the hidden-row case inverted).
   const stranded = access?.available === false && access.enabled
@@ -213,7 +181,7 @@ function SessionAccessRow({
           <button
             type="button"
             className="flex h-4 w-4 flex-none items-center justify-center rounded-full text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
-            aria-label={`${copy.label} — what this covers`}
+            aria-label={t('providerHelp', { label: copy.label })}
             title={copy.details}
           >
             <Icon name="info" size={13} />
@@ -221,7 +189,7 @@ function SessionAccessRow({
         </div>
         {(actionError || loadError) && (
           <div role="alert" className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--status-error)">
-            {actionError ?? `Could not load ${copy.name} session access.`}
+            {actionError ?? t('loadError', { name: copy.name })}
           </div>
         )}
       </div>
@@ -234,13 +202,13 @@ function SessionAccessRow({
           for a pointer and screen-reader text for everyone else. */}
       {stranded && (
         <span className="badge flex-none bg-(--status-paused-soft) text-(--status-paused)" title={copy.unavailable}>
-          <span aria-hidden="true">Not configured</span>
+          <span aria-hidden="true">{t('notConfigured')}</span>
           <span className="sr-only">{copy.unavailable}</span>
         </span>
       )}
       {access?.state === 'degraded' && !stranded && (
         <span className="badge flex-none bg-(--status-paused-soft) text-(--status-paused)" title={copy.degraded}>
-          <span aria-hidden="true">Scopes not resolving</span>
+          <span aria-hidden="true">{t('scopesNotResolving')}</span>
           <span className="sr-only">{copy.degraded}</span>
         </span>
       )}
@@ -249,11 +217,11 @@ function SessionAccessRow({
           className="badge flex-none bg-(--surface-sunken) text-(--text-tertiary)"
           title={copy.unresolved(hiddenSessions)}
         >
-          <span aria-hidden="true">{hiddenSessions} hidden</span>
+          <span aria-hidden="true">{t('hidden', { count: hiddenSessions })}</span>
           <span className="sr-only">{copy.unresolved(hiddenSessions)}</span>
         </span>
       )}
-      <span title={isOwner ? undefined : 'Only organization owners can change this setting'}>
+      <span title={isOwner ? undefined : t('ownerOnly')}>
         <Toggle
           checked={access?.enabled === true}
           disabled={!isOwner || !access || busy || (!access.available && !access.enabled)}
@@ -266,6 +234,7 @@ function SessionAccessRow({
 }
 
 export function SessionAccessCard({ orgId, isOwner }: { orgId?: string; isOwner: boolean }) {
+  const t = useTranslations('Settings.sessionAccess')
   // Three fixed hooks, one per provider — the card decides what to render, so it
   // has to hold the reads.
   const providers = [
@@ -282,14 +251,14 @@ export function SessionAccessCard({ orgId, isOwner }: { orgId?: string; isOwner:
   return (
     <div className="card mt-[18px]" id="session-access">
       <div className="cardhead justify-between">
-        <span className="cardtitle">Session access</span>
+        <span className="cardtitle">{t('title')}</span>
         <span className="flex items-center gap-[6px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-          Follow platform access
+          {t('followPlatformAccess')}
           <button
             type="button"
             className="flex h-4 w-4 flex-none items-center justify-center rounded-full text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
-            aria-label="Session access — what the toggles do"
-            title={SESSION_ACCESS_HINT}
+            aria-label={t('help')}
+            title={t('hint')}
           >
             <Icon name="info" size={13} />
           </button>
@@ -308,21 +277,6 @@ export function SessionAccessCard({ orgId, isOwner }: { orgId?: string; isOwner:
   )
 }
 
-// Only the chosen option's consequence is spelled out — the unchosen one is a
-// segment label, not a second paragraph.
-const AGENT_VISIBILITY_OPTIONS = [
-  {
-    key: 'all',
-    label: 'All agents',
-    sub: 'Open in both directions to every agent.'
-  },
-  {
-    key: 'selected',
-    label: 'Isolated',
-    sub: 'No peer access until agents are selected.'
-  }
-] as const satisfies ReadonlyArray<{ key: AgentCallPolicy; label: string; sub: string }>
-
 function AgentVisibilityCard({
   orgId,
   policy,
@@ -334,6 +288,7 @@ function AgentVisibilityCard({
   isOwner: boolean
   onChange: (policy: AgentCallPolicy) => Promise<void>
 }) {
+  const t = useTranslations('Settings.agentVisibility')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -351,19 +306,25 @@ function AgentVisibilityCard({
   }
 
   const disabled = !orgId || !isOwner || busy
-  const selected = AGENT_VISIBILITY_OPTIONS.find((option) => option.key === policy)
+  // Only the chosen option's consequence is spelled out — the unchosen one is a
+  // segment label, not a second paragraph.
+  const options = [
+    { key: 'all' as const, label: t('options.all.label'), sub: t('options.all.description') },
+    { key: 'selected' as const, label: t('options.selected.label'), sub: t('options.selected.description') }
+  ] satisfies ReadonlyArray<{ key: AgentCallPolicy; label: string; sub: string }>
+  const selected = options.find((option) => option.key === policy)
 
   return (
     <div className="card mt-[18px]" id="agent-visibility">
       <div className="cardhead justify-between">
-        <span className="cardtitle">Default agent visibility</span>
+        <span className="cardtitle">{t('title')}</span>
         <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-          Applies to new agents only
+          {t('newAgentsOnly')}
         </span>
       </div>
       <div className="flex flex-col gap-3 px-4 py-[15px] desktop:flex-row desktop:items-center desktop:gap-4">
         <div className="min-w-0 flex-1">
-          <div className="font-sans text-[13px] font-medium leading-normal">New agents start</div>
+          <div className="font-sans text-[13px] font-medium leading-normal">{t('newAgentsStart')}</div>
           <div className="mt-[2px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
             {selected?.sub}
           </div>
@@ -371,11 +332,11 @@ function AgentVisibilityCard({
         <div
           className="pillbar self-start desktop:flex-none desktop:self-auto"
           role="radiogroup"
-          aria-label="Default agent visibility"
+          aria-label={t('title')}
           aria-busy={busy}
-          title={isOwner ? undefined : 'Only organization owners can change this setting'}
+          title={isOwner ? undefined : t('ownerOnly')}
         >
-          {AGENT_VISIBILITY_OPTIONS.map((option) => (
+          {options.map((option) => (
             <button
               key={option.key}
               type="button"
@@ -419,7 +380,6 @@ interface MemberRowView {
   initials: string
   avBg: string
   avText: string
-  roleLabel: string
   roleBg: string
   roleText: string
   role: MemberRole
@@ -437,7 +397,6 @@ function rowFromDto(m: MemberDto): MemberRowView {
     initials: initialsFrom(m.name ?? '', m.email ?? undefined),
     avBg: owner ? 'var(--magenta-100)' : 'var(--gray-100)',
     avText: owner ? 'var(--magenta-700)' : 'var(--text-secondary)',
-    roleLabel: ROLE_LABELS[m.role],
     roleBg: owner ? 'var(--brand-soft)' : 'var(--surface-active)',
     roleText: owner ? 'var(--brand-soft-text)' : 'var(--text-secondary)',
     role: m.role,
@@ -448,6 +407,7 @@ function rowFromDto(m: MemberDto): MemberRowView {
 const MEMBER_GRID = 'grid-cols-[2fr_1.4fr_auto]'
 
 function InviteLinksCard({ orgId }: { orgId: string }) {
+  const t = useTranslations('Settings.inviteLinks')
   const key = consoleKeys.inviteLink(orgId)
   const {
     data: link,
@@ -513,11 +473,11 @@ function InviteLinksCard({ orgId }: { orgId: string }) {
   return (
     <div className="card mt-[18px]" id="invite-links">
       <div className="cardhead justify-between">
-        <span className="cardtitle">Invite links</span>
+        <span className="cardtitle">{t('title')}</span>
         {canGenerate && (
           <Button variant="secondary" size="xs" onClick={() => void generate()}>
             <Icon name="link" size={14} />
-            {busy === 'generate' ? 'Generating…' : link ? 'Generate new' : 'Generate link'}
+            {busy === 'generate' ? t('generating') : link ? t('generateNew') : t('generate')}
           </Button>
         )}
       </div>
@@ -526,7 +486,7 @@ function InviteLinksCard({ orgId }: { orgId: string }) {
         <LoadingState size={22} padding={20} />
       ) : loadError ? (
         <div className="px-4 py-[15px] font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
-          Couldn&apos;t load the invite link.
+          {t('loadError')}
         </div>
       ) : !link ? (
         <div className="flex items-center gap-3 px-4 py-[15px]">
@@ -534,9 +494,9 @@ function InviteLinksCard({ orgId }: { orgId: string }) {
             <Icon name="link" size={17} color="var(--text-tertiary)" />
           </span>
           <div className="min-w-0 flex-1">
-            <div className="font-sans text-[13px] font-semibold leading-normal">No invite link</div>
+            <div className="font-sans text-[13px] font-semibold leading-normal">{t('none')}</div>
             <div className="mt-[2px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-              Generate the organization&apos;s single collaborator link.
+              {t('noneDescription')}
             </div>
           </div>
         </div>
@@ -548,7 +508,7 @@ function InviteLinksCard({ orgId }: { orgId: string }) {
             </span>
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="font-sans text-[13px] font-semibold leading-normal">Organization invite link</span>
+                <span className="font-sans text-[13px] font-semibold leading-normal">{t('organizationLink')}</span>
                 <span
                   className={`badge ${
                     status === 'active'
@@ -558,14 +518,18 @@ function InviteLinksCard({ orgId }: { orgId: string }) {
                         : 'bg-(--status-error-soft) text-(--status-error)'
                   }`}
                 >
-                  {status === 'active' ? 'Active' : status === 'expired' ? 'Expired' : 'Revoked'}
+                  {status === 'active'
+                    ? t('status.active')
+                    : status === 'expired'
+                      ? t('status.expired')
+                      : t('status.revoked')}
                 </span>
               </div>
             </div>
             {status === 'active' && (
               <Button variant="secondary" size="xs" onClick={() => void revoke()}>
                 <Icon name="ban" size={13} />
-                {busy === 'revoke' ? 'Revoking…' : 'Revoke'}
+                {busy === 'revoke' ? t('revoking') : t('revoke')}
               </Button>
             )}
           </div>
@@ -575,7 +539,7 @@ function InviteLinksCard({ orgId }: { orgId: string }) {
               <div className="flex items-center gap-2 border-b border-(--gray-800) px-[13px] py-[9px]">
                 <Icon name="link" size={13} color="var(--text-inverse-dim)" />
                 <span className="font-mono text-[11px] font-medium leading-normal text-(--text-inverse-dim)">
-                  Copy this link now — it is shown only once
+                  {t('copyOnce')}
                 </span>
                 <button
                   type="button"
@@ -583,7 +547,7 @@ function InviteLinksCard({ orgId }: { orgId: string }) {
                   className="ml-auto inline-flex cursor-pointer items-center gap-[5px] border-0 bg-transparent font-mono text-[11px] font-medium leading-normal text-(--text-inverse-dim)"
                 >
                   <Icon name={copied ? 'check' : 'copy'} size={12} />
-                  {copied ? 'copied' : 'copy'}
+                  {copied ? t('copied') : t('copy')}
                 </button>
               </div>
               <div className="break-all px-[14px] py-[13px] font-mono text-[12px] leading-[1.7] text-[#cdd6e0]">
@@ -604,6 +568,7 @@ function InviteLinksCard({ orgId }: { orgId: string }) {
 }
 
 export default function SettingsView() {
+  const t = useTranslations('Settings')
   const { activeOrg, myRole, refreshOrgs, updateOrg: updateOrgSettings, leaveOrg, error: orgError } = useOrgs()
   const { openModal } = useModal()
   // The organization-environment picker filters this to agents the viewer can manage.
@@ -664,11 +629,11 @@ export default function SettingsView() {
       {/* Card ids are GlobalSearch anchor targets — keep in sync with nav.ts SETTING_CARDS. */}
       <div className="card" id="organization">
         <div className="cardhead justify-between">
-          <span className="cardtitle">Organization</span>
+          <span className="cardtitle">{t('organization.title')}</span>
           {isOwner && (
             <Button variant="secondary" size="xs" onClick={() => openModal('editOrg')}>
               <Icon name="pencil" size={14} />
-              Edit
+              {t('organization.edit')}
             </Button>
           )}
         </div>
@@ -729,17 +694,17 @@ export default function SettingsView() {
 
       <div className="card mt-[18px]" id="members">
         <div className="cardhead justify-between">
-          <span className="cardtitle">Members &amp; roles</span>
+          <span className="cardtitle">{t('members.title')}</span>
           {isOwner && (
             <Button variant="secondary" size="xs" onClick={() => setInviting(true)}>
               <Icon name="user-plus" size={14} />
-              Invite
+              {t('members.invite')}
             </Button>
           )}
         </div>
         <div className={`row h ${MEMBER_GRID}`}>
-          <span>Member</span>
-          <span>Role</span>
+          <span>{t('members.member')}</span>
+          <span>{t('members.role')}</span>
           <span />
         </div>
         {rows.map((p) => (
@@ -752,12 +717,18 @@ export default function SettingsView() {
               </div>
             </div>
             <span className="badge self-center justify-self-start" style={{ background: p.roleBg, color: p.roleText }}>
-              {p.roleLabel}
+              {
+                {
+                  owner: t('members.roles.owner'),
+                  collaborator: t('members.roles.collaborator'),
+                  viewer: t('members.roles.viewer')
+                }[p.role]
+              }
             </span>
             {isOwner || p.isCurrentUser ? (
               <button
                 className="iconbtn h-7 w-7 self-center"
-                title={isOwner ? 'Edit member' : 'Manage membership'}
+                title={isOwner ? t('members.edit') : t('members.manage')}
                 onClick={() => edit(p)}
               >
                 <Icon name="pencil" size={14} />
@@ -774,7 +745,7 @@ export default function SettingsView() {
         )}
         {loadFailed && (
           <div className="row grid-cols-[1fr] font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
-            Couldn&apos;t load members — is the control plane reachable?
+            {t('members.loadError')}
           </div>
         )}
       </div>

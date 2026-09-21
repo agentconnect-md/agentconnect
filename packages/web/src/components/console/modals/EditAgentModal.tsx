@@ -1,6 +1,7 @@
 // No 'use client' here: rendered only by ModalProvider (the client boundary).
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import {
   effortChoicesFor,
   effortField,
@@ -32,6 +33,7 @@ import {
   type AgentCallPolicy
 } from '@/lib/data'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
+import { permissionModeLabelKey } from '@/lib/permission-mode-i18n'
 import { fetchAgentDto, type AgentCallPolicyInput, type UpdateAgentInput } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import { featureFlagEnabled } from '@/lib/feature-flags'
@@ -73,11 +75,11 @@ export type EditAgentSection = 'basics' | 'runtime' | 'access' | 'secrets'
 // daemonId, so it can never be saved: the onChange below intercepts it.
 const ADD_DAEMON = '__add_daemon__'
 
-const SECTIONS: ReadonlyArray<{ id: EditAgentSection; label: string; icon: string }> = [
-  { id: 'basics', label: 'Basics', icon: 'id-card' },
-  { id: 'runtime', label: 'Runtime', icon: 'sliders-horizontal' },
-  { id: 'access', label: 'Access', icon: 'lock' },
-  { id: 'secrets', label: 'Variables and Secrets', icon: 'code-xml' }
+const SECTIONS: ReadonlyArray<{ id: EditAgentSection; icon: string }> = [
+  { id: 'basics', icon: 'id-card' },
+  { id: 'runtime', icon: 'sliders-horizontal' },
+  { id: 'access', icon: 'lock' },
+  { id: 'secrets', icon: 'code-xml' }
 ]
 
 const RAIL_ITEM_ON =
@@ -114,6 +116,8 @@ export default function EditAgentModal({
   onFailed?: (message: string) => void
   onClose: () => void
 }) {
+  const t = useTranslations('Agents.dialog')
+  const permissionT = useTranslations('Common.permissionModes')
   const acpRegistry = useAcpRegistry()
   const {
     updateAgent,
@@ -440,7 +444,7 @@ export default function EditAgentModal({
         disabled: !current && !serving
       }
     }),
-    ...(!initialDaemonId.current ? [{ value: '', label: 'No daemon', title: 'Leave this agent inactive.' }] : []),
+    ...(!initialDaemonId.current ? [{ value: '', label: t('edit.noDaemon'), title: t('edit.noDaemonHint') }] : []),
     ...(daemonId && !daemon && !selectedGroup && daemonId !== POOL_PLACEMENT
       ? [
           {
@@ -471,7 +475,7 @@ export default function EditAgentModal({
       }
     }),
     // Last row: no machine to pick means the picker itself offers connecting one.
-    { value: ADD_DAEMON, label: 'Add daemon', title: 'Connect a new machine to this org.', icon: 'plus' }
+    { value: ADD_DAEMON, label: t('edit.addDaemon'), title: t('edit.addDaemonHint'), icon: 'plus' }
   ]
   const sourceUnavailable = !!sourceDaemon && !moveReady(sourceDaemon)
   const sourceOffline = sourceDaemon?.status === 'offline'
@@ -531,7 +535,10 @@ export default function EditAgentModal({
           { v: permissionMode, l: `${permissionModeLabel(runtime, permissionMode)} (unavailable)` }
         ]
       : permissionChoices
-  const permissionOptions = permissionModeOptions
+  const permissionOptions = permissionModeOptions.map((option) => {
+    const key = permissionModeLabelKey(option.v)
+    return key ? { ...option, l: permissionT(key) } : option
+  })
   const runtimeUnavailable = daemonChanged && reportedRuntimeIds.length > 0 && !reportedRuntimeIds.includes(runtime)
   const modelUnavailable =
     daemonChanged && !!selectedModel && reportedModels.length > 0 && !reportedModels.includes(selectedModel)
@@ -608,7 +615,7 @@ export default function EditAgentModal({
   const save = async () => {
     if (saving) return
     if (envSecretError) {
-      setErr(envSecretError)
+      setErr(t(`errors.${envSecretError.key}`, envSecretError.values))
       return
     }
     if (daemonChanged) {
@@ -716,7 +723,7 @@ export default function EditAgentModal({
     <>
       <div className="modalhead">
         <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">
-          Edit <span className="mono text-[14px]">{agent.name}</span>
+          {t('edit.title')} <span className="mono text-[14px]">{agent.name}</span>
         </span>
         <button className="iconbtn" onClick={onClose}>
           <Icon name="x" size={16} />
@@ -744,34 +751,36 @@ export default function EditAgentModal({
                   color={activeSection === s.id ? 'var(--brand)' : 'var(--text-tertiary)'}
                   className="flex-none"
                 />
-                <span className="truncate">{s.label}</span>
+                <span className="truncate">{t(`sections.${s.id}`)}</span>
               </button>
             ))}
           </nav>
           <div ref={scrollRef} className="min-w-0 flex-1 overflow-y-auto p-5">
             <section ref={sectionRef('basics')}>
-              <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Basics</div>
+              <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+                {t('sections.basics')}
+              </div>
               <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
                 <div className="fld">
-                  <span className="fldlbl">Name</span>
+                  <span className="fldlbl">{t('name')}</span>
                   <input
                     className="inp mn cursor-not-allowed text-(--text-tertiary)"
                     value={name}
                     disabled
-                    aria-label="Name (read-only)"
+                    aria-label={t('edit.nameReadOnly')}
                   />
                 </div>
                 <div className="fld">
-                  <span className="fldlbl">Display name</span>
+                  <span className="fldlbl">{t('displayName')}</span>
                   {/* Built-in preset agents keep their fixed brand identity — the CP
                       refuses the change too. */}
                   <input
                     className="inp"
-                    placeholder="Deploy Bot (optional)"
+                    placeholder={t('displayNamePlaceholder')}
                     value={displayName}
                     onChange={(e) => setDisplayName(e.target.value)}
                     disabled={!!agent.builtin}
-                    title={agent.builtin ? 'Built-in agents keep their name' : undefined}
+                    title={agent.builtin ? t('edit.builtinNameLocked') : undefined}
                     autoFocus={!agent.builtin}
                   />
                 </div>
@@ -779,7 +788,7 @@ export default function EditAgentModal({
                 <div className="desktop:col-span-2 grid grid-cols-1 gap-[14px] desktop:grid-cols-3">
                   <div className="fld">
                     <div className="flex items-center justify-between gap-3">
-                      <span className="fldlbl">Runs on</span>
+                      <span className="fldlbl">{t('runsOn')}</span>
                       {!!initialDaemonId.current && !daemonChanged && (
                         <button
                           type="button"
@@ -789,14 +798,14 @@ export default function EditAgentModal({
                             setErr(null)
                           }}
                         >
-                          {repairPlacement ? 'Cancel repair' : 'Repair placement'}
+                          {repairPlacement ? t('edit.cancelRepair') : t('edit.repairPlacement')}
                         </button>
                       )}
                     </div>
                     <DaemonSelect
                       value={daemonId}
                       options={daemonOptions}
-                      placeholder="No daemon"
+                      placeholder={t('edit.noDaemon')}
                       onChange={(nextDaemonId) => {
                         // Chaining through ModalProvider replaces this dialog; Continue reopens it
                         // with the fresh daemon listed (same path as the unplaced agent's chip).
@@ -811,7 +820,7 @@ export default function EditAgentModal({
                     />
                   </div>
                   <div className="fld">
-                    <span className="fldlbl">Runtime</span>
+                    <span className="fldlbl">{t('runtime')}</span>
                     <RuntimeSelect
                       value={runtime}
                       options={runtimeOptions}
@@ -821,7 +830,7 @@ export default function EditAgentModal({
                     />
                   </div>
                   <div className="fld">
-                    <span className="fldlbl">Model</span>
+                    <span className="fldlbl">{t('model')}</span>
                     {/* No advertised models ⇒ nothing to choose: an inert em-dash field
                         rather than a fabricated "Default" entry the runtime never offered. */}
                     <ModelSelect
@@ -829,7 +838,7 @@ export default function EditAgentModal({
                       options={modelOptionsFor(daemon, runtime, modelOptions).map((option) =>
                         reportedModels.includes(option.value) ? option : { ...option, unavailable: true }
                       )}
-                      disabledHint="This runtime reports no selectable models"
+                      disabledHint={t('noSelectableModels')}
                       onChange={(next) => {
                         setModel(next)
                         // Picking a model resolves an effort the new model doesn't offer:
@@ -844,7 +853,7 @@ export default function EditAgentModal({
                       <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
                       <div className="min-w-0 flex-1">
                         <div className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
-                          Safe move unavailable
+                          {t('edit.safeMoveUnavailable')}
                         </div>
                         <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-secondary)">
                           {forceMove ? (
@@ -878,7 +887,9 @@ export default function EditAgentModal({
             </section>
 
             <section ref={sectionRef('runtime')} className="mt-5 border-t border-(--border-subtle) pt-5">
-              <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Runtime</div>
+              <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+                {t('sections.runtime')}
+              </div>
               <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
                 {(showEffort || fastModeAvailable || showPermission) && (
                   <div className="fld desktop:col-span-2">
@@ -907,7 +918,7 @@ export default function EditAgentModal({
                       )}
                       {fastModeAvailable && (
                         <div className="flex flex-col gap-[6px]">
-                          <span className="fldlbl">Fast mode</span>
+                          <span className="fldlbl">{t('fastMode')}</span>
                           <div className="pillbar self-start">
                             <button
                               type="button"
@@ -916,7 +927,7 @@ export default function EditAgentModal({
                               }
                               onClick={() => setFastMode(true)}
                             >
-                              On
+                              {t('on')}
                             </button>
                             <button
                               type="button"
@@ -925,14 +936,14 @@ export default function EditAgentModal({
                               }
                               onClick={() => setFastMode(false)}
                             >
-                              Off
+                              {t('off')}
                             </button>
                           </div>
                         </div>
                       )}
                       {showPermission && (
                         <div className="flex min-w-0 flex-col gap-[6px] desktop:col-span-2">
-                          <span className="fldlbl">Permission mode</span>
+                          <span className="fldlbl">{t('permissionMode')}</span>
                           <div className="pillbar max-w-full overflow-x-auto self-start">
                             {permissionOptions.map((o) => (
                               <button
@@ -962,7 +973,7 @@ export default function EditAgentModal({
                   required={selectedSandboxRequired}
                   unavailable={selectedSandboxUnavailable}
                   disabled={placementRequested}
-                  disabledDetail="Save the computer change before adjusting sandboxing."
+                  disabledDetail={t('edit.saveComputerFirst')}
                   clusterPlacement={daemonId === POOL_PLACEMENT}
                   onChange={setRunInSandbox}
                 />
@@ -976,34 +987,34 @@ export default function EditAgentModal({
                   onShowStatusBarChange={setShowStatusBar}
                 />
                 <div className="fld desktop:col-span-2">
-                  <span className="fldlbl">Introduce on channel join</span>
+                  <span className="fldlbl">{t('edit.introduceOnJoin')}</span>
                   <div className="inp min-w-0 justify-between gap-3">
                     <span className="inline-flex min-w-0 items-center gap-2">
                       <Icon name="users" size={16} color="var(--text-tertiary)" className="flex-none" />
                       <span className="truncate font-sans text-[13px] font-medium leading-normal text-(--text-secondary)">
-                        {introduceOnJoin ? 'On — greets peers on join' : 'Off'}
+                        {introduceOnJoin ? t('edit.introduceOnJoinOn') : t('off')}
                       </span>
                     </span>
                     <Toggle checked={introduceOnJoin} onChange={setIntroduceOnJoin} />
                   </div>
-                  <span className="mt-[6px] text-[11px] text-(--text-secondary)">
-                    Introduces itself to agents already in a channel it joins.
-                  </span>
+                  <span className="mt-[6px] text-[11px] text-(--text-secondary)">{t('edit.introduceOnJoinHint')}</span>
                 </div>
               </div>
             </section>
 
             <section ref={sectionRef('access')} className="mt-5 border-t border-(--border-subtle) pt-5">
-              <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Access</div>
+              <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+                {t('sections.access')}
+              </div>
               <div className="flex flex-col gap-[14px]">
                 <VisibilityField
                   value={sharing}
                   onChange={setSharing}
                   disabled={!agent.canManageSharing}
-                  label="Team visibility"
+                  label={t('teamVisibility')}
                 />
                 <div className="fld">
-                  <span className="fldlbl">Agent visibility</span>
+                  <span className="fldlbl">{t('agentVisibility')}</span>
                   <div className="flex flex-col gap-3">
                     <AgentCallVisibility
                       variant="section"
@@ -1107,7 +1118,7 @@ export default function EditAgentModal({
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button
           variant={forceMove ? 'danger' : 'primary'}
@@ -1126,14 +1137,14 @@ export default function EditAgentModal({
                     ? 'Repairing…'
                     : 'Saving…'
             : initialPlacement
-              ? 'Place agent'
+              ? t('edit.placeAgent')
               : forceMove
                 ? 'Force reassign'
                 : daemonChanged
                   ? 'Move agent'
                   : repairPlacement
                     ? 'Repair agent'
-                    : 'Save changes'}
+                    : t('edit.saveChanges')}
         </Button>
       </div>
     </>

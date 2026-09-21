@@ -3,6 +3,7 @@
 // "props must be serializable" entry-file check on the onClose callback.
 
 import { useEffect, useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { useConsoleData } from '@/lib/data-context'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useProfile } from '@/lib/profile'
@@ -33,6 +34,7 @@ import {
   supportsModes
 } from '@/lib/data'
 import { sessionIsolationLabel } from '@/lib/session-isolation'
+import { permissionModeLabelKey } from '@/lib/permission-mode-i18n'
 import { addAgentDaemonChoice } from './add-agent-daemon-choice'
 import { addAgentDraftSeed } from './add-agent-draft'
 import type { AgentSetupDraft } from '@agentconnect.md/protocol/mcp-app'
@@ -49,7 +51,6 @@ import {
   type GithubRepoDto
 } from '@/lib/api'
 import { isCodeHostProvider } from '@agentconnect.md/protocol/code-host'
-import { CODE_HOST_PROJECTION } from '@/lib/code-hosts'
 import { GithubMark, LoadingState } from '@/components/marks'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
@@ -119,13 +120,13 @@ type WsMode = WorkspaceMode
 // the wrong place.
 type SectionId = 'basics' | 'runtime' | 'workspace' | 'access' | 'memory' | 'secrets'
 
-const SECTIONS: ReadonlyArray<{ id: SectionId; label: string; icon: string }> = [
-  { id: 'basics', label: 'Basics', icon: 'id-card' },
-  { id: 'runtime', label: 'Runtime', icon: 'sliders-horizontal' },
-  { id: 'workspace', label: 'Workspace', icon: 'folder-git-2' },
-  { id: 'access', label: 'Access', icon: 'lock' },
-  { id: 'memory', label: 'Memory', icon: 'database' },
-  { id: 'secrets', label: 'Variables and Secrets', icon: 'code-xml' }
+const SECTIONS: ReadonlyArray<{ id: SectionId; icon: string }> = [
+  { id: 'basics', icon: 'id-card' },
+  { id: 'runtime', icon: 'sliders-horizontal' },
+  { id: 'workspace', icon: 'folder-git-2' },
+  { id: 'access', icon: 'lock' },
+  { id: 'memory', icon: 'database' },
+  { id: 'secrets', icon: 'code-xml' }
 ]
 
 const RAIL_ITEM_ON =
@@ -147,6 +148,8 @@ export default function AddAgentModal({
   /** Why a submitted create did not land, for the same reader — a failure the caller must hear too. */
   onFailed?: (message: string) => void
 }) {
+  const t = useTranslations('Agents.dialog')
+  const permissionT = useTranslations('Common.permissionModes')
   const { createAgent, daemons, agents, memberSets } = useConsoleData()
   // Read once: a draft is the form's starting point, and re-seeding on a later render would undo
   // whatever the reader had already typed over it.
@@ -339,12 +342,12 @@ export default function AddAgentModal({
     ...(featureFlagEnabled('daemon-groups') ? offeredGroups : []).map((group) => ({
       value: groupPlacementValue(group.setId),
       label: group.name,
-      meta: `${group.memberDaemonIds.length} daemon${group.memberDaemonIds.length === 1 ? '' : 's'}`,
+      meta: t('daemonSelect.groupMeta', { count: group.memberDaemonIds.length }),
       title: availableGroups.includes(group)
-        ? 'Any daemon in the group can serve this agent.'
+        ? t('daemonSelect.groupAvailable')
         : group.memberDaemonIds.length === 0
-          ? 'No daemons in this group yet.'
-          : 'No daemon in this group is serving right now.',
+          ? t('daemonSelect.groupEmpty')
+          : t('daemonSelect.groupOffline'),
       kind: 'group' as const,
       disabled: !availableGroups.includes(group)
     })),
@@ -352,10 +355,7 @@ export default function AddAgentModal({
       value: candidate.daemonId,
       label: candidate.name,
       ...(candidate.status === 'online' ? {} : { meta: candidate.status }),
-      title:
-        candidate.status === 'online'
-          ? 'Uses the credentials on this machine.'
-          : 'This machine is not currently serving.'
+      title: candidate.status === 'online' ? t('daemonSelect.localOnline') : t('daemonSelect.localOffline')
     }))
   ]
   const sandboxRequired = daemon?.caps.features.includes('sandbox-required') ?? false
@@ -369,6 +369,7 @@ export default function AddAgentModal({
     sandboxSupported,
     sandboxRequired
   })
+  const isolationMode = isolationLabel.mode === 'Session isolation' ? t('sessionIsolation') : t('worktree')
   // A selected daemon's reported profiles are authoritative, including an empty list.
   const runtimeIds = daemon ? selectableRuntimeIds(daemon, runtime) : FALLBACK_RUNTIME_IDS
   // Runtimes the daemon reports as logged out. Marked in the picker, never blocked —
@@ -412,7 +413,10 @@ export default function AddAgentModal({
     capability?.efforts && selectedEffort && !effortChoices.some((o) => o.value === selectedEffort)
       ? [
           ...effortChoices,
-          { value: selectedEffort, label: `${effortLabel(effectiveRuntime, selectedEffort)} (unavailable)` }
+          {
+            value: selectedEffort,
+            label: t('unavailableSuffix', { label: effortLabel(effectiveRuntime, selectedEffort) })
+          }
         ]
       : effortChoices
   const fastModeAvailable = fastModeAvailableFor(effectiveRuntime, capability)
@@ -423,7 +427,10 @@ export default function AddAgentModal({
   // currentValue), else the first offered mode. No "(unavailable)" here: unlike
   // Edit, nothing in this modal is stored yet.
   const selectedPermissionMode = resolvedPermissionMode(permissionMode, permissionChoices, modelCatalog)
-  const permissionOptions = permissionChoices
+  const permissionOptions = permissionChoices.map((option) => {
+    const key = permissionModeLabelKey(option.v)
+    return key ? { ...option, l: permissionT(key) } : option
+  })
 
   // A daemon selection defines the product default: optional means off; required
   // means on and immutable. Capability refreshes converge the same way.
@@ -704,55 +711,51 @@ export default function AddAgentModal({
     const slug = agentSlugFinalize(name) || agentSlugFinalize(displayName)
     if (busy) return
     if (!slug) {
-      setErr('Name is required — lowercase letters, digits and hyphens.')
+      setErr(t('errors.nameRequired'))
       return
     }
     if (!daemon) {
-      setErr('No daemon available — start a daemon first.')
+      setErr(t('errors.noDaemon'))
       return
     }
     if (!effectiveRuntime) {
-      setErr('No runtime available on this daemon.')
+      setErr(t('errors.noRuntime'))
       return
     }
     if (usingPicker && !ghRepo) {
-      setErr('Pick a repository, type an authorized GitHub repository, or switch to “Scratch”.')
+      setErr(t('errors.pickGithubRepository'))
       return
     }
     if (usingPicker && !picked && !publicRepo) {
-      setErr('Type an authorized GitHub repository as owner/repo, or pick a synced repository.')
+      setErr(t('errors.authorizedGithubRepository'))
       return
     }
     if (usingPicker && ghDenied) {
-      setErr(
-        ghDenied.denied === 'GITHUB_IDENTITY_REQUIRED'
-          ? 'Link your GitHub profile to verify repository access, then retry.'
-          : 'You don’t have access to this repository on GitHub.'
-      )
+      setErr(ghDenied.denied === 'GITHUB_IDENTITY_REQUIRED' ? t('errors.linkGithub') : t('errors.noGithubAccess'))
       return
     }
     if (wsMode === 'github' && !usingPicker && !repo.trim()) {
-      setErr('Pick a GitHub repository, or switch to “Scratch”.')
+      setErr(t('errors.pickGithubRepository'))
       return
     }
     if (wsMode === 'gitlab' && !glProject && !glPublicPath) {
-      setErr('Pick a GitLab project, or switch to “Scratch”.')
+      setErr(t('errors.pickGitlabProject'))
       return
     }
     if (wsMode === 'gitea' && !gtRepo) {
-      setErr('Pick a Gitea repository, or switch to “Scratch”.')
+      setErr(t('errors.pickGiteaRepository'))
       return
     }
     if (wsMode === 'giturl' && (!urlInput.trim() || urlTileHint !== null)) {
-      setErr(urlTileHint ?? 'Enter a full https:// or ssh:// clone URL.')
+      setErr(t('errors.cloneUrl'))
       return
     }
     if (memoryProvider === 'external' && !externalMemory.connectionId) {
-      setErr('Select an external-memory connection, or choose another memory backend.')
+      setErr(t('errors.externalMemoryConnection'))
       return
     }
     if (envSecretError) {
-      setErr(envSecretError)
+      setErr(t(`errors.${envSecretError.key}`, envSecretError.values))
       return
     }
     const envRecord = envRecordFromRows(envRows)
@@ -886,7 +889,7 @@ export default function AddAgentModal({
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       // The CP replies 409 when (org, name) is already taken.
-      const reason = msg.includes('409') ? `An agent named “${slug}” already exists.` : msg
+      const reason = msg.includes('409') ? t('errors.nameExists', { name: slug }) : msg
       setErr(reason)
       onFailed?.(reason)
       setBusy(false)
@@ -898,7 +901,7 @@ export default function AddAgentModal({
     try {
       const url = await fetchGithubInstallUrl()
       if (url) window.open(url, '_blank', 'noopener')
-      else setErr('Could not mint an install link (viewer role cannot install).')
+      else setErr(t('errors.installLink'))
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     }
@@ -913,10 +916,10 @@ export default function AddAgentModal({
 
   // Each code host says what it calls the thing being cloned; the two host-free tiles word themselves.
   const modeHint = isCodeHostProvider(wsMode)
-    ? `The ${CODE_HOST_PROJECTION[wsMode].repoNounShort} is cloned onto the machine; the agent runs from the directory you pick.`
+    ? t('workspace.codeHostHint')
     : wsMode === 'giturl'
-      ? 'Cloned with the daemon host’s own git credentials; the agent runs from the directory you pick.'
-      : 'We create a fresh working directory on the daemon — nothing is cloned.'
+      ? t('workspace.gitUrlHint')
+      : t('workspace.scratchHint')
   const urlTileHint = wsMode === 'giturl' ? gitRepoUrlTileHint(urlInput) : null
 
   // What still blocks Create, per section — an amber dot on the rail item plus,
@@ -933,27 +936,28 @@ export default function AddAgentModal({
     )
 
   const blockers: Partial<Record<SectionId, string>> = {}
-  if (!(agentSlugFinalize(name) || agentSlugFinalize(displayName))) blockers.basics = 'name is required'
-  else if (!daemon) blockers.basics = 'no daemon available'
-  if (usingPicker && !ghRepo) blockers.workspace = 'pick a repository'
-  else if (usingPicker && ghDenied) blockers.workspace = 'no access to this repository'
-  else if (usingPicker && !picked && !publicRepo) blockers.workspace = 'pick a repository'
-  else if (wsMode === 'github' && !usingPicker && !repo.trim()) blockers.workspace = 'add a repository'
-  else if (wsMode === 'gitlab' && glNoProjects) blockers.workspace = 'no GitLab projects added'
-  else if (wsMode === 'gitlab' && !glProject && !glPublicPath) blockers.workspace = 'pick a project'
-  else if (wsMode === 'gitea' && gtNoRepositories) blockers.workspace = 'no Gitea repositories added'
-  else if (wsMode === 'gitea' && !gtRepo) blockers.workspace = 'pick a repository'
-  else if (wsMode === 'giturl' && (!urlInput.trim() || urlTileHint !== null)) blockers.workspace = 'enter a clone URL'
-  if (envSecretError) blockers.secrets = envSecretError
-  if (memoryProvider === 'external' && !externalMemory.connectionId) blockers.memory = 'select a connection'
+  if (!(agentSlugFinalize(name) || agentSlugFinalize(displayName))) blockers.basics = t('blockers.nameRequired')
+  else if (!daemon) blockers.basics = t('blockers.noDaemon')
+  if (usingPicker && !ghRepo) blockers.workspace = t('blockers.pickRepository')
+  else if (usingPicker && ghDenied) blockers.workspace = t('blockers.noRepositoryAccess')
+  else if (usingPicker && !picked && !publicRepo) blockers.workspace = t('blockers.pickRepository')
+  else if (wsMode === 'github' && !usingPicker && !repo.trim()) blockers.workspace = t('blockers.addRepository')
+  else if (wsMode === 'gitlab' && glNoProjects) blockers.workspace = t('blockers.noGitlabProjects')
+  else if (wsMode === 'gitlab' && !glProject && !glPublicPath) blockers.workspace = t('blockers.pickProject')
+  else if (wsMode === 'gitea' && gtNoRepositories) blockers.workspace = t('blockers.noGiteaRepositories')
+  else if (wsMode === 'gitea' && !gtRepo) blockers.workspace = t('blockers.pickRepository')
+  else if (wsMode === 'giturl' && (!urlInput.trim() || urlTileHint !== null))
+    blockers.workspace = t('blockers.enterCloneUrl')
+  if (envSecretError) blockers.secrets = t(`errors.${envSecretError.key}`, envSecretError.values)
+  if (memoryProvider === 'external' && !externalMemory.connectionId) blockers.memory = t('blockers.selectConnection')
   const firstBlocker = SECTIONS.find((s) => blockers[s.id])
-  const blockerHint = firstBlocker ? `${firstBlocker.label}: ${blockers[firstBlocker.id]}` : null
+  const blockerHint = firstBlocker ? `${t(`sections.${firstBlocker.id}`)}: ${blockers[firstBlocker.id]}` : null
 
   return (
     <>
       <div className="modalhead">
         <AgentIconPicker value={icon} runtime={effectiveRuntime} onChange={setIcon} size={30} />
-        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Add agent</span>
+        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('addAgent')}</span>
         <button className="iconbtn" onClick={onClose}>
           <Icon name="x" size={16} />
         </button>
@@ -975,7 +979,7 @@ export default function AddAgentModal({
                 color={activeSection === s.id ? 'var(--brand)' : 'var(--text-tertiary)'}
                 className="flex-none"
               />
-              <span className="truncate">{s.label}</span>
+              <span className="truncate">{t(`sections.${s.id}`)}</span>
               {blockers[s.id] ? (
                 <span
                   className="h-[6px] w-[6px] flex-none rounded-full bg-(--amber-500) desktop:ml-auto"
@@ -987,10 +991,12 @@ export default function AddAgentModal({
         </nav>
         <div ref={scrollRef} className="min-w-0 flex-1 overflow-y-auto p-5">
           <section ref={sectionRef('basics')}>
-            <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Basics</div>
+            <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+              {t('sections.basics')}
+            </div>
             <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
               <div className="fld">
-                <span className="fldlbl">Name</span>
+                <span className="fldlbl">{t('name')}</span>
                 <input
                   className="inp mn"
                   placeholder="deploy-bot"
@@ -1000,20 +1006,20 @@ export default function AddAgentModal({
                 />
               </div>
               <div className="fld">
-                <span className="fldlbl">Display name</span>
+                <span className="fldlbl">{t('displayName')}</span>
                 <input
                   className="inp"
-                  placeholder="Deploy Bot (optional)"
+                  placeholder={t('displayNamePlaceholder')}
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
                 />
               </div>
               <div className="fld desktop:col-span-2">
-                <span className="fldlbl">Description</span>
+                <span className="fldlbl">{t('description')}</span>
                 <textarea
                   className="inp resize-y px-3 py-[8px] leading-[1.5] focus:border-(--brand) focus:outline-none"
                   rows={2}
-                  placeholder="Ships and rolls back deploys from chat"
+                  placeholder={t('descriptionPlaceholder')}
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
                 />
@@ -1021,11 +1027,11 @@ export default function AddAgentModal({
               {/* Daemon / Runtime / Model share one 3-up row inside the Basics grid. */}
               <div className="desktop:col-span-2 grid grid-cols-1 gap-[14px] desktop:grid-cols-3">
                 <div className="fld">
-                  <span className="fldlbl">Runs on</span>
+                  <span className="fldlbl">{t('runsOn')}</span>
                   <DaemonSelect value={effectiveDaemonId} options={daemonOptions} onChange={setDaemonId} />
                 </div>
                 <div className="fld">
-                  <span className="fldlbl">Runtime</span>
+                  <span className="fldlbl">{t('runtime')}</span>
                   <RuntimeSelect
                     value={effectiveRuntime}
                     options={runtimeIds}
@@ -1039,13 +1045,13 @@ export default function AddAgentModal({
                   />
                 </div>
                 <div className="fld">
-                  <span className="fldlbl">Model</span>
+                  <span className="fldlbl">{t('model')}</span>
                   {/* No advertised models ⇒ nothing to choose: an inert em-dash field
                   rather than a fabricated "Default" entry the runtime never offered. */}
                   <ModelSelect
                     value={selectedModel}
                     options={modelOptionsFor(daemon, effectiveRuntime, models)}
-                    disabledHint="This runtime reports no selectable models"
+                    disabledHint={t('noSelectableModels')}
                     onChange={(next) => {
                       setModel(next)
                       // Picking a model resolves an effort the new model doesn't offer:
@@ -1061,7 +1067,9 @@ export default function AddAgentModal({
           </section>
 
           <section ref={sectionRef('runtime')} className="mt-5 border-t border-(--border-subtle) pt-5">
-            <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Runtime</div>
+            <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+              {t('sections.runtime')}
+            </div>
             <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
               {(showEffort || fastModeAvailable || showPermission) && (
                 <div className="fld desktop:col-span-2">
@@ -1090,7 +1098,7 @@ export default function AddAgentModal({
                     )}
                     {fastModeAvailable && (
                       <div className="flex flex-col gap-[6px]">
-                        <span className="fldlbl">Fast mode</span>
+                        <span className="fldlbl">{t('fastMode')}</span>
                         <div className="pillbar self-start">
                           <button
                             type="button"
@@ -1099,7 +1107,7 @@ export default function AddAgentModal({
                             }
                             onClick={() => setFastMode(true)}
                           >
-                            On
+                            {t('on')}
                           </button>
                           <button
                             type="button"
@@ -1108,14 +1116,14 @@ export default function AddAgentModal({
                             }
                             onClick={() => setFastMode(false)}
                           >
-                            Off
+                            {t('off')}
                           </button>
                         </div>
                       </div>
                     )}
                     {showPermission && (
                       <div className="flex min-w-0 flex-col gap-[6px] desktop:col-span-2">
-                        <span className="fldlbl">Permission mode</span>
+                        <span className="fldlbl">{t('permissionMode')}</span>
                         <div className="pillbar max-w-full overflow-x-auto self-start">
                           {permissionOptions.map((o) => (
                             <button
@@ -1160,7 +1168,9 @@ export default function AddAgentModal({
           </section>
 
           <section ref={sectionRef('workspace')} className="mt-5 border-t border-(--border-subtle) pt-5">
-            <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Workspace</div>
+            <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+              {t('sections.workspace')}
+            </div>
             <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
               <WorkspaceModeField className="desktop:col-span-2" label={null} value={wsMode} onChange={setWsMode} />
 
@@ -1193,11 +1203,7 @@ export default function AddAgentModal({
                         submitGithubRepoSearch()
                       }
                     }}
-                    error={
-                      ghReposFailed && !ghLoading
-                        ? 'Couldn’t load repositories from GitHub — the list may be incomplete.'
-                        : undefined
-                    }
+                    error={ghReposFailed && !ghLoading ? t('errors.githubRepositories') : undefined}
                     onRetry={() => {
                       invalidateGithubRepoRosterCache()
                       setGhReposNonce((value) => value + 1)
@@ -1208,8 +1214,8 @@ export default function AddAgentModal({
                           <span className="mt-[6px] inline-flex items-start gap-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--red-500)">
                             <Icon name="triangle-alert" size={13} className="mt-[1px] flex-none" />
                             {ghDenied.denied === 'GITHUB_IDENTITY_REQUIRED'
-                              ? 'Link your GitHub profile to verify repository access, then retry.'
-                              : 'You don’t have access to this repository on GitHub, so it can’t be attached to an agent.'}
+                              ? t('errors.linkGithub')
+                              : t('errors.githubRepositoryUnavailable')}
                           </span>
                         )}
                         {ghPrivateReposHidden && (
@@ -1239,10 +1245,10 @@ export default function AddAgentModal({
                         <span className="mt-[6px] inline-flex items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
                           <Icon name="info" size={13} className="mt-[1px] flex-none" />
                           {manualPublicRepo
-                            ? 'Public repository — read-only clone.'
+                            ? t('workspace.publicReadOnly')
                             : ghAccess?.identityRequired
-                              ? 'Link your GitHub profile to verify write access.'
-                              : 'You have read-only access to this repository on GitHub.'}
+                              ? t('errors.linkGithubWrite')
+                              : t('workspace.githubReadOnly')}
                         </span>
                       ) : undefined
                     }
@@ -1281,7 +1287,7 @@ export default function AddAgentModal({
                     />
 
                     <WorkingSubdirectoryField value={agentDir} onChange={setAgentDir} />
-                    <WorktreeField label={isolationLabel.mode} checked={worktree} onChange={setWorktree} />
+                    <WorktreeField label={isolationMode} checked={worktree} onChange={setWorktree} />
                   </div>
                 </div>
               )}
@@ -1289,7 +1295,7 @@ export default function AddAgentModal({
               {wsMode === 'github' && ghEnabled === false && (
                 <>
                   <div className="fld desktop:col-span-2">
-                    <span className="fldlbl">GitHub repository</span>
+                    <span className="fldlbl">{t('githubRepository')}</span>
                     <div className="inp relative min-w-0 pl-[10px]">
                       <span className="inline-flex min-w-0 flex-1 items-center gap-2">
                         <span className="imark h-4 w-4 border-0 bg-transparent">
@@ -1317,7 +1323,7 @@ export default function AddAgentModal({
                       onChange={setBranch}
                     />
                     <WorkingSubdirectoryField value={agentDir} onChange={setAgentDir} />
-                    <WorktreeField label={isolationLabel.mode} checked={worktree} onChange={setWorktree} />
+                    <WorktreeField label={isolationMode} checked={worktree} onChange={setWorktree} />
                   </div>
                 </>
               )}
@@ -1325,7 +1331,7 @@ export default function AddAgentModal({
               {wsMode === 'gitlab' &&
                 (gl.error ? (
                   <div className="font-sans text-[12px] font-normal leading-[1.5] text-(--status-error) desktop:col-span-2">
-                    Couldn&rsquo;t load your GitLab projects — {gl.error}
+                    {t('errors.gitlabProjects', { error: gl.error })}
                   </div>
                 ) : gl.loading ? (
                   <div className="desktop:col-span-2">
@@ -1380,22 +1386,22 @@ export default function AddAgentModal({
                         }}
                       />
                       {glMatches.length === 0 && !glQ.trim().includes('/') && (
-                        <div className="fnohit">No projects match &ldquo;{glQ}&rdquo;</div>
+                        <div className="fnohit">{t('workspace.noProjectsMatch', { query: glQ })}</div>
                       )}
                     </GitlabProjectField>
 
                     <RepositoryAccessField
                       repositorySelected={!!glProject || !!glPublicPath}
-                      label="Project access"
-                      unselectedLabel="Select project first"
-                      writeDescription="Push, open merge requests & run pipelines"
+                      label={t('workspace.projectAccess')}
+                      unselectedLabel={t('workspace.selectProjectFirst')}
+                      writeDescription={t('workspace.gitlabWriteAccess')}
                       value={glPublicPath !== null ? 'read' : glPush ? 'write' : 'read'}
                       readOnly={glPublicPath !== null}
                       readOnlyNote={
                         glPublicPath !== null ? (
                           <span className="mt-[6px] inline-flex items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
                             <Icon name="info" size={13} className="mt-[1px] flex-none" />
-                            Public project — read-only clone.
+                            {t('workspace.publicProjectReadOnly')}
                           </span>
                         ) : undefined
                       }
@@ -1414,8 +1420,8 @@ export default function AddAgentModal({
                     <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_96px] desktop:gap-x-[14px]">
                       <WorkspaceBranchField
                         repositorySelected={!!glProject || !!glPublicPath}
-                        unselectedLabel="Pick project first"
-                        defaultBranchLabel="GitLab default branch"
+                        unselectedLabel={t('workspace.pickProjectFirst')}
+                        defaultBranchLabel={t('workspace.gitlabDefaultBranch')}
                         value={branch}
                         branches={null}
                         open={false}
@@ -1426,7 +1432,7 @@ export default function AddAgentModal({
                         onChange={setBranch}
                       />
                       <WorkingSubdirectoryField value={agentDir} onChange={setAgentDir} />
-                      <WorktreeField label={isolationLabel.mode} checked={worktree} onChange={setWorktree} />
+                      <WorktreeField label={isolationMode} checked={worktree} onChange={setWorktree} />
                     </div>
                   </div>
                 ))}
@@ -1434,7 +1440,7 @@ export default function AddAgentModal({
               {wsMode === 'gitea' &&
                 (gt.error ? (
                   <div className="font-sans text-[12px] font-normal leading-[1.5] text-(--status-error) desktop:col-span-2">
-                    Couldn&rsquo;t load your Gitea repositories — {gt.error}
+                    {t('errors.giteaRepositories', { error: gt.error })}
                   </div>
                 ) : gt.loading ? (
                   <div className="desktop:col-span-2">
@@ -1473,13 +1479,13 @@ export default function AddAgentModal({
                         />
                       ))}
                       {gtMatches.length === 0 && (
-                        <div className="fnohit">No repositories match &ldquo;{gtQ}&rdquo;</div>
+                        <div className="fnohit">{t('workspace.noRepositoriesMatch', { query: gtQ })}</div>
                       )}
                     </GiteaRepositoryField>
 
                     <RepositoryAccessField
                       repositorySelected={!!gtRepo}
-                      writeDescription="Push, open pull requests & request reviews"
+                      writeDescription={t('workspace.giteaWriteAccess')}
                       value={gtPush ? 'write' : 'read'}
                       open={gtAccessOpen}
                       onToggle={() => {
@@ -1496,7 +1502,7 @@ export default function AddAgentModal({
                     <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_96px] desktop:gap-x-[14px]">
                       <WorkspaceBranchField
                         repositorySelected={!!gtRepo}
-                        defaultBranchLabel="Gitea default branch"
+                        defaultBranchLabel={t('workspace.giteaDefaultBranch')}
                         value={branch}
                         branches={null}
                         open={false}
@@ -1507,7 +1513,7 @@ export default function AddAgentModal({
                         onChange={setBranch}
                       />
                       <WorkingSubdirectoryField value={agentDir} onChange={setAgentDir} />
-                      <WorktreeField label={isolationLabel.mode} checked={worktree} onChange={setWorktree} />
+                      <WorktreeField label={isolationMode} checked={worktree} onChange={setWorktree} />
                     </div>
                   </div>
                 ))}
@@ -1519,7 +1525,7 @@ export default function AddAgentModal({
                   branch={branch}
                   agentDir={agentDir}
                   worktree={worktree}
-                  worktreeLabel={isolationLabel.mode}
+                  worktreeLabel={isolationMode}
                   onUrlChange={setUrlInput}
                   onBranchChange={setBranch}
                   onAgentDirChange={setAgentDir}
@@ -1534,12 +1540,14 @@ export default function AddAgentModal({
           </section>
 
           <section ref={sectionRef('access')} className="mt-5 border-t border-(--border-subtle) pt-5">
-            <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Access</div>
+            <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+              {t('sections.access')}
+            </div>
             <div className="flex flex-col gap-[14px]">
-              <VisibilityField value={sharing} onChange={setSharing} label="Team visibility" />
+              <VisibilityField value={sharing} onChange={setSharing} label={t('teamVisibility')} />
               {/* Both directions, same cards as the Edit modal's Access section. */}
               <div className="fld">
-                <span className="fldlbl">Agent visibility</span>
+                <span className="fldlbl">{t('agentVisibility')}</span>
                 <div className="flex flex-col gap-3">
                   <AgentCallVisibility
                     variant="section"
@@ -1574,12 +1582,14 @@ export default function AddAgentModal({
             </div>
             <div className="mt-[14px] flex items-center gap-2 rounded-md bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
               <Icon name="info" size={14} />
-              You&apos;ll assign an integration after the agent is created.
+              {t('integrationAfterCreate')}
             </div>
           </section>
 
           <section ref={sectionRef('memory')} className="mt-5 border-t border-(--border-subtle) pt-5">
-            <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Memory</div>
+            <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+              {t('sections.memory')}
+            </div>
             <div className="mt-[13px] flex flex-col gap-[14px]">
               <div className="fld">
                 <MemoryProviderPicker value={memoryProvider} onChange={setMemoryProvider} disabled={busy} />
@@ -1589,7 +1599,7 @@ export default function AddAgentModal({
                   <ExternalMemoryBindingFields value={externalMemory} onChange={setExternalMemory} disabled={busy} />
                   {!externalMemory.connectionId ? (
                     <div className="font-sans text-[12px] font-normal leading-normal text-(--red-600)" role="alert">
-                      Choose an external-memory connection before creating this agent.
+                      {t('externalMemoryRequired')}
                     </div>
                   ) : null}
                 </div>
@@ -1600,7 +1610,7 @@ export default function AddAgentModal({
           <section ref={sectionRef('secrets')} className="mt-5 border-t border-(--border-subtle) pt-5">
             {/* Org-wide "All agents" entries enroll at creation and win same-name collisions (organization-secrets-and-variables.md §3.4); the registry is owner-only, so state the rule rather than list entries. */}
             <div className="mb-[14px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-              Organization-wide variables and secrets also apply and take precedence over same-name values here.
+              {t('organizationSecretsHint')}
             </div>
             <EnvSecretsFields
               envRows={envRows}
@@ -1626,14 +1636,14 @@ export default function AddAgentModal({
         ) : null}
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button
           disabled={busy || !effectiveRuntime || (memoryProvider === 'external' && !externalMemory.connectionId)}
           onClick={submit}
         >
           <Icon name="bot" size={15} />
-          {busy ? 'Creating…' : 'Create'}
+          {busy ? t('creating') : t('create')}
         </Button>
       </div>
     </>

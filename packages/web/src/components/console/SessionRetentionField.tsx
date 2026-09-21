@@ -12,17 +12,13 @@
  * lifecycle modal's version picker).
  */
 import { useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import type { DaemonSessionRetention } from '@/lib/api'
 
 export const SESSION_RETENTION_DEFAULT: DaemonSessionRetention = '7d'
 
-const PRESETS: { value: DaemonSessionRetention; label: string }[] = [
-  { value: '7d', label: 'After 7 days' },
-  { value: '30d', label: 'After 30 days' },
-  { value: '90d', label: 'After 90 days' },
-  { value: 'never', label: 'Never' }
-]
+const PRESET_VALUES: DaemonSessionRetention[] = ['7d', '30d', '90d', 'never']
 
 // Sentinel for the overlaid native <select>; never leaves this component.
 const CUSTOM = '__custom'
@@ -57,7 +53,15 @@ export function SessionRetentionField({
   onChange: (value: DaemonSessionRetention) => void
   disabled?: boolean
 }) {
-  const isPreset = PRESETS.some((o) => o.value === value)
+  const t = useTranslations('Daemons.dialog')
+  const presets = PRESET_VALUES.map((preset) => ({
+    value: preset,
+    label:
+      preset === 'never'
+        ? t('sessionRetention.never')
+        : t('sessionRetention.afterDays', { count: Number.parseInt(preset, 10) })
+  }))
+  const isPreset = PRESET_VALUES.includes(value)
   // Sticky custom mode: once the operator picks "Custom…" the day input stays
   // visible even while the typed count momentarily equals a preset (7 → 70).
   const [custom, setCustom] = useState(() => !isPreset)
@@ -70,9 +74,9 @@ export function SessionRetentionField({
   // setting the operator didn't enter.
   const label = showCustom
     ? customInvalid
-      ? 'After … days'
-      : `After ${retentionDays(value)} day${retentionDays(value) === 1 ? '' : 's'}`
-    : (PRESETS.find((o) => o.value === value)?.label ?? value)
+      ? t('sessionRetention.afterDays', { count: '…' })
+      : t('sessionRetention.afterDays', { count: retentionDays(value) ?? 14 })
+    : (presets.find((o) => o.value === value)?.label ?? value)
 
   const selectPreset = (next: string) => {
     if (next === CUSTOM) {
@@ -95,12 +99,12 @@ export function SessionRetentionField({
 
   return (
     <div className="fld mt-[14px]">
-      <span className="fldlbl">Expire sessions</span>
+      <span className="fldlbl">{t('expireSessions')}</span>
       <div className={`inp relative ${disabled ? 'opacity-60' : ''}`}>
         <span className="truncate font-sans text-[13px] text-(--text-primary)">
           {label}
           {!showCustom && value === SESSION_RETENTION_DEFAULT && (
-            <span className="text-(--text-tertiary)"> · default</span>
+            <span className="text-(--text-tertiary)"> · {t('sessionRetention.default')}</span>
           )}
         </span>
         <Icon name="chevron-down" size={15} color="var(--text-tertiary)" className="ml-auto" />
@@ -109,15 +113,15 @@ export function SessionRetentionField({
           disabled={disabled}
           onChange={(e) => selectPreset(e.target.value)}
           className="absolute inset-0 cursor-pointer opacity-0 disabled:cursor-default"
-          aria-label="Expire sessions"
+          aria-label={t('expireSessions')}
         >
-          {PRESETS.map((o) => (
+          {presets.map((o) => (
             <option key={o.value} value={o.value}>
               {o.label}
-              {o.value === SESSION_RETENTION_DEFAULT ? ' (default)' : ''}
+              {o.value === SESSION_RETENTION_DEFAULT ? ` (${t('sessionRetention.default')})` : ''}
             </option>
           ))}
-          <option value={CUSTOM}>Custom…</option>
+          <option value={CUSTOM}>{t('sessionRetention.custom')}</option>
         </select>
       </div>
       {showCustom && (
@@ -134,21 +138,23 @@ export function SessionRetentionField({
               disabled={disabled}
               onChange={(e) => typeDays(e.target.value)}
               className="w-full bg-transparent font-sans text-[13px] text-(--text-primary) outline-none"
-              aria-label="Expire sessions after (days)"
+              aria-label={t('sessionRetention.daysAriaLabel')}
               aria-invalid={customInvalid || undefined}
-              placeholder="Days"
+              placeholder={t('sessionRetention.days')}
             />
-            <span className="ml-auto shrink-0 font-sans text-[12px] text-(--text-tertiary)">days</span>
+            <span className="ml-auto shrink-0 font-sans text-[12px] text-(--text-tertiary)">
+              {t('sessionRetention.daysSuffix')}
+            </span>
           </div>
           {customInvalid && (
             <span className="font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
-              Enter a whole number of days (1–9999).
+              {t('sessionRetention.invalidDays')}
             </span>
           )}
         </>
       )}
       <span className="font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-        Finished sessions older than this are deleted from the daemon, including their workspaces.
+        {t('sessionRetention.hint')}
       </span>
     </div>
   )

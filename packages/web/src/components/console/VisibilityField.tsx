@@ -26,6 +26,7 @@ import { useIsMobile } from '@/lib/use-is-mobile'
 import { memberDisplayName, type MemberDto } from '@/lib/api'
 import { initialsFrom } from '@/lib/auth'
 import type { ResourceVisibility } from '@/lib/data'
+import { useTranslations } from 'next-intl'
 
 export interface SharingValue {
   visibility: ResourceVisibility
@@ -61,7 +62,7 @@ export function VisibilityField({
   value,
   onChange,
   disabled,
-  label = 'Visibility'
+  label
 }: {
   value: SharingValue
   onChange: (next: SharingValue) => void
@@ -69,6 +70,7 @@ export function VisibilityField({
   /** Field label (e.g. "Team visibility" in the agent Access section). */
   label?: string
 }) {
+  const t = useTranslations('Common.visibility')
   const isMobile = useIsMobile()
   const { members } = useConsoleData()
   const restricted = value.visibility === 'restricted'
@@ -91,7 +93,7 @@ export function VisibilityField({
 
   return (
     <div className="fld mt-[14px]">
-      <span className="fldlbl">{label}</span>
+      <span className="fldlbl">{label ?? t('label')}</span>
       {isMobile ? (
         <VisibilityPills restricted={restricted} onPick={pick} />
       ) : (
@@ -110,6 +112,7 @@ export function VisibilityField({
 // ── desktop: two tiles ───────────────────────────────────────────────────────
 
 function VisibilityTiles({ restricted, onPick }: { restricted: boolean; onPick: (v: ResourceVisibility) => void }) {
+  const t = useTranslations('Common.visibility')
   const tile = (v: ResourceVisibility, icon: string, title: string, desc: string) => {
     const on = restricted ? v === 'restricted' : v === 'org'
     return (
@@ -129,8 +132,8 @@ function VisibilityTiles({ restricted, onPick }: { restricted: boolean; onPick: 
   }
   return (
     <div className="grid grid-cols-1 gap-[10px] desktop:grid-cols-2">
-      {tile('org', 'globe', 'Everyone', 'All members can see it.')}
-      {tile('restricted', 'lock', 'Selected', 'Only people you choose.')}
+      {tile('org', 'globe', t('everyone'), t('everyoneDescription'))}
+      {tile('restricted', 'lock', t('selected'), t('selectedDescription'))}
     </div>
   )
 }
@@ -138,6 +141,7 @@ function VisibilityTiles({ restricted, onPick }: { restricted: boolean; onPick: 
 // ── desktop: searchable member list ──────────────────────────────────────────
 
 function ShareWithList({ selected, onToggle }: { selected: string[]; onToggle: (userId: string) => void }) {
+  const t = useTranslations('Common.visibility')
   const pool = useSharePool()
   const [q, setQ] = useState('')
   const [open, setOpen] = useState(false)
@@ -191,7 +195,7 @@ function ShareWithList({ selected, onToggle }: { selected: string[]; onToggle: (
                 e.stopPropagation()
                 onToggle(m.userId)
               }}
-              title={selected.length === 1 ? 'Select another member before removing the last person' : 'Remove access'}
+              title={selected.length === 1 ? t('removeLastMember') : t('removeAccess')}
               className={
                 selected.length === 1
                   ? 'inline-flex h-[15px] w-[15px] cursor-not-allowed items-center justify-center rounded-full text-(--text-tertiary) opacity-45'
@@ -207,14 +211,14 @@ function ShareWithList({ selected, onToggle }: { selected: string[]; onToggle: (
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onFocus={() => setOpen(true)}
-          placeholder="Search members…"
+          placeholder={t('searchMembers')}
           className="min-w-[110px] flex-1 border-0 bg-transparent py-[2px] font-sans text-[12.5px] font-normal leading-normal text-(--text-primary) outline-none"
         />
       </div>
       {selected.length === 0 && !open && (
         <div className="flex items-start gap-[7px] border-t border-(--border-subtle) bg-(--surface-sunken) px-3 py-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
           <Icon name="info" size={13} className="mt-[2px] flex-none" />
-          <span>Select at least one organization member.</span>
+          <span>{t('selectAtLeastOne')}</span>
         </div>
       )}
       {open && (
@@ -244,20 +248,16 @@ function ShareWithList({ selected, onToggle }: { selected: string[]; onToggle: (
             {options.length === 0 && (
               <div className="px-3 py-[10px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                 {pool.length === 0
-                  ? 'No other members to share with yet'
+                  ? t('noOtherMembers')
                   : availablePool.length === 0
-                    ? 'Everyone is already selected'
-                    : `No members match “${q}”`}
+                    ? t('everyoneSelected')
+                    : t('noMembersMatch', { query: q })}
               </div>
             )}
           </div>
           <div className="flex items-start gap-[7px] border-t border-(--border-subtle) bg-(--surface-sunken) px-3 py-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
             <Icon name="info" size={13} className="mt-[2px] flex-none" />
-            <span>
-              {selected.length === 0
-                ? 'Select at least one organization member.'
-                : 'At least one organization member must remain selected.'}
-            </span>
+            <span>{selected.length === 0 ? t('selectAtLeastOne') : t('atLeastOneMustRemain')}</span>
           </div>
         </>
       )}
@@ -268,6 +268,7 @@ function ShareWithList({ selected, onToggle }: { selected: string[]; onToggle: (
 // ── mobile: pills ────────────────────────────────────────────────────────────
 
 function VisibilityPills({ restricted, onPick }: { restricted: boolean; onPick: (v: ResourceVisibility) => void }) {
+  const t = useTranslations('Common.visibility')
   const pill = (v: ResourceVisibility, label: string) => {
     const on = restricted ? v === 'restricted' : v === 'org'
     return (
@@ -286,18 +287,19 @@ function VisibilityPills({ restricted, onPick }: { restricted: boolean; onPick: 
   }
   return (
     <div className="flex flex-wrap gap-2">
-      {pill('org', 'Everyone')}
-      {pill('restricted', 'Selected')}
+      {pill('org', t('everyone'))}
+      {pill('restricted', t('selected'))}
     </div>
   )
 }
 
 function ShareWithPills({ selected, onToggle }: { selected: string[]; onToggle: (userId: string) => void }) {
+  const t = useTranslations('Common.visibility')
   const pool = useSharePool()
 
   return (
     <>
-      <span className="fldlbl mt-[14px] block">Share with</span>
+      <span className="fldlbl mt-[14px] block">{t('shareWith')}</span>
       <div className="mt-[6px] flex flex-wrap gap-2">
         {pool.map((m) => {
           const on = selected.includes(m.userId)
@@ -307,7 +309,7 @@ function ShareWithPills({ selected, onToggle }: { selected: string[]; onToggle: 
               key={m.userId}
               type="button"
               onClick={() => onToggle(m.userId)}
-              title={lastSelected ? 'Select another member before removing the last person' : undefined}
+              title={lastSelected ? t('removeLastMember') : undefined}
               className={
                 on
                   ? 'inline-flex h-9 cursor-pointer items-center gap-[7px] rounded-full border border-(--brand) bg-(--brand-soft) pr-[14px] pl-[6px] font-sans text-[13px] font-semibold leading-normal text-(--brand)'
@@ -321,17 +323,13 @@ function ShareWithPills({ selected, onToggle }: { selected: string[]; onToggle: 
         })}
         {pool.length === 0 && (
           <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-            No other members to share with yet
+            {t('noOtherMembers')}
           </span>
         )}
       </div>
       <div className="mt-[10px] flex items-start gap-[6px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
         <Icon name="info" size={13} className="mt-[2px] flex-none" />
-        <span>
-          {selected.length === 0
-            ? 'Select at least one organization member.'
-            : 'At least one organization member must remain selected.'}
-        </span>
+        <span>{selected.length === 0 ? t('selectAtLeastOne') : t('atLeastOneMustRemain')}</span>
       </div>
     </>
   )
@@ -340,12 +338,13 @@ function ShareWithPills({ selected, onToggle }: { selected: string[]; onToggle: 
 // ── read-only detail row ─────────────────────────────────────────────────────
 
 export function VisibilityValue({ visibility, sharedWith }: { visibility: ResourceVisibility; sharedWith: string[] }) {
+  const t = useTranslations('Common.visibility')
   const { members } = useConsoleData()
   if (visibility === 'org') {
     return (
       <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal">
         <Icon name="globe" size={13} color="var(--text-tertiary)" />
-        Everyone
+        {t('everyone')}
       </span>
     )
   }
@@ -354,14 +353,14 @@ export function VisibilityValue({ visibility, sharedWith }: { visibility: Resour
   const extra = resolved.length - shown.length
   const title =
     resolved.length > 0
-      ? `${resolved.map(memberDisplayName).join(', ')} can access this restricted resource.`
-      : 'Restricted resource'
+      ? t('canAccess', { members: resolved.map(memberDisplayName).join(', ') })
+      : t('restrictedResource')
   return (
     <span className="inline-flex items-center gap-2" title={title}>
       <Icon name="lock" size={14} color="var(--text-tertiary)" className="flex-none" />
       {resolved.length === 0 ? (
         // Only for a legacy/corrupt row whose audience no longer resolves.
-        <span className="font-sans text-[12.5px] font-medium leading-normal">Restricted</span>
+        <span className="font-sans text-[12.5px] font-medium leading-normal">{t('selected')}</span>
       ) : (
         <span className="inline-flex">
           {shown.map((m, i) => (
@@ -369,7 +368,7 @@ export function VisibilityValue({ visibility, sharedWith }: { visibility: Resour
               key={m.userId}
               // Nested titles replace the parent's on hover, and the avatars are
               // the main hover target, so repeat this member's access state.
-              title={`${memberDisplayName(m)} can access this restricted resource.`}
+              title={t('canAccess', { members: memberDisplayName(m) })}
               className={i === 0 ? 'inline-flex' : 'inline-flex -ml-[6px]'}
             >
               <Avatar

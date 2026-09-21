@@ -29,6 +29,7 @@
     "typecheck:ci": "pnpm --filter '!@agentconnect.md/web' --config.enable-pre-post-scripts=false -r typecheck"
   },
   "devDependencies": {
+    "@formatjs/icu-messageformat-parser": "^3.5.20",
     "@semantic-release/exec": "^7.1.0",
     "@semantic-release/github": "^12.0.9",
     "@types/node": "^24.13.5",

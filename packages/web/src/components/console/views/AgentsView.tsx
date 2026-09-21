@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { useMemo, useState, type ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import {
   agentCapabilitySource,
   agentDaemonLabel,
@@ -71,6 +72,7 @@ function parseCompact(s: string): number {
 }
 
 export default function AgentsView() {
+  const t = useTranslations('Agents')
   const acpRegistry = useAcpRegistry()
   const { orgPath } = useOrgs()
   const { agents, daemons, integrations, members, getSessions, usage24h, agentsLoading, daemonsLoading, memberSets } =
@@ -145,18 +147,18 @@ export default function AgentsView() {
   // control). Metrics stay global (computed from the FULL agent set); only the LIST
   // is filtered — same `seg` state, same `filtered` result on either layout.
   const segs: { key: typeof seg; label: string }[] = [
-    { key: 'all', label: 'All' },
-    { key: 'online', label: 'Online' },
-    { key: 'offline', label: 'Offline' },
-    { key: 'paused', label: 'Paused' }
+    { key: 'all', label: t('filters.all') },
+    { key: 'online', label: t('status.online') },
+    { key: 'offline', label: t('status.offline') },
+    { key: 'paused', label: t('status.paused') }
   ]
   const scopes: { key: typeof scope; label: string }[] = [
-    { key: 'all', label: 'All' },
-    { key: 'mine', label: 'Mine' }
+    { key: 'all', label: t('filters.all') },
+    { key: 'mine', label: t('filters.mine') }
   ]
   const views: { key: typeof view; label: string }[] = [
-    { key: 'list', label: 'List' },
-    { key: 'topology', label: 'Topology' }
+    { key: 'list', label: t('views.list') },
+    { key: 'topology', label: t('views.topology') }
   ]
   const filtered = agents.filter((a) => {
     if (scope === 'mine' && (!me?.userId || a.createdBy !== me.userId)) return false
@@ -195,12 +197,16 @@ export default function AgentsView() {
     const cmp = by[sort.key]
     return [...filtered].sort((x, y) => cmp(x, y) * dir || agentLabel(x).localeCompare(agentLabel(y)))
   })()
-  const emptyMessage =
-    scope === 'mine'
-      ? seg === 'all'
-        ? 'No agents created by you.'
-        : 'No agents created by you in this state.'
-      : 'No agents in this state.'
+  const emptyMessage = scope === 'mine' ? (seg === 'all' ? t('empty.mine') : t('empty.mineState')) : t('empty.state')
+
+  const translatedStatus = (key: string) =>
+    ({
+      online: t('status.online'),
+      offline: t('status.offline'),
+      paused: t('status.paused'),
+      upgrading: t('status.upgrading'),
+      restarting: t('status.restarting')
+    })[key] ?? key
 
   // A sortable desktop column header: label + a sort caret. Inactive columns show a faint
   // chevrons-up-down on hover (the affordance); the active column shows an up/down caret in
@@ -212,7 +218,7 @@ export default function AgentsView() {
       <button
         type="button"
         onClick={() => onSort(key)}
-        title={`Sort by ${label}`}
+        title={t('sortBy', { label })}
         className={`group flex cursor-pointer items-center gap-[3px] border-0 bg-transparent p-0 font-mono text-[11px] font-semibold uppercase leading-normal tracking-[.04em] ${
           active ? 'text-(--text-primary)' : 'text-(--text-tertiary) hover:text-(--text-secondary)'
         }`}
@@ -260,9 +266,7 @@ export default function AgentsView() {
       <div className="wrap">
         <div className="mb-4 flex min-h-[34px] items-center gap-4">
           <div className="flex-1">
-            <p className="psub mt-0">
-              Directed call topology from the configured outbound and inbound visibility policies.
-            </p>
+            <p className="psub mt-0">{t('topologyDescription')}</p>
           </div>
           <div className="pillbar">
             {views.map((option) => (
@@ -278,7 +282,7 @@ export default function AgentsView() {
           </div>
           <Button size="sm" onClick={() => openModal('agent')}>
             <Icon name="plus" size={15} />
-            Add agent
+            {t('addAgent')}
           </Button>
         </div>
         <AgentReachabilityOverview agents={agents} daemons={daemons} loading={agentsLoading} />
@@ -310,22 +314,22 @@ export default function AgentsView() {
         <div className="mx-4 my-3 grid grid-cols-4 overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs)">
           {[
             {
-              label: 'Online',
+              label: t('metrics.online'),
               value: String(onlineCount),
               dim: ` / ${agents.length}`
             },
             {
-              label: 'Sessions 24h',
+              label: t('metrics.sessions'),
               value: (usage24h?.totals.sessions ?? 0).toLocaleString('en-US'),
               dim: ''
             },
             {
-              label: 'Tokens 24h',
+              label: t('metrics.tokens'),
               value: fmtCountCompact(usage24h?.totals.totalTokens ?? 0),
               dim: ''
             },
             {
-              label: 'Spend 24h',
+              label: t('metrics.spend'),
               value: fmtCost(amountToNumber(usage24h?.totals.costAmount ?? '0'), currency),
               dim: ''
             }
@@ -390,7 +394,7 @@ export default function AgentsView() {
           <div className="mx-4 mt-3 overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs)">
             {/* Column header. */}
             <div className="flex items-center justify-between border-b border-(--border-subtle) bg-(--surface-app) px-4 py-[10px]">
-              {['Agent', 'Sessions 24h'].map((h) => (
+              {[t('columns.agent'), t('columns.sessions')].map((h) => (
                 <span
                   key={h}
                   className="font-mono text-[11px] font-semibold uppercase leading-normal tracking-[.08em] text-(--text-tertiary)"
@@ -433,10 +437,7 @@ export default function AgentsView() {
                         {agentLabel(a)}
                       </span>
                       <BuiltinBadge show={!!a.builtin} />
-                      <RestrictedLock
-                        show={a.visibility === 'restricted'}
-                        title="Selected — only shared members can see this agent"
-                      />
+                      <RestrictedLock show={a.visibility === 'restricted'} title={t('restrictedHint')} />
                     </span>
                     <span className="truncate font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
                       {runtimeLabel(a.runtime, runtimeMeta?.name)} ·{' '}
@@ -477,7 +478,7 @@ export default function AgentsView() {
     <div className="wrap">
       <div className="mb-4 flex min-h-[34px] items-center gap-4">
         <div className="flex-1">
-          <p className="psub mt-0">AI agents running across your daemons. Click one to inspect its sessions.</p>
+          <p className="psub mt-0">{t('description')}</p>
         </div>
         <div className="flex items-center gap-2">
           <div className="pillbar">
@@ -519,40 +520,40 @@ export default function AgentsView() {
         </div>
         <Button size="sm" onClick={() => openModal('agent')}>
           <Icon name="plus" size={15} />
-          Add agent
+          {t('addAgent')}
         </Button>
       </div>
       <div className="mb-[18px] grid grid-cols-2 gap-[14px] desktop:grid-cols-4">
         <div className="card stat">
-          <div className="statlbl">Online agents</div>
+          <div className="statlbl">{t('metrics.onlineAgents')}</div>
           <div className="statval">
             {onlineCount} <span className="text-[14px] font-medium text-(--text-tertiary)">/ {agents.length}</span>
           </div>
         </div>
         <div className="card stat">
-          <div className="statlbl">Sessions (24h)</div>
+          <div className="statlbl">{t('metrics.sessionsLong')}</div>
           <div className="statval">{(usage24h?.totals.sessions ?? 0).toLocaleString('en-US')}</div>
         </div>
         <div className="card stat">
-          <div className="statlbl">Tokens (24h)</div>
+          <div className="statlbl">{t('metrics.tokensLong')}</div>
           <div className="statval">{fmtCountCompact(usage24h?.totals.totalTokens ?? 0)}</div>
         </div>
         <div className="card stat">
-          <div className="statlbl">Spend (24h)</div>
+          <div className="statlbl">{t('metrics.spendLong')}</div>
           <div className="statval">{fmtCost(amountToNumber(usage24h?.totals.costAmount ?? '0'), currency)}</div>
         </div>
       </div>
       <div className="card">
         <div className={`row h ${cols}`}>
-          {th('Agent', 'agent')}
-          {th('Status', 'status')}
-          {th('Runs on', 'daemon')}
-          {th('Creator', 'creator')}
-          {th('Repo', 'repo')}
-          <span>Integrations</span>
-          {th('Sessions 24h', 'sessions')}
-          {th('Tokens 24h', 'tokens')}
-          {th('Cost 24h', 'cost')}
+          {th(t('columns.agent'), 'agent')}
+          {th(t('columns.status'), 'status')}
+          {th(t('columns.runsOn'), 'daemon')}
+          {th(t('columns.creator'), 'creator')}
+          {th(t('columns.repo'), 'repo')}
+          <span>{t('columns.integrations')}</span>
+          {th(t('columns.sessions'), 'sessions')}
+          {th(t('columns.tokens'), 'tokens')}
+          {th(t('columns.cost'), 'cost')}
           <span />
         </div>
         {agentsLoading && agents.length === 0 ? (
@@ -618,10 +619,7 @@ export default function AgentsView() {
                         {agentLabel(a)}
                       </span>
                       <BuiltinBadge show={!!a.builtin} />
-                      <RestrictedLock
-                        show={a.visibility === 'restricted'}
-                        title="Selected — only shared members can see this agent"
-                      />
+                      <RestrictedLock show={a.visibility === 'restricted'} title={t('restrictedHint')} />
                     </div>
                     <div className="flex min-w-0 items-center gap-[6px] text-[11px] text-(--text-tertiary)">
                       <span className="whitespace-nowrap font-sans text-[11px] font-medium leading-normal text-(--text-secondary)">
@@ -638,7 +636,7 @@ export default function AgentsView() {
                     className="truncate font-sans text-[12.5px] font-medium leading-normal"
                     style={{ color: s.text }}
                   >
-                    {s.label}
+                    {translatedStatus(effectiveAgentStatus(a, owning))}
                   </span>
                 </div>
                 {/* Daemon and repo are the two cells that routinely truncate, so they keep
@@ -659,7 +657,7 @@ export default function AgentsView() {
                       }}
                     >
                       <Icon name="plus" size={13} />
-                      Add
+                      {t('add')}
                     </span>
                   </div>
                 ) : (
@@ -684,7 +682,7 @@ export default function AgentsView() {
                       fg="var(--text-secondary)"
                       style={{ border: '1px solid var(--border-subtle)' }}
                     />
-                    <span className="sr-only">Creator: {creatorName}</span>
+                    <span className="sr-only">{t('creatorLabel', { name: creatorName })}</span>
                   </div>
                 ) : (
                   <div className="mono min-w-0 truncate pr-3 text-[12px] text-(--text-tertiary)">—</div>
@@ -708,7 +706,7 @@ export default function AgentsView() {
                       }}
                     >
                       <Icon name="plus" size={13} />
-                      Add
+                      {t('add')}
                     </span>
                   )}
                 </div>

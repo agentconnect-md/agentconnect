@@ -13,6 +13,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { usePathname } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import { isAuthConfigured } from '@/lib/auth'
@@ -68,6 +69,44 @@ export function openGettingStarted() {
 }
 
 export default function GettingStarted() {
+  const t = useTranslations('GettingStarted')
+  const itemCopy: Record<string, { label: string; description: string; action: string }> = {
+    daemon: {
+      label: t('items.daemon.label'),
+      description: t('items.daemon.description'),
+      action: t('items.daemon.action')
+    },
+    slack: {
+      label: t('items.slack.label'),
+      description: t('items.slack.description'),
+      action: t('items.slack.action')
+    },
+    github: {
+      label: t('items.github.label'),
+      description: t('items.github.description'),
+      action: t('items.github.action')
+    },
+    'github-profile': {
+      label: t('items.github-profile.label'),
+      description: t('items.github-profile.description'),
+      action: t('items.github-profile.action')
+    },
+    conversation: {
+      label: t('items.conversation.label'),
+      description: t('items.conversation.description'),
+      action: t('items.conversation.action')
+    },
+    invite: {
+      label: t('items.invite.label'),
+      description: t('items.invite.description'),
+      action: t('items.invite.action')
+    },
+    'session-access': {
+      label: t('items.session-access.label'),
+      description: t('items.session-access.description'),
+      action: t('items.session-access.action')
+    }
+  }
   const { agents, daemons, integrations, allSessions, orgHasSessions, members, loading } = useConsoleData()
   const { activeOrg, updateOrg } = useOrgs()
   const { runAction } = useGsActions()
@@ -249,12 +288,12 @@ export default function GettingStarted() {
           <button
             type="button"
             onClick={() => setDrawerOpen(true)}
-            title="Getting started — open checklist"
+            title={t('openChecklist')}
             className="inline-flex cursor-pointer items-center gap-[9px] border-0 bg-transparent pr-[9px]"
           >
             <Ring ring={stepRing} size={22} track={3.4} />
             <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-              Getting started
+              {t('title')}
             </span>
             <span className="font-mono text-[12px] leading-normal text-(--text-tertiary)">{shortLabel}</span>
           </button>
@@ -262,8 +301,8 @@ export default function GettingStarted() {
           <button
             type="button"
             onClick={skip}
-            title="Hide the checklist — reopen it from the account menu"
-            aria-label="Hide the getting-started checklist"
+            title={t('hideChecklist')}
+            aria-label={t('hideChecklist')}
             className="flex h-[26px] w-[26px] flex-none cursor-pointer items-center justify-center rounded-full border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
           >
             <Icon name="x" size={14} />
@@ -283,15 +322,15 @@ export default function GettingStarted() {
               <div className="flex items-center gap-[10px]">
                 <Ring ring={stepRing} size={26} track={3} />
                 <span className="min-w-0 flex-1 font-sans text-[15px] font-semibold leading-normal text-(--text-primary)">
-                  Getting started
+                  {t('title')}
                 </span>
                 <span className="font-mono text-[12px] leading-normal text-(--text-tertiary)">
-                  Step {Math.min(step + 1, total)} of {total}
+                  {t('step', { current: Math.min(step + 1, total), total })}
                 </span>
                 <button
                   type="button"
                   onClick={() => setDrawerOpen(false)}
-                  title="Close — the checklist stays in the corner"
+                  title={t('close')}
                   className="flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover)"
                 >
                   <Icon name="x" size={16} />
@@ -341,7 +380,7 @@ export default function GettingStarted() {
                             : 'font-medium text-(--text-primary)'
                         }`}
                       >
-                        {it.label}
+                        {itemCopy[it.key]?.label ?? it.label}
                       </span>
                       {open &&
                         (it.key === 'slack' && slackOneClick ? (
@@ -351,12 +390,12 @@ export default function GettingStarted() {
                         ) : (
                           <>
                             <div className="mt-[5px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                              {it.expl}
+                              {itemCopy[it.key]?.description ?? it.expl}
                             </div>
                             {!it.done && (
                               <div className="mt-[11px]" onClick={(e) => e.stopPropagation()}>
                                 <Button size="sm" onClick={() => runFromDrawer(it.action)}>
-                                  {it.ctaLabel}
+                                  {itemCopy[it.key]?.action ?? it.ctaLabel}
                                 </Button>
                               </div>
                             )}
@@ -380,11 +419,11 @@ export default function GettingStarted() {
               {/* Dismisses the WHOLE Get Started (reopen from the account menu) — unlike
                   the header's ×, which only closes the drawer and keeps the pill. */}
               <Button variant="ghost" size="sm" onClick={skip}>
-                Skip for now
+                {t('skip')}
               </Button>
               <div className="flex-1" />
               <Button size="sm" onClick={() => advance(step + 1)}>
-                Next
+                {t('next')}
                 <Icon name="arrow-right" size={14} />
               </Button>
             </div>

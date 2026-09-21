@@ -6,6 +6,7 @@ import { listManagedSkillRevisions, type ManagedSkillDto, type ManagedSkillRevis
 import { ToolTile } from '@/components/console/ToolTile'
 import { LoadingState } from '@/components/marks'
 import { Icon } from '@/components/ui'
+import { useTranslations } from 'next-intl'
 
 function when(iso: string): string {
   return new Date(iso).toLocaleString()
@@ -75,6 +76,7 @@ export function ManagedSkillTile({
   canManage: boolean
   onArchive: () => void
 }) {
+  const t = useTranslations('Tools')
   const [open, setOpen] = useState(false)
   const [selectedRevision, setSelectedRevision] = useState(skill.currentRevision)
   useEffect(() => setSelectedRevision(skill.currentRevision), [skill.currentRevision])
@@ -100,14 +102,15 @@ export function ManagedSkillTile({
               : 'bg-(--status-info-soft) text-(--status-info)'
           }`}
         >
-          {skill.archivedAt ? 'managed · archived' : `managed · rev ${skill.currentRevision}`}
+          {skill.archivedAt
+            ? t('skills.managedArchived')
+            : t('skills.managedRevision', { revision: skill.currentRevision })}
         </span>
       }
       subtitle={skill.description}
       footer={
         <span className="mono text-[10.5px] text-(--text-disabled)">
-          {skill.fileCount} file{skill.fileCount === 1 ? '' : 's'} · {bytes(skill.expandedBytes)} expanded · immutable
-          bundle
+          {t('skills.bundleMeta', { count: skill.fileCount, expanded: bytes(skill.expandedBytes) })}
         </span>
       }
       action={
@@ -116,10 +119,10 @@ export function ManagedSkillTile({
             type="button"
             className="iconbtn h-6 w-6"
             onClick={() => setOpen((value) => !value)}
-            aria-label={open ? 'Hide revision history' : 'Show revision history'}
+            aria-label={open ? t('skills.hideHistory') : t('skills.showHistory')}
             aria-expanded={open}
             aria-controls={historyId}
-            title={open ? 'Hide revision history' : 'Show revision history'}
+            title={open ? t('skills.hideHistory') : t('skills.showHistory')}
           >
             <Icon name={open ? 'chevron-down' : 'chevron-right'} size={13} />
           </button>
@@ -127,7 +130,7 @@ export function ManagedSkillTile({
             <button
               type="button"
               className="iconbtn h-6 w-6"
-              title={skill.archivedAt ? 'Restore' : 'Archive'}
+              title={skill.archivedAt ? t('restore') : t('archive')}
               onClick={onArchive}
             >
               <Icon name={skill.archivedAt ? 'archive-restore' : 'archive'} size={13} />
@@ -144,12 +147,12 @@ export function ManagedSkillTile({
           ) : history.error ? (
             <div className="font-sans text-[12px] text-(--status-error)">{history.error.message}</div>
           ) : !selected ? (
-            <div className="font-sans text-[12px] text-(--text-tertiary)">Revision history is unavailable.</div>
+            <div className="font-sans text-[12px] text-(--text-tertiary)">{t('skills.revisionHistoryUnavailable')}</div>
           ) : (
             <div className="flex flex-col gap-3">
               <div className="flex flex-wrap items-center gap-3">
                 <label className="flex items-center gap-2 font-sans text-[11px] text-(--text-tertiary)">
-                  Revision
+                  {t('skills.revision')}
                   <select
                     className="inp h-7 min-w-20 py-0 text-[11px]"
                     aria-label={`Revision for ${skill.name}`}
@@ -159,7 +162,7 @@ export function ManagedSkillTile({
                     {history.data?.map((revision) => (
                       <option key={revision.revision} value={revision.revision}>
                         {revision.revision}
-                        {revision.revision === skill.currentRevision ? ' (current)' : ''}
+                        {revision.revision === skill.currentRevision ? ` (${t('skills.current')})` : ''}
                       </option>
                     ))}
                   </select>

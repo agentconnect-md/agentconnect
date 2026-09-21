@@ -11,6 +11,7 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
+    setupFiles: ['./src/i18n/test-setup.ts'],
     reporters: githubActionsReporters('web.md')
   }
 })

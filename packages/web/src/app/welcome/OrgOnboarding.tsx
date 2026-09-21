@@ -12,6 +12,7 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { LogoMark, Spinner } from '@/components/marks'
 import { ApiError, createOrg, getMyAccess } from '@/lib/api'
@@ -23,6 +24,7 @@ const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/
 
 export default function OrgOnboarding() {
   const router = useRouter()
+  const t = useTranslations('Onboarding.organization')
   const [ready, setReady] = useState(false)
   // ?new=1 marks a deliberate "create another org" visit from the console's org menu:
   // the orgCount bounce is skipped and a Back affordance returns to the console.
@@ -76,7 +78,7 @@ export default function OrgOnboarding() {
   const submit = async () => {
     if (busy) return
     if (!SLUG_RE.test(slug)) {
-      setErr(slug ? 'Use lowercase letters, digits, and hyphens only.' : 'Enter a URL name.')
+      setErr(slug ? t('errors.slugFormat') : t('errors.slugRequired'))
       return
     }
     setBusy(true)
@@ -86,7 +88,7 @@ export default function OrgOnboarding() {
       // Step 1 done — the org-scoped wizard continues from step 2 (where to run).
       router.replace(`/${org.slug}/onboarding`)
     } catch (e) {
-      if (e instanceof ApiError && e.status === 409) setErr('That URL name is already taken.')
+      if (e instanceof ApiError && e.status === 409) setErr(t('errors.slugTaken'))
       else setErr(e instanceof Error ? e.message : String(e))
       setBusy(false)
     }
@@ -126,17 +128,17 @@ export default function OrgOnboarding() {
           <div className="flex flex-1 items-center justify-center px-5 py-8 desktop:px-10 desktop:py-11">
             <div className="flex w-full max-w-[640px] flex-col">
               <div className="font-mono text-[12px] font-semibold uppercase leading-none tracking-[.1em] text-(--brand)">
-                Step 1 of 2
+                {t('step')}
               </div>
               <h1 className="mt-[10px] font-sans text-[26px] font-semibold leading-[1.15] tracking-[-.02em] text-(--text-primary)">
-                Create your organization
+                {t('title')}
               </h1>
               <p className="mt-2 font-sans text-[14px] font-normal leading-[1.5] text-(--text-secondary)">
-                Everything — agents, daemons, billing — lives under it.
+                {t('description')}
               </p>
               <div className="mt-7 grid grid-cols-1 items-start gap-4 desktop:grid-cols-2">
                 <div className="fld">
-                  <span className="fldlbl">Organization slug</span>
+                  <span className="fldlbl">{t('slug')}</span>
                   <div className={`inp justify-start gap-0 ${err ? 'border-(--status-error)' : ''}`}>
                     <span className="flex-none font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
                       {orgUrlPrefix()}
@@ -149,31 +151,31 @@ export default function OrgOnboarding() {
                         setSlug(e.target.value.toLowerCase())
                         setErr(null)
                       }}
-                      placeholder="my-organization"
+                      placeholder={t('slugPlaceholder')}
                     />
                   </div>
                   <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                    Lowercase letters and hyphens — appears in the URL.
+                    {t('slugHelp')}
                   </span>
                 </div>
                 <div className="fld">
-                  <span className="fldlbl">Display name</span>
+                  <span className="fldlbl">{t('displayName')}</span>
                   <div className="inp">
                     <input
                       value={name}
                       onChange={(e) => setName(e.target.value)}
-                      placeholder="Optional"
+                      placeholder={t('optional')}
                       className="min-w-0 flex-1 border-0 bg-transparent outline-0 [font:inherit]"
                     />
                   </div>
                   <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                    Shown across the console. Defaults to the slug.
+                    {t('displayNameHelp')}
                   </span>
                 </div>
               </div>
               {err && (
                 <div className="mt-3 font-sans text-[12px] font-normal leading-normal text-(--status-error)">
-                  Could not create — {err}
+                  {t('errors.create', { error: err })}
                 </div>
               )}
             </div>
@@ -181,12 +183,12 @@ export default function OrgOnboarding() {
           <div className="sticky bottom-0 flex flex-none items-center gap-[10px] border-t border-(--border-subtle) bg-(--surface-card) px-5 py-4 desktop:px-10">
             {creatingAnother && (
               <Button variant="ghost" disabled={busy} onClick={() => router.push('/')}>
-                Back
+                {t('back')}
               </Button>
             )}
             <div className="flex-1" />
             <Button disabled={busy} onClick={() => void submit()}>
-              {busy ? 'Creating…' : 'Continue'}
+              {busy ? t('creating') : t('continue')}
               <Icon name="arrow-right" size={15} />
             </Button>
           </div>

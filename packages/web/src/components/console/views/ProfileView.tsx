@@ -9,7 +9,9 @@
 // yet: they render the design's demo values only in mock mode, otherwise empty / '—'.
 
 import { useEffect, useState, type ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { useRouter, useSearchParams } from 'next/navigation'
+import LanguageSwitcher from '@/components/LanguageSwitcher'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { useModal } from '@/components/console/ModalProvider'
 import ApiKeysCard from '@/components/console/ApiKeysCard'
@@ -34,6 +36,8 @@ function KvRow({ label, children }: { label: string; children: ReactNode }) {
 }
 
 export default function ProfileView() {
+  const t = useTranslations('Profile')
+  const language = useTranslations('Common.language')
   const router = useRouter()
   const isMobile = useIsMobile()
   const { openModal } = useModal()
@@ -117,8 +121,8 @@ export default function ProfileView() {
           </div>
           <button
             onClick={() => openModal('editProfile')}
-            aria-label="Edit profile"
-            title="Edit profile"
+            aria-label={t('editProfile')}
+            title={t('editProfile')}
             className="iconbtn flex-none"
           >
             <Icon name="pencil" size={15} />
@@ -129,20 +133,30 @@ export default function ProfileView() {
         <div className="flex flex-col gap-4 p-4">
           {/* Account card */}
           <div className={cardShell}>
-            <div className={cardHead}>Account</div>
+            <div className={cardHead}>{t('account')}</div>
             <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
-              <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">Name</span>
+              <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
+                {t('name')}
+              </span>
               <span className="font-sans text-[14px] font-medium leading-normal">{user.name}</span>
             </div>
             <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
-              <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">Email</span>
+              <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
+                {t('email')}
+              </span>
               <span className="font-mono text-[12px] font-medium leading-normal">{user.email}</span>
             </div>
             <div className="flex items-center justify-between gap-4 px-4 py-3">
               <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
-                Member since
+                {t('memberSince')}
               </span>
               <span className="font-mono text-[12px] font-medium leading-normal">{memberSince}</span>
+            </div>
+            <div className="flex items-center justify-between gap-4 border-t border-(--border-subtle) px-4 py-3">
+              <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
+                {language('label')}
+              </span>
+              <LanguageSwitcher showLabel={false} />
             </div>
           </div>
 
@@ -169,7 +183,7 @@ export default function ProfileView() {
             className="flex h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-md border border-(--border-default) bg-(--surface-card) font-sans text-[14px] font-semibold leading-normal text-(--red-600)"
           >
             <Icon name="log-out" size={16} />
-            Sign out
+            {t('signOut')}
           </button>
           <div className="text-center font-mono text-[11px] font-normal leading-normal text-(--text-disabled)">
             AgentConnect
@@ -192,26 +206,29 @@ export default function ProfileView() {
         </div>
         <Button variant="secondary" size="sm" onClick={() => openModal('editProfile')}>
           <Icon name="pencil" size={14} />
-          Edit profile
+          {t('editProfile')}
         </Button>
       </div>
 
       <div className="card mt-[22px]">
         <div className="cardhead">
-          <span className="cardtitle">Account</span>
+          <span className="cardtitle">{t('account')}</span>
         </div>
         <div className="py-[6px]">
-          <KvRow label="Full name">
+          <KvRow label={t('fullName')}>
             <span className="font-sans text-[12.5px] font-medium leading-normal">{user.name}</span>
           </KvRow>
-          <KvRow label="Email">
+          <KvRow label={t('email')}>
             <span className="mono text-[12.5px]">{user.email}</span>
           </KvRow>
-          <KvRow label="Role">
+          <KvRow label={t('role')}>
             <span className={`badge ${roleBadge}`}>{roleLabel}</span>
           </KvRow>
-          <KvRow label="Member since">
+          <KvRow label={t('memberSince')}>
             <span className="mono text-[12.5px]">{memberSince}</span>
+          </KvRow>
+          <KvRow label={language('label')}>
+            <LanguageSwitcher showLabel={false} />
           </KvRow>
         </div>
       </div>
@@ -234,7 +251,7 @@ export default function ProfileView() {
         <Button variant="ghost" onClick={signOut}>
           <span className="inline-flex items-center gap-[7px] text-(--red-600)">
             <Icon name="log-out" size={15} />
-            Sign out
+            {t('signOut')}
           </span>
         </Button>
       </div>

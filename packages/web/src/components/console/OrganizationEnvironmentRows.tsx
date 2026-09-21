@@ -15,6 +15,7 @@
 // combination cannot be saved.
 
 import type { Agent } from '@/lib/data'
+import { useTranslations } from 'next-intl'
 
 export interface EffectiveVariableRow {
   k: string
@@ -31,12 +32,13 @@ export interface EffectiveSecretRow {
 /** The label shown on every inherited row. Kept in one place so the wording,
  *  spelling, and tooltip stay identical on the cards and in the editor. */
 export function OrganizationRowBadge() {
+  const t = useTranslations('Agents.detail.environment')
   return (
     <span
       className="flex-none rounded border border-(--border-subtle) px-[5px] py-px font-sans text-[10px] font-medium leading-normal text-(--text-tertiary)"
-      title="Defined for the whole organization — change it in Organization settings"
+      title={t('organizationTitle')}
     >
-      Organization
+      {t('organization')}
     </span>
   )
 }

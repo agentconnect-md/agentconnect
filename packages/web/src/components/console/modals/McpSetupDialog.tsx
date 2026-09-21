@@ -4,6 +4,7 @@
 // a header value or an OAuth client secret — are typed in the browser, never carried in a tool
 // argument that the audit log and the transcript would both keep.
 
+import { useTranslations } from 'next-intl'
 import { MCP_SETUP_URI, type NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
@@ -24,16 +25,16 @@ export default function McpSetupDialog({
   onClose: () => void
   onCompleted: NativeDialogReport
 }) {
+  const t = useTranslations('Tools.mcp.setupDialog')
   const { activeOrg, myRole } = useOrgs()
   const { agents, updateAgent } = useConsoleData()
-  const heading = 'Add MCP server'
+  const heading = t('heading')
   const notice = (text: string) => <NativeDialogNotice heading={heading} text={text} onClose={onClose} />
-  if (activeOrg?.id !== ui.orgId) return notice('This MCP registry belongs to another organization.')
+  if (activeOrg?.id !== ui.orgId) return notice(t('wrongOrganization'))
   // Same gate as the Tools & Skills page: the CP denies viewer writes, so offer no form.
-  if (myRole === 'viewer') return notice('You cannot add MCP servers in this organization.')
+  if (myRole === 'viewer') return notice(t('viewerDenied'))
   const agent = ui.intent.agentId ? agents.find((item) => item.id === ui.intent.agentId) : undefined
-  if (ui.intent.agentId && !agent?.canEdit)
-    return notice('You cannot change the MCP servers of the agent this server was requested for.')
+  if (ui.intent.agentId && !agent?.canEdit) return notice(t('cannotEditAgent'))
 
   // Attaching is a second write that may fail on its own; the summary reports what actually landed,
   // and never the url, header or grant key the dialog just handled.

@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import {
   AGENT_SETUP_URI,
   AGENT_TOOLS_URI,
@@ -106,16 +107,15 @@ export default function NativeIntegrationDialog({
 }
 
 function IntegrationSetupDialog({ ui, onClose, onCompleted }: Props) {
+  const t = useTranslations('Integrations.dialog')
   const { activeOrg } = useOrgs()
   const { agents, integrations, loading } = useConsoleData()
   const intent = ui.intent
   const agent = agents.find((item) => item.id === intent.agentId)
-  const notice = (text: string) => (
-    <NativeDialogNotice heading="Integration configuration" text={text} onClose={onClose} />
-  )
-  if (activeOrg?.id !== ui.orgId) return notice('This configuration belongs to another organization.')
-  if (loading) return notice('Loading configuration…')
-  if (intent.agentId && !agent?.canEdit) return notice("You cannot edit this agent's integrations.")
+  const notice = (text: string) => <NativeDialogNotice heading={t('configuration')} text={text} onClose={onClose} />
+  if (activeOrg?.id !== ui.orgId) return notice(t('wrongOrganization'))
+  if (loading) return notice(t('loading'))
+  if (intent.agentId && !agent?.canEdit) return notice(t('cannotEdit'))
   if (intent.mode === 'create')
     return (
       <AddIntegrationForOrgModal
@@ -123,7 +123,7 @@ function IntegrationSetupDialog({ ui, onClose, onCompleted }: Props) {
         initialAgentId={intent.agentId}
         onClose={onClose}
         onCompleted={onCompleted}
-        onFailed={nativeFailureReport('Adding the integration', onCompleted, onClose)}
+        onFailed={nativeFailureReport(t('adding'), onCompleted, onClose)}
       />
     )
   if (intent.target.kind === 'codehost-subscription')
@@ -138,7 +138,7 @@ function IntegrationSetupDialog({ ui, onClose, onCompleted }: Props) {
       onCompleted={onCompleted}
     />
   ) : (
-    notice('This integration is unavailable.')
+    notice(t('unavailable'))
   )
 }
 
@@ -153,6 +153,7 @@ function EditChannels({
   onClose: () => void
   onCompleted: NativeDialogReport
 }) {
+  const t = useTranslations('Integrations.dialog')
   const { refresh } = useConsoleData()
   const allowed = channelListSemantics(integration.platform).triggers
   const [draft, setDraft] = useState(() =>
@@ -170,23 +171,21 @@ function EditChannels({
           await updateIntegrationChannel(integration.id!, row.channelId, { trigger: draft[row.channelId] }, orgId)
       }
       await refresh()
-      onCompleted(`Updated conversation triggers for ${integration.name}.`)
+      onCompleted(t('updatedTriggers', { name: integration.name }))
       onClose()
     } catch (e) {
-      const reason = `Some changes may already be saved. ${e instanceof Error ? e.message : String(e)}`
+      const reason = `${t('partialSave')} ${e instanceof Error ? e.message : String(e)}`
       setError(reason)
-      nativeFailureReport(`Updating the triggers of ${integration.name}`, onCompleted, onClose)(reason)
+      nativeFailureReport(t('updatingTriggers', { name: integration.name }), onCompleted, onClose)(reason)
     } finally {
       setBusy(false)
     }
   }
   return (
     <>
-      <div className="modalhead">Edit {integration.name}</div>
+      <div className="modalhead">{t('edit', { name: integration.name })}</div>
       <div className="modalbody flex flex-col gap-3">
-        <p className="text-[13px] text-(--text-secondary)">
-          Choose when the agent responds in each conversation. Saving updates routing for this integration.
-        </p>
+        <p className="text-[13px] text-(--text-secondary)">{t('triggerDescription')}</p>
         {integration.channels.map((row) => (
           <label key={row.channelId} className="flex items-center justify-between gap-3">
             {row.name}
@@ -196,23 +195,25 @@ function EditChannels({
               disabled={busy}
               onChange={(e) => setDraft({ ...draft, [row.channelId]: e.target.value as 'off' | 'mention' | 'any' })}
             >
-              <option value="off">Off</option>
+              <option value="off">{t('off')}</option>
               {row.kind !== 'im' && (!allowed || allowed.includes('mention')) && (
-                <option value="mention">When mentioned</option>
+                <option value="mention">{t('whenMentioned')}</option>
               )}
-              {(row.kind === 'im' || !allowed || allowed.includes('any')) && <option value="any">Every message</option>}
+              {(row.kind === 'im' || !allowed || allowed.includes('any')) && (
+                <option value="any">{t('everyMessage')}</option>
+              )}
             </select>
           </label>
         ))}
-        {!integration.channels.length && <p>No conversations are available yet.</p>}
+        {!integration.channels.length && <p>{t('noConversationsAvailable')}</p>}
         {error && <p role="alert">{error}</p>}
       </div>
       <div className="modalfoot">
         <Button variant="secondary" disabled={busy} onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button disabled={busy || !integration.channels.length} onClick={() => void save()}>
-          Save changes
+          {t('saveChanges')}
         </Button>
       </div>
     </>
@@ -220,6 +221,7 @@ function EditChannels({
 }
 
 function EditSubscription({ ui, onClose, onCompleted }: Props) {
+  const t = useTranslations('Integrations.dialog')
   const intent = ui.intent
   const [hook, setHook] = useState<HookDto | null>(null)
   const [name, setName] = useState('')
@@ -256,7 +258,7 @@ function EditSubscription({ ui, onClose, onCompleted }: Props) {
         if (!alive) return
         const found = rows.find((row) => row.id === intent.target.id && row.agentId === intent.agentId)
         if (!found || !isCodeHostProvider(found.kind)) {
-          setError('This subscription is unavailable.')
+          setError(t('subscriptionUnavailable'))
           return
         }
         setHook(found)
@@ -273,8 +275,7 @@ function EditSubscription({ ui, onClose, onCompleted }: Props) {
               }
             })
             .catch(() => {
-              if (alive)
-                setError('Repository permissions could not be loaded. Reopen the dialog to change review settings.')
+              if (alive) setError(t('repoPermissionsError'))
             })
         }
         setMode(
@@ -298,8 +299,7 @@ function EditSubscription({ ui, onClose, onCompleted }: Props) {
     setError('')
     try {
       const latest = (await fetchAgentHooks(intent.agentId, ui.orgId)).find((row) => row.id === hook.id)
-      if (!latest || latest.configRevision !== hook.configRevision)
-        throw new Error('This subscription changed. Close and reopen the dialog before saving.')
+      if (!latest || latest.configRevision !== hook.configRevision) throw new Error(t('subscriptionChanged'))
       const common = {
         agentId: intent.agentId,
         name: name.trim(),
@@ -358,7 +358,9 @@ function EditSubscription({ ui, onClose, onCompleted }: Props) {
           ui.orgId
         )
       await refresh()
-      onCompleted(`Updated ${hook.kind} subscription ${name.trim()} for ${hook.repoFullName ?? hook.repoId}.`)
+      onCompleted(
+        t('updatedSubscription', { kind: hook.kind, name: name.trim(), repo: hook.repoFullName ?? hook.repoId ?? '' })
+      )
       onClose()
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e)
@@ -366,14 +368,14 @@ function EditSubscription({ ui, onClose, onCompleted }: Props) {
       // A stale-revision refusal is a local fix — reopening is the retry, and the caller is not told
       // a save failed that it never saw start. Anything else is a refusal the caller must hear.
       if (!reason.includes('Close and reopen'))
-        nativeFailureReport('Updating the subscription', onCompleted, onClose)(reason)
+        nativeFailureReport(t('updatingSubscription'), onCompleted, onClose)(reason)
     } finally {
       setBusy(false)
     }
   }
   return (
     <>
-      <div className="modalhead">Edit integration</div>
+      <div className="modalhead">{t('editIntegration')}</div>
       <div className="modalbody flex flex-col gap-3">
         {hook ? (
           <>
@@ -381,7 +383,7 @@ function EditSubscription({ ui, onClose, onCompleted }: Props) {
               {hook.repoFullName ?? hook.repoId} · {hook.family}
             </p>
             <label>
-              Name
+              {t('name')}
               <input
                 className="inp"
                 value={name}
@@ -392,10 +394,10 @@ function EditSubscription({ ui, onClose, onCompleted }: Props) {
             </label>
             <label>
               <input type="checkbox" checked={enabled} disabled={busy} onChange={(e) => setEnabled(e.target.checked)} />{' '}
-              Enabled
+              {t('enabled')}
             </label>
             <label>
-              Trigger
+              {t('trigger')}
               <select
                 className="inp"
                 value={mode}
@@ -405,15 +407,15 @@ function EditSubscription({ ui, onClose, onCompleted }: Props) {
                   setModeChanged(true)
                 }}
               >
-                <option value="first">When created</option>
-                <option value="every">Every update</option>
-                <option value="mention">When mentioned</option>
-                {hook.kind === 'github' && hook.family === 'issues' && <option value="labeled">When labeled</option>}
+                <option value="first">{t('whenCreated')}</option>
+                <option value="every">{t('everyUpdate')}</option>
+                <option value="mention">{t('whenMentioned')}</option>
+                {hook.kind === 'github' && hook.family === 'issues' && (
+                  <option value="labeled">{t('whenLabeled')}</option>
+                )}
               </select>
             </label>
-            <p className="text-[13px] text-(--text-secondary)">
-              Saving changes which repository events start an agent session.
-            </p>
+            <p className="text-[13px] text-(--text-secondary)">{t('repositoryTriggerDescription')}</p>
             {(hook.family === 'pull_request' || hook.family === 'merge_request') && (
               <fieldset disabled={busy}>
                 {hook.kind === 'github' ? (
@@ -444,16 +446,16 @@ function EditSubscription({ ui, onClose, onCompleted }: Props) {
             )}
           </>
         ) : (
-          !error && <p>Loading configuration…</p>
+          !error && <p>{t('loading')}</p>
         )}
         {error && <p role="alert">{error}</p>}
       </div>
       <div className="modalfoot">
         <Button variant="secondary" disabled={busy} onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button disabled={!hook || busy || !name.trim() || reviewBlocked} onClick={() => void save()}>
-          Save changes
+          {t('saveChanges')}
         </Button>
       </div>
     </>

@@ -6,6 +6,7 @@
 // What the design asked for and the runtime cannot supply is absent rather than faked: no progress bar, no step line, no command line, and no "Logs" link (§3.5 records the measurement behind each).
 
 import { useEffect, useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { Spinner } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { formatFileMtime } from '@/components/console/FileBrowser'
@@ -119,6 +120,7 @@ export function TasksPanel({
   /** The inputs to {@link tasksTabStatus} and the tab's badge. */
   onVerdictChange?: (verdict: TasksPanelVerdict) => void
 }) {
+  const t = useTranslations('Sessions.detail.tasksPanel')
   // Reads the panel asks for ITSELF: one per poll interval while something runs, and one on the edge where the reader opens the tab, because a list read ten minutes ago is not an answer about now. Only ever increasing, and summed with the tab action's counter, so every source names one distinct read.
   const [ownTick, setOwnTick] = useState(0)
   const [now, setNow] = useState(() => Date.now())
@@ -171,14 +173,10 @@ export function TasksPanel({
     if (read.err) return <PanelNotice text={noticeText(read.errStatus, read.errCode)} warn={read.errStatus !== 503} />
     // Two different answers the design would otherwise collapse into one empty state: a runtime that reports no task lifecycle at all has NO lease, which is not the same statement as a tracked session that happens to be idle.
     if (!read.data?.tracked) {
-      return (
-        <PanelNotice text="This agent’s runtime doesn’t report background tasks, so there is nothing to watch here. Its work still streams into the conversation." />
-      )
+      return <PanelNotice text={t('runtimeDoesNotReport')} />
     }
     if (tasks.length === 0) {
-      return (
-        <PanelNotice text="No background tasks in this session — everything the agent ran finished inside its turn." />
-      )
+      return <PanelNotice text={t('noTasksInSession')} />
     }
     return (
       <>
@@ -201,7 +199,7 @@ export function TasksPanel({
           data-tasks-census=""
           className="min-w-0 flex-1 font-sans text-[11px] font-normal leading-normal text-(--text-secondary)"
         >
-          {summaryText(read.data, tasks)}
+          {summaryText(read.data, tasks, t)}
         </span>
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-[6px] overflow-auto px-3 py-[10px]">{body()}</div>
@@ -210,9 +208,9 @@ export function TasksPanel({
 }
 
 /** The header's one-line census. Counts what is on screen, so it can never disagree with the rows. */
-function summaryText(data: AgentTasksDto | null, tasks: AgentTaskDto[]): string {
-  if (!data?.tracked) return 'Background tasks'
-  if (tasks.length === 0) return 'No background tasks'
+function summaryText(data: AgentTasksDto | null, tasks: AgentTaskDto[], t: ReturnType<typeof useTranslations>): string {
+  if (!data?.tracked) return t('backgroundTasks')
+  if (tasks.length === 0) return t('noBackgroundTasks')
   const running = tasks.filter((task) => task.state === 'running').length
   const failed = tasks.filter((task) => task.state === 'failed').length
   const done = tasks.length - running - failed
@@ -238,6 +236,7 @@ const BORDER: Record<AgentTaskDto['state'], string> = {
 }
 
 function TaskRow({ task, now }: { task: AgentTaskDto; now: number }) {
+  const t = useTranslations('Sessions.detail.tasksPanel')
   const running = task.state === 'running'
   return (
     <div
@@ -264,15 +263,15 @@ function TaskRow({ task, now }: { task: AgentTaskDto; now: number }) {
           }`}
           title={task.description ?? undefined}
         >
-          {task.description ?? 'Unnamed task'}
+          {task.description ?? t('unnamedTask')}
         </span>
         {/* Subagent rows are CARRIED rather than filtered: the same records fence reclaim, so hiding them here would show "no tasks" beside a host refusing to be reclaimed. Marked instead. */}
         {task.subagent ? (
           <span
             className="flex-none rounded-xs bg-(--surface-active) px-[5px] py-px font-sans text-[10px] font-medium leading-normal text-(--text-tertiary)"
-            title="The runtime’s own internal subagent invocation"
+            title={t('subagentTitle')}
           >
-            subagent
+            {t('subagent')}
           </span>
         ) : null}
         <span className="mono flex-none text-[11px] leading-normal text-(--text-tertiary)">

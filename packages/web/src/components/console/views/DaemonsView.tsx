@@ -23,8 +23,10 @@ import { DaemonLifecycleBadge } from '@/components/console/DaemonLifecycleBadge'
 import { KubernetesMark, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
+import { useTranslations } from 'next-intl'
 
 export default function DaemonsView() {
+  const t = useTranslations('Daemons')
   const { daemons, daemonsLoading, agents, memberSets, orgSetIds } = useConsoleData()
   const { openModal } = useModal()
 
@@ -73,13 +75,11 @@ export default function DaemonsView() {
           title, search and "+", so nothing renders here below 769px. */}
       <div className="mb-4 hidden min-h-[34px] items-center gap-4 desktop:flex">
         <div className="flex-1">
-          <p className="psub mt-0">
-            Your AgentConnect daemons. Each hosts agents over ACP and holds platform connections.
-          </p>
+          <p className="psub mt-0">{t('description')}</p>
         </div>
         <Button size="sm" onClick={() => openModal('daemon')}>
           <Icon name="plus" size={15} />
-          Add daemon
+          {t('addDaemon')}
         </Button>
       </div>
       {daemonsLoading && daemons.length === 0 ? (
@@ -91,13 +91,13 @@ export default function DaemonsView() {
               <span className="flex h-[46px] w-[46px] items-center justify-center rounded-[11px] border border-(--border-subtle) bg-(--surface-sunken)">
                 <Icon name="server" size={22} color="var(--text-tertiary)" />
               </span>
-              <div className="font-sans text-[15px] font-semibold leading-normal">No daemons connected</div>
+              <div className="font-sans text-[15px] font-semibold leading-normal">{t('empty.title')}</div>
               <div className="max-w-[380px] font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
-                Run the daemon where agents should execute; it shows up here.
+                {t('empty.description')}
               </div>
               <Button variant="secondary" size="sm" onClick={() => openModal('daemon')}>
                 <Icon name="plus" size={15} />
-                Add daemon
+                {t('addDaemon')}
               </Button>
             </div>
           ) : (
@@ -106,11 +106,11 @@ export default function DaemonsView() {
               <div className="mb-3 flex items-center gap-2 desktop:hidden">
                 <span className="inline-flex items-center gap-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-secondary)">
                   <span className="h-2 w-2 rounded-full bg-(--status-online)" />
-                  {online} online
+                  {t('online', { count: online })}
                 </span>
                 <span className="inline-flex items-center gap-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-secondary)">
                   <span className="h-2 w-2 rounded-full bg-(--status-paused)" />
-                  {paused} paused
+                  {t('paused', { count: paused })}
                 </span>
               </div>
               {poolMembers.length > 0 &&
@@ -123,7 +123,11 @@ export default function DaemonsView() {
                 <>
                   {/* Earns its place only where something else shares the page: the Cloud entry, or the groups below. */}
                   {(poolMembers.length > 0 || showGroups) && (
-                    <SectionHeader label="Daemons" count={ownDaemons.length} first={poolMembers.length === 0} />
+                    <SectionHeader
+                      label={t('sections.daemons')}
+                      count={ownDaemons.length}
+                      first={poolMembers.length === 0}
+                    />
                   )}
                   <div className={FLEET_GRID}>
                     {ownDaemons.map((m) => (
@@ -181,11 +185,12 @@ function SectionHeader({
 // Daemon groups (daemon-groups.md §2) drawn as a daemon's card — no telemetry, a group has no CPU of its own to quote.
 function GroupsSection({ groups, daemons }: { groups: MemberSetRow[]; daemons: DaemonRow[] }) {
   const { openModal } = useModal()
+  const t = useTranslations('Daemons')
 
   return (
     <>
       <SectionHeader
-        label="Daemon groups"
+        label={t('sections.groups')}
         count={groups.length}
         action={
           <button
@@ -193,13 +198,13 @@ function GroupsSection({ groups, daemons }: { groups: MemberSetRow[]; daemons: D
             onClick={() => openModal('group')}
           >
             <Icon name="plus" size={13} />
-            New group
+            {t('newGroup')}
           </button>
         }
       />
       {groups.length === 0 ? (
         <div className="card px-4 py-[18px] font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-secondary)">
-          Groups keep an agent running when one daemon goes down.
+          {t('groupsDescription')}
         </div>
       ) : (
         <div className={FLEET_GRID}>
@@ -214,6 +219,7 @@ function GroupsSection({ groups, daemons }: { groups: MemberSetRow[]; daemons: D
 
 function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow[] }) {
   const { openModal } = useModal()
+  const t = useTranslations('Daemons')
   const { orgPath } = useOrgs()
   const router = useRouter()
   const [menuOpen, setMenuOpen] = useState(false)
@@ -223,11 +229,19 @@ function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow
   // Names the members: the question a group answers that a count cannot. Falls back to a count once the list will not fit.
   const memberText =
     members.length === 0
-      ? 'No daemons yet'
+      ? t('noDaemons')
       : members.length <= 2
         ? members.map((d) => d.name).join(', ')
-        : `${members.length} daemons · ${serving} serving`
-  const meta = `${memberText} · ${group.agentCount} agent${group.agentCount === 1 ? '' : 's'}`
+        : t('groupMeta', { daemons: members.length, serving })
+  const meta = `${memberText} · ${t('agents', { count: group.agentCount })}`
+  const statusLabel =
+    s.label === 'online'
+      ? t('status.online')
+      : s.label === 'paused'
+        ? t('status.paused')
+        : s.label === 'offline'
+          ? t('status.offline')
+          : s.label
 
   return (
     // Opens the group's page, not the editor: what runs on it is the common read. Edit stays in the menu.
@@ -262,15 +276,15 @@ function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow
         className="badge flex-none px-[10px] py-[3px] text-[12px] desktop:hidden"
         style={{ background: s.bg, color: s.text }}
       >
-        {s.label}
+        {statusLabel}
       </span>
       <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="desktop:hidden" />
       {/* Desktop-only like a daemon card's: below 769px the chevron leads to the group's page, which carries both. */}
       <span className="relative hidden flex-none justify-end desktop:flex" onClick={(e) => e.stopPropagation()}>
         <button
           className="iconbtn h-7 w-7"
-          aria-label="Group actions"
-          title="Group actions"
+          aria-label={t('groupActions')}
+          title={t('groupActions')}
           onClick={() => setMenuOpen((v) => !v)}
         >
           <Icon name="ellipsis" size={16} />
@@ -287,7 +301,7 @@ function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow
                 }}
               >
                 <Icon name="pencil" size={15} />
-                Edit group
+                {t('editGroup')}
               </button>
               <span className="dmsep" />
               <button
@@ -298,7 +312,7 @@ function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow
                 }}
               >
                 <Icon name="trash" size={15} />
-                Remove group
+                {t('removeGroup')}
               </button>
             </span>
           </>
@@ -310,11 +324,24 @@ function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow
 
 /** Desktop's status readout, on a fixed track so every card's action button lands on the same column. */
 function StatusWord({ s }: { s: StatusInfo }) {
+  const t = useTranslations('Daemons')
+  const label =
+    s.label === 'online'
+      ? t('status.online')
+      : s.label === 'paused'
+        ? t('status.paused')
+        : s.label === 'offline'
+          ? t('status.offline')
+          : s.label === 'upgrading'
+            ? t('status.upgrading')
+            : s.label === 'restarting'
+              ? t('status.restarting')
+              : s.label
   return (
     <span className="hidden w-[76px] flex-none items-center gap-[7px] desktop:flex">
       <span className="dot" style={{ background: s.dot }} />
       <span className="truncate font-sans text-[12.5px] font-medium leading-normal" style={{ color: s.text }}>
-        {s.label}
+        {label}
       </span>
     </span>
   )
@@ -335,11 +362,14 @@ function StatusWord({ s }: { s: StatusInfo }) {
 function PoolFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: number }) {
   const { orgPath } = useOrgs()
   const router = useRouter()
+  const t = useTranslations('Daemons')
   const s = status(poolFleetStatus(members))
   const serving = members.filter((m) => m.status === 'online')
   const online = serving.length > 0
   // Node count and version stay internal — the cloud pool doesn't expose its topology.
-  const meta = online ? 'Managed by AgentConnect' : 'Managed by AgentConnect · not serving'
+  const meta = online ? t('pool.managed') : t('pool.notServing')
+  const statusLabel =
+    s.label === 'online' ? t('status.online') : s.label === 'paused' ? t('status.paused') : t('status.offline')
   // Opens CLOUD's own page, never a member's: no member id survives a rollout, so landing on
   // one machine would name the pool after a Pod that is already gone. That page is where the
   // runtimes, models and connections Cloud offers are read.
@@ -367,18 +397,20 @@ function PoolFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: numb
         </div>
         <div className="truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:text-[11.5px] desktop:leading-[1.5]">
           {meta}
-          <span className="desktop:hidden">{` · ${hosted} agent${hosted === 1 ? '' : 's'}`}</span>
+          <span className="desktop:hidden">{` · ${t('agents', { count: hosted })}`}</span>
         </div>
       </div>
       <div className="hidden flex-none text-right desktop:block">
         <div className="mono text-[14px] leading-normal font-semibold">{hosted}</div>
-        <div className="font-sans text-[10.5px] font-normal leading-normal text-(--text-tertiary)">agents on Cloud</div>
+        <div className="font-sans text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
+          {t('pool.agentsOnCloud')}
+        </div>
       </div>
       <span
         className="badge flex-none max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]"
         style={{ background: s.bg, color: s.text }}
       >
-        {s.label}
+        {statusLabel}
       </span>
       <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="desktop:hidden" />
     </div>
@@ -404,14 +436,17 @@ function loadBarColor(load: number): string {
 function ClusterFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: number }) {
   const { orgPath } = useOrgs()
   const router = useRouter()
+  const t = useTranslations('Daemons')
   const s = status(poolFleetStatus(members))
   const serving = members.filter((m) => m.status === 'online')
   const online = serving.length > 0
   // The serving members share a release (they roll together); an idle cluster has no version
   // worth quoting, so the strip drops it rather than naming a Pod that is gone.
   const meta = online
-    ? `${serving.length} node${serving.length === 1 ? '' : 's'} · ${serving[0]!.version}`
-    : 'no nodes serving'
+    ? t('cluster.nodesVersion', { count: serving.length, version: serving[0]!.version })
+    : t('cluster.noNodes')
+  const statusLabel =
+    s.label === 'online' ? t('status.online') : s.label === 'paused' ? t('status.paused') : t('status.offline')
   // Capacity is the sum of what the serving members will run, matched against what they ARE
   // running — the same pair the CP's placement check uses. A member reporting `maxAgents <= 0`
   // is UNBOUNDED, not a ceiling of zero: a cluster holding one has no finite budget, so the
@@ -455,7 +490,7 @@ function ClusterFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: n
         </div>
         <div className="truncate font-mono text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:text-[11px] desktop:leading-[1.5]">
           {meta}
-          <span className="desktop:hidden">{` · ${hosted} agent${hosted === 1 ? '' : 's'}`}</span>
+          <span className="desktop:hidden">{` · ${t('agents', { count: hosted })}`}</span>
         </div>
       </div>
       <div className="hidden flex-none items-center gap-7 desktop:flex">
@@ -466,7 +501,9 @@ function ClusterFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: n
                 {used} / {unbounded ? '∞' : capacity}
               </span>
               {/* An unbounded cluster has no fraction to be: the slot reads why, not "0%". */}
-              <span className="mono text-[11px] text-(--text-tertiary)">{unbounded ? 'no limit' : `${pct}%`}</span>
+              <span className="mono text-[11px] text-(--text-tertiary)">
+                {unbounded ? t('cluster.noLimit') : `${pct}%`}
+              </span>
             </div>
             <span className="block h-1 overflow-hidden rounded-sm bg-(--surface-active)">
               {!unbounded && (
@@ -474,14 +511,14 @@ function ClusterFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: n
               )}
             </span>
             <div className="mt-[5px] font-sans text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
-              Sandbox capacity in use
+              {t('cluster.capacity')}
             </div>
           </div>
         )}
         <div className="text-right">
           <div className="mono text-[14px] leading-normal font-semibold">{hosted}</div>
           <div className="mt-[2px] font-sans text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
-            agents on cluster
+            {t('cluster.agentsOnCluster')}
           </div>
         </div>
       </div>
@@ -489,7 +526,7 @@ function ClusterFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: n
         className="badge flex-none max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px] desktop:hidden"
         style={{ background: s.bg, color: s.text }}
       >
-        {s.label}
+        {statusLabel}
       </span>
       <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="desktop:hidden" />
     </div>
@@ -499,6 +536,7 @@ function ClusterFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: n
 function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
   const { orgPath } = useOrgs()
   const router = useRouter()
+  const t = useTranslations('Daemons')
   const { renameDaemon } = useConsoleData()
   const { openModal } = useModal()
   const [editing, setEditing] = useState(false)
@@ -521,6 +559,18 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
   const canRestart = online && !pending && m.canManageLifecycle
   const canUpgrade = canRestart && m.upgradeAvailable
   const hasActions = m.canEdit || canRestart
+  const statusLabel =
+    s.label === 'online'
+      ? t('status.online')
+      : s.label === 'paused'
+        ? t('status.paused')
+        : s.label === 'offline'
+          ? t('status.offline')
+          : s.label === 'upgrading'
+            ? t('status.upgrading')
+            : s.label === 'restarting'
+              ? t('status.restarting')
+              : s.label
 
   const beginEdit = () => {
     setDraft(m.name)
@@ -588,7 +638,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
               <span
                 onClick={(e) => e.stopPropagation()}
                 onDoubleClick={m.canEdit ? beginEdit : undefined}
-                title={m.canEdit ? 'Double-click to rename' : undefined}
+                title={m.canEdit ? t('doubleClickRename') : undefined}
                 className="hidden min-w-0 truncate font-sans text-[14px] font-semibold leading-normal desktop:block desktop:text-[13.5px]"
               >
                 {m.name}
@@ -597,10 +647,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
             <span className="truncate font-sans text-[14px] font-semibold leading-normal text-(--text-primary) desktop:hidden">
               {m.name}
             </span>
-            <RestrictedLock
-              show={m.visibility === 'restricted'}
-              title="Selected — only shared members can see this daemon"
-            />
+            <RestrictedLock show={m.visibility === 'restricted'} title={t('restrictedHint')} />
           </div>
           {/* Mobile appends the host, desktop the agent count; the upgrade hint hides mid-op, where the status says so. */}
           <div className="flex min-w-0 flex-wrap items-center gap-x-[7px] gap-y-[3px]">
@@ -621,27 +668,27 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
           className="badge flex-none px-[10px] py-[3px] text-[12px] desktop:hidden"
           style={{ background: s.bg, color: s.text }}
         >
-          {s.label}
+          {statusLabel}
         </span>
         <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="desktop:hidden" />
       </div>
       {/* Both utilizations inline. The row's elastic block: a bar reads fine at 100px, a truncated name does not. */}
       <div className="hidden w-[152px] min-w-[100px] flex-col gap-[5px] desktop:flex">
-        <MiniBar label="cpu" pct={m.cpu} color={barColor} hot={hot} />
-        <MiniBar label="mem" pct={m.mem} color={barColor} hot={hot} />
+        <MiniBar label={t('metrics.cpuShort')} pct={m.cpu} color={barColor} hot={hot} />
+        <MiniBar label={t('metrics.memoryShort')} pct={m.mem} color={barColor} hot={hot} />
       </div>
       <StatusWord s={s} />
       {/* Mobile-only: the stacked bars and the stat footer the desktop row folds away. */}
       <div className="flex w-full gap-4 desktop:hidden">
-        <UtilBar label="CPU" pct={m.cpu} color={barColor} hot={hot} />
-        <UtilBar label="MEM" pct={m.mem} color={barColor} hot={hot} />
+        <UtilBar label={t('metrics.cpu')} pct={m.cpu} color={barColor} hot={hot} />
+        <UtilBar label={t('metrics.memory')} pct={m.mem} color={barColor} hot={hot} />
       </div>
       <div className="flex w-full gap-5 border-t border-(--border-subtle) pt-[10px] desktop:hidden">
         {(
           [
-            ['agents', String(hosted)],
-            ['max agents', m.conns],
-            ['last seen', m.uptime]
+            [t('metrics.agents'), String(hosted)],
+            [t('metrics.maxAgents'), m.conns],
+            [t('metrics.lastSeen'), m.uptime]
           ] as const
         ).map(([label, value]) => (
           <div key={label}>
@@ -658,7 +705,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
             e.stopPropagation()
             setMenuOpen((v) => !v)
           }}
-          title="Daemon actions"
+          title={t('daemonActions')}
         >
           <Icon name="ellipsis" size={16} />
         </button>
@@ -681,7 +728,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
                   }}
                 >
                   <Icon name="pencil" size={15} />
-                  Rename
+                  {t('rename')}
                 </button>
               )}
               {canRestart && (
@@ -693,7 +740,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
                   }}
                 >
                   <Icon name="refresh-cw" size={15} />
-                  Restart
+                  {t('restart')}
                 </button>
               )}
               {offline && !pending && m.canEdit && (
@@ -706,7 +753,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
                     }}
                   >
                     <Icon name="refresh-cw" size={15} />
-                    Reconnect
+                    {t('reconnect')}
                   </button>
                   <div className="dmsep" />
                   <button
@@ -717,7 +764,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
                     }}
                   >
                     <Icon name="trash" size={15} />
-                    Delete
+                    {t('delete')}
                   </button>
                 </>
               )}

@@ -12,6 +12,7 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import { Button, Icon, Toggle } from '@/components/ui'
 import { AgentIconView, LoadingState, PlatformMark } from '@/components/marks'
 import { useModal } from '@/components/console/ModalProvider'
@@ -38,8 +39,8 @@ import GitlabCard from '@/components/console/GitlabCard'
 
 // The free-bot sub-line shows where the bot came from without repeating
 // historical usage metadata in the list row.
-function botSubline(b: BotDto): string {
-  return b.freedFromAgent ? `freed from ${b.freedFromAgent}` : b.prebuilt ? 'builtin' : ''
+function botSubline(b: BotDto, labels: { freedFrom: string; builtin: string }): string {
+  return b.freedFromAgent ? `${labels.freedFrom} ${b.freedFromAgent}` : b.prebuilt ? labels.builtin : ''
 }
 
 /** The Bots card's fallback `CardProvider`: a platform with no lifecycle
@@ -57,7 +58,7 @@ type BotRosterRow = { kind: 'workspace'; key: string; label: string } | { kind: 
 // Preserve the server's bot order within each workspace. The heading is rendered
 // only when this produces several groups, so single-workspace organizations keep
 // the compact flat list.
-function botRosterRows(bots: BotDto[]): BotRosterRow[] {
+function botRosterRows(bots: BotDto[], unavailableLabel: string): BotRosterRow[] {
   const groups = new Map<string, { label: string; bots: BotDto[] }>()
   for (const bot of bots) {
     const workspaceId = bot.workspaceId?.trim() || null
@@ -70,7 +71,7 @@ function botRosterRows(bots: BotDto[]): BotRosterRow[] {
       continue
     }
     groups.set(key, {
-      label: workspaceName ?? workspaceId ?? 'Workspace unavailable',
+      label: workspaceName ?? workspaceId ?? unavailableLabel,
       bots: [bot]
     })
   }
@@ -149,6 +150,7 @@ function Section({ label, children }: { label: string; children: ReactNode }) {
 }
 
 export default function IntegrationsView() {
+  const t = useTranslations('Integrations')
   // `?bot=<id>` opens that bot's channel roster — the agent page's bot chip and
   // the Settings-era deep links land here. `?platform=<id>` only selects the
   // tab, for senders that know which provider needs attention but not which of
@@ -167,18 +169,16 @@ export default function IntegrationsView() {
   return (
     <div className="wrap max-desktop:p-4">
       <div className="mb-4 flex flex-wrap items-center gap-3">
-        <p className="psub mt-0 min-w-[240px] flex-1">
-          Messaging bots and code hosts installed for this organization, and the agents bound to them.
-        </p>
+        <p className="psub mt-0 min-w-[240px] flex-1">{t('description')}</p>
         {canWrite && (
           <Button variant="primary" size="sm" onClick={() => openModal('integration')}>
             <Icon name="plus" size={14} />
-            Add integration
+            {t('addIntegration')}
           </Button>
         )}
       </div>
 
-      <Section label="Messaging apps">
+      <Section label={t('messagingApps')}>
         <BotsCard
           canWrite={canWrite}
           me={me}
@@ -188,7 +188,7 @@ export default function IntegrationsView() {
         />
       </Section>
 
-      <Section label="Code hosts">
+      <Section label={t('codeHosts')}>
         <GithubCard canWrite={canWrite} isOwner={isOwner} />
         {/* Cards own no margin here (see Section) — every card after the first supplies its own gap. */}
         <div className="mt-4">
@@ -229,6 +229,7 @@ function BotsCard({
   targetPlatform: string | null
   onDelete: (b: BotDto) => void
 }) {
+  const t = useTranslations('Integrations')
   const { orgPath } = useOrgs()
   const { bots, integrations, getAgent, setBotShareable, setChannelAgent, loading: dataLoading } = useConsoleData()
   // On an owner-as-default platform the seat IS a private agent's grant, so moving it is confirmed first.
@@ -256,7 +257,7 @@ function BotsCard({
   const { label } = platformTab
   const platformBots = bots.filter((bot) => botMatchesPlatformTab(bot, platformTab))
   const shownBots = inUseOnly ? platformBots.filter((bot) => bot.agentIds.length > 0) : platformBots
-  const rosterRows = botRosterRows(shownBots)
+  const rosterRows = botRosterRows(shownBots, t('workspaceUnavailable'))
   // Per-tab totals stay UNFILTERED: they answer "where does this org have bots",
   // which the filter must not silently rewrite while you read across the strip.
   const tabCounts = useMemo(() => {
@@ -314,7 +315,7 @@ function BotsCard({
   // every platform's rows; the module supplies the wording, the host still
   // decides when and which arm to show.
   const rowCopy = botCardCopy(platformTab.platform)
-  const noun = rowCopy.identityNoun
+  const noun = rowCopy.identityNoun.toLowerCase() === 'app' ? t('appLabel') : t('botLabel')
 
   return (
     <div className="card">
@@ -322,7 +323,7 @@ function BotsCard({
         <div
           className="flex min-w-0 flex-1 gap-0 overflow-x-auto [scrollbar-width:none] desktop:overflow-x-visible [&::-webkit-scrollbar]:hidden"
           role="tablist"
-          aria-label="Bot platform"
+          aria-label={t('botPlatform')}
         >
           {BOT_PLATFORM_TABS.map((item) => {
             const selected = item.key === platformTabKey
@@ -352,8 +353,8 @@ function BotsCard({
         {/* Pinned right of the scrolling tab strip. At 375px the full label eats a
             third of the row, so the mobile arm keeps only the words that carry it. */}
         <label className="flex flex-none cursor-pointer items-center gap-2 pl-3 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
-          <span className="max-desktop:hidden">Show in use</span>
-          <span className="desktop:hidden">In use</span>
+          <span className="max-desktop:hidden">{t('showInUse')}</span>
+          <span className="desktop:hidden">{t('inUse')}</span>
           <Toggle checked={inUseOnly} onChange={setInUseOnly} />
         </label>
       </div>
@@ -362,9 +363,9 @@ function BotsCard({
         {/* `.row.h` uppercases, so the module's lower-case noun renders as the
             heading did when the host picked between two literals. */}
         <span>{noun}</span>
-        <span>Sharable</span>
-        <span>Agents</span>
-        <span className="whitespace-nowrap max-[479px]:hidden">Created by</span>
+        <span>{t('sharable')}</span>
+        <span>{t('agents')}</span>
+        <span className="whitespace-nowrap max-[479px]:hidden">{t('createdBy')}</span>
         <span />
       </div>
       {/* Keyed by platform id: switching tabs REMOUNTS the module's card state,
@@ -380,7 +381,7 @@ function BotsCard({
                 className="flex items-center gap-2 border-b border-(--border-subtle) bg-(--surface-sunken) px-4 py-2"
               >
                 <span className="font-sans text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
-                  Workspace
+                  {t('workspace')}
                 </span>
                 <span className="mono min-w-0 truncate text-[12px] text-(--text-secondary)">{row.label}</span>
               </div>
@@ -430,14 +431,16 @@ function BotsCard({
                     </span>
                   </span>
                   <span className="mono min-w-0 flex-1 truncate text-[12.5px]">{b.name}</span>
-                  {b.prebuilt && <span className="badge bg-(--surface-active) text-(--text-tertiary)">builtin</span>}
+                  {b.prebuilt && (
+                    <span className="badge bg-(--surface-active) text-(--text-tertiary)">{t('builtin')}</span>
+                  )}
                   {/* Workspace uninstalled the app / revoked its tokens (rc/bot-revoked):
                     the credential is dead until a re-install refreshes it. The
                     sentence is the module's (§10 `settingsFragments.copy`) — only
                     Slack can name the lifecycle event that put the bot here. */}
                   {b.revokedAt && (
                     <span className="badge bg-(--status-error-soft) text-(--status-error)" title={rowCopy.revokedHint}>
-                      revoked
+                      {t('revoked')}
                     </span>
                   )}
                   {RowBadges && <RowBadges bot={b} />}
@@ -460,7 +463,7 @@ function BotsCard({
                       the CP would accept and the provider contract does not have. */}
                   {platformSharingFixed(b.platform) ? (
                     <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                      Always
+                      {t('always')}
                     </span>
                   ) : (
                     <Toggle
@@ -491,12 +494,12 @@ function BotsCard({
                     })
                   ) : (
                     <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                      {botSubline(b)}
+                      {botSubline(b, { freedFrom: t('bot.freedFrom'), builtin: t('bot.builtin') })}
                     </span>
                   )}
                 </div>
                 <span className="min-w-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) max-[479px]:hidden">
-                  {b.createdBy ? creatorLabel(b.createdBy, me) : b.prebuilt ? 'AgentConnect' : '—'}
+                  {b.createdBy ? creatorLabel(b.createdBy, me) : b.prebuilt ? t('agentConnect') : '—'}
                 </span>
                 {/* The 100px action track: the module's own controls (refresh, provider
                   deep link) first, then the host's delete. */}
@@ -509,7 +512,7 @@ function BotsCard({
                     </button>
                   ) : !free ? (
                     <span
-                      title="Uninstall its integration first"
+                      title={t('uninstallFirst')}
                       className="flex h-7 w-7 flex-none cursor-not-allowed items-center justify-center opacity-45"
                     >
                       <Icon name="trash" size={14} />
@@ -535,7 +538,7 @@ function BotsCard({
                         {/* The platform's own noun for the room, not "conversation": these rows
                             are a Linear workspace's teams and a Slack bot's channels. */}
                         <span>{roomPlural(roomLabel)}</span>
-                        {showDefaultDispatch && <span className="justify-self-end">Default dispatch</span>}
+                        {showDefaultDispatch && <span className="justify-self-end">{t('defaultDispatch')}</span>}
                       </div>
                       <div className="overflow-visible rounded-lg border border-(--border-subtle) bg-(--surface-card)">
                         {channels.map((c, index) => {
@@ -550,7 +553,7 @@ function BotsCard({
                             <Fragment key={c.channelId}>
                               {isDirectConversation(c.kind) && !isDirectConversation(channels[index - 1]?.kind) && (
                                 <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-3 py-[6px] font-sans text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
-                                  Direct messages
+                                  {t('directMessages')}
                                 </div>
                               )}
                               <div
@@ -567,7 +570,11 @@ function BotsCard({
                                   )}
                                   {/* The room's noun is the platform's own; the two direct kinds are platform-free. */}
                                   <span className="sr-only">
-                                    {c.kind === 'mpim' ? 'Group DM' : c.kind === 'im' ? 'Direct message' : roomLabel}
+                                    {c.kind === 'mpim'
+                                      ? t('groupDm')
+                                      : c.kind === 'im'
+                                        ? t('directMessage')
+                                        : roomLabel}
                                     :{' '}
                                   </span>
                                   <span className="flex min-w-0 items-baseline gap-[6px] truncate">
@@ -607,7 +614,7 @@ function BotsCard({
                     </>
                   ) : (
                     <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-                      No conversations yet — the roster fills in once the bot reaches its first {roomNoun}.
+                      {t('noConversations', { room: roomNoun })}
                     </div>
                   )}
                 </div>
@@ -623,14 +630,17 @@ function BotsCard({
           // Filtered empty — say so, or the roster reads as "this org has no
           // Slack bots" when it has several sitting free.
           <div className="px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-            No {label} {noun} is installed on an agent — turn off &ldquo;Show in use&rdquo; to see the{' '}
-            {platformBots.length} free {platformBots.length === 1 ? noun : `${noun}s`}.
+            {t(platformBots.length === 1 ? 'empty.filteredOne' : 'empty.filteredMany', {
+              platform: label,
+              noun,
+              count: platformBots.length
+            })}
           </div>
         ) : (
           <div className="px-4 py-7 text-center">
-            <div className="font-sans text-[13px] font-semibold leading-normal">No {noun}s yet</div>
+            <div className="font-sans text-[13px] font-semibold leading-normal">{t('empty.noneTitle', { noun })}</div>
             <div className="mt-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-              A {label} {noun} is registered when you add a {label} integration to an agent.
+              {t('empty.noneBody', { platform: label, noun })}
             </div>
           </div>
         ))}

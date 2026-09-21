@@ -7,6 +7,7 @@
 // JWT, and the tool only asks for them to be shown.
 
 import { useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { CODE_HOST_SETUP_URI, type NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import { Button } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
@@ -50,6 +51,7 @@ export default function CodeHostSetupDialog({
   onClose: () => void
   onCompleted: NativeDialogReport
 }) {
+  const t = useTranslations('Integrations.dialog.codeHostSetup')
   const { activeOrg, myRole } = useOrgs()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -60,13 +62,7 @@ export default function CodeHostSetupDialog({
   const isOwner = myRole === 'owner'
 
   if (activeOrg?.id !== ui.orgId)
-    return (
-      <NativeDialogNotice
-        heading="Code host connections"
-        text="These connections belong to another organization."
-        onClose={onClose}
-      />
-    )
+    return <NativeDialogNotice heading={t('title')} text={t('wrongOrganization')} onClose={onClose} />
 
   // Done reports the surface was reviewed; closing says nothing, because nothing here is a save
   // the dialog performs — each card applied its own action the moment it was taken.
@@ -86,12 +82,9 @@ export default function CodeHostSetupDialog({
 
   return (
     <>
-      <div className="modalhead">{provider ? `${LABEL[provider]} connections` : 'Code host connections'}</div>
+      <div className="modalhead">{provider ? t('providerTitle', { provider: LABEL[provider] }) : t('title')}</div>
       <div className="modalbody flex flex-col gap-4">
-        <p className="text-[13px] text-(--text-secondary)">
-          Install, connect and disconnect the organization&rsquo;s code hosts. Changes here apply immediately; tokens
-          and authorization codes stay in this browser and are never sent to the conversation.
-        </p>
+        <p className="text-[13px] text-(--text-secondary)">{t('description')}</p>
         {shows('github') && <GithubCard canWrite={canWrite} isOwner={isOwner} />}
         {shows('gitlab') && <GitlabCard canWrite={canWrite} />}
         {shows('gitea') && <GiteaCard canWrite={canWrite} />}
@@ -99,10 +92,10 @@ export default function CodeHostSetupDialog({
       </div>
       <div className="modalfoot">
         <Button variant="secondary" disabled={busy} onClick={onClose}>
-          Close
+          {t('close')}
         </Button>
         <Button disabled={busy} onClick={() => void done()}>
-          Done
+          {t('done')}
         </Button>
       </div>
     </>

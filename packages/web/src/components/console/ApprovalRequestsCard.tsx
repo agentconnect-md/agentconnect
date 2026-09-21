@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { decideAgentPermissionRequest, fetchAgentPermissionRequests, type AgentPermissionRequestDto } from '@/lib/api'
 import { MOCK_MODE } from '@/lib/data'
@@ -25,6 +26,7 @@ export function ApprovalRequestsCard({
   bare?: boolean
   className?: string
 }) {
+  const t = useTranslations('Agents.detail.integrations')
   const { activeOrg } = useOrgs()
   const notifications = useOptionalNotifications()
   const requestsKey = MOCK_MODE ? null : consoleKeys.agentPermissionRequests(activeOrg?.id, agentId)
@@ -179,10 +181,12 @@ export function ApprovalRequestsCard({
         >
           <Icon name={collapsed ? 'chevron-right' : 'chevron-down'} size={13} color="var(--text-tertiary)" />
           <span className="font-sans text-[12.5px] font-semibold leading-normal">
-            {pendingOnly ? 'Pending requests' : 'Approval requests'}
+            {pendingOnly ? t('pendingRequests') : t('approvalRequests')}
           </span>
         </button>
-        {pendingCount > 0 && <span className="badge bg-(--amber-50) text-(--amber-600)">{pendingCount} pending</span>}
+        {pendingCount > 0 && (
+          <span className="badge bg-(--amber-50) text-(--amber-600)">{t('pendingCount', { count: pendingCount })}</span>
+        )}
       </div>
       {collapsed ? null : body}
     </div>

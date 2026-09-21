@@ -9,6 +9,7 @@
 // McpServersField / VisibilityField), so the parent owns the boundary.
 
 import { useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { AgentIconView, Spinner } from '@/components/marks'
 import { AGENT_ICON_GLYPHS, AGENT_ICON_COLORS, type AgentIcon } from '@/lib/agent-icon'
@@ -45,6 +46,7 @@ export function AgentIconPicker({
   pencilCorner?: 'tr' | 'br'
   radiusClass?: string
 }) {
+  const t = useTranslations('Agents.dialog.iconPicker')
   const [open, setOpen] = useState(false)
   // In-progress preview while open, seeded from `value` on open; `value` itself is the
   // committed icon. Displayed only while open, so a header preview needs no parent state.
@@ -89,7 +91,7 @@ export function AgentIconPicker({
       // onCommit path (that would re-persist the stale glyph draft).
       setOpen(false)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'upload failed')
+      setError(err instanceof Error ? err.message : t('uploadFailed'))
     } finally {
       setUploading(false)
     }
@@ -117,7 +119,7 @@ export function AgentIconPicker({
     <div className="relative flex-none">
       <button
         type="button"
-        title="Choose icon"
+        title={t('chooseIcon')}
         onClick={() => (open ? closePopover() : openPopover())}
         // No overflow-hidden here: the pencil badge overflows the corner and must not be
         // clipped. The glyph plate / <img> self-round via rounded-[inherit], and the
@@ -140,7 +142,7 @@ export function AgentIconPicker({
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-[9px] font-mono text-[11px] font-semibold uppercase tracking-[0.06em] text-(--text-tertiary)">
-              Icon
+              {t('icon')}
             </div>
             <div className="mb-[15px] grid grid-cols-8 gap-[5px]">
               {AGENT_ICON_GLYPHS.map((g) => {
@@ -164,7 +166,7 @@ export function AgentIconPicker({
             {!isBrand && (
               <>
                 <div className="mb-[9px] font-mono text-[11px] font-semibold uppercase tracking-[0.06em] text-(--text-tertiary)">
-                  Color
+                  {t('color')}
                 </div>
                 <div className="mb-[14px] flex gap-[8px]">
                   {AGENT_ICON_COLORS.map((c) => {
@@ -199,7 +201,7 @@ export function AgentIconPicker({
                   ) : (
                     <>
                       <Icon name="upload" size={13} color="var(--text-secondary)" />
-                      {shown?.kind === 'image' ? 'Replace image' : 'Upload image'}
+                      {shown?.kind === 'image' ? t('replaceImage') : t('uploadImage')}
                     </>
                   )}
                 </button>

@@ -19,23 +19,34 @@ import { useIsMobile } from '@/lib/use-is-mobile'
 import { LoadingState } from '@/components/marks'
 import { RestrictedLock } from '@/components/console/VisibilityField'
 import { Button, Icon, Toggle } from '@/components/ui'
+import { useLocale, useTranslations } from 'next-intl'
 
-function fmtWhen(iso: string | null): string {
-  if (!iso) return 'never'
+type WhenLabels = {
+  never: string
+  invalid: string
+  seconds: (value: number) => string
+  minutes: (value: number) => string
+  hours: (value: number) => string
+  days: (value: number) => string
+}
+
+function fmtWhen(iso: string | null, labels: WhenLabels): string {
+  if (!iso) return labels.never
   const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return '—'
+  if (Number.isNaN(d.getTime())) return labels.invalid
   const s = Math.round((Date.now() - d.getTime()) / 1000)
-  if (s < 60) return `${s}s ago`
+  if (s < 60) return labels.seconds(s)
   const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ago`
+  if (m < 60) return labels.minutes(m)
   const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
+  if (h < 24) return labels.hours(h)
+  return labels.days(Math.floor(h / 24))
 }
 
 const GRID = 'grid-cols-[2.2fr_1.1fr_1.3fr_1.1fr_1.1fr_44px] gap-3'
 
 export default function CronsView() {
+  const t = useTranslations('Crons')
   const { crons, cronsLoading } = useConsoleData()
   const { openModal } = useModal()
   const isMobile = useIsMobile()
@@ -52,13 +63,13 @@ export default function CronsView() {
             <span className="flex h-[46px] w-[46px] items-center justify-center rounded-[11px] border border-(--border-subtle) bg-(--surface-sunken)">
               <Icon name="calendar-clock" size={22} color="var(--text-tertiary)" />
             </span>
-            <div className="font-sans text-[15px] font-semibold leading-normal">No schedules yet</div>
+            <div className="font-sans text-[15px] font-semibold leading-normal">{t('empty.title')}</div>
             <div className="max-w-[400px] font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
-              Run an agent on a timer — a daily report, a nightly audit.
+              {t('empty.description')}
             </div>
             <Button variant="secondary" size="sm" onClick={() => openModal('cron')}>
               <Icon name="plus" size={15} />
-              New schedule
+              {t('newSchedule')}
             </Button>
           </div>
         </div>
@@ -80,11 +91,11 @@ export default function CronsView() {
         <div className="flex items-center gap-2 px-4 pt-[14px] pb-1">
           <span className="inline-flex items-center gap-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-secondary)">
             <span className="h-2 w-2 rounded-full bg-(--status-online)" />
-            {enabledCount} enabled
+            {t('enabled', { count: enabledCount })}
           </span>
           <span className="flex-1" />
           <span className="font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
-            next: {soonest ? fmtNextRun(soonest) : '—'}
+            {t('next', { value: soonest ? fmtNextRun(soonest) : '—' })}
           </span>
         </div>
         <div className="mx-4 mt-3 overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs)">
@@ -100,11 +111,11 @@ export default function CronsView() {
     <div className="wrap">
       <div className="mb-4 flex min-h-[34px] items-center gap-4">
         <div className="flex-1">
-          <p className="psub mt-0">Cron jobs that run an agent on a timer — reports, sweeps, audits.</p>
+          <p className="psub mt-0">{t('description')}</p>
         </div>
         <Button size="sm" onClick={() => openModal('cron')}>
           <Icon name="plus" size={15} />
-          New schedule
+          {t('newSchedule')}
         </Button>
       </div>
 
@@ -115,23 +126,23 @@ export default function CronsView() {
           <span className="flex h-[46px] w-[46px] items-center justify-center rounded-[11px] border border-(--border-subtle) bg-(--surface-sunken)">
             <Icon name="calendar-clock" size={22} color="var(--text-tertiary)" />
           </span>
-          <div className="font-sans text-[15px] font-semibold leading-normal">No schedules yet</div>
+          <div className="font-sans text-[15px] font-semibold leading-normal">{t('empty.title')}</div>
           <div className="max-w-[400px] font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
-            Run an agent on a timer — a daily report, a nightly audit.
+            {t('empty.description')}
           </div>
           <Button variant="secondary" size="sm" onClick={() => openModal('cron')}>
             <Icon name="plus" size={15} />
-            New schedule
+            {t('newSchedule')}
           </Button>
         </div>
       ) : (
         <div className="card">
           <div className={`row h ${GRID}`}>
-            <span>Schedule</span>
-            <span>Agent</span>
-            <span>Cron</span>
-            <span>Last run</span>
-            <span>Next run</span>
+            <span>{t('columns.schedule')}</span>
+            <span>{t('columns.agent')}</span>
+            <span>{t('columns.cron')}</span>
+            <span>{t('columns.lastRun')}</span>
+            <span>{t('columns.nextRun')}</span>
             <span />
           </div>
           {crons.map((c) => (
@@ -144,6 +155,8 @@ export default function CronsView() {
 }
 
 function CronRow({ c }: { c: CronDto }) {
+  const t = useTranslations('Crons')
+  const locale = useLocale()
   const { agents, saveCron } = useConsoleData()
   const router = useRouter()
   const { orgPath } = useOrgs()
@@ -153,9 +166,17 @@ function CronRow({ c }: { c: CronDto }) {
   const agentName = owner ? agentLabel(owner) : c.agentId ? c.agentId.slice(0, 8) : '—'
   const clock = useScheduleTimeZone()
   // The expression is never converted, so its reading names the zone it is interpreted in.
-  const human = cronHuman(c.schedule)
+  const human = cronHuman(c.schedule, locale)
   const next = c.enabled ? fmtNextRun(cronNext(c.schedule, c.timezone), clock.zoneFor(c.timezone)) : '—'
   const ran = !!c.lastRunAt
+  const whenLabels = {
+    never: t('when.never'),
+    invalid: '—',
+    seconds: (value: number) => t('when.seconds', { value }),
+    minutes: (value: number) => t('when.minutes', { value }),
+    hours: (value: number) => t('when.hours', { value }),
+    days: (value: number) => t('when.days', { value })
+  }
 
   const toggle = async (nextOn: boolean) => {
     const input = cronUpdateInput(c, { enabled: nextOn })
@@ -178,10 +199,7 @@ function CronRow({ c }: { c: CronDto }) {
         >
           <span className="flex min-w-0 items-center gap-[6px]">
             <span className="truncate">{c.name ?? '—'}</span>
-            <RestrictedLock
-              show={c.visibility === 'restricted'}
-              title="Selected — only shared members can see this schedule"
-            />
+            <RestrictedLock show={c.visibility === 'restricted'} title={t('restrictedHint')} />
           </span>
         </div>
         <div
@@ -195,13 +213,13 @@ function CronRow({ c }: { c: CronDto }) {
       <div className="min-w-0">
         <span className="mono text-[12px] text-(--text-primary)">{c.schedule}</span>
         <div className="mt-[2px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-          {human ? `${human} · ${c.timezone}` : 'invalid expression'}
+          {human ? `${human} · ${c.timezone}` : t('invalidExpression')}
         </div>
       </div>
       <span className="inline-flex items-center gap-[6px]">
         <span className={`dot h-[6px] w-[6px] ${ran ? 'bg-(--status-online)' : 'bg-(--text-disabled)'}`} />
         <span className="font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
-          {ran ? `ran · ${fmtWhen(c.lastRunAt)}` : 'never'}
+          {ran ? `${t('ran')} · ${fmtWhen(c.lastRunAt, whenLabels)}` : t('when.never')}
         </span>
       </span>
       <span className={`mono text-[12px] ${next === '—' ? 'text-(--text-tertiary)' : 'text-(--text-primary)'}`}>
@@ -219,6 +237,8 @@ function CronRow({ c }: { c: CronDto }) {
 // equivalent of the desktop row's Toggle (same full-payload PUT). The tile tints
 // brand when enabled, so its state doubles as the affordance.
 function MobileCronRow({ c, i }: { c: CronDto; i: number }) {
+  const t = useTranslations('Crons')
+  const locale = useLocale()
   const { agents, saveCron } = useConsoleData()
   const router = useRouter()
   const { orgPath } = useOrgs()
@@ -227,10 +247,18 @@ function MobileCronRow({ c, i }: { c: CronDto; i: number }) {
   const owner = agents.find((a) => a.id === c.agentId)
   const agentName = owner ? agentLabel(owner) : c.agentId ? c.agentId.slice(0, 8) : '—'
   const clock = useScheduleTimeZone()
-  const human = cronHuman(c.schedule)
+  const human = cronHuman(c.schedule, locale)
   const meta = `${agentName} · ${human ? `${human} · ${c.timezone}` : c.schedule}`
-  const next = c.enabled ? fmtNextRun(cronNext(c.schedule, c.timezone), clock.zoneFor(c.timezone)) : 'off'
+  const next = c.enabled ? fmtNextRun(cronNext(c.schedule, c.timezone), clock.zoneFor(c.timezone)) : t('off')
   const ran = !!c.lastRunAt
+  const whenLabels = {
+    never: t('when.never'),
+    invalid: '—',
+    seconds: (value: number) => t('when.seconds', { value }),
+    minutes: (value: number) => t('when.minutes', { value }),
+    hours: (value: number) => t('when.hours', { value }),
+    days: (value: number) => t('when.days', { value })
+  }
 
   const toggle = async () => {
     const input = cronUpdateInput(c, { enabled: !c.enabled })
@@ -258,8 +286,8 @@ function MobileCronRow({ c, i }: { c: CronDto; i: number }) {
         }}
         disabled={!c.agentId || busy}
         aria-pressed={c.enabled}
-        aria-label={c.enabled ? 'Disable schedule' : 'Enable schedule'}
-        title={!c.agentId ? 'Re-assign an agent first' : c.enabled ? 'Tap to disable' : 'Tap to enable'}
+        aria-label={c.enabled ? t('disable') : t('enable')}
+        title={!c.agentId ? t('reassignFirst') : c.enabled ? t('tapToDisable') : t('tapToEnable')}
         className={`flex h-10 w-10 flex-none items-center justify-center rounded-md border active:opacity-70 ${
           c.enabled
             ? 'border-(--brand-soft) bg-(--brand-soft) text-(--brand)'
@@ -293,7 +321,7 @@ function MobileCronRow({ c, i }: { c: CronDto; i: number }) {
           {next}
         </span>
         <span className="font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">
-          {ran ? `ran · ${fmtWhen(c.lastRunAt)}` : 'never'}
+          {ran ? `${t('ran')} · ${fmtWhen(c.lastRunAt, whenLabels)}` : t('when.never')}
         </span>
       </span>
     </div>

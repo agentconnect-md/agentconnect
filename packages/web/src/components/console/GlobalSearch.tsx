@@ -13,6 +13,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useRouter } from 'next/navigation'
+import { useLocale } from 'next-intl'
 import useSWR from 'swr'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
@@ -90,6 +91,7 @@ export function GlobalSearch({
   rail = false,
   onClose
 }: { autoFocus?: boolean; mobile?: boolean; rail?: boolean; onClose?: () => void } = {}) {
+  const locale = useLocale()
   const router = useRouter()
   const { orgPath, myRole, activeOrg } = useOrgs()
   const { agents, daemons, crons, allSessions, memberSets, orgSetIds } = useConsoleData()
@@ -228,7 +230,7 @@ export function GlobalSearch({
         key: `schedule:${c.id}`,
         kind: 'schedule',
         title: c.name ?? '—',
-        meta: [agentName, cronHuman(c.schedule)].filter(Boolean).join(' · '),
+        meta: [agentName, cronHuman(c.schedule, locale)].filter(Boolean).join(' · '),
         aux: c.enabled ? 'enabled' : 'disabled',
         href: orgPath(`/crons/${c.id}`)
       }

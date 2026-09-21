@@ -1,9 +1,10 @@
 import type { Metadata } from 'next'
+import { getTranslations } from 'next-intl/server'
 import ActivateAccount from './ActivateAccount'
 
-export const metadata: Metadata = {
-  title: 'Activate account · AgentConnect',
-  referrer: 'no-referrer'
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations('Auth.metadata')
+  return { title: t('activate'), referrer: 'no-referrer' }
 }
 
 export default async function ActivatePage({ params }: { params: Promise<{ token: string }> }) {

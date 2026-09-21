@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import type { Agent, AgentCallPolicy, DaemonRow, MemberSetRow } from '@/lib/data'
 import { agentCapabilitySource, agentDaemonLabel, agentLabel, agentModelDisplay } from '@/lib/data'
 import { AgentIconView } from '@/components/marks'
@@ -44,22 +45,16 @@ export interface AgentCallVisibilityProps {
 /** Stands in for granted peers this viewer can't resolve (restricted agents are
  *  filtered out of `/agents`, yet their grants remain active and are preserved
  *  by the CP on save). Without it the allow-list would under-report itself. */
-function HiddenSelectionChip({ count, note }: { count: number; note?: string }) {
+function HiddenSelectionChip({ count, note, label }: { count: number; note?: string; label: string }) {
   return (
     <span
       title={note}
       className="flex h-6 flex-none items-center gap-[5px] rounded-full border border-dashed border-(--border-default) pr-[9px] pl-[7px]"
     >
       <Icon name="eye-off" size={12} color="var(--text-tertiary)" className="flex-none" />
-      <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)">
-        {count} not visible
-      </span>
+      <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)">{label}</span>
     </span>
   )
-}
-
-function plural(count: number, word: string): string {
-  return count === 1 ? word : `${word}s`
 }
 
 const segOn =
@@ -83,6 +78,7 @@ export function AgentCallVisibility({
   variant = 'card',
   className
 }: AgentCallVisibilityProps) {
+  const t = useTranslations('Agents.detail.callVisibility')
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -105,11 +101,7 @@ export function AgentCallVisibility({
   )
   const selectedTotal = selectedPeers.length + hiddenSelectedCount
   const hiddenSelectedNote =
-    hiddenSelectedCount > 0
-      ? `${hiddenSelectedCount} selected ${plural(hiddenSelectedCount, 'agent')} ${
-          hiddenSelectedCount === 1 ? 'is' : 'are'
-        } restricted and not visible to you.`
-      : undefined
+    hiddenSelectedCount > 0 ? t('hiddenSelectedNote', { count: hiddenSelectedCount }) : undefined
   const policyPeers = mode === 'all' ? peers : selectedPeers
   const effectivePeerIdSet = useMemo(() => new Set(effectivePeerIds ?? []), [effectivePeerIds])
   const effectivePeers = useMemo(
@@ -170,7 +162,7 @@ export function AgentCallVisibility({
     <div className="flex items-center gap-2">
       <Icon name={mode === 'all' ? 'globe' : 'lock'} size={13} color="var(--text-tertiary)" className="flex-none" />
       <span className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
-        {mode === 'all' ? 'All agents' : 'Selected agents'}
+        {mode === 'all' ? t('allAgents') : t('selectedAgents')}
       </span>
     </div>
   ) : (
@@ -181,7 +173,7 @@ export function AgentCallVisibility({
           : 'flex h-7 flex-none gap-[2px] rounded-[7px] border border-(--border-subtle) bg-(--surface-sunken) p-[3px]'
       }
       role="group"
-      aria-label={direction === 'inbound' ? 'Inbound agent visibility' : 'Outbound agent visibility'}
+      aria-label={direction === 'inbound' ? t('inboundAria') : t('outboundAria')}
     >
       <button
         type="button"
@@ -190,7 +182,7 @@ export function AgentCallVisibility({
         onClick={() => pickMode('all')}
         className={mode === 'all' ? segOn : segOff}
       >
-        All agents
+        {t('allAgents')}
       </button>
       <button
         type="button"
@@ -199,7 +191,7 @@ export function AgentCallVisibility({
         onClick={() => pickMode('selected')}
         className={mode === 'selected' ? segOn : segOff}
       >
-        Selected
+        {t('selected')}
       </button>
     </div>
   )
@@ -207,23 +199,26 @@ export function AgentCallVisibility({
   const allAgentsSummary =
     effectivePeerIds === undefined || effectivePeers.length === policyPeers.length ? (
       direction === 'inbound' ? (
-        <>{target} accepts calls from all agents.</>
+        <>
+          {target} {t('acceptsAll')}
+        </>
       ) : (
-        <>{target} can call all agents.</>
+        <>
+          {target} {t('callsAll')}
+        </>
       )
     ) : direction === 'inbound' ? (
       <>
-        {target} accepts calls from {effectivePeers.length} of {policyPeers.length}{' '}
-        {plural(policyPeers.length, 'agent')}.
+        {target} {t('acceptsCount', { count: effectivePeers.length, total: policyPeers.length })}
       </>
     ) : (
       <>
-        {target} can call {effectivePeers.length} of {policyPeers.length} {plural(policyPeers.length, 'agent')}.
+        {target} {t('callsCount', { count: effectivePeers.length, total: policyPeers.length })}
       </>
     )
   const blockedCallersTitle =
     direction === 'outbound' && effectivePeerIds !== undefined && blockedPeers.length > 0
-      ? `${blockedPeers.map(agentLabel).join(', ')} can't accept this agent's call.`
+      ? t('blockedCallers', { names: blockedPeers.map(agentLabel).join(', ') })
       : undefined
 
   const body =
@@ -248,7 +243,7 @@ export function AgentCallVisibility({
           title={blockedCallersTitle}
           className="min-w-0 flex-1 font-sans text-[13px] font-normal leading-[1.45] text-(--text-secondary)"
         >
-          {peers.length === 0 ? <>No other agents are available yet.</> : allAgentsSummary}
+          {peers.length === 0 ? <>{t('noOtherAgents')}</> : allAgentsSummary}
         </div>
       </div>
     ) : !editable ? (
@@ -257,7 +252,7 @@ export function AgentCallVisibility({
       <div className="min-h-[60px] px-4 py-[14px]">
         {selectedTotal === 0 ? (
           <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
-            No agents selected.
+            {t('noAgentsSelected')}
           </span>
         ) : (
           <div className="flex flex-wrap items-center gap-[6px]">
@@ -280,7 +275,13 @@ export function AgentCallVisibility({
                 </span>
               </span>
             ))}
-            {hiddenSelectedCount > 0 && <HiddenSelectionChip count={hiddenSelectedCount} note={hiddenSelectedNote} />}
+            {hiddenSelectedCount > 0 && (
+              <HiddenSelectionChip
+                count={hiddenSelectedCount}
+                note={hiddenSelectedNote}
+                label={t('hiddenSelected', { count: hiddenSelectedCount })}
+              />
+            )}
           </div>
         )}
       </div>
@@ -301,7 +302,7 @@ export function AgentCallVisibility({
               </span>
               <button
                 type="button"
-                aria-label={`Remove ${agentLabel(peer)}`}
+                aria-label={t('removeAgent', { name: agentLabel(peer) })}
                 disabled={!editable || busy}
                 onClick={(event) => {
                   event.stopPropagation()
@@ -316,12 +317,18 @@ export function AgentCallVisibility({
           {/* Grants to peers this editor can't see are preserved by the CP on
               save — surface them so the row never reads as a smaller allow-list
               than the one actually stored. */}
-          {hiddenSelectedCount > 0 && <HiddenSelectionChip count={hiddenSelectedCount} note={hiddenSelectedNote} />}
+          {hiddenSelectedCount > 0 && (
+            <HiddenSelectionChip
+              count={hiddenSelectedCount}
+              note={hiddenSelectedNote}
+              label={t('hiddenSelected', { count: hiddenSelectedCount })}
+            />
+          )}
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onFocus={() => setOpen(true)}
-            placeholder="Search agents..."
+            placeholder={t('searchAgents')}
             disabled={!editable || busy}
             className="h-full min-w-[92px] flex-1 border-0 bg-transparent p-0 font-sans text-[13px] font-normal leading-normal text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
           />
@@ -357,7 +364,7 @@ export function AgentCallVisibility({
                 ))
               ) : (
                 <div className="flex min-h-24 items-center justify-center px-4 py-6 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-                  {availablePeers.length === 0 ? 'All agents are selected' : 'No matching agents'}
+                  {availablePeers.length === 0 ? t('allSelected') : t('noMatchingAgents')}
                 </div>
               )}
             </div>
@@ -384,7 +391,7 @@ export function AgentCallVisibility({
   // separately rather than folded into the fraction.
   const hasSelection = mode === 'all' ? policyPeers.length > 0 : selectedTotal > 0
   const evaluatedCount = policyPeers.length
-  const relationshipLabel = direction === 'inbound' ? 'Can call this agent' : 'This agent can call'
+  const relationshipLabel = direction === 'inbound' ? t('canCall') : t('thisAgentCanCall')
   const effectiveSummary =
     effectivePeerIds !== undefined && mode === 'selected' ? (
       <div
@@ -399,18 +406,14 @@ export function AgentCallVisibility({
             color="var(--text-tertiary)"
             className="flex-none"
           />
-          {hasSelection ? relationshipLabel : 'No peers selected'}
+          {hasSelection ? relationshipLabel : t('noPeersSelected')}
         </span>
         {hasSelection && (
           <span className="flex flex-none items-center gap-[6px] font-mono text-[11px] font-semibold leading-normal text-(--text-primary)">
-            {evaluatedCount > 0 && (
-              <span>
-                {effectivePeers.length} of {evaluatedCount}
-              </span>
-            )}
+            {evaluatedCount > 0 && <span>{t('of', { count: effectivePeers.length, total: evaluatedCount })}</span>}
             {hiddenSelectedCount > 0 && (
               <span title={hiddenSelectedNote} className="font-medium text-(--text-tertiary)">
-                {hiddenSelectedCount} unknown
+                {t('unknown', { count: hiddenSelectedCount })}
               </span>
             )}
           </span>
@@ -432,10 +435,10 @@ export function AgentCallVisibility({
             </span>
             <div className="min-w-0 flex-1">
               <div className="font-sans text-[10.5px] font-semibold leading-normal tracking-[.05em] text-(--text-tertiary) uppercase">
-                {direction === 'inbound' ? 'Inbound' : 'Outbound'}
+                {direction === 'inbound' ? t('inbound') : t('outbound')}
               </div>
               <div className="mt-1 font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                {direction === 'inbound' ? 'Which agents can call this agent?' : 'Which agents can this agent call?'}
+                {direction === 'inbound' ? t('inboundQuestion') : t('outboundQuestion')}
               </div>
             </div>
           </div>
@@ -452,7 +455,7 @@ export function AgentCallVisibility({
     return (
       <div ref={rootRef} aria-busy={busy} className={`fld${className ? ` ${className}` : ''}`}>
         <div className="flex items-center justify-between gap-2">
-          <span className="fldlbl">Agent visibility</span>
+          <span className="fldlbl">{t('title')}</span>
           {toggle}
         </div>
         <div className="overflow-visible rounded-md border border-(--border-subtle) bg-(--surface-card)">
@@ -470,7 +473,7 @@ export function AgentCallVisibility({
       className={`card relative max-desktop:rounded-lg${className ? ` ${className}` : ''}`}
     >
       <div className="flex items-center justify-between gap-2 border-b border-(--border-subtle) px-4 py-3 desktop:gap-3 desktop:py-[13px]">
-        <span className="whitespace-nowrap font-sans text-[14px] font-semibold leading-normal">Agent visibility</span>
+        <span className="whitespace-nowrap font-sans text-[14px] font-semibold leading-normal">{t('title')}</span>
         {toggle}
       </div>
       {body}

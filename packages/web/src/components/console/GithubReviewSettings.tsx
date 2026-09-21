@@ -1,5 +1,6 @@
 'use client'
 
+import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { CodeHostReviewSettings, ReviewNotice } from '@/components/console/CodeHostReviewSettings'
 import {
@@ -48,6 +49,7 @@ export function GithubReviewSettings({
   authorizingRepo?: boolean
   onAuthorizeRepo?: () => void
 }) {
+  const t = useTranslations('Integrations.dialog.codeHostReview.github')
   const needed = requiredRepoAccess(value)
   const accessBlocked = repoSelected && !repoAccessSatisfies(repoAccess, needed)
   const hasExactChecksWritePermission = hasChecksWritePermission(installation)
@@ -62,26 +64,22 @@ export function GithubReviewSettings({
   const hasPendingPermissionUpgrade = installation?.permissionsStatus === 'outdated'
   const blocked = accessBlocked || reviewPermissionBlocked || checkPermissionBlocked
 
-  const approveHelp = `Allows a formal APPROVE review. The App cannot approve its own PR or guarantee CODEOWNERS coverage${
-    publicRepo ? '; public PR content is untrusted input' : ''
-  }.`
+  const approveHelp = publicRepo ? t('helpApprovePublic') : t('helpApprove')
 
   return (
     <CodeHostReviewSettings
-      title="PR review"
+      title={t('title')}
       value={value}
       onReviewPolicyChange={onReviewPolicyChange}
       onReportingModeChange={onReportingModeChange}
       layout={layout}
       defaultExpanded={defaultExpanded}
-      statusCheckLabel="Status check"
+      statusCheckLabel={t('statusCheckLabel')}
       help={{
-        inlineComments: 'Submit formal COMMENT reviews with optional comments on specific changed lines.',
-        requestChanges:
-          'Allow formal REQUEST_CHANGES reviews for blocking findings. This also enables inline comments.',
+        inlineComments: t('helpInlineComments'),
+        requestChanges: t('helpRequestChanges'),
         approve: approveHelp,
-        statusCheck:
-          'Publish an informational GitHub Check Run for queued, in-progress, and final results. It does not block merging.'
+        statusCheck: t('helpStatusCheck')
       }}
       notices={
         <>
@@ -97,21 +95,25 @@ export function GithubReviewSettings({
                     disabled={authorizingRepo}
                     className="flex-none rounded-sm border border-(--status-error) px-2 py-[5px] font-sans text-[11.5px] font-semibold leading-normal disabled:cursor-default disabled:opacity-60"
                   >
-                    {authorizingRepo ? 'Authorizing…' : repoAccess === 'none' ? 'Authorize repo' : 'Upgrade access'}
+                    {authorizingRepo
+                      ? t('authorizing')
+                      : repoAccess === 'none'
+                        ? t('authorizeRepo')
+                        : t('upgradeAccess')}
                   </button>
                 ) : undefined
               }
             >
-              This configuration needs {needed} repository access; the agent currently has {repoAccess}.
+              {t('accessNeeded', { needed, repoAccess })}
             </ReviewNotice>
           )}
           {reviewPermissionBlocked && (
             <ReviewNotice icon="triangle-alert" tone="error">
               {installation?.pullRequestsPermission === 'missing'
-                ? 'This installation must grant the App Pull requests write permission for formal reviews.'
+                ? t('reviewPermissionMissing')
                 : installation?.pullRequestsPermission === 'read'
-                  ? 'This installation must upgrade Pull requests permission from read to write for formal reviews.'
-                  : 'Pull requests write permission could not be confirmed for this installation.'}
+                  ? t('reviewPermissionReadOnly')
+                  : t('reviewPermissionUnconfirmed')}
               {installation?.settingsUrl && (
                 <>
                   {' '}
@@ -121,7 +123,7 @@ export function GithubReviewSettings({
                     rel="noopener noreferrer"
                     className="lnk text-[12px]"
                   >
-                    Review permissions
+                    {t('reviewPermissions')}
                     <Icon name="external-link" size={12} />
                   </a>
                 </>
@@ -133,11 +135,11 @@ export function GithubReviewSettings({
             <ReviewNotice icon="triangle-alert" tone="error">
               {!hasExactChecksWritePermission
                 ? installation?.checksPermission === 'missing'
-                  ? 'This installation must accept the App’s updated Checks permission.'
-                  : 'Checks permission could not be confirmed for this installation.'
+                  ? t('checksPermissionMissing')
+                  : t('checksPermissionUnconfirmed')
                 : installation?.pullRequestsPermission === 'missing'
-                  ? 'This installation must grant the App Pull requests read permission for live PR association.'
-                  : 'Pull requests read permission could not be confirmed for live PR association.'}
+                  ? t('readPermissionMissing')
+                  : t('readPermissionUnconfirmed')}
               {installation?.settingsUrl && (
                 <>
                   {' '}
@@ -147,7 +149,7 @@ export function GithubReviewSettings({
                     rel="noopener noreferrer"
                     className="lnk text-[12px]"
                   >
-                    Update permissions
+                    {t('updatePermissions')}
                     <Icon name="external-link" size={12} />
                   </a>
                 </>
@@ -157,11 +159,9 @@ export function GithubReviewSettings({
 
           {repoSelected && hasPendingPermissionUpgrade && !blocked && (
             <ReviewNotice icon="triangle-alert" tone="warning">
-              {hasExactChecksWritePermission
-                ? 'This installation has other GitHub App permission updates waiting for approval. Its current Checks write permission remains available.'
-                : 'This installation has GitHub App permission updates waiting for approval.'}{' '}
+              {hasExactChecksWritePermission ? t('pendingUpgradeChecksKept') : t('pendingUpgrade')}{' '}
               <a href={installation.settingsUrl} target="_blank" rel="noopener noreferrer" className="lnk text-[12px]">
-                Review permissions
+                {t('reviewPermissions')}
                 <Icon name="external-link" size={12} />
               </a>
             </ReviewNotice>

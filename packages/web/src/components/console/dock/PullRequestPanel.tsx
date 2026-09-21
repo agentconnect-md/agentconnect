@@ -5,6 +5,7 @@
 // A 404 from the probe is PROVISIONAL on a bounded ladder (the session→run link can commit after the status flip, or with no flip at all), then the absence is believed and drawn: the branch's state and a Create-pull-request action, which is another one-turn post on the same path as Auto-fix.
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { Spinner } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import {
@@ -220,6 +221,7 @@ export function PullRequestPanel({
   /** The inputs to {@link pullRequestTabStatus}, the tab's badge and its external-link action. */
   onVerdictChange?: (verdict: PullRequestPanelVerdict) => void
 }) {
+  const t = useTranslations('Sessions.detail.pullRequestPanel')
   // The panel owns its reads: the tab's header action is `external-link` (§1's table), so refresh lives in the body. Both fields move together so a press is exactly one effect run.
   const [reads, setReads] = useState({ tick: 0, force: false })
   const { read, refreshing } = useSessionPullRequest(sessionId, reads)
@@ -383,8 +385,8 @@ export function PullRequestPanel({
       data-pr-refresh=""
       className="iconbtn h-[22px] w-[22px] flex-none rounded-xs disabled:pointer-events-none"
       disabled={refreshing}
-      aria-label="Refresh pull request"
-      title="Ask GitHub again, past the control plane’s short cache"
+      aria-label={t('refresh')}
+      title={t('refreshTitle')}
       onClick={() => setReads((r) => ({ tick: r.tick + 1, force: true }))}
     >
       {refreshing ? <Spinner size={11} /> : <Icon name="refresh-cw" size={13} />}
@@ -428,7 +430,7 @@ export function PullRequestPanel({
       <div data-pr-panel="none" className="flex min-h-0 flex-1 flex-col">
         <div className="flex flex-none items-center gap-2 border-b border-(--border-subtle) px-3 py-[7px]">
           <span className="min-w-0 flex-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-            {unpublished ? 'No upstream configured' : 'No pull request'}
+            {unpublished ? t('noUpstream') : t('noPullRequest')}
           </span>
           {refresh}
         </div>
@@ -459,7 +461,7 @@ export function PullRequestPanel({
             attr: { 'data-pr-create': '' },
             // Relabelled once asked: the same press is now a RETRY, and a button that still reads
             // "Create pull request" would invite a second PR for the branch that already has one.
-            label: createRequested ? 'Ask again' : 'Create pull request',
+            label: createRequested ? t('askAgain') : t('createPullRequest'),
             icon: createRequested ? 'rotate-ccw' : 'git-pull-request',
             title: createRequested
               ? 'Ask again — if this branch already has a pull request the agent will say so instead of opening a second one'
@@ -480,7 +482,7 @@ export function PullRequestPanel({
       <div data-pr-panel="failed" className="flex min-h-0 flex-1 flex-col">
         <div className="flex flex-none items-center gap-2 border-b border-(--border-subtle) px-3 py-[7px]">
           <span className="min-w-0 flex-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-            Pull request unavailable
+            {t('unavailable')}
           </span>
           {refresh}
         </div>
@@ -492,8 +494,31 @@ export function PullRequestPanel({
     )
   }
 
-  const pill = STATE_PILL[pullRequestPillKey(view.state, view.isDraft)]!
-  const decision = view.reviewDecision ? DECISION_PILL[view.reviewDecision] : undefined
+  const pillKey = pullRequestPillKey(view.state, view.isDraft)
+  const pill = {
+    ...STATE_PILL[pillKey]!,
+    label:
+      pillKey === 'open'
+        ? t('open')
+        : pillKey === 'draft'
+          ? t('draft')
+          : pillKey === 'merged'
+            ? t('merged')
+            : pillKey === 'closed'
+              ? t('closed')
+              : t('stateUnknown')
+  }
+  const decision = view.reviewDecision
+    ? {
+        ...DECISION_PILL[view.reviewDecision],
+        label:
+          view.reviewDecision === 'approved'
+            ? t('approved')
+            : view.reviewDecision === 'changes_requested'
+              ? t('changesRequested')
+              : t('reviewRequired')
+      }
+    : undefined
 
   const section = (name: string, title: string, count: ReactNode, children: ReactNode, aside?: ReactNode) => (
     <div data-pr-section={name} className="flex flex-none flex-col">
@@ -551,9 +576,9 @@ export function PullRequestPanel({
         {review.isBot ? (
           <span
             className="flex-none rounded-xs bg-(--surface-active) px-[5px] py-px font-sans text-[10px] font-medium leading-normal text-(--text-tertiary)"
-            title="A GitHub App identity, not a person"
+            title={t('botTitle')}
           >
-            bot
+            {t('bot')}
           </span>
         ) : null}
         <span className="flex-none font-sans text-[11px] font-normal leading-normal text-(--text-secondary)">
@@ -580,9 +605,9 @@ export function PullRequestPanel({
         {thread.isOutdated ? (
           <span
             className="flex-none rounded-xs bg-(--surface-active) px-[5px] py-px font-sans text-[10px] font-medium leading-normal text-(--text-tertiary)"
-            title="The commented lines have changed since this thread was opened"
+            title={t('outdatedTitle')}
           >
-            outdated
+            {t('outdated')}
           </span>
         ) : null}
       </div>
@@ -641,7 +666,7 @@ export function PullRequestPanel({
           className="lnk flex items-center gap-[4px] self-start font-sans text-[11.5px] font-medium leading-normal"
         >
           <Icon name="external-link" size={12} className="flex-none" />
-          View on GitHub
+          {t('viewOnGithub')}
         </a>
       </div>
       <div className="flex min-h-0 flex-1 flex-col overflow-auto pb-2">
@@ -649,7 +674,7 @@ export function PullRequestPanel({
         {view.body ? (
           <div data-pr-body="" className="flex flex-none flex-col">
             <div className="flex items-center gap-2 px-3 pt-[10px] pb-[5px] font-sans text-[10.5px] font-semibold tracking-[0.04em] uppercase leading-normal text-(--text-disabled)">
-              Description
+              {t('description')}
             </div>
             <div
               className={`px-3 font-sans text-[12px] font-normal leading-[1.55] whitespace-pre-wrap break-words text-(--text-secondary) ${
@@ -665,7 +690,7 @@ export function PullRequestPanel({
                 className="self-start px-3 pb-2 font-sans text-[11px] font-medium leading-normal text-(--text-link) hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
                 onClick={() => setBodyExpanded((v) => !v)}
               >
-                {bodyExpanded ? 'Show less' : 'Show more'}
+                {bodyExpanded ? t('showLess') : t('showMore')}
               </button>
             ) : null}
           </div>
@@ -721,10 +746,10 @@ export function PullRequestPanel({
           <>
             {section(
               'checks',
-              'Checks',
+              t('checks'),
               view.checks.length,
               view.checks.length === 0 ? (
-                <PanelNotice text="No checks reported on this PR’s head commit." />
+                <PanelNotice text={t('noChecks')} />
               ) : (
                 <>
                   {view.checks.map(checkRow)}
@@ -736,9 +761,9 @@ export function PullRequestPanel({
             )}
             {section(
               'reviews',
-              'Reviews',
+              t('reviews'),
               view.reviews.length,
-              view.reviews.length === 0 ? <PanelNotice text="No reviews yet." /> : <>{view.reviews.map(reviewRow)}</>,
+              view.reviews.length === 0 ? <PanelNotice text={t('noReviews')} /> : <>{view.reviews.map(reviewRow)}</>,
               decision ? (
                 <span data-pr-decision={view.reviewDecision} className={decision.cls}>
                   {decision.label}
@@ -747,11 +772,11 @@ export function PullRequestPanel({
             )}
             {section(
               'threads',
-              'Unresolved threads',
+              t('unresolvedThreads'),
               // The count is a FLOOR when the thread page is truncated, and the `+` says so rather than presenting a page as the total.
               `${view.unresolvedCount}${view.threadsTruncated ? '+' : ''}`,
               view.threads.length === 0 ? (
-                <PanelNotice text="No unresolved review threads." />
+                <PanelNotice text={t('noThreads')} />
               ) : (
                 <div className="flex flex-col gap-[6px] px-3 pt-px pb-[6px]">
                   {view.threads.map(threadCard)}
@@ -766,7 +791,7 @@ export function PullRequestPanel({
               view.threads.length > 0
                 ? postAction({
                     attr: { 'data-pr-autofix': '' },
-                    label: 'Auto-fix',
+                    label: t('autoFix'),
                     icon: 'wand-sparkles',
                     title:
                       'Hand every unresolved thread to the agent as one turn; it edits this session’s worktree and resolves the threads it fixes',
@@ -791,10 +816,10 @@ export function PullRequestPanel({
                   data-pr-merge-cancel=""
                   className="dsbtn dsbtn-secondary sm flex-none disabled:pointer-events-none disabled:opacity-50"
                   disabled={mergeNow.busy}
-                  title="Keep the pull request open"
+                  title={t('keepOpen')}
                   onClick={() => setMergeArmed(false)}
                 >
-                  Cancel
+                  {t('cancel')}
                 </button>
                 <button
                   type="button"
@@ -811,7 +836,7 @@ export function PullRequestPanel({
                   onClick={doMerge}
                 >
                   {mergeNow.busy ? <Spinner size={11} /> : <Icon name="git-merge" size={13} />}
-                  Confirm merge
+                  {t('confirmMerge')}
                 </button>
               </>
             ) : (
@@ -830,7 +855,7 @@ export function PullRequestPanel({
                 onClick={() => setMergeArmed(true)}
               >
                 <Icon name="git-merge" size={13} />
-                Merge
+                {t('merge')}
               </button>
             )}
             {mergeNow.err ? (
@@ -869,7 +894,7 @@ export function PullRequestPanel({
               disabled={!view.canArmAutoMerge || view.autoMergeArmed === null || merge.busy}
               onChange={(event) => toggleAutoMerge(event.target.checked)}
             />
-            Merge when ready
+            {t('mergeWhenReady')}
             {merge.busy ? <Spinner size={11} /> : null}
             {view.autoMergeArmed ? (
               <span
@@ -883,7 +908,7 @@ export function PullRequestPanel({
                       : undefined
                 }
               >
-                Watching
+                {t('watching')}
               </span>
             ) : null}
           </label>

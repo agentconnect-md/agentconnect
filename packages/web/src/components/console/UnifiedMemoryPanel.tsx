@@ -1,6 +1,7 @@
 'use client'
 
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import dynamic from 'next/dynamic'
 import type {
   MemoryEntryCapabilities,
@@ -148,6 +149,7 @@ function EntryRow({
   )
 }
 function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: Props) {
+  const t = useTranslations('Agents.detail.memory')
   const generation = useRef(0)
   const detailRequest = useRef(0)
   const [capabilities, setCapabilities] = useState<MemoryEntryCapabilities | null>(null)
@@ -518,7 +520,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
       ) : null}
       {!busy && !error && hits && hits.length === 0 ? (
         <div className="px-4 py-3 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-          No memory matched this search.
+          {t('noSearchMatches')}
         </div>
       ) : null}
       {!busy && hits
@@ -538,7 +540,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
         : null}
       {!busy && !error && !hits && entries.length === 0 && !overview ? (
         <div className="px-4 py-3 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-          No memory yet.
+          {t('noMemory')}
         </div>
       ) : null}
       {!busy && !hits
@@ -558,7 +560,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
       {!busy && !hits && cursor ? (
         <div className="px-3 py-2">
           <Button variant="ghost" size="xs" disabled={paging || saving} onClick={() => void more()}>
-            {paging ? 'Loading…' : 'Load more'}
+            {paging ? t('loading') : t('loadMore')}
           </Button>
         </div>
       ) : null}
@@ -791,7 +793,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
   )
   return (
     <FileBrowserShell
-      title={<span aria-label="Memory entries">Memory</span>}
+      title={<span aria-label={t('memory')}>{t('memory')}</span>}
       headerEnd={
         <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
           <Button
@@ -799,10 +801,10 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
             size="xs"
             disabled={busy || saving || (!!mode && !blocked)}
             onClick={() => void reload(blocked)}
-            ariaLabel="Refresh"
+            ariaLabel={t('refresh')}
           >
             <Icon name="refresh-cw" size={13} />
-            <span className="max-desktop:hidden">Refresh</span>
+            <span className="max-desktop:hidden">{t('refresh')}</span>
           </Button>
           {supports('create') ? (
             <Button
@@ -810,10 +812,10 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
               size="xs"
               disabled={busy || reading || overviewBusy || overviewTopicBusy || saving || !!mode || blocked}
               onClick={startCreate}
-              ariaLabel="New memory"
+              ariaLabel={t('newMemory')}
             >
               <Icon name="plus" size={13} />
-              <span className="max-desktop:hidden">New memory</span>
+              <span className="max-desktop:hidden">{t('newMemory')}</span>
             </Button>
           ) : null}
         </div>
@@ -822,8 +824,8 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
       {capabilities?.operations.includes('search') ? (
         <div className="flex items-center gap-2 border-b border-(--border-subtle) px-3 py-2">
           <input
-            aria-label="Search memory"
-            placeholder="Search memory…"
+            aria-label={t('searchMemory')}
+            placeholder={t('searchMemory')}
             value={query}
             maxLength={2048}
             disabled={busy || saving}
@@ -843,7 +845,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
             onClick={() => void search()}
           >
             <Icon name="search" size={13} />
-            Search
+            {t('search')}
           </Button>
           {hits ? (
             <Button
@@ -855,7 +857,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
                 setSearchNote(undefined)
               }}
             >
-              Clear search
+              {t('clearSearch')}
             </Button>
           ) : null}
         </div>
@@ -895,7 +897,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
           preview={reading || mode || document || overviewOpen ? renderPreview : null}
           emptyPreview={
             <div className="flex flex-1 items-center justify-center px-4 py-10 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-              Select a memory to read it.
+              {t('selectMemory')}
             </div>
           }
         />

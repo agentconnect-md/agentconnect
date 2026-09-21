@@ -1,9 +1,10 @@
 import type { Metadata } from 'next'
+import { getTranslations } from 'next-intl/server'
 import JoinOrganization from './JoinOrganization'
 
-export const metadata: Metadata = {
-  title: 'Join organization · AgentConnect',
-  referrer: 'no-referrer'
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations('Auth.metadata')
+  return { title: t('join'), referrer: 'no-referrer' }
 }
 
 export default async function JoinOrganizationPage({ params }: { params: Promise<{ token: string }> }) {

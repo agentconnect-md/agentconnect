@@ -2,7 +2,9 @@
 // reading of an expression and the next-fire preview. Both are display-only —
 // the daemon (croner, same library) remains authoritative for actual firing.
 import { Cron } from 'croner'
-import cronstrue from 'cronstrue'
+// The `i18n` entry is the one that bundles the locale table; the default entry ships English only.
+import cronstrue from 'cronstrue/i18n'
+import { DEFAULT_LOCALE, LOCALES, type Locale } from '@/i18n/config'
 import type { CronDto, UpsertCronInput } from './api'
 
 // The visual "Repeats" builder in the schedule modal speaks in these presets;
@@ -55,11 +57,11 @@ export function parseCron(expr: string): CronParts {
   return fallback
 }
 
-/** "0 9 * * 1" → "At 09:00 AM, only on Monday"; null when the expression
- *  doesn't parse (the caller decides how to show the error). */
-export function cronHuman(expr: string): string | null {
+/** "0 9 * * 1" → "At 09:00 AM, only on Monday" (localized); null when the
+ *  expression doesn't parse (the caller decides how to show the error). */
+export function cronHuman(expr: string, locale: Locale = DEFAULT_LOCALE): string | null {
   try {
-    return cronstrue.toString(expr)
+    return cronstrue.toString(expr, { locale: LOCALES[locale].cronstrue })
   } catch {
     return null
   }
@@ -85,9 +87,11 @@ export function cronTimezoneSelectModel(
   ].sort()
   return {
     initialValue: storedTimezone ?? browserTimezone,
+    // The browser-default row is flagged, not labelled: the caller renders
+    // Crons.dialog.timezoneBrowserDefault so the copy stays translatable.
     options: values.map((value) => ({
       value,
-      label: storedTimezone == null && value === browserTimezone ? `Browser default (${value})` : value
+      browserDefault: storedTimezone == null && value === browserTimezone
     }))
   }
 }

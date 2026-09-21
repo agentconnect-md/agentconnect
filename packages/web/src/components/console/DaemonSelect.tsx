@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
+import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { placementIcon, type PlacementIconKind } from '@/lib/data'
 
@@ -39,8 +40,8 @@ export function DaemonSelect({
   value,
   options,
   onChange,
-  ariaLabel = 'Runs on',
-  placeholder = 'No daemons connected'
+  ariaLabel,
+  placeholder
 }: {
   value: string
   options: readonly DaemonSelectOption[]
@@ -48,6 +49,9 @@ export function DaemonSelect({
   ariaLabel?: string
   placeholder?: string
 }) {
+  const t = useTranslations('Agents.dialog.daemonSelect')
+  const effectiveAriaLabel = ariaLabel ?? t('runsOn')
+  const effectivePlaceholder = placeholder ?? t('noDaemonsConnected')
   const selectedIndex = options.findIndex((option) => option.value === value)
   const selected = selectedIndex >= 0 ? options[selectedIndex] : undefined
   const [open, setOpen] = useState(false)
@@ -129,7 +133,7 @@ export function DaemonSelect({
             ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)'
             : 'hover:border-(--border-strong) hover:bg-(--surface-hover) focus-visible:border-(--border-focus) focus-visible:ring-[3px] focus-visible:ring-(--brand-ring)'
         }`}
-        aria-label={ariaLabel}
+        aria-label={effectiveAriaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
@@ -149,7 +153,7 @@ export function DaemonSelect({
               className="flex-none"
             />
           )}
-          <span className="truncate">{selected?.label ?? placeholder}</span>
+          <span className="truncate">{selected?.label ?? effectivePlaceholder}</span>
         </span>
         <Icon
           name="chevron-down"
@@ -166,7 +170,7 @@ export function DaemonSelect({
             id={listboxId}
             role="listbox"
             tabIndex={-1}
-            aria-label={ariaLabel}
+            aria-label={effectiveAriaLabel}
             aria-activedescendant={activeIndex >= 0 ? `${listboxId}-option-${activeIndex}` : undefined}
             className="fmenu z-40 min-w-full outline-none"
             onKeyDown={onListKeyDown}

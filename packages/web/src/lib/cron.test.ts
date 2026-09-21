@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CronDto } from './api'
 import {
+  cronHuman,
   cronNext,
   cronTimezoneInput,
   cronTimezoneSelectModel,
@@ -11,6 +12,19 @@ import {
 } from './cron'
 
 afterEach(() => vi.useRealTimers())
+
+describe('cronHuman', () => {
+  it('reads the expression in the given console locale', () => {
+    expect(cronHuman('0 9 * * 1', 'en')).toBe('At 09:00 AM, only on Monday')
+    expect(cronHuman('0 9 * * 1', 'zh-CN')).toContain('09:00')
+    expect(cronHuman('0 9 * * 1', 'zh-CN')).not.toContain('Monday')
+  })
+
+  it('falls back to the source locale and returns null for an unparseable expression', () => {
+    expect(cronHuman('0 9 * * 1')).toBe('At 09:00 AM, only on Monday')
+    expect(cronHuman('not a cron')).toBeNull()
+  })
+})
 
 describe('cronNext', () => {
   it('computes the next absolute fire time in the stored IANA timezone', () => {
@@ -134,23 +148,23 @@ describe('cronUpdateInput', () => {
 describe('cronTimezoneSelectModel', () => {
   const supportedTimezones = ['UTC', 'Asia/Singapore']
 
-  it('defaults a new cron to the browser timezone and labels that option', () => {
+  it('defaults a new cron to the browser timezone and flags that option', () => {
     expect(cronTimezoneSelectModel(null, 'Asia/Singapore', supportedTimezones)).toEqual({
       initialValue: 'Asia/Singapore',
       options: [
-        { value: 'Asia/Singapore', label: 'Browser default (Asia/Singapore)' },
-        { value: 'UTC', label: 'UTC' }
+        { value: 'Asia/Singapore', browserDefault: true },
+        { value: 'UTC', browserDefault: false }
       ]
     })
   })
 
-  it('preserves a stored timezone omitted from the supported list and uses plain labels while editing', () => {
+  it('preserves a stored timezone omitted from the supported list and flags nothing while editing', () => {
     expect(cronTimezoneSelectModel('US/Eastern', 'Asia/Singapore', supportedTimezones)).toEqual({
       initialValue: 'US/Eastern',
       options: [
-        { value: 'Asia/Singapore', label: 'Asia/Singapore' },
-        { value: 'US/Eastern', label: 'US/Eastern' },
-        { value: 'UTC', label: 'UTC' }
+        { value: 'Asia/Singapore', browserDefault: false },
+        { value: 'US/Eastern', browserDefault: false },
+        { value: 'UTC', browserDefault: false }
       ]
     })
   })
@@ -159,8 +173,8 @@ describe('cronTimezoneSelectModel', () => {
     expect(cronTimezoneSelectModel(null, 'Asia/Singapore', [])).toEqual({
       initialValue: 'Asia/Singapore',
       options: [
-        { value: 'Asia/Singapore', label: 'Browser default (Asia/Singapore)' },
-        { value: 'UTC', label: 'UTC' }
+        { value: 'Asia/Singapore', browserDefault: true },
+        { value: 'UTC', browserDefault: false }
       ]
     })
   })

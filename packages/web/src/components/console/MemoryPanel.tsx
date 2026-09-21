@@ -15,6 +15,7 @@ import { UnifiedMemoryPanel } from '@/components/console/UnifiedMemoryPanel'
 // The CP enforces edit permission (a 403 surfaces as an error), matching the console.
 
 import { useEffect, useId, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import {
   fetchAgentMemoryFull,
   fetchAgentMemoryChannels,
@@ -246,6 +247,7 @@ export function MemoryPanel({
   /** Placed on a member set (a group or the pool), where the home is fixed to `control-plane` and there is no way back. */
   memberSetPlaced?: boolean
 }) {
+  const t = useTranslations('Agents.detail.memory')
   const { updateAgent } = useConsoleData()
   // Channel memory viewer (#653): the channels with their own folder, and which one
   // is being viewed. `undefined` = the shared agent-level base. Only meaningful when
@@ -428,37 +430,37 @@ export function MemoryPanel({
       case 'managed': {
         if (persistedSettings.scope === 'channel') {
           return [
-            'Managed directory',
+            t('managedDirectory'),
             memoryHomeLabel(persistedSettings.home),
-            `Auto-distill ${persistedSettings.autoDistill ? 'on' : 'off'}`,
-            'Channel scope'
+            t('autoDistill', { state: persistedSettings.autoDistill ? t('on') : t('off') }),
+            t('channelScope')
           ].join(' · ')
         }
         const dreaming = persistedSettings.dreaming
         const cadence = dreaming.schedule === '0 4 * * *' ? 'daily' : dreaming.schedule ? 'scheduled' : 'manual'
         return [
-          'Managed directory',
+          t('managedDirectory'),
           memoryHomeLabel(persistedSettings.home),
-          `Auto-distill ${persistedSettings.autoDistill ? 'on' : 'off'}`,
-          dreaming.enabled ? `Dreaming ${cadence}` : 'Dreaming off',
-          ...(dreaming.enabled && dreaming.mineSkills === true ? ['Skill mining on'] : []),
-          `Auto-accept ${dreaming.autoAdopt ? 'on' : 'off'}`,
-          'Agent scope'
+          t('autoDistill', { state: persistedSettings.autoDistill ? t('on') : t('off') }),
+          dreaming.enabled ? t('dreamingOn', { cadence: t(`dreamingCadence.${cadence}`) }) : t('dreamingOff'),
+          ...(dreaming.enabled && dreaming.mineSkills === true ? [t('skillMiningOn')] : []),
+          t('autoAccept', { state: dreaming.autoAdopt ? t('on') : t('off') }),
+          t('agentScope')
         ].join(' · ')
       }
       case 'native':
-        return 'Runtime-native memory · Agent scope'
+        return t('nativeSummary')
       case 'external': {
         const { connectionId, recall, captureMode } = persistedSettings.external
         return [
-          connectionId ? `Connection ${connectionId.slice(0, 8)}` : 'No connection',
-          `Recall ${recall.mode === 'auto' ? 'every turn' : 'tool only'}`,
-          `Capture ${captureMode === 'turn' ? 'every turn' : 'manual'}`,
-          'Agent scope'
+          connectionId ? t('connectionNamed', { id: connectionId.slice(0, 8) }) : t('noConnection'),
+          recall.mode === 'auto' ? t('recallEveryTurn') : t('recallToolOnly'),
+          captureMode === 'turn' ? t('captureEveryTurn') : t('captureManual'),
+          t('agentScope')
         ].join(' · ')
       }
       case 'none':
-        return 'Persistent memory is off'
+        return t('persistentOff')
     }
   })()
 
@@ -498,14 +500,14 @@ export function MemoryPanel({
         <div className="flex items-center justify-between gap-3 px-4 py-3">
           <div className="flex min-w-0 flex-col gap-[3px]">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="font-sans text-[13px] font-semibold leading-normal">Memory backend</span>
+              <span className="font-sans text-[13px] font-semibold leading-normal">{t('backend')}</span>
               <span className="badge bg-(--surface-active) text-(--text-secondary)">{persistedProviderLabel}</span>
               {settingsChanged ? (
                 <span
                   className="font-sans text-[11px] font-semibold leading-normal text-(--amber-500)"
                   aria-live="polite"
                 >
-                  Unsaved changes
+                  {t('unsavedChanges')}
                 </span>
               ) : null}
               {persistedProvider === 'managed' && homeMigrationPending ? (
@@ -531,17 +533,17 @@ export function MemoryPanel({
           >
             {settingsOpen ? (
               settingsChanged ? (
-                'Cancel'
+                t('cancel')
               ) : (
-                'Close'
+                t('close')
               )
             ) : canEdit ? (
               <>
                 <Icon name="pencil" size={13} />
-                Edit
+                {t('edit')}
               </>
             ) : (
-              'Details'
+              t('details')
             )}
           </Button>
         </div>

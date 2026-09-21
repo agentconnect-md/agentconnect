@@ -17,6 +17,7 @@
 
 import { useEffect, useState, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import { FaSlack, FaTelegram, FaDiscord } from 'react-icons/fa'
 import { Icon } from '@/components/ui'
 import { Spinner, Wordmark } from '@/components/marks'
@@ -36,10 +37,13 @@ const DOCS_URL = 'https://docs.agentconnect.md'
 const FROM_EMAIL_DEFAULT = 'no-reply@agentconnect.md'
 const INTAKE_KEY = 'ac.wl.intake'
 const PROVIDER_KEY = 'ac.wl.provider'
-const TEAM_SIZES = ['Just me', '2–10', '11–50', '51–200', '200+']
-const PROVIDER_LABELS: Record<string, string> = Object.fromEntries(
-  socialLoginProviders().map((p) => [p.target, `via ${p.name}`])
-)
+const TEAM_SIZES = [
+  { value: 'Just me', label: 'justMe' },
+  { value: '2–10', label: 'twoToTen' },
+  { value: '11–50', label: 'elevenToFifty' },
+  { value: '51–200', label: 'fiftyOneToTwoHundred' },
+  { value: '200+', label: 'twoHundredPlus' }
+] as const
 const PLATFORMS: { id: Platform; label: string; Mark: typeof FaSlack }[] = [
   { id: 'slack', label: 'Slack', Mark: FaSlack },
   { id: 'telegram', label: 'Telegram', Mark: FaTelegram },
@@ -83,6 +87,7 @@ const isCompleteIntake = (d: Partial<WaitlistIntake> | null): d is WaitlistIntak
 
 export default function Waitlist() {
   const router = useRouter()
+  const t = useTranslations('Auth.waitlist')
   const [phase, setPhase] = useState<Phase>('loading')
   const [status, setStatus] = useState<'pending' | 'approved'>('pending')
   const [email, setEmail] = useState<string | null>(null)
@@ -140,7 +145,7 @@ export default function Waitlist() {
       clearStash(INTAKE_KEY)
       showOnList(s === 'approved' ? 'approved' : 'pending', mail)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not submit your request.')
+      setError(e instanceof Error ? e.message : t('errors.submit'))
       setPhase('intake')
     } finally {
       setSubmitting(false)
@@ -188,7 +193,7 @@ export default function Waitlist() {
         setPhase('intake')
       } catch (e) {
         if (!cancelled) {
-          setError(e instanceof Error ? e.message : 'Something went wrong.')
+          setError(e instanceof Error ? e.message : t('errors.generic'))
           setPhase('error')
         }
       }
@@ -196,7 +201,7 @@ export default function Waitlist() {
     return () => {
       cancelled = true
     }
-  }, [router])
+  }, [router, t])
 
   // "Request access": signed in ⇒ submit now; otherwise reveal the SSO verify step.
   const requestAccess = async () => {
@@ -251,7 +256,7 @@ export default function Waitlist() {
                 </span>
                 <div>
                   <h1 className="wl-h1" style={{ fontSize: 22 }}>
-                    Something went wrong
+                    {t('errors.title')}
                   </h1>
                   <p className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">{error}</p>
                 </div>
@@ -260,38 +265,37 @@ export default function Waitlist() {
 
             {phase === 'intake' && (
               <div className="wl-in">
-                <div className="wl-eyebrow">Join the waitlist</div>
-                <h1 className="wl-h1">Request your invite</h1>
+                <div className="wl-eyebrow">{t('intake.eyebrow')}</div>
+                <h1 className="wl-h1">{t('intake.title')}</h1>
                 <p className="mt-[10px] text-[14px] leading-[1.55] text-(--text-secondary)">
-                  AgentConnect is in a closed beta. Tell us a little about your team and we&apos;ll send an activation
-                  link when a seat opens.
+                  {t('intake.description')}
                 </p>
 
                 <div className="mt-7 flex flex-col gap-4">
                   <div className="flex gap-[14px]">
                     <div className="flex-1">
-                      <label className="wl-lbl">Name</label>
+                      <label className="wl-lbl">{t('intake.name')}</label>
                       <input
                         className="wl-input"
                         value={name}
                         onChange={(e) => setName(e.target.value)}
-                        placeholder="Jordan Rivera"
+                        placeholder={t('intake.namePlaceholder')}
                       />
                     </div>
                     <div className="flex-1">
-                      <label className="wl-lbl">Company / team</label>
+                      <label className="wl-lbl">{t('intake.company')}</label>
                       <input
                         className="wl-input"
                         value={company}
                         onChange={(e) => setCompany(e.target.value)}
-                        placeholder="Northwind Ops"
+                        placeholder={t('intake.companyPlaceholder')}
                       />
                     </div>
                   </div>
 
                   <div className="flex gap-[14px]">
                     <div className="flex-1">
-                      <label className="wl-lbl">Which platforms will your team use?</label>
+                      <label className="wl-lbl">{t('intake.platforms')}</label>
                       <div className="flex gap-2">
                         {PLATFORMS.map(({ id, label, Mark }) => {
                           const on = platforms.includes(id)
@@ -314,13 +318,15 @@ export default function Waitlist() {
 
                   <div className="flex gap-[14px]">
                     <div className="flex-1">
-                      <label className="wl-lbl">Team size</label>
+                      <label className="wl-lbl">{t('intake.teamSize')}</label>
                       <select className="wl-select" value={teamSize} onChange={(e) => setTeamSize(e.target.value)}>
                         <option value="" disabled>
-                          Select
+                          {t('intake.select')}
                         </option>
-                        {TEAM_SIZES.map((t) => (
-                          <option key={t}>{t}</option>
+                        {TEAM_SIZES.map((size) => (
+                          <option key={size.value} value={size.value}>
+                            {t(`intake.teamSizes.${size.label}`)}
+                          </option>
                         ))}
                       </select>
                     </div>
@@ -329,13 +335,13 @@ export default function Waitlist() {
 
                   <div>
                     <label className="wl-lbl">
-                      What do you want agents to handle? <span className="wl-req">(optional)</span>
+                      {t('intake.useCase')} <span className="wl-req">{t('intake.optional')}</span>
                     </label>
                     <textarea
                       className="wl-area"
                       value={useCase}
                       onChange={(e) => setUseCase(e.target.value)}
-                      placeholder="e.g. triage #support, run deploys from a command, summarize standups…"
+                      placeholder={t('intake.useCasePlaceholder')}
                     />
                   </div>
                 </div>
@@ -348,7 +354,7 @@ export default function Waitlist() {
                   onClick={requestAccess}
                   disabled={submitting || !canSubmit}
                 >
-                  {submitting ? 'Submitting…' : 'Request access'}
+                  {submitting ? t('intake.submitting') : t('intake.requestAccess')}
                   {!submitting && <Icon name="arrow-right" size={17} />}
                 </button>
               </div>
@@ -358,7 +364,7 @@ export default function Waitlist() {
               <div className="wl-in flex flex-col">
                 <button type="button" className="backlink" onClick={() => setPhase('intake')}>
                   <Icon name="arrow-left" size={15} />
-                  Back to details
+                  {t('verification.back')}
                 </button>
                 <div
                   className="mt-[22px] flex h-[52px] w-[52px] items-center justify-center rounded-[12px] text-(--brand)"
@@ -367,11 +373,10 @@ export default function Waitlist() {
                   <Icon name="shield-check" size={26} color="var(--brand)" />
                 </div>
                 <h1 className="wl-h1 mt-5" style={{ fontSize: 26 }}>
-                  Verify it&apos;s your email
+                  {t('verification.title')}
                 </h1>
                 <p className="mt-[10px] max-w-[380px] text-[14px] leading-[1.55] text-(--text-secondary)">
-                  Sign in with the account you want your invite tied to. We only use it to confirm your email — no free
-                  typing, no spoofing.
+                  {t('verification.description')}
                 </p>
                 <div className="mt-[26px] flex max-w-[380px] flex-col gap-3">
                   <SocialLoginButtons
@@ -407,13 +412,12 @@ function OnListColumn({
   onSignOut: () => void
   onRefresh: () => void
 }) {
+  const t = useTranslations('Auth.waitlist')
   // A stashed provider is unvalidated JSON, so an unknown value degrades to no
   // label rather than rendering "Verified undefined".
-  const providerLabel = (provider && PROVIDER_LABELS[provider]) || ''
-  const lead =
-    status === 'approved'
-      ? 'You’re approved. Your activation link is on its way — open it to finish setting up your account.'
-      : 'Thanks for requesting access. We review requests weekly and send activation links in small batches — no need to check back.'
+  const providerName = provider ? socialLoginProviders().find((item) => item.target === provider)?.name : undefined
+  const providerLabel = providerName ? t('onList.via', { provider: providerName }) : ''
+  const lead = status === 'approved' ? t('onList.approved') : t('onList.pending')
   return (
     <>
       <div className="wl-formcol wl-in">
@@ -435,7 +439,7 @@ function OnListColumn({
             </div>
           </div>
           <h1 className="wl-h1 mt-[26px]" style={{ fontSize: 30 }}>
-            You&apos;re on the list
+            {t('onList.title')}
           </h1>
           <p className="mt-[10px] max-w-[420px] text-[15px] leading-[1.6] text-(--text-secondary)">{lead}</p>
 
@@ -447,7 +451,9 @@ function OnListColumn({
               <span className="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-(--status-online) text-white">
                 <Icon name="check" size={12} color="#fff" />
               </span>
-              <span className="text-[12.5px] font-medium text-(--text-secondary)">Verified {providerLabel}</span>
+              <span className="text-[12.5px] font-medium text-(--text-secondary)">
+                {t('onList.verified')} {providerLabel}
+              </span>
               <span className="h-[14px] w-px bg-(--border-default)" />
               <span className="wl-mono text-[12.5px] text-(--text-primary)">{email}</span>
             </div>
@@ -455,7 +461,7 @@ function OnListColumn({
 
           <div className="mt-[30px]">
             <div className="wl-eyebrow" style={{ color: 'var(--text-tertiary)', marginBottom: 16 }}>
-              What happens next
+              {t('onList.next')}
             </div>
             <Timeline status={status} email={email} />
           </div>
@@ -469,20 +475,21 @@ function OnListColumn({
               style={{ width: 'auto', padding: '0 20px' }}
             >
               <Icon name="book-open" size={16} color="#fff" />
-              Read the docs
+              {t('onList.readDocs')}
             </a>
             <button type="button" className="wl-btn-ghost" onClick={onRefresh}>
-              Check status
+              {t('onList.checkStatus')}
             </button>
           </div>
         </div>
 
         <div className="flex items-center justify-between border-t border-(--border-subtle) pt-5">
           <span className="text-[12px] text-(--text-tertiary)">
-            Not {email ? <span className="wl-mono text-(--text-secondary)">{email}</span> : 'you'}?
+            {t('onList.not')}{' '}
+            {email ? <span className="wl-mono text-(--text-secondary)">{email}</span> : t('onList.you')}?
           </span>
           <button type="button" className="flink" onClick={onSignOut}>
-            Sign out &amp; use another account
+            {t('onList.signOut')}
           </button>
         </div>
       </div>
@@ -501,27 +508,29 @@ function fromEmail(): string {
 }
 
 function Timeline({ status, email }: { status: 'pending' | 'approved'; email: string | null }) {
-  const mail = email ? <span className="wl-mono text-(--text-primary)">{email}</span> : 'your inbox'
+  const t = useTranslations('Auth.waitlist.timeline')
+  const mail = email ? <span className="wl-mono text-(--text-primary)">{email}</span> : t('inbox')
   const steps: { title: string; body: ReactNode; done: boolean; active: boolean }[] = [
     {
-      title: 'Request reviewed',
-      body: <>We look over new requests every week. Most teams hear back within a week or two.</>,
+      title: t('reviewedTitle'),
+      body: <>{t('reviewedBody')}</>,
       done: status === 'approved',
       active: status === 'pending'
     },
     {
-      title: 'Activation link emailed',
+      title: t('activationTitle'),
       body: (
         <>
-          Your link arrives at {mail} from <span className="wl-mono text-(--text-primary)">{fromEmail()}</span>.
+          {t('activationPrefix')} {mail} {t('activationFrom')}{' '}
+          <span className="wl-mono text-(--text-primary)">{fromEmail()}</span>.
         </>
       ),
       done: false,
       active: status === 'approved'
     },
     {
-      title: 'Deploy your first agent',
-      body: <>Open the link, connect a workspace, and go live in minutes.</>,
+      title: t('deployTitle'),
+      body: <>{t('deployBody')}</>,
       done: false,
       active: false
     }
@@ -561,21 +570,14 @@ function Timeline({ status, email }: { status: 'pending' | 'approved'; email: st
 }
 
 /* ── Editorial asides ─────────────────────────────────────────────────────── */
-const FEATURES: { icon: string; title: string; body: string }[] = [
-  {
-    icon: 'message-square',
-    title: 'Agents in your channels',
-    body: 'Slack, Telegram and Discord — no new app to learn.'
-  },
-  {
-    icon: 'activity',
-    title: 'One operator console',
-    body: 'Volume, latency, escalations and live transcripts in one view.'
-  },
-  { icon: 'key', title: 'Your keys stay put', body: 'Agents run on your machines — credentials never leave them.' }
-]
+const FEATURES = [
+  { icon: 'message-square', key: 'channels' },
+  { icon: 'activity', key: 'console' },
+  { icon: 'key', key: 'keys' }
+] as const
 
 function IntakeAside() {
+  const t = useTranslations('Auth.waitlist.aside')
   return (
     <aside className="wl-aside">
       <div
@@ -586,14 +588,14 @@ function IntakeAside() {
           className="h-[6px] w-[6px] rounded-full bg-(--status-online)"
           style={{ boxShadow: '0 0 0 3px rgba(21,166,97,.22)' }}
         />
-        Invite-only preview
+        {t('preview')}
       </div>
       <div className="mt-[26px] max-w-[340px] text-[24px] font-semibold leading-[1.3] tracking-[-.02em]">
-        Agents that live where your team already talks.
+        {t('headline')}
       </div>
       <div className="mt-[26px] flex flex-col gap-3">
         {FEATURES.map((f) => (
-          <div key={f.title} className="flex items-start gap-3">
+          <div key={f.key} className="flex items-start gap-3">
             <span
               className="flex h-[26px] w-[26px] flex-none items-center justify-center rounded-[6px] text-(--brand)"
               style={{ background: 'var(--brand-soft)' }}
@@ -601,14 +603,15 @@ function IntakeAside() {
               <Icon name={f.icon} size={15} color="var(--brand)" />
             </span>
             <div className="text-[13.5px] leading-[1.5] text-(--text-secondary)">
-              <span className="font-semibold text-(--text-primary)">{f.title}.</span> {f.body}
+              <span className="font-semibold text-(--text-primary)">{t(`features.${f.key}.title`)}.</span>{' '}
+              {t(`features.${f.key}.body`)}
             </div>
           </div>
         ))}
       </div>
       <div className="mt-auto pt-[26px]">
         <div className="mb-3 font-mono text-[11px] font-semibold uppercase tracking-[.08em] text-(--text-tertiary)">
-          Runs on
+          {t('runsOn')}
         </div>
         <div className="flex gap-[9px]">
           {PLATFORMS.map(({ id, label, Mark }) => (
@@ -628,30 +631,33 @@ function IntakeAside() {
 }
 
 function OnListAside() {
+  const t = useTranslations('Auth.waitlist.aside')
   return (
     <aside className="wl-aside dark">
       <div className="inline-flex h-[26px] items-center gap-[7px] self-start rounded-full border border-[rgba(255,255,255,.12)] bg-[rgba(255,255,255,.07)] px-[11px] font-mono text-[11.5px] font-semibold uppercase tracking-[.05em] text-(--text-inverse-dim)">
-        While you wait
+        {t('whileYouWait')}
       </div>
       <div className="mt-[26px] max-w-[340px] text-[25px] font-semibold leading-[1.28] tracking-[-.02em]">
-        Here&apos;s what you&apos;ll be running.
+        {t('runningHeadline')}
       </div>
       <div className="mt-[26px] flex flex-col gap-[14px]">
         {FEATURES.map((f) => (
-          <div key={f.title} className="flex items-start gap-[13px]">
+          <div key={f.key} className="flex items-start gap-[13px]">
             <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[8px] border border-[rgba(255,255,255,.10)] bg-[rgba(255,255,255,.06)] text-white">
               <Icon name={f.icon} size={16} color="#fff" />
             </span>
             <div>
-              <div className="text-[14px] font-semibold text-white">{f.title}</div>
-              <div className="mt-[2px] text-[13px] leading-[1.5] text-(--text-inverse-dim)">{f.body}</div>
+              <div className="text-[14px] font-semibold text-white">{t(`features.${f.key}.title`)}</div>
+              <div className="mt-[2px] text-[13px] leading-[1.5] text-(--text-inverse-dim)">
+                {t(`features.${f.key}.body`)}
+              </div>
             </div>
           </div>
         ))}
       </div>
       <div className="mt-auto">
         <div className="mb-3 font-mono text-[11px] font-semibold uppercase tracking-[.08em] text-[rgba(255,255,255,.4)]">
-          Deploy to
+          {t('deployTo')}
         </div>
         <div className="flex gap-[9px]">
           {PLATFORMS.map(({ id, label, Mark }) => (

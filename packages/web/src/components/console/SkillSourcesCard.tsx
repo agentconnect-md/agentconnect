@@ -38,6 +38,7 @@ import { VisibilityField, VisibilityValue, sameSharing, type SharingValue } from
 import { SkillMark, SkillSourceLine, ToolTile, ToolTileGrid } from '@/components/console/ToolTile'
 import { GithubMark, LoadingState } from '@/components/marks'
 import { Button, Icon, Toggle } from '@/components/ui'
+import { useTranslations } from 'next-intl'
 
 /** Split a comma/whitespace-separated skill filter into a clean string[]. */
 function parseSkills(raw: string): string[] {
@@ -48,6 +49,7 @@ function parseSkills(raw: string): string[] {
 }
 
 export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; canManage: boolean }) {
+  const t = useTranslations('Tools')
   const { skillSources, skillSourcesLoading } = useConsoleData()
   const { activeOrg } = useOrgs()
   const { mutate: mutateSWR } = useSWRConfig()
@@ -82,17 +84,17 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
     <div className="card overflow-hidden">
       <div className="cardhead flex-wrap justify-between gap-2">
         <span className="inline-flex items-baseline gap-[10px]">
-          <span className="cardtitle">Skills library</span>
-          <span className="mono text-[11px] text-(--text-tertiary)">Git sources and managed bundles</span>
+          <span className="cardtitle">{t('skills.title')}</span>
+          <span className="mono text-[11px] text-(--text-tertiary)">{t('skills.subtitle')}</span>
         </span>
         <span className="flex flex-wrap items-center justify-end gap-3">
           <label className="flex items-center gap-2 font-sans text-[11.5px] text-(--text-tertiary)">
-            Include archived
+            {t('includeArchived')}
             <Toggle checked={includeArchived} onChange={setIncludeArchived} />
           </label>
           {canWrite && (
             <AnchoredFlyout
-              ariaLabel="Add skill source"
+              ariaLabel={t('skills.addAria')}
               estimatedHeight={154}
               trigger={({ open, menuId, toggle }) => (
                 <Button
@@ -104,7 +106,7 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
                   ariaControls={open ? menuId : undefined}
                 >
                   <Icon name="plus" size={14} />
-                  Add
+                  {t('add')}
                   <Icon name="chevron-down" size={13} color="var(--text-tertiary)" />
                 </Button>
               )}
@@ -124,10 +126,10 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
                     </span>
                     <span className="flex min-w-0 flex-col">
                       <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                        Search skills.sh
+                        {t('skills.searchRegistry')}
                       </span>
                       <span className="mt-[2px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary)">
-                        Find a skill in the public registry by name
+                        {t('skills.searchRegistryDescription')}
                       </span>
                     </span>
                   </button>
@@ -144,10 +146,10 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
                     </span>
                     <span className="flex min-w-0 flex-col">
                       <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                        Import from GitHub
+                        {t('skills.importGithub')}
                       </span>
                       <span className="mt-[2px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary)">
-                        Register a repository you already know
+                        {t('skills.importGithubDescription')}
                       </span>
                     </span>
                   </button>
@@ -162,7 +164,7 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
         <LoadingState size={22} padding={20} />
       ) : empty && !managedSkills.error ? (
         <div className="px-4 py-[14px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          No skills yet. Install one from skills.sh or import a GitHub source.
+          {t('skills.empty')}
         </div>
       ) : (
         <ToolTileGrid>
@@ -235,6 +237,7 @@ function SourceTile({
   onEdit: () => void
   onDelete: () => void
 }) {
+  const t = useTranslations('Tools')
   return (
     <ToolTile
       mark={<SkillMark />}
@@ -245,9 +248,9 @@ function SourceTile({
             {s.private && (
               <span
                 className="badge flex-none bg-(--status-paused-soft) text-[9.5px] text-(--status-paused)"
-                title="Private repository — installed through the org GitHub App"
+                title={t('skills.privateRepositoryHint')}
               >
-                private
+                {t('skills.private')}
               </span>
             )}
             {s.ref && (
@@ -262,10 +265,10 @@ function SourceTile({
       action={
         canWrite ? (
           <>
-            <button className="iconbtn h-6 w-6" onClick={onEdit} title="Edit">
+            <button className="iconbtn h-6 w-6" onClick={onEdit} title={t('edit')}>
               <Icon name="pencil" size={12} />
             </button>
-            <button className="iconbtn h-6 w-6" onClick={onDelete} title="Delete">
+            <button className="iconbtn h-6 w-6" onClick={onDelete} title={t('delete')}>
               <Icon name="trash" size={12} />
             </button>
           </>
@@ -275,7 +278,7 @@ function SourceTile({
         <div className="flex min-w-0 items-center gap-2">
           <VisibilityValue visibility={s.visibility} sharedWith={s.sharedWith} />
           <span className="mono ml-auto min-w-0 truncate text-right text-[10.5px] text-(--text-disabled)">
-            added {fmtDate(s.createdAt)}
+            {t('added', { date: fmtDate(s.createdAt) })}
           </span>
         </div>
       }
@@ -295,6 +298,7 @@ export function CreateSkillSourceModal({
   /** Why a submitted import did not land — a native card reports a refusal as well as a save. */
   onFailed?: (message: string) => void
 }) {
+  const t = useTranslations('Tools.skills.create')
   const { createSkillSource } = useConsoleData()
   const { me } = useProfile()
   const [name, setName] = useState('')
@@ -349,7 +353,7 @@ export function CreateSkillSourceModal({
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--brand-soft)">
           <Icon name="book-open" size={16} color="var(--brand)" />
         </span>
-        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Import skills from GitHub</span>
+        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('title')}</span>
         <button className="iconbtn" onClick={onClose}>
           <Icon name="x" size={16} />
         </button>
@@ -358,7 +362,7 @@ export function CreateSkillSourceModal({
       <div className="modalbody">
         <div className="flex flex-col gap-[14px]">
           <div className="fld">
-            <span className="fldlbl">Source</span>
+            <span className="fldlbl">{t('source')}</span>
             <input
               className="inp mn"
               placeholder="owner/repo or https://github.com/owner/repo"
@@ -367,11 +371,11 @@ export function CreateSkillSourceModal({
               autoFocus
             />
             <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              A repository of skills, one folder per SKILL.md. Private repos need the org GitHub App.
+              {t('sourceHint')}
             </span>
           </div>
           <div className="fld">
-            <span className="fldlbl">Name</span>
+            <span className="fldlbl">{t('name')}</span>
             <input
               className="inp mn"
               placeholder={derivedName || 'platform-skills'}
@@ -382,7 +386,7 @@ export function CreateSkillSourceModal({
           </div>
           <div className="grid grid-cols-2 gap-[14px]">
             <div className="fld">
-              <span className="fldlbl">Ref (optional)</span>
+              <span className="fldlbl">{t('refOptional')}</span>
               <input
                 className="inp mn"
                 placeholder="v1.2.0 / main / a commit"
@@ -391,7 +395,7 @@ export function CreateSkillSourceModal({
               />
             </div>
             <div className="fld">
-              <span className="fldlbl">Subdir (optional)</span>
+              <span className="fldlbl">{t('subdirOptional')}</span>
               <input
                 className="inp mn"
                 placeholder="skills"
@@ -401,10 +405,10 @@ export function CreateSkillSourceModal({
             </div>
           </div>
           <div className="fld">
-            <span className="fldlbl">Skills (optional)</span>
+            <span className="fldlbl">{t('skillsOptional')}</span>
             <input
               className="inp mn"
-              placeholder="review-pr, safe-deploy — blank installs all"
+              placeholder={t('skillsPlaceholder')}
               value={skills}
               onChange={(e) => setSkills(e.target.value)}
             />
@@ -417,7 +421,7 @@ export function CreateSkillSourceModal({
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button
           variant="primary"
@@ -425,7 +429,7 @@ export function CreateSkillSourceModal({
           className={valid && !busy ? undefined : 'pointer-events-none opacity-50'}
         >
           <Icon name="book-open" size={14} />
-          {busy ? 'Importing…' : 'Import'}
+          {busy ? t('importing') : t('import')}
         </Button>
       </div>
     </>
@@ -433,6 +437,7 @@ export function CreateSkillSourceModal({
 }
 
 function EditSkillSourceModal({ source: s, onClose }: { source: SkillSourceDto; onClose: () => void }) {
+  const t = useTranslations('Tools.skills.edit')
   const { updateSkillSource, saveSharing } = useConsoleData()
   const [source, setSource] = useState(s.source)
   const [ref, setRef] = useState(s.ref ?? '')
@@ -472,7 +477,9 @@ function EditSkillSourceModal({ source: s, onClose }: { source: SkillSourceDto; 
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--brand-soft)">
           <Icon name="book-open" size={16} color="var(--brand)" />
         </span>
-        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Edit {s.name}</span>
+        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">
+          {t('title', { name: s.name })}
+        </span>
         <button className="iconbtn" onClick={onClose}>
           <Icon name="x" size={16} />
         </button>
@@ -481,15 +488,15 @@ function EditSkillSourceModal({ source: s, onClose }: { source: SkillSourceDto; 
       <div className="modalbody">
         <div className="flex flex-col gap-[14px]">
           <div className="fld">
-            <span className="fldlbl">Source</span>
+            <span className="fldlbl">{t('source')}</span>
             <input className="inp mn" value={source} onChange={(e) => setSource(e.target.value)} />
             <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              The name can&rsquo;t be changed later.
+              {t('nameLocked')}
             </span>
           </div>
           <div className="grid grid-cols-2 gap-[14px]">
             <div className="fld">
-              <span className="fldlbl">Ref</span>
+              <span className="fldlbl">{t('ref')}</span>
               <input
                 className="inp mn"
                 placeholder="v1.2.0 / main"
@@ -498,15 +505,15 @@ function EditSkillSourceModal({ source: s, onClose }: { source: SkillSourceDto; 
               />
             </div>
             <div className="fld">
-              <span className="fldlbl">Subdir</span>
+              <span className="fldlbl">{t('subdir')}</span>
               <input className="inp mn" value={subDir} onChange={(e) => setSubDir(e.target.value)} />
             </div>
           </div>
           <div className="fld">
-            <span className="fldlbl">Skills</span>
+            <span className="fldlbl">{t('skills')}</span>
             <input
               className="inp mn"
-              placeholder="blank installs all"
+              placeholder={t('skillsPlaceholderEdit')}
               value={skills}
               onChange={(e) => setSkills(e.target.value)}
             />
@@ -519,14 +526,14 @@ function EditSkillSourceModal({ source: s, onClose }: { source: SkillSourceDto; 
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button
           variant="primary"
           onClick={() => void submit()}
           className={valid && !busy ? undefined : 'pointer-events-none opacity-50'}
         >
-          {busy ? 'Saving…' : 'Save'}
+          {busy ? t('saving') : t('save')}
         </Button>
       </div>
     </>
@@ -534,6 +541,7 @@ function EditSkillSourceModal({ source: s, onClose }: { source: SkillSourceDto; 
 }
 
 function DeleteSkillSourceModal({ source: s, onClose }: { source: SkillSourceDto; onClose: () => void }) {
+  const t = useTranslations('Tools.skills.delete')
   const { deleteSkillSource } = useConsoleData()
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -554,29 +562,28 @@ function DeleteSkillSourceModal({ source: s, onClose }: { source: SkillSourceDto
   return (
     <>
       <div className="modalhead">
-        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Delete {s.name}?</span>
+        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">
+          {t('title', { name: s.name })}
+        </span>
         <button className="iconbtn" onClick={onClose}>
           <Icon name="x" size={16} />
         </button>
       </div>
       <div className="modalbody">
-        <p className="font-sans text-[13px] font-normal leading-[1.5] text-(--text-secondary)">
-          This removes the source from your organization. Agents that still enable it must unselect it first. Skills
-          already installed in a workspace stay until that workspace is rebuilt.
-        </p>
+        <p className="font-sans text-[13px] font-normal leading-[1.5] text-(--text-secondary)">{t('body')}</p>
         {err && <div className="mt-3 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>}
       </div>
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button
           variant="danger"
           onClick={() => void submit()}
           className={busy ? 'pointer-events-none opacity-50' : undefined}
         >
-          {busy ? 'Deleting…' : 'Delete'}
+          {busy ? t('deleting') : t('delete')}
         </Button>
       </div>
     </>

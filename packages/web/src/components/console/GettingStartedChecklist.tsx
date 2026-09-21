@@ -9,6 +9,7 @@
 
 import { useCallback } from 'react'
 import { useRouter } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
@@ -146,6 +147,7 @@ export function useSlackPlatformAppAvailable(): boolean {
 // (e.g. no published platform app on this CP) or the manual link falls back to the full
 // integration modal, which handles every path. `onManual` opens that modal.
 export function SlackSlideBody({ done, onManual }: { done: boolean; onManual: () => void }) {
+  const t = useTranslations('GettingStarted.slack')
   const { agents, refresh } = useConsoleData()
   const builtin = agents.find((a) => a.builtin) ?? agents[0]
   const placed = !!builtin && agentIsPlaced(builtin)
@@ -153,35 +155,31 @@ export function SlackSlideBody({ done, onManual }: { done: boolean; onManual: ()
   return (
     <>
       <div className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-        {done
-          ? 'Connected — the built-in bot can read and post in your Slack channel.'
-          : placed
-            ? 'One click installs the built-in AgentConnect bot — no Slack app, token, or scopes to pick.'
-            : 'Set up your agent first, then connect it to Slack in one click.'}
+        {done ? t('connected') : placed ? t('oneClick') : t('setUpAgentFirst')}
       </div>
       {!done && (
         <div className="mt-[14px]">
           {!placed ? (
             <Button size="sm" variant="secondary" disabled>
               <FaSlack size={14} aria-hidden />
-              Add to Slack
+              {t('add')}
             </Button>
           ) : slack.phase === 'authorizing' ? (
             <button
               type="button"
               onClick={() => slack.cancel()}
-              title="Cancel — closed the Slack tab? Click to try again"
+              title={t('cancelHint')}
               className="group inline-flex h-[30px] cursor-pointer items-center gap-[6px] whitespace-nowrap rounded-(--radius-sm) border-0 bg-(--surface-inverse) px-3 font-sans text-[12.5px] font-medium leading-none text-white"
             >
               <Icon name="loader" size={14} className="animate-spin group-hover:hidden" />
               <Icon name="x" size={14} className="hidden group-hover:inline" />
-              <span className="group-hover:hidden">Waiting for Slack…</span>
-              <span className="hidden group-hover:inline">Cancel</span>
+              <span className="group-hover:hidden">{t('waiting')}</span>
+              <span className="hidden group-hover:inline">{t('cancel')}</span>
             </button>
           ) : (
             <Button size="sm" onClick={() => void slack.start()}>
               <FaSlack size={14} aria-hidden />
-              Add to Slack
+              {t('add')}
             </Button>
           )}
         </div>
@@ -194,7 +192,7 @@ export function SlackSlideBody({ done, onManual }: { done: boolean; onManual: ()
             onClick={onManual}
             className="cursor-pointer border-0 bg-transparent p-0 font-sans text-[11.5px] font-semibold text-(--brand) underline"
           >
-            Set up Slack another way
+            {t('manualSetup')}
           </button>
         </div>
       )}

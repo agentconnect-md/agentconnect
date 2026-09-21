@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
+import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { modelLabel } from '@/lib/data'
 
@@ -26,7 +27,7 @@ export function ModelSelect({
   value,
   options,
   onChange,
-  ariaLabel = 'Model',
+  ariaLabel,
   placeholder = '—',
   disabledHint
 }: {
@@ -38,6 +39,8 @@ export function ModelSelect({
   placeholder?: string
   disabledHint?: string
 }) {
+  const t = useTranslations('Agents.dialog.modelSelect')
+  const effectiveAriaLabel = ariaLabel ?? t('model')
   const selectedIndex = options.findIndex((option) => option.value === value)
   const selected = selectedIndex >= 0 ? options[selectedIndex] : undefined
   const [open, setOpen] = useState(false)
@@ -109,7 +112,7 @@ export function ModelSelect({
               ? 'cursor-pointer border-(--border-focus) ring-[3px] ring-(--brand-ring)'
               : 'cursor-pointer hover:border-(--border-strong) hover:bg-(--surface-hover) focus-visible:border-(--border-focus) focus-visible:ring-[3px] focus-visible:ring-(--brand-ring)'
         }`}
-        aria-label={ariaLabel}
+        aria-label={effectiveAriaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
@@ -143,7 +146,7 @@ export function ModelSelect({
             id={listboxId}
             role="listbox"
             tabIndex={-1}
-            aria-label={ariaLabel}
+            aria-label={effectiveAriaLabel}
             aria-activedescendant={activeIndex >= 0 ? `${listboxId}-option-${activeIndex}` : undefined}
             // Anchored to the field's RIGHT edge (`.fmenu` itself sets `left: 0`, hence the
             // explicit `left-auto`). Model is the last field of its row, so a menu wider than
@@ -178,7 +181,7 @@ export function ModelSelect({
                   <span className="min-w-0 flex-1 truncate">{modelLabel(option.value)}</span>
                   {option.unavailable ? (
                     <span className="flex-none font-sans text-[11px] font-medium leading-normal text-(--status-paused)">
-                      unavailable
+                      {t('unavailable')}
                     </span>
                   ) : (
                     option.name && (

@@ -4,6 +4,7 @@ import { useRef, useState } from 'react'
 import type { MemberSetRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { Button, Icon } from '@/components/ui'
+import { useTranslations } from 'next-intl'
 
 /**
  * New / Edit group (docs/designs/daemon-groups.md §2) — name and membership in one dialog.
@@ -19,6 +20,7 @@ import { Button, Icon } from '@/components/ui'
  * own, so one refusal reports itself and leaves the rest of the edit intact.
  */
 export default function GroupModal({ group, onClose }: { group?: MemberSetRow; onClose: () => void }) {
+  const t = useTranslations('Daemons.dialog')
   const { createGroup, renameGroup, enrollInGroup, withdrawFromGroup, daemons } = useConsoleData()
   const [name, setName] = useState(group?.name ?? '')
   // The membership this dialog is editing, seeded from the group and applied on save.
@@ -71,7 +73,7 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
           <Icon name="layers" size={15} color="var(--brand)" />
         </span>
         <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">
-          {group ? 'Edit group' : 'New group'}
+          {group ? t('editGroup') : t('newGroup')}
         </span>
         <button className="iconbtn" onClick={onClose}>
           <Icon name="x" size={16} />
@@ -79,7 +81,7 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
       </div>
       <div className="modalbody">
         <div className="fld">
-          <span className="fldlbl">Name</span>
+          <span className="fldlbl">{t('name')}</span>
           <input
             className="inp focus:border-(--brand) focus:outline-none"
             placeholder="edge-pool"
@@ -90,10 +92,10 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
           />
         </div>
         <div className="fld mt-[14px]">
-          <span className="fldlbl">Daemons</span>
+          <span className="fldlbl">{t('daemons')}</span>
           {candidates.length === 0 ? (
             <div className="rounded-lg border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[14px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-              No daemons available. Connect one, or remove it from its current group first.
+              {t('noDaemonsAvailable')}
             </div>
           ) : (
             <div className="overflow-hidden rounded-lg border border-(--border-subtle)">
@@ -121,7 +123,7 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
                         {daemon.name}
                       </span>
                       <span className="block truncate font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                        {daemon.status === 'online' ? 'Online' : 'Offline'}
+                        {daemon.status === 'online' ? t('onlineStatus') : t('offlineStatus')}
                       </span>
                     </span>
                   </button>
@@ -140,10 +142,10 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button onClick={() => void save()} className={!saving && trimmed ? undefined : 'cursor-default opacity-50'}>
-          {saving ? 'Saving…' : group ? 'Save' : 'Create group'}
+          {saving ? t('saving') : group ? t('save') : t('createGroup')}
         </Button>
       </div>
     </>

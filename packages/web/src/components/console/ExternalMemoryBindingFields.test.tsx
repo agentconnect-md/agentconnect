@@ -64,7 +64,7 @@ describe('DEFAULT_EXTERNAL_MEMORY_BINDING', () => {
 describe('connectionEndpointDisplay', () => {
   it('shows the operator command for a local stdio plugin instead of an endpoint', () => {
     expect(connectionEndpointDisplay({ transport: 'stdio', endpoint: null, commandRef: 'mem0-oss' })).toEqual({
-      label: 'Operator command',
+      labelKey: 'operatorCommand',
       value: 'mem0-oss'
     })
   })
@@ -76,11 +76,11 @@ describe('connectionEndpointDisplay', () => {
         endpoint: 'https://relay.example/mem',
         commandRef: null
       })
-    ).toEqual({ label: 'Plugin endpoint', value: 'https://relay.example/mem' })
+    ).toEqual({ labelKey: 'pluginEndpoint', value: 'https://relay.example/mem' })
   })
 
   it('falls back without inventing an endpoint when no installation is selected', () => {
-    expect(connectionEndpointDisplay(undefined)).toEqual({ label: 'Plugin endpoint', value: 'unavailable' })
+    expect(connectionEndpointDisplay(undefined)).toEqual({ labelKey: 'pluginEndpoint', value: null })
   })
 })
 
@@ -92,23 +92,19 @@ describe('connectionStatusNotice', () => {
   it('frames probing as the initial compatibility check', () => {
     const notice = connectionStatusNotice('probing')
     expect(notice?.tone).toBe('progress')
-    expect(notice?.text.toLowerCase()).toContain('verifying')
+    expect(notice?.textKey).toBe('probing')
   })
 
   it('frames an admitted-degraded revision as temporarily unavailable, not needing initial verification', () => {
     const notice = connectionStatusNotice('degraded')
     expect(notice?.tone).toBe('warn')
-    expect(notice?.text).toMatch(/temporarily unavailable/i)
-    expect(notice?.text).toMatch(/fails open|keeps running/i)
-    // The old copy wrongly told an already-admitted connection it still had to
-    // pass a first compatibility check; that must not reappear here.
-    expect(notice?.text).not.toMatch(/compatibility check/i)
+    expect(notice?.textKey).toBe('degraded')
   })
 
   it('frames invalid as a proven static failure that needs an update', () => {
     const notice = connectionStatusNotice('invalid')
     expect(notice?.tone).toBe('error')
-    expect(notice?.text).toMatch(/conformance|failed/i)
+    expect(notice?.textKey).toBe('invalid')
   })
 })
 

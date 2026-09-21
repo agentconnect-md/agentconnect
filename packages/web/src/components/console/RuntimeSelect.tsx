@@ -1,10 +1,9 @@
 import { Fragment, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
+import { useTranslations } from 'next-intl'
 import { AgentMark } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { IMAGE_BINARY_MISSING_LABEL, runtimeLabel, runtimeWarning } from '@/lib/data'
-
-const LOGIN_HINT = 'Not signed in on this daemon — you can still pick it, then sign in on the daemon host'
 
 export function RuntimeSelect({
   value,
@@ -12,7 +11,7 @@ export function RuntimeSelect({
   needsLogin,
   imageBinaryMissing,
   onChange,
-  ariaLabel = 'Runtime'
+  ariaLabel
 }: {
   value: string
   options: readonly string[]
@@ -22,6 +21,9 @@ export function RuntimeSelect({
   onChange: (value: string) => void
   ariaLabel?: string
 }) {
+  const t = useTranslations('Agents.dialog.runtimeSelect')
+  const effectiveAriaLabel = ariaLabel ?? t('runtime')
+  const loginHint = t('loginHint')
   const registry = useAcpRegistry()
   const rows = options
     .map((id) => ({
@@ -110,7 +112,7 @@ export function RuntimeSelect({
             ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)'
             : 'hover:border-(--border-strong) hover:bg-(--surface-hover) focus-visible:border-(--border-focus) focus-visible:ring-[3px] focus-visible:ring-(--brand-ring)'
         }`}
-        aria-label={ariaLabel}
+        aria-label={effectiveAriaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
@@ -131,7 +133,7 @@ export function RuntimeSelect({
               {selected?.warning && (
                 <span
                   className="flex-none"
-                  title={selected.warning === 'image-binary-missing' ? IMAGE_BINARY_MISSING_LABEL : LOGIN_HINT}
+                  title={selected.warning === 'image-binary-missing' ? IMAGE_BINARY_MISSING_LABEL : loginHint}
                 >
                   <Icon name="triangle-alert" size={13} color="var(--status-paused)" />
                 </span>
@@ -139,7 +141,7 @@ export function RuntimeSelect({
             </>
           ) : (
             // An unplaced agent has no selection; do not display the first option as selected.
-            <span className="truncate text-(--text-tertiary)">Select runtime</span>
+            <span className="truncate text-(--text-tertiary)">{t('selectRuntime')}</span>
           )}
         </span>
         <Icon
@@ -157,7 +159,7 @@ export function RuntimeSelect({
             id={listboxId}
             role="listbox"
             tabIndex={-1}
-            aria-label={ariaLabel}
+            aria-label={effectiveAriaLabel}
             aria-activedescendant={`${listboxId}-option-${activeIndex}`}
             // Keep names and wrapped status text readable within the viewport.
             className="fmenu left-0 z-40 w-max min-w-full max-w-[calc(100vw-64px)] rounded-lg p-2 shadow-(--shadow-xl) outline-none"
@@ -179,7 +181,7 @@ export function RuntimeSelect({
                       row.warning === 'image-binary-missing'
                         ? IMAGE_BINARY_MISSING_LABEL
                         : row.warning
-                          ? LOGIN_HINT
+                          ? loginHint
                           : undefined
                     }
                     className={`fopt min-h-10 gap-3 rounded-md px-2 py-[6px] text-[13px] ${
@@ -201,7 +203,7 @@ export function RuntimeSelect({
                         <span className="flex items-start gap-[4px] font-sans text-[11px] font-medium leading-normal text-(--status-paused)">
                           <Icon name="triangle-alert" size={11} className="mt-[2px] flex-none" />
                           <span>
-                            {row.warning === 'image-binary-missing' ? IMAGE_BINARY_MISSING_LABEL : 'Login required'}
+                            {row.warning === 'image-binary-missing' ? IMAGE_BINARY_MISSING_LABEL : t('loginRequired')}
                           </span>
                         </span>
                       )}

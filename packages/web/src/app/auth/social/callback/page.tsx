@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui'
 import { Spinner } from '@/components/marks'
 import { linkMySocialIdentity, refreshMySocialIdentities } from '@/lib/api'
@@ -15,10 +16,11 @@ import {
 } from '@/lib/logto-account'
 
 export default function SocialAccountCallback() {
+  const t = useTranslations('Auth.socialCallback')
   const started = useRef(false)
   const [error, setError] = useState<string>()
   const [returnTo, setReturnTo] = useState('/')
-  const [workingMessage, setWorkingMessage] = useState('Linking your sign-in account…')
+  const [workingMessage, setWorkingMessage] = useState(() => t('linking'))
 
   useEffect(() => {
     if (started.current) return
@@ -26,24 +28,24 @@ export default function SocialAccountCallback() {
 
     const flow = takeSocialLinkFlow()
     if (!flow) {
-      setError('This account-linking request expired. Return to Profile and try again.')
+      setError(t('expired'))
       return
     }
     setReturnTo(flow.returnTo)
-    if (flow.purpose === 'reauthorize') setWorkingMessage(`Updating ${flow.providerName} authorization…`)
+    if (flow.purpose === 'reauthorize') setWorkingMessage(t('updating', { provider: flow.providerName }))
 
     const params = new URLSearchParams(window.location.search)
     const providerError = params.get('error')
     if (providerError) {
       setError(
         providerError === 'access_denied'
-          ? `${flow.providerName} authorization was cancelled.`
-          : `${flow.providerName} could not authorize this account.`
+          ? t('cancelled', { provider: flow.providerName })
+          : t('authorizationFailed', { provider: flow.providerName })
       )
       return
     }
     if (params.get('state') !== flow.state) {
-      setError('The account-linking response could not be verified. Return to Profile and try again.')
+      setError(t('unverified'))
       return
     }
 
@@ -95,7 +97,7 @@ export default function SocialAccountCallback() {
           })
         )
       })
-  }, [])
+  }, [t])
 
   return (
     <div className="authpage">
@@ -104,7 +106,7 @@ export default function SocialAccountCallback() {
         <div>{error ?? workingMessage}</div>
         {error ? (
           <Button variant="secondary" onClick={() => window.location.replace(returnTo)}>
-            Back to Profile
+            {t('backToProfile')}
           </Button>
         ) : null}
       </div>

@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { fetchAgentDto, type McpProviderCreatedDto } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import { MOCK_MODE, type DaemonRow } from '@/lib/data'
@@ -46,6 +47,7 @@ export function AgentToolsCard({
   /** Reports a write in flight, so a host dialog can hold its own completion until the row settles. */
   onBusyChange?: (busy: boolean) => void
 }) {
+  const t = useTranslations('Agents.detail.tools')
   const { updateAgent, mcpProviders, connectorsEnabled } = useConsoleData()
   const [creating, setCreating] = useState(false)
   const [browsing, setBrowsing] = useState(false)
@@ -146,11 +148,11 @@ export function AgentToolsCard({
 
   const menu = canEdit ? (
     <AttachMenu
-      ariaLabel="Add an MCP server to this agent"
+      ariaLabel={t('addCustomMcp')}
       disabled={enabled === null || saving}
       groups={[
         {
-          heading: 'Add existing',
+          heading: t('addExisting'),
           icon: 'plug',
           options,
           emptyLabel: 'Every server available to this agent is already attached.'
@@ -158,9 +160,9 @@ export function AgentToolsCard({
       ]}
       actions={[
         ...(connectorsEnabled
-          ? [{ key: 'connectors', label: 'Browse connectors…', icon: 'blocks', onPick: () => setBrowsing(true) }]
+          ? [{ key: 'connectors', label: t('browseConnectors'), icon: 'blocks', onPick: () => setBrowsing(true) }]
           : []),
-        { key: 'custom', label: 'Add custom MCP server…', icon: 'plus', onPick: () => setCreating(true) }
+        { key: 'custom', label: t('addCustomMcp'), icon: 'plus', onPick: () => setCreating(true) }
       ]}
     />
   ) : undefined
@@ -168,9 +170,10 @@ export function AgentToolsCard({
   return (
     <div className="card overflow-hidden max-desktop:rounded-lg desktop:max-w-[760px]">
       <div className="cardhead flex-wrap gap-2">
-        <span className="cardtitle">Tools</span>
+        <span className="cardtitle">{t('tools')}</span>
         <span className="mono ml-auto text-[11px] text-(--text-tertiary)">
-          MCP servers{daemon ? ` · ${runtime} on ${daemon.name}` : ` · ${runtime}`}
+          {t('mcpServers')}
+          {daemon ? ` · ${runtime} on ${daemon.name}` : ` · ${runtime}`}
         </span>
         {menu}
       </div>
@@ -194,7 +197,7 @@ export function AgentToolsCard({
                   dimmed={!server}
                   badge={
                     <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
-                      {provider ? 'workspace' : 'daemon'}
+                      {provider ? t('workspace') : t('daemon')}
                     </span>
                   }
                   onRemove={canEdit && !saving ? () => void attach(name, false) : undefined}
@@ -218,12 +221,12 @@ export function AgentToolsCard({
         <AttachedEmpty
           // `enabled` null ⇒ the saved allow-list is still in flight; claiming
           // "no servers" then would be a guess, not a fact.
-          title={enabled === null ? 'Loading tools…' : 'No MCP servers'}
+          title={enabled === null ? t('loading') : t('noMcpServers')}
           hint={
             enabled === null
               ? 'Reading the servers this agent attaches.'
               : canEdit
-                ? 'Attach one from your workspace, or register a new server.'
+                ? t('attachMcpHint')
                 : 'This agent has no MCP servers attached.'
           }
           action={enabled === null ? undefined : menu}

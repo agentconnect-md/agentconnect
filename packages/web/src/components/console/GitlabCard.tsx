@@ -11,6 +11,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
+import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { Button, Icon } from '@/components/ui'
 import { SQUARE_MARK_FILL_PCT } from '@/components/mark-box'
@@ -165,6 +166,7 @@ function ProjectRow({
 }
 
 export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
+  const t = useTranslations('Integrations')
   // Gate on the active org like the GitHub card: before it resolves `orgBase()` throws and reads "not enabled".
   const { activeOrg, orgPath } = useOrgs()
   const { getAgent } = useConsoleData()
@@ -551,7 +553,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                       onClick={() => setPending({ target: c, remove: false })}
                     >
                       <Icon name="unplug" size={13} />
-                      Disconnect
+                      {t('codeHostActions.disconnect')}
                     </Button>
                   )}
                   {c.state === 'disconnected' && c.assignedProjects === 0 && (
@@ -603,7 +605,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
       {/* Desktop only: below the breakpoint the row stacks, where a two-track header would label nothing. */}
       {enabled === true && rows.length > 0 && (
         <div className="row h hidden grid-cols-[minmax(0,1fr)_auto] gap-[11px] desktop:grid">
-          <span>Bot</span>
+          <span>{t('botLabel')}</span>
           <span />
         </div>
       )}

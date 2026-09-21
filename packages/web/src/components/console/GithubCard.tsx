@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { SQUARE_MARK_FILL_PCT } from '@/components/mark-box'
 import { GithubMark, LoadingState } from '@/components/marks'
@@ -21,6 +22,7 @@ import UninstallGithubInstallationModal from '@/components/console/modals/Uninst
 // see them; installing and syncing are writes (viewers don't get those buttons),
 // while uninstalling the App from an account is owner-only.
 export default function GithubCard({ canWrite, isOwner }: { canWrite: boolean; isOwner: boolean }) {
+  const t = useTranslations('Integrations')
   // Gate the org-scoped fetch on the active org (same hard-refresh race as SlackCard):
   // before OrgProvider resolves, `orgBase()` throws → the catch would show "not enabled"
   // even when it IS. Re-fetch once the org resolves / on switch.
@@ -88,11 +90,11 @@ export default function GithubCard({ canWrite, isOwner }: { canWrite: boolean; i
           <span className="flex items-center gap-2">
             <Button variant="ghost" onClick={sync}>
               <Icon name="refresh-cw" size={13} />
-              {busy ? 'Syncing…' : 'Sync'}
+              {busy ? t('github.syncing') : t('github.sync')}
             </Button>
             <Button onClick={install}>
               <Icon name="external-link" size={13} />
-              Install on GitHub
+              {t('github.install')}
             </Button>
           </span>
         )}
@@ -115,8 +117,8 @@ export default function GithubCard({ canWrite, isOwner }: { canWrite: boolean; i
           breakpoint, where a two-track header would label nothing. */}
       {enabled === true && installs.length > 0 && (
         <div className="row h hidden grid-cols-[minmax(0,1fr)_auto] gap-[11px] desktop:grid">
-          <span>Installation</span>
-          <span>Repository access</span>
+          <span>{t('installation')}</span>
+          <span>{t('repositoryAccess')}</span>
         </div>
       )}
       {enabled === true &&
@@ -140,7 +142,7 @@ export default function GithubCard({ canWrite, isOwner }: { canWrite: boolean; i
               </div>
               <span className="flex items-center justify-between gap-3 desktop:justify-end">
                 <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                  {i.repositorySelection === 'all' ? 'all repositories' : 'selected repositories'}
+                  {i.repositorySelection === 'all' ? t('github.allRepositories') : t('github.selectedRepositories')}
                 </span>
                 {isOwner && (
                   <Button
@@ -150,7 +152,7 @@ export default function GithubCard({ canWrite, isOwner }: { canWrite: boolean; i
                     onClick={() => setUninstalling(i)}
                   >
                     <Icon name="unplug" size={13} />
-                    Uninstall
+                    {t('github.uninstall')}
                   </Button>
                 )}
               </span>

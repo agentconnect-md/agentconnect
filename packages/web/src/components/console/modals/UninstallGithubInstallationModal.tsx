@@ -1,6 +1,7 @@
 // No 'use client' here: rendered only inside a client boundary (SettingsView).
 
 import { useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { GithubMark } from '@/components/marks'
 import { uninstallGithubInstallation, type GithubInstallationDto } from '@/lib/api'
@@ -17,6 +18,7 @@ export default function UninstallGithubInstallationModal({
   onClose: () => void
   onUninstalled: (id: string) => void
 }) {
+  const t = useTranslations('Integrations.dialog.uninstallGithub')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
@@ -41,21 +43,21 @@ export default function UninstallGithubInstallationModal({
             <GithubMark color="var(--status-error)" />
           </span>
         </span>
-        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Uninstall GitHub App</span>
-        <button className="iconbtn" onClick={onClose} aria-label="Close">
+        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('title')}</span>
+        <button className="iconbtn" onClick={onClose} aria-label={t('close')}>
           <Icon name="x" size={16} />
         </button>
       </div>
       <div className="modalbody">
         <p className="m-0 font-sans text-[13.5px] font-normal leading-[1.6] text-(--text-secondary)">
-          Uninstall the GitHub App from <span className="mono text-(--text-primary)">{installation.accountLogin}</span>?
-          The App will lose access to its repositories. Repository triggers and credential-free clone or push operations
-          using this installation will stop working.
+          {t.rich('body', {
+            account: () => <span className="mono text-(--text-primary)">{installation.accountLogin}</span>
+          })}
         </p>
         <div className="mt-[14px] flex items-start gap-[9px] rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-[13px] py-3">
           <Icon name="info" size={15} color="var(--text-tertiary)" className="mt-[1px] flex-none" />
           <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-            This does not delete repositories or existing sessions. You can install the App again later.
+            {t('reinstallHint')}
           </span>
         </div>
         {err && (
@@ -65,11 +67,11 @@ export default function UninstallGithubInstallationModal({
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button variant="danger" onClick={onUninstall} className={busy ? 'pointer-events-none opacity-50' : undefined}>
           <Icon name="unplug" size={15} />
-          {busy ? 'Uninstalling…' : 'Uninstall'}
+          {busy ? t('uninstalling') : t('uninstall')}
         </Button>
       </div>
     </>

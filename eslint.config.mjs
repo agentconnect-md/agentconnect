@@ -63,6 +63,24 @@ export default defineConfig([
     }
   },
   {
+    // Migration guard: unconverted console and route trees are temporarily allowlisted.
+    files: ['packages/web/src/**/*.{jsx,tsx}'],
+    ignores: ['packages/web/src/components/console/**', 'packages/web/src/app/**', '**/*.test.{jsx,tsx}'],
+    rules: {
+      'no-restricted-syntax': [
+        'warn',
+        {
+          selector: 'JSXText[value=/[A-Za-z]/]',
+          message: 'User-facing JSX text must come from the i18n message catalog.'
+        },
+        {
+          selector: 'JSXAttribute[name.name=/^(title|placeholder|aria-label|label)$/] > Literal[value=/[A-Za-z]/]',
+          message: 'User-facing JSX attributes must come from the i18n message catalog.'
+        }
+      ]
+    }
+  },
+  {
     // Tenancy fence (docs/designs/org-scoped-data-layer.md §6): the HTTP
     // surface resolves resources through org-fenced repo methods only; the
     // `*Unscoped` escape hatches belong to internal trust domains. A

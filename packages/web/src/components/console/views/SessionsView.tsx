@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import {
   AGENTS,
   MOCK_MODE,
@@ -70,15 +71,12 @@ function AvatarFace({ label, member }: { label: string; member?: MemberDto }) {
  *  any workspace it had), so the row still lists but can never be replayed. Marked
  *  in the list rather than hidden — the metadata is deliberately kept. */
 function PurgedMark({ session }: { session: Session }) {
+  const t = useTranslations('Sessions.list')
   if (!session.contentPurgedAt) return null
   const when = fmtDate(session.contentPurgedAt)
   return (
     <span
-      title={
-        session.contentPurgedPartial
-          ? `Part of this conversation's history was deleted from ${when} by the session retention policy`
-          : `Transcript deleted ${when} by the session retention policy — only metadata remains`
-      }
+      title={session.contentPurgedPartial ? t('purgedPartial', { date: when }) : t('purged', { date: when })}
       className="inline-flex flex-none"
     >
       <Icon name="trash" size={12} color="var(--text-tertiary)" />
@@ -93,6 +91,7 @@ function activityMs(s: Session): number {
 }
 
 export default function SessionsView() {
+  const t = useTranslations('Sessions.list')
   const { activeOrg, orgPath } = useOrgs()
   const { agents, allSessions, sessionFacets: baseSessionFacets, crons, members } = useConsoleData()
   const { pgSessionList } = usePlayground()
@@ -351,7 +350,7 @@ export default function SessionsView() {
       const fallback = participant.name.trim()
       return fallback && fallback !== participant.agentId && fallback !== participant.agentId.slice(0, 8)
         ? fallback
-        : 'Agent'
+        : t('agent')
     }
     const rosterNames = roster.map(participantName)
     return (
@@ -374,7 +373,7 @@ export default function SessionsView() {
   }
 
   const agentOpts: FilterOption[] = [
-    { v: 'all', label: 'All agents', face: catFace('bot') },
+    { v: 'all', label: t('allAgents'), face: catFace('bot') },
     ...agents
       .filter((agent) => facetAgentIds.has(agent.id))
       .map((a) => ({
@@ -393,12 +392,12 @@ export default function SessionsView() {
       }))
   ]
   const integrationOpts: FilterOption[] = [
-    { v: 'all', label: 'All integrations', face: catFace('plug') },
+    { v: 'all', label: t('allIntegrations'), face: catFace('plug') },
     ...[...intSet].map(([v, label]) => ({ v, label, face: <PlatformMark platform={v} fillPct={100} /> }))
   ]
   // Channels lead with the `#` category glyph; the source platform sits on the right.
   const channelOpts: FilterOption[] = [
-    { v: 'all', label: 'All channels', face: catFace('hash') },
+    { v: 'all', label: t('allChannels'), face: catFace('hash') },
     ...[...chMap].map(([value, channel]) => ({
       v: value,
       label: channel.label,
@@ -407,7 +406,7 @@ export default function SessionsView() {
       pillFace: <PlatformMark platform={channel.platform} fillPct={100} />
     }))
   ]
-  const triggerAll: FilterOption = { v: 'all', label: 'All triggers', face: catFace('zap') }
+  const triggerAll: FilterOption = { v: 'all', label: t('allTriggers'), face: catFace('zap') }
   const triggerAgents: FilterOption[] = [...triggerAgentSet]
     .map(([v, agent]) => ({
       v,
@@ -456,10 +455,10 @@ export default function SessionsView() {
     .map(([v, label]) => ({ v, label, kind: 'schedule' as const, face: catFace('timer') }))
     .sort(byLabel)
   const triggerGroups: FilterGroup[] = [
-    { label: 'Agents', options: triggerAgents },
-    { label: 'People', options: triggerPeople },
+    { label: t('agents'), options: triggerAgents },
+    { label: t('people'), options: triggerPeople },
     ...hookTriggerGroups,
-    { label: 'Schedules', options: triggerScheds }
+    { label: t('schedules'), options: triggerScheds }
   ]
   const triggerFlat: FilterOption[] = [
     triggerAll,
@@ -476,7 +475,7 @@ export default function SessionsView() {
   const filtActive = !(fAgent === 'all' && fInt === 'all' && fChannel === 'all' && fTrigger === 'all')
   const initialLoading = sessionList.isLoading && sessions.length === 0
   const showEmpty = totalCount === 0 && filtered.length === 0 && !initialLoading
-  const countLabel = `${totalCount} ${totalCount === 1 ? 'session' : 'sessions'}`
+  const countLabel = t('count', { count: totalCount })
 
   // Active-filter chips (mobile, sheet closed) — label + one-tap clear per filter.
   const labelOf = (opts: FilterOption[], v: string) => opts.find((o) => o.v === v)?.label ?? v
@@ -525,14 +524,14 @@ export default function SessionsView() {
       <span
         role="link"
         tabIndex={0}
-        title="Open schedule"
+        title={t('openSchedule')}
         onClick={openCron}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') openCron(e)
         }}
         className="cursor-pointer text-(--brand)"
       >
-        {cronById.get(cronId)?.name?.trim() || 'Schedule'}
+        {cronById.get(cronId)?.name?.trim() || t('schedule')}
       </span>
     )
   }
@@ -555,33 +554,42 @@ export default function SessionsView() {
           better than a sentence does, and the list starts at the top of the page. */}
       {/* Desktop filter bar — four custom dropdowns, each showing the selected face. */}
       <div className="mb-4 hidden flex-wrap items-center gap-[10px] desktop:flex">
-        <span className="eyebrow mr-[2px]">Filter</span>
-        <FilterSelect value={fAgent} onChange={(v) => setFilter('agent', v)} options={agentOpts} noun="agents" />
+        <span className="eyebrow mr-[2px]">{t('filter')}</span>
+        <FilterSelect
+          value={fAgent}
+          onChange={(v) => setFilter('agent', v)}
+          options={agentOpts}
+          placeholder={t('filterAgents')}
+          ariaLabel={t('filterAgentsLabel')}
+        />
         <FilterSelect
           value={fInt}
           onChange={(v) => setFilter('integration', v)}
           options={integrationOpts}
-          noun="integrations"
+          placeholder={t('filterIntegrations')}
+          ariaLabel={t('filterIntegrationsLabel')}
         />
         <FilterSelect
           value={fChannel}
           onChange={(v) => setFilter('channel', v)}
           options={channelOpts}
           mono
-          noun="channels"
+          placeholder={t('filterChannels')}
+          ariaLabel={t('filterChannelsLabel')}
         />
         <FilterSelect
           value={fTrigger}
           onChange={(v) => setFilter('trigger', v)}
           options={[triggerAll]}
           groups={triggerGroups}
-          noun="triggers"
+          placeholder={t('filterTriggers')}
+          ariaLabel={t('filterTriggersLabel')}
         />
         <span className="mono ml-auto text-[12px] text-(--text-tertiary)">{countLabel}</span>
         {filtActive && (
           <button className="lnk text-(--text-tertiary)" onClick={() => router.replace(orgPath('/sessions'))}>
             <Icon name="x" size={13} />
-            Clear
+            {t('clear')}
           </button>
         )}
       </div>
@@ -597,7 +605,7 @@ export default function SessionsView() {
               <span
                 role="button"
                 tabIndex={0}
-                aria-label={`Clear ${c.key} filter`}
+                aria-label={t('clearFilter', { filter: t(c.key) })}
                 onClick={() => setFilter(c.key, 'all')}
                 className="inline-flex h-[18px] w-[18px] cursor-pointer items-center justify-center text-(--text-tertiary)"
               >
@@ -618,7 +626,7 @@ export default function SessionsView() {
       )}
       {filtered.length > 0 && (
         <div className="px-4 pt-4 pb-1 font-mono text-[11px] font-semibold uppercase leading-normal tracking-[.08em] text-(--text-tertiary) desktop:hidden">
-          Today · {totalCount}
+          {t('today')} · {totalCount}
         </div>
       )}
       {/* The list card: desktop `.card` chrome; on mobile the same card gains the
@@ -630,11 +638,11 @@ export default function SessionsView() {
         }`}
       >
         <div className={`row h ${cols} hidden desktop:grid`}>
-          <span>Session</span>
-          <span>Agent</span>
-          <span>Integration</span>
-          <span>Status</span>
-          <span className="text-right">Tokens</span>
+          <span>{t('columns.session')}</span>
+          <span>{t('columns.agent')}</span>
+          <span>{t('columns.integration')}</span>
+          <span>{t('columns.status')}</span>
+          <span className="text-right">{t('columns.tokens')}</span>
           <span />
         </div>
         {initialLoading && (
@@ -660,7 +668,7 @@ export default function SessionsView() {
                 <span className="min-w-0 truncate font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
                   {s.title}
                 </span>
-                <RestrictedLock show={s.visibility === 'private'} title="Private session — visible only to its owner" />
+                <RestrictedLock show={s.visibility === 'private'} title={t('privateSession')} />
                 <PurgedMark session={s} />
                 {/* Status as a compact pill — the design's badge, driven by the real
                     status (soft bg + saturated text from STATUS_MAP). */}
@@ -701,10 +709,7 @@ export default function SessionsView() {
                   <span className="truncate font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
                     {s.title}
                   </span>
-                  <RestrictedLock
-                    show={s.visibility === 'private'}
-                    title="Private session — visible only to its owner"
-                  />
+                  <RestrictedLock show={s.visibility === 'private'} title={t('privateSession')} />
                   <PurgedMark session={s} />
                 </div>
                 <div className="mono text-[11px] text-(--text-tertiary)">
@@ -741,9 +746,9 @@ export default function SessionsView() {
         {showEmpty && (
           <div className="hidden flex-col items-center gap-[6px] px-6 py-[44px] text-center desktop:flex">
             {emptyIcon}
-            <div className="mt-[6px] font-sans text-[14px] font-semibold leading-normal">No sessions match</div>
+            <div className="mt-[6px] font-sans text-[14px] font-semibold leading-normal">{t('noMatches')}</div>
             <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-              Try clearing a filter to see more runs.
+              {t('clearFilterHint')}
             </div>
           </div>
         )}
@@ -751,7 +756,7 @@ export default function SessionsView() {
       {sessionList.nextCursor && !initialLoading && (
         <div className="mt-3 flex justify-center max-desktop:px-4">
           <button className="lnk text-[12px]" onClick={sessionList.loadMore} disabled={sessionList.loadingMore}>
-            {sessionList.loadingMore ? 'Loading…' : 'Load more'}
+            {sessionList.loadingMore ? t('loading') : t('loadMore')}
           </button>
         </div>
       )}
@@ -759,10 +764,10 @@ export default function SessionsView() {
         <div className="mx-6 my-[44px] flex flex-col items-center gap-[6px] text-center desktop:hidden">
           {emptyIcon}
           <div className="mt-[6px] font-sans text-[14px] font-semibold leading-normal">
-            {filtActive ? 'No sessions match' : 'No sessions yet'}
+            {filtActive ? t('noMatches') : t('noSessions')}
           </div>
           <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-            {filtActive ? 'Try loosening the filters.' : 'Runs will appear here as your agents work.'}
+            {filtActive ? t('loosenFiltersHint') : t('emptyHint')}
           </div>
         </div>
       )}
@@ -775,32 +780,38 @@ export default function SessionsView() {
           >
             <div className="msheet-handle" />
             <div className="flex items-center px-0 pb-1 pt-[2px]">
-              <span className="flex-1 font-sans text-[15px] font-semibold leading-normal">Filter sessions</span>
+              <span className="flex-1 font-sans text-[15px] font-semibold leading-normal">{t('filterSessions')}</span>
               {filtActive && (
                 <button
                   className="h-8 border-0 bg-transparent px-[10px] font-sans text-[13px] font-semibold leading-normal text-(--brand)"
                   onClick={() => router.replace(orgPath('/sessions'))}
                 >
-                  Clear all
+                  {t('clearAll')}
                 </button>
               )}
             </div>
-            <PillSection first label="Agent" options={agentOpts} value={fAgent} onPick={(v) => setFilter('agent', v)} />
             <PillSection
-              label="Integration"
+              first
+              label={t('agent')}
+              options={agentOpts}
+              value={fAgent}
+              onPick={(v) => setFilter('agent', v)}
+            />
+            <PillSection
+              label={t('integration')}
               options={integrationOpts}
               value={fInt}
               onPick={(v) => setFilter('integration', v)}
             />
             <PillSection
-              label="Channel"
+              label={t('channel')}
               options={channelOpts}
               value={fChannel}
               onPick={(v) => setFilter('channel', v)}
               mono
             />
             <PillSection
-              label="Trigger"
+              label={t('trigger')}
               options={triggerFlat}
               value={fTrigger}
               onPick={(v) => setFilter('trigger', v)}
@@ -809,7 +820,7 @@ export default function SessionsView() {
               className="mt-[18px] flex h-[46px] w-full items-center justify-center rounded-[10px] border-0 bg-(--brand) font-sans text-[14px] font-semibold leading-normal text-white"
               onClick={closeSheet}
             >
-              Show {countLabel}
+              {t('show', { count: totalCount })}
             </button>
             <div className="msheet-home">
               <span className="home-pill dark" />
@@ -874,16 +885,18 @@ function FilterSelect({
   options,
   groups,
   mono,
-  noun
+  placeholder,
+  ariaLabel
 }: {
   value: string
   onChange: (v: string) => void
   options: FilterOption[]
   groups?: FilterGroup[]
   mono?: boolean
-  // Plural category name for the search placeholder — "Filter {noun}…".
-  noun: string
+  placeholder: string
+  ariaLabel: string
 }) {
+  const t = useTranslations('Sessions.list')
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const all = groups ? [...options, ...groups.flatMap((g) => g.options)] : options
@@ -928,9 +941,9 @@ function FilterSelect({
               className="fsearch"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder={`Filter ${noun}…`}
+              placeholder={placeholder}
               autoFocus
-              aria-label={`Filter ${noun}`}
+              aria-label={ariaLabel}
             />
             {shownOptions.map((o) => (
               <FilterOpt key={o.v} option={o} selected={o.v === value} mono={mono} onPick={() => pick(o.v)} />
@@ -943,7 +956,7 @@ function FilterSelect({
                 ))}
               </div>
             ))}
-            {noHit && <div className="fnohit">No matches</div>}
+            {noHit && <div className="fnohit">{t('noMatchesShort')}</div>}
           </div>
         </>
       )}
@@ -970,6 +983,7 @@ function PillSection({
   mono?: boolean
   first?: boolean
 }) {
+  const t = useTranslations('Sessions.list')
   return (
     <>
       <div
@@ -997,7 +1011,7 @@ function PillSection({
               }`}
             >
               {mark && <span className="flex h-5 w-5 flex-none items-center justify-center">{mark}</span>}
-              {o.v === 'all' ? 'All' : o.label}
+              {o.v === 'all' ? t('all') : o.label}
             </button>
           )
         })}

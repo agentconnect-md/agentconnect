@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import useSWR, { useSWRConfig } from 'swr'
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
 import {
@@ -104,25 +105,22 @@ export function rowAttribution(
 // to the service: the feed is keyset-paginated over both ledger sides at once, so narrowing
 // it here rather than on a page already fetched is what keeps the cursor, the loaded count
 // and "end of ledger" describing the rows actually on screen.
+// Display text for `key`/`kind` lives in the `Billing` message catalog — see `TX_SIDES`
+// labels, `KNOWN_KINDS` and `STATE_COLOR` below, resolved through `t` at the render site.
 const TX_SIDES = [
-  // { key: 'all', label: 'All', type: undefined },
-  { key: 'debit', label: 'Usage', type: 'debit' },
-  { key: 'credit', label: 'Top-ups', type: 'credit' }
+  // { key: 'all', type: undefined },
+  { key: 'debit', type: 'debit' },
+  { key: 'credit', type: 'credit' }
 ] as const
 type TxSide = (typeof TX_SIDES)[number]['key']
 
-const KIND_LABEL: Record<string, string> = {
-  purchase: 'Credit purchase',
-  adjustment: 'Adjustment',
-  promo: 'Promotional credit',
-  refund: 'Refund'
-}
+const KNOWN_KINDS = ['purchase', 'adjustment', 'promo', 'refund'] as const
 
-// The gateway's own call, as the design's balance-card status pill. No `state` ⇒ no pill.
-const STATE_PILL: Record<NonNullable<BillingAccount['state']>, { label: string; color: string }> = {
-  active: { label: 'Serving', color: 'var(--status-online)' },
-  suspended: { label: 'Suspended', color: 'var(--status-error)' },
-  unknown: { label: 'Unconfirmed', color: 'var(--status-info)' }
+// The gateway's own call, as the design's balance-card status pill color. No `state` ⇒ no pill.
+const STATE_COLOR: Record<NonNullable<BillingAccount['state']>, string> = {
+  active: 'var(--status-online)',
+  suspended: 'var(--status-error)',
+  unknown: 'var(--status-info)'
 }
 
 // Design's Posted column, `YYYY-MM-DD HH:mm` in the viewer's own timezone. sv-SE is the
@@ -189,6 +187,11 @@ function BalanceBannerCard({
   canPay: boolean
   onAddCredits: () => void
 }) {
+  const rawT = useTranslations('Billing.banners')
+  // `banner.titleKey`/`textKey`/`ctaKey` are plain strings (the point of returning keys
+  // instead of text, per `balanceBanner`'s doc comment) — narrower than the translator's
+  // literal-union key type, so resolve them through an untyped call.
+  const t = rawT as unknown as (key: string, values?: Record<string, unknown>) => string
   const banner = balanceBanner(acct, { hasHistory })
   if (!banner) return null
   const tone = BALANCE_TONE[banner.tone]
@@ -198,14 +201,16 @@ function BalanceBannerCard({
         <Icon name={banner.icon} size={16} color={tone.glyph} />
       </span>
       <div className="min-w-0 flex-1">
-        <div className="font-sans text-[13px] font-semibold leading-normal">{banner.title}</div>
+        <div className="font-sans text-[13px] font-semibold leading-normal">
+          {t(banner.titleKey, banner.titleValues)}
+        </div>
         <div className="mt-1 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
-          {banner.text}
+          {t(banner.textKey, banner.textValues)}
         </div>
         {/* Only owners move money — the service enforces it; this just doesn't offer a refused form. */}
-        {banner.cta && canPay && (
+        {banner.ctaKey && canPay && (
           <Button size="sm" className="mt-2.5" onClick={onAddCredits}>
-            {banner.cta}
+            {t(banner.ctaKey)}
           </Button>
         )}
       </div>
@@ -262,40 +267,27 @@ const BANNER_TONE: Record<CheckoutReturn['phase'], { border: string; bg: string;
   error: { border: 'var(--status-error)', bg: 'var(--status-error-soft)', icon: 'triangle-alert' }
 }
 
-function checkoutCopy(state: CheckoutReturn): { title: string; body: string } {
+type CheckoutTranslator = ReturnType<typeof useTranslations<'Billing.checkout'>>
+
+function checkoutCopy(state: CheckoutReturn, t: CheckoutTranslator): { title: string; body: string } {
   switch (state.phase) {
     case 'confirming':
-      return {
-        title: 'Confirming your payment',
-        body: 'You came back from Stripe, but the payment counts only once Stripe tells us it settled. Credits post as soon as that lands — usually seconds. Safe to leave this page; the balance updates on its own.'
-      }
+      return { title: t('confirmingTitle'), body: t('confirmingBody') }
     case 'still-pending':
-      return {
-        title: 'Payment still settling',
-        body: 'Stripe has not confirmed the payment yet. Some payment methods settle over several minutes — credits post automatically once it lands, and it is safe to leave this page.'
-      }
+      return { title: t('stillPendingTitle'), body: t('stillPendingBody') }
     case 'completed':
       return {
-        title: `${fmtMicroUsd(state.purchase.amountMicro)} added`,
-        body: 'The payment settled and the credits are on your balance.'
+        title: t('completedTitle', { amount: fmtMicroUsd(state.purchase.amountMicro) }),
+        body: t('completedBody')
       }
     case 'failed':
-      return {
-        title: "Payment didn't go through",
-        body: 'Stripe declined the payment, so nothing was charged and your balance is unchanged. You can try again with the same or a different method.'
-      }
+      return { title: t('failedTitle'), body: t('failedBody') }
     case 'expired':
-      return {
-        title: 'Checkout session expired',
-        body: 'The Stripe session timed out and no payment confirmation has arrived. If you left without paying, nothing was charged. If you paid just as the session closed, the credits still post automatically once Stripe confirms — they will show in the transactions below.'
-      }
+      return { title: t('expiredTitle'), body: t('expiredBody') }
     case 'canceled':
-      return { title: 'Checkout canceled', body: 'You left the Stripe page before paying. Nothing was charged.' }
+      return { title: t('canceledTitle'), body: t('canceledBody') }
     case 'error':
-      return {
-        title: 'Could not check the payment',
-        body: `${state.message} — if the payment went through, the credits still post automatically; you can also check again now.`
-      }
+      return { title: t('errorTitle'), body: t('errorBody', { message: state.message }) }
   }
 }
 
@@ -308,8 +300,9 @@ function CheckoutBanner({
   onDismiss: () => void
   onRetry: () => void
 }) {
+  const t = useTranslations('Billing.checkout')
   const tone = BANNER_TONE[state.phase]
-  const copy = checkoutCopy(state)
+  const copy = checkoutCopy(state, t)
   const busy = state.phase === 'confirming'
   return (
     <div
@@ -326,13 +319,13 @@ function CheckoutBanner({
         </div>
         {busy && (
           <div className="mono mt-2 text-[11.5px] text-(--text-tertiary)">
-            checking payment status · attempt {state.phase === 'confirming' ? state.attempt : 0}
+            {t('checkingStatus', { attempt: state.phase === 'confirming' ? state.attempt : 0 })}
           </div>
         )}
         {state.phase === 'error' && (
           <div className="mt-2">
             <Button size="xs" variant="secondary" onClick={onRetry}>
-              Check again
+              {t('checkAgain')}
             </Button>
           </div>
         )}
@@ -343,13 +336,13 @@ function CheckoutBanner({
             target="_blank"
             rel="noopener noreferrer"
           >
-            View receipt
+            {t('viewReceipt')}
             <Icon name="arrow-up-right" size={12} />
           </a>
         )}
       </div>
       {!busy && (
-        <Button size="xs" variant="ghost" onClick={onDismiss} ariaLabel="Dismiss">
+        <Button size="xs" variant="ghost" onClick={onDismiss} ariaLabel={t('dismiss')}>
           <Icon name="x" size={14} />
         </Button>
       )}
@@ -360,6 +353,7 @@ function CheckoutBanner({
 // ── Add credits (owners only — the service enforces this; the UI just agrees) ─
 
 function AddCreditsCard({ orgId, returnPath }: { orgId: string; returnPath: string }) {
+  const t = useTranslations('Billing.addCredits')
   const [preset, setPreset] = useState<number>(50)
   const [custom, setCustom] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -393,7 +387,7 @@ function AddCreditsCard({ orgId, returnPath }: { orgId: string; returnPath: stri
   return (
     <div id="add-credits" className="card flex flex-col">
       <div className="cardhead">
-        <span className="cardtitle">Add credits</span>
+        <span className="cardtitle">{t('title')}</span>
       </div>
       <div className="flex flex-1 flex-col p-4">
         <div className="grid grid-cols-4 gap-2">
@@ -432,9 +426,9 @@ function AddCreditsCard({ orgId, returnPath }: { orgId: string; returnPath: stri
               value={custom}
               // Digits and one dot only — anything else never enters the state.
               onChange={(e) => setCustom(e.target.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1'))}
-              placeholder="Other"
+              placeholder={t('otherPlaceholder')}
               inputMode="decimal"
-              aria-label="Custom amount in USD"
+              aria-label={t('customAmountAriaLabel')}
               className="mono w-full min-w-0 border-0 bg-transparent text-[12.5px] outline-none"
             />
           </div>
@@ -444,8 +438,14 @@ function AddCreditsCard({ orgId, returnPath }: { orgId: string; returnPath: stri
           style={{ color: invalidCustom ? 'var(--status-error)' : 'var(--text-tertiary)' }}
         >
           {invalidCustom
-            ? `Enter an amount between $${MIN_USD.toFixed(2)} and $${MAX_USD.toLocaleString('en-US', { minimumFractionDigits: 2 })}.`
-            : `Minimum $${MIN_USD.toFixed(2)}, maximum $${MAX_USD.toLocaleString('en-US', { minimumFractionDigits: 2 })} per purchase.`}
+            ? t('rangeError', {
+                min: MIN_USD.toFixed(2),
+                max: MAX_USD.toLocaleString('en-US', { minimumFractionDigits: 2 })
+              })
+            : t('rangeHint', {
+                min: MIN_USD.toFixed(2),
+                max: MAX_USD.toLocaleString('en-US', { minimumFractionDigits: 2 })
+              })}
         </div>
         {error && (
           <div className="mt-2 flex items-center gap-2 font-sans text-[12px] text-(--status-error)">
@@ -457,7 +457,11 @@ function AddCreditsCard({ orgId, returnPath }: { orgId: string; returnPath: stri
           <Button size="md" disabled={!valid || submitting} onClick={() => void submit()} className="w-full">
             <span className="inline-flex items-center gap-2">
               <Icon name={submitting ? 'loader-circle' : 'plus'} size={15} />
-              {submitting ? 'Opening Stripe checkout…' : `Add ${valid ? fmtMicroUsd(cents * 10_000) : 'credits'}`}
+              {submitting
+                ? t('openingCheckout')
+                : valid
+                  ? t('addAmount', { amount: fmtMicroUsd(cents * 10_000) })
+                  : t('addCreditsButton')}
             </span>
           </Button>
         </div>
@@ -477,6 +481,7 @@ function AddCreditsCard({ orgId, returnPath }: { orgId: string; returnPath: stri
 const ACTIVITY_FILL = '[&_.bar-usage_path]:fill-(--brand) [&_.bar-topup_path]:fill-(--green-500)'
 
 function ActivityCard({ orgId }: { orgId: string }) {
+  const t = useTranslations('Billing.activity')
   const [range, setRange] = useState<ActivityRange>('d7')
   const [mode, setMode] = useState<ActivityMode>('usage')
   const cfg = activityRange(range)
@@ -497,7 +502,7 @@ function ActivityCard({ orgId }: { orgId: string }) {
           <span
             className={`h-[9px] w-[9px] flex-none rounded-[2px] ${mode === 'usage' ? 'bg-(--brand)' : 'bg-(--green-500)'}`}
           />
-          {mode === 'usage' ? 'usage' : 'topped up'}{' '}
+          {mode === 'usage' ? t('tooltipUsage') : t('tooltipToppedUp')}{' '}
           <span className="mono text-(--text-primary)">{fmtMicroUsd(Math.round(row.amount * 1_000_000))}</span>
         </div>
       </div>
@@ -510,23 +515,25 @@ function ActivityCard({ orgId }: { orgId: string }) {
     <div className="card mb-[18px] min-w-0">
       <div className="cardhead flex-wrap justify-between gap-2">
         <span className="inline-flex items-baseline gap-2">
-          <span className="cardtitle">Activity</span>
-          <span className="mono text-[11.5px] text-(--text-tertiary)">{cfg.note}</span>
+          <span className="cardtitle">{t('title')}</span>
+          <span className="mono text-[11.5px] text-(--text-tertiary)">
+            {t('lastPeriod', { period: t(`ranges.${cfg.key}.period`) })}
+          </span>
         </span>
         <span className="flex items-center gap-2">
           <span className="pillbar">
             {ACTIVITY_RANGES.map((r) => (
               <button key={r.key} className={range === r.key ? 'pill on' : 'pill'} onClick={() => setRange(r.key)}>
-                {r.label}
+                {t(`ranges.${r.key}.label`)}
               </button>
             ))}
           </span>
           <span className="pillbar">
             <button className={mode === 'usage' ? 'pill on' : 'pill'} onClick={() => setMode('usage')}>
-              Usage
+              {t('modeUsage')}
             </button>
             <button className={mode === 'topups' ? 'pill on' : 'pill'} onClick={() => setMode('topups')}>
-              Top-ups
+              {t('modeTopups')}
             </button>
           </span>
         </span>
@@ -535,10 +542,10 @@ function ActivityCard({ orgId }: { orgId: string }) {
         <div className="flex items-center gap-3 px-4 py-3">
           <Icon name="triangle-alert" size={18} color="var(--status-error)" />
           <span className="flex-1 font-sans text-[13px] font-normal leading-[1.55]">
-            Could not load activity: {(rows.error as Error).message}
+            {t('loadError', { error: (rows.error as Error).message })}
           </span>
           <Button size="sm" variant="secondary" onClick={() => void rows.mutate()}>
-            Retry
+            {t('retry')}
           </Button>
         </div>
       ) : !rows.data ? (
@@ -585,7 +592,7 @@ function ActivityCard({ orgId }: { orgId: string }) {
                       nothing at all. */}
                   <Bar
                     dataKey="amount"
-                    name={mode === 'usage' ? 'usage' : 'top-up'}
+                    name={mode === 'usage' ? t('barNameUsage') : t('barNameTopup')}
                     className={mode === 'usage' ? 'bar-usage' : 'bar-topup'}
                     radius={[3, 3, 0, 0]}
                     minPointSize={(_: number | null | undefined, i: number) => ((buckets[i]?.amount ?? 0) > 0 ? 3 : 0)}
@@ -596,12 +603,15 @@ function ActivityCard({ orgId }: { orgId: string }) {
           ) : (
             <div className="py-8 text-center font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-tertiary)">
               {mode === 'usage'
-                ? `Nothing was deducted in the ${cfg.note.replace('last ', '')}.`
-                : `No credits were added in the ${cfg.note.replace('last ', '')}.`}
+                ? t('emptyUsage', { period: t(`ranges.${cfg.key}.period`) })
+                : t('emptyTopups', { period: t(`ranges.${cfg.key}.period`) })}
             </div>
           )}
           <div className="mt-2 text-center font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-            {mode === 'usage' ? 'usage' : 'top-ups'} · {cfg.note.replace('last ', '')}{' '}
+            {t('footerLine', {
+              mode: mode === 'usage' ? t('footerUsage') : t('footerTopups'),
+              period: t(`ranges.${cfg.key}.period`)
+            })}{' '}
             <span className="mono text-[11px] text-(--text-secondary)">
               {fmtMicroUsd(Math.round(total * 1_000_000))}
             </span>
@@ -613,18 +623,19 @@ function ActivityCard({ orgId }: { orgId: string }) {
 }
 
 function MembersDontPayCard() {
+  const t = useTranslations('Billing.membersDontPay')
   return (
     <div className="card flex flex-col">
       <div className="cardhead">
-        <span className="cardtitle">Add credits</span>
+        <span className="cardtitle">{t('cardTitle')}</span>
       </div>
       <div className="flex flex-1 flex-col items-center justify-center gap-2 p-5 text-center">
         <span className="flex h-9 w-9 items-center justify-center rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) text-(--text-tertiary)">
           <Icon name="user-round-cog" size={17} />
         </span>
-        <div className="font-sans text-[13px] font-semibold">Owners add credits</div>
+        <div className="font-sans text-[13px] font-semibold">{t('title')}</div>
         <div className="max-w-[300px] font-sans text-[12px] font-normal leading-[1.6] text-(--text-tertiary)">
-          You can see the balance and every transaction. Ask an org owner to top up.
+          {t('body')}
         </div>
       </div>
     </div>
@@ -632,6 +643,7 @@ function MembersDontPayCard() {
 }
 
 export default function BillingView() {
+  const t = useTranslations('Billing')
   const { activeOrg, myRole, loading: orgLoading } = useOrgs()
   // The viewer's OWN roster, for the name and icon of an agent this row may name. Read on the
   // console data provider's own SWR key so it shares that cache instead of fetching twice.
@@ -772,37 +784,27 @@ export default function BillingView() {
   // grow into rows the tail already fetched.
   const mine = tail && tail.orgId === orgId && tail.side === side ? tail : null
   const tailItems = mine ? mine.items : []
-  const firstIds = new Set(transactions.data?.items.map((t) => t.id))
-  const loaded = transactions.data ? [...transactions.data.items, ...tailItems.filter((t) => !firstIds.has(t.id))] : []
+  const firstIds = new Set(transactions.data?.items.map((tx) => tx.id))
+  const loaded = transactions.data
+    ? [...transactions.data.items, ...tailItems.filter((tx) => !firstIds.has(tx.id))]
+    : []
   // The side is a REQUEST: a billing image that predates `type` ignores it and answers with
   // the whole ledger. Cutting again here is what stops that image from rendering top-ups
   // under a pill that says Usage — a wrong answer is worse than a narrower one.
-  const txItems = sideType ? loaded.filter((t) => t.type === sideType) : loaded
+  const txItems = sideType ? loaded.filter((tx) => tx.type === sideType) : loaded
   const nextCursor = mine ? mine.nextCursor : (transactions.data?.nextCursor ?? null)
 
   // Deep-link landing for a console that does not offer billing: the rail hides
   // the entry, so anyone here typed the URL or followed an old bookmark. Gated on
   // the flag, not on BILLING_URL — with the flag on and no endpoint configured the
   // page must report a broken deployment, not quietly claim billing is elsewhere.
-  if (!offered)
-    return (
-      <Notice
-        title="Billing applies to AgentConnect Cloud"
-        body="This deployment is self-hosted, so there is nothing to bill. Usage and cost of your own runtimes are on the Analytics page."
-      />
-    )
+  if (!offered) return <Notice title={t('notOffered.title')} body={t('notOffered.body')} />
   if (orgLoading) return <LoadingState fill />
   // Every figure on this page belongs to an org, so without one there is nothing
   // to ask for — the fetches below stay unkeyed and would leave the page silently
   // empty. Reached when the org list came back empty or unauthorized (a stale
   // session keeps a token, so nothing redirects to sign-in).
-  if (!orgId)
-    return (
-      <Notice
-        title="No organization selected"
-        body="Billing is per organization. Pick one from the switcher, or sign in again if your session has expired."
-      />
-    )
+  if (!orgId) return <Notice title={t('noOrg.title')} body={t('noOrg.body')} />
   if (!account.data && !account.error) return <LoadingState fill />
 
   const acct = account.data
@@ -824,22 +826,22 @@ export default function BillingView() {
   // comes off the loaded ledger, the threshold off the account. The design's
   // "Billed this period" needs a service field that does not exist — still out.
   const ledgerItems = ledger.data?.items ?? []
-  const lastDebit = ledgerItems.find((t) => t.type === 'debit')
+  const lastDebit = ledgerItems.find((tx) => tx.type === 'debit')
   const thresholdMicro = acct?.lowBalanceMicro ?? 0
   const threshold = thresholdMicro > 0 ? fmtMicroUsd(thresholdMicro) : '—'
   // Design: still Serving below the threshold, but the pill turns amber with the banner.
   const lowBalance = acct != null && thresholdMicro > 0 && acct.balanceMicro < thresholdMicro
   const pill =
     acct?.state === 'active' && lowBalance
-      ? { label: 'Serving', color: 'var(--status-paused)' }
+      ? { label: t('statePill.servingLowBalance'), color: 'var(--status-paused)' }
       : acct?.state != null
-        ? STATE_PILL[acct.state]
+        ? { label: t(`statePill.${acct.state}`), color: STATE_COLOR[acct.state] }
         : null
 
   return (
     <div className="wrap">
       <div className="mb-4 flex min-h-[34px] items-center gap-4">
-        <p className="psub mt-0 flex-1">Prepaid balance for this organization, and what has been credited to it.</p>
+        <p className="psub mt-0 flex-1">{t('description')}</p>
       </div>
 
       {checkout && (
@@ -858,10 +860,10 @@ export default function BillingView() {
         <div className="card mb-4 flex items-center gap-3 px-4 py-3">
           <Icon name="triangle-alert" size={18} color="var(--status-error)" />
           <span className="flex-1 font-sans text-[13px] font-normal leading-[1.55]">
-            Could not reach the billing service: {(account.error as Error).message}
+            {t('accountLoadError', { error: (account.error as Error).message })}
           </span>
           <Button size="sm" variant="secondary" onClick={() => void account.mutate()}>
-            Retry
+            {t('retry')}
           </Button>
         </div>
       )}
@@ -896,7 +898,7 @@ export default function BillingView() {
                 is every reconciliation fact there is. */}
             <div className="card">
               <div className="cardhead justify-between">
-                <span className="cardtitle">Balance</span>
+                <span className="cardtitle">{t('balance')}</span>
                 {pill && (
                   <span className="inline-flex items-center gap-[7px]">
                     <span className="h-[7px] w-[7px] rounded-full" style={{ background: pill.color }} />
@@ -915,11 +917,11 @@ export default function BillingView() {
                 </div>
                 <div className="mt-5 flex gap-[26px] border-t border-(--border-subtle) pt-4">
                   <div>
-                    <div className="eyebrow">Last deduction</div>
+                    <div className="eyebrow">{t('lastDeduction')}</div>
                     <div className="mono mt-[5px] text-[13px]">{lastDebit ? fmtPostedLocal(lastDebit.at) : '—'}</div>
                   </div>
                   <div>
-                    <div className="eyebrow">Alert threshold</div>
+                    <div className="eyebrow">{t('alertThreshold')}</div>
                     <div className="mono mt-[5px] text-[13px]">{threshold}</div>
                   </div>
                 </div>
@@ -941,23 +943,25 @@ export default function BillingView() {
           <div className="card">
             <div className="cardhead flex-wrap justify-between gap-2">
               <span className="inline-flex items-center gap-2">
-                <span className="cardtitle">Transactions</span>
+                <span className="cardtitle">{t('transactions.title')}</span>
                 {/* `self-center`: the group stays baseline-aligned so the title and the count
                     keep sitting on one line, while the pillbar — a control with its own box,
                     taller than both — centres in the line instead of hanging off its text. */}
                 <span className="pillbar self-center">
                   {TX_SIDES.map((s) => (
                     <button key={s.key} className={side === s.key ? 'pill on' : 'pill'} onClick={() => setSide(s.key)}>
-                      {s.label}
+                      {t(`transactions.sides.${s.key}`)}
                     </button>
                   ))}
                 </span>
                 {transactions.data && (
-                  <span className="mono text-[11.5px] text-(--text-tertiary)">{txItems.length} loaded</span>
+                  <span className="mono text-[11.5px] text-(--text-tertiary)">
+                    {t('transactions.loadedCount', { count: txItems.length })}
+                  </span>
                 )}
               </span>
               <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                Newest first · amounts in USD
+                {t('transactions.newestFirst')}
               </span>
             </div>
             {/* The two requests fail independently, so this card carries its own
@@ -967,10 +971,10 @@ export default function BillingView() {
               <div className="flex items-center gap-3 px-4 py-3">
                 <Icon name="triangle-alert" size={18} color="var(--status-error)" />
                 <span className="flex-1 font-sans text-[13px] font-normal leading-[1.55]">
-                  Could not load transactions: {(transactions.error as Error).message}
+                  {t('transactions.loadError', { error: (transactions.error as Error).message })}
                 </span>
                 <Button size="sm" variant="secondary" onClick={() => void transactions.mutate()}>
-                  Retry
+                  {t('retry')}
                 </Button>
               </div>
             ) : !transactions.data ? (
@@ -979,10 +983,10 @@ export default function BillingView() {
               <div className="animate-pulse">
                 <div className={`row h rounded-none ${TX_GRID}`}>
                   <span />
-                  <span>Description</span>
-                  <span className="text-right">Amount</span>
+                  <span>{t('transactions.columns.description')}</span>
+                  <span className="text-right">{t('transactions.columns.amount')}</span>
                   <span />
-                  <span className="truncate">Posted ({LOCAL_TZ})</span>
+                  <span className="truncate">{t('transactions.columns.posted', { tz: LOCAL_TZ })}</span>
                 </div>
                 {Array.from({ length: 5 }, (_, i) => (
                   <div key={i} className={`row ${TX_GRID}`}>
@@ -1003,34 +1007,38 @@ export default function BillingView() {
                   <Icon name="receipt-text" size={20} />
                 </span>
                 <div className="mt-3 font-sans text-[14px] font-semibold leading-normal">
-                  {side === 'debit' ? 'No usage yet' : side === 'credit' ? 'No top-ups yet' : 'No transactions yet'}
+                  {side === 'debit'
+                    ? t('transactions.empty.usageTitle')
+                    : side === 'credit'
+                      ? t('transactions.empty.topupsTitle')
+                      : t('transactions.empty.allTitle')}
                 </div>
                 {/* Under a filter this is "nothing on this side", not "nothing at all" — the
                     unfiltered ledger may be full, and saying otherwise reads as data loss. */}
                 <div className="mt-1 max-w-[340px] font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-tertiary)">
                   {side === 'debit'
-                    ? 'Usage deductions will appear here once your agents start spending.'
+                    ? t('transactions.empty.usageBody')
                     : side === 'credit'
-                      ? 'Purchases and operator credits will appear here.'
-                      : 'Purchases and usage deductions will appear here once your org is funded.'}
+                      ? t('transactions.empty.topupsBody')
+                      : t('transactions.empty.allBody')}
                 </div>
               </div>
             ) : (
               <>
                 <div className={`row h rounded-none ${TX_GRID}`}>
                   <span />
-                  <span>Description</span>
-                  <span className="text-right">Amount</span>
+                  <span>{t('transactions.columns.description')}</span>
+                  <span className="text-right">{t('transactions.columns.amount')}</span>
                   <span />
                   <span className="truncate" title={LOCAL_TZ}>
-                    Posted ({LOCAL_TZ})
+                    {t('transactions.columns.posted', { tz: LOCAL_TZ })}
                   </span>
                 </div>
-                {txItems.map((t) => {
-                  const credit = t.type === 'credit'
-                  const positive = credit && t.amountMicro > 0
+                {txItems.map((tx) => {
+                  const credit = tx.type === 'credit'
+                  const positive = credit && tx.amountMicro > 0
                   return (
-                    <div key={t.id} className={`row ${TX_GRID}`}>
+                    <div key={tx.id} className={`row ${TX_GRID}`}>
                       <span
                         className="flex h-[26px] w-[26px] items-center justify-center rounded-[7px]"
                         style={
@@ -1043,7 +1051,11 @@ export default function BillingView() {
                       </span>
                       <span className="flex min-w-0 items-center gap-2">
                         <span className="truncate font-sans text-[13px] font-medium leading-normal">
-                          {credit ? (KIND_LABEL[t.kind] ?? t.kind) : `Usage — ${t.period}`}
+                          {credit
+                            ? (KNOWN_KINDS as readonly string[]).includes(tx.kind)
+                              ? t(`kindLabels.${tx.kind}`)
+                              : tx.kind
+                            : t('transactions.usagePeriod', { period: tx.period })}
                         </span>
                         <span
                           className="mono inline-flex h-[19px] flex-none items-center rounded-[4px] px-[7px] text-[10.5px] font-semibold tracking-[0.04em] uppercase"
@@ -1053,7 +1065,7 @@ export default function BillingView() {
                               : { background: 'var(--surface-active)', color: 'var(--text-secondary)' }
                           }
                         >
-                          {credit ? t.kind : 'usage'}
+                          {credit ? tx.kind : t('transactions.usageTag')}
                         </span>
                         {/* Who the charge is attributed to. An agent is named only when it is in
                             the viewer's roster; everything else is one id-less rollup with a
@@ -1062,7 +1074,7 @@ export default function BillingView() {
                           (() => {
                             // Nothing at all while the roster is in flight: fail closed applies
                             // to a MISSING answer, not a pending one.
-                            const split = rosterPending ? [] : rowAttribution(t.agents, agentById)
+                            const split = rosterPending ? [] : rowAttribution(tx.agents, agentById)
                             // The description column shares the row with the amount, so the
                             // NAMED chips are capped. The rollup is appended after the cap: it
                             // is the one chip that must never be hidden behind a `+N`.
@@ -1080,8 +1092,11 @@ export default function BillingView() {
                                     visible in the chip; that card already scrolls sideways. */}
                                 {[...shown, ...(rollup ? [rollup] : [])].map((chip) => {
                                   const share = chip.agent
-                                    ? `${agentLabel(chip.agent)} — ${fmtDecimalUsd(chip.amount)}`
-                                    : `Agents you don’t have access to — ${fmtDecimalUsd(chip.amount)}`
+                                    ? t('transactions.agentShare', {
+                                        name: agentLabel(chip.agent),
+                                        amount: fmtDecimalUsd(chip.amount)
+                                      })
+                                    : t('transactions.withheldShare', { amount: fmtDecimalUsd(chip.amount) })
                                   return (
                                     <span
                                       key={chip.key}
@@ -1132,22 +1147,22 @@ export default function BillingView() {
                           })()}
                         {/* Free operator text, rendered as TEXT — truncated, with the whole
                             note on hover, so a long one cannot push the amount column out. */}
-                        {credit && t.note && (
+                        {credit && tx.note && (
                           <span
                             className="truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
-                            title={t.note}
+                            title={tx.note}
                           >
-                            {t.note}
+                            {tx.note}
                           </span>
                         )}
-                        {credit && t.receiptUrl && (
+                        {credit && tx.receiptUrl && (
                           <a
                             className="inline-flex flex-none items-center gap-0.5 font-sans text-[12px] font-medium text-(--text-brand) hover:underline"
-                            href={t.receiptUrl}
+                            href={tx.receiptUrl}
                             target="_blank"
                             rel="noopener noreferrer"
                           >
-                            Receipt
+                            {t('transactions.receipt')}
                             <Icon name="arrow-up-right" size={11} />
                           </a>
                         )}
@@ -1160,27 +1175,27 @@ export default function BillingView() {
                           className="mono text-right text-[13px]"
                           style={positive ? { color: 'var(--status-online)' } : undefined}
                         >
-                          {positive ? `+${fmtMicroUsd(t.amountMicro)}` : fmtMicroUsd(t.amountMicro)}
+                          {positive ? `+${fmtMicroUsd(tx.amountMicro)}` : fmtMicroUsd(tx.amountMicro)}
                         </span>
                       ) : (
-                        <span className="mono text-right text-[13px]" title={`$${t.amount}`}>
+                        <span className="mono text-right text-[13px]" title={`$${tx.amount}`}>
                           <span className="cursor-help border-b border-dotted border-(--border-strong)">
-                            -{fmtDecimalUsd(t.amount)}
+                            -{fmtDecimalUsd(tx.amount)}
                           </span>
                         </span>
                       )}
                       <span />
-                      <span className="mono text-[12px] text-(--text-secondary)">{fmtPostedLocal(t.at)}</span>
+                      <span className="mono text-[12px] text-(--text-secondary)">{fmtPostedLocal(tx.at)}</span>
                     </div>
                   )
                 })}
                 <div className="flex items-center justify-center gap-3 rounded-b-[10px] border-t border-(--border-subtle) bg-(--surface-app) px-4 py-3.5">
                   {nextCursor ? (
                     <Button size="sm" variant="secondary" disabled={loadingMore} onClick={() => void loadMore()}>
-                      {loadingMore ? 'Loading…' : 'Load more'}
+                      {loadingMore ? t('transactions.loadingMore') : t('transactions.loadMore')}
                     </Button>
                   ) : (
-                    <span className="mono text-[11.5px] text-(--text-tertiary)">end of ledger</span>
+                    <span className="mono text-[11.5px] text-(--text-tertiary)">{t('transactions.endOfLedger')}</span>
                   )}
                   {tailError && (
                     <span className="font-sans text-[12px] font-normal leading-normal text-(--status-error)">

@@ -9,6 +9,7 @@ import { Button, Icon } from '@/components/ui'
 import { Spinner } from '@/components/marks'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
 import { SessionRetentionField, SESSION_RETENTION_DEFAULT } from '@/components/console/SessionRetentionField'
+import { useTranslations } from 'next-intl'
 
 /** What the CP already gave the provisioned row — skip the /sharing write when the
  *  operator leaves it alone. */
@@ -25,6 +26,7 @@ interface CommandTab {
  *  command, and the copy button copies whichever tab is active. Copy feedback is
  *  keyed by tab so switching tabs resets the transient "copied" state. */
 function CommandBox({ tabs, placeholder }: { tabs: CommandTab[]; placeholder: ReactNode }) {
+  const t = useTranslations('Daemons.dialog')
   const [active, setActive] = useState(0)
   const [copied, setCopied] = useState(false)
   const command = tabs[active]?.command ?? null
@@ -68,7 +70,7 @@ function CommandBox({ tabs, placeholder }: { tabs: CommandTab[]; placeholder: Re
           className="ml-auto inline-flex cursor-pointer items-center gap-[5px] border-0 bg-transparent px-[13px] py-[9px] font-mono text-[11px] font-medium leading-normal text-(--text-inverse-dim) disabled:cursor-default disabled:opacity-50"
         >
           <Icon name={copied ? 'check' : 'copy'} size={12} />
-          {copied ? 'copied' : 'copy'}
+          {copied ? t('copied') : t('copy')}
         </button>
       </div>
       <div className="break-all px-[14px] py-[13px] font-mono text-[12px] leading-[1.7] text-[#cdd6e0]">
@@ -97,6 +99,7 @@ export default function AddDaemonModal({
   onDone?: (daemonId: string) => void
   registerDismiss: (handler: () => void) => () => void
 }) {
+  const t = useTranslations('Daemons.dialog')
   const { provisionDaemon, daemons, refresh, deleteDaemon, renameDaemon, setDaemonSessionRetention, saveSharing } =
     useConsoleData()
   const { me } = useProfile()
@@ -198,23 +201,27 @@ export default function AddDaemonModal({
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-subtle) bg-(--surface-sunken)">
           <Icon name="server" size={17} color="var(--brand)" />
         </span>
-        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Add daemon</span>
+        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('addDaemon')}</span>
       </div>
       <div className="modalbody">
         <p className="mb-[14px] font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
-          Run one of these on the machine where agents should run.
+          {t('description')}
         </p>
-        <p className="mb-[8px] font-sans text-[12px] font-semibold leading-normal text-(--text-tertiary)">Connect</p>
+        <p className="mb-[8px] font-sans text-[12px] font-semibold leading-normal text-(--text-tertiary)">
+          {t('connect')}
+        </p>
         <CommandBox
           tabs={[
-            { key: 'run', label: 'Run', command: cmds?.run ?? null },
-            { key: 'service', label: 'Install as service', command: cmds?.login ?? null }
+            { key: 'run', label: t('run'), command: cmds?.run ?? null },
+            { key: 'service', label: t('installService'), command: cmds?.login ?? null }
           ]}
           placeholder={
             err ? (
-              <div className="text-(--status-error)">Could not provision a key — {err}</div>
+              <div className="text-(--status-error)">
+                {t('provisionError')} — {err}
+              </div>
             ) : (
-              <div className="text-(--text-inverse-dim)">Minting key…</div>
+              <div className="text-(--text-inverse-dim)">{t('mintingKey')}</div>
             )
           }
         />
@@ -225,8 +232,8 @@ export default function AddDaemonModal({
                 <Icon name="check" size={13} color="#fff" />
               </span>
               <div className="flex-1">
-                <div className="font-sans text-[13px] font-semibold leading-normal">Daemon connected</div>
-                <div className="mono text-[11px] text-(--text-tertiary)">{row?.name} is online.</div>
+                <div className="font-sans text-[13px] font-semibold leading-normal">{t('connected')}</div>
+                <div className="mono text-[11px] text-(--text-tertiary)">{t('online', { name: row?.name ?? '' })}</div>
               </div>
             </>
           ) : (
@@ -235,8 +242,8 @@ export default function AddDaemonModal({
                 <Spinner size={22} />
               </span>
               <div className="flex-1">
-                <div className="font-sans text-[13px] font-semibold leading-normal">Waiting for daemon…</div>
-                <div className="mono text-[11px] text-(--text-tertiary)">It&apos;ll appear here once it connects.</div>
+                <div className="font-sans text-[13px] font-semibold leading-normal">{t('waiting')}</div>
+                <div className="mono text-[11px] text-(--text-tertiary)">{t('waitingDescription')}</div>
               </div>
             </>
           )}
@@ -247,7 +254,7 @@ export default function AddDaemonModal({
             Done (see `finish`). */}
         <div className="fld mt-[14px]">
           <span className="fldlbl">
-            Name <span className="font-normal text-(--text-tertiary)">· optional</span>
+            {t('name')} <span className="font-normal text-(--text-tertiary)">· {t('optional')}</span>
           </span>
           <input
             className="inp"
@@ -262,7 +269,7 @@ export default function AddDaemonModal({
           />
         </div>
         <SessionRetentionField value={retention} onChange={setRetention} />
-        <VisibilityField value={sharing} onChange={setSharing} />
+        <VisibilityField value={sharing} onChange={setSharing} label={t('visibility')} />
         {saveErr && (
           <div className="mt-[14px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[11px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)">
             <Icon name="triangle-alert" size={15} />
@@ -271,9 +278,7 @@ export default function AddDaemonModal({
         )}
       </div>
       <div className="modalfoot">
-        <span className="mono text-[11px] text-(--text-tertiary)">
-          {connect ? 'copy this key now — shown only once' : 'minting key…'}
-        </span>
+        <span className="mono text-[11px] text-(--text-tertiary)">{connect ? t('copyKeyNow') : t('mintingKey')}</span>
         <div className="flex-1" />
         {connected ? (
           <Button
@@ -281,7 +286,7 @@ export default function AddDaemonModal({
             onClick={() => void finish()}
             className={saving ? 'cursor-default opacity-60' : undefined}
           >
-            {saving ? 'Saving…' : onDone ? 'Continue' : 'Done'}
+            {saving ? t('saving') : onDone ? t('continue') : t('done')}
           </Button>
         ) : (
           // Can't finish until the daemon connects — offer a Cancel that cleans up
@@ -291,7 +296,7 @@ export default function AddDaemonModal({
             onClick={() => void cancel()}
             className={cancelling ? 'cursor-default opacity-60' : undefined}
           >
-            {cancelling ? 'Cancelling…' : 'Cancel'}
+            {cancelling ? t('cancelling') : t('cancel')}
           </Button>
         )}
       </div>

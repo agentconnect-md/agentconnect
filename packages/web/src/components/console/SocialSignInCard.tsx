@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import useSWR from 'swr'
+import { useTranslations } from 'next-intl'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { SocialLoginMark } from '@/components/marks'
 import { initialsFrom } from '@/lib/auth'
@@ -71,6 +72,7 @@ function UnlinkDialog({
   onConfirm: () => Promise<void>
   onClose: () => void
 }) {
+  const t = useTranslations('Profile.social')
   const titleId = useId()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
@@ -103,15 +105,15 @@ function UnlinkDialog({
             <Icon name="unlink" size={16} color="var(--brand)" />
           </span>
           <span id={titleId} className="flex-1 font-sans text-[16px] font-semibold leading-normal">
-            Unlink {provider.name}
+            {t('unlinkTitle', { provider: provider.name })}
           </span>
-          <button type="button" className="iconbtn" aria-label="Close" disabled={busy} onClick={onClose}>
+          <button type="button" className="iconbtn" aria-label={t('close')} disabled={busy} onClick={onClose}>
             <Icon name="x" size={16} />
           </button>
         </div>
         <div className="modalbody">
           <p className="font-sans text-[13.5px] font-normal leading-[1.6] text-(--text-secondary)">
-            {provider.name} will no longer be available for signing in to this account.
+            {t('unlinkBody', { provider: provider.name })}
           </p>
           {error ? (
             <div className="mt-3 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)" role="alert">
@@ -122,10 +124,10 @@ function UnlinkDialog({
         <div className="modalfoot">
           <div className="flex-1" />
           <Button variant="ghost" disabled={busy} onClick={onClose}>
-            Cancel
+            {t('cancel')}
           </Button>
           <Button variant="danger" disabled={busy} onClick={() => void submit()}>
-            {busy ? 'Unlinking…' : `Unlink ${provider.name}`}
+            {busy ? t('unlinking') : t('unlink')}
           </Button>
         </div>
       </div>
@@ -150,6 +152,7 @@ function VerifyAccountDialog({
   onVerified: (currentVerificationRecordId: string, expiresAt: string) => Promise<void>
   onClose: () => void
 }) {
+  const t = useTranslations('Profile.social')
   const titleId = useId()
   // Held together: the record is only reusable against the expiry Logto issued
   // with it, and that clock started when the code was sent.
@@ -171,14 +174,14 @@ function VerifyAccountDialog({
     setError(undefined)
     try {
       if (!email) {
-        throw new LogtoAccountError('This account needs a verified email before sign-in methods can change.', 0)
+        throw new LogtoAccountError(t('verifiedEmailRequired'), 0)
       }
       if (!pending) {
         setPending(await requestEmailVerification(email))
         return
       }
       if (!code.trim()) {
-        setError('Enter the verification code from your email.')
+        setError(t('verificationCodeRequired'))
         return
       }
       await onVerified(await verifyEmailCode(email, pending.verificationId, code.trim()), pending.expiresAt)
@@ -197,17 +200,17 @@ function VerifyAccountDialog({
             <Icon name="shield-check" size={16} color="var(--brand)" />
           </span>
           <span id={titleId} className="flex-1 font-sans text-[16px] font-semibold leading-normal">
-            Link {provider.name}
+            {t('linkTitle', { provider: provider.name })}
           </span>
-          <button type="button" className="iconbtn" aria-label="Close" disabled={busy} onClick={onClose}>
+          <button type="button" className="iconbtn" aria-label={t('close')} disabled={busy} onClick={onClose}>
             <Icon name="x" size={16} />
           </button>
         </div>
         <div className="modalbody">
           <p className="font-sans text-[13.5px] font-normal leading-[1.6] text-(--text-secondary)">
             {pending
-              ? `Enter the code sent to ${email ?? 'your email'}, then continue to ${provider.name}.`
-              : `To protect your account, verify it's you with a code sent to ${email ?? 'your email'}.`}
+              ? t('verifyContinue', { email: email ?? t('yourEmail'), provider: provider.name })
+              : t('verifyAccount', { email: email ?? t('yourEmail') })}
           </p>
           {pending ? (
             // A short code, not prose: centred, spaced and monospaced so the
@@ -216,7 +219,7 @@ function VerifyAccountDialog({
             // style, so it falls back to the browser's own ring.
             <div className="mt-4 flex justify-center">
               <input
-                aria-label="Verification code"
+                aria-label={t('verificationCode')}
                 className="w-[190px] rounded-lg border border-(--border-default) bg-(--surface-card) px-3 py-2.5 text-center indent-[0.32em] font-mono text-[19px] font-medium tracking-[0.32em] text-(--text-primary) outline-none focus:border-(--border-focus) focus:ring-[3px] focus:ring-(--brand-ring)"
                 value={code}
                 inputMode="numeric"
@@ -238,10 +241,10 @@ function VerifyAccountDialog({
         <div className="modalfoot">
           <div className="flex-1" />
           <Button variant="ghost" disabled={busy} onClick={onClose}>
-            Cancel
+            {t('cancel')}
           </Button>
           <Button variant="primary" disabled={busy} onClick={() => void submit()}>
-            {busy ? 'Working…' : pending ? `Continue to ${provider.name}` : 'Send code'}
+            {busy ? t('working') : pending ? t('continueTo', { provider: provider.name }) : t('sendCode')}
           </Button>
         </div>
       </div>
@@ -296,6 +299,7 @@ export default function SocialSignInCard({
   autoAuthorize?: { target: SocialLoginTarget; purpose: 'link' | 'reauthorize' }
   onAutoAuthorizeHandled?: () => void
 }) {
+  const t = useTranslations('Profile.social')
   const {
     data: account,
     error,
@@ -419,7 +423,7 @@ export default function SocialSignInCard({
     onAutoAuthorizeHandled?.()
     if (!provider) {
       onNotice({
-        message: `${targetName(autoAuthorize.target)} authorization is not available on this deployment.`
+        message: t('authorizationUnavailable', { provider: targetName(autoAuthorize.target) })
       })
       return
     }
@@ -441,15 +445,15 @@ export default function SocialSignInCard({
 
   return (
     <>
-      <section id="sign-in-methods" className={shell} aria-label="Sign-in methods">
+      <section id="sign-in-methods" className={shell} aria-label={t('title')}>
         <div className={header}>
           <div className={mobile ? '' : 'flex flex-col gap-0.5'}>
             <div className={mobile ? 'font-sans text-[14px] font-semibold leading-normal' : 'cardtitle'}>
-              Sign-in methods
+              {t('title')}
             </div>
             {!mobile ? (
               <div className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                Link more than one social account to the same AgentConnect profile.
+                {t('description')}
               </div>
             ) : null}
           </div>
@@ -463,7 +467,7 @@ export default function SocialSignInCard({
               {accountErrorMessage(error)}
             </span>
             <Button variant="secondary" size="xs" onClick={() => void mutate()}>
-              Retry
+              {t('retry')}
             </Button>
           </div>
         ) : null}
@@ -498,7 +502,7 @@ export default function SocialSignInCard({
                         />
                         <div className="min-w-0">
                           <div className="truncate font-sans text-[13px] font-medium leading-normal">
-                            {details?.name ?? 'Linked'}
+                            {details?.name ?? t('linked')}
                           </div>
                           {details?.email ? (
                             <ExternalLine href={details.profileUrl} mono>
@@ -512,7 +516,7 @@ export default function SocialSignInCard({
                       </div>
                     ) : (
                       <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
-                        Not linked
+                        {t('notLinked')}
                       </span>
                     )
                   ) : !error ? (
@@ -540,7 +544,7 @@ export default function SocialSignInCard({
                             disabled={busyProvider !== undefined}
                             onClick={() => beginReauthorize(provider)}
                           >
-                            {busyProvider === provider.target ? 'Reconnecting…' : 'Reconnect'}
+                            {busyProvider === provider.target ? t('reconnecting') : t('reconnect')}
                           </Button>
                         ) : null}
                         {canUnlink ? (
@@ -550,7 +554,7 @@ export default function SocialSignInCard({
                             disabled={busyProvider !== undefined}
                             onClick={() => setPendingUnlink(provider)}
                           >
-                            <span className="text-(--status-error)">Unlink</span>
+                            <span className="text-(--status-error)">{t('unlink')}</span>
                           </Button>
                         ) : null}
                       </>
@@ -562,7 +566,7 @@ export default function SocialSignInCard({
                         onClick={() => void beginLink(provider)}
                       >
                         <Icon name="link" size={14} />
-                        {busyProvider === provider.target ? 'Linking…' : 'Link'}
+                        {busyProvider === provider.target ? t('linking') : t('link')}
                       </Button>
                     )
                   ) : null}

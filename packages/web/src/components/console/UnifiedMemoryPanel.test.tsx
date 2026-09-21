@@ -3,6 +3,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { MemoryEntryCapabilities } from '@agentconnect.md/protocol'
+import english from '../../../messages/en.json'
 vi.mock('@/lib/api', () => {
   class ApiError extends Error {
     constructor(
@@ -225,7 +226,8 @@ it('searches only when advertised, shows what a hit can prove, and opens a hit l
     hits: [{ entry: { ...entry, ref: 'hit-ref', label: 'Deploy' }, snippet: '…Deploy on Fridays…' }]
   })
   await render('two')
-  const input = host.querySelector('input[aria-label="Search memory"]') as HTMLInputElement
+  const label = english.Agents.detail.memory.searchMemory
+  const input = host.querySelector(`input[aria-label="${label}"]`) as HTMLInputElement
   expect(input).toBeTruthy()
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'fridays')

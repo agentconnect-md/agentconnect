@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import useSWR from 'swr'
 import Link from 'next/link'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import {
   agentCapabilitySource,
   agentDaemonLabel,
@@ -29,6 +30,7 @@ import {
   workspaceSourceOf
 } from '@/lib/data'
 import { agentSessionIsolationLabel } from '@/lib/session-isolation'
+import { permissionModeLabelKey } from '@/lib/permission-mode-i18n'
 import {
   createGithubHook,
   createGiteaHook,
@@ -213,6 +215,8 @@ function rowSettingsTitle(hook: HookDto): string {
 }
 
 export default function AgentDetailView() {
+  const t = useTranslations('Agents.detail')
+  const permissionT = useTranslations('Common.permissionModes')
   const acpRegistry = useAcpRegistry()
   const { orgPath, activeOrg } = useOrgs()
   const { me } = useProfile()
@@ -886,7 +890,7 @@ export default function AgentDetailView() {
     const pid = openPlayground(da)
     router.push(orgPath(`/sessions/${pid}`))
   }
-  const pauseActionLabel = da.pause ? 'Unpause' : 'Pause'
+  const pauseActionLabel = da.pause ? t('actions.unpause') : t('actions.pause')
   const pauseActionIcon = da.pause ? 'play' : 'pause'
   const togglePause = async () => {
     if (actionSaving) return
@@ -966,7 +970,7 @@ export default function AgentDetailView() {
                 }
               >
                 <Icon name="plus" size={13} />
-                Add daemon
+                {t('actions.addDaemon')}
               </button>
             ) : (
               <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
@@ -979,7 +983,7 @@ export default function AgentDetailView() {
             ) : (
               <span className="inline-flex items-center gap-[6px] font-sans text-[12px] font-semibold leading-normal text-(--amber-500)">
                 <Icon name="triangle-alert" size={14} />
-                No integration
+                {t('noIntegration')}
               </span>
             )}
             {(hasIntegrationMarks || sessionCount > 0) && (
@@ -988,7 +992,7 @@ export default function AgentDetailView() {
                 href={orgPath(`/sessions?agent=${da.id}`)}
               >
                 <Icon name="messages-square" size={14} />
-                {sessionCount} sessions
+                {t('sessions', { count: sessionCount })}
                 <Icon name="arrow-right" size={13} />
               </Link>
             )}
@@ -997,10 +1001,10 @@ export default function AgentDetailView() {
         <div className="flex gap-2">
           <Button size="sm" onClick={onPlayground}>
             <Icon name="message-square-text" size={15} />
-            Playground
+            {t('actions.playground')}
           </Button>
           <div className="relative">
-            <button className="iconbtn" onClick={toggleActions} title="Agent actions">
+            <button className="iconbtn" onClick={toggleActions} title={t('actions.agentActions')}>
               <Icon name="ellipsis" size={16} />
             </button>
             {actionsOpen && (
@@ -1010,7 +1014,7 @@ export default function AgentDetailView() {
                   {/* Edit lives on the General card now, not here. */}
                   <button className="dmi" onClick={() => void togglePause()} disabled={actionSaving}>
                     <Icon name={pauseActionIcon} size={15} />
-                    {actionSaving ? 'Saving...' : pauseActionLabel}
+                    {actionSaving ? t('actions.saving') : pauseActionLabel}
                   </button>
                   {actionErr && (
                     <div className="px-[14px] py-[8px] font-sans text-[12px] font-normal leading-normal text-(--red-600)">
@@ -1029,7 +1033,7 @@ export default function AgentDetailView() {
                         }}
                       >
                         <Icon name="trash" size={15} />
-                        Delete
+                        {t('actions.delete')}
                       </button>
                     </>
                   )}
@@ -1064,7 +1068,7 @@ export default function AgentDetailView() {
               <span className="h-[6px] w-[6px] rounded-full" style={{ background: ds.dot }} />
               {ds.label}
             </span>
-            <button className="iconbtn ml-auto flex-none" onClick={openActions} title="Agent actions">
+            <button className="iconbtn ml-auto flex-none" onClick={openActions} title={t('actions.agentActions')}>
               <Icon name="ellipsis" size={18} />
             </button>
           </div>
@@ -1088,11 +1092,11 @@ export default function AgentDetailView() {
           className="flex h-11 flex-1 cursor-pointer items-center justify-center gap-2 rounded-md border-0 bg-(--brand) font-sans text-[14px] font-semibold leading-normal text-white"
         >
           <Icon name="message-square-text" size={18} />
-          Playground
+          {t('actions.playground')}
         </button>
         <button
           onClick={openActions}
-          title={pauseActionLabel + ' agent'}
+          title={t('actions.agentAction', { action: pauseActionLabel })}
           className="flex h-11 w-11 flex-none cursor-pointer items-center justify-center rounded-md border border-(--border-default) bg-(--surface-card) text-(--text-secondary)"
         >
           <Icon name={pauseActionIcon} size={18} />
@@ -1105,11 +1109,11 @@ export default function AgentDetailView() {
       <div className="flex gap-6 overflow-x-auto border-b border-(--border-default) bg-(--surface-card) px-4 [-webkit-overflow-scrolling:touch] desktop:mb-[18px] desktop:gap-0 desktop:overflow-x-visible desktop:bg-transparent desktop:px-0">
         {(
           [
-            ['integrations', 'Integrations'],
-            ['config', 'Configuration'],
-            ['workspace', 'Workspace'],
-            ['memory', 'Memory'],
-            ['tools', 'Tools & Skills']
+            ['integrations', t('tabs.integrations')],
+            ['config', t('tabs.configuration')],
+            ['workspace', t('tabs.workspace')],
+            ['memory', t('tabs.memory')],
+            ['tools', t('tabs.tools')]
           ] as [DetailTab, string][]
         ).map(([t, label]) => {
           const on = tab === t
@@ -1143,7 +1147,7 @@ export default function AgentDetailView() {
                 at its Basics anchor. */}
             <div className="card order-1 overflow-hidden max-desktop:rounded-lg">
               <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
-                <span className="font-sans text-[14px] font-semibold leading-normal">Basics</span>
+                <span className="font-sans text-[14px] font-semibold leading-normal">{t('basics.title')}</span>
                 {!da.name.startsWith(MOCK_PREFIX) && (
                   <>
                     <button
@@ -1151,7 +1155,7 @@ export default function AgentDetailView() {
                       className="flex h-7 cursor-pointer items-center gap-[6px] border-0 bg-transparent px-0 py-0 font-sans text-[14px] font-semibold leading-normal text-(--brand-soft-text) desktop:hidden"
                     >
                       <Icon name="pencil" size={14} />
-                      Edit
+                      {t('actions.edit')}
                     </button>
                     <Button
                       variant="secondary"
@@ -1160,7 +1164,7 @@ export default function AgentDetailView() {
                       onClick={() => openModal('editAgent', da, { focusSection: 'basics' })}
                     >
                       <Icon name="pencil" size={14} />
-                      Edit
+                      {t('actions.edit')}
                     </Button>
                   </>
                 )}
@@ -1168,7 +1172,7 @@ export default function AgentDetailView() {
               <div className="desktop:py-[6px]">
                 <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
                   <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                    Name
+                    {t('basics.name')}
                   </span>
                   <span className="mono text-[12px] font-medium leading-normal text-(--text-primary) desktop:text-[12.5px] desktop:font-normal">
                     {da.name}
@@ -1182,7 +1186,7 @@ export default function AgentDetailView() {
                     className="box-border flex w-full cursor-pointer items-center justify-between gap-4 border-0 border-b border-(--border-subtle) bg-(--surface-card) px-4 py-3 text-left desktop:hidden"
                   >
                     <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
-                      Runs on
+                      {t('basics.runsOn')}
                     </span>
                     <span className="inline-flex min-w-0 items-center gap-[6px]">
                       <span className="truncate font-mono text-[12px] font-medium leading-normal text-(--text-primary)">
@@ -1194,7 +1198,7 @@ export default function AgentDetailView() {
                 ) : (
                   <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3 desktop:hidden">
                     <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
-                      Runs on
+                      {t('basics.runsOn')}
                     </span>
                     <span className="font-mono text-[12px] font-medium leading-normal text-(--text-primary)">
                       {daemonLine}
@@ -1203,7 +1207,7 @@ export default function AgentDetailView() {
                 )}
                 <div className="hidden items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3 desktop:flex">
                   <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
-                    Runs on
+                    {t('basics.runsOn')}
                   </span>
                   {owningDaemon ? (
                     <Link className="lnk font-mono text-[12.5px] font-medium leading-normal" href={daemonHref}>
@@ -1220,7 +1224,7 @@ export default function AgentDetailView() {
                       }
                     >
                       <Icon name="plus" size={13} />
-                      Add
+                      {t('actions.add')}
                     </button>
                   ) : (
                     <span className="mono text-[12.5px]">{daemonLine}</span>
@@ -1231,11 +1235,10 @@ export default function AgentDetailView() {
                     <Icon name="triangle-alert" size={14} color="var(--amber-500)" className="mt-[1px] flex-none" />
                     <div className="min-w-0 flex-1">
                       <div className="font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
-                        Safe move unavailable
+                        {t('basics.safeMoveUnavailable')}
                       </div>
                       <div className="mt-[3px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                        Bring <span className="font-semibold text-(--text-primary)">{owningDaemon.name}</span> online
-                        before moving this agent safely.
+                        {t('basics.safeMoveBody', { daemon: owningDaemon.name })}
                       </div>
                       {!da.name.startsWith(MOCK_PREFIX) && da.canEdit && (
                         <button
@@ -1243,7 +1246,7 @@ export default function AgentDetailView() {
                           className="mt-[6px] border-0 bg-transparent p-0 font-sans text-[11.5px] font-semibold leading-normal text-(--brand-soft-text) hover:underline"
                           onClick={() => openModal('editAgent', da, { focusSection: 'basics' })}
                         >
-                          Open recovery options
+                          {t('basics.openRecovery')}
                         </button>
                       )}
                     </div>
@@ -1251,7 +1254,7 @@ export default function AgentDetailView() {
                 )}
                 <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
                   <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                    Runtime
+                    {t('basics.runtime')}
                   </span>
                   <span className="inline-flex items-center gap-[7px] font-sans text-[12px] font-medium leading-normal desktop:text-[12.5px]">
                     {/* Mobile shows the bare mark; desktop the bordered imark chip. */}
@@ -1266,7 +1269,7 @@ export default function AgentDetailView() {
                 </div>
                 <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
                   <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                    Model
+                    {t('basics.model')}
                   </span>
                   <span className="mono text-[12px] font-medium leading-normal text-(--text-primary) desktop:text-[12.5px] desktop:leading-[1.5] desktop:font-normal">
                     {modelText}
@@ -1274,7 +1277,7 @@ export default function AgentDetailView() {
                 </div>
                 <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
                   <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                    Created
+                    {t('basics.created')}
                   </span>
                   <span className="font-sans text-[14px] font-medium leading-normal desktop:text-[12.5px]">
                     {creatorLabel(da.createdBy, me)}{' '}
@@ -1285,7 +1288,7 @@ export default function AgentDetailView() {
                 </div>
                 <div className="flex items-center justify-between gap-4 px-4 py-3">
                   <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                    Modified
+                    {t('basics.modified')}
                   </span>
                   <span className="font-sans text-[14px] font-medium leading-normal desktop:text-[12.5px]">
                     {creatorLabel(da.lastModifiedBy, me)}{' '}
@@ -1301,7 +1304,7 @@ export default function AgentDetailView() {
                 Edit-agent modal at its Runtime behavior anchor. */}
             <div className="card order-2 overflow-hidden max-desktop:rounded-lg">
               <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
-                <span className="font-sans text-[14px] font-semibold leading-normal">Runtime</span>
+                <span className="font-sans text-[14px] font-semibold leading-normal">{t('runtime.title')}</span>
                 {!da.name.startsWith(MOCK_PREFIX) && (
                   <>
                     <button
@@ -1309,7 +1312,7 @@ export default function AgentDetailView() {
                       className="flex h-7 cursor-pointer items-center gap-[6px] border-0 bg-transparent px-0 py-0 font-sans text-[14px] font-semibold leading-normal text-(--brand-soft-text) desktop:hidden"
                     >
                       <Icon name="pencil" size={14} />
-                      Edit
+                      {t('actions.edit')}
                     </button>
                     <Button
                       variant="secondary"
@@ -1318,7 +1321,7 @@ export default function AgentDetailView() {
                       onClick={() => openModal('editAgent', da, { focusSection: 'runtime' })}
                     >
                       <Icon name="pencil" size={14} />
-                      Edit
+                      {t('actions.edit')}
                     </Button>
                   </>
                 )}
@@ -1328,10 +1331,15 @@ export default function AgentDetailView() {
                   <>
                     <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
                       <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                        Permission mode
+                        {t('runtime.permissionMode')}
                       </span>
                       <span className="badge bg-(--surface-active) text-(--text-secondary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]">
-                        {agentPermissionDisplay(capabilitySource, da.runtime, da.permissionMode)}
+                        {(() => {
+                          const key = permissionModeLabelKey(da.permissionMode)
+                          return key
+                            ? permissionT(key)
+                            : agentPermissionDisplay(capabilitySource, da.runtime, da.permissionMode)
+                        })()}
                       </span>
                     </div>
                     <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
@@ -1344,7 +1352,7 @@ export default function AgentDetailView() {
                     </div>
                     <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
                       <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                        Fast mode
+                        {t('runtime.fastMode')}
                       </span>
                       <span
                         className={
@@ -1353,14 +1361,14 @@ export default function AgentDetailView() {
                             : 'badge bg-(--surface-active) text-(--text-tertiary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]'
                         }
                       >
-                        {da.fastMode ? 'On' : 'Off'}
+                        {da.fastMode ? t('on') : t('off')}
                       </span>
                     </div>
                   </>
                 )}
                 <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
                   <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                    Change runtime in chat
+                    {t('runtime.changeInChat')}
                   </span>
                   <span
                     className={
@@ -1369,7 +1377,7 @@ export default function AgentDetailView() {
                         : 'badge bg-(--surface-active) text-(--text-tertiary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]'
                     }
                   >
-                    {da.allowRuntimeChangesInChat ? 'Allowed' : 'Off'}
+                    {da.allowRuntimeChangesInChat ? t('runtime.allowed') : t('off')}
                   </span>
                 </div>
                 {/* Pause is a transient runtime action, not a config default — only
@@ -1377,16 +1385,16 @@ export default function AgentDetailView() {
                 {da.pause && (
                   <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
                     <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                      Pause
+                      {t('actions.pause')}
                     </span>
                     <span className="badge bg-(--status-paused-soft) text-(--amber-500) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]">
-                      Paused
+                      {t('runtime.paused')}
                     </span>
                   </div>
                 )}
                 <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
                   <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                    Output mode
+                    {t('runtime.outputMode')}
                   </span>
                   <span className="badge bg-(--surface-active) text-(--text-secondary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]">
                     {outputModeLabel}
@@ -1394,7 +1402,7 @@ export default function AgentDetailView() {
                 </div>
                 <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
                   <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                    Show footer
+                    {t('runtime.showFooter')}
                   </span>
                   <span
                     className={
@@ -1403,12 +1411,12 @@ export default function AgentDetailView() {
                         : 'badge bg-(--surface-active) text-(--text-tertiary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]'
                     }
                   >
-                    {da.showFooter ? 'On' : 'Off'}
+                    {da.showFooter ? t('on') : t('off')}
                   </span>
                 </div>
                 <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
                   <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                    Show status bar
+                    {t('runtime.showStatusBar')}
                   </span>
                   <span
                     className={
@@ -1417,12 +1425,12 @@ export default function AgentDetailView() {
                         : 'badge bg-(--surface-active) text-(--text-tertiary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]'
                     }
                   >
-                    {da.showStatusBar ? 'On' : 'Off'}
+                    {da.showStatusBar ? t('on') : t('off')}
                   </span>
                 </div>
                 <div className="flex items-center justify-between gap-4 px-4 py-3">
                   <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                    Introduce on join
+                    {t('runtime.introduceOnJoin')}
                   </span>
                   <span
                     className={
@@ -1431,7 +1439,7 @@ export default function AgentDetailView() {
                         : 'badge bg-(--surface-active) text-(--text-tertiary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]'
                     }
                   >
-                    {da.introduceOnJoin ? 'On' : 'Off'}
+                    {da.introduceOnJoin ? t('on') : t('off')}
                   </span>
                 </div>
               </div>
@@ -1445,7 +1453,7 @@ export default function AgentDetailView() {
                 behavior 2 → Description 3 → Access 4 → Variables 5 → Secrets 6. */}
             <div className="card order-3 overflow-hidden max-desktop:rounded-lg">
               <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
-                <span className="font-sans text-[14px] font-semibold leading-normal">Description</span>
+                <span className="font-sans text-[14px] font-semibold leading-normal">{t('description')}</span>
                 {!da.name.startsWith(MOCK_PREFIX) && (
                   <>
                     <button
@@ -1453,7 +1461,7 @@ export default function AgentDetailView() {
                       className="flex h-7 cursor-pointer items-center gap-[6px] border-0 bg-transparent px-0 py-0 font-sans text-[14px] font-semibold leading-normal text-(--brand-soft-text) desktop:hidden"
                     >
                       <Icon name="pencil" size={14} />
-                      Edit
+                      {t('actions.edit')}
                     </button>
                     <Button
                       variant="secondary"
@@ -1462,7 +1470,7 @@ export default function AgentDetailView() {
                       onClick={() => openModal('editAgentDesc', da)}
                     >
                       <Icon name="pencil" size={14} />
-                      Edit
+                      {t('actions.edit')}
                     </Button>
                   </>
                 )}
@@ -1476,7 +1484,7 @@ export default function AgentDetailView() {
                 only. Edit opens the sectioned Edit-agent modal at its Access anchor. */}
             <div className="card order-4 overflow-hidden max-desktop:rounded-lg">
               <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
-                <span className="font-sans text-[14px] font-semibold leading-normal">Access</span>
+                <span className="font-sans text-[14px] font-semibold leading-normal">{t('access')}</span>
                 {!da.name.startsWith(MOCK_PREFIX) && da.canEdit && (
                   <>
                     <button
@@ -1484,7 +1492,7 @@ export default function AgentDetailView() {
                       className="flex h-7 cursor-pointer items-center gap-[6px] border-0 bg-transparent px-0 py-0 font-sans text-[14px] font-semibold leading-normal text-(--brand-soft-text) desktop:hidden"
                     >
                       <Icon name="pencil" size={14} />
-                      Edit
+                      {t('actions.edit')}
                     </button>
                     <Button
                       variant="secondary"
@@ -1493,7 +1501,7 @@ export default function AgentDetailView() {
                       onClick={() => openModal('editAgent', da, { focusSection: 'access' })}
                     >
                       <Icon name="pencil" size={14} />
-                      Edit
+                      {t('actions.edit')}
                     </Button>
                   </>
                 )}
@@ -1564,13 +1572,13 @@ export default function AgentDetailView() {
         <div className="grid grid-cols-1 gap-4 p-4 desktop:grid-cols-[1.5fr_1fr] desktop:items-start desktop:gap-[18px] desktop:p-0">
           <div className="card overflow-hidden max-desktop:rounded-lg">
             <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
-              <span className="font-sans text-[14px] font-semibold leading-normal">Integrations</span>
+              <span className="font-sans text-[14px] font-semibold leading-normal">{t('integrations.title')}</span>
               <button
                 onClick={() => openModal('integration', da)}
                 className="flex h-7 cursor-pointer items-center gap-[6px] border-0 bg-transparent px-0 py-0 font-sans text-[14px] font-semibold leading-normal text-(--brand-soft-text) desktop:hidden"
               >
                 <Icon name="plus" size={14} />
-                Add
+                {t('integrations.add')}
               </button>
               <Button
                 variant="secondary"
@@ -1579,7 +1587,7 @@ export default function AgentDetailView() {
                 onClick={() => openModal('integration', da)}
               >
                 <Icon name="plus" size={14} />
-                Add integration
+                {t('integrations.addIntegration')}
               </Button>
             </div>
             {hasInt ? (
@@ -1624,7 +1632,7 @@ export default function AgentDetailView() {
                             <span className="ml-auto flex flex-none items-center gap-3">
                               <span className="inline-flex flex-none items-center gap-[5px] rounded-full bg-(--brand-soft) px-[10px] py-[3px] font-sans text-[12px] font-semibold leading-normal text-(--brand-soft-text)">
                                 <span className="h-[6px] w-[6px] rounded-full bg-(--status-online)" />
-                                connected
+                                {t('integrations.connected')}
                               </span>
                               {g.platform === 'discord' && g.discordAppId && (
                                 <a
@@ -1917,7 +1925,7 @@ export default function AgentDetailView() {
                                   <FeishuRegionBadge integration={g} />
                                   <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
                                     <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
-                                    connected
+                                    {t('integrations.connected')}
                                   </span>
                                 </div>
                               </div>
@@ -2013,7 +2021,7 @@ export default function AgentDetailView() {
                             <span className="font-sans text-[13.5px] font-semibold leading-normal">{githubOwner}</span>
                             <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
                               <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
-                              connected
+                              {t('integrations.connected')}
                             </span>
                           </div>
                         </div>
@@ -2148,7 +2156,7 @@ export default function AgentDetailView() {
                             <span className="font-sans text-[13.5px] font-semibold leading-normal">GitLab</span>
                             <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
                               <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
-                              connected
+                              {t('integrations.connected')}
                             </span>
                           </div>
                           {gitlabInstanceUrl && (
@@ -2286,7 +2294,7 @@ export default function AgentDetailView() {
                             <span className="font-sans text-[13.5px] font-semibold leading-normal">Gitea</span>
                             <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
                               <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
-                              connected
+                              {t('integrations.connected')}
                             </span>
                           </div>
                           {giteaInstanceUrl && (
@@ -2479,12 +2487,12 @@ export default function AgentDetailView() {
             )}
             {/* This agent's recent sessions — same card as Home's Recent list. */}
             <RecentSessionsCard
-              title="Recent sessions"
+              title={t('integrations.recentSessions')}
               sessions={recentSessions}
               limit={12}
               loading={agentSessionsLoading}
               allHref={orgPath(`/sessions?agent=${da.id}`)}
-              emptyText="No sessions yet."
+              emptyText={t('integrations.noSessions')}
               showAgent={false}
               className="max-desktop:rounded-lg"
             />
@@ -2545,7 +2553,7 @@ export default function AgentDetailView() {
             <WorkspaceCard agent={da} header={mockWorkspaceHeader} />
 
             <FileBrowserShell
-              title="Files"
+              title={t('workspace.files')}
               headerEnd={
                 isGitWorkspace(ws) ? (
                   <div className="flex w-1/4 min-w-0 flex-none items-center gap-2 max-desktop:w-[min(210px,56vw)]">
@@ -2573,7 +2581,7 @@ export default function AgentDetailView() {
                 <div className="flex flex-col items-center gap-[6px] px-6 py-7 text-center">
                   <Icon name="folder" size={20} color="var(--text-tertiary)" />
                   <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-                    No files reported yet — the daemon indexes the working tree on first run.
+                    {t('workspace.noFilesReported')}
                   </div>
                 </div>
               )}
@@ -2614,7 +2622,7 @@ export default function AgentDetailView() {
           <AgentSkillsCard agentId={da.id} canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit} />
           <div className="card overflow-hidden max-desktop:rounded-lg desktop:max-w-[760px]">
             <div className="border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal desktop:py-[13px]">
-              Loaded from workspace
+              {t('tools.loadedFromWorkspace')}
             </div>
             <div className="desktop:py-[6px]">
               {MOCK_MODE ? (
@@ -2623,21 +2631,21 @@ export default function AgentDetailView() {
                     <Icon name="file-text" size={16} color="var(--text-tertiary)" />
                     <span className="mono flex-1 text-[12.5px]">CLAUDE.md</span>
                     <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                      project guide · 2.1 KB
+                      {t('integrations.projectGuide', { size: '2.1 KB' })}
                     </span>
                   </div>
                   <div className="flex items-center gap-[11px] border-t border-(--border-subtle) px-4 py-[11px] desktop:py-3">
                     <Icon name="folder" size={16} color="var(--text-tertiary)" />
                     <span className="mono flex-1 text-[12.5px]">.agent/skills/</span>
                     <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                      4 skills
+                      {t('integrations.skillsCount', { count: 4 })}
                     </span>
                   </div>
                   <div className="flex items-center gap-[11px] border-t border-(--border-subtle) px-4 py-[11px] desktop:py-3">
                     <Icon name="book-open" size={16} color="var(--text-tertiary)" />
                     <span className="mono flex-1 text-[12.5px]">docs/runbooks/</span>
                     <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                      12 files indexed
+                      {t('integrations.filesIndexed', { count: 12 })}
                     </span>
                   </div>
                 </>

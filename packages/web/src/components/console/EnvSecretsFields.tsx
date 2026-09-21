@@ -12,6 +12,7 @@
 // makes it active again without re-entering its value.
 
 import type { Dispatch, SetStateAction } from 'react'
+import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { OrganizationRowBadge } from '@/components/console/OrganizationEnvironmentRows'
 
@@ -60,11 +61,23 @@ export function secretsPatchFromRows(rows: SecretDraft[], existingKeys: string[]
   return patch
 }
 
-/** First validation error across both lists, or null. */
-export function envSecretsError(envRows: EnvVarDraft[], secretRows: SecretDraft[]): string | null {
+/** First validation error across both lists, or null. A message key under
+ *  `Agents.dialog.errors` plus its interpolation values — the caller resolves it
+ *  through `t`, so this stays testable and localizable without one. */
+export interface EnvSecretsError {
+  key:
+    | 'invalidVariableName'
+    | 'duplicateVariableNames'
+    | 'invalidSecretName'
+    | 'secretValueRequired'
+    | 'duplicateSecretNames'
+  values?: { name: string }
+}
+
+export function envSecretsError(envRows: EnvVarDraft[], secretRows: SecretDraft[]): EnvSecretsError | null {
   const envKept = envRows.map((r) => ({ k: r.k.trim(), v: r.v })).filter((r) => r.k || r.v)
-  for (const r of envKept) if (!ENV_KEY.test(r.k)) return `“${r.k || '(empty)'}” is not a valid variable name`
-  if (new Set(envKept.map((r) => r.k)).size !== envKept.length) return 'Duplicate variable names'
+  for (const r of envKept) if (!ENV_KEY.test(r.k)) return { key: 'invalidVariableName', values: { name: r.k } }
+  if (new Set(envKept.map((r) => r.k)).size !== envKept.length) return { key: 'duplicateVariableNames' }
   // Same row-keeping rule as `secretsPatchFromRows`: only a fully blank NEW row is
   // an abandoned "Add secret" click. An EXISTING row must survive to the key check
   // below even when blank — its value is always blank (write-only), so dropping it
@@ -72,11 +85,12 @@ export function envSecretsError(envRows: EnvVarDraft[], secretRows: SecretDraft[
   // missing original key as a deletion, silently destroying an unrecoverable secret.
   const secKept = secretRows.map((r) => ({ ...r, k: r.k.trim() })).filter((r) => !(r.origK === null && !r.k && !r.v))
   for (const r of secKept) {
-    if (!ENV_KEY.test(r.k)) return `“${r.k || '(empty)'}” is not a valid secret name`
+    if (!ENV_KEY.test(r.k)) return { key: 'invalidSecretName', values: { name: r.k } }
     // A new row, or one renamed to a new key, must carry a value.
-    if ((r.origK === null || r.k !== r.origK) && r.v === '') return `Enter a value for secret “${r.k}”`
+    if ((r.origK === null || r.k !== r.origK) && r.v === '')
+      return { key: 'secretValueRequired', values: { name: r.k } }
   }
-  if (new Set(secKept.map((r) => r.k)).size !== secKept.length) return 'Duplicate secret names'
+  if (new Set(secKept.map((r) => r.k)).size !== secKept.length) return { key: 'duplicateSecretNames' }
   return null
 }
 
@@ -95,17 +109,18 @@ function FromOrganizationGroup({
   masked: boolean
   manageHref?: string
 }) {
+  const t = useTranslations('Agents.dialog.secretsFields')
   if (rows.length === 0) return null
   return (
     <div className="mt-[10px] overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-subtle)">
       <div className="flex items-center justify-between gap-3 border-b border-(--border-subtle) px-4 py-[7px]">
         <span className="font-sans text-[11px] font-semibold leading-normal tracking-wide text-(--text-tertiary) uppercase">
-          From organization
+          {t('fromOrganization')}
         </span>
         {/* Owners get a way to change these; other members see the group only. */}
         {manageHref && (
           <a className="lnk text-[11.5px]" href={manageHref}>
-            Manage
+            {t('manage')}
           </a>
         )}
       </div>
@@ -123,7 +138,7 @@ function FromOrganizationGroup({
           </span>
           <span
             className="mono min-w-0 flex-1 truncate text-right text-[12px] text-(--text-tertiary)"
-            title={masked ? 'Write-only — value can’t be viewed' : row.v}
+            title={masked ? t('writeOnlyTitle') : row.v}
           >
             {masked ? '••••••••' : row.v}
           </span>
@@ -135,12 +150,13 @@ function FromOrganizationGroup({
 
 /** The note on a retained-but-inactive local row. */
 function OverriddenNote() {
+  const t = useTranslations('Agents.dialog.secretsFields')
   return (
     <span
       className="flex-none font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)"
-      title="An organization entry with this name applies instead. Remove that assignment to use this value again."
+      title={t('overriddenTitle')}
     >
-      Overridden by Organization
+      {t('overriddenBy')}
     </span>
   )
 }
@@ -165,6 +181,7 @@ export function EnvSecretsFields({
   /** Link to Organization settings; owners only (absent ⇒ explanatory text only). */
   organizationSettingsHref?: string
 }) {
+  const t = useTranslations('Agents.dialog.secretsFields')
   const patchEnv = (i: number, patch: Partial<EnvVarDraft>) =>
     setEnvRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)))
   const patchSec = (i: number, patch: Partial<SecretDraft>) =>
@@ -176,9 +193,11 @@ export function EnvSecretsFields({
   return (
     <div className="flex flex-col gap-[22px]">
       <div>
-        <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Variables</div>
+        <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+          {t('variables.title')}
+        </div>
         <div className="mt-1 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-          Plain configuration values, available to the agent at runtime.
+          {t('variables.description')}
         </div>
         <FromOrganizationGroup rows={organizationVariables} masked={false} manageHref={organizationSettingsHref} />
         <div className="mt-[10px] overflow-hidden rounded-lg border border-(--border-subtle)">
@@ -188,16 +207,16 @@ export function EnvSecretsFields({
                 <div className="flex items-center gap-[6px]">
                   <input
                     className={KV_INPUT}
-                    placeholder="KEY"
+                    placeholder={t('variables.keyPlaceholder')}
                     value={r.k}
                     onChange={(e) => patchEnv(i, { k: e.target.value })}
-                    aria-label="Variable name"
+                    aria-label={t('variables.nameAriaLabel')}
                     autoFocus
                   />
                   <button
                     type="button"
                     className="iconbtn h-7 w-7 flex-none"
-                    title="Done"
+                    title={t('done')}
                     onClick={() => patchEnv(i, { editing: false })}
                   >
                     <Icon name="check" size={13} />
@@ -205,12 +224,12 @@ export function EnvSecretsFields({
                 </div>
                 <textarea
                   className={KV_VALUE}
-                  placeholder="Value"
+                  placeholder={t('variables.valuePlaceholder')}
                   value={r.v}
                   onChange={(e) => patchEnv(i, { v: e.target.value })}
                   spellCheck={false}
                   autoComplete="off"
-                  aria-label="Variable value"
+                  aria-label={t('variables.valueAriaLabel')}
                 />
               </div>
             ) : (
@@ -230,7 +249,7 @@ export function EnvSecretsFields({
                 <button
                   type="button"
                   className="iconbtn h-[26px] w-[26px] flex-none"
-                  title="Edit"
+                  title={t('edit')}
                   onClick={() => patchEnv(i, { editing: true })}
                 >
                   <Icon name="pencil" size={12} />
@@ -238,7 +257,7 @@ export function EnvSecretsFields({
                 <button
                   type="button"
                   className="iconbtn h-[26px] w-[26px] flex-none"
-                  title="Remove"
+                  title={t('remove')}
                   onClick={() => setEnvRows((rs) => rs.filter((_, j) => j !== i))}
                 >
                   <Icon name="trash" size={12} />
@@ -252,15 +271,17 @@ export function EnvSecretsFields({
             onClick={() => setEnvRows((rs) => [...rs, { k: '', v: '', editing: true }])}
           >
             <Icon name="plus" size={13} />
-            Add variable
+            {t('variables.add')}
           </button>
         </div>
       </div>
 
       <div>
-        <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Secrets</div>
+        <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+          {t('secrets.title')}
+        </div>
         <div className="mt-1 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-          Write-only credentials — values can’t be viewed after saving.
+          {t('secrets.description')}
         </div>
         <FromOrganizationGroup
           rows={organizationSecretKeys.map((k) => ({ k }))}
@@ -274,16 +295,16 @@ export function EnvSecretsFields({
                 <div className="flex items-center gap-[6px]">
                   <input
                     className={KV_INPUT}
-                    placeholder="SECRET_KEY"
+                    placeholder={t('secrets.keyPlaceholder')}
                     value={r.k}
                     onChange={(e) => patchSec(i, { k: e.target.value })}
-                    aria-label="Secret name"
+                    aria-label={t('secrets.nameAriaLabel')}
                     autoFocus
                   />
                   <button
                     type="button"
                     className="iconbtn h-7 w-7 flex-none"
-                    title="Done"
+                    title={t('done')}
                     onClick={() => patchSec(i, { editing: false })}
                   >
                     <Icon name="check" size={13} />
@@ -291,12 +312,12 @@ export function EnvSecretsFields({
                 </div>
                 <textarea
                   className={KV_VALUE}
-                  placeholder={r.origK !== null ? 'New value' : 'Value'}
+                  placeholder={r.origK !== null ? t('secrets.newValuePlaceholder') : t('secrets.valuePlaceholder')}
                   value={r.v}
                   onChange={(e) => patchSec(i, { v: e.target.value })}
                   spellCheck={false}
                   autoComplete="off"
-                  aria-label="Secret value"
+                  aria-label={t('secrets.valueAriaLabel')}
                 />
               </div>
             ) : (
@@ -312,7 +333,7 @@ export function EnvSecretsFields({
                 <button
                   type="button"
                   className="iconbtn h-[26px] w-[26px] flex-none"
-                  title={r.origK !== null ? 'Replace value' : 'Edit'}
+                  title={r.origK !== null ? t('secrets.replaceValue') : t('edit')}
                   onClick={() => patchSec(i, { editing: true, ...(r.origK !== null ? { v: '' } : {}) })}
                 >
                   <Icon name="pencil" size={12} />
@@ -320,7 +341,7 @@ export function EnvSecretsFields({
                 <button
                   type="button"
                   className="iconbtn h-[26px] w-[26px] flex-none"
-                  title="Remove"
+                  title={t('remove')}
                   onClick={() => setSecretRows((rs) => rs.filter((_, j) => j !== i))}
                 >
                   <Icon name="trash" size={12} />
@@ -334,7 +355,7 @@ export function EnvSecretsFields({
             onClick={() => setSecretRows((rs) => [...rs, { k: '', origK: null, v: '', editing: true }])}
           >
             <Icon name="plus" size={13} />
-            Add secret
+            {t('secrets.add')}
           </button>
         </div>
       </div>

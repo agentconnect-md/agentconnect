@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useId, type ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 
 export function ConfirmationDialog({
@@ -25,6 +26,7 @@ export function ConfirmationDialog({
   onConfirm: () => void
   onClose: () => void
 }) {
+  const t = useTranslations('Common.actions')
   const titleId = useId()
 
   useEffect(() => {
@@ -51,7 +53,7 @@ export function ConfirmationDialog({
           <span id={titleId} className="flex-1 font-sans text-[16px] font-semibold leading-normal">
             {title}
           </span>
-          <button type="button" className="iconbtn" aria-label="Close" disabled={busy} onClick={onClose}>
+          <button type="button" className="iconbtn" aria-label={t('close')} disabled={busy} onClick={onClose}>
             <Icon name="x" size={16} />
           </button>
         </div>
@@ -69,7 +71,7 @@ export function ConfirmationDialog({
         <div className="modalfoot">
           <div className="flex-1" />
           <Button variant="ghost" disabled={busy} onClick={onClose}>
-            Cancel
+            {t('cancel')}
           </Button>
           <Button variant={destructive ? 'danger' : 'primary'} disabled={busy} onClick={onConfirm}>
             {busy ? busyLabel : confirmLabel}

@@ -1,6 +1,7 @@
 'use client'
 
 import { MOCK_PREFIX, type Agent } from '@/lib/data'
+import { useTranslations } from 'next-intl'
 import { useModal } from '@/components/console/ModalProvider'
 import { Button, Icon } from '@/components/ui'
 import { OrganizationRowBadge, effectiveSecretRows } from '@/components/console/OrganizationEnvironmentRows'
@@ -15,6 +16,7 @@ import { OrganizationRowBadge, effectiveSecretRows } from '@/components/console/
  * Variables card.
  */
 export function AgentSecretsCard({ agent }: { agent: Agent }) {
+  const t = useTranslations('Agents.detail.environment')
   const { openModal } = useModal()
   const editable = !agent.name.startsWith(MOCK_PREFIX)
   // The EFFECTIVE list — counts include both sources, and a local row shadowed by
@@ -26,7 +28,7 @@ export function AgentSecretsCard({ agent }: { agent: Agent }) {
     <div className="card">
       <div className="cardhead justify-between">
         <span className="inline-flex min-w-0 items-baseline gap-[7px]">
-          <span className="cardtitle">Secrets</span>
+          <span className="cardtitle">{t('secrets')}</span>
           {total > 0 && <span className="mono text-[11px] text-(--text-tertiary)">{total}</span>}
         </span>
         {editable && (
@@ -36,7 +38,7 @@ export function AgentSecretsCard({ agent }: { agent: Agent }) {
             onClick={() => openModal('editAgent', agent, { focusSection: 'secrets' })}
           >
             <Icon name="pencil" size={14} />
-            Edit
+            {t('edit')}
           </Button>
         )}
       </div>
@@ -50,14 +52,14 @@ export function AgentSecretsCard({ agent }: { agent: Agent }) {
               </span>
               {row.fromOrganization && <OrganizationRowBadge />}
             </span>
-            <span className="mono text-[12px] text-(--text-tertiary)" title="Write-only — value can’t be viewed">
+            <span className="mono text-[12px] text-(--text-tertiary)" title={t('writeOnlyTitle')}>
               ••••••••
             </span>
           </div>
         ))}
         {total === 0 && (
           <div className="px-4 py-[11px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-            No secrets
+            {t('noSecrets')}
           </div>
         )}
       </div>

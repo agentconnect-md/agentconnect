@@ -23,9 +23,7 @@ import { Icon } from '@/components/ui'
 import { Spinner } from '@/components/marks'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
 import { putSessionVisibility, type MutableSessionVisibility, type SessionVisibility } from '@/lib/api'
-
-export const SESSION_PRIVATE_TITLE = 'Visible only to me'
-export const SESSION_EVERYONE_TITLE = 'Visible to everyone in the org'
+import { useTranslations } from 'next-intl'
 
 export function SessionVisibilityControl({
   sessionId,
@@ -59,6 +57,7 @@ export function SessionVisibilityControl({
   /** Reflect the PUT response into the caller's caches (detail SWR + lists). */
   onChanged: (next: { visibility: SessionVisibility; state: 'pending' | 'applied' }) => void
 }) {
+  const t = useTranslations('Sessions.visibility')
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -107,12 +106,12 @@ export function SessionVisibilityControl({
     const privateSession = effective === 'private'
     return (
       <span
-        title="Setting up session access"
-        aria-label={`Session visibility: ${privateSession ? 'Private' : 'Everyone'} (loading)`}
+        title={t('settingUp')}
+        aria-label={`${t('sessionVisibility')}: ${privateSession ? t('private') : t('everyone')} (${t('loading')})`}
         className="inline-flex h-[26px] flex-none items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
       >
         <Icon name={privateSession ? 'lock' : 'globe'} size={13} color="var(--text-tertiary)" />
-        {privateSession ? 'Private' : 'Everyone'}
+        {privateSession ? t('private') : t('everyone')}
         <Spinner size={10} />
       </span>
     )
@@ -135,18 +134,18 @@ export function SessionVisibilityControl({
     const title =
       externalResolution === 'settled'
         ? github
-          ? 'Visible to everyone who can access the repo'
+          ? t('repoAccess')
           : slack
-            ? 'Visible to everyone who can access the channel'
-            : 'Visible to everyone who can access the conversation'
-        : `${provider} access could not be verified; this session remains hidden`
+            ? t('channelAccess')
+            : t('conversationAccess')
+        : t('accessUnverified', { provider })
     return (
       <span
         title={title}
         className="inline-flex h-[26px] flex-none items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
       >
         <Icon name="users" size={13} color="var(--text-tertiary)" />
-        {`${provider} members`}
+        {t('externalMembers', { provider })}
         {state === 'pending' && <Spinner size={10} />}
       </span>
     )
@@ -156,11 +155,11 @@ export function SessionVisibilityControl({
     const privateSession = effective === 'private'
     return (
       <span
-        title={privateSession ? SESSION_PRIVATE_TITLE : SESSION_EVERYONE_TITLE}
+        title={privateSession ? t('privateTitle') : t('everyoneTitle')}
         className="inline-flex h-[26px] flex-none items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
       >
         <Icon name={privateSession ? 'lock' : 'globe'} size={13} color="var(--text-tertiary)" />
-        {privateSession ? 'Private' : 'Everyone'}
+        {privateSession ? t('private') : t('everyone')}
         {state === 'pending' && <Spinner size={10} />}
       </span>
     )
@@ -172,8 +171,8 @@ export function SessionVisibilityControl({
     label: string
     description: string
   }> = [
-    { value: 'org', icon: 'globe', label: 'Everyone', description: SESSION_EVERYONE_TITLE },
-    { value: 'private', icon: 'lock', label: 'Private', description: SESSION_PRIVATE_TITLE }
+    { value: 'org', icon: 'globe', label: t('everyone'), description: t('everyoneTitle') },
+    { value: 'private', icon: 'lock', label: t('private'), description: t('privateTitle') }
   ]
   const current = choices.find((choice) => choice.value === effective) ?? choices[0]!
   const closeAndFocus = () => {
@@ -210,15 +209,9 @@ export function SessionVisibilityControl({
         <button
           ref={triggerRef}
           type="button"
-          title={
-            state === 'pending'
-              ? nativeMemory
-                ? 'Waiting for the owning daemon to confirm the change'
-                : 'Waiting for the owning daemon to confirm the change — capture stops at daemon acknowledgement'
-              : current.description
-          }
+          title={state === 'pending' ? (nativeMemory ? t('waiting') : t('waitingWithMemory')) : current.description}
           disabled={busy}
-          aria-label={`Session visibility: ${current.label}`}
+          aria-label={`${t('sessionVisibility')}: ${current.label}`}
           aria-haspopup="menu"
           aria-expanded={open}
           aria-controls={open ? menuId : undefined}
@@ -247,7 +240,7 @@ export function SessionVisibilityControl({
             onKeyDown={moveFocus}
           >
             <span id={headingId} className="sr-only">
-              Session visibility
+              {t('sessionVisibility')}
             </span>
             {choices.map((choice) => {
               const selected = choice.value === effective
@@ -285,8 +278,8 @@ export function SessionVisibilityControl({
       )}
       {confirming && (
         <ConfirmationDialog
-          title="Make this session private?"
-          confirmLabel="Make private"
+          title={t('makePrivateTitle')}
+          confirmLabel={t('makePrivate')}
           busy={busy}
           error={error}
           onConfirm={() => void apply('private')}
@@ -295,20 +288,7 @@ export function SessionVisibilityControl({
             setError(null)
           }}
         >
-          {nativeMemory ? (
-            <>
-              Making this session private hides the transcript from other members immediately. It does{' '}
-              <strong>not</strong> affect this agent&rsquo;s memory: it runs on its runtime&rsquo;s own memory, which
-              has no per-session control, so what the agent learns here can still surface in other people&rsquo;s
-              sessions.
-            </>
-          ) : (
-            <>
-              Making this session private stops it from feeding shared agent memory once the daemon confirms, and hides
-              the transcript immediately. Anything the agent already learned while it was visible to everyone is not
-              removed.
-            </>
-          )}
+          {nativeMemory ? <>{t('nativeMemoryWarning')}</> : <>{t('managedMemoryWarning')}</>}
         </ConfirmationDialog>
       )}
     </span>

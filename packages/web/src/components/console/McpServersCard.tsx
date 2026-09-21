@@ -36,8 +36,10 @@ import { ConnectorsModal } from '@/components/console/ConnectorsModal'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
+import { useTranslations } from 'next-intl'
 
 export function McpServersCard({ canWrite }: { canWrite: boolean }) {
+  const t = useTranslations('Tools')
   const { mcpProviders, mcpProvidersLoading, connectorsEnabled } = useConsoleData()
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<McpProviderDto | null>(null)
@@ -53,9 +55,9 @@ export function McpServersCard({ canWrite }: { canWrite: boolean }) {
 
   const empty = (
     <div className="px-4 py-7 text-center">
-      <div className="font-sans text-[13px] font-semibold leading-normal">No connectors or MCPs yet</div>
+      <div className="font-sans text-[13px] font-semibold leading-normal">{t('mcp.emptyTitle')}</div>
       <div className="mx-auto mt-1 max-w-[430px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-        Register an MCP server once; any agent in the organization can enable it.
+        {t('mcp.emptyDescription')}
       </div>
     </div>
   )
@@ -63,10 +65,10 @@ export function McpServersCard({ canWrite }: { canWrite: boolean }) {
   return (
     <div className="card mb-[18px]">
       <div className="cardhead justify-between">
-        <span className="cardtitle">Connectors & MCP servers</span>
+        <span className="cardtitle">{t('mcp.title')}</span>
         {canWrite && (
           <AnchoredFlyout
-            ariaLabel="Add connector or MCP server"
+            ariaLabel={t('mcp.addAria')}
             estimatedHeight={canAddConnectors ? 154 : 78}
             trigger={({ open, menuId, toggle }) => (
               <Button
@@ -78,7 +80,7 @@ export function McpServersCard({ canWrite }: { canWrite: boolean }) {
                 ariaControls={open ? menuId : undefined}
               >
                 <Icon name="plus" size={14} />
-                Add
+                {t('add')}
                 <Icon name="chevron-down" size={13} color="var(--text-tertiary)" />
               </Button>
             )}
@@ -99,10 +101,10 @@ export function McpServersCard({ canWrite }: { canWrite: boolean }) {
                     </span>
                     <span className="flex min-w-0 flex-col">
                       <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                        Add connectors
+                        {t('mcp.addConnectors')}
                       </span>
                       <span className="mt-[2px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary)">
-                        Browse and connect open-connector providers
+                        {t('mcp.browseConnectors')}
                       </span>
                     </span>
                   </button>
@@ -120,10 +122,10 @@ export function McpServersCard({ canWrite }: { canWrite: boolean }) {
                   </span>
                   <span className="flex min-w-0 flex-col">
                     <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                      Custom MCP provider
+                      {t('mcp.customProvider')}
                     </span>
                     <span className="mt-[2px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary)">
-                      Connect an upstream MCP server by URL
+                      {t('mcp.customProviderDescription')}
                     </span>
                   </span>
                 </button>
@@ -205,27 +207,28 @@ function ProviderTile({
   onEdit: () => void
   onDelete: () => void
 }) {
+  const t = useTranslations('Tools')
   return (
     <ToolTile
       mark={<ProviderMark iconUrl={iconUrl} />}
       name={p.name}
-      subtitle={p.kind === 'open_connector' ? 'Open connector' : 'Custom MCP server'}
+      subtitle={p.kind === 'open_connector' ? t('mcp.openConnector') : t('mcp.customServer')}
       action={
         canWrite ? (
           <>
             {p.auth === 'oauth2' && p.oauth?.status !== 'connected' && (
               <button
                 className="iconbtn h-6 w-6"
-                title={p.oauth?.status === 'reauth_required' ? 'Reconnect' : 'Connect'}
+                title={p.oauth?.status === 'reauth_required' ? t('mcp.reconnect') : t('mcp.connect')}
                 onClick={() => void beginProviderOauth(p.id)}
               >
                 <Icon name="plug" size={12} />
               </button>
             )}
-            <button className="iconbtn h-6 w-6" title="Edit" onClick={onEdit}>
+            <button className="iconbtn h-6 w-6" title={t('edit')} onClick={onEdit}>
               <Icon name="pencil" size={12} />
             </button>
-            <button className="iconbtn h-6 w-6" title="Remove" onClick={onDelete}>
+            <button className="iconbtn h-6 w-6" title={t('remove')} onClick={onDelete}>
               <Icon name="trash" size={12} />
             </button>
           </>
@@ -236,7 +239,7 @@ function ProviderTile({
           <VisibilityValue visibility={p.visibility} sharedWith={p.sharedWith} />
           <OauthStatusBadge provider={p} />
           <span className="mono ml-auto flex-none text-[10.5px] text-(--text-disabled)">
-            added {fmtDate(p.createdAt)}
+            {t('added', { date: fmtDate(p.createdAt) })}
           </span>
         </div>
       }
@@ -251,6 +254,7 @@ function ProviderTile({
  * while leaving the provider and its grant key alone, so no agent has to re-select it.
  */
 function OauthConnectionField({ provider }: { provider: McpProviderDto }) {
+  const t = useTranslations('Tools.mcp.oauthField')
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<string | null>(null)
   const status = provider.oauth?.status ?? 'pending'
@@ -262,10 +266,10 @@ function OauthConnectionField({ provider }: { provider: McpProviderDto }) {
     try {
       if (what === 'connect') {
         await beginProviderOauth(provider.id)
-        setNote('Complete the sign-in in the popup window…')
+        setNote(t('completeSignIn'))
       } else {
         await disconnectMcpProviderOauth(provider.id)
-        setNote('Disconnected. Reconnect to make this server usable again.')
+        setNote(t('disconnectedNote'))
       }
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e))
@@ -276,14 +280,14 @@ function OauthConnectionField({ provider }: { provider: McpProviderDto }) {
 
   return (
     <div className="fld">
-      <span className="fldlbl">Connection</span>
+      <span className="fldlbl">{t('connection')}</span>
       <div className="flex items-center justify-between gap-3 rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px]">
         <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
           {status === 'connected'
-            ? `Signed in to ${provider.oauth?.issuer ?? 'the authorization server'}.`
+            ? t('signedInTo', { issuer: provider.oauth?.issuer ?? t('authServerFallback') })
             : status === 'reauth_required'
-              ? 'The stored authorization is no longer accepted.'
-              : 'Not connected yet.'}
+              ? t('reauthNotAccepted')
+              : t('notConnectedYet')}
         </span>
         <div className="flex flex-none items-center gap-3">
           <button
@@ -292,7 +296,7 @@ function OauthConnectionField({ provider }: { provider: McpProviderDto }) {
             className="inline-flex w-fit cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--brand)"
           >
             <Icon name="plug" size={14} />
-            {status === 'connected' ? 'Reconnect' : 'Connect'}
+            {status === 'connected' ? t('reconnect') : t('connect')}
           </button>
           {status === 'connected' && (
             <button
@@ -300,13 +304,13 @@ function OauthConnectionField({ provider }: { provider: McpProviderDto }) {
               onClick={() => void run('disconnect')}
               className="inline-flex w-fit cursor-pointer items-center border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)"
             >
-              Disconnect
+              {t('disconnect')}
             </button>
           )}
         </div>
       </div>
       <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-        {note ?? 'The access token is held by the control plane and refreshed automatically.'}
+        {note ?? t('tokenHint')}
       </span>
     </div>
   )
@@ -316,19 +320,16 @@ function OauthConnectionField({ provider }: { provider: McpProviderDto }) {
  *  currently reach its upstream at all. `reauth_required` means the grant is dead and only
  *  a fresh authorization repairs it — a refresh will not. */
 function OauthStatusBadge({ provider }: { provider: McpProviderDto }) {
+  const t = useTranslations('Tools')
   if (provider.auth !== 'oauth2') return null
   const status = provider.oauth?.status ?? 'pending'
   if (status === 'connected') return null
   return (
     <span
       className="flex-none font-sans text-[10.5px] font-medium leading-normal text-(--status-error)"
-      title={
-        status === 'reauth_required'
-          ? 'The stored authorization is no longer accepted — reconnect to repair it.'
-          : 'Not connected yet — authorize this server to make it usable.'
-      }
+      title={status === 'reauth_required' ? t('mcp.reauthHint') : t('mcp.notConnectedHint')}
     >
-      {status === 'reauth_required' ? 'Reconnect needed' : 'Not connected'}
+      {status === 'reauth_required' ? t('mcp.reconnectNeeded') : t('mcp.notConnected')}
     </span>
   )
 }
@@ -350,40 +351,38 @@ function HeadersEditor({
   onChange: (rows: HeaderRow[]) => void
   valuePlaceholder?: string
 }) {
+  const t = useTranslations('Tools.mcp.headers')
   const set = (i: number, patch: Partial<HeaderRow>) => onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)))
   const add = () => onChange([...rows, { name: '', value: '' }])
   const remove = (i: number) => onChange(rows.filter((_, j) => j !== i))
   return (
     <div className="fld">
       <span className="fldlbl">
-        Headers{' '}
-        <span className="font-normal tracking-normal normal-case text-(--text-tertiary)">
-          — sent to the upstream server; values are write-only
-        </span>
+        {t('label')} <span className="font-normal tracking-normal normal-case text-(--text-tertiary)">{t('hint')}</span>
       </span>
       <div className="flex flex-col gap-2">
         {rows.map((r, i) => (
           <div key={i} className="flex items-center gap-2">
             <input
               className="dsinput-field mono min-w-0 flex-1"
-              placeholder="Authorization"
+              placeholder={t('namePlaceholder')}
               value={r.name}
               onChange={(e) => set(i, { name: e.target.value })}
-              aria-label="Header name"
+              aria-label={t('nameAriaLabel')}
             />
             <input
               className="dsinput-field mono min-w-0 flex-1"
-              placeholder={valuePlaceholder ?? 'Bearer …'}
+              placeholder={valuePlaceholder ?? t('valuePlaceholder')}
               value={r.value}
               onChange={(e) => set(i, { value: e.target.value })}
-              aria-label="Header value"
+              aria-label={t('valueAriaLabel')}
             />
             <button
               type="button"
               className="iconbtn flex-none"
               onClick={() => remove(i)}
-              aria-label="Remove header"
-              title="Remove header"
+              aria-label={t('remove')}
+              title={t('remove')}
             >
               <Icon name="x" size={15} />
             </button>
@@ -395,7 +394,7 @@ function HeadersEditor({
           className="inline-flex w-fit cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--brand)"
         >
           <Icon name="plus" size={14} />
-          Add header
+          {t('add')}
         </button>
       </div>
     </div>
@@ -419,14 +418,15 @@ function McpAppsField({
   onChange: (v: boolean) => void
   disabled?: boolean
 }) {
+  const t = useTranslations('Tools.mcp.apps')
   return (
     <CompactToggleField
-      label="Interactive interfaces"
+      label={t('label')}
       checked={checked}
       onChange={onChange}
       {...(disabled ? { disabled } : {})}
-      status={checked ? 'Rendered in chat' : 'Off'}
-      detail="Let this server show interactive interfaces in the web console. The daemon connects to it directly instead of the agent runtime, and its tools are renamed to server__tool."
+      status={checked ? t('statusOn') : t('statusOff')}
+      detail={t('detail')}
     />
   )
 }
@@ -450,6 +450,7 @@ export function CreateMcpProviderModal({
   /** Why a submitted registration did not land — a native card reports a refusal as well as a save. */
   onFailed?: (message: string) => void
 }) {
+  const t = useTranslations('Tools.mcp.create')
   const { createMcpProvider } = useConsoleData()
   const { me } = useProfile()
   const [name, setName] = useState('')
@@ -506,7 +507,7 @@ export function CreateMcpProviderModal({
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--brand-soft)">
           <Icon name="plug" size={16} color="var(--brand)" />
         </span>
-        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Add MCP server</span>
+        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('title')}</span>
         <button className="iconbtn" onClick={onClose}>
           <Icon name="x" size={16} />
         </button>
@@ -515,7 +516,7 @@ export function CreateMcpProviderModal({
       <div className="modalbody">
         <div className="flex flex-col gap-[14px]">
           <div className="fld">
-            <span className="fldlbl">Name</span>
+            <span className="fldlbl">{t('name')}</span>
             <input
               className="inp mn"
               placeholder="linear"
@@ -526,7 +527,7 @@ export function CreateMcpProviderModal({
             />
           </div>
           <div className="fld">
-            <span className="fldlbl">URL</span>
+            <span className="fldlbl">{t('url')}</span>
             <input
               className="inp mn"
               placeholder="https://mcp.example.com/sse"
@@ -534,16 +535,16 @@ export function CreateMcpProviderModal({
               onChange={(e) => setUrl(e.target.value)}
             />
             <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              Agents never see this URL — the relay dials it.
+              {t('urlHint')}
             </span>
           </div>
           <div className="fld">
-            <span className="fldlbl">Authentication</span>
+            <span className="fldlbl">{t('authentication')}</span>
             <div className="flex gap-2">
               {(
                 [
-                  ['headers', 'API key / headers'],
-                  ['oauth2', 'OAuth']
+                  ['headers', t('authHeaders')],
+                  ['oauth2', t('authOauth')]
                 ] as const
               ).map(([value, label]) => (
                 <button
@@ -561,7 +562,7 @@ export function CreateMcpProviderModal({
             <HeadersEditor rows={headers} onChange={setHeaders} />
           ) : (
             <details className="fld">
-              <summary className="fldlbl cursor-pointer">Advanced — existing OAuth client (optional)</summary>
+              <summary className="fldlbl cursor-pointer">{t('advancedOauth')}</summary>
               <div className="mt-2 flex flex-col gap-2">
                 <input
                   className="inp mn"
@@ -577,7 +578,7 @@ export function CreateMcpProviderModal({
                   onChange={(e) => setClientSecret(e.target.value)}
                 />
                 <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                  Leave blank unless you registered your own OAuth app.
+                  {t('oauthClientHint')}
                 </span>
               </div>
             </details>
@@ -591,7 +592,7 @@ export function CreateMcpProviderModal({
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button
           variant="primary"
@@ -599,7 +600,7 @@ export function CreateMcpProviderModal({
           className={valid && !busy ? undefined : 'pointer-events-none opacity-50'}
         >
           <Icon name="plug" size={14} />
-          {busy ? 'Adding…' : 'Add'}
+          {busy ? t('adding') : t('add')}
         </Button>
       </div>
     </>
@@ -608,6 +609,7 @@ export function CreateMcpProviderModal({
 
 // ── edit dialog (url + headers; headers are write-only — blank keeps them) ─────
 export function EditMcpProviderModal({ provider, onClose }: { provider: McpProviderDto; onClose: () => void }) {
+  const t = useTranslations('Tools.mcp.edit')
   const { updateMcpProvider, saveSharing } = useConsoleData()
   const [url, setUrl] = useState(provider.url)
   // Start empty: the stored values are never returned, so a blank editor means
@@ -666,7 +668,7 @@ export function EditMcpProviderModal({ provider, onClose }: { provider: McpProvi
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--brand-soft)">
           <Icon name="plug" size={16} color="var(--brand)" />
         </span>
-        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Edit MCP server</span>
+        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('title')}</span>
         <button className="iconbtn" onClick={onClose}>
           <Icon name="x" size={16} />
         </button>
@@ -675,28 +677,31 @@ export function EditMcpProviderModal({ provider, onClose }: { provider: McpProvi
       <div className="modalbody">
         <div className="flex flex-col gap-[14px]">
           <div className="fld">
-            <span className="fldlbl">Name</span>
+            <span className="fldlbl">{t('name')}</span>
             <input className="inp mn opacity-60" value={provider.name} readOnly disabled />
             <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              The name can&rsquo;t be changed later.
+              {t('nameLocked')}
             </span>
           </div>
           <div className="fld">
-            <span className="fldlbl">URL</span>
+            <span className="fldlbl">{t('url')}</span>
             <input className="inp mn" value={url} onChange={(e) => setUrl(e.target.value)} />
           </div>
           {provider.auth === 'oauth2' ? (
             <OauthConnectionField provider={provider} />
           ) : replaceHeaders ? (
-            <HeadersEditor rows={headers} onChange={setHeaders} valuePlaceholder="new value" />
+            <HeadersEditor rows={headers} onChange={setHeaders} valuePlaceholder={t('newValuePlaceholder')} />
           ) : (
             <div className="fld">
-              <span className="fldlbl">Headers</span>
+              <span className="fldlbl">{t('headers')}</span>
               <div className="flex items-center justify-between gap-3 rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px]">
                 <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
                   {provider.headerNames.length > 0
-                    ? `${provider.headerNames.length} header${provider.headerNames.length === 1 ? '' : 's'} configured (${provider.headerNames.join(', ')}). Values are hidden.`
-                    : 'No headers configured.'}
+                    ? t('headersConfigured', {
+                        count: provider.headerNames.length,
+                        names: provider.headerNames.join(', ')
+                      })
+                    : t('noHeaders')}
                 </span>
                 <button
                   type="button"
@@ -704,11 +709,11 @@ export function EditMcpProviderModal({ provider, onClose }: { provider: McpProvi
                   className="inline-flex w-fit flex-none cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--brand)"
                 >
                   <Icon name="pencil" size={14} />
-                  Replace
+                  {t('replace')}
                 </button>
               </div>
               <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                Replaces all existing headers.
+                {t('replaceHint')}
               </span>
             </div>
           )}
@@ -721,14 +726,14 @@ export function EditMcpProviderModal({ provider, onClose }: { provider: McpProvi
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button
           variant="primary"
           onClick={() => void submit()}
           className={valid && !busy ? undefined : 'pointer-events-none opacity-50'}
         >
-          {busy ? 'Saving…' : 'Save'}
+          {busy ? t('saving') : t('save')}
         </Button>
       </div>
     </>
@@ -748,6 +753,7 @@ export function EditMcpProviderModal({ provider, onClose }: { provider: McpProvi
 // multi-method one is ambiguous (the row doesn't record which was used), so we let the
 // user pick. Visibility stays editable regardless.
 function EditConnectorModal({ provider, onClose }: { provider: McpProviderDto; onClose: () => void }) {
+  const t = useTranslations('Tools.mcp.editConnector')
   const { reconnectConnectorConnection, saveSharing } = useConsoleData()
   const { data: catalog, error: catalogErr } = useSWR('connector-catalog', () => fetchConnectorCatalog(), {
     revalidateOnFocus: false
@@ -781,23 +787,23 @@ function EditConnectorModal({ provider, onClose }: { provider: McpProviderDto; o
   const requiredFilled = fields.filter((f) => f.required).every((f) => (values[f.key] ?? '').trim().length > 0)
   const sharingChanged = provider.canManageSharing && !sameSharing(sharing, initialSharing.current)
 
-  const title = isOauth ? 'Reconnect connector' : auth?.type === 'api_key' ? 'Edit API key' : 'Edit connector'
+  const title = isOauth ? t('reconnectTitle') : auth?.type === 'api_key' ? t('editApiKeyTitle') : t('editTitle')
 
   // OAuth: re-run the authorization popup (its own action, independent of the footer).
   const reconnectOauth = async () => {
     if (!auth || reconnecting) return
     setReconnecting(true)
-    setStatus('Opening authorization…')
+    setStatus(t('openingAuthorization'))
     try {
       const res = await reconnectConnectorConnection(provider.id, { authType: auth.type })
       if (res.authorizationUrl) {
         window.open(res.authorizationUrl, 'connectors_oauth', oauthPopupFeatures())
-        setStatus('Complete the sign-in in the popup window…')
+        setStatus(t('completeSignIn'))
       } else {
-        setStatus('Reconnect started, but authorization did not begin.')
+        setStatus(t('reconnectStartedNoAuth'))
       }
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : 'Reconnect failed.')
+      setStatus(e instanceof Error ? e.message : t('reconnectFailed'))
     } finally {
       setReconnecting(false)
     }
@@ -808,7 +814,7 @@ function EditConnectorModal({ provider, onClose }: { provider: McpProviderDto; o
   const save = async () => {
     if (saving) return
     if (isCredential && credsEntered && !requiredFilled) {
-      setErr('Enter every required field to update the credential.')
+      setErr(t('requiredFieldsError'))
       return
     }
     setSaving(true)
@@ -825,11 +831,7 @@ function EditConnectorModal({ provider, onClose }: { provider: McpProviderDto; o
     }
   }
 
-  const hint = isOauth
-    ? 'the URL and headers are managed for you. Re-run authorization if the connection stopped working.'
-    : isCredential
-      ? 'the URL and headers are managed for you. Enter a new credential to replace the stored one.'
-      : 'the URL and headers are managed for you.'
+  const hint = isOauth ? t('hintOauth') : isCredential ? t('hintCredential') : t('hintDefault')
 
   return (
     <>
@@ -846,10 +848,13 @@ function EditConnectorModal({ provider, onClose }: { provider: McpProviderDto; o
       <div className="modalbody">
         <div className="flex flex-col gap-[14px]">
           <div className="fld">
-            <span className="fldlbl">Connection</span>
+            <span className="fldlbl">{t('connection')}</span>
             <input className="inp mn opacity-60" value={provider.name} readOnly disabled />
             <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              {provider.service ? `Open-connector · ${provider.service}` : 'Open-connector connection'} — {hint}
+              {provider.service
+                ? t('openConnectorService', { service: provider.service })
+                : t('openConnectorConnection')}{' '}
+              — {hint}
             </span>
           </div>
 
@@ -857,7 +862,7 @@ function EditConnectorModal({ provider, onClose }: { provider: McpProviderDto; o
             <div className="flex items-start gap-[9px] rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px]">
               <Icon name="triangle-alert" size={15} color="var(--status-error)" className="mt-[1px] flex-none" />
               <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                Couldn’t load the connector catalog — editing the connection is unavailable right now.
+                {t('catalogLoadError')}
               </span>
             </div>
           ) : !catalog ? (
@@ -866,13 +871,12 @@ function EditConnectorModal({ provider, onClose }: { provider: McpProviderDto; o
             <div className="flex items-start gap-[9px] rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px]">
               <Icon name="triangle-alert" size={15} color="var(--text-tertiary)" className="mt-[1px] flex-none" />
               <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                This connector is no longer available in the catalog, so its credential can’t be edited. Delete and
-                re-add it if you still need it.
+                {t('catalogMissing')}
               </span>
             </div>
           ) : (
             <div className="fld">
-              <span className="fldlbl">{isOauth ? 'Authorization' : 'Credential'}</span>
+              <span className="fldlbl">{isOauth ? t('authorizationLabel') : t('credentialLabel')}</span>
               {ambiguous && (
                 <div className="mb-1 flex gap-1 rounded-[8px] bg-(--surface-sunken) p-[3px]">
                   {cp.auth.map((a) => (
@@ -886,7 +890,7 @@ function EditConnectorModal({ provider, onClose }: { provider: McpProviderDto; o
                           : 'bg-transparent text-(--text-secondary)'
                       }`}
                     >
-                      {authLabel(a.type)}
+                      {t(`authTypes.${a.type}`)}
                     </button>
                   ))}
                 </div>
@@ -901,7 +905,7 @@ function EditConnectorModal({ provider, onClose }: { provider: McpProviderDto; o
                     className="mt-[1px] flex-none"
                   />
                   <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                    This connector needs no credentials — there’s nothing to edit.
+                    {t('noAuthNote')}
                   </span>
                 </div>
               ) : isOauth ? (
@@ -909,7 +913,7 @@ function EditConnectorModal({ provider, onClose }: { provider: McpProviderDto; o
                   <div className="flex items-start gap-[9px] rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px]">
                     <Icon name="shield-check" size={15} color="var(--brand)" className="mt-[1px] flex-none" />
                     <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                      Sign in with {cp.displayName} again in a popup to refresh this connection’s authorization.
+                      {t('signInAgain', { name: cp.displayName })}
                     </span>
                   </div>
                   <div>
@@ -919,7 +923,7 @@ function EditConnectorModal({ provider, onClose }: { provider: McpProviderDto; o
                       className={reconnecting ? 'pointer-events-none opacity-50' : undefined}
                     >
                       <Icon name="external-link" size={14} />
-                      {reconnecting ? 'Reconnecting…' : `Reconnect ${cp.displayName}`}
+                      {reconnecting ? t('reconnecting') : t('reconnectButton', { name: cp.displayName })}
                     </Button>
                   </div>
                   {status && (
@@ -939,7 +943,7 @@ function EditConnectorModal({ provider, onClose }: { provider: McpProviderDto; o
                     />
                   ))}
                   <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                    Leave blank to keep the current value.
+                    {t('keepCurrentValue')}
                   </span>
                 </div>
               )}
@@ -954,14 +958,14 @@ function EditConnectorModal({ provider, onClose }: { provider: McpProviderDto; o
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button
           variant="primary"
           onClick={() => void save()}
           className={saving ? 'pointer-events-none opacity-50' : undefined}
         >
-          {saving ? 'Saving…' : isCredential && credsEntered ? 'Save' : 'Done'}
+          {saving ? t('saving') : isCredential && credsEntered ? t('save') : t('done')}
         </Button>
       </div>
     </>
@@ -1007,14 +1011,6 @@ function ConnectorCredentialInput({
   )
 }
 
-// The auth-method label for the ambiguous-connector picker (mirrors ConnectorsModal.authLabel).
-function authLabel(type: ConnectorAuthDefinition['type']): string {
-  if (type === 'api_key') return 'API key'
-  if (type === 'oauth2') return 'OAuth'
-  if (type === 'custom_credential') return 'Custom'
-  return 'No auth'
-}
-
 /**
  * Open the CP's authorization funnel in a popup. The url runs on the CP's PUBLIC origin —
  * the browser hop that binds this window to the grant — and finally redirects back to the
@@ -1042,6 +1038,7 @@ function oauthPopupFeatures(): string {
 
 // ── delete confirm ─────────────────────────────────────────────────────────────
 function DeleteMcpProviderModal({ provider, onClose }: { provider: McpProviderDto; onClose: () => void }) {
+  const t = useTranslations('Tools.mcp.delete')
   const { deleteMcpProvider } = useConsoleData()
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -1065,15 +1062,14 @@ function DeleteMcpProviderModal({ provider, onClose }: { provider: McpProviderDt
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--status-error-soft)">
           <Icon name="trash" size={16} color="var(--status-error)" />
         </span>
-        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Delete MCP server</span>
+        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('title')}</span>
         <button className="iconbtn" onClick={onClose}>
           <Icon name="x" size={16} />
         </button>
       </div>
       <div className="modalbody">
         <p className="m-0 font-sans text-[13.5px] font-normal leading-[1.6] text-(--text-secondary)">
-          <span className="mono text-(--text-primary)">{provider.name}</span>&#32;will be removed and its grant key
-          revoked — agents that enabled it will stop being able to reach it. This can&apos;t be undone.
+          {t.rich('body', { name: () => <span className="mono text-(--text-primary)">{provider.name}</span> })}
         </p>
         {err && (
           <div className="mt-[10px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>
@@ -1082,7 +1078,7 @@ function DeleteMcpProviderModal({ provider, onClose }: { provider: McpProviderDt
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button
           variant="danger"
@@ -1090,7 +1086,7 @@ function DeleteMcpProviderModal({ provider, onClose }: { provider: McpProviderDt
           className={busy ? 'pointer-events-none opacity-50' : undefined}
         >
           <Icon name="trash" size={15} />
-          {busy ? 'Deleting…' : 'Delete'}
+          {busy ? t('deleting') : t('delete')}
         </Button>
       </div>
     </>

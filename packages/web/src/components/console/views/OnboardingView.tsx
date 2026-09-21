@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useParams, useRouter } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import { KubernetesMark, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { useConsoleData } from '@/lib/data-context'
@@ -42,6 +43,7 @@ type Step = 'where' | 'run'
 
 export default function OnboardingView() {
   const router = useRouter()
+  const t = useTranslations('Onboarding')
   const params = useParams()
   const {
     agents,
@@ -188,7 +190,7 @@ export default function OnboardingView() {
     try {
       await refreshDaemons()
     } catch {
-      setMintErr('Could not refresh the daemon list — check your connection and retry.')
+      setMintErr(t('errors.refreshDaemons'))
       return
     }
     provisioned.current = false
@@ -265,7 +267,7 @@ export default function OnboardingView() {
     <div className="flex min-h-full flex-col">
       {step === 'where' ? (
         <WhereStep
-          stepLabel={`Step ${stepNumbers.where} of ${total}`}
+          stepLabel={t('step', { current: stepNumbers.where, total })}
           choice={choice}
           onChoice={setChoice}
           finishHere={!lastStepExists}
@@ -275,7 +277,7 @@ export default function OnboardingView() {
         />
       ) : choice === 'pool' ? (
         <ClusterStep
-          stepLabel={`Step ${total} of ${total}`}
+          stepLabel={t('step', { current: total, total })}
           source={poolSource}
           serving={poolMembers.filter((d) => d.status === 'online').length}
           initial={builtinAgent ? { runtime: builtinAgent.runtime, model: builtinAgent.model } : undefined}
@@ -296,7 +298,7 @@ export default function OnboardingView() {
         />
       ) : (
         <DaemonStep
-          stepLabel={`Step ${total} of ${total}`}
+          stepLabel={t('step', { current: total, total })}
           cmd={cmd}
           mintErr={mintErr}
           copied={copied}
@@ -430,12 +432,13 @@ function WhereStep({
   err: string | null
   onNext: () => void
 }) {
+  const t = useTranslations('Onboarding.where')
   const managed = featureFlagEnabled('managed')
   return (
     <StepFrame
       stepLabel={stepLabel}
-      title="Where to run"
-      sub="Pick where your first agent runs."
+      title={t('title')}
+      sub={t('description')}
       footer={
         <>
           <div className="flex-1" />
@@ -443,11 +446,11 @@ function WhereStep({
             {finishHere ? (
               <>
                 <Icon name="check" size={15} />
-                {finishing ? 'Finishing…' : 'Finish'}
+                {finishing ? t('finishing') : t('finish')}
               </>
             ) : (
               <>
-                Continue
+                {t('continue')}
                 <Icon name="arrow-right" size={15} />
               </>
             )}
@@ -457,12 +460,8 @@ function WhereStep({
     >
       <div className="mt-[26px] grid grid-cols-1 gap-3 desktop:grid-cols-2">
         <WhereCard
-          name={managed ? 'Cloud' : 'Cluster'}
-          desc={
-            managed
-              ? 'Easiest start. Free credits on signup, nothing to install.'
-              : 'The daemon pool your org already runs. Nothing to install.'
-          }
+          name={managed ? t('cloud') : t('cluster')}
+          desc={managed ? t('cloudDescription') : t('clusterDescription')}
           icon="cloud"
           // A self-hosted pool IS a Kubernetes cluster, so it is named by the thing the
           // operator actually runs rather than by a generic box glyph.
@@ -471,8 +470,8 @@ function WhereStep({
           onSelect={() => onChoice('pool')}
         />
         <WhereCard
-          name="Daemon"
-          desc="Bring your own provider credentials, and your own machine."
+          name={t('daemon')}
+          desc={t('daemonDescription')}
           icon="server"
           selected={choice === 'daemon'}
           onSelect={() => onChoice('daemon')}
@@ -517,10 +516,11 @@ function useRuntimeModel(daemon?: DaemonRow, initial?: { runtime?: string; model
 }
 
 function RuntimeModelFields({ rm }: { rm: ReturnType<typeof useRuntimeModel> }) {
+  const t = useTranslations('Onboarding.runtime')
   return (
     <div className="grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
       <div className="fld">
-        <span className="fldlbl">Runtime</span>
+        <span className="fldlbl">{t('runtime')}</span>
         <RuntimeSelect
           value={rm.effectiveRuntime}
           options={rm.runtimeIds}
@@ -533,11 +533,11 @@ function RuntimeModelFields({ rm }: { rm: ReturnType<typeof useRuntimeModel> }) 
         />
       </div>
       <div className="fld">
-        <span className="fldlbl">Model</span>
+        <span className="fldlbl">{t('model')}</span>
         <ModelSelect
           value={rm.selectedModel}
           options={rm.modelOptions}
-          disabledHint="This runtime reports no selectable models"
+          disabledHint={t('noModels')}
           onChange={rm.setModel}
         />
       </div>
@@ -582,9 +582,10 @@ function ClusterStep({
   onBack?: () => void
   onFinish: (runtime: string, model: string) => void
 }) {
+  const t = useTranslations('Onboarding.cluster')
   const rm = useRuntimeModel(source, initial)
   // "AgentConnect Cloud" is a name; "Kubernetes cluster" is a thing the operator runs.
-  const where = featureFlagEnabled('managed') ? poolLabel() : `the ${poolLabel()}`
+  const where = featureFlagEnabled('managed') ? poolLabel() : t('selfHostedWhere', { pool: poolLabel() })
   // A serving member can still be mid-probe and advertise no profiles at all. Offering the
   // static fallback list there would write `claude-acp` over the pool runtime the deployment
   // configured, and Finish on the pool skips the move that would have refused it — so with
@@ -600,19 +601,19 @@ function ClusterStep({
   return (
     <StepFrame
       stepLabel={stepLabel}
-      title="Choose runtime"
-      sub={`What the agent runs on ${where}.`}
+      title={t('title')}
+      sub={t('description', { where })}
       footer={
         <>
           {onBack && (
             <Button variant="ghost" disabled={saving} onClick={onBack}>
-              Back
+              {t('back')}
             </Button>
           )}
           <div className="flex-1" />
           <Button disabled={saving || !canFinish} onClick={() => onFinish(runtime, model)}>
             <Icon name="check" size={15} />
-            {saving ? 'Finishing…' : 'Finish'}
+            {saving ? t('finishing') : t('finish')}
           </Button>
         </>
       }
@@ -621,9 +622,7 @@ function ClusterStep({
       {showPickers && advertised && <RuntimeModelFields rm={rm} />}
       {showPickers && !advertised && (
         <p className="mt-6 font-sans text-[13px] leading-[1.5] text-(--text-secondary)">
-          {placed
-            ? `${poolLabel()} has not advertised its runtimes yet, so this leaves the agent's runtime as it is. Change it from the agent's page once the cluster reports them.`
-            : `Waiting for ${poolLabel()} to report the runtimes it can run — the agent cannot be placed there until it does. This page keeps checking; pick Daemon instead to run it on your own machine.`}
+          {placed ? t('notAdvertisedPlaced', { pool: poolLabel() }) : t('notAdvertisedWaiting', { pool: poolLabel() })}
         </p>
       )}
       {/* Where it lands, in the pool's own terms: the placement names the set, not a Pod. */}
@@ -632,7 +631,7 @@ function ClusterStep({
           <KubernetesMark />
         </span>
         <span className="font-sans text-[13px] font-normal leading-normal text-(--text-secondary)">
-          Runs on {where} · {serving > 0 ? `${serving} node${serving === 1 ? '' : 's'} serving` : 'no nodes serving'}
+          {t('runsOn', { where })} · {serving > 0 ? t('nodesServing', { count: serving }) : t('noNodesServing')}
         </span>
       </div>
       <SaveError err={err} />
@@ -678,31 +677,32 @@ function DaemonStep({
   onSkip: () => void
   onFinish: (runtime: string, model: string) => void
 }) {
+  const t = useTranslations('Onboarding.daemon')
   const rm = useRuntimeModel(daemon, initial)
   const ready = !!daemon
 
   return (
     <StepFrame
       stepLabel={stepLabel}
-      title="Run the daemon"
-      sub="Bring your own provider credentials, and your own machine. Run this on the machine your agents should work on."
+      title={t('title')}
+      sub={t('description')}
       footer={
         <>
           {onBack && (
             <Button variant="ghost" disabled={saving} onClick={onBack}>
-              Back
+              {t('back')}
             </Button>
           )}
           <div className="flex-1" />
           <Button variant="ghost" disabled={saving} onClick={onSkip}>
-            Skip
+            {t('skip')}
           </Button>
           <Button
             disabled={saving || !ready || (showPickers && !rm.effectiveRuntime)}
             onClick={() => onFinish(rm.effectiveRuntime, rm.selectedModel)}
           >
             <Icon name="check" size={15} />
-            {saving ? 'Finishing…' : 'Finish'}
+            {saving ? t('finishing') : t('finish')}
           </Button>
         </>
       }
@@ -714,7 +714,7 @@ function DaemonStep({
           <div className="flex items-center gap-2 border-b border-(--gray-800) py-[9px] pr-[10px] pl-[13px]">
             <Icon name="terminal" size={13} color="var(--text-inverse-dim)" />
             <span className="font-mono text-[11px] font-medium leading-normal tracking-[.02em] text-(--text-inverse-dim)">
-              your machine · macOS, Linux, WSL
+              {t('yourMachine')} · macOS, Linux, WSL
             </span>
             <button
               type="button"
@@ -723,7 +723,7 @@ function DaemonStep({
               className="ml-auto inline-flex h-[26px] cursor-pointer items-center gap-[6px] rounded-md border border-white/15 bg-white/5 px-[9px] font-mono text-[11px] font-medium text-[#e6ebf1] hover:border-white/25 hover:bg-white/10 disabled:cursor-default disabled:opacity-50"
             >
               <Icon name={copied ? 'check' : 'copy'} size={12} />
-              {copied ? 'Copied' : 'Copy'}
+              {copied ? t('copied') : t('copy')}
             </button>
           </div>
           <div className="flex gap-[9px] break-all p-[15px] font-mono text-[13px] leading-[1.6] text-[#cdd6e0]">
@@ -734,18 +734,18 @@ function DaemonStep({
               </>
             ) : mintErr ? (
               <span className="flex flex-wrap items-center gap-2">
-                <span className="text-(--status-error)">Could not provision a key — {mintErr}</span>
+                <span className="text-(--status-error)">{t('provisionError', { error: mintErr })}</span>
                 <button
                   type="button"
                   onClick={onRetry}
                   className="inline-flex h-[24px] cursor-pointer items-center gap-[5px] rounded-md border border-white/15 bg-white/5 px-2 font-mono text-[11px] font-medium text-[#e6ebf1] hover:border-white/25 hover:bg-white/10"
                 >
                   <Icon name="refresh-cw" size={11} />
-                  Retry
+                  {t('retry')}
                 </button>
               </span>
             ) : (
-              <span className="text-(--text-inverse-dim)">Minting key…</span>
+              <span className="text-(--text-inverse-dim)">{t('minting')}</span>
             )}
           </div>
         </div>
@@ -764,12 +764,12 @@ function DaemonStep({
             <div className="mt-[1px] font-mono text-[12px] leading-normal text-(--text-secondary)">
               {[daemon.host, daemon.version ? `v${daemon.version.replace(/^v/, '')}` : '']
                 .filter(Boolean)
-                .join(' · ') || 'connected'}
+                .join(' · ') || t('connected')}
             </div>
           </div>
           <span className="inline-flex flex-none items-center gap-[6px] font-sans text-[12px] font-medium text-(--green-500)">
             <span className="h-[7px] w-[7px] rounded-full bg-(--green-500)" />
-            online
+            {t('online')}
           </span>
         </div>
       ) : (
@@ -777,10 +777,11 @@ function DaemonStep({
           <span className="h-[18px] w-[18px] flex-none animate-spin rounded-full border-2 border-(--gray-200) border-t-(--brand)" />
           <div className="min-w-0 flex-1">
             <div className="font-sans text-[13.5px] font-medium leading-normal text-(--text-primary)">
-              Waiting for your daemon to come online…
+              {t('waiting')}
             </div>
             <div className="mt-[2px] font-mono text-[11.5px] leading-normal text-(--text-tertiary)">
-              {listeningId ? `Listening for ${listeningId} · ` : ''}this page continues on its own
+              {listeningId ? `${t('listeningFor', { id: listeningId })} · ` : ''}
+              {t('continues')}
             </div>
           </div>
           <span className="flex-none font-mono text-[12px] tabular-nums text-(--text-tertiary)">{elapsedLabel}</span>
@@ -790,7 +791,7 @@ function DaemonStep({
       {showPickers && (
         <>
           <div className="mt-7 mb-3 font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
-            What should the agent run on?
+            {t('runtimeQuestion')}
           </div>
           <RuntimeModelFields rm={rm} />
         </>
@@ -803,7 +804,7 @@ function DaemonStep({
         rel="noopener noreferrer"
         className="mt-5 inline-flex items-center gap-[6px] self-start font-sans text-[12.5px] text-(--text-tertiary) no-underline hover:text-(--brand)"
       >
-        Daemon not showing up? Read the setup guide
+        {t('setupGuide')}
         <Icon name="arrow-up-right" size={13} />
       </a>
     </StepFrame>

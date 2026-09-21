@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, type ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import {
   codeHostReviewCapabilities,
@@ -56,6 +57,7 @@ export function CodeHostReviewSettings({
   defaultExpanded?: boolean
   notices?: ReactNode
 }) {
+  const t = useTranslations('Integrations.dialog.codeHostReview')
   const [expanded, setExpanded] = useState(defaultExpanded)
   // Custom is a disclosure the value cannot express: an exact Details value the
   // user opened Custom on must keep the checkboxes visible.
@@ -75,19 +77,19 @@ export function CodeHostReviewSettings({
   const checkboxes = (
     <div className="grid grid-cols-2 gap-x-3 gap-y-2 desktop:grid-cols-4">
       <Capability
-        label="Inline comments"
+        label={t('inlineComments')}
         help={help.inlineComments}
         checked={capabilities.inlineComments}
         onChange={(checked) => setCapability('inlineComments', checked)}
       />
       <Capability
-        label="Request changes"
+        label={t('requestChanges')}
         help={help.requestChanges}
         checked={capabilities.requestChanges}
         onChange={(checked) => setCapability('requestChanges', checked)}
       />
       <Capability
-        label="Approve"
+        label={t('approve')}
         help={help.approve}
         checked={capabilities.approve}
         onChange={(checked) => setCapability('approve', checked)}
@@ -105,7 +107,7 @@ export function CodeHostReviewSettings({
     const format = customPinned ? 'custom' : reviewFormatOf(value, statusMode)
     return (
       <div className="flex flex-col gap-3">
-        <div className="fldlbl">Review format</div>
+        <div className="fldlbl">{t('reviewFormat')}</div>
         <div className="grid grid-cols-3 gap-2">
           {REVIEW_FORMATS.map((option) => {
             const active = format === option.id
@@ -126,7 +128,7 @@ export function CodeHostReviewSettings({
                     : 'h-10 rounded-md border border-(--border-default) bg-(--surface-card) font-sans text-[12.5px] font-semibold leading-normal text-(--text-secondary)'
                 }
               >
-                {option.label}
+                {t(`formats.${option.id}`)}
               </button>
             )
           })}
@@ -166,7 +168,7 @@ export function CodeHostReviewSettings({
                       : 'h-10 rounded-md border border-(--border-default) bg-(--surface-card) font-sans text-[12.5px] font-semibold leading-normal text-(--text-secondary)'
                   }
                 >
-                  {option.label}
+                  {t(`presets.${option.id}`)}
                 </button>
               )
             })}

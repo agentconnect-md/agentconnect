@@ -11,6 +11,7 @@
 // (`.mtop`), which is where the section/entity title still shows.
 
 import { createContext, Fragment, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { SiModelcontextprotocol } from 'react-icons/si'
 import { SWRConfig, type SWRConfiguration } from 'swr'
 import Link from 'next/link'
@@ -29,6 +30,7 @@ import { GlobalSearch } from './GlobalSearch'
 import { TooltipLayer } from './Tooltip'
 import { SearchOpenContext } from './search-open'
 import { LoadingState, LogoMark, OrgIconView } from '@/components/marks'
+import LanguageSwitcher from '@/components/LanguageSwitcher'
 import { Avatar, Icon } from '@/components/ui'
 import { getUser, isAuthConfigured, logout } from '@/lib/auth'
 import { useProfile } from '@/lib/profile'
@@ -54,27 +56,19 @@ const CONSOLE_SWR_CONFIG = {
 } satisfies SWRConfiguration
 
 interface GithubCallbackNotice {
-  message: string
+  messageKey: 'githubInstalled' | 'githubPending' | 'githubRetry'
   tone: 'success' | 'warning'
 }
 
 function githubCallbackNotice(code: string): GithubCallbackNotice | null {
   if (code === 'installed') {
-    return { message: 'GitHub installation connected.', tone: 'success' }
+    return { messageKey: 'githubInstalled', tone: 'success' }
   }
   if (code === 'pending-approval') {
-    return {
-      message:
-        'GitHub is waiting for an organization administrator to approve this installation. After approval, choose Install on GitHub again to finish connecting it.',
-      tone: 'warning'
-    }
+    return { messageKey: 'githubPending', tone: 'warning' }
   }
   if (code === 'retry-install') {
-    return {
-      message:
-        'AgentConnect could not verify which organization this GitHub installation belongs to. Choose Install on GitHub again to restart the connection.',
-      tone: 'warning'
-    }
+    return { messageKey: 'githubRetry', tone: 'warning' }
   }
   return null
 }
@@ -216,6 +210,7 @@ function RailAccount({
   onToggleTheme: () => void
   onSignOut: () => void
 }) {
+  const t = useTranslations('Shell')
   const [open, setOpen] = useState(false)
   const orgName = activeOrg ? (activeOrg.name ?? activeOrg.slug) : ''
 
@@ -225,7 +220,7 @@ function RailAccount({
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="pfbtn"
-        title={collapsed ? display.name : 'Account'}
+        title={collapsed ? display.name : t('actions.account')}
         aria-haspopup="menu"
         aria-expanded={open}
       >
@@ -297,27 +292,27 @@ function RailAccount({
                 }}
               >
                 <Icon name="plus" size={15} color="var(--text-tertiary)" />
-                Create organization
+                {t('actions.createOrganization')}
               </button>
             )}
             <div className="dmsep" />
             <Link href={orgPath('/profile')} className="dmi no-underline" onClick={() => setOpen(false)}>
               <Icon name="circle-user-round" size={15} color="var(--text-tertiary)" />
-              Profile
+              {t('navigation.profile')}
             </Link>
             <Link href={orgPath('/settings')} className="dmi no-underline" onClick={() => setOpen(false)}>
               <Icon name="settings" size={15} color="var(--text-tertiary)" />
-              Organization settings
+              {t('navigation.organizationSettings')}
             </Link>
             <div className="dmsep" />
             <button className="dmi" onClick={onToggleTheme}>
               <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={15} color="var(--text-tertiary)" />
-              {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+              {theme === 'dark' ? t('actions.lightMode') : t('actions.darkMode')}
             </button>
             <div className="dmsep" />
             <button className="dmi" onClick={onSignOut}>
               <Icon name="log-out" size={15} color="var(--text-tertiary)" />
-              Sign out
+              {t('actions.signOut')}
             </button>
           </div>
         </>
@@ -336,11 +331,43 @@ function ShellChrome({ children }: { children: ReactNode }) {
 }
 
 function ShellChromeInner({ children }: { children: ReactNode }) {
+  const t = useTranslations('Shell')
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const params = useParams<{ slug?: string }>()
   const { orgPath, orgs, activeOrg, setActiveOrg, loading: orgsLoading, error: orgsError } = useOrgs()
   const { openModal } = useModal()
+  const navLabel = (href: string, fallback: string) => {
+    switch (href) {
+      case '/home':
+        return t('navigation.home')
+      case '/agents':
+        return t('navigation.agents')
+      case '/sessions':
+      case '/conversations':
+        return t('navigation.sessions')
+      case '/crons':
+        return t('navigation.schedules')
+      case '/tools':
+        return t('navigation.tools')
+      case '/integrations':
+        return t('navigation.integrations')
+      case '/knowledge':
+        return t('navigation.knowledge')
+      case '/daemons':
+        return t('navigation.infra')
+      case '/usage':
+        return t('navigation.analytics')
+      case '/billing':
+        return t('navigation.billing')
+      case '/settings':
+        return t('navigation.settings')
+      case '/profile':
+        return t('navigation.profile')
+      default:
+        return fallback
+    }
+  }
   const {
     daemons,
     agents,
@@ -574,7 +601,8 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
       </div>
     )
 
-  const crumb = SECTIONS.find((s) => isActive(barePath, s.prefix))?.label ?? ''
+  const section = SECTIONS.find((s) => isActive(barePath, s.prefix))
+  const crumb = section ? navLabel(section.prefix, section.label) : ''
 
   // Mobile chrome is route-driven (SSR-safe): a LIST route shows the list app bar +
   // bottom nav; anything deeper is a PUSH screen (back-button app bar, no nav). The
@@ -643,6 +671,15 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
     setLinkCopied(true)
     setTimeout(() => setLinkCopied(false), 1600)
   }
+  const githubNoticeMessage = githubNotice
+    ? t(
+        githubNotice.messageKey === 'githubInstalled'
+          ? 'notices.githubInstalled'
+          : githubNotice.messageKey === 'githubPending'
+            ? 'notices.githubPending'
+            : 'notices.githubRetry'
+      )
+    : ''
 
   return (
     <MobileFilterContext.Provider value={{ filter: mobileFilter, register: setMobileFilter }}>
@@ -657,7 +694,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                 <Link
                   href={orgPath('/home')}
                   className="railbrand-logo cursor-pointer select-none"
-                  aria-label="Go to Home"
+                  aria-label={t('actions.goHome')}
                 >
                   <LogoMark size={24} />
                   <span className="brandword font-sans text-[16px] font-semibold leading-normal tracking-[-.02em] text-white">
@@ -671,7 +708,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                   // No `title`: the icon already reads as the collapse/expand affordance,
                   // and a tooltip on the collapsed rail's own toggle is noise. Screen
                   // readers still get the state from aria-label.
-                  aria-label={railCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                  aria-label={railCollapsed ? t('actions.expandSidebar') : t('actions.collapseSidebar')}
                 >
                   <Icon name={railCollapsed ? 'panel-left-open' : 'panel-left-close'} size={16} />
                 </button>
@@ -683,8 +720,8 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                   type="button"
                   onClick={openSearch}
                   className="railiconbtn railsrbtn"
-                  title="Search"
-                  aria-label="Search"
+                  title={t('actions.search')}
+                  aria-label={t('actions.search')}
                 >
                   <Icon name="search" size={16} />
                 </button>
@@ -697,11 +734,11 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                 type="button"
                 onClick={openSearch}
                 className="navitem railsrnav"
-                title="Search"
-                aria-label="Search"
+                title={t('actions.search')}
+                aria-label={t('actions.search')}
               >
                 <Icon name="search" size={18} />
-                <span>Search</span>
+                <span>{t('actions.search')}</span>
               </button>
               {NAV_GROUPS.map((g) => g.filter(navVisible)).map((group, groupIndex) => (
                 <Fragment key={group[0]?.href ?? groupIndex}>
@@ -712,12 +749,12 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                       <Link
                         key={item.href}
                         href={orgPath(item.href)}
-                        title={railCollapsed ? item.label : undefined}
+                        title={railCollapsed ? navLabel(item.href, item.label) : undefined}
                         className={on ? 'navitem on' : 'navitem'}
                       >
                         {/* No inline color — `.navitem.on svg` tints the active glyph brand. */}
                         <Icon name={item.icon} size={18} />
-                        <span>{item.label}</span>
+                        <span>{navLabel(item.href, item.label)}</span>
                       </Link>
                     )
                   })}
@@ -748,8 +785,8 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                     type="button"
                     onClick={toggleTheme}
                     className="railiconbtn"
-                    title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-                    aria-label="Toggle theme"
+                    title={theme === 'dark' ? t('actions.switchLight') : t('actions.switchDark')}
+                    aria-label={t('actions.toggleTheme')}
                   >
                     <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
                   </button>
@@ -768,8 +805,8 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                     type="button"
                     onClick={() => setHelpMenu((v) => !v)}
                     className="railiconbtn"
-                    title="Help & resources"
-                    aria-label="Help & resources"
+                    title={t('help.menu')}
+                    aria-label={t('help.menu')}
                   >
                     <Icon name="circle-question-mark" size={16} color={helpMenu ? 'var(--brand)' : undefined} />
                   </button>
@@ -789,7 +826,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                             }}
                           >
                             <Icon name="rocket" size={15} color="var(--text-tertiary)" />
-                            Getting started
+                            {t('help.gettingStarted')}
                           </button>
                         )}
                         <button
@@ -800,7 +837,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                           }}
                         >
                           <SiModelcontextprotocol className="text-(--text-tertiary)" aria-hidden />
-                          Connect your AI
+                          {t('help.connectAi')}
                         </button>
                         <a
                           className="dmi no-underline"
@@ -810,8 +847,11 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                           onClick={() => setHelpMenu(false)}
                         >
                           <Icon name="book-open" size={15} color="var(--text-tertiary)" />
-                          Documentation
+                          {t('help.documentation')}
                         </a>
+                        <div className="px-3 py-2">
+                          <LanguageSwitcher className="w-full justify-between" />
+                        </div>
                         <div className="dmsep" />
                         <button
                           className="dmi"
@@ -821,7 +861,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                           }}
                         >
                           <Icon name="command" size={15} color="var(--text-tertiary)" />
-                          Keyboard shortcuts
+                          {t('help.keyboardShortcuts')}
                         </button>
                         <a
                           className="dmi no-underline"
@@ -831,11 +871,11 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                           onClick={() => setHelpMenu(false)}
                         >
                           <Icon name="gift" size={15} color="var(--text-tertiary)" />
-                          What&rsquo;s new
+                          {t('help.whatsNew')}
                         </a>
                         <a className="dmi no-underline" href={help.support} onClick={() => setHelpMenu(false)}>
                           <Icon name="life-buoy" size={15} color="var(--text-tertiary)" />
-                          Help &amp; support
+                          {t('help.support')}
                         </a>
                       </div>
                     </>
@@ -861,7 +901,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                     className="mt-[1px] flex-none"
                   />
                   <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                    {githubNotice.message}
+                    {githubNoticeMessage}
                   </span>
                   {authOn ? (
                     <Link
@@ -869,7 +909,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                       className="lnk flex-none text-[12px]"
                       onClick={() => setGithubNotice(null)}
                     >
-                      Organization settings
+                      {t('navigation.organizationSettings')}
                     </Link>
                   ) : (
                     <button
@@ -880,13 +920,13 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                         openModal('agent')
                       }}
                     >
-                      Add agent
+                      {t('actions.addAgent')}
                     </button>
                   )}
                   <button
                     type="button"
                     className="iconbtn -m-1 h-7 w-7 flex-none"
-                    aria-label="Dismiss GitHub installation notice"
+                    aria-label={t('notices.dismissGithub')}
                     onClick={() => setGithubNotice(null)}
                   >
                     <Icon name="x" size={14} />
@@ -897,33 +937,37 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
               <header className="mtop">
                 {isListRoute ? (
                   <>
-                    <Link href={orgPath('/home')} className="mtop-logo select-none" aria-label="Go to Home">
+                    <Link href={orgPath('/home')} className="mtop-logo select-none" aria-label={t('actions.goHome')}>
                       <LogoMark />
                     </Link>
                     <span className="mtop-title">{crumb}</span>
                     {addKind && (
-                      <button className="mappbtn" aria-label="Add" onClick={() => openModal(addKind)}>
+                      <button className="mappbtn" aria-label={t('actions.add')} onClick={() => openModal(addKind)}>
                         <Icon name="circle-plus" size={22} />
                       </button>
                     )}
                     {/* Sessions registers a filter slot; surface it as an app-bar button
                   with a dot when any filter is active (design's Sessions tab). */}
                     {barePath === '/sessions' && mobileFilter && (
-                      <button className="mappbtn relative" aria-label="Filter sessions" onClick={mobileFilter.open}>
+                      <button
+                        className="mappbtn relative"
+                        aria-label={t('actions.filterSessions')}
+                        onClick={mobileFilter.open}
+                      >
                         <Icon name="sliders-horizontal" size={20} />
                         {mobileFilter.active && (
                           <span className="absolute top-[9px] right-[10px] h-[7px] w-[7px] rounded-full border-[1.5px] border-(--surface-card) bg-(--brand)" />
                         )}
                       </button>
                     )}
-                    <button className="mappbtn" aria-label="Search" onClick={() => setMobileSearch(true)}>
+                    <button className="mappbtn" aria-label={t('actions.search')} onClick={() => setMobileSearch(true)}>
                       <Icon name="search" size={20} />
                     </button>
                     <NotificationBell variant="mobile" />
                     <button
                       className="mappbtn"
-                      aria-label="Toggle theme"
-                      title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+                      aria-label={t('actions.toggleTheme')}
+                      title={theme === 'dark' ? t('actions.switchLight') : t('actions.switchDark')}
                       onClick={toggleTheme}
                     >
                       <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={20} />
@@ -931,8 +975,8 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                     {authOn && (
                       <Link
                         href={orgPath('/profile')}
-                        aria-label="Profile"
-                        title="Profile"
+                        aria-label={t('navigation.profile')}
+                        title={t('navigation.profile')}
                         className="ml-[2px] flex-none leading-[0]"
                       >
                         <Avatar src={display.picture} initials={display.initials} size={30} fontSize={11} />
@@ -941,7 +985,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                   </>
                 ) : (
                   <>
-                    <button className="mappbtn" aria-label="Back" onClick={goBack}>
+                    <button className="mappbtn" aria-label={t('actions.back')} onClick={goBack}>
                       <Icon name="arrow-left" size={20} />
                     </button>
                     <span className="mtop-title">{pushTitle}</span>
@@ -962,7 +1006,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                     {isSessionDetail && (
                       <button
                         className="mappbtn"
-                        aria-label={linkCopied ? 'Link copied' : 'Copy link'}
+                        aria-label={linkCopied ? t('actions.linkCopied') : t('actions.copyLink')}
                         onClick={copyLink}
                       >
                         <Icon
@@ -989,13 +1033,13 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                       return (
                         <Link key={item.href} href={orgPath(item.href)} className={on ? 'mnavitem on' : 'mnavitem'}>
                           <Icon name={item.icon} size={20} color={on ? 'var(--magenta-300)' : undefined} />
-                          <span>{item.label}</span>
+                          <span>{navLabel(item.href, item.label)}</span>
                         </Link>
                       )
                     })}
                     <button type="button" className="mnavitem" onClick={() => setMobileSheet('more')}>
                       <Icon name="ellipsis" size={20} />
-                      <span>More</span>
+                      <span>{t('navigation.more')}</span>
                     </button>
                   </div>
                   <div className="mnav-home">
@@ -1040,13 +1084,14 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
 // Top-bar theme toggle (light ↔ dark). Shared by the console top bar and the onboarding
 // header so both flip the same shell-owned theme state.
 function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
+  const t = useTranslations('Shell.actions')
   return (
     <button
       type="button"
       className="iconbtn"
       onClick={onToggle}
-      title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-      aria-label="Toggle theme"
+      title={theme === 'dark' ? t('switchLight') : t('switchDark')}
+      aria-label={t('toggleTheme')}
     >
       <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
     </button>
@@ -1064,13 +1109,14 @@ function UserMenu({
   orgPath: (path: string) => string
   onSignOut: () => void
 }) {
+  const t = useTranslations('Shell')
   const [open, setOpen] = useState(false)
   return (
     <div className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
         className="cursor-pointer border-0 bg-transparent p-0 leading-[0]"
-        title="Your profile"
+        title={t('actions.yourProfile')}
       >
         <Avatar src={display.picture} initials={display.initials} size={30} fontSize={11} />
       </button>
@@ -1087,15 +1133,15 @@ function UserMenu({
             </div>
             <Link href={orgPath('/profile')} className="usermenu-item no-underline" onClick={() => setOpen(false)}>
               <Icon name="user" size={15} color="var(--text-tertiary)" />
-              Your profile
+              {t('actions.yourProfile')}
             </Link>
             <Link href={orgPath('/settings')} className="usermenu-item no-underline" onClick={() => setOpen(false)}>
               <Icon name="settings" size={15} color="var(--text-tertiary)" />
-              Organization settings
+              {t('navigation.organizationSettings')}
             </Link>
             <button className="usermenu-item" onClick={onSignOut}>
               <Icon name="log-out" size={15} color="var(--text-tertiary)" />
-              Sign out
+              {t('actions.signOut')}
             </button>
           </div>
         </>
@@ -1108,6 +1154,7 @@ function UserMenu({
 // genuinely-wired bindings are listed (⌘K global search + its result navigation);
 // Esc closes this dialog. Kept small — a reference card, not a settings surface.
 function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
+  const t = useTranslations('Shell')
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
@@ -1116,17 +1163,17 @@ function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
   const rows: { label: string; keys: string[] }[] = [
-    { label: 'Open search from anywhere', keys: ['⌘', 'K'] },
-    { label: 'Move through results', keys: ['↑', '↓'] },
-    { label: 'Open the selected result', keys: ['↵'] },
-    { label: 'Close search or dialog', keys: ['Esc'] }
+    { label: t('shortcuts.openSearch'), keys: ['⌘', 'K'] },
+    { label: t('shortcuts.moveResults'), keys: ['↑', '↓'] },
+    { label: t('shortcuts.openResult'), keys: ['↵'] },
+    { label: t('shortcuts.close'), keys: ['Esc'] }
   ]
   return (
     <div className="scrim" onClick={onClose}>
       <div className="modal max-w-[420px]" onClick={(e) => e.stopPropagation()}>
         <div className="modalhead">
           <Icon name="command" size={18} color="var(--text-tertiary)" />
-          <span className="font-sans text-[15px] font-semibold leading-normal">Keyboard shortcuts</span>
+          <span className="font-sans text-[15px] font-semibold leading-normal">{t('shortcuts.title')}</span>
         </div>
         <div className="modalbody flex flex-col">
           {rows.map((r) => (
@@ -1178,6 +1225,27 @@ function MobileSheets({
   onOpenOrg: () => void
   onClose: () => void
 }) {
+  const t = useTranslations('Shell')
+  const navLabel = (href: string, fallback: string) => {
+    switch (href) {
+      case '/tools':
+        return t('navigation.tools')
+      case '/integrations':
+        return t('navigation.integrations')
+      case '/knowledge':
+        return t('navigation.knowledge')
+      case '/daemons':
+        return t('navigation.infra')
+      case '/usage':
+        return t('navigation.analytics')
+      case '/billing':
+        return t('navigation.billing')
+      case '/settings':
+        return t('navigation.organizationSettings')
+      default:
+        return fallback
+    }
+  }
   const square = (o: OrgDto) => (
     <OrgIconView
       icon={o.icon}
@@ -1194,7 +1262,7 @@ function MobileSheets({
         <div className="msheet-handle" />
         {which === 'more' ? (
           <>
-            <div className="msheet-eyebrow">More</div>
+            <div className="msheet-eyebrow">{t('navigation.more')}</div>
             {/* Org switcher + Profile/Settings only exist in auth mode. */}
             {authOn && activeOrg && (
               <>
@@ -1202,9 +1270,7 @@ function MobileSheets({
                   {square(activeOrg)}
                   <span className="msheet-rowtext">
                     <span className="msheet-rowname">{activeOrg.name ?? activeOrg.slug}</span>
-                    <span className="msheet-rowmeta">
-                      {orgs.length} organization{orgs.length === 1 ? '' : 's'}
-                    </span>
+                    <span className="msheet-rowmeta">{t('organization.count', { count: orgs.length })}</span>
                   </span>
                   <Icon name="chevrons-up-down" size={16} color="var(--text-tertiary)" />
                 </button>
@@ -1214,7 +1280,7 @@ function MobileSheets({
             {MORE_ROWS.filter((r) => navVisible(r) && (authOn || r.href !== '/settings')).map((r) => (
               <Link key={r.href} href={orgPath(r.href)} className="msheet-row" onClick={onClose}>
                 <Icon name={r.icon} size={20} color="var(--text-tertiary)" />
-                <span>{r.label}</span>
+                <span>{navLabel(r.href, r.label)}</span>
               </Link>
             ))}
             {/* The rail (and both of its re-entry menus) is hidden at mobile widths, so
@@ -1230,11 +1296,11 @@ function MobileSheets({
                 }}
               >
                 <Icon name="rocket" size={20} color="var(--text-tertiary)" />
-                <span>Getting started</span>
+                <span>{t('help.gettingStarted')}</span>
               </button>
             )}
             <button type="button" className="msheet-cancel" onClick={onClose}>
-              Cancel
+              {t('actions.cancel')}
             </button>
             <div className="msheet-home">
               <span className="home-pill dark" />
@@ -1242,7 +1308,7 @@ function MobileSheets({
           </>
         ) : (
           <>
-            <div className="msheet-eyebrow">Organization</div>
+            <div className="msheet-eyebrow">{t('organization.title')}</div>
             {orgs.map((o) => (
               <button
                 key={o.id}
@@ -1274,12 +1340,12 @@ function MobileSheets({
                   <span className="msheet-orgsq dashed">
                     <Icon name="plus" size={16} />
                   </span>
-                  <span>Create organization</span>
+                  <span>{t('actions.createOrganization')}</span>
                 </button>
               </>
             )}
             <button type="button" className="msheet-cancel" onClick={onClose}>
-              Cancel
+              {t('actions.cancel')}
             </button>
             <div className="msheet-home">
               <span className="home-pill dark" />

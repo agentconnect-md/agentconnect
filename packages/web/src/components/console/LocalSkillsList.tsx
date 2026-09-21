@@ -7,18 +7,12 @@
 // Rendered inside the "Loaded from workspace" card on the agent Tools & Skills tab.
 
 import useSWR from 'swr'
+import { useTranslations } from 'next-intl'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
-import { fetchAgentLocalSkills, type LocalSkillOrigin } from '@/lib/api'
+import { fetchAgentLocalSkills } from '@/lib/api'
 import { Icon } from '@/components/ui'
 import { LoadingState } from '@/components/marks'
-
-const ORIGIN_LABEL: Record<LocalSkillOrigin, string> = {
-  'dream-accepted': 'Dream',
-  managed: 'Managed',
-  'git-source': 'Git source',
-  repo: 'Repo'
-}
 
 const rowMessage = (text: string) => (
   <div className="px-4 py-[13px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) desktop:py-3">
@@ -27,6 +21,7 @@ const rowMessage = (text: string) => (
 )
 
 export function LocalSkillsList({ agentId }: { agentId: string }) {
+  const t = useTranslations('Agents.detail.tools')
   const { activeOrg } = useOrgs()
   const { data, error, isLoading } = useSWR(consoleKeys.agentLocalSkills(activeOrg?.id, agentId), () =>
     fetchAgentLocalSkills(agentId)
@@ -59,7 +54,9 @@ export function LocalSkillsList({ agentId }: { agentId: string }) {
             <span className="flex-1" />
           )}
           <span className="flex-none rounded border border-(--border-subtle) px-[6px] py-[1px] font-sans text-[10.5px] font-normal leading-normal text-(--text-secondary)">
-            {ORIGIN_LABEL[skill.origin]}
+            {t(
+              skill.origin === 'dream-accepted' ? 'dream' : skill.origin === 'git-source' ? 'gitSource' : skill.origin
+            )}
           </span>
         </div>
       ))}

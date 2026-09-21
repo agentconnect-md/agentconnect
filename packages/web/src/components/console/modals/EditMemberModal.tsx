@@ -5,6 +5,7 @@
 // demote/remove the LAST owner (409), and the dialog pre-disables those paths.
 
 import { useEffect, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { Avatar, Button, Icon } from '@/components/ui'
 import {
   updateMemberRole,
@@ -31,61 +32,6 @@ export interface MemberTarget {
   lastOwner: boolean
 }
 
-const ROLE_TILES: { role: MemberRole; icon: string; title: string; desc: string }[] = [
-  {
-    role: 'owner',
-    icon: 'shield',
-    title: 'Owner',
-    desc: 'Edit everything, plus add/remove members and change organization info.'
-  },
-  {
-    role: 'collaborator',
-    icon: 'users',
-    title: 'Collaborator',
-    desc: 'Create, edit & run agents, manage sessions. No member or organization changes.'
-  },
-  { role: 'viewer', icon: 'eye', title: 'Viewer', desc: 'Read-only — view agents, sessions and usage.' }
-]
-
-const KIND_LABEL: Record<VisibilityResourceKind, [one: string, many: string]> = {
-  agent: ['agent', 'agents'],
-  daemon: ['daemon', 'daemons'],
-  cron: ['schedule', 'schedules'],
-  mcpProvider: ['MCP provider', 'MCP providers'],
-  skillSource: ['skill source', 'skill sources']
-}
-
-/** `2 agents, 1 daemon and 3 schedules` — omitting unaffected kinds. */
-function countPhrase(resources: MemberRemovalPreviewDto['resources']): string {
-  const parts = resources.map((r) => `${r.selected} ${KIND_LABEL[r.kind][r.selected === 1 ? 0 : 1]}`)
-  if (parts.length <= 1) return parts[0] ?? ''
-  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
-}
-
-/** The danger card's subtitle: exactly how Selected audiences change. */
-function audienceSentence(preview: MemberRemovalPreviewDto, leaving: boolean): string {
-  const replacement = preview.replacement
-  if (!replacement) return 'An organization needs at least one owner — promote another member first.'
-  if (preview.resources.length === 0) {
-    return leaving
-      ? 'You are not included in any Selected audiences.'
-      : 'They are not included in any Selected audiences.'
-  }
-
-  const removed = `${leaving ? 'Your' : 'Their'} access will be removed from ${countPhrase(preview.resources)}.`
-  const reassigned = preview.resources.reduce((count, resource) => count + resource.reassigned, 0)
-  if (reassigned === 0) return `${removed} Every affected resource still has another selected member.`
-
-  const recipient = replacement.isCurrentUser
-    ? 'you'
-    : (replacement.name ?? replacement.email ?? 'the longest-standing owner')
-  const repair =
-    reassigned === 1
-      ? `One would otherwise have no selected members, so ${recipient} will be added.`
-      : `${reassigned} would otherwise have no selected members, so ${recipient} will be added.`
-  return `${removed} ${repair}`
-}
-
 const dotOn = 'mt-[3px] h-[14px] w-[14px] flex-none rounded-full border-4 border-(--brand) bg-(--surface-card)'
 const dotOff =
   'mt-[3px] h-[14px] w-[14px] flex-none rounded-full border-[1.5px] border-(--border-strong) bg-(--surface-card)'
@@ -103,11 +49,49 @@ export default function EditMemberModal({
   onClose: () => void
   onChanged: () => void
 }) {
+  const t = useTranslations('Settings.members.editDialog')
   const [role, setRole] = useState<MemberRole>(member.role)
   const [busy, setBusy] = useState(false)
   const [removeArmed, setRemoveArmed] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [preview, setPreview] = useState<MemberRemovalPreviewDto | null>(null)
+  const roleTiles = [
+    { role: 'owner' as const, icon: 'shield', title: t('roles.owner.title'), desc: t('roles.owner.description') },
+    {
+      role: 'collaborator' as const,
+      icon: 'users',
+      title: t('roles.collaborator.title'),
+      desc: t('roles.collaborator.description')
+    },
+    { role: 'viewer' as const, icon: 'eye', title: t('roles.viewer.title'), desc: t('roles.viewer.description') }
+  ]
+  const countPhrase = (resources: MemberRemovalPreviewDto['resources']) => {
+    const labels: Record<VisibilityResourceKind, string> = {
+      agent: t('resources.agent', { count: 2 }),
+      daemon: t('resources.daemon', { count: 2 }),
+      cron: t('resources.cron', { count: 2 }),
+      mcpProvider: t('resources.mcpProvider', { count: 2 }),
+      skillSource: t('resources.skillSource', { count: 2 })
+    }
+    return resources
+      .map((resource) => t('resourceCount', { count: resource.selected, kind: labels[resource.kind] }))
+      .join(', ')
+  }
+  const audienceSentence = (nextPreview: MemberRemovalPreviewDto, leaving: boolean) => {
+    const replacement = nextPreview.replacement
+    if (!replacement) return t('ownerRequired')
+    if (nextPreview.resources.length === 0) return leaving ? t('noSelectedSelf') : t('noSelectedMember')
+    const removed = t('accessRemoved', {
+      subject: leaving ? t('your') : t('their'),
+      resources: countPhrase(nextPreview.resources)
+    })
+    const reassigned = nextPreview.resources.reduce((count, resource) => count + resource.reassigned, 0)
+    if (reassigned === 0) return `${removed} ${t('anotherSelected')}`
+    const recipient = replacement.isCurrentUser
+      ? t('you')
+      : (replacement.name ?? replacement.email ?? t('longestOwner'))
+    return `${removed} ${t('reassigned', { count: reassigned, recipient })}`
+  }
 
   // Advisory read — a failure just leaves the generic copy in place rather than
   // blocking the dialog (the removal itself re-derives all of this server-side).
@@ -122,7 +106,7 @@ export default function EditMemberModal({
   }, [member.userId])
 
   const fail = (e: unknown) => {
-    if (e instanceof ApiError && e.status === 409) setErr('An organization needs at least one owner.')
+    if (e instanceof ApiError && e.status === 409) setErr(t('ownerRequired'))
     else setErr(e instanceof Error ? e.message : String(e))
     setBusy(false)
   }
@@ -179,38 +163,32 @@ export default function EditMemberModal({
         </button>
       </div>
       <div className="modalbody">
-        <div className="fldlbl mb-2">Role</div>
+        <div className="fldlbl mb-2">{t('role')}</div>
         <div className="flex flex-col gap-[10px]">
-          {ROLE_TILES.map((t) => {
-            const on = role === t.role
+          {roleTiles.map((tile) => {
+            const on = role === tile.role
             // The last owner can't leave the owner role — the org would orphan.
-            const locked = !canEditRole || (member.lastOwner && t.role !== 'owner')
+            const locked = !canEditRole || (member.lastOwner && tile.role !== 'owner')
             return (
               <div
-                key={t.role}
+                key={tile.role}
                 className={`${on ? 'ptile on' : 'ptile'} items-start ${
                   locked ? 'cursor-not-allowed opacity-55' : 'cursor-pointer'
                 }`}
-                title={
-                  !canEditRole
-                    ? 'Only organization owners can change roles'
-                    : locked
-                      ? 'An organization needs at least one owner'
-                      : undefined
-                }
-                onClick={() => !locked && setRole(t.role)}
+                title={!canEditRole ? t('ownerOnly') : locked ? t('ownerRequired') : undefined}
+                onClick={() => !locked && setRole(tile.role)}
               >
                 <span
                   className={`flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border bg-(--surface-card) ${
                     on ? 'border-(--brand)' : 'border-(--border-default)'
                   }`}
                 >
-                  <Icon name={t.icon} size={16} color={on ? 'var(--brand)' : 'var(--text-tertiary)'} />
+                  <Icon name={tile.icon} size={16} color={on ? 'var(--brand)' : 'var(--text-tertiary)'} />
                 </span>
                 <div className="flex-1">
-                  <div className="font-sans text-[13px] font-semibold leading-normal">{t.title}</div>
+                  <div className="font-sans text-[13px] font-semibold leading-normal">{tile.title}</div>
                   <div className="mt-[2px] font-sans text-[12px] font-normal leading-[1.4] text-(--text-tertiary)">
-                    {t.desc}
+                    {tile.desc}
                   </div>
                 </div>
                 <span className={on ? dotOn : dotOff} />
@@ -222,39 +200,39 @@ export default function EditMemberModal({
           <Icon name="user-minus" size={16} color="var(--status-error)" className="flex-none" />
           <div className="flex-1">
             <div className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
-              {onLeave ? 'Leave organization' : 'Remove from organization'}
+              {onLeave ? t('leaveOrganization') : t('removeOrganization')}
             </div>
             <div className="font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
               {preview
                 ? audienceSentence(preview, Boolean(onLeave))
                 : onLeave
-                  ? 'Your Selected access will be removed. An empty audience will receive an organization owner.'
-                  : 'Removes their membership and Selected access. Their sessions stay in history.'}
+                  ? t('leaveFallback')
+                  : t('removeFallback')}
             </div>
           </div>
           <button
             disabled={member.lastOwner}
-            title={member.lastOwner ? 'An organization needs at least one owner' : undefined}
+            title={member.lastOwner ? t('ownerRequired') : undefined}
             onClick={() => void remove()}
             className={`flex-none rounded-[7px] border border-[rgba(220,75,75,.4)] px-[11px] py-[6px] font-sans text-[12px] font-semibold leading-normal ${
               removeArmed ? 'bg-(--status-error) text-white' : 'bg-(--surface-card) text-(--status-error)'
             } ${member.lastOwner ? 'cursor-not-allowed opacity-55' : 'cursor-pointer'}`}
           >
-            {removeArmed ? (onLeave ? 'Confirm leave' : 'Confirm remove') : onLeave ? 'Leave' : 'Remove'}
+            {removeArmed ? (onLeave ? t('confirmLeave') : t('confirmRemove')) : onLeave ? t('leave') : t('remove')}
           </button>
         </div>
         {err && (
           <div className="mt-3 font-sans text-[12px] font-normal leading-normal text-(--status-error)">
-            Could not complete this change — {err}
+            {t('changeFailed', { error: err })}
           </div>
         )}
       </div>
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
-        {canEditRole && <Button onClick={() => void save()}>{busy ? 'Saving…' : 'Save changes'}</Button>}
+        {canEditRole && <Button onClick={() => void save()}>{busy ? t('saving') : t('saveChanges')}</Button>}
       </div>
     </>
   )

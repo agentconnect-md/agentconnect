@@ -5,6 +5,7 @@
 // Status, diff, log and every write come live from that daemon through the CP (body-locality), so an offline daemon, a from-scratch workspace, a clean tree, a capped status list, a daemon too old for the log or for git writes, and a busy agent that refuses the write are all expected answers, each drawn as data.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { Spinner } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { formatFileMtime } from '@/components/console/FileBrowser'
@@ -158,6 +159,7 @@ export function GitPanel({
   /** This panel changed the checkout, so every OTHER reader of it is stale — the Files tree's status badges and any diff the viewer holds open. The panel's own status and log it refreshes itself. */
   onWrote?: () => void
 }) {
+  const t = useTranslations('Sessions.detail.gitPanel')
   // The panel's own re-read, summed with the tab action's: a commit empties the index and adds a commit, so status AND log have to come again — a stage does not, because its reply carries the fresh status. Both counters only ever increase, so their sum names a distinct read.
   const [writeTick, setWriteTick] = useState(0)
   // The automatic re-read (turn edge, poll, reveal), a third counter on the same sum so an auto refresh
@@ -309,7 +311,7 @@ export function GitPanel({
           type="button"
           data-git-row={file.path}
           className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 border-0 bg-transparent py-[5px] pr-1 pl-3 text-left [font:inherit]"
-          title={`${file.path}\n${untracked ? 'Untracked — open the file' : staged ? 'Staged — open its diff' : 'Not staged — open its diff'}`}
+          title={`${file.path}\n${untracked ? t('untrackedOpen') : staged ? t('stagedOpen') : t('notStagedOpen')}`}
           onClick={() => onOpenDiff(file.path, staged, untracked)}
         >
           <StatusBadge ch={staged ? (file.index ?? 'M') : (file.workingDir ?? 'M')} />
@@ -319,10 +321,7 @@ export function GitPanel({
           </span>
           {/* Counted by `git diff HEAD --numstat`, so they describe the file's WHOLE change against HEAD rather than this section's half — absent for an untracked file, a binary change, and a daemon too old to count. */}
           {file.additions != null || file.deletions != null ? (
-            <span
-              className="mono flex-none text-[11px] font-medium leading-normal"
-              title="Lines added and removed against the last commit (staged and unstaged together)"
-            >
+            <span className="mono flex-none text-[11px] font-medium leading-normal" title={t('linesChanged')}>
               {file.additions != null ? <span className="text-(--status-online)">{`+${file.additions}`}</span> : null}
               {file.additions != null && file.deletions != null ? ' ' : null}
               {file.deletions != null ? <span className="text-(--status-error)">{`−${file.deletions}`}</span> : null}
@@ -336,8 +335,8 @@ export function GitPanel({
             data-git-toggle={file.path}
             className="iconbtn h-[22px] w-[22px] flex-none rounded-xs opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 disabled:pointer-events-none max-desktop:opacity-100"
             disabled={staging !== null}
-            aria-label={staged ? `Unstage ${file.path}` : `Stage ${file.path}`}
-            title={staged ? 'Unstage this file' : 'Stage this file'}
+            aria-label={staged ? t('unstageFile', { path: file.path }) : t('stageFile', { path: file.path })}
+            title={staged ? t('unstageThisFile') : t('stageThisFile')}
             onClick={() => void moveIndex(staged ? 'unstage' : 'stage', [file.path], busyKey)}
           >
             {staging === busyKey ? <Spinner size={11} /> : <Icon name={staged ? 'minus' : 'plus'} size={13} />}
@@ -373,7 +372,11 @@ export function GitPanel({
                 )
               }
             >
-              {staging === `all:${staged ? 'staged' : 'changes'}` ? 'Working…' : staged ? 'Unstage all' : 'Stage all'}
+              {staging === `all:${staged ? 'staged' : 'changes'}`
+                ? t('working')
+                : staged
+                  ? t('unstageAll')
+                  : t('stageAll')}
             </button>
           ) : null}
         </div>
@@ -387,9 +390,7 @@ export function GitPanel({
     // back on the agent's next turn, so this must not read as an outage — and must not read as "not
     // a git checkout" either, which is what a suspended pod used to answer.
     if (shown === 'asleep') {
-      return (
-        <PanelNotice text="Git status is not available right now — this agent runs in a cluster sandbox and its pod is not running. It starts again on the agent's next turn, and the checkout comes back with it." />
-      )
+      return <PanelNotice text={t('sandboxAsleep')} />
     }
     if (shown === 'unavailable') {
       return (
@@ -400,17 +401,15 @@ export function GitPanel({
       )
     }
     if (shown === 'none') {
-      return (
-        <PanelNotice text="This workspace is not a git checkout, so it has no branch, no changes and no commits. The agent's files are still in the Files tab." />
-      )
+      return <PanelNotice text={t('notCheckoutNotice')} />
     }
     if (sections.staged.length === 0 && sections.changes.length === 0) {
-      return <PanelNotice text="Nothing has changed in this checkout — every tracked file matches the last commit." />
+      return <PanelNotice text={t('clean')} />
     }
     return (
       <>
-        {section('Staged', sections.staged, true)}
-        {section('Changes', sections.changes, false)}
+        {section(t('staged'), sections.staged, true)}
+        {section(t('changes'), sections.changes, false)}
         {git?.truncated ? (
           <div className="px-3 py-[7px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
             {`This tree has more changed files than one status read carries — the first ${git.files.length} are listed.`}
@@ -464,7 +463,7 @@ export function GitPanel({
             </span>
             <span className="flex min-w-0 flex-1 flex-col">
               <span className="truncate font-sans text-[12px] font-normal leading-[1.45] text-(--text-primary)">
-                {commit.subject || '(no message)'}
+                {commit.subject || t('noMessage')}
               </span>
               <span className="mono truncate text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
                 {[commit.shortSha, commit.author, formatFileMtime(commit.committedAt)].filter(Boolean).join(' · ')}
@@ -473,9 +472,9 @@ export function GitPanel({
             {tracked && !commit.pushed ? (
               <span
                 className="mono flex-none text-[10.5px] font-medium leading-normal text-(--status-info)"
-                title={`Not yet on ${log.log?.tracking}`}
+                title={t('notYetOn', { tracking: log.log?.tracking ?? '' })}
               >
-                unpushed
+                {t('unpushed')}
               </span>
             ) : null}
           </div>
@@ -508,10 +507,10 @@ export function GitPanel({
         ) : (
           <span className="min-w-0 flex-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
             {shown === 'none'
-              ? 'Not a git checkout'
+              ? t('notGitCheckout')
               : shown === 'asleep'
-                ? 'Sandbox not running'
-                : 'Git status unavailable'}
+                ? t('sandboxNotRunning')
+                : t('statusUnavailable')}
           </span>
         )}
         {/* Ahead/behind describe the branch against its upstream, so they are withheld when there is none — a `↑0 ↓0` beside an untracked branch reads as "in sync with a remote" and there is no remote. */}
@@ -562,7 +561,7 @@ export function GitPanel({
         ) : (
           <div className="flex flex-none items-center gap-2 border-t border-(--border-subtle) px-3 py-[7px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
             <Icon name="eye" size={12} color="var(--text-tertiary)" className="flex-none" />
-            <span>Review only — your role in this organization cannot change this checkout.</span>
+            <span>{t('reviewOnly')}</span>
           </div>
         )
       ) : null}
@@ -588,7 +587,7 @@ export function GitPanel({
               className="flex-none"
             />
             <span className="font-sans text-[10.5px] font-semibold tracking-[0.04em] uppercase leading-normal text-(--text-disabled)">
-              {log.log?.base ? 'Commits ahead' : 'Commits'}
+              {log.log?.base ? t('commitsAhead') : t('commits')}
             </span>
             {/* A `+` says the count is a FLOOR — the page carries `limit` commits and the range has more. */}
             {commitCount !== null ? (
@@ -598,7 +597,7 @@ export function GitPanel({
             ) : null}
             {log.log?.base ? (
               <span className="mono min-w-0 truncate text-[10.5px] font-normal leading-normal text-(--text-disabled)">
-                {`vs ${log.log.base}`}
+                {t('vs', { base: log.log.base })}
               </span>
             ) : null}
           </button>

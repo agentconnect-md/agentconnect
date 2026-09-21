@@ -24,18 +24,13 @@ import { randomUuid } from '@/lib/random-uuid'
 import { AgentIconView, PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
+import { useLocale, useTranslations } from 'next-intl'
 
 // The visual "Repeats" builder: preset frequencies plus a Custom escape hatch.
-const FREQS: { key: CronMode; label: string }[] = [
-  { key: 'hourly', label: 'Hourly' },
-  { key: 'daily', label: 'Daily' },
-  { key: 'weekdays', label: 'Weekdays' },
-  { key: 'weekly', label: 'Weekly' },
-  { key: 'custom', label: 'Custom' }
-]
-// Sunday-first, matching cron's weekday numbering (Sunday = 0).
-const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-const DAY_INITIALS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
+const FREQS: CronMode[] = ['hourly', 'daily', 'weekdays', 'weekly', 'custom']
+// Sunday-first, matching cron's weekday numbering (Sunday = 0). Names come from
+// Crons.dialog.weekday / .weekdayShort.
+const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const
 
 // Native time / number inputs styled to match the modal's `.inp.mn` pill (the
 // class sets display:flex which fights the browser's internal time UI).
@@ -53,12 +48,13 @@ function TimeField({
   minute: number
   onChange: (hour: number, minute: number) => void
 }) {
+  const t = useTranslations('Crons.dialog')
   return (
     <div className="fld">
-      <span className="fldlbl">At</span>
+      <span className="fldlbl">{t('at')}</span>
       <input
         type="time"
-        aria-label="Time of day"
+        aria-label={t('at')}
         value={`${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`}
         onChange={(e) => {
           const [h, m] = e.target.value.split(':')
@@ -84,6 +80,8 @@ interface Target {
 const HEADLESS: Target = { platform: 'slack' }
 
 export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null; onClose: () => void }) {
+  const t = useTranslations('Crons.dialog')
+  const locale = useLocale()
   const { agents, integrations, saveCron, saveSharing } = useConsoleData()
   const { me } = useProfile()
   // Only real agents can own a cron (a mock agent isn't on any daemon).
@@ -178,7 +176,7 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
   const editing = !!cron
   // The effective expression: Custom drives the raw field, presets compose it.
   const schedule = mode === 'custom' ? customExpr.trim() : buildCron(mode, hour, minute, weekday)
-  const human = schedule ? cronHuman(schedule) : null
+  const human = schedule ? cronHuman(schedule, locale) : null
   const timezoneValue = timezone.trim()
   const timezoneInput = cronTimezoneInput(cron, timezone)
   const timezoneValid = timezoneInput !== null
@@ -241,7 +239,7 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
           <Icon name="calendar-clock" size={17} color="var(--brand)" />
         </span>
         <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">
-          {editing ? 'Edit schedule' : 'New schedule'}
+          {editing ? t('editSchedule') : t('newSchedule')}
         </span>
         <button className="iconbtn" onClick={onClose}>
           <Icon name="x" size={16} />
@@ -250,7 +248,7 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
       <div className="modalbody">
         <div className="grid grid-cols-2 gap-[12px] min-[440px]:gap-[14px]">
           <div className="fld">
-            <span className="fldlbl">Name</span>
+            <span className="fldlbl">{t('name')}</span>
             <input
               className="inp mn"
               placeholder="weekly-deploy-report"
@@ -260,7 +258,7 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
             />
           </div>
           <div className="fld">
-            <span className="fldlbl">Agent</span>
+            <span className="fldlbl">{t('agent')}</span>
             <div className="inp relative">
               <span className="inline-flex min-w-0 items-center gap-[7px]">
                 {selectedAgent ? (
@@ -273,7 +271,7 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
                 <span
                   className={`mono truncate text-[12.5px] ${agentId ? 'text-(--text-primary)' : 'text-(--text-tertiary)'}`}
                 >
-                  {selectedAgent ? agentLabel(selectedAgent) : 'No agent'}
+                  {selectedAgent ? agentLabel(selectedAgent) : t('noAgent')}
                 </span>
               </span>
               <Icon name="chevron-down" size={15} color="var(--text-tertiary)" />
@@ -285,9 +283,9 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
                   setTarget(HEADLESS) // channels belong to the previous agent's integrations
                 }}
                 className="absolute inset-0 cursor-pointer opacity-0"
-                aria-label="Agent"
+                aria-label={t('agent')}
               >
-                {realAgents.length === 0 && <option value="">No agents</option>}
+                {realAgents.length === 0 && <option value="">{t('noAgents')}</option>}
                 {realAgents.map((a) => (
                   <option key={a.id} value={a.id}>
                     {agentLabel(a)}
@@ -299,19 +297,19 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
         </div>
 
         <div className="fld mt-[14px]">
-          <span className="fldlbl">Repeats</span>
+          <span className="fldlbl">{t('repeats')}</span>
           <div className="flex flex-wrap gap-[5px] desktop:gap-[6px]">
-            {FREQS.map((f) => {
-              const on = mode === f.key
+            {FREQS.map((key) => {
+              const on = mode === key
               return (
                 <button
-                  key={f.key}
+                  key={key}
                   type="button"
                   onClick={() => {
                     // Seed Custom with the preset it's leaving so the raw field
                     // isn't empty on first switch.
-                    if (f.key === 'custom' && !customExpr.trim() && schedule) setCustomExpr(schedule)
-                    setMode(f.key)
+                    if (key === 'custom' && !customExpr.trim() && schedule) setCustomExpr(schedule)
+                    setMode(key)
                   }}
                   className={`h-[30px] cursor-pointer rounded-sm border px-[7px] py-0 font-sans text-[12.5px] font-medium leading-normal desktop:px-[13px] ${
                     on
@@ -319,7 +317,7 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
                       : 'border-(--border-default) bg-(--surface-card) text-(--text-secondary)'
                   }`}
                 >
-                  {f.label}
+                  {t(`frequency.${key}`)}
                 </button>
               )
             })}
@@ -329,15 +327,15 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
         {mode === 'weekly' && (
           <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] gap-3">
             <div className="fld">
-              <span className="fldlbl">On</span>
+              <span className="fldlbl">{t('on')}</span>
               <div className="flex gap-[5px]">
-                {DAY_INITIALS.map((label, i) => {
+                {WEEKDAYS.map((day, i) => {
                   const on = weekday === i
                   return (
                     <button
-                      key={i}
+                      key={day}
                       type="button"
-                      title={DAYS[i]}
+                      title={t(`weekday.${day}`)}
                       onClick={() => setWeekday(i)}
                       className={`h-[30px] min-w-0 max-w-[34px] flex-1 basis-0 cursor-pointer rounded-sm border font-sans text-[12px] font-medium leading-normal ${
                         on
@@ -345,7 +343,7 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
                           : 'border-(--border-default) bg-(--surface-card) text-(--text-secondary)'
                       }`}
                     >
-                      {label}
+                      {t(`weekdayShort.${day}`)}
                     </button>
                   )
                 })}
@@ -377,12 +375,12 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
 
         {mode === 'hourly' && (
           <div className="fld mt-3">
-            <span className="fldlbl">At minute</span>
+            <span className="fldlbl">{t('atMinute')}</span>
             <input
               type="number"
               min={0}
               max={59}
-              aria-label="Minute of the hour"
+              aria-label={t('atMinute')}
               value={minute}
               onChange={(e) => setMinute(Math.max(0, Math.min(59, Math.floor(Number(e.target.value) || 0))))}
               className={`${PILL_INPUT} w-[110px]`}
@@ -392,7 +390,7 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
 
         {mode === 'custom' && (
           <div className="fld mt-3">
-            <span className="fldlbl">Cron expression</span>
+            <span className="fldlbl">{t('cronExpression')}</span>
             <input
               className="inp mn"
               placeholder="0 9 * * 1"
@@ -411,16 +409,16 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
                   {human} · {timezoneValue} · <span className="mono text-[11px]">{schedule}</span>
                 </>
               ) : (
-                'Not a valid cron expression.'
+                t('invalidExpression')
               )
             ) : (
-              'Five fields: minute hour day month weekday.'
+              t('fiveFields')
             )}
           </span>
         </div>
 
         <div className="fld mt-3">
-          <span className="fldlbl">Timezone</span>
+          <span className="fldlbl">{t('timezone')}</span>
           <select
             className="inp mn"
             value={timezone}
@@ -429,22 +427,22 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
           >
             {timezoneModel.options.map((option) => (
               <option key={option.value} value={option.value}>
-                {option.label}
+                {option.browserDefault ? t('timezoneBrowserDefault', { timezone: option.value }) : option.value}
               </option>
             ))}
           </select>
           {!timezoneValid && (
             <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              Select a valid IANA timezone.
+              {t('validTimezone')}
             </span>
           )}
         </div>
 
         <div className="fld mt-[14px]">
-          <span className="fldlbl">Prompt</span>
+          <span className="fldlbl">{t('prompt')}</span>
           <textarea
             className="inp min-h-15 resize-y px-3 py-2 leading-[1.5]"
-            placeholder="Summarize last week's deploys and rollbacks, and post the report to #deploys."
+            placeholder={t('promptPlaceholder')}
             value={trigger}
             onChange={(e) => setTrigger(e.target.value)}
           />
@@ -452,8 +450,8 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
 
         <div className="fld mt-[14px]">
           <span className="fldlbl">
-            Target integration{' '}
-            <span className="font-normal tracking-normal normal-case text-(--text-tertiary)">— optional</span>
+            {t('targetIntegration')}{' '}
+            <span className="font-normal tracking-normal normal-case text-(--text-tertiary)">— {t('optional')}</span>
           </span>
           <div className="inp relative">
             <span className="inline-flex min-w-0 items-center gap-[7px]">
@@ -465,12 +463,12 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
                   <span className="mono text-[12.5px]">
                     {selectedOpt
                       ? `${chatRoomSigil(selectedOpt.platform)}${selectedOpt.channelName}`
-                      : `${target.channel} (current)`}
+                      : t('currentTarget', { channel: target.channel })}
                   </span>
                 </>
               ) : (
                 <span className="font-sans text-[12.5px] font-normal leading-normal text-(--text-disabled)">
-                  None — session only
+                  {t('noneSessionOnly')}
                 </span>
               )}
             </span>
@@ -479,10 +477,12 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
               value={selectValue}
               onChange={(e) => pickTarget(e.target.value)}
               className="absolute inset-0 cursor-pointer opacity-0"
-              aria-label="Target integration"
+              aria-label={t('targetIntegration')}
             >
-              <option value="">None — session only</option>
-              {selectValue === 'current' && <option value="current">{`${target.channel} (current)`}</option>}
+              <option value="">{t('noneSessionOnly')}</option>
+              {selectValue === 'current' && (
+                <option value="current">{t('currentTarget', { channel: target.channel ?? '' })}</option>
+              )}
               {channelOpts.map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
@@ -491,7 +491,7 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
             </select>
           </div>
           <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-            Optional — output stays in the session.
+            {t('outputStaysInSession')}
           </span>
         </div>
 
@@ -507,11 +507,11 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button onClick={() => void save()} className={valid && !saving ? undefined : 'cursor-default opacity-50'}>
           <Icon name="calendar-clock" size={15} />
-          {saving ? 'Saving…' : editing ? 'Save' : 'Create'}
+          {saving ? t('saving') : editing ? t('save') : t('create')}
         </Button>
       </div>
     </>

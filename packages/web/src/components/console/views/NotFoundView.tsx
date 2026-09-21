@@ -1,5 +1,6 @@
 'use client'
 
+import { useTranslations } from 'next-intl'
 import { usePathname } from 'next/navigation'
 import { useOrgs } from '@/lib/org-context'
 import { NotFound } from '@/components/console/NotFound'
@@ -8,19 +9,20 @@ import { NotFound } from '@/components/console/NotFound'
 // Renders inside the console shell so the rail/top-bar context is preserved, and
 // shows the attempted path in the shared not-found anatomy.
 export default function NotFoundView() {
+  const t = useTranslations('Common.notFound')
   const pathname = usePathname()
   const { orgPath } = useOrgs()
   return (
     <div className="wrap">
       <NotFound
         icon="compass"
-        kind="PAGE"
-        title="Page not found"
+        kind={t('kind')}
+        title={t('title')}
         chip={pathname}
-        post=" doesn’t exist. Check the address, or head back home."
-        actionLabel="Go to home"
+        post={t('post')}
+        actionLabel={t('goHome')}
         actionHref={orgPath('/home')}
-        searchLabel="Search"
+        searchLabel={t('search')}
       />
     </div>
   )

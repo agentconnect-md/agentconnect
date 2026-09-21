@@ -10,6 +10,7 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
+import { useLocale, useTranslations } from 'next-intl'
 import { useOrgs } from '@/lib/org-context'
 import { useOnboardingRedirect } from '@/lib/use-onboarding-redirect'
 import { useIsMobile } from '@/lib/use-is-mobile'
@@ -32,7 +33,6 @@ import { useProfile } from '@/lib/profile'
 import { featureFlagEnabled, type FeatureFlagId } from '@/lib/feature-flags'
 import {
   agentCapabilitySource,
-  IMAGE_BINARY_MISSING_LABEL,
   agentDaemonLabel,
   agentLabel,
   agentPlacementKind,
@@ -97,33 +97,29 @@ function useAvailableHeight(ref: RefObject<HTMLElement | null>, enabled: boolean
   return height
 }
 
-// Relative "…ago" for a cron's last run. fmtNextRun covers the future side;
-// this is the (missing) past side. Coarse buckets are all a dashboard needs.
-function fmtAgo(iso: string | null): string {
-  if (!iso) return 'never'
-  const t = Date.parse(iso)
-  if (Number.isNaN(t)) return 'never'
-  const s = Math.max(0, Math.round((Date.now() - t) / 1000))
-  if (s < 60) return 'just now'
-  const m = Math.round(s / 60)
-  if (m < 60) return `${m}m ago`
-  const h = Math.round(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.round(h / 24)}d ago`
-}
-
-function greeting(): string {
-  const h = new Date().getHours()
-  return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'
-}
-
 export default function HomeView() {
   const router = useRouter()
+  const t = useTranslations('Home')
+  const locale = useLocale()
   const { user } = useProfile()
   const firstName = user.name.trim().split(/\s+/)[0] ?? ''
   const { orgPath } = useOrgs()
   const { agents, daemons, crons, allSessions, usage24h, getAgent, loading, memberSets, orgSetIds } = useConsoleData()
   const { openPlayground, pgSend, pgSetModel, pgSetEffort, pgSetPermissionPreset } = usePlayground()
+  const formatAgo = (iso: string | null): string => {
+    if (!iso) return t('time.never')
+    const timestamp = Date.parse(iso)
+    if (Number.isNaN(timestamp)) return t('time.never')
+    const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000))
+    if (seconds < 60) return t('time.justNow')
+    const minutes = Math.round(seconds / 60)
+    if (minutes < 60) return t('time.minutesAgo', { count: minutes })
+    const hours = Math.round(minutes / 60)
+    if (hours < 24) return t('time.hoursAgo', { count: hours })
+    return t('time.daysAgo', { count: Math.round(hours / 24) })
+  }
+  const hour = new Date().getHours()
+  const greeting = hour < 12 ? t('greeting.morning') : hour < 18 ? t('greeting.afternoon') : t('greeting.evening')
   // Home is the default landing, so it owns the fresh-org bounce to /onboarding.
   const holdForOnboarding = useOnboardingRedirect()
 
@@ -200,10 +196,10 @@ export default function HomeView() {
       description: inRoster
         ? undefined
         : ready
-          ? 'Add to this conversation'
+          ? t('composer.addToConversation')
           : !isOnline(a)
-            ? `${agentLabel(a)} is offline — its daemon isn't serving`
-            : `${agentLabel(a)} has no AI runtime signed in`
+            ? t('composer.offlineDescription', { agent: agentLabel(a) })
+            : t('composer.authDescription', { agent: agentLabel(a) })
     }
   })
   const mention = useMentionAutocomplete({
@@ -234,6 +230,8 @@ export default function HomeView() {
     agent ?? { runInSandbox: false, sandboxSupported: false, sandboxRequired: false },
     orgSetIds
   )
+  const isolationMode =
+    isolationLabel.mode === 'Session isolation' ? t('composer.sessionIsolation') : t('composer.worktree')
 
   // Overrides are per-agent; drop them when the agent changes so the new agent's
   // own defaults show through.
@@ -343,7 +341,7 @@ export default function HomeView() {
     try {
       setImage(await prepareWebchatImage(file))
     } catch (error) {
-      setImageError(error instanceof Error ? error.message : 'Couldn’t prepare that image.')
+      setImageError(error instanceof Error ? error.message : t('composer.imageError'))
     } finally {
       setImagePreparing(false)
       if (imageInputRef.current) imageInputRef.current.value = ''
@@ -416,13 +414,13 @@ export default function HomeView() {
   const agentOptions = agents.map((a) => {
     const ready = agentReady(a)
     const reason = !isOnline(a)
-      ? `${agentLabel(a)} is offline — its daemon isn't serving`
-      : `${agentLabel(a)} has no AI runtime signed in`
+      ? t('composer.offlineDescription', { agent: agentLabel(a) })
+      : t('composer.authDescription', { agent: agentLabel(a) })
     return {
       value: a.id,
       label: agentLabel(a),
       dimmed: !ready,
-      description: ready ? 'Pick the agent to ask' : reason,
+      description: ready ? t('composer.pickAgent') : reason,
       leading: (
         <span className="relative flex-none">
           <span className="av h-[18px] w-[18px] rounded-xs">
@@ -452,12 +450,12 @@ export default function HomeView() {
         label: agentLabel(a),
         dimmed: !ready,
         description: ready
-          ? 'Add to this conversation'
+          ? t('composer.addToConversation')
           : !isOnline(a)
-            ? `${agentLabel(a)} is offline — its daemon isn't serving`
+            ? t('composer.offlineDescription', { agent: agentLabel(a) })
             : imageBinaryMissingFor(a)
-              ? IMAGE_BINARY_MISSING_LABEL
-              : `${agentLabel(a)} has no AI runtime signed in`,
+              ? t('composer.imageBinaryMissing')
+              : t('composer.authDescription', { agent: agentLabel(a) }),
         leading: (
           <span className="av h-[18px] w-[18px] flex-none rounded-xs">
             <AgentIconView icon={a.icon} runtime={a.runtime} size={18} />
@@ -482,7 +480,7 @@ export default function HomeView() {
         {/* Server and client can sit in different timezones, and the display name
             only resolves after mount — both settle on the client. */}
         <h1 className="ptitle text-[27px]" suppressHydrationWarning>
-          {greeting()}
+          {greeting}
           {firstName ? `, ${firstName}` : ''}
         </h1>
       </div>
@@ -514,8 +512,8 @@ export default function HomeView() {
             <button
               type="button"
               className="iconbtn absolute -right-2 -top-2 h-6 w-6 rounded-full shadow-(--shadow-xs)"
-              title="Remove image"
-              aria-label="Remove image"
+              title={t('composer.removeImage')}
+              aria-label={t('composer.removeImage')}
               onClick={() => setImage(undefined)}
             >
               <Icon name="x" size={14} />
@@ -554,7 +552,7 @@ export default function HomeView() {
               }
             }}
             rows={5}
-            placeholder="Ask agentconnect to connect a workspace, deploy an agent, or check on a run"
+            placeholder={t('composer.placeholder')}
             className="block max-h-[280px] min-h-[140px] w-full resize-none border-0 bg-transparent px-[15px] pt-[14px] pb-1 font-sans text-[14px] leading-normal text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
           />
           <MentionMenu
@@ -578,10 +576,10 @@ export default function HomeView() {
             <button
               type="button"
               className="flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-secondary)"
-              aria-label="Attach a file"
+              aria-label={t('composer.attachFile')}
               aria-haspopup="menu"
               aria-expanded={menu === 'attach'}
-              title="Attach a file"
+              title={t('composer.attachFile')}
               disabled={imagePreparing}
               onClick={() => setMenu((cur) => (cur === 'attach' ? null : 'attach'))}
             >
@@ -604,7 +602,7 @@ export default function HomeView() {
                     }}
                   >
                     <Icon name="image" size={16} color="var(--text-secondary)" />
-                    Add photos
+                    {t('composer.addPhotos')}
                   </button>
                 </div>
               </>
@@ -638,7 +636,7 @@ export default function HomeView() {
                       <span className="truncate">{agentLabel(a)}</span>
                       <button
                         type="button"
-                        aria-label={`Remove ${agentLabel(a)}`}
+                        aria-label={t('composer.removeAgent', { agent: agentLabel(a) })}
                         className="-mr-1 px-1 text-(--text-tertiary) hover:text-(--text-primary)"
                         onClick={() => (i === 0 ? removePrimary() : removeMember(a.id))}
                       >
@@ -648,11 +646,11 @@ export default function HomeView() {
                   ))
                 ) : (
                   <ComposerMenu
-                    title="Agent"
+                    title={t('composer.agent')}
                     value={agent.id}
                     options={agentOptions}
                     searchable
-                    searchPlaceholder="Search agents…"
+                    searchPlaceholder={t('composer.searchAgents')}
                     open={menu === 'agent'}
                     align="left"
                     placement="down"
@@ -668,11 +666,11 @@ export default function HomeView() {
                 )}
                 {addOptions.length > 0 && (
                   <ComposerMenu
-                    title="Add agents"
+                    title={t('composer.addAgents')}
                     value=""
                     options={addOptions}
                     searchable
-                    searchPlaceholder="Search agents…"
+                    searchPlaceholder={t('composer.searchAgents')}
                     iconOnly
                     open={menu === 'add'}
                     align="left"
@@ -686,7 +684,7 @@ export default function HomeView() {
                 )}
                 {!multi && modelChoices.length > 0 && (
                   <ComposerMenu
-                    title="Model"
+                    title={t('composer.model')}
                     value={model}
                     options={modelChoices}
                     open={menu === 'model'}
@@ -705,7 +703,7 @@ export default function HomeView() {
                 )}
                 {!multi && showEffort && effortChoices.length > 0 && (
                   <ComposerMenu
-                    title="Effort"
+                    title={t('composer.effort')}
                     value={effort}
                     options={effortChoices}
                     open={menu === 'effort'}
@@ -719,7 +717,7 @@ export default function HomeView() {
                 )}
                 {!multi && showPermission && permissionChoices.length > 0 && (
                   <ComposerMenu
-                    title="Permission"
+                    title={t('composer.permission')}
                     value={permissionPreset}
                     options={permissionChoices}
                     open={menu === 'permission'}
@@ -739,13 +737,13 @@ export default function HomeView() {
                       onChange={(event) => setWorktreeOverride(event.target.checked)}
                       className="h-4 w-4 flex-none accent-(--brand)"
                     />
-                    <span className="truncate">{isolationLabel.mode}</span>
+                    <span className="truncate">{isolationMode}</span>
                   </label>
                 )}
               </>
             ) : (
               <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)">
-                No agents yet
+                {t('composer.noAgents')}
               </span>
             )}
           </div>
@@ -756,18 +754,18 @@ export default function HomeView() {
             onClick={send}
             title={
               blocked === 'offline'
-                ? `${agentLabel(agent!)} is offline — can't start a session`
+                ? t('composer.offlineSend', { agent: agentLabel(agent!) })
                 : blocked === 'image'
-                  ? IMAGE_BINARY_MISSING_LABEL
+                  ? t('composer.imageBinaryMissing')
                   : blocked === 'auth'
-                    ? `No AI runtime is signed in on ${placementName || 'the daemon'} — can't start a session`
+                    ? t('composer.authSend', { placement: placementName || t('composer.theDaemon') })
                     : notReadyMember
                       ? !isOnline(notReadyMember)
-                        ? `${agentLabel(notReadyMember)} is offline — can't start a session`
+                        ? t('composer.offlineSend', { agent: agentLabel(notReadyMember) })
                         : imageBinaryMissingFor(notReadyMember)
-                          ? IMAGE_BINARY_MISSING_LABEL
-                          : `${agentLabel(notReadyMember)} has no AI runtime signed in — can't start a session`
-                      : 'Send'
+                          ? t('composer.imageBinaryMissing')
+                          : t('composer.authMemberSend', { agent: agentLabel(notReadyMember) })
+                      : t('composer.send')
             }
           >
             <Icon name="arrow-up" size={15} color="#fff" />
@@ -785,20 +783,20 @@ export default function HomeView() {
             {blocked === 'offline' ? (
               <>
                 <span className="font-semibold">{agentLabel(agent!)}</span>
-                {' is offline — you can’t start a session until its daemon reconnects.'}
+                {t('blocked.offlineSuffix')}
               </>
             ) : blocked === 'image' ? (
-              IMAGE_BINARY_MISSING_LABEL
+              t('composer.imageBinaryMissing')
             ) : (
               <>
-                {'No AI runtime is signed in'}
+                {t('blocked.authPrefix')}
                 {placementName ? (
                   <>
-                    {' on '}
+                    {t('blocked.on')}
                     <span className="font-semibold">{placementName}</span>
                   </>
                 ) : null}
-                {', so agents can’t take a session.'}
+                {t('blocked.authSuffix')}
               </>
             )}
           </span>
@@ -808,7 +806,11 @@ export default function HomeView() {
               className="flex-none font-sans text-[13px] font-semibold leading-normal text-(--text-brand) hover:underline"
               onClick={() => router.push(placementHref)}
             >
-              {blocked === 'auth' ? 'Fix' : placementKind === 'daemon' ? 'View daemon' : 'View infra'}
+              {blocked === 'auth'
+                ? t('blocked.fix')
+                : placementKind === 'daemon'
+                  ? t('blocked.viewDaemon')
+                  : t('blocked.viewInfra')}
             </button>
           )}
         </div>
@@ -828,16 +830,19 @@ export default function HomeView() {
           sessions={allSessions}
           loading={loading}
           allHref={orgPath('/sessions')}
-          emptyText="No sessions yet — ask an agent above to start one."
+          emptyText={t('dashboard.noSessions')}
           limit={sessionRows}
           rowClassName={DASH_ROW}
           className={aligned ? undefined : 'desktop:self-start'}
         />
 
         <div className="flex flex-col gap-4">
-          <Card title="Agents you use" action={<CardLink href={orgPath('/agents')}>All agents</CardLink>}>
+          <Card
+            title={t('dashboard.agentsTitle')}
+            action={<CardLink href={orgPath('/agents')}>{t('dashboard.allAgents')}</CardLink>}
+          >
             {topAgents.length === 0 ? (
-              <EmptyRow className={DASH_ROW}>No agents yet.</EmptyRow>
+              <EmptyRow className={DASH_ROW}>{t('dashboard.noAgents')}</EmptyRow>
             ) : (
               topAgents.map((a) => {
                 const ready = agentReady(a)
@@ -869,9 +874,12 @@ export default function HomeView() {
             )}
           </Card>
 
-          <Card title="Scheduled runs" action={<CardLink href={orgPath('/crons')}>All schedules</CardLink>}>
+          <Card
+            title={t('dashboard.schedulesTitle')}
+            action={<CardLink href={orgPath('/crons')}>{t('dashboard.allSchedules')}</CardLink>}
+          >
             {scheduled.length === 0 ? (
-              <EmptyRow className={DASH_ROW}>No schedules yet.</EmptyRow>
+              <EmptyRow className={DASH_ROW}>{t('dashboard.noSchedules')}</EmptyRow>
             ) : (
               scheduled.map((c) => {
                 const owner = c.agentId ? getAgent(c.agentId) : undefined
@@ -883,14 +891,14 @@ export default function HomeView() {
                   >
                     <span className="min-w-0">
                       <span className="block truncate font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
-                        {c.name || cronHuman(c.schedule) || c.schedule}
+                        {c.name || cronHuman(c.schedule, locale) || c.schedule}
                       </span>
                       <span className="mono mt-[3px] block truncate text-[11px] text-(--text-tertiary)">
-                        {owner ? agentLabel(owner) : '—'} · ran {fmtAgo(c.lastRunAt)}
+                        {owner ? agentLabel(owner) : '—'} · {t('dashboard.ran')} {formatAgo(c.lastRunAt)}
                       </span>
                     </span>
                     <span className="mono self-start whitespace-nowrap text-[11.5px] text-(--text-secondary)">
-                      {c.enabled ? fmtNextRun(cronNext(c.schedule, c.timezone)) : 'paused'}
+                      {c.enabled ? fmtNextRun(cronNext(c.schedule, c.timezone)) : t('dashboard.paused')}
                     </span>
                   </Link>
                 )

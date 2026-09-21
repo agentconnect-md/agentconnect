@@ -23,6 +23,7 @@ import { useOrgs } from '@/lib/org-context'
 import { LoadingState } from '@/components/marks'
 import { MemoryConnectionsCard } from '@/components/console/MemoryConnectionsCard'
 import { Button, Icon, Toggle } from '@/components/ui'
+import { useTranslations } from 'next-intl'
 
 const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), { ssr: false })
 
@@ -67,6 +68,7 @@ function Empty({ icon, children }: { icon: string; children: ReactNode }) {
 }
 
 function SkillTree({ files }: { files: OrganizationSuggestionContentDto & { kind: 'skill' } }) {
+  const t = useTranslations('Knowledge')
   const ordered = [...files.files].sort((a, b) => a.path.localeCompare(b.path))
   return (
     <div className="flex flex-col gap-3">
@@ -80,7 +82,7 @@ function SkillTree({ files }: { files: OrganizationSuggestionContentDto & { kind
             <span>{file.path}</span>
             {file.encoding === 'base64' && (
               <span className="ml-auto text-[10px] text-(--text-disabled)">
-                binary · {bytes(base64ByteLength(file.content))}
+                {t('binary')} · {bytes(base64ByteLength(file.content))}
               </span>
             )}
           </div>
@@ -93,7 +95,7 @@ function SkillTree({ files }: { files: OrganizationSuggestionContentDto & { kind
           </div>
           {file.encoding === 'base64' ? (
             <div className="px-3 py-4 font-sans text-[12px] text-(--text-tertiary)">
-              Binary asset · {bytes(base64ByteLength(file.content))}
+              {t('binaryAsset')} · {bytes(base64ByteLength(file.content))}
             </div>
           ) : file.path.toLowerCase().endsWith('.md') ? (
             <div className="px-4 py-3">
@@ -117,6 +119,7 @@ export function SuggestionCard({
   suggestion: OrganizationSuggestionDto
   onReviewed: () => Promise<void>
 }) {
+  const t = useTranslations('Knowledge')
   const [busy, setBusy] = useState<'accept' | 'reject' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [inspect, setInspect] = useState(false)
@@ -164,13 +167,13 @@ export function SuggestionCard({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="font-sans text-[14px] font-semibold text-(--text-primary)">{suggestion.title}</h3>
-            <span className={`badge text-[9.5px] ${tone}`}>{suggestion.state}</span>
+            <span className={`badge text-[9.5px] ${tone}`}>{t(`states.${suggestion.state}`)}</span>
             <span className="badge bg-(--surface-sunken) text-[9.5px] text-(--text-tertiary)">
-              {suggestion.operation}
+              {t(`operations.${suggestion.operation}`)}
             </span>
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 font-sans text-[11px] text-(--text-tertiary)">
-            <span>Proposed by {suggestion.sourceAgentName ?? suggestion.sourceAgentId}</span>
+            <span>{t('proposedBy', { name: suggestion.sourceAgentName ?? suggestion.sourceAgentId })}</span>
             <span aria-hidden>·</span>
             <time dateTime={suggestion.createdAt}>{when(suggestion.createdAt)}</time>
             <span aria-hidden>·</span>
@@ -183,24 +186,23 @@ export function SuggestionCard({
             <Tags values={suggestion.tags} />
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[10px] text-(--text-disabled)">
-            <span title={suggestion.dreamId}>Dream {suggestion.dreamId}</span>
+            <span title={suggestion.dreamId}>{t('dream', { id: suggestion.dreamId })}</span>
             {suggestion.operation === 'update' && suggestion.targetArtifactId && (
               <>
                 <span aria-hidden>·</span>
                 <span title={suggestion.targetArtifactId}>
-                  target {suggestion.targetArtifactId} rev {suggestion.targetRevision}
+                  {t('targetRevision', { id: suggestion.targetArtifactId, revision: suggestion.targetRevision ?? '—' })}
                 </span>
               </>
             )}
             <span aria-hidden>·</span>
             <span title={suggestion.sessionIds.join(', ')}>
-              {suggestion.sessionIds.length} source session{suggestion.sessionIds.length === 1 ? '' : 's'}:{' '}
-              {suggestion.sessionIds.join(', ')}
+              {t('sourceSessions', { count: suggestion.sessionIds.length })}: {suggestion.sessionIds.join(', ')}
             </span>
             {suggestion.reviewedAt && (
               <>
                 <span aria-hidden>·</span>
-                <span>reviewed {when(suggestion.reviewedAt)}</span>
+                <span>{t('reviewed', { time: when(suggestion.reviewedAt) })}</span>
               </>
             )}
           </div>
@@ -219,7 +221,7 @@ export function SuggestionCard({
               }}
             >
               <Icon name="eye" size={13} />
-              Inspect
+              {t('inspect')}
             </Button>
             <Button
               variant="secondary"
@@ -228,7 +230,7 @@ export function SuggestionCard({
               onClick={() => void review('reject')}
             >
               <Icon name="x" size={13} />
-              {busy === 'reject' ? 'Rejecting…' : 'Reject'}
+              {busy === 'reject' ? t('rejecting') : t('reject')}
             </Button>
             <Button
               variant="primary"
@@ -237,7 +239,7 @@ export function SuggestionCard({
               onClick={() => void review('accept')}
             >
               <Icon name="check" size={13} />
-              {busy === 'accept' ? 'Accepting…' : 'Accept'}
+              {busy === 'accept' ? t('accepting') : t('accept')}
             </Button>
           </div>
         )}
@@ -246,22 +248,22 @@ export function SuggestionCard({
         {suggestion.state !== 'pending' ? (
           <div className="font-sans text-[12px] text-(--text-tertiary)">
             {suggestion.state === 'accepted'
-              ? `Accepted as revision ${suggestion.acceptedArtifactRevision ?? '—'}.`
-              : `Rejected${suggestion.reviewReason ? `: ${suggestion.reviewReason}` : '.'}`}
-            {' The retained suggestion metadata remains available; its daemon-local review body is no longer served.'}
+              ? t('acceptedRevision', { revision: suggestion.acceptedArtifactRevision ?? '—' })
+              : t('rejected', { reason: suggestion.reviewReason ? `: ${suggestion.reviewReason}` : '.' })}
+            {` ${t('retainedMetadata')}`}
           </div>
         ) : !suggestion.contentAvailable ? (
           <div className="flex items-center gap-2 rounded-md bg-(--status-paused-soft) px-3 py-3 font-sans text-[12px] text-(--text-secondary)">
             <Icon name="server-off" size={15} />
-            Review is unavailable while the source daemon is offline or no longer owns the agent.
+            {t('reviewUnavailable')}
           </div>
         ) : !inspect ? (
           <p className="rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-3 font-sans text-[12px] text-(--text-secondary)">
-            Choose <strong>Inspect</strong> to fetch the staged body; Accept is enabled once it renders in full.
+            {t('inspectHintPrefix')} <strong>{t('inspect')}</strong> {t('inspectHintSuffix')}
           </p>
         ) : contentError ? (
           <div className="font-sans text-[12px] text-(--status-error)">
-            {contentError instanceof Error ? contentError.message : 'Could not load this suggestion.'}
+            {contentError instanceof Error ? contentError.message : t('loadSuggestionError')}
           </div>
         ) : !content ? (
           <LoadingState size={20} padding={16} />
@@ -289,40 +291,41 @@ type RevisionProvenance = Pick<
 >
 
 function Provenance({ value }: { value: RevisionProvenance }) {
+  const t = useTranslations('Knowledge')
   return (
     <div className="flex flex-wrap gap-x-2 gap-y-1 font-mono text-[10px] text-(--text-disabled)">
-      <span>{value.source === 'dream' ? 'Dream proposal' : 'manual publish'}</span>
+      <span>{value.source === 'dream' ? t('dreamProposal') : t('manualPublish')}</span>
       <span aria-hidden>·</span>
       <time dateTime={value.createdAt}>{when(value.createdAt)}</time>
       {value.sourceAgentId && (
         <>
           <span aria-hidden>·</span>
-          <span title={value.sourceAgentId}>agent {value.sourceAgentId}</span>
+          <span title={value.sourceAgentId}>{t('agentId', { id: value.sourceAgentId })}</span>
         </>
       )}
       {value.sourceDreamId && (
         <>
           <span aria-hidden>·</span>
-          <span title={value.sourceDreamId}>dream {value.sourceDreamId}</span>
+          <span title={value.sourceDreamId}>{t('dream', { id: value.sourceDreamId })}</span>
         </>
       )}
       {value.sourceSessionIds.length > 0 && (
         <>
           <span aria-hidden>·</span>
           <span title={value.sourceSessionIds.join(', ')}>
-            {value.sourceSessionIds.length} source session{value.sourceSessionIds.length === 1 ? '' : 's'}
+            {t('sourceSessions', { count: value.sourceSessionIds.length })}
           </span>
         </>
       )}
       {value.reviewedByUserId ? (
         <>
           <span aria-hidden>·</span>
-          <span>reviewed by {value.reviewedByUserId}</span>
+          <span>{t('reviewedBy', { id: value.reviewedByUserId })}</span>
         </>
       ) : value.createdByUserId ? (
         <>
           <span aria-hidden>·</span>
-          <span>published by {value.createdByUserId}</span>
+          <span>{t('publishedBy', { id: value.createdByUserId })}</span>
         </>
       ) : null}
       <span aria-hidden>·</span>
@@ -342,6 +345,7 @@ export function KnowledgeEntry({
   onEdit: () => void
   onArchive: () => void
 }) {
+  const t = useTranslations('Knowledge')
   const [open, setOpen] = useState(false)
   const [selectedRevision, setSelectedRevision] = useState(record.currentRevision)
   useEffect(() => setSelectedRevision(record.currentRevision), [record.currentRevision])
@@ -361,10 +365,10 @@ export function KnowledgeEntry({
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-sans text-[13px] font-semibold text-(--text-primary)">{record.title}</span>
             <span className="badge bg-(--surface-sunken) text-[9.5px] text-(--text-tertiary)">
-              rev {record.currentRevision}
+              {t('revision', { value: record.currentRevision })}
             </span>
             {record.archivedAt && (
-              <span className="badge bg-(--surface-sunken) text-[9.5px] text-(--text-disabled)">archived</span>
+              <span className="badge bg-(--surface-sunken) text-[9.5px] text-(--text-disabled)">{t('archived')}</span>
             )}
           </div>
           {record.summary && (
@@ -373,18 +377,21 @@ export function KnowledgeEntry({
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <Tags values={record.tags} />
             <span className="font-sans text-[10.5px] text-(--text-disabled)">
-              updated {when(record.updatedAt)} · {record.source === 'dream' ? 'Dream proposal' : 'manual'}
+              {t('updated', {
+                time: when(record.updatedAt),
+                source: record.source === 'dream' ? t('dreamProposal') : t('manual')
+              })}
             </span>
           </div>
         </div>
         {canManage && (
           <div className="flex flex-none items-center gap-1" onClick={(event) => event.preventDefault()}>
             {!record.archivedAt && (
-              <button className="iconbtn" title="Publish a new revision" onClick={onEdit}>
+              <button className="iconbtn" title={t('publishRevisionTitle')} onClick={onEdit}>
                 <Icon name="pencil" size={13} />
               </button>
             )}
-            <button className="iconbtn" title={record.archivedAt ? 'Restore' : 'Archive'} onClick={onArchive}>
+            <button className="iconbtn" title={record.archivedAt ? t('restore') : t('archive')} onClick={onArchive}>
               <Icon name={record.archivedAt ? 'archive-restore' : 'archive'} size={13} />
             </button>
           </div>
@@ -396,22 +403,22 @@ export function KnowledgeEntry({
         ) : history.error ? (
           <div className="font-sans text-[12px] text-(--status-error)">{history.error.message}</div>
         ) : !selected ? (
-          <div className="font-sans text-[12px] text-(--text-tertiary)">Revision history is unavailable.</div>
+          <div className="font-sans text-[12px] text-(--text-tertiary)">{t('revisionHistoryUnavailable')}</div>
         ) : (
           <div className="flex flex-col gap-4">
             <div className="flex flex-wrap items-center gap-3 rounded-md bg-(--surface-sunken) px-3 py-2">
               <label className="flex items-center gap-2 font-sans text-[11px] text-(--text-tertiary)">
-                Revision
+                {t('revisionLabel')}
                 <select
                   className="inp h-7 min-w-20 py-0 text-[11px]"
-                  aria-label={`Revision for ${record.title}`}
+                  aria-label={t('revisionSelectAria', { title: record.title })}
                   value={selectedRevision}
                   onChange={(event) => setSelectedRevision(Number(event.target.value))}
                 >
                   {history.data?.map((revision) => (
                     <option key={revision.revision} value={revision.revision}>
                       {revision.revision}
-                      {revision.revision === record.currentRevision ? ' (current)' : ''}
+                      {revision.revision === record.currentRevision ? ` (${t('current')})` : ''}
                     </option>
                   ))}
                 </select>
@@ -439,6 +446,7 @@ function KnowledgeEditor({
   onClose: () => void
   onSaved: () => Promise<void>
 }) {
+  const t = useTranslations('Knowledge')
   const [title, setTitle] = useState(record?.title ?? '')
   const [summary, setSummary] = useState(record?.summary ?? '')
   const [tags, setTags] = useState(record?.tags.join(', ') ?? '')
@@ -478,19 +486,19 @@ function KnowledgeEditor({
             <Icon name="book-open" size={16} color="var(--brand)" />
           </span>
           <span className="flex-1 font-sans text-[16px] font-semibold">
-            {record ? `Publish revision ${record.currentRevision + 1}` : 'Publish organization knowledge'}
+            {record ? t('publishRevision', { value: record.currentRevision + 1 }) : t('publishKnowledge')}
           </span>
-          <button className="iconbtn" onClick={onClose} aria-label="Close">
+          <button className="iconbtn" onClick={onClose} aria-label={t('close')}>
             <Icon name="x" size={16} />
           </button>
         </div>
         <div className="modalbody flex flex-col gap-3">
           <label className="fld">
-            <span className="fldlbl">Title</span>
+            <span className="fldlbl">{t('fields.title')}</span>
             <input className="inp" value={title} maxLength={128} onChange={(event) => setTitle(event.target.value)} />
           </label>
           <label className="fld">
-            <span className="fldlbl">Summary</span>
+            <span className="fldlbl">{t('fields.summary')}</span>
             <input
               className="inp"
               value={summary}
@@ -499,16 +507,16 @@ function KnowledgeEditor({
             />
           </label>
           <label className="fld">
-            <span className="fldlbl">Tags</span>
+            <span className="fldlbl">{t('fields.tags')}</span>
             <input
               className="inp mn"
-              placeholder="architecture, runbook, deployment"
+              placeholder={t('fields.tagsPlaceholder')}
               value={tags}
               onChange={(event) => setTags(event.target.value)}
             />
           </label>
           <label className="fld">
-            <span className="fldlbl">Markdown</span>
+            <span className="fldlbl">{t('fields.markdown')}</span>
             <textarea
               className="inp mn min-h-[300px] resize-y py-3"
               value={content}
@@ -520,10 +528,10 @@ function KnowledgeEditor({
         <div className="modalfoot">
           <div className="flex-1" />
           <Button variant="ghost" onClick={onClose}>
-            Cancel
+            {t('cancel')}
           </Button>
           <Button variant="primary" disabled={busy || !title.trim() || !content.trim()} onClick={() => void save()}>
-            {busy ? 'Publishing…' : record ? 'Publish revision' : 'Publish'}
+            {busy ? t('publishing') : record ? t('publishRevisionAction') : t('publish')}
           </Button>
         </div>
       </div>
@@ -532,6 +540,7 @@ function KnowledgeEditor({
 }
 
 export default function KnowledgeView() {
+  const t = useTranslations('Knowledge')
   const { activeOrg, myRole, orgPath } = useOrgs()
   const router = useRouter()
   const search = useSearchParams()
@@ -574,13 +583,11 @@ export default function KnowledgeView() {
   return (
     <div className="wrap max-desktop:p-4">
       <div className="mb-4 flex flex-wrap items-center gap-3">
-        <p className="psub mt-0 min-w-[240px] flex-1">
-          Owner-approved, revisioned knowledge shared across your organization and discovered by agents on demand.
-        </p>
+        <p className="psub mt-0 min-w-[240px] flex-1">{t('description')}</p>
         {tab === 'organization' && canManage && (
           <Button variant="primary" size="sm" onClick={() => setEditor(null)}>
             <Icon name="plus" size={14} />
-            Publish knowledge
+            {t('publishKnowledge')}
           </Button>
         )}
       </div>
@@ -588,15 +595,15 @@ export default function KnowledgeView() {
       <div className="mb-4 flex items-center justify-between border-b border-(--border-subtle)">
         <div className="tabs border-b-0">
           <button className={tab === 'organization' ? 'tab on' : 'tab'} onClick={() => changeTab('organization')}>
-            Organization
+            {t('tabs.organization')}
           </button>
           <button className={tab === 'suggestions' ? 'tab on' : 'tab'} onClick={() => changeTab('suggestions')}>
-            Suggestions
+            {t('tabs.suggestions')}
           </button>
         </div>
         {tab === 'organization' && (
           <label className="flex items-center gap-2 pb-2 font-sans text-[11.5px] text-(--text-tertiary)">
-            Include archived
+            {t('includeArchived')}
             <Toggle checked={includeArchived} onChange={setIncludeArchived} />
           </label>
         )}
@@ -611,15 +618,17 @@ export default function KnowledgeView() {
       {tab === 'organization' ? (
         <section className="card overflow-hidden">
           <div className="cardhead justify-between">
-            <span className="cardtitle">Knowledge library</span>
-            <span className="mono text-[11px] text-(--text-tertiary)">{knowledge.data?.length ?? 0} entries</span>
+            <span className="cardtitle">{t('library')}</span>
+            <span className="mono text-[11px] text-(--text-tertiary)">
+              {t('entries', { count: knowledge.data?.length ?? 0 })}
+            </span>
           </div>
           {knowledge.isLoading ? (
             <LoadingState size={22} padding={24} />
           ) : knowledge.error ? (
             <Empty icon="triangle-alert">{knowledge.error.message}</Empty>
           ) : !knowledge.data?.length ? (
-            <Empty icon="book-open">No organization knowledge has been published yet.</Empty>
+            <Empty icon="book-open">{t('emptyKnowledge')}</Empty>
           ) : (
             <div className="divide-y divide-(--border-subtle)">
               {knowledge.data.map((record) => (
@@ -636,7 +645,7 @@ export default function KnowledgeView() {
         </section>
       ) : !canManage ? (
         <section className="card">
-          <Empty icon="shield">Only organization owners can review Dream suggestions.</Empty>
+          <Empty icon="shield">{t('ownerOnly')}</Empty>
         </section>
       ) : (
         <div className="flex flex-col gap-3">
@@ -647,12 +656,12 @@ export default function KnowledgeView() {
                 className={suggestionState === state ? 'pill on' : 'pill'}
                 onClick={() => setSuggestionState(state)}
               >
-                {state[0]!.toUpperCase() + state.slice(1)}
+                {t(`states.${state}`)}
               </button>
             ))}
             <span className="ml-auto font-sans text-[11px] text-(--text-tertiary)">
-              {suggestionCounts.total} suggestion{suggestionCounts.total === 1 ? '' : 's'}
-              {suggestionState === 'pending' ? ` · ${suggestionCounts.available} available now` : ''}
+              {t('suggestionCount', { count: suggestionCounts.total })}
+              {suggestionState === 'pending' ? ` · ${t('availableNow', { count: suggestionCounts.available })}` : ''}
             </span>
           </div>
           {suggestions.isLoading ? (
@@ -663,13 +672,13 @@ export default function KnowledgeView() {
             <section className="card">
               <Empty icon="triangle-alert">
                 {suggestions.error instanceof ApiError && suggestions.error.status === 403
-                  ? 'Only organization owners can review suggestions.'
+                  ? t('ownerOnlySuggestions')
                   : suggestions.error.message}
               </Empty>
             </section>
           ) : !suggestions.data?.length ? (
             <section className="card">
-              <Empty icon="sparkles">No {suggestionState} suggestions.</Empty>
+              <Empty icon="sparkles">{t('emptySuggestions', { state: t(`states.${suggestionState}`) })}</Empty>
             </section>
           ) : (
             suggestions.data.map((suggestion) => (

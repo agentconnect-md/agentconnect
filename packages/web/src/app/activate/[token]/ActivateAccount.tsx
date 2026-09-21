@@ -10,6 +10,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { Spinner, Wordmark } from '@/components/marks'
 import { redeemWaitlistLink, ApiError } from '@/lib/api'
@@ -17,13 +18,9 @@ import { currentSubject, isAuthConfigured, resetSession } from '@/lib/auth'
 import { writeFlowState } from '@/lib/flow-state'
 import { abandonActivation, beginActivation, claimActivationProof } from '@/lib/activation-handshake'
 
-const STORAGE_BLOCKED =
-  'This browser is blocking the temporary storage this activation link needs, so it cannot ' +
-  'verify who is signing in. Allow site data for this site (or use a regular, non-private ' +
-  'window), then open the link again.'
-
 export default function ActivateAccount({ token }: { token: string }) {
   const router = useRouter()
+  const t = useTranslations('Auth.activation')
   const [error, setError] = useState<string | null>(null)
   // Shown when the flow was refused before redeeming — the user can clear the
   // session by hand and re-open the link, which is the manual form of the reset
@@ -57,7 +54,7 @@ export default function ActivateAccount({ token }: { token: string }) {
             if (!writeFlowState('returnTo', window.location.pathname) || !beginActivation(token)) {
               abandonActivation()
               if (!cancelled) {
-                setError(STORAGE_BLOCKED)
+                setError(t('storageBlocked'))
                 setOfferSignOut(true)
               }
               return
@@ -97,14 +94,14 @@ export default function ActivateAccount({ token }: { token: string }) {
             ? e.message
             : e instanceof Error
               ? e.message
-              : 'Could not activate your account.'
+              : t('genericError')
         )
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [router, token])
+  }, [router, t, token])
 
   return (
     <div className="authpage">
@@ -116,16 +113,16 @@ export default function ActivateAccount({ token }: { token: string }) {
               <Icon name="link-2-off" size={22} color="var(--status-error)" />
             </span>
             <div>
-              <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">Activation unavailable</h1>
+              <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">{t('unavailable')}</h1>
               <p className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">{error}</p>
             </div>
             {offerSignOut ? (
               <Button variant="secondary" onClick={() => void resetSession()}>
-                Sign out
+                {t('signOut')}
               </Button>
             ) : (
               <Button variant="secondary" onClick={() => router.replace('/waitlist')}>
-                Back to waitlist
+                {t('backToWaitlist')}
               </Button>
             )}
           </>
@@ -133,10 +130,8 @@ export default function ActivateAccount({ token }: { token: string }) {
           <>
             <Spinner size={42} />
             <div>
-              <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">
-                Activating your account…
-              </h1>
-              <p className="mt-2 text-[13px] leading-normal text-(--text-secondary)">This only takes a moment.</p>
+              <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">{t('activating')}</h1>
+              <p className="mt-2 text-[13px] leading-normal text-(--text-secondary)">{t('moment')}</p>
             </div>
           </>
         )}
