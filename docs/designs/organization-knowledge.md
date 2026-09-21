@@ -30,23 +30,31 @@ organization content or enable a skill.
 ## 2. Product contract
 
 The console gains a separate top-level **Knowledge** destination at
-`/[slug]/knowledge`, beside Tools & Skills. It has two tabs:
+`/[slug]/knowledge`, beside Tools & Skills.
 
-1. **Organization** lists accepted, non-archived knowledge. A row shows title,
-   summary, tags, revision, provenance, author/reviewer, and timestamps; opening
-   it loads a revision selector and renders the selected immutable Markdown plus
-   its provenance. Owners may create, edit, archive, and restore. Editing creates
-   a new immutable revision.
-2. **Suggestions** lists Dream candidates. Each card shows its title or skill
-   name, rendered Markdown or complete file tree, proposing agent, source Dream
-   and sessions, operation (`create` or `update`), creation time, and review
-   state. Owners may accept or reject a pending item. Rejected items remain in
-   history. The body is fetched from the source daemon only on inspection, and
-   acceptance carries the token that inspection mints (§7.3), so the card offers
-   `Inspect` beside the two decisions and keeps `Accept` disabled until the
-   complete body has rendered. Each control keeps one meaning, so a stray second
-   click cannot land on a decision the first click armed. Rejecting needs no
-   inspection: it installs nothing.
+The **Library** lists accepted knowledge, with archived entries on request. A
+row shows title, summary, tags, current revision, and the last update, and
+opens the entry page at `/[slug]/knowledge/[id]`. The entry page renders the
+current immutable Markdown with its provenance — source, proposing agent,
+author or reviewer, date — and lists every revision beside it; selecting an
+older revision renders it in place while the entry keeps pointing at the
+current one. Owners publish new entries from the library and publish new
+revisions, archive, and restore from the entry page. Editing always creates a
+new immutable revision. Internal identifiers (digests, Dream and session ids)
+are not shown.
+
+**Suggestions** is an owner-only tab that lists Dream candidates by review
+state, with the pending count on the tab. Each card shows its title or skill
+name, the proposing agent, source-session count, creation time, and whether it
+updates an existing artifact. The body — rendered Markdown or the complete file
+tree — is fetched from the source daemon only on inspection, and acceptance
+carries the token that inspection mints (§7.3), so the card offers `Inspect`
+beside the two decisions and keeps `Accept` disabled until the complete body
+has rendered. Each control keeps one meaning, so a stray second click cannot
+land on a decision the first click armed. Rejecting needs no inspection: it
+installs nothing. A reviewed card keeps one line of outcome: the accepted
+revision, linked to its entry, or the rejection and its reason. Rejected items
+remain in history.
 
 Managed organization skills appear in the existing **Skills library** card on
 Tools & Skills, alongside Git-backed sources. A managed tile is labeled as an

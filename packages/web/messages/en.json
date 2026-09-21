@@ -1989,78 +1989,80 @@
     }
   },
   "Knowledge": {
-    "description": "Owner-approved, revisioned knowledge shared across your organization and discovered by agents on demand.",
-    "publishKnowledge": "Publish knowledge",
+    "description": "Approved notes every agent can look up.",
+    "publish": "Publish",
     "tabs": {
-      "organization": "Organization",
+      "library": "Library",
       "suggestions": "Suggestions"
     },
     "includeArchived": "Include archived",
-    "library": "Knowledge library",
-    "entries": "{count, plural, one {# entry} other {# entries}}",
-    "emptyKnowledge": "No organization knowledge has been published yet.",
-    "ownerOnly": "Only organization owners can review Dream suggestions.",
-    "ownerOnlySuggestions": "Only organization owners can review suggestions.",
-    "suggestionCount": "{count, plural, one {# suggestion} other {# suggestions}}",
-    "availableNow": "{count} available now",
-    "emptySuggestions": "No {state} suggestions.",
+    "columns": {
+      "title": "Title",
+      "tags": "Tags",
+      "revision": "Revision",
+      "updated": "Updated"
+    },
+    "revision": "rev {value}",
+    "archived": "Archived",
+    "empty": {
+      "title": "No knowledge yet",
+      "description": "Publish a note, or accept a Dream suggestion."
+    },
     "states": {
       "pending": "Pending",
       "accepted": "Accepted",
       "rejected": "Rejected"
     },
-    "operations": {
-      "create": "Create",
-      "update": "Update"
-    },
+    "emptySuggestions": "{state, select, pending {No pending suggestions} accepted {No accepted suggestions} other {No rejected suggestions}}",
+    "emptySuggestionsHint": "Dreams propose knowledge and skills here for review.",
+    "proposedBy": "Proposed by {name}",
+    "publishedBy": "Published by {name}",
+    "reviewedBy": "reviewed by {name}",
+    "removedAgent": "a removed agent",
+    "sessions": "{count, plural, one {# session} other {# sessions}}",
+    "update": "Update",
+    "replacesRevision": "Replaces rev {revision}",
+    "unavailable": "Unavailable",
+    "unavailableHint": "Can't review while the proposing agent is offline.",
+    "inspect": "Inspect",
+    "inspectHint": "Inspect the full text to enable Accept.",
+    "reject": "Reject",
+    "rejecting": "Rejecting…",
+    "accept": "Accept",
+    "accepting": "Accepting…",
+    "acceptedAs": "Accepted as rev {revision}",
+    "rejectedLabel": "Rejected",
+    "open": "Open",
+    "loadSuggestionError": "Could not load this suggestion.",
     "binary": "binary",
     "binaryAsset": "Binary asset",
-    "proposedBy": "Proposed by {name}",
-    "dream": "Dream {id}",
-    "targetRevision": "target {id} rev {revision}",
-    "sourceSessions": "{count, plural, one {# source session} other {# source sessions}}",
-    "reviewed": "reviewed {time}",
-    "inspect": "Inspect",
-    "rejecting": "Rejecting…",
-    "reject": "Reject",
-    "accepting": "Accepting…",
-    "accept": "Accept",
-    "acceptedRevision": "Accepted as revision {revision}.",
-    "rejected": "Rejected{reason}",
-    "retainedMetadata": "The retained suggestion metadata remains available; its daemon-local review body is no longer served.",
-    "reviewUnavailable": "Review is unavailable while the source daemon is offline or no longer owns the agent.",
-    "inspectHintPrefix": "Choose",
-    "inspectHintSuffix": "to fetch the staged body; Accept is enabled once it renders in full.",
-    "loadSuggestionError": "Could not load this suggestion.",
-    "dreamProposal": "Dream proposal",
-    "manualPublish": "manual publish",
-    "manual": "manual",
-    "agentId": "agent {id}",
-    "reviewedBy": "reviewed by {id}",
-    "publishedBy": "published by {id}",
-    "revision": "rev {value}",
-    "archived": "archived",
-    "updated": "updated {time} · {source}",
-    "publishRevisionTitle": "Publish a new revision",
-    "restore": "Restore",
-    "archive": "Archive",
-    "revisionHistoryUnavailable": "Revision history is unavailable.",
-    "revisionLabel": "Revision",
-    "revisionSelectAria": "Revision for {title}",
-    "current": "current",
-    "publishRevision": "Publish revision {value}",
-    "close": "Close",
-    "fields": {
+    "detail": {
+      "notFoundTitle": "Knowledge not found",
+      "notFoundPre": "No entry ",
+      "notFoundPost": " in this organization. It may have been removed.",
+      "backToKnowledge": "Back to knowledge",
+      "searchKnowledge": "Search knowledge",
+      "newRevision": "New revision",
+      "archive": "Archive",
+      "restore": "Restore",
+      "history": "History",
+      "current": "Current",
+      "viewingOlder": "Viewing rev {revision}.",
+      "showCurrent": "Show current"
+    },
+    "editor": {
+      "createTitle": "Publish knowledge",
+      "revisionTitle": "Publish rev {value}",
       "title": "Title",
       "summary": "Summary",
       "tags": "Tags",
       "tagsPlaceholder": "architecture, runbook, deployment",
-      "markdown": "Markdown"
+      "content": "Content",
+      "close": "Close",
+      "cancel": "Cancel",
+      "publish": "Publish",
+      "publishing": "Publishing…"
     },
-    "cancel": "Cancel",
-    "publishing": "Publishing…",
-    "publishRevisionAction": "Publish revision",
-    "publish": "Publish",
     "memoryConnections": {
       "title": "External memory",
       "connectionsCount": "{count, plural, one {# connection} other {# connections}}",
@@ -2287,10 +2289,22 @@
       "barNameUsage": "usage",
       "barNameTopup": "top-up",
       "ranges": {
-        "h24": { "label": "24h", "period": "24 hours" },
-        "d7": { "label": "7d", "period": "7 days" },
-        "d30": { "label": "30d", "period": "30 days" },
-        "d90": { "label": "90d", "period": "90 days" }
+        "h24": {
+          "label": "24h",
+          "period": "24 hours"
+        },
+        "d7": {
+          "label": "7d",
+          "period": "7 days"
+        },
+        "d30": {
+          "label": "30d",
+          "period": "30 days"
+        },
+        "d90": {
+          "label": "90d",
+          "period": "90 days"
+        }
       }
     },
     "membersDontPay": {
@@ -2374,7 +2388,10 @@
             "title": "Collaborator",
             "description": "Create, edit & run agents, manage sessions. No member or organization changes."
           },
-          "viewer": { "title": "Viewer", "description": "Read-only — view agents, sessions and usage." }
+          "viewer": {
+            "title": "Viewer",
+            "description": "Read-only — view agents, sessions and usage."
+          }
         }
       },
       "editDialog": {
@@ -2419,7 +2436,10 @@
             "title": "Collaborator",
             "description": "Create, edit & run agents, manage sessions. No member or organization changes."
           },
-          "viewer": { "title": "Viewer", "description": "Read-only — view agents, sessions and usage." }
+          "viewer": {
+            "title": "Viewer",
+            "description": "Read-only — view agents, sessions and usage."
+          }
         }
       }
     },
@@ -2467,8 +2487,14 @@
       "newAgentsStart": "New agents start",
       "ownerOnly": "Only organization owners can change this setting",
       "options": {
-        "all": { "label": "All agents", "description": "Open in both directions to every agent." },
-        "selected": { "label": "Isolated", "description": "No peer access until agents are selected." }
+        "all": {
+          "label": "All agents",
+          "description": "Open in both directions to every agent."
+        },
+        "selected": {
+          "label": "Isolated",
+          "description": "No peer access until agents are selected."
+        }
       }
     },
     "inviteLinks": {
@@ -2480,7 +2506,11 @@
       "none": "No invite link",
       "noneDescription": "Generate the organization's single collaborator link.",
       "organizationLink": "Organization invite link",
-      "status": { "active": "Active", "expired": "Expired", "revoked": "Revoked" },
+      "status": {
+        "active": "Active",
+        "expired": "Expired",
+        "revoked": "Revoked"
+      },
       "revoking": "Revoking…",
       "revoke": "Revoke",
       "copyOnce": "Copy this link now — it is shown only once",
@@ -2499,7 +2529,10 @@
       "deleteBody": "Every agent this {kind} was assigned to stops receiving it. If an agent defines its own {key}, that value becomes effective again.",
       "deleteSecretWarning": "The value cannot be recovered afterwards.",
       "restartNote": "Applies on the agent's next restart.",
-      "kinds": { "variable": "Variable", "secret": "Secret" },
+      "kinds": {
+        "variable": "Variable",
+        "secret": "Secret"
+      },
       "writeOnly": "Write-only — value can't be viewed",
       "selectedAgents": "Selected agents ({count})",
       "edit": "Edit",
@@ -2525,7 +2558,10 @@
           "label": "All agents",
           "description": "Every agent you can manage, now and as new ones are configured"
         },
-        "selected": { "label": "Selected agents", "description": "Only the agents you pick below" }
+        "selected": {
+          "label": "Selected agents",
+          "description": "Only the agents you pick below"
+        }
       },
       "agents": "Agents",
       "noManagedAgents": "You don't manage any agents yet. You can save this entry now and assign it later.",

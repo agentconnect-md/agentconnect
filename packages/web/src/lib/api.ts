@@ -6120,6 +6120,10 @@ export function listOrganizationKnowledge(includeArchived = false): Promise<Orga
   )
 }
 
+export function getOrganizationKnowledge(id: string): Promise<OrganizationKnowledgeDto> {
+  return apiGet<OrganizationKnowledgeDto>(`${orgBase()}/knowledge/${encodeURIComponent(id)}`)
+}
+
 export function listOrganizationKnowledgeRevisions(id: string): Promise<OrganizationKnowledgeRevisionDto[]> {
   return apiGet<OrganizationKnowledgeRevisionDto[]>(`${orgBase()}/knowledge/${encodeURIComponent(id)}/revisions`)
 }

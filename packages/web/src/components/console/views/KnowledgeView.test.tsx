@@ -6,14 +6,17 @@ import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setApiOrgId, type OrganizationKnowledgeDto, type OrganizationSuggestionDto } from '@/lib/api'
 
+const mocks = vi.hoisted(() => ({ role: 'owner' as 'owner' | 'collaborator' }))
+
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ replace: vi.fn() }),
+  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
   useSearchParams: () => new URLSearchParams()
 }))
 vi.mock('@/lib/org-context', () => ({
-  useOrgs: () => ({ activeOrg: { id: 'org-test' }, myRole: 'owner', orgPath: (path: string) => path })
+  useOrgs: () => ({ activeOrg: { id: 'org-test' }, myRole: mocks.role, orgPath: (path: string) => path })
 }))
 vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ agents: [] }) }))
+vi.mock('@/lib/profile', () => ({ useProfile: () => ({ user: null, me: null }) }))
 
 vi.mock('next/dynamic', () => ({
   default: () =>
@@ -22,7 +25,8 @@ vi.mock('next/dynamic', () => ({
     }
 }))
 
-import KnowledgeView, { KnowledgeEntry, SuggestionCard } from './KnowledgeView'
+import KnowledgeView from './KnowledgeView'
+import { SuggestionCard } from '@/components/console/SuggestionCard'
 
 const BASE: OrganizationSuggestionDto = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -51,6 +55,27 @@ const BASE: OrganizationSuggestionDto = {
   updatedAt: '2026-07-31T00:00:00.000Z'
 }
 
+const KNOWLEDGE: OrganizationKnowledgeDto = {
+  id: '55555555-5555-4555-8555-555555555555',
+  title: 'Release policy',
+  content: '# Current body',
+  summary: 'How releases are cut',
+  tags: ['release', 'ops'],
+  currentRevision: 2,
+  digest: `sha256:${'c'.repeat(64)}`,
+  source: 'manual',
+  sourceAgentId: null,
+  sourceDreamId: null,
+  sourceSessionIds: [],
+  createdByUserId: 'owner-1',
+  reviewedByUserId: null,
+  archivedAt: null,
+  createdAt: '2026-07-30T00:00:00.000Z',
+  updatedAt: '2026-07-31T00:00:00.000Z',
+  revisionCreatedAt: '2026-07-31T00:00:00.000Z',
+  canManage: true
+}
+
 let host: HTMLDivElement
 let root: Root
 
@@ -60,7 +85,11 @@ function button(label: string): HTMLButtonElement {
   return found
 }
 
-async function render(suggestion: OrganizationSuggestionDto, onReviewed = vi.fn(async () => undefined)) {
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+}
+
+async function renderCard(suggestion: OrganizationSuggestionDto, onReviewed = vi.fn(async () => undefined)) {
   await act(async () => {
     root.render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
@@ -69,6 +98,16 @@ async function render(suggestion: OrganizationSuggestionDto, onReviewed = vi.fn(
     )
   })
   return onReviewed
+}
+
+async function renderView() {
+  await act(async () => {
+    root.render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <KnowledgeView />
+      </SWRConfig>
+    )
+  })
 }
 
 async function settleUntil(done: () => boolean): Promise<void> {
@@ -87,6 +126,7 @@ beforeEach(() => {
   document.body.append(host)
   root = createRoot(host)
   setApiOrgId('org-test')
+  mocks.role = 'owner'
 })
 
 afterEach(async () => {
@@ -100,12 +140,13 @@ describe('organization suggestion review card', () => {
   it('keeps both review decisions disabled while the source review surface is unavailable', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    await render({ ...BASE, contentAvailable: false })
+    await renderCard({ ...BASE, contentAvailable: false })
 
     expect(button('Reject').disabled).toBe(true)
     expect(button('Accept').disabled).toBe(true)
     expect(button('Inspect').disabled).toBe(true) // nothing to read the body from
-    expect(host.textContent).toContain('Review is unavailable')
+    expect(host.textContent).toContain('Unavailable')
+    expect(host.textContent).toContain("Can't review while the proposing agent is offline.")
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
@@ -115,42 +156,35 @@ describe('organization suggestion review card', () => {
       releaseContent = resolve
     })
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).endsWith('/content')) {
-        return contentResponse
-      }
-      return new Response(JSON.stringify({ ...BASE, state: 'accepted' }), {
-        status: init?.method === 'POST' ? 200 : 500,
-        headers: { 'content-type': 'application/json' }
-      })
+      if (String(input).endsWith('/content')) return contentResponse
+      return json({ ...BASE, state: 'accepted' }, init?.method === 'POST' ? 200 : 500)
     })
     vi.stubGlobal('fetch', fetchMock)
-    const onReviewed = await render(BASE)
+    const onReviewed = await renderCard(BASE)
     // Accept is disabled until the body renders — it binds to the inspected snapshot — and the
     // step that unlocks it sits right beside it.
     expect(button('Accept').disabled).toBe(true)
     expect(button('Inspect').disabled).toBe(false)
+    expect(host.textContent).toContain('Inspect the full text to enable Accept.')
     expect(fetchMock).not.toHaveBeenCalled()
     await act(async () => button('Inspect').click())
     await settleUntil(() => fetchMock.mock.calls.length === 1)
     await act(async () => {
       releaseContent(
-        new Response(
-          JSON.stringify({
-            kind: 'knowledge',
-            digest: BASE.digest,
-            snapshotToken: `sha256:${'b'.repeat(64)}`,
-            content: '# Deployment\nRun every gate.',
-            summary: BASE.summary,
-            tags: BASE.tags
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } }
-        )
+        json({
+          kind: 'knowledge',
+          digest: BASE.digest,
+          snapshotToken: `sha256:${'b'.repeat(64)}`,
+          content: '# Deployment\nRun every gate.',
+          summary: BASE.summary,
+          tags: BASE.tags
+        })
       )
     })
     await settleUntil(() => host.textContent?.includes('Run every gate.') === true)
 
     expect(host.textContent).toContain('# Deployment')
-    expect(host.textContent).toContain('Run every gate.')
+    expect(host.textContent).not.toContain('Inspect the full text')
     expect(button('Accept').disabled).toBe(false)
     await act(async () => button('Accept').click())
     await settleUntil(() => onReviewed.mock.calls.length === 1)
@@ -163,29 +197,21 @@ describe('organization suggestion review card', () => {
   })
 
   it('inspects from the header, then accepts — the inspect click never posts a review', async () => {
-    // The reported confusion: Accept looked broken until you found "Inspect staged content"
-    // in the panel below. The step now sits beside Accept, and still gates it.
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).endsWith('/content')) {
-        return new Response(
-          JSON.stringify({
-            kind: 'knowledge',
-            digest: BASE.digest,
-            snapshotToken: `sha256:${'c'.repeat(64)}`,
-            content: '# Deployment',
-            summary: BASE.summary,
-            tags: BASE.tags
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } }
-        )
+        return json({
+          kind: 'knowledge',
+          digest: BASE.digest,
+          snapshotToken: `sha256:${'c'.repeat(64)}`,
+          content: '# Deployment',
+          summary: BASE.summary,
+          tags: BASE.tags
+        })
       }
-      return new Response(JSON.stringify({ ...BASE, state: 'accepted' }), {
-        status: init?.method === 'POST' ? 200 : 500,
-        headers: { 'content-type': 'application/json' }
-      })
+      return json({ ...BASE, state: 'accepted' }, init?.method === 'POST' ? 200 : 500)
     })
     vi.stubGlobal('fetch', fetchMock)
-    const onReviewed = await render(BASE)
+    const onReviewed = await renderCard(BASE)
 
     await act(async () => button('Inspect').click())
     await settleUntil(() => host.textContent?.includes('Deployment') === true)
@@ -202,15 +228,11 @@ describe('organization suggestion review card', () => {
   })
 
   it('rejects without inspecting: nothing is installed, so no snapshot is needed', async () => {
-    const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL, _init?: RequestInit) =>
-        new Response(JSON.stringify({ ...BASE, state: 'rejected' }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' }
-        })
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      json({ ...BASE, state: 'rejected' })
     )
     vi.stubGlobal('fetch', fetchMock)
-    const onReviewed = await render(BASE)
+    const onReviewed = await renderCard(BASE)
     await act(async () => button('Reject').click())
     await settleUntil(() => onReviewed.mock.calls.length === 1)
     const reviewCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/review'))
@@ -219,28 +241,24 @@ describe('organization suggestion review card', () => {
   })
 
   it('renders every text file and identifies binary assets in a complete skill tree', async () => {
-    const fetchMock = vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            kind: 'skill',
-            digest: BASE.digest,
-            snapshotToken: `sha256:${'b'.repeat(64)}`,
-            files: [
-              {
-                path: 'SKILL.md',
-                encoding: 'utf8',
-                content: '---\nname: safe-deploy\ndescription: Deploy safely\n---\n# Safe deploy'
-              },
-              { path: 'scripts/check.sh', encoding: 'utf8', content: '#!/bin/sh\necho ready' },
-              { path: 'assets/logo.png', encoding: 'base64', content: 'iVBORw==' }
-            ]
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } }
-        )
+    const fetchMock = vi.fn(async () =>
+      json({
+        kind: 'skill',
+        digest: BASE.digest,
+        snapshotToken: `sha256:${'b'.repeat(64)}`,
+        files: [
+          {
+            path: 'SKILL.md',
+            encoding: 'utf8',
+            content: '---\nname: safe-deploy\ndescription: Deploy safely\n---\n# Safe deploy'
+          },
+          { path: 'scripts/check.sh', encoding: 'utf8', content: '#!/bin/sh\necho ready' },
+          { path: 'assets/logo.png', encoding: 'base64', content: 'iVBORw==' }
+        ]
+      })
     )
     vi.stubGlobal('fetch', fetchMock)
-    await render({ ...BASE, kind: 'skill', title: 'safe-deploy' })
+    await renderCard({ ...BASE, kind: 'skill', title: 'safe-deploy' })
     expect(fetchMock).not.toHaveBeenCalled()
     await act(async () => button('Inspect').click())
     await settleUntil(() => host.textContent?.includes('echo ready') === true)
@@ -251,29 +269,36 @@ describe('organization suggestion review card', () => {
     expect(host.textContent).toContain('assets/logo.png')
     expect(host.textContent).toContain('Binary asset')
   })
+
+  it('reduces a reviewed suggestion to one outcome line that links to the accepted entry', async () => {
+    vi.stubGlobal('fetch', vi.fn())
+    await renderCard({
+      ...BASE,
+      state: 'accepted',
+      reviewedAt: '2026-08-01T00:00:00.000Z',
+      acceptedArtifactId: KNOWLEDGE.id,
+      acceptedArtifactRevision: 1
+    })
+    expect(host.textContent).toContain('Accepted as rev 1')
+    expect(host.querySelector(`a[href="/knowledge/${KNOWLEDGE.id}"]`)).not.toBeNull()
+    expect([...host.querySelectorAll('button')].map((b) => b.textContent)).toEqual([])
+    // Internal identifiers stay out of the card.
+    expect(host.textContent).not.toContain('dream-1')
+    expect(host.textContent).not.toContain('session-1')
+    expect(host.textContent).not.toContain('sha256')
+  })
 })
 
 describe('organization knowledge surface', () => {
-  it('renders knowledge above external memory without loading managed skills', async () => {
-    const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL) =>
-        new Response(JSON.stringify([]), { status: 200, headers: { 'content-type': 'application/json' } })
-    )
+  it('shows the empty library above external memory without loading managed skills', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) => json([]))
     vi.stubGlobal('fetch', fetchMock)
-
-    await act(async () => {
-      root.render(
-        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-          <KnowledgeView />
-        </SWRConfig>
-      )
-    })
-    await settleUntil(() => host.textContent?.includes('No organization knowledge has been published yet.') === true)
+    await renderView()
+    await settleUntil(() => host.textContent?.includes('No knowledge yet') === true)
 
     const content = host.textContent ?? ''
-    expect(content).toContain('Knowledge library')
     expect(content).toContain('External memory')
-    expect(content.indexOf('Knowledge library')).toBeLessThan(content.indexOf('External memory'))
+    expect(content.indexOf('No knowledge yet')).toBeLessThan(content.indexOf('External memory'))
     expect(content).not.toContain('Managed skills')
     const urls = fetchMock.mock.calls.map(([input]) => String(input))
     expect(urls.some((url) => url.includes('/knowledge?includeArchived=false'))).toBe(true)
@@ -282,108 +307,41 @@ describe('organization knowledge surface', () => {
     expect(urls.some((url) => url.includes('/managed-skills'))).toBe(false)
   })
 
-  it('loads and selects historical knowledge content, then refreshes an open entry for a new revision', async () => {
-    const knowledge: OrganizationKnowledgeDto = {
-      id: '55555555-5555-4555-8555-555555555555',
-      title: 'Release policy',
-      content: '# Current',
-      summary: 'Current summary',
-      tags: ['release'],
-      currentRevision: 2,
-      digest: `sha256:${'c'.repeat(64)}`,
-      source: 'manual',
-      sourceAgentId: null,
-      sourceDreamId: null,
-      sourceSessionIds: [],
-      createdByUserId: 'owner-1',
-      reviewedByUserId: null,
-      archivedAt: null,
-      createdAt: '2026-07-30T00:00:00.000Z',
-      updatedAt: '2026-07-31T00:00:00.000Z',
-      revisionCreatedAt: '2026-07-31T00:00:00.000Z',
-      canManage: true
-    }
-    let knowledgeCurrentRevision = 2
-    const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL) =>
-        new Response(
-          JSON.stringify([
-            {
-              knowledgeId: knowledge.id,
-              revision: knowledgeCurrentRevision,
-              content: knowledgeCurrentRevision === 2 ? '# Current' : '# Newly published',
-              summary: knowledgeCurrentRevision === 2 ? 'Current summary' : 'New summary',
-              tags: ['release'],
-              digest: knowledge.digest,
-              source: 'manual',
-              sourceAgentId: null,
-              sourceDreamId: null,
-              sourceSessionIds: [],
-              createdByUserId: 'owner-1',
-              reviewedByUserId: null,
-              createdAt: '2026-07-31T00:00:00.000Z'
-            },
-            {
-              knowledgeId: knowledge.id,
-              revision: 1,
-              content: '# Historical policy',
-              summary: 'Initial summary',
-              tags: ['history'],
-              digest: `sha256:${'f'.repeat(64)}`,
-              source: 'dream',
-              sourceAgentId: 'agent-1',
-              sourceDreamId: 'dream-1',
-              sourceSessionIds: ['session-1'],
-              createdByUserId: null,
-              reviewedByUserId: 'owner-1',
-              createdAt: '2026-07-30T00:00:00.000Z'
-            }
-          ]),
-          { status: 200, headers: { 'content-type': 'application/json' } }
-        )
+  it('lists entries as rows that open the entry page and counts pending suggestions on the tab', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/knowledge-suggestions')) return json([BASE, { ...BASE, id: 'second' }])
+      if (url.includes('/knowledge?')) return json([KNOWLEDGE])
+      return json([])
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await renderView()
+    await settleUntil(() => host.textContent?.includes('Release policy') === true)
+    await settleUntil(() => button('Suggestions').textContent?.includes('2') === true)
+
+    const row = host.querySelector<HTMLAnchorElement>(`a[href="/knowledge/${KNOWLEDGE.id}"]`)
+    expect(row?.textContent).toContain('Release policy')
+    expect(row?.textContent).toContain('How releases are cut')
+    expect(row?.textContent).toContain('rev 2')
+    // The body and history live on the entry page, not in the list.
+    expect(host.textContent).not.toContain('# Current body')
+    expect(host.querySelectorAll('select')).toHaveLength(0)
+    expect(button('Publish')).toBeDefined()
+    const urls = fetchMock.mock.calls.map(([input]) => String(input))
+    expect(urls.some((url) => url.includes('/knowledge-suggestions?state=pending'))).toBe(true)
+  })
+
+  it('hides the review tab and the publish action from members who cannot manage knowledge', async () => {
+    mocks.role = 'collaborator'
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
+      json(String(input).includes('/knowledge?') ? [{ ...KNOWLEDGE, canManage: false }] : [])
     )
     vi.stubGlobal('fetch', fetchMock)
+    await renderView()
+    await settleUntil(() => host.textContent?.includes('Release policy') === true)
 
-    await act(async () => {
-      root.render(
-        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-          <KnowledgeEntry record={knowledge} canManage={false} onEdit={() => undefined} onArchive={() => undefined} />
-        </SWRConfig>
-      )
-    })
-    await act(async () => {
-      const details = host.querySelector('details')!
-      details.open = true
-      details.dispatchEvent(new Event('toggle'))
-    })
-    await settleUntil(() => host.querySelectorAll('select').length === 1)
-
-    const knowledgeSelect = host.querySelector('select')!
-    await act(async () => {
-      knowledgeSelect.value = '1'
-      knowledgeSelect.dispatchEvent(new Event('change', { bubbles: true }))
-    })
-    expect(host.textContent).toContain('# Historical policy')
-    expect(host.textContent).toContain('reviewed by owner-1')
-    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
-      expect.stringContaining(`/knowledge/${knowledge.id}/revisions`)
-    ])
-
-    knowledgeCurrentRevision = 3
-    await act(async () => {
-      root.render(
-        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-          <KnowledgeEntry
-            record={{ ...knowledge, currentRevision: 3 }}
-            canManage={false}
-            onEdit={() => undefined}
-            onArchive={() => undefined}
-          />
-        </SWRConfig>
-      )
-    })
-    await settleUntil(() => host.textContent?.includes('# Newly published') === true)
-    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/revisions'))).toHaveLength(2)
-    expect(host.textContent).not.toContain('Revision history is unavailable.')
+    expect(host.textContent).not.toContain('Suggestions')
+    expect([...host.querySelectorAll('button')].some((b) => b.textContent?.includes('Publish'))).toBe(false)
+    expect(fetchMock.mock.calls.every(([input]) => !String(input).includes('/knowledge-suggestions'))).toBe(true)
   })
 })

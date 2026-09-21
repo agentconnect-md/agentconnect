@@ -1989,78 +1989,80 @@
     }
   },
   "Knowledge": {
-    "description": "由组织所有者审核、带版本的知识，供组织共享并由 Agent 按需发现。",
-    "publishKnowledge": "发布知识",
+    "description": "经审核的笔记，所有 Agent 都可以查阅。",
+    "publish": "发布",
     "tabs": {
-      "organization": "组织知识",
+      "library": "知识库",
       "suggestions": "建议"
     },
     "includeArchived": "包含已归档",
-    "library": "知识库",
-    "entries": "{count, plural, other {# 条}}",
-    "emptyKnowledge": "暂无已发布的组织知识。",
-    "ownerOnly": "只有组织所有者可以审核 Dream 建议。",
-    "ownerOnlySuggestions": "只有组织所有者可以审核建议。",
-    "suggestionCount": "{count, plural, other {# 条建议}}",
-    "availableNow": "当前可用 {count} 条",
-    "emptySuggestions": "暂无{state}建议。",
+    "columns": {
+      "title": "标题",
+      "tags": "标签",
+      "revision": "版本",
+      "updated": "更新时间"
+    },
+    "revision": "版本 {value}",
+    "archived": "已归档",
+    "empty": {
+      "title": "暂无知识",
+      "description": "发布一条笔记，或接受一条 Dream 建议。"
+    },
     "states": {
       "pending": "待处理",
       "accepted": "已接受",
       "rejected": "已拒绝"
     },
-    "operations": {
-      "create": "新建",
-      "update": "更新"
-    },
+    "emptySuggestions": "{state, select, pending {暂无待处理建议} accepted {暂无已接受建议} other {暂无已拒绝建议}}",
+    "emptySuggestionsHint": "Dream 会在这里提出知识和技能建议，等待审核。",
+    "proposedBy": "提议者：{name}",
+    "publishedBy": "发布者：{name}",
+    "reviewedBy": "审核者：{name}",
+    "removedAgent": "已移除的 Agent",
+    "sessions": "{count, plural, other {# 个会话}}",
+    "update": "更新",
+    "replacesRevision": "替换版本 {revision}",
+    "unavailable": "不可用",
+    "unavailableHint": "提议的 Agent 离线时无法审核。",
+    "inspect": "查看",
+    "inspectHint": "查看完整内容后即可接受。",
+    "reject": "拒绝",
+    "rejecting": "正在拒绝…",
+    "accept": "接受",
+    "accepting": "正在接受…",
+    "acceptedAs": "已接受为版本 {revision}",
+    "rejectedLabel": "已拒绝",
+    "open": "打开",
+    "loadSuggestionError": "无法加载此建议。",
     "binary": "二进制",
     "binaryAsset": "二进制资源",
-    "proposedBy": "提议者：{name}",
-    "dream": "Dream {id}",
-    "targetRevision": "目标 {id}，版本 {revision}",
-    "sourceSessions": "{count, plural, other {# 个来源会话}}",
-    "reviewed": "审核于 {time}",
-    "inspect": "查看",
-    "rejecting": "正在拒绝…",
-    "reject": "拒绝",
-    "accepting": "正在接受…",
-    "accept": "接受",
-    "acceptedRevision": "已接受为版本 {revision}。",
-    "rejected": "已拒绝{reason}",
-    "retainedMetadata": "保留的建议元数据仍可用；Daemon 本地的审核正文不再提供。",
-    "reviewUnavailable": "源 Daemon 离线或不再拥有该 Agent，暂时无法审核。",
-    "inspectHintPrefix": "点击",
-    "inspectHintSuffix": "获取暂存正文；正文完整渲染后即可接受。",
-    "loadSuggestionError": "无法加载此建议。",
-    "dreamProposal": "Dream 建议",
-    "manualPublish": "手动发布",
-    "manual": "手动",
-    "agentId": "Agent {id}",
-    "reviewedBy": "审核者：{id}",
-    "publishedBy": "发布者：{id}",
-    "revision": "版本 {value}",
-    "archived": "已归档",
-    "updated": "更新于 {time} · {source}",
-    "publishRevisionTitle": "发布新版本",
-    "restore": "恢复",
-    "archive": "归档",
-    "revisionHistoryUnavailable": "版本历史不可用。",
-    "revisionLabel": "版本",
-    "revisionSelectAria": "选择 {title} 的版本",
-    "current": "当前",
-    "publishRevision": "发布版本 {value}",
-    "close": "关闭",
-    "fields": {
+    "detail": {
+      "notFoundTitle": "未找到知识",
+      "notFoundPre": "此组织中没有条目 ",
+      "notFoundPost": "，它可能已被移除。",
+      "backToKnowledge": "返回知识库",
+      "searchKnowledge": "搜索知识",
+      "newRevision": "新版本",
+      "archive": "归档",
+      "restore": "恢复",
+      "history": "历史",
+      "current": "当前",
+      "viewingOlder": "正在查看版本 {revision}。",
+      "showCurrent": "显示当前版本"
+    },
+    "editor": {
+      "createTitle": "发布知识",
+      "revisionTitle": "发布版本 {value}",
       "title": "标题",
       "summary": "摘要",
       "tags": "标签",
       "tagsPlaceholder": "架构、运行手册、部署",
-      "markdown": "Markdown"
+      "content": "内容",
+      "close": "关闭",
+      "cancel": "取消",
+      "publish": "发布",
+      "publishing": "正在发布…"
     },
-    "cancel": "取消",
-    "publishing": "正在发布…",
-    "publishRevisionAction": "发布版本",
-    "publish": "发布",
     "memoryConnections": {
       "title": "外部记忆",
       "connectionsCount": "{count, plural, other {# 个连接}}",
@@ -2287,10 +2289,22 @@
       "barNameUsage": "用量",
       "barNameTopup": "充值",
       "ranges": {
-        "h24": { "label": "24 小时", "period": "24 小时" },
-        "d7": { "label": "7 天", "period": "7 天" },
-        "d30": { "label": "30 天", "period": "30 天" },
-        "d90": { "label": "90 天", "period": "90 天" }
+        "h24": {
+          "label": "24 小时",
+          "period": "24 小时"
+        },
+        "d7": {
+          "label": "7 天",
+          "period": "7 天"
+        },
+        "d30": {
+          "label": "30 天",
+          "period": "30 天"
+        },
+        "d90": {
+          "label": "90 天",
+          "period": "90 天"
+        }
       }
     },
     "membersDontPay": {
@@ -2366,12 +2380,18 @@
         "add": "添加",
         "alreadyMember": "{email} 已是成员",
         "roles": {
-          "owner": { "title": "所有者", "description": "可编辑全部内容、添加或移除成员，以及更改组织信息。" },
+          "owner": {
+            "title": "所有者",
+            "description": "可编辑全部内容、添加或移除成员，以及更改组织信息。"
+          },
           "collaborator": {
             "title": "协作者",
             "description": "可创建、编辑和运行 Agent，管理会话；不能更改成员或组织。"
           },
-          "viewer": { "title": "查看者", "description": "只读：可查看 Agent、会话和用量。" }
+          "viewer": {
+            "title": "查看者",
+            "description": "只读：可查看 Agent、会话和用量。"
+          }
         }
       },
       "editDialog": {
@@ -2408,12 +2428,18 @@
           "skillSource": "{count, plural, other {技能来源}}"
         },
         "roles": {
-          "owner": { "title": "所有者", "description": "可编辑全部内容、添加或移除成员，以及更改组织信息。" },
+          "owner": {
+            "title": "所有者",
+            "description": "可编辑全部内容、添加或移除成员，以及更改组织信息。"
+          },
           "collaborator": {
             "title": "协作者",
             "description": "可创建、编辑和运行 Agent，管理会话；不能更改成员或组织。"
           },
-          "viewer": { "title": "查看者", "description": "只读：可查看 Agent、会话和用量。" }
+          "viewer": {
+            "title": "查看者",
+            "description": "只读：可查看 Agent、会话和用量。"
+          }
         }
       }
     },
@@ -2461,8 +2487,14 @@
       "newAgentsStart": "新建 Agent 的初始设置",
       "ownerOnly": "只有组织所有者可以更改此设置",
       "options": {
-        "all": { "label": "所有 Agent", "description": "可与每个 Agent 双向通信。" },
-        "selected": { "label": "隔离", "description": "选择 Agent 前，不允许与其他 Agent 通信。" }
+        "all": {
+          "label": "所有 Agent",
+          "description": "可与每个 Agent 双向通信。"
+        },
+        "selected": {
+          "label": "隔离",
+          "description": "选择 Agent 前，不允许与其他 Agent 通信。"
+        }
       }
     },
     "inviteLinks": {
@@ -2474,7 +2506,11 @@
       "none": "暂无邀请链接",
       "noneDescription": "生成组织唯一的协作者邀请链接。",
       "organizationLink": "组织邀请链接",
-      "status": { "active": "有效", "expired": "已过期", "revoked": "已撤销" },
+      "status": {
+        "active": "有效",
+        "expired": "已过期",
+        "revoked": "已撤销"
+      },
       "revoking": "正在撤销…",
       "revoke": "撤销",
       "copyOnce": "请立即复制此链接：它只会显示一次",
@@ -2493,7 +2529,10 @@
       "deleteBody": "此前分配了此{kind}的每个 Agent 都将不再接收它。如果 Agent 自己定义了 {key}，该值将重新生效。",
       "deleteSecretWarning": "此值之后无法恢复。",
       "restartNote": "将在 Agent 下次重启后生效。",
-      "kinds": { "variable": "变量", "secret": "密钥" },
+      "kinds": {
+        "variable": "变量",
+        "secret": "密钥"
+      },
       "writeOnly": "只写：无法查看值",
       "selectedAgents": "已选 Agent（{count}）",
       "edit": "编辑",
@@ -2515,8 +2554,14 @@
       "keepCurrentValue": "保留当前值",
       "appliesTo": "应用到",
       "audiences": {
-        "all": { "label": "所有 Agent", "description": "你可以管理的每个 Agent，以及之后配置的新 Agent" },
-        "selected": { "label": "选定 Agent", "description": "仅应用到下方选择的 Agent" }
+        "all": {
+          "label": "所有 Agent",
+          "description": "你可以管理的每个 Agent，以及之后配置的新 Agent"
+        },
+        "selected": {
+          "label": "选定 Agent",
+          "description": "仅应用到下方选择的 Agent"
+        }
       },
       "agents": "Agent",
       "noManagedAgents": "你暂时没有可管理的 Agent。现在可以保存此条目，之后再分配。",

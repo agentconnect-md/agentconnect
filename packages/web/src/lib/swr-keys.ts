@@ -27,6 +27,17 @@ export const consoleKeys = {
     consoleKey(orgId, 'agent-runtime-commands', agentId),
   managedSkills: (orgId: string | null | undefined, includeArchived: boolean) =>
     consoleKey(orgId, 'managed-skills', includeArchived ? 'include-archived' : 'active'),
+  organizationKnowledge: (orgId: string | null | undefined, includeArchived: boolean) =>
+    consoleKey(orgId, 'organization-knowledge', includeArchived ? 'include-archived' : 'active'),
+  organizationKnowledgeEntry: (orgId: string | null | undefined, id: string) =>
+    consoleKey(orgId, 'organization-knowledge-entry', id),
+  /** The current revision is part of the key, so a revision published from the page refreshes an open history in place. */
+  organizationKnowledgeRevisions: (orgId: string | null | undefined, id: string, currentRevision: string) =>
+    consoleKey(orgId, 'organization-knowledge-revisions', id, currentRevision),
+  organizationSuggestions: <const State extends 'pending' | 'accepted' | 'rejected'>(
+    orgId: string | null | undefined,
+    state: State
+  ) => consoleKey(orgId, 'organization-suggestions', state),
   organizationEnvironment: (orgId: string | null | undefined) => consoleKey(orgId, 'organization-environment'),
   /** The install wizard's deployment-capability probe (`GET /slack/config`) —
    *  Slack-NAMED but answered per organization AND per caller, so it is
