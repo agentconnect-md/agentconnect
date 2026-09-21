@@ -7539,7 +7539,7 @@ export class Daemon {
   private async sessionCoordinateFor(
     agentId: string,
     integrationId: string | undefined,
-    msg: NormalizedMessage,
+    msg: Pick<NormalizedMessage, 'channel' | 'transportScope'>,
     opts: { mint?: boolean } = {}
   ): Promise<string | undefined> {
     if (integrationId === undefined) return undefined
@@ -9179,10 +9179,18 @@ export class Daemon {
     // key, the msgId and the dispatched message all agree on one channel (branches 1 and 2 leave
     // it exactly as asserted; only the channel-free branch 3 substitutes).
     const childMsgId = `agentcall:${sessionChannel}:${msg.deliveryId}`
+    // The callee's own coordinate, resolved HERE because this is its daemon: the source
+    // daemon cannot see this agent's integration or its reservation, so it forwards only the
+    // physical thread. Without this a remote append-mode callee opens a session per caller
+    // instead of continuing its one conversation — the cross-daemon half of the local fix.
+    const childCoordinate = await this.sessionCoordinateFor(msg.toAgentId, integrationId, {
+      channel: sessionChannel,
+      ...(childTransportScope !== undefined ? { transportScope: childTransportScope } : {})
+    })
     const childSessionId = sessionKey(
       platform,
       sessionChannel,
-      thread ?? childMsgId,
+      childCoordinate ?? thread ?? childMsgId,
       msg.toAgentId,
       childTransportScope
     )
@@ -9206,6 +9214,7 @@ export class Daemon {
       platform,
       channel: sessionChannel,
       ...(thread !== undefined ? { thread } : {}),
+      ...(childCoordinate !== undefined ? { sessionThread: childCoordinate } : {}),
       sender: { id: msg.trustedFromAgentId, isBot: true },
       // The forwarded text already names the caller (`From <caller>: …`, built on the caller's
       // daemon in prepareAgentDelivery) — deliver it as-is. Re-wrapping it here would
@@ -10479,13 +10488,13 @@ export class Daemon {
         this.dispatch(agentId, msg, integrationId, webchat, callMeta, opts),
       webchatTransport: () => this.webchatTransport,
       externalOriginForSession: (agentId, sessionKey) => this.externalOriginForSession(agentId, sessionKey),
-      targetSessionCoordinate: async (agentId, platform, channel, transportScope) => {
-        const int = this.agents
-          .get(agentId)
-          ?.integrations?.find(
-            (candidate) => candidate.platform === platform && conversationSessionMode(candidate, channel) === 'append'
-          )
-        if (!int) return undefined
+      // The integration the wake actually selected, not any same-platform one: an agent can
+      // hold two integrations whose channel ids collide, and the other one's mode is not
+      // this conversation's.
+      targetSessionCoordinate: async (agentId, integrationId, channel, transportScope) => {
+        if (integrationId === undefined) return undefined
+        const int = this.agents.get(agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
+        if (!int || conversationSessionMode(int, channel) !== 'append') return undefined
         return await this.store.resolveAppendCoordinate(agentId, channel, transportScope)
       }
     }

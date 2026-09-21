@@ -115,7 +115,7 @@ export interface CollabTurnHost {
    *  own reservation, so this is the callee's answer, not the caller's. */
   targetSessionCoordinate(
     agentId: string,
-    platform: string,
+    integrationId: string | undefined,
     channel: string,
     transportScope?: string
   ): Promise<string | undefined>
@@ -465,7 +465,7 @@ export class CollabCoordinator {
     // keying on the delivery thread would open the peer a second session per caller.
     const targetCoordinate = await this.host.targetSessionCoordinate(
       req.toAgentId,
-      platform,
+      integrationId,
       coordChannel,
       targetTransportScope
     )
