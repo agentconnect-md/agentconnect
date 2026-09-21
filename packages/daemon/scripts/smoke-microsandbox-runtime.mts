@@ -2,17 +2,18 @@
 // Usage: pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-microsandbox-runtime.mts <image> [transfer-MiB]
 // It reads the guest socket paths from the launch environment and calls only what both sides of the move onto the shim have, so the same file measures the previous mechanism from a checkout of it.
 import assert from 'node:assert/strict'
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { sessionHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
 import type { SpawnedRuntime } from '../src/acp/spawn-driver.js'
-import { startExecutorFacet } from '../src/execution/executor-facet.js'
+import { seedSessionHome, startExecutorFacet } from '../src/execution/executor-facet.js'
 import { ExecutorPlane } from '../src/execution/executor-plane.js'
 import { microsandboxLauncher } from '../src/execution/executor-vm.js'
 import type { PlaneLaunch } from '../src/execution/plane.js'
+import { assembleRuntimeLaunch } from '../src/launch/assemble.js'
 import { makeLogger } from '../src/log.js'
 import { installMicrosandbox } from '../src/microsandbox/install.js'
 import { prepareMicrosandboxLaunch } from '../src/microsandbox/launch.js'
@@ -150,11 +151,19 @@ const LEAF = sessionKeyDirName(SESSION_KEY)
 const SUBJECT = sessionSandboxSubject(AGENT, LEAF)
 const HOST_KEY = sessionHostKey(AGENT, SESSION_KEY)
 const hostedDir = join(root, 'sessions', LEAF)
-/** Reports what the shim gave it into the mounted workspace, then echoes: the file is read back from THIS machine's disk. */
+const hostedReport = join(hostedDir, 'workspace', 'from-the-guest')
+/** Reports its environment and whether the sign-in it is pointed at is there, into the mounted workspace, then echoes. */
 const HOSTED_RUNTIME = [
-  `require('fs').writeFileSync(${JSON.stringify(join(hostedDir, 'workspace', 'from-the-guest'))}, JSON.stringify({ home: process.env.HOME, path: process.env.PATH, agent: process.env.AC_AGENT_ID }))`,
+  "const fs = require('fs')",
+  'const signIn = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR',
+  "const signedIn = Boolean(signIn) && fs.existsSync(signIn + '/.credentials.json')",
+  'fs.writeFileSync(process.env.AC_TEST_REPORT, JSON.stringify({ env: process.env, signedIn }))',
   'process.stdin.pipe(process.stdout)'
 ].join('; ')
+// This machine's own Claude sign-in, which the facet seeds the session HOME from; the VM must be given it (§8).
+const machineHome = join(root, 'machine')
+await mkdir(join(machineHome, '.claude'), { recursive: true, mode: 0o700 })
+await writeFile(join(machineHome, '.claude', '.credentials.json'), '{"claudeAiOauth":{}}\n', { mode: 0o600 })
 const facet = await startExecutorFacet({
   daemonRoot: root,
   share: true,
@@ -168,7 +177,10 @@ const facet = await startExecutorFacet({
   ownSessions: () => 0,
   draining: () => false,
   endpointHost: () => '127.0.0.1',
-  seedHome: () => {},
+  seedHome: (home) =>
+    seedSessionHome(home, { 'claude-acp': { command: 'claude-agent-acp', args: [], env: [] } }, console, {
+      HOME: machineHome
+    }),
   agentsExist: async (ids: string[]) => new Set(ids),
   retentionMs: () => null,
   log: makeLogger('info'),
@@ -336,14 +348,32 @@ try {
   assert.deepEqual(plane.rootsFor(SESSION_KEY), { runtimeRoot: DEFAULT_SHIM_RUNTIME_ROOT, missingHelpers: [] })
   step('hosted-vm-prepared-and-its-shim-bound-through-the-pipe', { ms: summary.hostedLaunchMs })
 
-  // Only the host key is read; the rest of a launch belongs to an agent this script does not load.
+  // A REAL prepared launch, composed as the holder composes a placed session's: on the HOME its executor seeded (§7).
+  const home = plane.homeFor(SUBJECT)!
+  assert.equal(home, join(hostedDir, 'home'))
+  const holderAgentDir = join(root, 'holder-agent')
+  await mkdir(holderAgentDir)
+  const holderEnv = { HOME: holderAgentDir, PATH: '/holder/bin', HOLDER_ONLY: 'holder' }
+  const prepared = assembleRuntimeLaunch({
+    runtimeId: 'claude-acp',
+    runtime: { command: '/usr/local/bin/node', args: ['-e', HOSTED_RUNTIME], env: [] },
+    provider: 'managed',
+    scopeDir: holderAgentDir,
+    cwd: join(hostedDir, 'workspace'),
+    hostKey: HOST_KEY,
+    runInSandbox: false,
+    runtimeEnv: {},
+    agentEnv: { AC_AGENT_ID: AGENT, AC_TEST_REPORT: hostedReport },
+    hostEnv: holderEnv,
+    stateSourceEnv: holderEnv,
+    executor: { home }
+  })
+  // What AcpHost hands the driver; only the host key of a launch is read, the rest belongs to an agent this script does not load.
   const hostedDriver = plane.spawnFor({ hostKey: HOST_KEY } as unknown as PlaneLaunch).driver
   const echo = await hostedDriver.launch({
-    command: '/usr/local/bin/node',
-    args: ['-e', HOSTED_RUNTIME],
-    // The HOME a holder composes on the executor's root, which resolves in the guest because the session is mounted there (§7).
-    // Deliberately no PATH: a holder describes a different machine, so the guest's own is filled in (§6).
-    env: { AC_AGENT_ID: AGENT, HOME: join(hostedDir, 'home') },
+    command: prepared.runtime.command,
+    args: prepared.runtime.args,
+    env: { ...(prepared.launch.inheritProcessEnv ? holderEnv : {}), ...prepared.launch.env },
     hostKey: HOST_KEY
   })
   const writer = echo.toAgent.getWriter()
@@ -352,26 +382,37 @@ try {
   assert.deepEqual(await firstJsonLine(echo), { hello: 'executor' })
   await echo.stop(10_000)
 
-  // The session's work is on THIS machine's disk, in the mount, never on the VM's own disks (§7).
-  const inGuest = JSON.parse(await readFile(join(hostedDir, 'workspace', 'from-the-guest'), 'utf8')) as {
-    home: string
-    path: string
-    agent: string
+  // Read back from THIS machine's disk: the guest wrote it into the mount, never onto the VM's own disks (§7).
+  const inGuest = JSON.parse(await readFile(hostedReport, 'utf8')) as {
+    env: Record<string, string | undefined>
+    signedIn: boolean
   }
-  assert.equal(inGuest.agent, AGENT, 'the launch environment did not reach the runtime')
-  // The mount is at the same path in the guest, so a HOME the holder composed on the executor's root is the seeded one.
-  assert.equal(inGuest.home, join(hostedDir, 'home'))
-  assert.ok(existsSync(join(hostedDir, 'home')), 'the session HOME is not on this machine')
-  // AC_SHIM_COMPLETE_ENV is never set for a remote holder, so that PATH is the guest's fill-in, not this machine's (§6).
-  assert.ok(inGuest.path, 'the guest filled in no PATH of its own')
-  assert.notEqual(inGuest.path, process.env.PATH)
-  step('hosted-acp-echo-and-mounted-state-verified', inGuest)
+  const seen = inGuest.env
+  assert.equal(seen.AC_AGENT_ID, AGENT, 'the launch environment did not reach the runtime')
+  assert.equal(seen.HOME, home)
+  assert.equal(seen.XDG_CONFIG_HOME, join(home, '.config'))
+  assert.equal(seen.CLAUDE_CONFIG_DIR, join(home, '.claude'))
+  // The executor's own sign-in: its shim fills the pointer in, and the VM was given the directory it names (§8).
+  assert.equal(seen.CLAUDE_SECURESTORAGE_CONFIG_DIR, realpathSync(join(machineHome, '.claude')))
+  assert.ok(inGuest.signedIn, "the executor's sign-in is not reachable in the guest")
+  // Nothing of the holder's environment; the PATH is the guest's own fill-in, which a complete-env shim would not make (§6).
+  assert.equal(seen.HOLDER_ONLY, undefined)
+  assert.deepEqual(
+    Object.entries(seen).filter(([, value]) => value?.includes(holderAgentDir) || value === '/holder/bin'),
+    []
+  )
+  assert.ok(seen.PATH, 'the guest filled in no PATH of its own')
+  step('hosted-prepared-launch-echoed-under-the-seeded-home-and-sign-in', {
+    home: seen.HOME,
+    path: seen.PATH,
+    signIn: seen.CLAUDE_SECURESTORAGE_CONFIG_DIR
+  })
 
   // Idle drops the launch, and the next one is a NEW launchId: the executor rotates the key and allocates the next generation.
   await plane.suspendIdle(SUBJECT)
   assert.equal(await hostedLaunch(), firstGeneration + 1)
   // The same environment, so the first launch's work is still in the mount.
-  assert.ok(existsSync(join(hostedDir, 'workspace', 'from-the-guest')), 'the relaunch did not reuse the environment')
+  assert.ok(existsSync(hostedReport), 'the relaunch did not reuse the environment')
   step('a-second-launch-rotated-the-key-and-bound-the-same-shim', { generation: firstGeneration + 1 })
 
   await plane.retire(AGENT, SESSION_KEY)

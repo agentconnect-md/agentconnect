@@ -61,8 +61,8 @@ export interface MicrosandboxEnvironment {
   mounts: SandboxMount[]
   workspaceRoot: string
   secrets?: MicrosandboxSecret[]
-  /** A session this machine hosts for another member of its group: its shim is EXPOSED for the executor's pipe, never bound here (session-executors.md §6). Set only when true, so an ordinary environment's spec is unchanged. */
-  hosted?: true
+  /** A session this machine hosts for another member of its group: its shim is EXPOSED for the executor's pipe, never bound here (session-executors.md §6), and started with what the HOME seed points a runtime at. Absent on every ordinary environment, whose spec is therefore unchanged. */
+  hosted?: { env: Record<string, string> }
 }
 
 export type MicrosandboxExecOptions = MicrosandboxExecuteOptions
@@ -898,6 +898,7 @@ export class MicrosandboxManager {
           sandbox,
           workspaceRoot: environment.workspaceRoot,
           completeEnv: false,
+          seedEnv: environment.hosted.env,
           runtimeStderr: (text) => this.options.log?.debug(`microsandbox ${id}: ${text.trimEnd()}`),
           failed: (error) => {
             this.options.log?.error(`microsandbox: the hosted shim of ${id} ended — ${error.message}`)

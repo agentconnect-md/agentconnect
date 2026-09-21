@@ -4,21 +4,25 @@ import { join } from 'node:path'
 import type { MicrosandboxEnvironment, MicrosandboxManager } from '../microsandbox/driver.js'
 import { DEFAULT_SHIM_RUNTIME_ROOT } from '../shim/sandbox-paths.js'
 import { SESSIONS_DIR } from '../workspace/session-layout.js'
-import type { StrategyLauncher } from './strategies.js'
+import type { SessionSeed, StrategyLauncher } from './strategies.js'
 
 /** Hosted environments are keyed apart from every agent-owned one: this machine holds none of their agents. */
 const HOSTED_PREFIX = 'executor/'
 
 /** A hosted session's VM, whose durable state is an executor-local directory MOUNTED into it, never on its own disks (§7). */
 // `replace()` retires and destroys a VM whenever its spec or image identity changes, with no dirty check, so work on those disks would go with it.
-export function hostedEnvironment(daemonRoot: string, sessionLeaf: string): MicrosandboxEnvironment {
+export function hostedEnvironment(
+  daemonRoot: string,
+  sessionLeaf: string,
+  seed: SessionSeed = { env: {}, paths: [] }
+): MicrosandboxEnvironment {
   const directory = join(daemonRoot, SESSIONS_DIR, sessionLeaf)
   return {
     id: `${HOSTED_PREFIX}${sessionLeaf}`,
-    // The same path inside the VM, so the shim reports the workspace root a holder derives this machine's daemon root from.
-    mounts: [{ source: directory, target: directory, mode: 'writable' }],
+    // At the same paths in the VM: the session, whose root a holder derives, and the sign-in its HOME points at, writable for a refresh as a local VM's is (§8).
+    mounts: [directory, ...seed.paths].map((path) => ({ source: path, target: path, mode: 'writable' as const })),
     workspaceRoot: directory,
-    hosted: true
+    hosted: { env: seed.env }
   }
 }
 
@@ -30,9 +34,9 @@ export function microsandboxLauncher(deps: { manager: () => MicrosandboxManager 
     return manager
   }
   return {
-    start: async ({ daemonRoot, sessionLeaf }) => {
+    start: async ({ daemonRoot, sessionLeaf, seed }) => {
       const manager = required()
-      const environment = hostedEnvironment(daemonRoot, sessionLeaf)
+      const environment = hostedEnvironment(daemonRoot, sessionLeaf, seed)
       // The mount source must exist before the VM starts; the facet seeds this machine's sign-in into `home` first.
       for (const leaf of ['workspace', 'repos', 'home'])
         await mkdir(join(environment.workspaceRoot, leaf), { recursive: true, mode: 0o700 })

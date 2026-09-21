@@ -164,6 +164,8 @@ export async function startGuestShim(input: {
   workspaceRoot: string
   /** Whether the daemon driving this VM is on the same machine and sends each runtime's whole environment; a holder on another machine describes a different machine, so for one it is false (§6). */
   completeEnv: boolean
+  /** What a hosted session's HOME seed points a runtime at on this machine; the shim fills it in beneath a holder's env, as a host shim does. */
+  seedEnv?: Record<string, string>
   /** What the runtime writes to stderr: the shim starts it with its own stderr, so it arrives on the shim's stream. */
   runtimeStderr: (text: string) => void
   /** The shim ended without having been stopped. */
@@ -199,6 +201,8 @@ export async function startGuestShim(input: {
     handle = await openExecStream(sdk, sandbox, MICROSANDBOX_NODE, [`${directory}/index.js`, '--identity-stdin'], {
       cwd: '/',
       env: {
+        // First, so a seed can name none of the shim's own variables.
+        ...input.seedEnv,
         [SHIM_WORKSPACE_ROOT_ENV]: input.workspaceRoot,
         [SHIM_LISTEN_PORT_ENV]: String(DEFAULT_SHIM_LISTEN_PORT),
         ...(input.completeEnv ? { [SHIM_COMPLETE_ENV_FLAG]: '1' } : {})

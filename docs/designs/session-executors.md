@@ -835,7 +835,10 @@ the executor's strategy is the session's boundary, whatever the holder's backend
 What only the executor can name comes from the executor: the HOME seed also answers
 where that machine keeps a sign-in the HOME only points at — Claude's credential
 directory, which the seed leaves out of the HOME — and the executor's shim fills that
-in beneath whatever the holder sent.
+in beneath whatever the holder sent. Those places, and the shared files the seeded HOME
+links to (Codex's and Qoder's), are paths on the executor's host: a `host` shim already
+sees them, and a VM strategy mounts them into the guest at the same paths, writable
+for a token refresh, as the local VM already mounts them for its own sessions.
 
 **Provider credentials and agent secrets are two mechanisms**, and both cross the
 link — encrypted. The earlier text authenticated the dial and left the link itself
