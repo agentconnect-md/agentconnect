@@ -265,12 +265,21 @@ describe('executor/prepare', () => {
 })
 
 describe('executor/release', () => {
-  const RELEASE: ExecutorReleaseReq = { agentId: AGENT, sessionKey: PREPARE.sessionKey, executorDaemonId: EXECUTOR }
+  const RELEASE: ExecutorReleaseReq = {
+    agentId: AGENT,
+    sessionKey: PREPARE.sessionKey,
+    executorDaemonId: EXECUTOR,
+    launchId: LAUNCH
+  }
 
-  it('names the session and the machine, and nothing about a launch', () => {
+  it('names the session, the machine and the launch it retires', () => {
     expect(roundTrip('executor/release', RELEASE)).toEqual(RELEASE)
     expect(ExecutorReleaseReq.safeParse({ agentId: AGENT, sessionKey: PREPARE.sessionKey }).success).toBe(false)
     expect(ExecutorReleaseReq.safeParse({ ...RELEASE, sessionKey: '' }).success).toBe(false)
+    // A session key outlives its launches, so a release that names none could cross a launch boundary.
+    const { launchId: _launchId, ...unfenced } = RELEASE
+    expect(ExecutorReleaseReq.safeParse(unfenced).success).toBe(false)
+    expect(ExecutorReleaseReq.safeParse({ ...RELEASE, launchId: 'launch-1' }).success).toBe(false)
   })
 
   it('every arm of the reply round-trips, and a refusal is a slug from its own closed list', () => {

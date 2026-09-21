@@ -1106,10 +1106,13 @@ not read as idle — has its shim stopped. Its slot is freed, its key and cached
 reply are dropped, and its directory and applied generation stay.
 
 **Release.** A holder that retires the session sends `executor/release`, which the
-Control Plane relays here: the shim stops, and the environment and its inventory
-record are removed. It answers `unknown` for an environment it does not have, so a
-resend is free, and it is deliberately NOT gated by `share` or the group's switch —
-withdrawn consent must still let a holder clean up what it placed.
+Control Plane relays here: a launch still inside the launcher is waited for, the shim
+stops, and the environment and its inventory record are removed. It is fenced to the
+`launchId` it names — a session key outlives its launches, so a retransmitted or
+reordered release must not delete what a newer one created — and answers `unknown`
+both for an environment it does not have and for one on another launch, so a resend
+is free. It is deliberately NOT gated by `share` or the group's switch: withdrawn
+consent must still let a holder clean up what it placed.
 
 **Backstop reconcile.** Every ten minutes the facet sweeps its on-disk inventory,
 which is labelled by agent id and session leaf and nothing else. It reads **no

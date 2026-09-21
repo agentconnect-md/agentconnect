@@ -48,7 +48,8 @@ const PREPARE: ExecutorPrepareReq = {
 const RELEASE: ExecutorReleaseReq = {
   agentId: AGENT,
   sessionKey: PREPARE.sessionKey,
-  executorDaemonId: EXECUTOR
+  executorDaemonId: EXECUTOR,
+  launchId: LAUNCH
 }
 
 function frame(type: 'executor/candidates' | 'executor/prepare' | 'executor/release', payload: unknown): AnyFrame {

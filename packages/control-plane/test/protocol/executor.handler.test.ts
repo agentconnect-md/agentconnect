@@ -51,7 +51,12 @@ const PREPARE: ExecutorPrepareReq = {
   launchId: LAUNCH,
   strategy: 'host'
 }
-const RELEASE: ExecutorReleaseReq = { agentId: AGENT, sessionKey: SESSION_KEY, executorDaemonId: EXECUTOR }
+const RELEASE: ExecutorReleaseReq = {
+  agentId: AGENT,
+  sessionKey: SESSION_KEY,
+  executorDaemonId: EXECUTOR,
+  launchId: LAUNCH
+}
 
 const BEAT = { load: { cpu: 0.1, mem: 0.1, agents: 0 }, health: 'ok', activeSessions: 0 }
 

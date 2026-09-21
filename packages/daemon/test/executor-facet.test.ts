@@ -620,17 +620,18 @@ describe('executor facet', () => {
   })
 
   describe('release', () => {
-    const release = (over: Partial<{ agentId: string; sessionKey: string }> = {}) => ({
+    const release = (launch: number, over: Partial<{ agentId: string; sessionKey: string }> = {}) => ({
       agentId: AGENT,
       sessionKey: KEY,
       executorDaemonId: SELF,
+      launchId: LAUNCH(launch),
       ...over
     })
 
     it('stops the shim, removes the environment and its record, and closes the holder’s pipe', async () => {
       const { facet } = await start()
       const socket = await admitted(ready(await facet.prepare(req(1))))
-      expect(await facet.release(release())).toEqual({ status: 'released' })
+      expect(await facet.release(release(1))).toEqual({ status: 'released' })
       expect(shims.get(LEAF)!.stopped).toBe(true)
       await closed(socket)
       expect(existsSync(join(root!, 'sessions', LEAF))).toBe(false)
@@ -641,17 +642,31 @@ describe('executor facet', () => {
     it('is idempotent, and a session it never hosted is unknown rather than an error', async () => {
       const { facet } = await start()
       ready(await facet.prepare(req(1)))
-      expect(await facet.release(release())).toEqual({ status: 'released' })
-      expect(await facet.release(release())).toEqual({ status: 'unknown' })
-      expect(await facet.release(release({ sessionKey: `slack:C9:1700000000.000900:${AGENT}` }))).toEqual({
+      expect(await facet.release(release(1))).toEqual({ status: 'released' })
+      expect(await facet.release(release(1))).toEqual({ status: 'unknown' })
+      expect(await facet.release(release(1, { sessionKey: `slack:C9:1700000000.000900:${AGENT}` }))).toEqual({
         status: 'unknown'
       })
+    })
+
+    it('never crosses a launch boundary: a late release finds the environment on a newer launch and removes nothing', async () => {
+      const { facet } = await start()
+      ready(await facet.prepare(req(1)))
+      const socket = await admitted(ready(await facet.prepare(req(2))))
+      // A session key outlives its launches; this one was retransmitted or reordered past the prepare that replaced it.
+      expect(await facet.release(release(1))).toEqual({ status: 'unknown' })
+      expect(existsSync(join(root!, 'sessions', LEAF, 'home'))).toBe(true)
+      expect(shims.get(LEAF)!.stopped).toBe(false)
+      socket.write('untouched')
+      await vi.waitFor(() => expect(shims.get(LEAF)!.received()).toBe('untouched'), WAIT)
+      // The launch the environment IS on releases it.
+      expect(await facet.release(release(2))).toEqual({ status: 'released' })
     })
 
     it('refuses to release another agent’s environment, whoever the Control Plane vouched for', async () => {
       const { facet } = await start()
       ready(await facet.prepare(req(1)))
-      expect(await facet.release(release({ agentId: OTHER_AGENT }))).toEqual({
+      expect(await facet.release(release(1, { agentId: OTHER_AGENT }))).toEqual({
         status: 'refused',
         reason: 'not_holder'
       })
@@ -665,19 +680,35 @@ describe('executor facet', () => {
       facets = []
       const { facet } = await start({ share: false })
       expect(facet.facts()).toBeUndefined()
-      expect(await facet.release(release())).toEqual({ status: 'released' })
+      expect(await facet.release(release(1))).toEqual({ status: 'released' })
       expect(existsSync(join(root!, 'sessions', LEAF))).toBe(false)
     })
 
     it('retires the launch of an environment a release is removing, rather than making it wait', async () => {
       const { facet } = await start()
       ready(await facet.prepare(req(1)))
-      const removing = facet.release(release())
+      const removing = facet.release(release(1))
       // A prepare that waited here would let a later holder's overtake it, which is the one ordering the CP cannot fix.
       expect(await facet.prepare(req(2))).toEqual({ status: 'refused', reason: 'launch_retired' })
       expect(await removing).toEqual({ status: 'released' })
       // Once it is gone the environment is created again, from the first generation.
       expect(ready(await facet.prepare(req(2))).generation).toBe(1)
+    })
+
+    it('lets a launch that was still starting finish, so its shim is stopped and not left detached', async () => {
+      let launched!: () => void
+      hold = new Promise<void>((resolve) => (launched = resolve))
+      const { facet } = await start()
+      const starting = facet.prepare(req(1))
+      // The holder retired the session while its own preparation was still inside the launcher.
+      const removing = facet.release(release(1))
+      launched()
+      ready(await starting)
+      expect(await removing).toEqual({ status: 'released' })
+      // The shim the launch started belongs to nobody once the record is gone, so the removal has to be the one that stops it.
+      expect(shims.get(LEAF)!.stopped).toBe(true)
+      expect(existsSync(join(root!, 'sessions', LEAF))).toBe(false)
+      expect(facet.hostedSessions()).toBe(0)
     })
   })
 

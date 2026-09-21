@@ -502,12 +502,18 @@ class Facet implements ExecutorFacet {
     if (!env) return Promise.resolve({ status: 'unknown' })
     // The CP vouched that the asker holds `req.agentId`; that says nothing about another agent's environment.
     if (env.agentId !== req.agentId) return Promise.resolve({ status: 'refused', reason: 'not_holder' })
+    // A session key outlives its launches, and a release can be retransmitted or reordered past a prepare. Fenced to the
+    // launch it retires, a late one finds the environment on another launch and removes nothing.
+    if (env.launchId !== req.launchId) return Promise.resolve({ status: 'unknown' })
     // Marked with nothing awaited first, so a prepare arriving meanwhile is retired rather than resurrecting what is going.
     return (env.discarding ??= this.remove(env)).then(() => ({ status: 'released' }))
   }
 
   /** The holder judged the session retired, pipe and all; nothing here outranks that. A removal that fails is logged and left to the backstop. */
   private async remove(env: Environment): Promise<void> {
+    // A launch still starting owns a shim this environment is about to stop being: let it finish, or its process outlives
+    // the map entry that could have stopped it. Nothing new starts meanwhile — `discarding` is already set.
+    await env.launching?.catch(() => undefined)
     await this.stopEnvironment(env)
     await this.discard(env, 'its holder released it')
   }

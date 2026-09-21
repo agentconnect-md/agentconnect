@@ -1166,7 +1166,12 @@ describe('CpClient dispatch', () => {
     launchId: '55555555-5555-4555-8555-555555555555',
     strategy: 'host'
   }
-  const RELEASE = { agentId: CRON_AGENT_ID, sessionKey: PREPARE.sessionKey, executorDaemonId: DAEMON_ID }
+  const RELEASE = {
+    agentId: CRON_AGENT_ID,
+    sessionKey: PREPARE.sessionKey,
+    executorDaemonId: DAEMON_ID,
+    launchId: PREPARE.launchId
+  }
 
   // It advertises `session-executors-v1`, so a relayed prepare must be ANSWERED: an ignored frame costs the Control Plane its whole relay budget.
   it('refuses a relayed executor/prepare at once while it has no executor facet', async () => {

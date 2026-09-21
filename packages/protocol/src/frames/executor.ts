@@ -122,7 +122,8 @@ export type ExecutorPrepareResult = z.infer<typeof ExecutorPrepareResult>
 export const ExecutorReleaseReq = z.object({
   agentId: z.string().uuid(),
   sessionKey: z.string().min(1).max(1024),
-  executorDaemonId: z.string().uuid()
+  executorDaemonId: z.string().uuid(),
+  launchId: z.string().uuid() // the launch being retired: a session key outlives its launches, so a release that names another one is `unknown`
 })
 export type ExecutorReleaseReq = z.infer<typeof ExecutorReleaseReq>
 
@@ -130,7 +131,7 @@ export type ExecutorReleaseReq = z.infer<typeof ExecutorReleaseReq>
 export const ExecutorReleaseRefusal = z.enum(['not_holder', 'not_on_group', 'not_member', 'relay_failed'])
 export type ExecutorReleaseRefusal = z.infer<typeof ExecutorReleaseRefusal>
 
-/** REP to `executor/release`. `unknown` makes it idempotent; `offline` is the CP's own record, and the executor's backstop collects the environment later. */
+/** REP to `executor/release`. `unknown` makes it idempotent and fences it — no environment, or one that has moved on to another launch; `offline` is the CP's own record, and the executor's backstop collects the environment later. */
 export const ExecutorReleaseResult = z.discriminatedUnion('status', [
   z.object({ status: z.literal('released') }),
   z.object({ status: z.literal('unknown') }),

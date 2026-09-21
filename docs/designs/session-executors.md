@@ -374,15 +374,26 @@ the machines talk to each other.
    root (§5) — or `full`, or a refusal with its reason. The CP returns that reply to
    the holder. `launchId` is a uuid the holder mints per launch (below); `resources`
    and `image` matter to the `microsandbox` strategy only.
-3. **`executor/release {agentId, sessionKey, executorDaemonId}`** — holder → CP,
-   when the holder retires the session (§7). The same ledger checks as `prepare`
-   **except the two consents**: neither the group's switch nor the executor's facet
-   being on may block it, because withdrawn consent must still let a holder clean up
-   what it placed. The executor stops the shim, removes the environment and its
-   inventory record, and answers `released`, `unknown` (it has no such environment,
-   which makes a resend free) or a refusal. An executor whose control connection is
-   down answers `offline` from the CP's own record, and its backstop collects the
-   environment later.
+3. **`executor/release {agentId, sessionKey, executorDaemonId, launchId}`** — holder
+   → CP, when the holder retires the session (§7). The same ledger checks as
+   `prepare` **except the two consents**: neither the group's switch nor the
+   executor's facet being on may block it, because withdrawn consent must still let a
+   holder clean up what it placed. The executor stops the shim, removes the
+   environment and its inventory record, and answers `released`, `unknown` or a
+   refusal. An executor whose control connection is down answers `offline` from the
+   CP's own record, and its backstop collects the environment later.
+
+   `launchId` names the launch being retired, and it is a fence, not a label. A
+   session key is derived from the conversation and outlives every launch under it,
+   so without one a release that was retransmitted, or that the CP relayed after a
+   `prepare` from the same holder, would delete an environment a **newer** launch had
+   just created — prepares are ordered against each other (below), but a release and a
+   prepare are two independent handler runs. An environment that has moved on to
+   another launch answers `unknown`, which is also the answer for one that is not
+   there at all: both mean "the launch you are retiring is gone", and both make a
+   resend free. The holder therefore records the launch it last prepared for a session
+   beside that session's executor; what it cannot name, the backstop owns.
+
 4. **The holder dials the executor's listener with TLS, using that key**, with the
    session leaf as the PSK identity. TLS-PSK authenticates both ends and encrypts
    the link with no certificates (the evidence closes this section): a dialer that
@@ -690,10 +701,12 @@ finds no launch, mints a new one, and its `prepare` starts the environment again
 the next generation; a holder that kept the old launch would reuse a reply whose key
 no longer opens anything, and no `prepare` would ever be sent. A dead holder's
 pipes close by themselves, so nothing keeps running for lack of a judge.
-_Retirement:_ the holder sends `executor/release` (§6), and the executor stops the
-shim, removes the environment and drops its inventory record. That is the whole of
-it when the executor is reachable; when it is not, the holder is told `offline` and
-the backstop below collects the environment later.
+_Retirement:_ the holder sends `executor/release` naming the launch it is retiring
+(§6), and the executor stops the shim — waiting first for a launch still inside its
+launcher, so no shim outlives the record that could have stopped it — removes the
+environment and drops its inventory record. That is the whole of it when the executor
+is reachable; when it is not, the holder is told `offline` and the backstop below
+collects the environment later.
 
 **When there is no holder.** A release can be lost, a holder can die between
 deciding and sending, and an agent can be removed outright. So the executor keeps an
