@@ -1232,6 +1232,10 @@ export interface SessionMetaRecord {
    *  private one. Session-bound provenance that outlives `daemonId` (domain/session-content.ts). */
   contentSetId: string | null
   workspaceIsolation: 'shared' | 'session' | null
+  /** Birth verdict (session-executors.md §7): the group member executing this session, or the reason
+   *  it stayed with its holder. At most one is ever set; both null on a session born before the feature. */
+  executorDaemonId: DaemonId | null
+  stayedHomeReason: SessionStayedHomeReason | null
   activityState: ActivityState
   // ── session visibility (session-visibility.md §3) ──
   orgId: OrgId // denormalized from agent.orgId at ingest

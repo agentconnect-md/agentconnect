@@ -1037,6 +1037,8 @@ export function sessionRoutes(deps: HttpDeps) {
           daemonId: s.daemonId,
           contentSetId: s.contentSetId ?? null,
           workspaceIsolation: s.workspaceIsolation,
+          executorDaemonId: s.executorDaemonId,
+          stayedHomeReason: s.stayedHomeReason,
           activityState: s.activityState,
           visibility: s.visibility,
           externalProvider: s.externalProvider,

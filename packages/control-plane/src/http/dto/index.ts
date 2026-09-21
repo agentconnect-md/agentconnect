@@ -28,6 +28,7 @@ import {
   HOOK_KINDS,
   RepoSubdirError,
   SessionImageAttachment,
+  SessionStayedHomeReason,
   MAX_WORKSPACE_COMMIT_MESSAGE,
   MAX_WORKSPACE_EDIT_BYTES,
   MAX_WORKSPACE_LOG_COMMITS,
@@ -88,13 +89,31 @@ export const SetAgentCallPolicyBody = z
 export type SetAgentCallPolicyBodyT = z.infer<typeof SetAgentCallPolicyBody>
 
 // ── daemons (read model) ──────────────────────────────────────────────────
+
+/** What a daemon offers the sessions of its group (session-executors.md §5, §10). Each strategy is
+ *  named after `sandbox.backend` and carries the reason it cannot run here when it cannot. The
+ *  listener's address is NOT here: it is topology, and nothing configures or shows one. */
+export const DaemonExecutorDto = z.object({
+  enabled: z.boolean(),
+  strategies: z
+    .record(
+      z.string(),
+      z.union([z.object({ available: z.literal(true) }), z.object({ available: z.literal(false), reason: z.string() })])
+    )
+    .optional(),
+  /** The daemon's own session ceiling (`limits.maxConcurrentSessions`). */
+  capacity: z.number().int().min(0).optional()
+})
+
 export const DaemonCapabilitiesDto = z.object({
   platforms: z.array(z.string()),
   runtimes: z.array(z.string()),
   acp: z.boolean(),
   features: z.array(z.string()),
   /** Why a sandbox this daemon HAS is unusable right now; `features` still lists `sandbox`, because it refuses launches rather than running them unconfined. */
-  sandboxUnavailable: z.string().optional()
+  sandboxUnavailable: z.string().optional(),
+  /** What this daemon offers the group's sessions (session-executors.md §10); absent while its executor facet is off. */
+  executor: DaemonExecutorDto.optional()
 })
 export const DaemonLoadDto = z.object({ cpu: z.number(), mem: z.number(), agents: z.number() })
 
@@ -228,6 +247,9 @@ export const DaemonViewDto = z.object({
   sessionEpoch: z.number(),
   maxAgents: z.number().int(),
   activeSessions: z.number().int(),
+  /** Session environments live on this machine, whoever holds them — its own plus any it hosts for
+   *  the group (session-executors.md §6). Null until the daemon reports one. */
+  hostedSessions: z.number().int().nullable(),
   lastSeenAt: z.string().nullable(),
   createdAt: z.string(), // ISO-8601
   createdBy: z.string().nullable(), // creator's userId (web resolves to a name / "You"); null for CLI/self-registered
@@ -3109,6 +3131,10 @@ export const SessionDetailDto = z.object({
   /** The shared-store pool set holding this session's rows (`domain/session-content.ts`); null ⇒ the recorder's private store. */
   contentSetId: z.string().nullable(),
   workspaceIsolation: z.enum(['shared', 'session']).nullable(),
+  /** The group member executing this session (session-executors.md §7); null ⇒ its holder runs it. */
+  executorDaemonId: z.string().nullable(),
+  /** Why it stayed with its holder — recorded at birth, so "everything still runs on one machine" has an answer. Null once an executor took it, and on a session born before the feature. */
+  stayedHomeReason: SessionStayedHomeReason.nullable(),
   activityState: z.string(),
   // ── session visibility (docs/designs/session-visibility.md) ──
   visibility: SessionVisibilityEnum,

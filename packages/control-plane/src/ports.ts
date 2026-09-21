@@ -16,7 +16,8 @@ import type {
   McpTransportCapabilities,
   RuntimeModelCatalog,
   SecretsRequest,
-  SecretsGrant
+  SecretsGrant,
+  ExecutorStrategyTable
 } from '@agentconnect.md/protocol'
 import type { AgentId, DaemonId, LeaseId, OrgId } from './domain/ids.js'
 import type { DaemonStatus, HealthState, AcpSupport, ResourceVisibility, ViewCtx } from './persistence/ports.js'
@@ -180,6 +181,17 @@ export interface DaemonCapabilities {
   features: string[]
   /** Why a sandbox this daemon HAS cannot be provided right now; absent when it can. */
   sandboxUnavailable?: string
+  /** Session-executor facts (session-executors.md §10); absent while the facet is off. */
+  executor?: DaemonExecutorFacts
+}
+
+/** What a sharing daemon offers, for the console. The endpoint is deliberately dropped here: it is topology, never configured or shown (§10). */
+export interface DaemonExecutorFacts {
+  enabled: boolean
+  /** The effective strategy table: what this machine can run now, or the reason it cannot (§5). */
+  strategies?: ExecutorStrategyTable
+  /** The daemon's `limits.maxConcurrentSessions`. */
+  capacity?: number
 }
 
 /** Last reported `Heartbeat.load`. */
