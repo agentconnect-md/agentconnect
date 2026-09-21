@@ -316,10 +316,59 @@ it.skipIf(process.platform === 'win32')(
         placementOf: (key: string) => (key === placed.sessionKey ? placed : undefined),
         homeFor: () => '/srv/executor/sessions/leaf/home',
         rootsFor: () => ({ runtimeRoot: '/srv/executor/hs/0a1b2c', missingHelpers: [] }),
+        runtimeDefFor: (_key: string, runtime: unknown) => runtime,
         spawnFor: () => ({ driver: {}, hostKey }),
         stop: async () => {}
       }
       expectCarried(build(), '/srv/executor/hs/0a1b2c/config-files')
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+)
+
+it.skipIf(process.platform === 'win32')(
+  "starts a placed session's adapter from its executor's own install, and a local one from this machine's",
+  async () => {
+    const root = scaffold({ workspace: { mode: 'from-scratch', path: 'workspace' } })
+    const daemon = new Daemon({ root, sandboxMechanism: 'bwrap', probeRuntimes: async () => [] })
+    try {
+      await daemon.start()
+      const agent = (daemon as any).agents.get('bot-a')
+      const placedKey = KEY('placed')
+      const build = (key: string) =>
+        (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
+          hostKey: sessionHostKey(agent.id, key),
+          runInSandbox: false,
+          cwd: agent.workspace.path
+        }).host
+      const placed = {
+        agentId: agent.id,
+        sessionKey: placedKey,
+        leaf: 'leaf',
+        subject: 'bot-a/leaf',
+        executorDaemonId: 'executor-a',
+        strategy: 'host'
+      }
+      const installed = { command: '/srv/executor/bin/node', args: ['/srv/executor/runtimes/adapter/dist/index.js'] }
+      const runtimeDefFor = vi.fn((_key: string, runtime: Record<string, unknown>) => ({ ...runtime, ...installed }))
+      ;(daemon as any).executorPlane = {
+        placementOf: (key: string) => (key === placedKey ? placed : undefined),
+        homeFor: () => '/srv/executor/sessions/leaf/home',
+        rootsFor: () => ({ runtimeRoot: '/srv/executor/hs/0a1b2c', missingHelpers: [] }),
+        runtimeDefFor,
+        spawnFor: () => ({ driver: {} }),
+        stop: async () => {}
+      }
+
+      const remote = build(placedKey)
+      expect(remote.runtime).toMatchObject(installed)
+      expect(runtimeDefFor).toHaveBeenCalledWith(placedKey, expect.objectContaining({ args: ['unused'] }))
+      // A session this machine runs keeps this machine's definition.
+      const local = build(KEY('local'))
+      expect(local.runtime).toMatchObject({ args: ['unused'] })
+      expect(runtimeDefFor).toHaveBeenCalledTimes(1)
     } finally {
       await daemon.stop()
       rmSync(root, { recursive: true, force: true })

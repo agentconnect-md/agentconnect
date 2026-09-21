@@ -325,6 +325,47 @@ describe('executor facet', () => {
       expect(vmStarts).toHaveLength(1)
     })
 
+    it('says how the environment it prepared starts the runtime a launch names: this machine’s install, or its image’s', async () => {
+      const installed = { command: '/usr/bin/node', args: ['/srv/agentconnect/runtimes/adapter/dist/index.js'] }
+      const imaged = { command: 'codex-acp', args: [] }
+      const asked: string[] = []
+      const { facet } = await start({
+        runtimeLaunch: async (runtimeId, strategy) => {
+          asked.push(`${runtimeId}@${strategy}`)
+          if (runtimeId !== 'codex-acp') return undefined
+          return strategy === 'microsandbox' ? imaged : installed
+        }
+      })
+      const reply = ready(await facet.prepare(req(1, { runtime: 'codex-acp' })))
+      expect(reply.runtimeLaunch).toEqual(installed)
+      // A resend of the same launch is answered from the reply it was given, not asked again.
+      expect(ready(await facet.prepare(req(1, { runtime: 'codex-acp' }))).runtimeLaunch).toEqual(installed)
+      const vm = { sessionKey: `slack:C2:1700000000.000200:${AGENT}`, strategy: 'microsandbox', runtime: 'codex-acp' }
+      expect(ready(await facet.prepare(req(2, vm))).runtimeLaunch).toEqual(imaged)
+      expect(asked).toEqual(['codex-acp@host', 'codex-acp@microsandbox'])
+    })
+
+    it('prepares the environment all the same when it has no install of the runtime, or none was named', async () => {
+      const asked: string[] = []
+      const { facet } = await start({
+        runtimeLaunch: async (runtimeId) => {
+          asked.push(runtimeId)
+          if (runtimeId === 'broken') throw new Error('the adapter could not be installed')
+          // More than the reply may carry, which would fail the whole reply at the relay.
+          if (runtimeId === 'oversized') return { command: 'node', args: Array.from({ length: 65 }, () => '-v') }
+          return undefined
+        }
+      })
+      expect(ready(await facet.prepare(req(1, { runtime: 'absent' }))).runtimeLaunch).toBeUndefined()
+      // The holder keeps its own definition then, so a failed install costs it nothing it had before.
+      expect(ready(await facet.prepare(req(2, { runtime: 'broken' }))).runtimeLaunch).toBeUndefined()
+      expect(lines.join('\n')).toMatch(/cannot say how this machine starts runtime broken/)
+      expect(ready(await facet.prepare(req(3, { runtime: 'oversized' }))).runtimeLaunch).toBeUndefined()
+      expect(lines.join('\n')).toMatch(/runtime oversized does not fit the prepare reply/)
+      expect(ready(await facet.prepare(req(4))).runtimeLaunch).toBeUndefined()
+      expect(asked).toEqual(['absent', 'broken', 'oversized'])
+    })
+
     it('answers the same launch again with the same key and generation, rotating nothing and closing no pipe', async () => {
       const { facet } = await start()
       const first = ready(await facet.prepare(req(3)))

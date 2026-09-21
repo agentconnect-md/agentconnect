@@ -200,6 +200,26 @@ describe('executor/prepare', () => {
     expect(roundTrip('executor/prepare', vm)).toEqual(vm)
   })
 
+  it('names the runtime the session starts, and a ready reply says how that machine starts it', () => {
+    const named = { ...PREPARE, runtime: 'codex-acp' }
+    expect(roundTrip('executor/prepare', named)).toEqual(named)
+    const ready: ExecutorPrepareResult = {
+      status: 'ready',
+      generation: 2,
+      endpoint: { host: '192.0.2.10', port: 7443 },
+      psk: 'c2VjcmV0LXBpcGUta2V5',
+      runtimeRoot: '/home/agent/.agentconnect/hs/0a1b2c3d4e5f',
+      runtimeLaunch: {
+        command: '/usr/bin/node',
+        args: ['/home/agent/.agentconnect/runtimes/@example/acp@1.2.3/node_modules/@example/acp/dist/index.js']
+      },
+      liveCount: 1
+    }
+    expect(roundTrip('executor/prepare/result', ready)).toEqual(ready)
+    expect(ExecutorPrepareReq.safeParse({ ...PREPARE, runtime: '' }).success).toBe(false)
+    expect(ExecutorPrepareResult.safeParse({ ...ready, runtimeLaunch: { command: '', args: [] } }).success).toBe(false)
+  })
+
   it('a resent request is the same bytes, launch id included, so whoever dedupes by launch can', () => {
     const frame = buildEnvelope('executor/prepare', PREPARE)
     expect(encode(frame)).toBe(encode(frame))

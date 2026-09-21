@@ -14,13 +14,14 @@ import {
 import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DEFAULT_BACKOFF_CAP_MS, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
-import type {
-  ExecutorFacts,
-  ExecutorPrepareRefusal,
-  ExecutorPrepareReq,
-  ExecutorPrepareResult,
-  ExecutorReleaseReq,
-  ExecutorReleaseResult
+import {
+  ExecutorRuntimeLaunch,
+  type ExecutorFacts,
+  type ExecutorPrepareRefusal,
+  type ExecutorPrepareReq,
+  type ExecutorPrepareResult,
+  type ExecutorReleaseReq,
+  type ExecutorReleaseResult
 } from '@agentconnect.md/protocol'
 import { sessionKeyDirName } from '../acp/host-key.js'
 import type { RuntimeDef } from '../config/config-schema.js'
@@ -90,6 +91,8 @@ export interface ExecutorFacetDeps {
   endpointHost: () => string | undefined
   /** Seed a session HOME from this machine's runtime sign-in (§8), answering what on this machine that seed points a runtime at. */
   seedHome: (home: string) => SessionSeed | void
+  /** How an environment of this strategy starts a runtime a holder names: this machine's install, or its image's (§8); undefined when it has none. */
+  runtimeLaunch?: (runtimeId: string, strategy: ExecutionStrategy) => Promise<ExecutorRuntimeLaunch | undefined>
   /** The CP's `agent/exists`; a throw is "cannot answer". */
   agentsExist: (agentIds: string[]) => Promise<Set<string>>
   /** This machine's `sessions.retention` as a window; null ⇒ `never`, and an environment nobody uses is kept forever. */
@@ -347,7 +350,7 @@ class Facet implements ExecutorFacet {
     this.environments.set(leaf, env)
     // Rotation is the fence (§6): the old key, its cached answer and the pipe it admitted go before the new launch starts.
     this.retire(env)
-    const launching = this.launch(env, generation, launcher)
+    const launching = this.launch(env, generation, launcher, req.runtime)
     env.launching = launching
     const settled = (): void => {
       if (env.launching !== launching) return
@@ -362,7 +365,8 @@ class Facet implements ExecutorFacet {
   private async launch(
     env: Environment,
     generation: number,
-    launcher: StrategyLauncher
+    launcher: StrategyLauncher,
+    runtimeId?: string
   ): Promise<ExecutorPrepareResult> {
     await this.serializeStart(async () => {
       if (env.stopping) await env.stopping
@@ -382,6 +386,8 @@ class Facet implements ExecutorFacet {
       env.shim = shim
       void shim.exited.then(() => this.shimExited(env, shim))
     })
+    // Outside the start gate: a first install of the adapter may take a while, and it holds up no other environment.
+    const runtimeLaunch = runtimeId === undefined ? undefined : await this.runtimeLaunch(runtimeId, env.strategy)
     // A newer launch took the environment while this one was starting it, and owns the key now.
     if (env.generation !== generation || !env.shim || !this.listener) return refused('launch_retired')
     const host = this.deps.endpointHost()
@@ -395,9 +401,28 @@ class Facet implements ExecutorFacet {
       runtimeRoot: env.shim.runtimeRoot,
       ...(env.shim.helperRoot === undefined ? {} : { helperRoot: env.shim.helperRoot }),
       ...(env.shim.missingHelpers.length > 0 ? { missingHelpers: env.shim.missingHelpers } : {}),
+      ...(runtimeLaunch ? { runtimeLaunch } : {}),
       liveCount: this.liveCount()
     }
     return env.reply
+  }
+
+  /** Where an environment of this strategy finds a runtime's install; never fatal, since a holder without the answer keeps its own launch. */
+  private async runtimeLaunch(
+    runtimeId: string,
+    strategy: ExecutionStrategy
+  ): Promise<ExecutorRuntimeLaunch | undefined> {
+    let answer: ExecutorRuntimeLaunch | undefined
+    try {
+      answer = await this.deps.runtimeLaunch?.(runtimeId, strategy)
+    } catch (error) {
+      this.deps.log.warn(`executor: cannot say how this machine starts runtime ${runtimeId} (${message(error)})`)
+      return undefined
+    }
+    // An answer the frame cannot carry would fail the whole reply at the relay, so it is dropped here instead.
+    if (answer === undefined || ExecutorRuntimeLaunch.safeParse(answer).success) return answer
+    this.deps.log.warn(`executor: how this machine starts runtime ${runtimeId} does not fit the prepare reply`)
+    return undefined
   }
 
   // One environment start at a time, as the microsandbox manager starts VMs, so the VM strategy inherits the rule.

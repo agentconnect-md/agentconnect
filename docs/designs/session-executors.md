@@ -360,7 +360,7 @@ the machines talk to each other.
    `currentExecutorDaemonId` — a **hint**, not an instruction (§7). These are
    **facts, never a choice**: the CP ranks nothing and recommends nothing, and
    placement stays the holder's.
-2. **`executor/prepare {agentId, sessionKey, executorDaemonId, launchId, strategy, resources, image}`**
+2. **`executor/prepare {agentId, sessionKey, executorDaemonId, launchId, strategy, runtime, resources, image}`**
    — holder → CP. The CP checks the ledger: the requester holds the agent's duty
    (`DutyLeaseService.holdsAgent`, the read that already authorizes `duty/fetch`),
    and the target is a member of the agent's set with its facet on. It then relays
@@ -371,9 +371,10 @@ the machines talk to each other.
    own runtime sign-in (§8), starts the shim, allocates the launch's binding
    generation, mints a per-session pre-shared key, and replies
    `{generation, endpoint, psk, runtimeRoot, liveCount}` — `host` adds its helper
-   root (§5) — or `full`, or a refusal with its reason. The CP returns that reply to
-   the holder. `launchId` is a uuid the holder mints per launch (below); `resources`
-   and `image` matter to the `microsandbox` strategy only.
+   root (§5), and `runtimeLaunch` when the request named a `runtime` (§8) — or `full`,
+   or a refusal with its reason. The CP returns that reply to the holder. `launchId` is
+   a uuid the holder mints per launch (below); `resources` and `image` matter to the
+   `microsandbox` strategy only.
 3. **`executor/release {agentId, sessionKey, executorDaemonId, launchId}`** — holder
    → CP, when the holder retires the session (§7). The same ledger checks as
    `prepare` **except the two consents**: neither the group's switch nor the
@@ -840,6 +841,20 @@ links to (Codex's and Qoder's), are paths on the executor's host: a `host` shim 
 sees them, and a VM strategy mounts them into the guest at the same paths, writable
 for a token refresh, as the local VM already mounts them for its own sessions.
 
+The runtime's adapter is the executor's too. A daemon launches a registry or managed
+adapter from its own store (`node` and a bin path under its daemon root, resolved at
+that daemon's start), so the holder's command names a tree only the holder has. The
+holder names the session's `runtime` in `prepare`, and the executor answers
+`runtimeLaunch`, the command and arguments that the environment it prepared starts it
+with. For `host` that is what a local agent of that machine would start, installed in
+its own store first if it has not been yet, the way it does for an agent assigned after
+boot. For `microsandbox` it is the entry its image declares, which is what its own VM
+sessions run. The holder launches with that command and keeps the rest of its own
+definition. An executor that answers nothing, because it predates the field, has no
+such runtime, or failed the install, leaves the holder's own definition in place,
+which starts only where the executor's paths match. The runtime a session sees is
+therefore the version that machine installed, as its sign-in is that machine's.
+
 **Provider credentials and agent secrets are two mechanisms**, and both cross the
 link — encrypted. The earlier text authenticated the dial and left the link itself
 optionally plaintext, while its own §6 noted that sandboxed agents share the LAN: a
@@ -915,10 +930,12 @@ and an executor at N is between the holder's dialer and the executor's shim, and
 that is the shim protocol's existing feature negotiation — the same skew a pool
 image's shim already has against its daemon. Members roll in either order. The two
 CP requests follow the control protocol's own rule: a holder answered
-`UNKNOWN_FRAME` by an older CP does not spread, and says so. The one
-version-sensitive value that does travel is a name, not code: the `microsandbox`
-image reference in `prepare`, so the runtimes a session sees do not depend on which
-machine it landed on.
+`UNKNOWN_FRAME` by an older CP does not spread, and says so. The version-sensitive
+values that do travel are names, not code. One is the `microsandbox` image reference
+in `prepare`, so the runtimes a session sees in a VM do not depend on which machine it
+landed on. The other is the `runtime` id, which the executor resolves to the install its
+environment starts (§8). A CP or executor that predates that field drops it, and the
+holder keeps its own definition.
 
 ## 10. Configuration and console
 

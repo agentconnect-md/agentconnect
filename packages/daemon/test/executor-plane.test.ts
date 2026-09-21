@@ -187,6 +187,35 @@ describe('the session life', () => {
   })
 })
 
+describe('the adapter a placed session starts', () => {
+  // What this machine's own store would launch: its node and a tree only it has.
+  const own = { command: '/opt/holder/node', args: ['/srv/holder/runtimes/adapter@1.0.0/bin.js', '--acp'], env: [] }
+  const installed = { command: '/usr/bin/node', args: ['/var/lib/agentconnect/runtimes/adapter@1.1.0/bin.js', '--acp'] }
+
+  it('is the install its executor named in the reply, the rest of the definition kept', async () => {
+    const { executor } = plane([ready(1, { runtimeLaunch: installed })])
+    await executor.prepareAt(AGENT, KEY, [HOST])
+    const env = [{ name: 'EXAMPLE_FLAG', value: '1' }]
+    expect(executor.runtimeDefFor(KEY, { ...own, env })).toEqual({ ...installed, env })
+  })
+
+  it("stays this machine's definition when the executor named none, and for a session placed nowhere", async () => {
+    const { executor } = plane([ready(1)])
+    await executor.prepareAt(AGENT, KEY, [HOST])
+    expect(executor.runtimeDefFor(KEY, own)).toBe(own)
+    expect(executor.runtimeDefFor(`slack:C9:1700000000.000900:${AGENT}`, own)).toBe(own)
+  })
+
+  it('goes with the launch, so an idle session asks its executor again', async () => {
+    const { executor } = plane([ready(1, { runtimeLaunch: installed }), ready(2)])
+    await executor.prepareAt(AGENT, KEY, [HOST])
+    await executor.suspendIdle(SUBJECT)
+    expect(executor.runtimeDefFor(KEY, own)).toBe(own)
+    await executor.prepareAt(AGENT, KEY, [HOST])
+    expect(executor.runtimeDefFor(KEY, own)).toBe(own)
+  })
+})
+
 describe('the mount a session composes on', () => {
   it('is the executor root its shim reported a session directory under', () => {
     expect(executorMount(`/var/lib/agentconnect/sessions/${LEAF}`, LEAF)).toBe('/var/lib/agentconnect')

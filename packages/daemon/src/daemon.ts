@@ -3473,6 +3473,14 @@ export class Daemon {
         this.refreshAdmittedRuntimes()
         return seedSessionHome(home, this.runtimes, this.log)
       },
+      // What a local agent here would start, so a holder never names a path in its own store (§8): a VM its image's adapter, a host process this machine's install.
+      runtimeLaunch: async (runtimeId, strategy) => {
+        if (strategy === 'host') await this.ensureRuntimeInstalled(runtimeId, this.localRuntimeCatalog !== undefined)
+        const catalog =
+          strategy === 'microsandbox' ? this.microsandboxCatalog : (this.localRuntimeCatalog ?? this.runtimeCatalog)
+        const runtime = catalog?.entries[runtimeId]?.runtime
+        return runtime && { command: runtime.command, args: [...runtime.args] }
+      },
       agentsExist: async (agentIds) => {
         if (!this.cpClient) throw new Error('no control plane connection')
         return this.cpClient.agentsExist(agentIds)
@@ -3494,17 +3502,21 @@ export class Daemon {
     // Under --k8s every isolated session already gets a pod of the install's own pool; nothing spreads (§11).
     if (this.k8s) return
     this.executorPlane = new ExecutorPlane({
-      prepare: (launch) =>
-        this.requireCp('executor/prepare').executorPrepare(
+      prepare: (launch) => {
+        // Named so the executor can answer with its own install of it (§8).
+        const runtime = this.agents.get(launch.agentId)?.runtime
+        return this.requireCp('executor/prepare').executorPrepare(
           {
             agentId: launch.agentId,
             sessionKey: launch.sessionKey,
             executorDaemonId: launch.executorDaemonId,
             launchId: launch.launchId,
-            strategy: launch.strategy
+            strategy: launch.strategy,
+            ...(runtime ? { runtime } : {})
           },
           this.orgForAgent(launch.agentId)
-        ),
+        )
+      },
       release: (placed, launchId) =>
         this.requireCp('executor/release').executorRelease(
           {
@@ -5357,6 +5369,8 @@ export class Daemon {
         `session ${remoteSession.leaf} has no environment on daemon ${remoteSession.executorDaemonId} to launch in — its next turn prepares one`
       )
     }
+    // And its adapter is the one that machine installed, never a path in this machine's store (§8).
+    const launchDef = (remoteSession && this.executorPlane?.runtimeDefFor(remoteSession.sessionKey, runtime)) || runtime
     // A dream reads only its materialized inputs to produce a memory proposal, so
     // it never needs the agent's TOOL credentials (github-app git helper, gh
     // wrapper, or materialized `*_DATA` config-file secrets like KUBECONFIG /
@@ -5530,7 +5544,7 @@ export class Daemon {
           : {}),
         ...(remoteHome ? { executor: { home: remoteHome } } : {}),
         runtimeId: runtimeEntry?.aliasOf ?? agent.runtime,
-        runtime,
+        runtime: launchDef,
         provider: memoryKindOf(agent),
         scopeDir: agent.dir,
         cwd: opts.cwd,
@@ -5604,7 +5618,7 @@ export class Daemon {
       // session that later fails a Git write can be matched against what its host was given.
       const reopened = launch.gitMetadataWriteRoots.length > 0 ? launch.gitMetadataWriteRoots.join(', ') : 'none'
       const boundary = remoteSession
-        ? `on daemon ${remoteSession.executorDaemonId} (${remoteSession.strategy})`
+        ? `on daemon ${remoteSession.executorDaemonId} (${remoteSession.strategy}, ${launchDef === runtime ? 'adapter as defined here' : 'its own adapter install'})`
         : `sandbox ${runInSandbox ? 'on' : 'off'}`
       this.log.info(
         `acp: agent "${agentId}" host launch — ${boundary}, cwd ${opts.cwd}, git metadata reopened: ${reopened}`

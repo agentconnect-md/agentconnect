@@ -4,6 +4,7 @@ import type { Socket } from 'node:net'
 import { ClientTransport, systemClock, type Clock } from '@agentconnect.md/connection'
 import type { ExecutorPrepareResult, ExecutorReleaseResult } from '@agentconnect.md/protocol'
 import { sessionKeyDirName } from '../acp/host-key.js'
+import type { RuntimeDef } from '../config/config-schema.js'
 import { clusterMetrics } from '../metrics/cluster-metrics.js'
 import { ChannelBinder } from '../remote/channel-binder.js'
 import { LaunchRegistry } from '../remote/launch-registry.js'
@@ -203,6 +204,13 @@ export class ExecutorPlane implements ExecutionPlane {
       ...(ready.helperRoot === undefined ? {} : { helperRoot: ready.helperRoot }),
       missingHelpers: ready.missingHelpers ?? []
     }
+  }
+
+  /** The runtime a placed session starts: the command its executor named for its own install (§8), else this machine's definition as before. */
+  runtimeDefFor(sessionKey: string, runtime: RuntimeDef): RuntimeDef {
+    const placed = this.placements.get(sessionKey)
+    const named = placed && this.registry.currentLaunch(placed.subject)?.ready?.runtimeLaunch
+    return named ? { ...runtime, command: named.command, args: [...named.args] } : runtime
   }
 
   /** The roots of the session whose environment holds this path, for a caller that has one rather than a key. */
