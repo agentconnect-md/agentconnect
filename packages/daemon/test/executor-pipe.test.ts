@@ -8,7 +8,13 @@ import { connect, type ConnectionOptions, type TLSSocket } from 'node:tls'
 import { ClientTransport } from '@agentconnect.md/connection'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WebSocketServer } from 'ws'
-import { PIPE_TLS, startPipeListener, type PipeAdmission, type PipeListener } from '../src/execution/executor-pipe.js'
+import {
+  dialPipe,
+  PIPE_TLS,
+  startPipeListener,
+  type PipeAdmission,
+  type PipeListener
+} from '../src/execution/executor-pipe.js'
 import { WAIT } from './wait-support.js'
 
 /** In place of a shim: a unix-socket server that echoes, and remembers who reached it and what they sent. */
@@ -272,5 +278,40 @@ describe('executor pipe listener', () => {
     socket.on('error', () => {})
     await closed(socket)
     expect(shim.connections).toHaveLength(0)
+  })
+
+  // The holder's own dial, against the listener it will meet in production.
+  it('opens the holder side with the key its `prepare` returned, and fails with any other', async () => {
+    const shim = await stubShim()
+    const key = randomBytes(32)
+    const { port } = await listen((identity) =>
+      identity === IDENTITY ? { key, socketPath: shim.socketPath } : undefined
+    )
+    const socket = await dialPipe({
+      host: '127.0.0.1',
+      port,
+      psk: key.toString('base64url'),
+      identity: IDENTITY
+    })
+    clients.push(socket)
+    expect(socket.getCipher().name).toBe('TLS_AES_128_GCM_SHA256')
+    await vi.waitFor(() => expect(shim.connections).toHaveLength(1), WAIT)
+
+    const wrongKey = dialPipe({
+      host: '127.0.0.1',
+      port,
+      psk: randomBytes(32).toString('base64url'),
+      identity: IDENTITY
+    })
+    await expect(wrongKey).rejects.toThrow()
+    // An identity nobody holds fails exactly as a wrong key does: the listener is no oracle for which sessions live here.
+    const unknownSession = dialPipe({
+      host: '127.0.0.1',
+      port,
+      psk: key.toString('base64url'),
+      identity: 'session-ffffffffffffffffffffffff'
+    })
+    await expect(unknownSession).rejects.toThrow()
+    expect(shim.connections).toHaveLength(1)
   })
 })

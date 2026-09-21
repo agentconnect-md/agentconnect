@@ -397,7 +397,7 @@ import {
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { runtimeCredentialsConfigured } from './runtimes/runtime-credential-discovery.js'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
-import { wireWorkspacePlane, type ExecutionPlane, type PlaneLaunch, type PlaneScope } from './execution/plane.js'
+import type { ExecutionPlane, PlaneLaunch, PlaneScope } from './execution/plane.js'
 import { seedSessionHome, startExecutorFacet, type ExecutorFacet } from './execution/executor-facet.js'
 import { ExecutorPlane, executorMcpBridge, type PlacedSession } from './execution/executor-plane.js'
 import { placeSession, type PlacementAsk, type PlacementChoice } from './execution/executor-placement.js'

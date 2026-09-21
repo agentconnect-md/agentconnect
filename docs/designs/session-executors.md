@@ -392,7 +392,8 @@ the machines talk to each other.
    another launch answers `unknown`, which is also the answer for one that is not
    there at all: both mean "the launch you are retiring is gone", and both make a
    resend free. The holder therefore records the launch it last prepared for a session
-   beside that session's executor; what it cannot name, the backstop owns.
+   beside that session's executor — in the process that prepared it, since a restart ends
+   every launch it could have named; what it cannot name, the backstop owns.
 
 4. **The holder dials the executor's listener with TLS, using that key**, with the
    session leaf as the PSK identity. TLS-PSK authenticates both ends and encrypts
@@ -961,7 +962,7 @@ feature shipping:
 **The feature is seven pull requests.** The earlier estimate of three weeks of
 focused work predates both the groundwork and the cuts, and each shortens it; the
 week of validation on a real multi-machine deployment, which the requester of #2111
-offered to run, stands. F1, F2a and F2b have landed; F1b is the revision that took
+offered to run, stands. F1, F2a, F2b and F3 have landed; F1b is the revision that took
 the shared store out, and the rest follow it.
 
 | PR  | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |

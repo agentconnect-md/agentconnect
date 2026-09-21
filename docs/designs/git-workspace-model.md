@@ -445,7 +445,10 @@ agent.workspace.isolation`, and always `shared` for a from-scratch agent, whose 
    nowhere yet takes what one created now would get: a boundary around the runtime (its own
    pod on a pool member, the effective OS sandbox on a self-hosted daemon) means clones, and
    no boundary means a worktree. A pool member has no local disk to ask, so its session pod
-   holds that record.
+   holds that record. A session placed on another machine of the daemon group
+   ([session-executors.md](session-executors.md) §7) is **always** clones, whatever this
+   machine would have given it: the primary checkout it would have worktree'd is not on the
+   machine it runs on, and the directory that records its tier is that machine's.
 
 **And a tier nothing has answered yet is not isolated.** Value 1 has to be in hand before
 anything keys a host on the session, because on the pool the pod is claimed when that host

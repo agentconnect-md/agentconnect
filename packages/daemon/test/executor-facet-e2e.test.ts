@@ -112,8 +112,7 @@ describe('executor facet, end to end', () => {
     let onLost!: (reason: string) => void
     const lost = new Promise<string>((resolve) => (onLost = resolve))
     const dialer = new ShimDialer({
-      // For an executor the identity proof is the pipe itself: it was admitted under a key this session's executor minted.
-      verifier: { reviewToken: async () => ({ authenticated: true, podName: LEAF, podUid: LEAF }) },
+      // No pod verifier: for an executor the proof is the pipe itself, admitted under a key this session's executor minted.
       dial: (url, options) => ClientTransport.dial(url, { ...options, createConnection: () => pipe(reply) }) as never,
       onConnection: (connection) => session.attach(connection),
       onConnectionLost: (_subject, reason) => onLost(reason),
@@ -122,7 +121,7 @@ describe('executor facet, end to end', () => {
     dialers.push(dialer)
     await dialer.connect(
       'ws://executor.example.test',
-      { agentId: AGENT, subject: LEAF, sandboxUid: LEAF, generation, grants: ['acp'], podName: LEAF },
+      { agentId: AGENT, subject: LEAF, sandboxUid: LEAF, generation, grants: ['acp'], podName: LEAF, peer: 'executor' },
       30_000
     )
     return { session, lost }

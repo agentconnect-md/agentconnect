@@ -37,6 +37,7 @@ export const WINDOWS_EXCLUDED = [
   'test/gitlab-self-managed-host.test.ts',
   'test/executor-pipe.test.ts',
   'test/executor-facet.test.ts',
+  'test/executor-session-e2e.test.ts',
   // `mode & 0o777` assertions throughout: Windows carries no POSIX mode bits to assert on.
   'test/config-file-env.test.ts',
   'test/evaluation-events.test.ts',
