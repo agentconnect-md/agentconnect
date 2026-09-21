@@ -1,4 +1,4 @@
-// Session executors (session-executors.md §6): the registration facts, the two requests a holder sends, and the birth verdict.
+// Session executors (session-executors.md §6, §7): the registration facts, the three requests a holder sends, and the birth verdict.
 import { z } from 'zod'
 
 /** A strategy as `sandbox.backend` names it; a slug rather than an enum, so a later strategy needs no frame revision. */
@@ -34,7 +34,8 @@ export type ExecutorFacts = z.infer<typeof ExecutorFacts>
 
 /** D→C REQ (reply: `executor/candidates/result`): the duty holder asks, at session birth, who in the agent's group could host it. */
 export const ExecutorCandidatesReq = z.object({
-  agentId: z.string().uuid()
+  agentId: z.string().uuid(),
+  sessionKey: z.string().min(1).max(1024).optional() // named ⇒ the answer also hints where the CP last saw this session run
 })
 export type ExecutorCandidatesReq = z.infer<typeof ExecutorCandidatesReq>
 
@@ -61,7 +62,8 @@ export type ExecutorCandidate = z.infer<typeof ExecutorCandidate>
 /** C→D REP to `executor/candidates`. The asker is never listed — it is always its own candidate; `reason` rides an empty list only. */
 export const ExecutorCandidatesResult = z.object({
   candidates: z.array(ExecutorCandidate),
-  reason: ExecutorCandidatesEmptyReason.optional()
+  reason: ExecutorCandidatesEmptyReason.optional(),
+  currentExecutorDaemonId: z.string().uuid().optional() // a HINT from the CP's own session row, possibly stale and not necessarily a candidate
 })
 export type ExecutorCandidatesResult = z.infer<typeof ExecutorCandidatesResult>
 
@@ -70,7 +72,7 @@ export const ExecutorPrepareReq = z.object({
   agentId: z.string().uuid(),
   sessionKey: z.string().min(1).max(1024),
   executorDaemonId: z.string().uuid(),
-  generation: z.number().int().positive(), // the launch's binding generation: a resend carries the same one, a new launch a higher one
+  launchId: z.string().uuid(), // minted by the holder per launch: a resend carries the same one, a new launch a new one
   strategy: ExecutorStrategyName,
   // The two below matter to the `microsandbox` strategy only.
   resources: z
@@ -84,9 +86,8 @@ export const ExecutorPrepareReq = z.object({
 })
 export type ExecutorPrepareReq = z.infer<typeof ExecutorPrepareReq>
 
-/** Why nothing was prepared. The first four are the executor's; the rest are the CP's, decided without relaying (`relay_failed`: the executor did not answer in time). */
+/** Why nothing was prepared. The first three are the executor's; the rest are the CP's, decided without relaying (`relay_failed`: the executor did not answer in time). */
 export const ExecutorPrepareRefusal = z.enum([
-  'stale_generation',
   'launch_retired',
   'draining',
   'strategy_unavailable',
@@ -103,6 +104,7 @@ export type ExecutorPrepareRefusal = z.infer<typeof ExecutorPrepareRefusal>
 export const ExecutorPrepareResult = z.discriminatedUnion('status', [
   z.object({
     status: z.literal('ready'),
+    generation: z.number().int().positive(), // allocated by the executor, one past the last it applied: the holder binds the shim at it
     endpoint: ExecutorEndpoint,
     psk: z.string().min(1).max(512),
     runtimeRoot: z.string().min(1).max(4096),
@@ -115,6 +117,27 @@ export const ExecutorPrepareResult = z.discriminatedUnion('status', [
   z.object({ status: z.literal('offline'), lastSeenAt: z.string().datetime().nullable() })
 ])
 export type ExecutorPrepareResult = z.infer<typeof ExecutorPrepareResult>
+
+/** D→C REQ, and the same payload C→D once relayed; both hops reply `executor/release/result`. The holder retired the session: stop its environment and remove it (§7). */
+export const ExecutorReleaseReq = z.object({
+  agentId: z.string().uuid(),
+  sessionKey: z.string().min(1).max(1024),
+  executorDaemonId: z.string().uuid()
+})
+export type ExecutorReleaseReq = z.infer<typeof ExecutorReleaseReq>
+
+/** Why nothing was released: `not_holder` is the CP's ledger check or the executor's (the environment is another agent's); the rest are the CP's. */
+export const ExecutorReleaseRefusal = z.enum(['not_holder', 'not_on_group', 'not_member', 'relay_failed'])
+export type ExecutorReleaseRefusal = z.infer<typeof ExecutorReleaseRefusal>
+
+/** REP to `executor/release`. `unknown` makes it idempotent; `offline` is the CP's own record, and the executor's backstop collects the environment later. */
+export const ExecutorReleaseResult = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('released') }),
+  z.object({ status: z.literal('unknown') }),
+  z.object({ status: z.literal('refused'), reason: ExecutorReleaseRefusal }),
+  z.object({ status: z.literal('offline'), lastSeenAt: z.string().datetime().nullable() })
+])
+export type ExecutorReleaseResult = z.infer<typeof ExecutorReleaseResult>
 
 /** Why a session stayed with its holder (§7). Closed: a value added later is frame-fatal to an older CP, so it ships behind its own feature. */
 export const SessionStayedHomeReason = z.enum([

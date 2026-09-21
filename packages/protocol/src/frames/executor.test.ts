@@ -5,6 +5,8 @@ import {
   ExecutorFacts,
   ExecutorPrepareReq,
   ExecutorPrepareResult,
+  ExecutorReleaseReq,
+  ExecutorReleaseResult,
   SessionStayedHomeReason
 } from './executor.js'
 import { RegisterReq } from './register.js'
@@ -13,6 +15,7 @@ import { buildEnvelope, decodeCpEnvelope, decodeEnvelope, encode, type FrameType
 
 const AGENT = '22222222-2222-4222-8222-222222222222'
 const EXECUTOR = '33333333-3333-4333-8333-333333333333'
+const LAUNCH = '44444444-4444-4444-8444-444444444444'
 
 const FACTS: ExecutorFacts = {
   enabled: true,
@@ -44,7 +47,7 @@ const PREPARE: ExecutorPrepareReq = {
   agentId: AGENT,
   sessionKey: 'slack:C1:1700000000.000100',
   executorDaemonId: EXECUTOR,
-  generation: 7,
+  launchId: LAUNCH,
   strategy: 'host'
 }
 
@@ -142,10 +145,21 @@ describe('the birth verdict on the session metadata report', () => {
 })
 
 describe('executor/candidates', () => {
-  it('the request names only the agent', () => {
+  it('the request names the agent, and the session only when the holder wants to know where it last ran', () => {
     expect(roundTrip('executor/candidates', { agentId: AGENT })).toEqual({ agentId: AGENT })
+    const asked = { agentId: AGENT, sessionKey: PREPARE.sessionKey }
+    expect(roundTrip('executor/candidates', asked)).toEqual(asked)
     expect(ExecutorCandidatesReq.safeParse({}).success).toBe(false)
     expect(ExecutorCandidatesReq.safeParse({ agentId: 'not-a-uuid' }).success).toBe(false)
+    expect(ExecutorCandidatesReq.safeParse({ agentId: AGENT, sessionKey: '' }).success).toBe(false)
+  })
+
+  it('the hint rides any answer, an empty one included, and is a daemon id or nothing', () => {
+    const hinted = { candidates: [], reason: 'no_member_shares', currentExecutorDaemonId: EXECUTOR }
+    expect(roundTrip('executor/candidates/result', hinted)).toEqual(hinted)
+    expect(ExecutorCandidatesResult.safeParse({ candidates: [], currentExecutorDaemonId: 'daemon-b' }).success).toBe(
+      false
+    )
   })
 
   it('the answer carries each candidate’s facts through the codec', () => {
@@ -186,15 +200,18 @@ describe('executor/prepare', () => {
     expect(roundTrip('executor/prepare', vm)).toEqual(vm)
   })
 
-  it('a resent request is the same bytes, generation included, so whoever dedupes by launch can', () => {
+  it('a resent request is the same bytes, launch id included, so whoever dedupes by launch can', () => {
     const frame = buildEnvelope('executor/prepare', PREPARE)
     expect(encode(frame)).toBe(encode(frame))
-    expect(roundTrip('executor/prepare', PREPARE)).toMatchObject({ generation: 7 })
+    expect(roundTrip('executor/prepare', PREPARE)).toMatchObject({ launchId: LAUNCH })
   })
 
-  it('refuses a launch with no generation, and takes a strategy this build has never heard of', () => {
-    expect(ExecutorPrepareReq.safeParse({ ...PREPARE, generation: 0 }).success).toBe(false)
-    expect(ExecutorPrepareReq.safeParse({ ...PREPARE, generation: 1.5 }).success).toBe(false)
+  it('refuses a launch that names none, carries no generation of its own, and takes a strategy this build has never heard of', () => {
+    const { launchId: _launchId, ...unnamed } = PREPARE
+    expect(ExecutorPrepareReq.safeParse(unnamed).success).toBe(false)
+    expect(ExecutorPrepareReq.safeParse({ ...PREPARE, launchId: 'launch-7' }).success).toBe(false)
+    // The executor allocates the generation: one a holder sends is not part of the request.
+    expect(ExecutorPrepareReq.parse({ ...PREPARE, generation: 7 })).toEqual(PREPARE)
     expect(ExecutorPrepareReq.safeParse({ ...PREPARE, strategy: 'docker' }).success).toBe(true)
   })
 
@@ -202,6 +219,7 @@ describe('executor/prepare', () => {
     const arms: ExecutorPrepareResult[] = [
       {
         status: 'ready',
+        generation: 8,
         endpoint: { host: '192.0.2.10', port: 7443 },
         psk: 'c2VjcmV0LXBpcGUta2V5',
         runtimeRoot: '/home/agent/workspace/hs/0a1b2c3d4e5f',
@@ -211,17 +229,31 @@ describe('executor/prepare', () => {
       },
       { status: 'full', liveCount: 32 },
       { status: 'full' },
-      { status: 'refused', reason: 'stale_generation' },
+      { status: 'refused', reason: 'launch_retired' },
       { status: 'offline', lastSeenAt: '2026-09-21T00:00:00.000Z' },
       { status: 'offline', lastSeenAt: null }
     ]
     for (const arm of arms) expect(roundTrip('executor/prepare/result', arm)).toEqual(arm)
   })
 
-  it('a refusal reason is a slug from the closed list, never prose', () => {
+  it('a refusal reason is a slug from the closed list, never prose, and a generation is never refused as stale', () => {
     expect(ExecutorPrepareResult.safeParse({ status: 'refused', reason: 'the executor is busy' }).success).toBe(false)
+    expect(ExecutorPrepareResult.safeParse({ status: 'refused', reason: 'stale_generation' }).success).toBe(false)
     expect(ExecutorPrepareResult.safeParse({ status: 'refused' }).success).toBe(false)
     expect(ExecutorPrepareResult.safeParse({ status: 'ready', psk: 'k' }).success).toBe(false)
+  })
+
+  it('a ready reply names the generation the executor allocated, which the holder binds at', () => {
+    const ready = {
+      status: 'ready',
+      endpoint: { host: '192.0.2.10', port: 7443 },
+      psk: 'c2VjcmV0LXBpcGUta2V5',
+      runtimeRoot: '/home/agent/workspace/hs/0a1b2c3d4e5f',
+      liveCount: 1
+    }
+    expect(ExecutorPrepareResult.safeParse(ready).success).toBe(false)
+    expect(ExecutorPrepareResult.safeParse({ ...ready, generation: 0 }).success).toBe(false)
+    expect(ExecutorPrepareResult.safeParse({ ...ready, generation: 1 }).success).toBe(true)
   })
 
   it('a daemon reads a reply field it predates as absent, not as a failed request', () => {
@@ -229,5 +261,31 @@ describe('executor/prepare', () => {
     const decoded = decodeCpEnvelope(encode(frame))
     if (!decoded.ok) throw new Error(`decode failed: ${decoded.msg}`)
     expect(decoded.frame.payload).toEqual({ status: 'full', liveCount: 1 })
+  })
+})
+
+describe('executor/release', () => {
+  const RELEASE: ExecutorReleaseReq = { agentId: AGENT, sessionKey: PREPARE.sessionKey, executorDaemonId: EXECUTOR }
+
+  it('names the session and the machine, and nothing about a launch', () => {
+    expect(roundTrip('executor/release', RELEASE)).toEqual(RELEASE)
+    expect(ExecutorReleaseReq.safeParse({ agentId: AGENT, sessionKey: PREPARE.sessionKey }).success).toBe(false)
+    expect(ExecutorReleaseReq.safeParse({ ...RELEASE, sessionKey: '' }).success).toBe(false)
+  })
+
+  it('every arm of the reply round-trips, and a refusal is a slug from its own closed list', () => {
+    const arms: ExecutorReleaseResult[] = [
+      { status: 'released' },
+      { status: 'unknown' },
+      { status: 'refused', reason: 'not_holder' },
+      { status: 'refused', reason: 'not_member' },
+      { status: 'offline', lastSeenAt: '2026-09-21T00:00:00.000Z' },
+      { status: 'offline', lastSeenAt: null }
+    ]
+    for (const arm of arms) expect(roundTrip('executor/release/result', arm)).toEqual(arm)
+    // Neither consent gates a release, so neither is a reason to refuse one.
+    for (const reason of ['group_switch_off', 'facet_off', 'draining']) {
+      expect(ExecutorReleaseResult.safeParse({ status: 'refused', reason }).success).toBe(false)
+    }
   })
 })

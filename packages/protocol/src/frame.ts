@@ -44,7 +44,9 @@ import {
   ExecutorCandidatesReq,
   ExecutorCandidatesResult,
   ExecutorPrepareReq,
-  ExecutorPrepareResult
+  ExecutorPrepareResult,
+  ExecutorReleaseReq,
+  ExecutorReleaseResult
 } from './frames/executor.js'
 import { CodeHostNoteDesired, CodeHostNoteResult, CodeHostNoteResultOk } from './frames/codehost-note.js'
 import { AgentApprovalRoute, AgentApprovalRouted } from './frames/approval-route.js'
@@ -259,11 +261,13 @@ export const FRAME_SCHEMAS = {
   'duty/claim/ok': DutyClaimOk,
   'duty/fetch': DutyFetch,
   'duty/fetch/ok': DutyFetchOk,
-  // ── session executors (session-executors.md §6): facts a holder pulls, and a prepare the CP relays (key-bearing reply — never log) ──
+  // ── session executors (session-executors.md §6, §7): facts a holder pulls, and a prepare (key-bearing reply — never log) and a release the CP relays ──
   'executor/candidates': ExecutorCandidatesReq,
   'executor/candidates/result': ExecutorCandidatesResult,
   'executor/prepare': ExecutorPrepareReq,
   'executor/prepare/result': ExecutorPrepareResult,
+  'executor/release': ExecutorReleaseReq,
+  'executor/release/result': ExecutorReleaseResult,
   // ── agent lifecycle / delivery ──
   'agent/launch': AgentLaunch,
   'agent/launched': AgentLaunched,
@@ -580,6 +584,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('executor/candidates/result', FRAME_SCHEMAS['executor/candidates/result']),
   frame('executor/prepare', FRAME_SCHEMAS['executor/prepare']),
   frame('executor/prepare/result', FRAME_SCHEMAS['executor/prepare/result']),
+  frame('executor/release', FRAME_SCHEMAS['executor/release']),
+  frame('executor/release/result', FRAME_SCHEMAS['executor/release/result']),
   frame('agent/launch', FRAME_SCHEMAS['agent/launch']),
   frame('agent/launched', FRAME_SCHEMAS['agent/launched']),
   frame('agent/stop', FRAME_SCHEMAS['agent/stop']),

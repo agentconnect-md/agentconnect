@@ -402,10 +402,10 @@ export const APPROVAL_DM_ROUTE_V1_FEATURE = 'approval-dm-route-v1'
  *  in a daemon→CP frame is frame-fatal to an older CP (§17.3), not a stripped field. */
 export const GITLAB_EFFECT_V1_FEATURE = 'gitlab-effect-v1'
 
-/** Session executors (session-executors.md §6): the CP serves `executor/candidates` and relays `executor/prepare`, a daemon answers the relayed one; neither end sends an executor frame to a peer without it. */
+/** Session executors (session-executors.md §6): the CP serves `executor/candidates` and relays `executor/prepare` and `executor/release`, a daemon answers the relayed ones; neither end sends an executor frame to a peer without it. */
 export const SESSION_EXECUTORS_V1_FEATURE = 'session-executors-v1'
 
-/** How long the CP lets ONE relayed `executor/prepare` run, single-shot: above the pool's 90 s pod-readiness budget, which an executor's own preparation budget must stay under. */
+/** How long the CP lets ONE relayed `executor/prepare` (or `executor/release`) run, single-shot: above the pool's 90 s pod-readiness budget, which an executor's own preparation budget must stay under. */
 export const EXECUTOR_PREPARE_RELAY_BUDGET_MS = 120_000
 
 /** CP serves the `memory/store` family (memory-evolution.md §3.2.1); a daemon refuses a `control-plane` home without it. */
