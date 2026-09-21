@@ -24,6 +24,8 @@ import { routeRules, type RouteVia } from '../router/routing-table.js'
 import { conversationAdmitted, integrationRouting, type RoutingRule } from '../router/routing-rule.js'
 import { sessionKey, type LocalStore, type SessionRecord } from '../store/local-store.js'
 import { isAppendCoordinate } from '../session/append-coordinate.js'
+import { monotonicTs } from '../store/monotonic-ts.js'
+import { transcriptCoords } from '../session/session-manager.js'
 import {
   CommandChromeRegistry,
   type CommandChromeContext,
@@ -128,6 +130,10 @@ interface CommandContext {
   thread: string
   /** Where the reply lands — the command message's own thread, kept separate from `thread`. */
   replyThread: string
+  /** The key the command was TYPED at, before the latest-session fallback may retarget it.
+   *  A control that destroys state checks this: acting on a thread the user is not in gives
+   *  the people working there no notice, because the reply goes to `replyThread`. */
+  typedKey: string
   rec: SessionRecord | undefined
   acpSessionId: string | undefined
   /** A turn currently owns this logical session key (gate-owned or queued), per §6.9 #390. */
@@ -557,6 +563,8 @@ export class CommandHandlers {
     // a `!stop` sent in the cold thread can mute/cancel an older thread and leave the
     // actual turn running. Check all gate representations because commands can race the
     // short hand-offs between them.
+    // The key this command was TYPED at, before the fallback may retarget it below.
+    const typedKey = key
     let directGateActive = this.gateActiveFor(key)
     // The fallback exists for a command typed outside any session's thread. It must not fire
     // once an append coordinate is resolved: the channel's latest session there may be a
@@ -595,6 +603,7 @@ export class CommandHandlers {
       key,
       thread,
       replyThread,
+      typedKey,
       rec,
       acpSessionId: acpSessionId ?? undefined,
       inflight
@@ -613,6 +622,7 @@ export class CommandHandlers {
   /** Per-kind command handlers, plus the shared guards dispatch applies ahead of each. */
   private readonly registry: CommandRegistry = {
     resume: { run: async (_command, ctx) => await this.runResume(ctx) },
+    new: { run: async (_command, ctx) => await this.runNew(ctx) },
     stop: { run: async (_command, ctx) => await this.runStop(ctx) },
     cancel: { run: async (_command, ctx) => await this.runCancel(ctx) },
     status: { run: async (_command, ctx) => await this.runStatus(ctx) },
@@ -665,6 +675,69 @@ export class CommandHandlers {
   }
 
   /** `!stop` — interrupt any in-flight turn AND mute the thread until the agent is @mentioned again. */
+  /**
+   * `!new` — start over here (channel-session-mode.md §7).
+   *
+   * The two modes do different things under one gesture because "start over" means
+   * different things when a session IS a thread and when it is not. In `append` the
+   * conversation rotates onto a fresh coordinate and the retired session keeps everything it
+   * had; in `createNew` the thread is not going anywhere, so its session keeps its identity
+   * and loses its context.
+   */
+  private async runNew(ctx: CommandContext): Promise<boolean> {
+    const { target, msg, key, thread, typedKey, rec, inflight, reply } = ctx
+    if (isAppendCoordinate(thread)) {
+      // Rotating does not touch a running turn: it finishes on the old coordinate and posts
+      // to its own thread, while later messages resolve to the new one. Refusing here would
+      // be friction with nothing behind it (§7.3).
+      // A caller that loses the CAS does not advance again — it reports the rotation someone
+      // else just performed, which is the same answer from this user's point of view (§3.3).
+      await this.host.store().advanceAppendCoordinate(target.agentId, msg.channel, thread, msg.transportScope)
+      this.logSessionAction('new', key, senderActor(msg))
+      // Deliberately not "the next message": coordinates are resolved at ingress, so a turn
+      // already running and anything queued behind it finish on the retired coordinate.
+      reply('🆕 Started a new session. New messages from here on begin it.')
+      return true
+    }
+    // Clearing nulls the acpSessionId the running turn is identified by, so it would pull
+    // that turn's identity out from under it (§7.3).
+    if (inflight) {
+      reply('A turn is still running — `!cancel` it first, then `!new`.')
+      return true
+    }
+    if (!rec) {
+      reply('Nothing to clear here yet — the next message starts a session.')
+      return true
+    }
+    // The latest-session fallback retargeted this command at a thread it was not typed in.
+    // That is right for a reversible control like `!stop`, and wrong here: `!new` destroys
+    // context, and the reply lands on the command's own thread, so the people working in the
+    // cleared one would never be told. Make them say it there.
+    if (key !== typedKey) {
+      reply('Run `!new` inside the thread you want to clear — it only clears the thread it is typed in.')
+      return true
+    }
+    // The cursor is "the moment this ran" IN THE PLATFORM'S OWN ID SPACE, derived from the
+    // command message exactly as a turn derives its own. A wall-clock stamp is an id the
+    // platform never issued, and the replay path discards such a cursor outright
+    // (`ordering.coordinate(...) === null` ⇒ catch up from scratch) — which would replay the
+    // whole thread and restore precisely what the clear removed.
+    const { ts } = transcriptCoords(msg)
+    const cursor = msg.platform === 'webchat' ? (msg.transcriptTs ?? monotonicTs()) : ts
+    const cleared = await this.host
+      .store()
+      .clearSessionContext(key, cursor, Date.now(), ctx.acpSessionId ?? rec.acpSessionId)
+    if (!cleared) {
+      // Either the row went away, or a turn started between the in-flight check and this
+      // write and now owns a different runtime session. Both mean: do not clear silently.
+      reply('A turn started just now — `!cancel` it first, then `!new`.')
+      return true
+    }
+    this.logSessionAction('new', key, senderActor(msg))
+    reply('🆕 Cleared. This thread continues with a fresh context.')
+    return true
+  }
+
   private async runStop(ctx: CommandContext): Promise<boolean> {
     const { target, key, thread, rec, acpSessionId, inflight, reply } = ctx
     // A conversation that appends has ONE session, so the mute latch would silence the

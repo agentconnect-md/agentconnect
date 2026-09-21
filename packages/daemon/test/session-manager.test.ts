@@ -129,6 +129,29 @@ describe('SessionManager', () => {
     await s.close()
   })
 
+  // §7.2 — the property `!new` exists for. The clear is two fields on the row, and the one
+  // that matters is the CURSOR: the two resets that already write these fields null it,
+  // which makes the next prompt replay the whole thread as catch-up. That restores exactly
+  // what a clear is meant to remove, so a regression here looks like the command silently
+  // doing nothing.
+  it('does not replay anything from before a cleared session', async () => {
+    const store = await newStore()
+    const sm = new SessionManager({ store, hostFor: async () => fakeHost(), agentById: () => agent, memory })
+    const key = sessionKey('slack', 'C1', '100.1', 'bot-a')
+
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'about the old thing' }))
+    const s = await store
+
+    // The clear, as `!new` performs it: identity kept, cursor at the moment it ran.
+    expect(await s.clearSessionContext(key, '100.5', Date.now(), 'acp-1')).toBe(true)
+
+    const next = await sm.handle('bot-a', msg({ ts: '100.9', text: 'about the new thing' }))
+    const prompted = next.blocks.map((b) => ('text' in b ? (b.text ?? '') : '')).join('\n')
+    expect(prompted).toContain('about the new thing')
+    expect(prompted).not.toContain('about the old thing')
+    await s.close()
+  })
+
   it('seats a platform standing block with the agent meta, once, never beside the user text', async () => {
     const store = await newStore()
     const host = fakeHost()

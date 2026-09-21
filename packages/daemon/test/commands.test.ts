@@ -4,6 +4,12 @@ import { parseCommand } from '../src/commands/commands.js'
 describe('parseCommand', () => {
   it('parses !stop, !cancel, and !resume as distinct commands', () => {
     expect(parseCommand('!stop')).toEqual({ kind: 'stop' })
+    expect(parseCommand('!new')).toEqual({ kind: 'new' })
+    expect(parseCommand('/new')).toEqual({ kind: 'new' })
+    // Telegram group addressing, and the word must not match a prefix of ordinary text.
+    expect(parseCommand('/new@mybot')).toEqual({ kind: 'new' })
+    expect(parseCommand('!newsletter')).toBeNull()
+    expect(parseCommand('new session please')).toBeNull()
     expect(parseCommand('!cancel')).toEqual({ kind: 'cancel' })
     expect(parseCommand('/cancel')).toEqual({ kind: 'cancel' })
     expect(parseCommand('!resume')).toEqual({ kind: 'resume' })

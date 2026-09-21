@@ -2851,6 +2851,71 @@ it('retires the affinity row a session left at its previous transport scope', as
 // `append` conversation's coordinate. What matters is that concurrent callers converge on
 // ONE value, that a rotation is exactly once per intent, and that a purge does not leave a
 // coordinate behind whose transcript is still on disk.
+// §7.2: the clear keeps the session's identity and takes its context. The cursor is what
+// separates it from the two resets that already write these fields — those null it, which
+// makes the next prompt replay the whole thread, i.e. restore exactly what a clear removes.
+it('clears a session in place, keeping its identity and moving the replay cursor', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-clear-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
+  await s.upsertSession({
+    key,
+    agentId: 'bot-a',
+    platform: 'slack',
+    channel: 'C1',
+    thread: 'T1',
+    acpSessionId: 'acp-1',
+    state: 'idle',
+    lastDeliveredTs: '100.1',
+    updatedAt: 1
+  })
+  const before = await s.getSession(key)
+
+  // Pinned on the runtime id the caller read, so a turn that started meanwhile cannot be
+  // cleared out from under itself.
+  expect(await s.clearSessionContext(key, '200.0', 2, 'acp-1')).toBe(true)
+
+  const after = await s.getSession(key)
+  // Identity survives: same row, same key, same outward id — the console entry is the same.
+  expect(after?.key).toBe(key)
+  expect(after?.sessionId).toBe(before?.sessionId)
+  expect(after?.thread).toBe('T1')
+  // Context does not: the runtime session is detached and the cursor moved forward, so the
+  // next prompt replays from the clear rather than from the start of the thread.
+  expect(after?.acpSessionId).toBeNull()
+  expect(after?.lastDeliveredTs).toBe('200.0')
+  await s.close()
+})
+
+it('refuses a clear pinned on a runtime session the row no longer holds', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-clear-raced-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
+  await s.upsertSession({
+    key,
+    agentId: 'bot-a',
+    platform: 'slack',
+    channel: 'C1',
+    thread: 'T1',
+    acpSessionId: 'acp-2',
+    state: 'idle',
+    lastDeliveredTs: '100.1',
+    updatedAt: 1
+  })
+  // The command decided against `acp-1`; a turn admitted since moved the row to `acp-2`, and
+  // clearing now would cut that turn's identity out from under it.
+  expect(await s.clearSessionContext(key, '200.0', 2, 'acp-1')).toBe(false)
+  expect((await s.getSession(key))?.acpSessionId).toBe('acp-2')
+  await s.close()
+})
+
+it('reports a clear of a session that is gone rather than creating one', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-clear-missing-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  expect(await s.clearSessionContext(sessionKey('slack', 'C1', 'T1', 'bot-a'), '200.0', 2, 'acp-1')).toBe(false)
+  await s.close()
+})
+
 it('converges every concurrent resolver on one append coordinate', async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'ac-reservation-')), 'local.sqlite')
   const s = await openTestStore(path)

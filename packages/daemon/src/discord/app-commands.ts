@@ -60,6 +60,7 @@ export const DISCORD_APP_COMMANDS: ApplicationCommandDataResolvable[] = [
   { name: 'stop', description: 'Stop the agent and mute this thread until @mentioned' },
   { name: 'cancel', description: 'Cancel the in-flight turn (session stays live)' },
   { name: 'resume', description: 'Reset loop protection and unmute this conversation' },
+  { name: 'new', description: 'Start a new session in this conversation' },
   {
     name: 'queue',
     description: 'Queue a message to run once the agent is idle',

@@ -44,6 +44,7 @@ const BOT_COMMANDS: { command: string; description: string }[] = [
   { command: 'stop', description: 'Stop the current turn and mute until you @mention me' },
   { command: 'cancel', description: 'Cancel the current turn (keep the session live)' },
   { command: 'resume', description: 'Reset loop protection and unmute this conversation' },
+  { command: 'new', description: 'Start a new session in this conversation' },
   { command: 'fast', description: 'Toggle fast mode — /fast on | off' },
   { command: 'models', description: 'Choose the model — /models [name] (bare = list)' },
   { command: 'effort', description: 'Choose reasoning effort — /effort [level] (bare = list)' },

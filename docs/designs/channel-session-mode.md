@@ -1,6 +1,7 @@
 # Per-Conversation Session Mode
 
-> Status: Proposed — not implemented.
+> Status: Implemented on the daemon and the Control Plane; the console control (§8) and the
+> unbounded transcript read (§10) are still outstanding. `auto` remains reserved (§12).
 > Scope: chat conversations that are channels, on every platform that has them, over
 > both daemon-owned and relay-forwarded ingress.
 > Primary implementation areas: `packages/protocol`, `packages/control-plane`,
@@ -399,11 +400,17 @@ and fan-out tests must pass unchanged against it before `append` uses it for any
 
 ### 7.1 In `append`: mint a new coordinate
 
-`!new` advances the reservation row by compare-and-set (§3.3) and writes a bare session
-row at the new coordinate, so the next message resolves to it immediately. The retired session keeps its row, its outward id, its
-CP metadata, and its transcript; the conversation simply stops adding to it, and it ages
-out through ordinary retention. Nothing is destroyed, and the successor's runtime session
-is born lazily, on the next message.
+`!new` advances the reservation row by compare-and-set (§3.3). Nothing else is written: the
+reservation is the authoritative source (§3.3) and no resolver consults the sessions table,
+so a bare row would serve nobody. The retired session keeps its row, its outward id, its CP
+metadata, and its transcript; the conversation simply stops adding to it, and it ages out
+through ordinary retention. Nothing is destroyed, and the successor's runtime session is
+born lazily, on the next message.
+
+Work already ADMITTED stays on the retired coordinate: it was resolved at ingress, so a
+running turn and anything queued behind it finish where they were admitted. That is the same
+rule §7.3 states for the in-flight turn, extended to the queue behind it, and it is why the
+reply says new messages rather than the next message.
 
 A session-isolated agent gets a **new workspace** with the new session, since workspace
 isolation is pinned when a logical session is created. That is the intended reading of
@@ -427,6 +434,21 @@ makes the next prompt replay the whole thread as catch-up (bounded by
 cursor to the moment it ran, so the replay window starts there and the session resumes
 from the `!new` point with nothing before it.
 
+**The cursor is a platform id, not a clock.** It is compared against the transcript's own
+`ts`, and the replay path discards a cursor its platform's ordering cannot parse — falling
+back to a full catch-up, which restores exactly what was cleared. So it is derived from the
+`!new` message itself, the way a turn derives its own coordinates, and a wall-clock stamp is
+wrong on every platform whose ids are not wall-clock shaped. Feishu's `om_` ids are opaque
+and unordered, so the cursor there is only as good as their lexical order — a pre-existing
+limitation of that platform's transcript, not of this command.
+
+Two guards the shape of this operation earns. The write is pinned on the runtime session id
+the command read, because the in-flight refusal above it is a check-then-act: a turn admitted
+in between has already read the row, and its own write would silently undo the clear.
+And a `!new` that the latest-session fallback retargeted to another thread is refused rather
+than performed — the reply lands on the command's own thread, so the people working in the
+cleared one would never be told.
+
 The cleared session is the same session afterwards: same key, so the same
 `session_outward_ids` row and the same console entry. The clear leaves **no console
 trace** — a deliberate choice, not an oversight.
@@ -443,7 +465,9 @@ trace** — a deliberate choice, not an oversight.
 
 ### 7.4 Authorization
 
-`commandSenderAllowed`, the same gate `!stop` takes, and **not** marked `runtimeChange` —
+`commandSenderAllowed`, the same gate `!stop` takes, plus the trusted-actor check `!resume`
+takes: `!new` discards a conversation's working context and cannot be undone, so a bot echo
+or a wrapper reporting no actor must not be able to forge it. **Not** marked `runtimeChange` —
 that flag guards Agent-level runtime settings behind an Agent editor, and `!new` changes
 no setting. No confirmation step. `logSessionAction('new', key, actor)` records who ran
 it, which is what that function exists for.

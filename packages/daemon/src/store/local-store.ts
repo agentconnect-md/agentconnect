@@ -2759,6 +2759,40 @@ export class LocalStore {
     return await this.resolveAppendCoordinate(agentId, channel, scope, now)
   }
 
+  /**
+   * Clear a session's CONTEXT while it keeps its identity (channel-session-mode.md §7.2).
+   *
+   * The same two fields the memory-provider and workspace-isolation resets already write on
+   * an existing row, with one deliberate difference: those null `lastDeliveredTs`, which
+   * makes the next prompt replay the whole thread as catch-up — that RESTORES context. Here
+   * the cursor is set to the moment the clear ran, so the replay window starts there and the
+   * session resumes with nothing before it.
+   *
+   * The row keeps its key, coordinate, outward id and workspace, so the console entry and
+   * everything holding the session's identity survive. A TTL-`closed` session stays closed,
+   * as the two sibling resets leave it: clearing context is not a reason to read as live
+   * again. Returns false when the row is gone.
+   */
+  async clearSessionContext(
+    key: string,
+    cursorTs: string,
+    at: number,
+    expectAcpSessionId?: string | null
+  ): Promise<boolean> {
+    // Pinned on the runtime id the caller read. The in-flight refusal above it is a
+    // check-then-act — a turn admitted between the check and this write would have already
+    // read the row, and its own upsert would silently undo the clear — so the write applies
+    // only while the session still holds the id the decision was made on.
+    const res = await this.db
+      .prepare(
+        `UPDATE sessions SET acpSessionId = NULL, lastDeliveredTs = ?,
+           state = CASE WHEN state = 'closed' THEN 'closed' ELSE 'idle' END, updatedAt = ?
+         WHERE key = ? AND acpSessionId IS ?`
+      )
+      .run(cursorTs, at, key, expectAcpSessionId ?? null)
+    return Number(res.changes) > 0
+  }
+
   /** Drop a conversation's reservation, but only while it still names `coordinate` — a
    *  reservation a concurrent `!new` has already rotated is left alone. */
   private async clearAppendReservation(

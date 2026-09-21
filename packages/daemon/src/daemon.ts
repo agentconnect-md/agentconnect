@@ -7673,6 +7673,13 @@ export class Daemon {
         this.log.warn(`loop guard: ignored unauthenticated resume for ${loopGuardScope(msg)}`)
         return { kind: 'rejected', reason: 'suppressed' }
       }
+      // `!new` discards a conversation's working context and cannot be undone, so it takes
+      // the same gate for the same reason: a bot echo or a wrapper that reports no actor must
+      // not be able to forge it. Every other command is either reversible or merely reports.
+      if (command.kind === 'new' && !isTrustedHumanTurn(msg)) {
+        this.log.warn(`command: ignored unauthenticated !new in ch=${msg.channel}`)
+        return { kind: 'rejected', reason: 'suppressed' }
+      }
       // §14.3: a command that resolved no admitted target in an Off gated
       // conversation gets the same one-time notice as an unrouted message.
       if (!(await this.commands.handleCommand(command, msg, undefined, srcIntegrationIds)))
