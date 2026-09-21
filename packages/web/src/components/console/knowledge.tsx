@@ -1,7 +1,6 @@
 'use client'
 
-// Shared pieces of the Knowledge surface (docs/designs/organization-knowledge.md §2): the
-// publish editor, tag chips, and the one-line provenance every revision carries.
+// Shared Knowledge pieces: the publish editor, tag chips, and the one-line provenance (organization-knowledge.md §2).
 
 import { useEffect, useId, useState } from 'react'
 import { useTranslations } from 'next-intl'

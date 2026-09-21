@@ -1,8 +1,6 @@
 'use client'
 
-// Knowledge (`/knowledge`) — the organization's approved notes (docs/designs/organization-knowledge.md §2).
-// The Library lists them; a row opens the entry page, where reading, history, new revisions and
-// archiving live. Owners also get a Suggestions tab: the Dream proposals waiting for review.
+// Knowledge (`/knowledge`): library rows open the entry page; owners also get the Suggestions tab (organization-knowledge.md §2).
 
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'

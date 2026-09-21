@@ -1,8 +1,6 @@
 'use client'
 
-// One Dream proposal in the Knowledge → Suggestions queue (docs/designs/organization-knowledge.md §2).
-// The body stays at its source until Inspect fetches it, and Accept binds to the token that fetch
-// mints, so Accept stays disabled until the whole body has rendered; Reject needs no body.
+// One Dream proposal in Knowledge → Suggestions; Accept binds to the body Inspect fetched (organization-knowledge.md §2, §7.3).
 
 import dynamic from 'next/dynamic'
 import Link from 'next/link'

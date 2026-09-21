@@ -1,9 +1,6 @@
 'use client'
 
-// One knowledge entry (`/knowledge/[id]`): the current revision rendered in full, its history
-// beside it, and the owner actions — new revision, archive, restore — in the header. An older
-// revision renders in place; the entry itself always points at the current one
-// (docs/designs/organization-knowledge.md §2).
+// One knowledge entry: current revision, history, owner actions; older revisions render in place (organization-knowledge.md §2).
 
 import { useEffect, useState } from 'react'
 import dynamic from 'next/dynamic'
