@@ -146,13 +146,24 @@ describe('the agent page’s Slack card', () => {
     await settle()
 
     expect(mocks.startSlackPlatformInstall).toHaveBeenCalledWith({ botId: 'bot-1' })
-    expect(reinstall.disabled).toBe(true)
     expect(reinstall.title).toBe('Reinstalling…')
     expect(reinstall.querySelector('svg')?.getAttribute('class')).toContain('animate-spin')
     const notice = header().nextElementSibling as HTMLElement
     expect(notice.getAttribute('role')).toBe('status')
     expect(notice.textContent).toBe('Reinstalling…')
     expect(notice.style.padding).toBe('10px 16px')
+
+    // A closed popup cannot report itself, so the pending reinstall stays clickable and restarts.
+    expect(reinstall.disabled).toBe(false)
+    mocks.startSlackPlatformInstall.mockResolvedValue({
+      id: 'install-2',
+      installUrl: 'https://slack.example.test/oauth-2'
+    })
+    await act(async () => reinstall.click())
+    await settle()
+    expect(mocks.startSlackPlatformInstall).toHaveBeenCalledTimes(2)
+    expect(mocks.getSlackPlatformInstall).toHaveBeenLastCalledWith('install-2')
+    expect(host.querySelector('[role="status"]')?.textContent).toBe('Reinstalling…')
   })
 
   it('reads the console again once the reinstall lands', async () => {

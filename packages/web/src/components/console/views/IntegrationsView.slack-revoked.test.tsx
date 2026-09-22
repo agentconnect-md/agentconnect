@@ -151,13 +151,13 @@ afterEach(async () => {
 
 describe('a revoked built-in Slack app’s row', () => {
   it('reinstalls straight from the row, haloed, with the refresh beside it held for the same round trip', async () => {
-    mocks.getSlackPlatformInstall.mockResolvedValue({
-      id: 'install-1',
+    mocks.getSlackPlatformInstall.mockImplementation(async (id: string) => ({
+      id,
       status: 'pending',
       failureReason: null,
       missingScopes: [],
       botId: null
-    })
+    }))
     const row = await botRow()
     const reinstall = reinstallIn(row)!
     expect(reinstall.className).toContain('border-(--status-error)')
@@ -166,8 +166,19 @@ describe('a revoked built-in Slack app’s row', () => {
     await settle()
     expect(mocks.startSlackPlatformInstall).toHaveBeenCalledWith({ botId: 'bot-1' })
     expect(reinstallIn(row)!.title).toBe('Reinstalling…')
-    expect(reinstallIn(row)!.disabled).toBe(true)
     expect(row.querySelector<HTMLButtonElement>('button[aria-label="Refresh Slack app"]')!.disabled).toBe(true)
+
+    // An abandoned popup cannot report itself, so a pending reinstall restarts with a fresh link.
+    expect(reinstallIn(row)!.disabled).toBe(false)
+    mocks.startSlackPlatformInstall.mockResolvedValue({
+      id: 'install-2',
+      installUrl: 'https://slack.example.test/oauth-2'
+    })
+    await act(async () => reinstallIn(row)!.click())
+    await settle()
+    expect(mocks.startSlackPlatformInstall).toHaveBeenCalledTimes(2)
+    expect(mocks.getSlackPlatformInstall).toHaveBeenLastCalledWith('install-2')
+    expect(reinstallIn(row)!.title).toBe('Reinstalling…')
   })
 
   it('re-reads the app once Slack reauthorizes it', async () => {
@@ -186,7 +197,7 @@ describe('a revoked built-in Slack app’s row', () => {
     expect(mocks.refreshSlackBot).toHaveBeenCalledWith('bot-1')
   })
 
-  it('reports a failed reinstall under the row, as the card always has', async () => {
+  it('reports a failed reinstall under the row in the agent card’s words, not as a refresh failure', async () => {
     mocks.getSlackPlatformInstall.mockResolvedValue({
       id: 'install-1',
       status: 'failed',
@@ -198,10 +209,19 @@ describe('a revoked built-in Slack app’s row', () => {
     await act(async () => reinstallIn(row)!.click())
     await settle()
 
-    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
-      "Couldn't refresh this Slack app — The reinstall was cancelled in Slack."
-    )
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe('The reinstall was cancelled in Slack.')
     expect(reinstallIn(row)!.disabled).toBe(false)
+  })
+
+  it('still frames a refresh that failed as one', async () => {
+    mocks.refreshSlackBot.mockRejectedValue(new Error('Slack is unreachable'))
+    const row = await botRow()
+    await act(async () => row.querySelector<HTMLButtonElement>('button[aria-label="Refresh Slack app"]')!.click())
+    await settle()
+
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      "Couldn't refresh this Slack app — Slack is unreachable"
+    )
   })
 
   it('lists the agents it served, each marked revoked', async () => {

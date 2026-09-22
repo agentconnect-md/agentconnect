@@ -22,6 +22,7 @@ export interface SlackReinstallCallbacks {
 export interface SlackReinstall {
   /** The bot whose reinstall is in flight, or null. */
   botId: string | null
+  /** Starting again while one is pending replaces it with a fresh link; the abandoned row just expires. */
   start(botId: string): void
 }
 
@@ -42,21 +43,25 @@ export function useSlackBuiltinReinstall(callbacks: SlackReinstallCallbacks): Sl
   // Callers pass fresh closures each render; a ref keeps the poll from restarting under a live reinstall.
   const latest = useRef(callbacks)
   latest.current = callbacks
+  // The popup cannot report being closed (`noopener`), so a pending reinstall stays restartable; only a mint in flight is not.
+  const minting = useRef(false)
 
-  const start = useCallback(
-    async (botId: string) => {
-      if (pending) return
-      latest.current.onStart?.(botId)
-      try {
-        const started = await slackApi.startPlatformInstall({ botId })
-        setPending({ botId, installId: started.id })
-        window.open(started.installUrl, '_blank', 'noopener,width=680,height=760')
-      } catch (e) {
-        latest.current.onFailed(botId, e instanceof Error ? e.message : String(e))
-      }
-    },
-    [pending]
-  )
+  const start = useCallback(async (botId: string) => {
+    if (minting.current) return
+    minting.current = true
+    latest.current.onStart?.(botId)
+    try {
+      const started = await slackApi.startPlatformInstall({ botId })
+      // A new pending object restarts the poll effect, whose cleanup silences the replaced one.
+      setPending({ botId, installId: started.id })
+      window.open(started.installUrl, '_blank', 'noopener,width=680,height=760')
+    } catch (e) {
+      setPending(null)
+      latest.current.onFailed(botId, e instanceof Error ? e.message : String(e))
+    } finally {
+      minting.current = false
+    }
+  }, [])
 
   // The ROW is the signal, not "did an integration appear": a reauthorization only rotates the token.
   useEffect(() => {
@@ -106,10 +111,10 @@ export function useSlackBuiltinReinstall(callbacks: SlackReinstallCallbacks): Sl
   )
 }
 
-/** The reinstall icon control, haloed because it only shows while the app is revoked. */
+/** The reinstall icon control, haloed because it only shows while the app is revoked; it spins but stays clickable while pending. */
 export function SlackReinstallButton({
   busy,
-  disabled = busy,
+  disabled = false,
   onClick
 }: {
   busy: boolean

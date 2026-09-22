@@ -83,7 +83,56 @@ describe('useSlackBuiltinReinstall', () => {
     expect(flow.botId).toBeNull()
   })
 
-  it('stays in flight while the row is pending', async () => {
+  it('restarts a pending reinstall with a fresh link, and ignores the replaced poll’s late result', async () => {
+    // The first row answers only after the restart; the second stays pending.
+    let settleFirst: (row: unknown) => void = () => {}
+    const firstRow = new Promise((resolve) => (settleFirst = resolve))
+    mocks.getSlackPlatformInstall.mockImplementation((id: string) =>
+      id === 'install-1'
+        ? firstRow
+        : Promise.resolve({ id, status: 'pending', failureReason: null, missingScopes: [], botId: null })
+    )
+    await startReinstall()
+    expect(flow.botId).toBe('bot-1')
+
+    mocks.startSlackPlatformInstall.mockResolvedValue({
+      id: 'install-2',
+      installUrl: 'https://slack.example.test/oauth-2'
+    })
+    await act(async () => flow.start('bot-1'))
+    await settle()
+
+    expect(mocks.startSlackPlatformInstall).toHaveBeenCalledTimes(2)
+    expect(open).toHaveBeenLastCalledWith(
+      'https://slack.example.test/oauth-2',
+      '_blank',
+      'noopener,width=680,height=760'
+    )
+    expect(mocks.getSlackPlatformInstall).toHaveBeenLastCalledWith('install-2')
+    expect(callbacks.onStart).toHaveBeenCalledTimes(2)
+    expect(flow.botId).toBe('bot-1')
+
+    await act(async () =>
+      settleFirst({ id: 'install-1', status: 'completed', failureReason: null, missingScopes: [], botId: 'bot-1' })
+    )
+    await settle()
+    expect(callbacks.onInstalled).not.toHaveBeenCalled()
+    expect(callbacks.onFailed).not.toHaveBeenCalled()
+    expect(flow.botId).toBe('bot-1')
+  })
+
+  it('mints one link at a time', async () => {
+    mocks.startSlackPlatformInstall.mockReturnValue(new Promise(() => {}))
+    await act(async () => root.render(<Harness />))
+    await act(async () => {
+      flow.start('bot-1')
+      flow.start('bot-1')
+    })
+
+    expect(mocks.startSlackPlatformInstall).toHaveBeenCalledTimes(1)
+  })
+
+  it('ends a pending reinstall whose restart could not start', async () => {
     mocks.getSlackPlatformInstall.mockResolvedValue({
       id: 'install-1',
       status: 'pending',
@@ -93,10 +142,12 @@ describe('useSlackBuiltinReinstall', () => {
     })
     await startReinstall()
 
-    expect(flow.botId).toBe('bot-1')
-    // A second start while one is in flight mints nothing.
-    await act(async () => flow.start('bot-2'))
-    expect(mocks.startSlackPlatformInstall).toHaveBeenCalledTimes(1)
+    mocks.startSlackPlatformInstall.mockRejectedValue(new Error('Slack app is not configured'))
+    await act(async () => flow.start('bot-1'))
+    await settle()
+
+    expect(callbacks.onFailed).toHaveBeenCalledWith('bot-1', 'Slack app is not configured')
+    expect(flow.botId).toBeNull()
   })
 
   it('reports a reinstall cancelled in Slack', async () => {

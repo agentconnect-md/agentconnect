@@ -15,8 +15,8 @@ import { slackRefreshNoticeState } from './refresh-notice'
 import { SlackReinstallButton, useSlackBuiltinReinstall } from './reinstall'
 import { SlackReplaceTokenAction } from './replace-token'
 
-/** One bot's last refresh outcome — a result, an error, or (mid-flight) neither. */
-type SlackRefreshEntry = { result?: SlackBotRefreshDto; error?: string }
+/** One bot's last outcome — a refresh result or error, a reinstall failure, or (mid-flight) none of them. */
+type SlackRefreshEntry = { result?: SlackBotRefreshDto; error?: string; reinstallError?: string }
 
 /** Card-scoped on purpose: one refresh and one reinstall in flight per card, outcomes per bot. */
 interface SlackBotCardState {
@@ -72,10 +72,10 @@ function SlackBotCardProvider({ children }: { children: ReactNode }) {
   )
 
   // A reinstall's failure sits beside the bot's last refresh result rather than replacing it.
-  const setReinstallError = useCallback((botId: string, error?: string) => {
+  const setReinstallError = useCallback((botId: string, reinstallError?: string) => {
     setEntries((current) => {
       const result = current[botId]?.result
-      return { ...current, [botId]: { ...(result ? { result } : {}), ...(error ? { error } : {}) } }
+      return { ...current, [botId]: { ...(result ? { result } : {}), ...(reinstallError ? { reinstallError } : {}) } }
     })
   }, [])
 
@@ -138,13 +138,14 @@ function SlackRowActions({ bot, canWrite }: { bot: BotDto; canWrite: boolean }) 
     ? slackRefreshNoticeState(entry.result, { builtin: bot.prebuilt }).needsAttention
     : false
   const refreshing = card.refreshingBot(bot.id)
+  const reinstalling = card.reinstallingBot(bot.id)
   return (
     <>
-      {/* A revoked built-in app is repaired by reinstalling it, straight from the row. */}
+      {/* A revoked built-in app is repaired by reinstalling it, straight from the row; a pending one can be restarted. */}
       {bot.prebuilt && bot.revokedAt && (
         <SlackReinstallButton
-          busy={card.reinstallingBot(bot.id)}
-          disabled={refreshing}
+          busy={reinstalling}
+          disabled={refreshing && !reinstalling}
           onClick={() => card.reinstallBuiltin(bot)}
         />
       )}
@@ -186,14 +187,16 @@ function SlackCardNotice({ bot }: { bot: BotDto }) {
   const card = useSlackBotCard()
   const entry = card.entryFor(bot.id)
   if (!entry) return null
+  // Only a refresh failure is framed as one; a reinstall failure is already its own sentence.
+  const failure = entry.error ? t('refreshFailed', { error: entry.error }) : entry.reinstallError
   return (
     <>
-      {entry.error && (
+      {failure && (
         <div
           role="alert"
           className="border-b border-(--border-subtle) bg-(--status-error-soft) px-4 py-2 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)"
         >
-          {t('refreshFailed', { error: entry.error })}
+          {failure}
         </div>
       )}
       {entry.result && (
