@@ -40,6 +40,11 @@ export type FeatureFlagId =
   | 'git-url'
   /** The QQ integration's install entry points; a QQ bot the org already has keeps its Bots tab. */
   | 'qq'
+  /** The Decisions surface: its rail entry, its routes, and the `By decision` channel trigger.
+   *  A standing switch for the prototype stage — the pages read an opt-in mock `DecisionApi`
+   *  (docs/designs/decision-ui-foundation.md), not a live Control Plane resource, so a deployment
+   *  turns this on to exercise the design and never to serve real decisions. */
+  | 'decisions'
 
 function enabledIds(): ReadonlySet<string> {
   // The server must read the SAME value `PublicEnvScript` injects, in the same precedence, or a

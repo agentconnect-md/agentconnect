@@ -28,6 +28,8 @@ export const NAV_GROUPS: NavItem[][] = [
     { href: '/home', label: 'Home', icon: 'house' },
     { href: '/agents', label: 'Agents', icon: 'bot' },
     { href: '/sessions', label: 'Sessions', icon: 'messages-square' },
+    // The judgement a channel consults, so it sits with the work rather than with Infra.
+    { href: '/decisions', label: 'Decisions', icon: 'split', requires: 'decisions' },
     { href: '/crons', label: 'Schedules', icon: 'calendar-clock' },
     { href: '/tools', label: 'Tools & Skills', icon: 'blocks' },
     { href: '/integrations', label: 'Integrations', icon: 'plug' },
@@ -57,6 +59,7 @@ export const MOBILE_NAV: NavItem[] = [
 export const MORE_ROWS: NavItem[] = [
   { href: '/tools', label: 'Tools & Skills', icon: 'blocks' },
   { href: '/integrations', label: 'Integrations', icon: 'plug' },
+  { href: '/decisions', label: 'Decisions', icon: 'split', requires: 'decisions' },
   { href: '/knowledge', label: 'Knowledge', icon: 'book-open' },
   { href: '/daemons', label: 'Infra', icon: 'server' },
   { href: '/usage', label: 'Analytics', icon: 'circle-gauge' },
@@ -72,6 +75,7 @@ export const SECTIONS: { prefix: string; label: string }[] = [
   { prefix: '/sessions', label: 'Sessions' },
   // Merged conversation pages live in the Sessions section (§5.3).
   { prefix: '/conversations', label: 'Sessions' },
+  { prefix: '/decisions', label: 'Decisions' },
   { prefix: '/crons', label: 'Schedules' },
   { prefix: '/tools', label: 'Tools & Skills' },
   { prefix: '/integrations', label: 'Integrations' },
@@ -104,6 +108,7 @@ const PAGE_KEYWORDS: Record<string, string[]> = {
   '/billing': ['balance', 'credit', 'invoice', 'payment', 'top up'],
   '/tools': ['mcp', 'connectors', 'skills'],
   '/integrations': ['bots', 'github', 'slack', 'telegram', 'discord', 'lark', 'feishu'],
+  '/decisions': ['judgement', 'question', 'trigger when', 'routing'],
   '/usage': ['usage', 'costs', 'tokens']
 }
 

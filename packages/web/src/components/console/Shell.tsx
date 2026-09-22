@@ -24,6 +24,7 @@ import { detailCrumb, type CrumbSlot } from '@/lib/crumb'
 import { PlaygroundProvider } from './PlaygroundProvider'
 import { ModalProvider, useModal } from './ModalProvider'
 import { PendingActionsProvider } from './PendingActions'
+import { DecisionsPrototypeProvider } from '@/lib/decisions/provider'
 import ConnectAiModal from './ConnectAiModal'
 import GettingStarted, { openGettingStarted } from './GettingStarted'
 import { GlobalSearch } from './GlobalSearch'
@@ -168,7 +169,11 @@ export default function ConsoleShell({ children }: { children: ReactNode }) {
               for the same reason: the cards that register live under a route, the banner that
               names them is the route's own chrome, and one registry outlives both. */}
               <PendingActionsProvider>
-                <ShellChrome>{children}</ShellChrome>
+                {/* One Decisions prototype outlives every route: a decision created on the
+                    editor is still there when a channel row binds it (lib/decisions/provider). */}
+                <DecisionsPrototypeProvider>
+                  <ShellChrome>{children}</ShellChrome>
+                </DecisionsPrototypeProvider>
               </PendingActionsProvider>
             </ModalProvider>
           </PlaygroundProvider>
@@ -1237,6 +1242,8 @@ function MobileSheets({
         return t('navigation.integrations')
       case '/knowledge':
         return t('navigation.knowledge')
+      case '/decisions':
+        return t('navigation.decisions')
       case '/daemons':
         return t('navigation.infra')
       case '/usage':
