@@ -344,9 +344,9 @@ These reach the same code and keep today's behavior; they are listed so nobody l
 Two rules, in this order.
 
 1. **An admission lives as long as its session, and so do the session's own rows.**
-   `deleteSession(key)` deletes `transcript_recipient WHERE sessionKey = key` and the `tool`,
-   `reasoning`, and `app` rows that admission set covers — they were produced by this session and
-   belong to no other — in the same transaction that removes the session row and clears the append
+   `deleteSession(key)` deletes `transcript_recipient WHERE sessionKey = key` and every non-`text`
+   row that admission set covers (`tool`, `reasoning`, `app`, `plan`, `elicit`, and any kind added
+   later) — they were produced by this session and belong to no other — in the same transaction that removes the session row and clears the append
    reservation. Conversational rows are left in place as observations. Nothing else deletes an
    admission.
 2. **An unadmitted row lives while it is among the newest 100 conversational rows of its
