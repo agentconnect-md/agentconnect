@@ -269,9 +269,9 @@ The wire contract is unchanged; only the paths move.
 **Configured is what a machine offers; reported is what is effective.** A strategy
 whose probe fails at startup is reported unavailable with its reason, the way the
 daemon already reports `sandboxUnavailable`; placement reads only the effective
-table. The console keeps showing the reason exactly as it does for a daemon whose
-sandbox is down. The table is a process-level fact, so it rides registration beside
-`sandboxUnavailable`, not the heartbeat (§6).
+table. The console does not display the table; a daemon's own sandbox keeps its
+unavailable reason exactly as before. The table is a process-level fact, so it rides
+registration beside `sandboxUnavailable`, not the heartbeat (§6).
 
 **Placement is a match.** An agent asks for a strategy; the holder places the session
 on an executor whose effective table offers it. In v1 the ask is the existing
@@ -983,9 +983,10 @@ off, enforced where the facts are served: with the switch off,
 has the question of sessions already placed). Either consent alone would let one
 party volunteer the other.
 
-The console adds no new kind of row. On the Infra page each daemon shows the
-sessions it hosts and its capacity beside the strategies it offers. A group has one
-switch, "spread sessions across the group", default off. A session's detail shows
+The console adds no new kind of row, and no per-daemon executor readout: the hosted
+count, the capacity and the strategy table are reported for placement, not for
+display (#2232 took them off the daemon card). A group has one switch, "spread
+sessions across the group", default off. A session's detail shows
 which daemon executes it, or why it stayed on its holder (§7). The existing "Run in
 sandbox" state and its unavailable reason keep their meaning per strategy.
 
@@ -1026,8 +1027,8 @@ feature shipping:
 **The feature is seven pull requests.** The earlier estimate of three weeks of
 focused work predates both the groundwork and the cuts, and each shortens it; the
 week of validation on a real multi-machine deployment, which the requester of #2111
-offered to run, stands. F1, F2a, F2b, F3 and F4 have landed; F1b is the revision that
-took the shared store out, and F5 follows it.
+offered to run, stands. All seven have landed; F1b is the revision that took the
+shared store out.
 
 | PR  | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1037,7 +1038,7 @@ took the shared store out, and F5 follows it.
 | F1b | The shared store leaves the design: `launchId` on `prepare` and the executor-allocated `generation` on its reply, the CP's adjacency of the last duty read and the send, the relayed `executor/release`, the `sessionKey` hint on `executor/candidates`, and the backstop reconcile on `agent/exists` plus this machine's retention. The holder side that SENDS a release is F3.                                                                                                                   |
 | F3  | The holder: `ExecutorPlane` and its `ShimEndpointProvider`, per-session plane resolution, the birth predicate with its recorded reason, minting a `launchId` per launch and binding at the generation the reply returns, launch retirement at idle and on a retired-launch refusal, sending `executor/release` at retirement, failover through the candidates hint, the lazy loss rule; and a two-daemon, one-CP integration fixture covering holder failover, executor loss and executor restart. |
 | F4  | The `microsandbox` strategy: "prepare an environment" split from "spawn the runtime" in the microsandbox driver, the pipe into the guest over agentd's TCP stream, the session's state in an executor-local mount.                                                                                                                                                                                                                                                                                 |
-| F5  | Console: the group switch, per-daemon hosting and capacity, a session's executor or the reason it stayed home.                                                                                                                                                                                                                                                                                                                                                                                     |
+| F5  | Console: the group switch, and a session's executor or the reason it stayed home. Per-daemon hosting and capacity landed with it and were removed in #2232.                                                                                                                                                                                                                                                                                                                                        |
 
 Documents travel with the code that changes them: the pointers in the group and
 backend designs already exist, and the workspace model's tier rule gains its
