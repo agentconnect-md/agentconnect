@@ -143,6 +143,31 @@ describe('cluster channel binder', () => {
     expect(subject.sessionFor('agent-a')).toBeDefined()
   })
 
+  it('tells the host of a failed bind while the bind still holds the launch', async () => {
+    // A host that puts the pod back to sleep must see the bind's own hold, or it would act before the release it defers to.
+    const { clock, registry, launch } = await withLaunch()
+    const events: string[] = []
+    const subject = new ChannelBinder({
+      registry,
+      endpoints: {
+        resolve: async () => {
+          throw new Error('pod never came up')
+        },
+        retain: () => void events.push('retain'),
+        release: () => void events.push('release')
+      },
+      clock,
+      log,
+      metrics: noopClusterMetrics,
+      channelTimeoutMs: 1_000,
+      connectChannel: async () => stubConnection(7),
+      onBindFailed: (failed, which) => void events.push(`failed:${failed}:${which === launch}`)
+    })
+
+    await expect(subject.bindChannel('agent-a', launch, undefined, ['acp'])).rejects.toThrow(/pod never came up/)
+    expect(events).toEqual(['retain', 'failed:agent-a:true', 'release'])
+  })
+
   it('reports whether it was the call that dropped a lost session', async () => {
     const { clock, registry, launch } = await withLaunch()
     const subject = binder(registry, clock, async () => stubConnection(7))

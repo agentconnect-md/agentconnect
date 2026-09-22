@@ -352,6 +352,17 @@ finds the Sandbox Suspended. The one caller that is not a turn is the console's 
 (below): it needs the pod for a workspace read rather than for a runtime, so it drives the same
 resume and stops at the shim bind, creating no host and no ACP session.
 
+**A wake that fails is undone.** A pod the scheduler cannot place stays Pending, and its bind
+times out. Left `Running`, the Sandbox keeps the pod's resource requests on the node, so every
+later wake there fails the same way. The cached launch also keeps its claim stamped, and the next
+read waits on the same pod again. So a failed bind returns the pod through the idle suspension
+path once its last hold is released: the launch or workspace preparation around the bind may
+still hold it. It is skipped when a later attempt replaced the launch or a channel to the pod is
+still attached. The sweep catches pods this rule never saw, such as one taken over while stuck. A
+launch with no channel ever bound here, whose pod is still not Ready a full pod-up timeout after
+the launch was recorded, is suspended regardless of activity. The agent's traffic says nothing
+about a pod that never came up.
+
 One gap this leaves, deliberately: a pod still Running from _before_ a daemon restart has no
 launch in the new process, so nothing considers it until the agent is used again — at which
 point it acquires a launch and the rule applies from then on. On a pool member the duty grant

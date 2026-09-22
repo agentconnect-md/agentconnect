@@ -99,7 +99,10 @@ export class K8sDriver implements SpawnDriver {
       channelTimeoutMs: this.podUpTimeoutMs,
       connectChannel: deps.connectChannel,
       ...(deps.revokeChannel ? { revokeChannel: deps.revokeChannel } : {}),
-      ...(deps.onChannelReady ? { onChannelReady: deps.onChannelReady } : {})
+      ...(deps.onChannelReady ? { onChannelReady: deps.onChannelReady } : {}),
+      // Deferred to the LAST release: the launch or workspace preparation around the bind may still hold the pod.
+      onBindFailed: (subject, launch) =>
+        this.lease.whenReleased(launch.sandboxName, () => this.putBackAfterFailedBind(subject, launch))
     })
     this.shim = new RemoteShimDriver({
       ensureLaunch: (subject, timer) => this.ensureSandbox(subject, timer),
@@ -404,6 +407,30 @@ export class K8sDriver implements SpawnDriver {
         this.forgetLaunch(subject)
       }
     })
+  }
+
+  // A failed bind leaves a Running pod nothing uses, often one this member just woke; left so, a pod that cannot schedule keeps its CPU request and starves every later wake.
+  private putBackAfterFailedBind(subject: string, launch: SandboxLaunch): void {
+    // Replaced, released, or bound by a later attempt meanwhile: not this failure's pod to suspend.
+    if (this.registry.currentLaunch(subject) !== launch || this.binder.sessionFor(subject)?.isAttached()) return
+    void this.suspendIfIdle(subject).then(
+      (outcome) => {
+        if (outcome === 'suspended') this.deps.log.info(`cluster: sandbox ${subject} suspended after its bind failed`)
+      },
+      (err: unknown) =>
+        this.deps.log.warn(
+          `cluster: could not suspend sandbox ${subject} after its bind failed — ${(err as Error).message}`
+        )
+    )
+  }
+
+  /** Whether the subject's pod is still not up a full pod-up bound after its launch, with no channel ever bound to it here. */
+  // The idle sweep judges such a pod apart from the agent's activity: it serves nothing and holds its node's resources while it waits.
+  async stalledWake(subject: string): Promise<boolean> {
+    const launch = this.registry.currentLaunch(subject)
+    if (!launch || this.binder.sessionFor(subject)) return false
+    if (this.clock.now() - launch.since < this.podUpTimeoutMs) return false
+    return (await this.sandboxReadiness(subject)) === 'starting'
   }
 
   /** Subjects this daemon holds a Sandbox for, and since when — the idle sweep's candidates. */
