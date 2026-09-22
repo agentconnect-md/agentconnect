@@ -3450,12 +3450,18 @@ export class LocalStore {
   /** Rows left mid-turn and untouched since `before` (#2245): candidates only — the caller proves no turn runs them. */
   async listAbandonedTurnSessions(
     before: number
-  ): Promise<{ key: string; agentId: string; state: SessionRecord['state']; updatedAt: number }[]> {
+  ): Promise<{ key: string; agentId: string; platform: string; state: SessionRecord['state']; updatedAt: number }[]> {
     return (await this.db
       .prepare(
-        "SELECT key, agentId, state, updatedAt FROM sessions WHERE state IN ('prompting', 'resuming', 'cancelling') AND updatedAt < ?"
+        "SELECT key, agentId, platform, state, updatedAt FROM sessions WHERE state IN ('prompting', 'resuming', 'cancelling') AND updatedAt < ?"
       )
-      .all(before)) as { key: string; agentId: string; state: SessionRecord['state']; updatedAt: number }[]
+      .all(before)) as {
+      key: string
+      agentId: string
+      platform: string
+      state: SessionRecord['state']
+      updatedAt: number
+    }[]
   }
 
   /** Put an abandoned row back to `idle` only while it is still the row that was read; `updatedAt` stays its last activity. */

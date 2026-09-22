@@ -173,6 +173,18 @@ describe('session sweeps on a daemon pool are holder-only (#1032)', () => {
     await seedSession(store, 'a-dead', AGENT_A, 'prompting', 0)
     await seedSession(store, 'a-running', AGENT_A, 'prompting', 0)
     a.inner.inflight.add('a-running')
+    // A Dream's row is `prompting` for its whole run, outside every map the turn check reads.
+    await store.upsertSession({
+      key: 'a-dream',
+      agentId: AGENT_A,
+      platform: 'dream',
+      channel: 'memory',
+      thread: 'dream-1',
+      acpSessionId: 'acp-a-dream',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: 0
+    })
 
     // B does not serve A's agent, so it leaves both rows to A.
     await advance(b, past)
@@ -184,6 +196,7 @@ describe('session sweeps on a daemon pool are holder-only (#1032)', () => {
     await a.inner.sweepIdle()
     expect((await store.getSession('a-dead'))?.state).toBe('closed')
     expect((await store.getSession('a-running'))?.state).toBe('prompting')
+    expect((await store.getSession('a-dream'))?.state).toBe('prompting')
     await stop()
   })
 

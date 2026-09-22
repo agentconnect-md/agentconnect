@@ -804,7 +804,9 @@ session, and the row has been untouched for longer than
 `limits.agentMaxLifetimeMs`; the TTL close in the same pass then closes it.
 The write is conditional on the row still being exactly what was read, so a
 turn that took it meanwhile wins. It is never done at startup: on a shared
-store another member may be running that turn (#2245).
+store another member may be running that turn (#2245). A Dream's row is
+exempt: a Dream runs off the chat-turn queue, stays `prompting` for its whole
+run, and its runner owns the row and its crash recovery.
 
 ### 7.4 Message-to-Execution Flow
 

@@ -18295,7 +18295,8 @@ export class Daemon {
     const rows = await this.store.listAbandonedTurnSessions(now - this.cfg.limits.agentMaxLifetimeMs)
     let released = 0
     for (const row of rows) {
-      if (!this.servesAgent(row.agentId) || this.turnRunsHere(row.key)) continue
+      // A Dream runs off the chat-turn queue, and its runner owns its row and its crash recovery.
+      if (row.platform === 'dream' || !this.servesAgent(row.agentId) || this.turnRunsHere(row.key)) continue
       if (await this.store.releaseAbandonedTurnSession(row.key, row.state, row.updatedAt)) released += 1
     }
     if (released) this.log.warn(`idle: released ${released} session(s) an earlier process left mid-turn`)

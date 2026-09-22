@@ -1637,6 +1637,7 @@ describe('LocalStore session lifecycle (§7.3/#111/#118)', () => {
     await seed(s, 'old-idle', 'bot-a', 'idle', 100)
     const rows = await s.listAbandonedTurnSessions(500)
     expect(rows.map((r) => r.key).sort()).toEqual(['old-cancelling', 'old-prompting', 'old-resuming'])
+    expect(rows.find((r) => r.key === 'old-prompting')?.platform).toBe('slack')
     // A turn that took the row since it was read wins.
     await s.setSessionState('old-resuming', 'prompting', 950)
     expect(await s.releaseAbandonedTurnSession('old-resuming', 'resuming', 100)).toBe(false)
