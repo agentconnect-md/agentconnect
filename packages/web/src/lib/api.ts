@@ -18,7 +18,12 @@ import type {
 import { isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf, poolLabel } from '@/lib/data'
 import type { HookKind, SessionStayedHomeReason } from '@agentconnect.md/protocol'
 import type { CodeHostProvider } from '@agentconnect.md/protocol/code-host'
-import { hookKindFromIntegration, hookSourceLabel } from '@/lib/session-trigger'
+import {
+  appendSessionLabel,
+  appendSessionStartedAt,
+  hookKindFromIntegration,
+  hookSourceLabel
+} from '@/lib/session-trigger'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { withIconUrl } from '@/lib/agent-icon'
 import {
@@ -882,6 +887,11 @@ export interface SlackConfigInput {
 // gating for restricted agents), only when @-mentioned, or on any message.
 export type ChannelTrigger = 'off' | 'mention' | 'any'
 
+/** Which session an activation in a conversation joins (channel-session-mode.md). Orthogonal
+ *  to the trigger: that decides WHETHER the agent responds, this decides which session it
+ *  responds in. */
+export type ChannelSessionMode = 'createNew' | 'append'
+
 // One conversation the integration's bot is in (daemon-reported) + its trigger
 // choice. kind 'im' rows are DM conversations and 'mpim' rows are Slack group DMs;
 // both are observed rather than enumerable and appear for every agent visibility.
@@ -897,6 +907,7 @@ export interface IntegrationChannelDto {
   isPrivate: boolean
   kind: 'channel' | 'im' | 'mpim'
   trigger: ChannelTrigger
+  sessionMode: ChannelSessionMode
   agentId: string | null // effective shared-conversation owner; null before convergence / when not applicable
 }
 
@@ -2061,6 +2072,9 @@ export function sessionFromDto(d: SessionDto): Session {
   const isHook = platform === 'hook'
   const isDream = platform === 'dream'
   const channel = sessionChannelLabel(platform, rawChannel, d.channelName, d.triggeredByName, d.hookKind)
+  // A session that carries a whole conversation belongs to the room, not to whoever spoke
+  // first — and `triggeredBy` is frozen first-wins, so it would credit them for months.
+  const appendStartedAt = appendSessionStartedAt(d.sessionKey.thread)
   const isSlackDm = platform === 'slack' && /^D/.test(rawChannel)
   const dmFallback = isSlackDm ? (d.triggeredByName ? `@${d.triggeredByName}` : 'DM') : null
   const user = isDream
@@ -2069,7 +2083,8 @@ export function sessionFromDto(d: SessionDto): Session {
       : d.triggeredBy === 'auto'
         ? 'Automatic'
         : 'Manual'
-    : d.triggeredByName ||
+    : (appendStartedAt && appendSessionLabel(appendStartedAt)) ||
+      d.triggeredByName ||
       (isHook && d.triggeredBy?.startsWith('hook:') ? hookSourceLabel(d.hookKind) : d.triggeredBy) ||
       PLACEHOLDER
   return {
@@ -4213,7 +4228,7 @@ export async function fetchHookRuns(id: string, orgId?: string): Promise<HookRun
 export async function updateIntegrationChannel(
   integrationId: string,
   channelId: string,
-  patch: { trigger?: ChannelTrigger; agentId?: string },
+  patch: { trigger?: ChannelTrigger; sessionMode?: ChannelSessionMode; agentId?: string },
   orgId?: string
 ): Promise<IntegrationChannelDto> {
   return apiPatch<IntegrationChannelDto>(

@@ -498,9 +498,13 @@ and `/new` on Telegram and Discord, and it joins the advertised menus — `BOT_C
 `IntegrationChannelList.tsx` renders a second `TriggerSelect` in the conversation row,
 left of the trigger dropdown, with its own hover copy:
 
-- `Create new` — "Each new message starts a fresh session. Replies inside a thread
-  continue that thread's session."
-- `Append` — "Every message in this conversation is added to one ongoing session."
+- `new session` — "Each new message in this channel starts a fresh session. Replies inside a
+  thread continue that thread's session."
+- `one session` — "Every message in this channel is added to one ongoing session. Send
+  `!new` there to start a fresh one."
+
+The labels name the OUTCOME rather than the mechanism, so the row reads as a choice about
+this conversation instead of a term from this document.
 
 **Scope: channel rows, on every platform that has channels.** A direct conversation is not
 a channel and does not get the control. Per-platform narrowing uses the same mechanism as
@@ -514,9 +518,15 @@ detail header render a session's `user` column from `triggeredBy`/`triggeredByNa
 is frozen first-wins on the daemon ("the sender that created the session keeps the credit
 across later upserts"). For a session that carries a whole channel over months, that
 credits everything to whoever spoke first. `append` sessions are identified by the
-conversation and the coordinate's start time instead — `#deploys (since Mar 4)` — which
-also makes `!new` visible in the console, since two generations are otherwise
-indistinguishable in a list.
+conversation and the coordinate's start time instead: the row already carries the room in
+its own column, so the person column reads `Since Mar 4` and the two together identify the
+session. That also makes `!new` visible in the console, since two generations are otherwise
+indistinguishable in a list. The date carries its year outside the current one, the rule the
+list's own timestamps follow.
+
+**Linear declares `createNew` only.** A Linear row is a team and every issue in it is its own
+thread, so appending would pool a whole team into one session — a meaning this setting has
+nowhere else. It is the first use of the per-platform narrowing this section describes.
 
 ## 9. Visibility and attribution
 
@@ -545,18 +555,26 @@ The eventual home for "audience = the conversation" is the existing external tie
 `ownerIdentity` and resolves membership live — but that tier only engages when an
 organization enables the provider policy, so it is not a prerequisite here.
 
-## 10. A prerequisite fix
+## 10. Unbounded reads — corrected
 
-`threadTranscript()` (`packages/daemon/src/store/local-store.ts`) reads a conversation
-with `SELECT * … WHERE channel = ? AND thread = ? ORDER BY seq ASC` and **no `LIMIT`**,
-and transcript rows are never pruned — no retention rule covers them. This is safe today
-only because no `(channel, thread)` pair grows without bound. `append` creates exactly
-that: a busy channel's whole history under one coordinate, read into memory on every
-console open, with the rows of retired coordinates still on disk beside it. The prompt
-path is already bounded (`MAX_REPLAY_ENTRIES`, `MAX_CONTEXT_REFRESH_EVENTS`); this read is
-not.
+An earlier revision of this design called for bounding `threadTranscript()`
+(`packages/daemon/src/store/local-store.ts`), which selects a conversation with no `LIMIT`,
+on the grounds that the console reads it on every open and `append` would make one
+`(channel, thread)` pair grow without bound.
 
-It is bounded as part of this work, not after it.
+**That was wrong, and the correction is worth recording rather than deleting.** The claim
+came from reading an unbounded SQL statement without checking its callers: `threadTranscript`
+has none in production — only tests. The console reads a transcript through
+`transcriptPageForAgent` / `transcriptPageForAgentByEventTime` (`cp/session-reader.ts`),
+which page, and whose `limit` the wire schema caps at 200 with a default of 50
+(`protocol/src/frames/session.ts`). The prompt path is bounded too
+(`MAX_REPLAY_ENTRIES`, `MAX_CONTEXT_REFRESH_EVENTS`).
+
+So `append` adds no unbounded read. What it does add is unbounded GROWTH: transcript rows
+are never pruned — no retention rule covers them — and a busy `append` conversation
+accumulates a channel's whole history under one coordinate, with retired coordinates' rows
+beside it. Paging keeps any single read cheap; the disk cost is real and belongs to the
+open question about transcript retention in §12, not to a read that does not exist.
 
 ## 11. Testing
 
@@ -607,5 +625,5 @@ It is bounded as part of this work, not after it.
    daemon-side classifier; nothing above changes shape to accommodate it.
 2. **Retention of retired coordinates.** Superseded `append` sessions age out through the
    ordinary retention window, and their transcript rows remain on disk indefinitely like
-   every other conversation's. §10 bounds the read; whether the rows themselves deserve a
-   retention rule is a separate question about transcript retention generally.
+   every other conversation's. Reads are bounded already (§10), so this is a question about
+   disk, not latency — and about transcript retention generally rather than this mode.

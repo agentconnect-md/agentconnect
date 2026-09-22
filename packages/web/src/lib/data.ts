@@ -2153,6 +2153,10 @@ export interface IntegrationChannelRow {
   /** 'im' = a DM conversation row, 'mpim' = a Slack group DM; absent = channel. */
   kind?: 'channel' | 'im' | 'mpim'
   trigger: 'off' | 'mention' | 'any'
+  /** Which session a message here joins: a new one per thread, or the conversation's one
+   *  ongoing session. Channel rows only — a direct conversation is not a place this choice
+   *  means anything. */
+  sessionMode?: 'createNew' | 'append'
   /** Effective per-conversation owner for a shared bot. */
   agentId?: string | null
 }

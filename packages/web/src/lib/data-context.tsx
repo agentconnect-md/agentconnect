@@ -116,6 +116,7 @@ import {
   type UpdateAgentInput,
   type CreateIntegrationInput,
   type ChannelTrigger,
+  type ChannelSessionMode,
   type IntegrationDto,
   type CreatedHookDto,
   type CreateHookInput,
@@ -255,6 +256,7 @@ interface ConsoleData {
   deleteHook: (id: string, agentId?: string | null) => Promise<void>
   /** Per-conversation trigger choice (PATCH), applied to the local row on success. */
   setChannelTrigger: (integrationId: string, channelId: string, trigger: ChannelTrigger) => Promise<void>
+  setChannelSessionMode: (integrationId: string, channelId: string, sessionMode: ChannelSessionMode) => Promise<void>
   /** Per-conversation default agent for a shared bot (PATCH), applied locally. */
   setChannelAgent: (integrationId: string, channelId: string, agentId: string) => Promise<void>
   /** Forget a conversation row without touching the platform. */
@@ -331,7 +333,10 @@ function groupRow(s: MemberSetDto): MemberSetRow {
 // Map a live integration DTO to the richer UI row, resolving the holding daemon
 // via the owning agent. `channels` is the daemon-reported membership snapshot with
 // each channel's trigger choice (@-mention vs any message), set per channel.
-function integrationRowFromDto(
+/** The DTO → row projection. Exported for its test: every per-conversation field the console
+ *  renders has to survive this map, and a field silently missing here reads as its default
+ *  forever — the control then shows a state the server does not have. */
+export function integrationRowFromDto(
   d: IntegrationDto,
   agentsById: Map<string, Agent>,
   botsById: Map<string, BotDto>
@@ -362,6 +367,7 @@ function integrationRowFromDto(
       ...(c.url ? { url: c.url } : {}),
       kind: c.kind,
       trigger: c.trigger,
+      sessionMode: c.sessionMode,
       agentId: c.agentId
     }))
   }
@@ -1426,6 +1432,35 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
 
   // Flip one conversation's trigger. Shared bots project it bot-wide. Avoid a full
   // re-pull so the toggle does not flash.
+  const setChannelSessionMode = useCallback(
+    async (integrationId: string, channelId: string, sessionMode: ChannelSessionMode) => {
+      await apiUpdateIntegrationChannel(integrationId, channelId, { sessionMode })
+      settleInBackground(
+        mutateIntegrations(
+          (rows) => {
+            const source = rows?.find((row) => row.id === integrationId)
+            if (!rows || !source) return rows
+            // A shared bot's conversation is bot-scoped: the CP replicates the choice across
+            // every sibling install, so the optimistic view has to move with it.
+            const botWide = realBots.some((bot) => bot.id === source.botId && bot.shareable)
+            return rows.map((row) =>
+              (botWide ? row.botId === source.botId : row.id === integrationId)
+                ? {
+                    ...row,
+                    channels: row.channels.map((channel) =>
+                      channel.channelId === channelId ? { ...channel, sessionMode } : channel
+                    )
+                  }
+                : row
+            )
+          },
+          { revalidate: false }
+        )
+      )
+    },
+    [mutateIntegrations, realBots]
+  )
+
   const setChannelTrigger = useCallback(
     async (integrationId: string, channelId: string, trigger: ChannelTrigger) => {
       await apiUpdateIntegrationChannel(integrationId, channelId, { trigger })
@@ -1723,6 +1758,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       deleteHook,
       deleteBot,
       setChannelTrigger,
+      setChannelSessionMode,
       forgetChannel,
       leaveConversation,
       setChannelAgent,

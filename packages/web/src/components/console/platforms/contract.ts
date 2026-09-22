@@ -568,6 +568,10 @@ export interface WebChannelListSemantics {
    * `any`, because nothing would ever match it. DM rows keep their binary control.
    */
   triggers?: readonly ('off' | 'mention' | 'any')[]
+  /** Session modes this platform's channel rows offer. Absent ⇒ both, which is every
+   *  platform that has channels. A platform opts out by omitting one rather than core
+   *  branching on a platform name. */
+  sessionModes?: readonly ('createNew' | 'append')[]
   /**
    * Confirmation shown before a row's default dispatch moves OFF a RESTRICTED agent.
    * Where an owner compiles to a per-conversation default rather than an ownership

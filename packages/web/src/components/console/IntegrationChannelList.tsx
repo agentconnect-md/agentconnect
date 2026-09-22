@@ -72,6 +72,61 @@ function TriggerToggle({
   )
 }
 
+/** The per-conversation session-mode dropdown: which session a message here joins. It sits
+ *  beside the trigger because the two are the room's only per-conversation choices, and it
+ *  answers a different question — the trigger decides WHETHER the agent responds, this
+ *  decides which session it responds in.
+ *
+ *  Channel rows only. A direct conversation is one continuous exchange already, so the
+ *  choice would name a distinction that does not exist there. */
+function SessionModeToggle({
+  channel,
+  platform,
+  disabled,
+  onChange
+}: {
+  channel: IntegrationChannelRow
+  platform?: string
+  disabled: boolean
+  onChange: (mode: NonNullable<IntegrationChannelRow['sessionMode']>) => void
+}) {
+  const [saving, setSaving] = useState(false)
+  const current = channel.sessionMode ?? 'createNew'
+  const allowed = channelListSemantics(platform).sessionModes
+  const here = `this ${rowNoun(channel.kind, platform)}`
+  const options: TriggerOption<NonNullable<IntegrationChannelRow['sessionMode']>>[] = [
+    {
+      value: 'createNew',
+      label: 'new session',
+      hint: `Each new message in ${here} starts a fresh session. Replies inside a thread continue that thread's session.`
+    },
+    {
+      value: 'append',
+      label: 'one session',
+      hint: `Every message in ${here} is added to one ongoing session. Send \`!new\` there to start a fresh one.`
+    }
+  ]
+  const offered = allowed ? options.filter((o) => allowed.includes(o.value)) : options
+  if (offered.length < 2) return null
+  const pick = (mode: NonNullable<IntegrationChannelRow['sessionMode']>) => {
+    if (disabled || saving || mode === current) return
+    setSaving(true)
+    Promise.resolve(onChange(mode)).finally(() => setSaving(false))
+  }
+  return (
+    <TriggerSelect
+      options={offered}
+      value={current}
+      onChange={pick}
+      ariaLabel={`Session mode for ${rowLabel(channel)}`}
+      hint="Session — which session a message here joins"
+      disabled={disabled}
+      busy={saving}
+      className="max-desktop:w-full"
+    />
+  )
+}
+
 /** One band of the channel list: the rows of a single Discord server, with the header
  *  to print above them (absent ⇒ no header, the flat lead group). */
 export interface SpaceGroup {
@@ -556,8 +611,16 @@ export function IntegrationChannelList({
   /** Horizontal row padding, to line up with the host card (18 list / 14 detail). */
   padX?: number
 }) {
-  const { setChannelTrigger, setChannelAgent, forgetChannel, leaveConversation, bots, agents, integrations } =
-    useConsoleData()
+  const {
+    setChannelTrigger,
+    setChannelSessionMode,
+    setChannelAgent,
+    forgetChannel,
+    leaveConversation,
+    bots,
+    agents,
+    integrations
+  } = useConsoleData()
   const ownerGuard = useOwnerChangeGuard()
   // A derived roster is the platform's own list — nothing is observed into it, and nothing is dropped from here.
   const derivedRoster = channelListSemantics(platform).roster === 'derived'
@@ -681,6 +744,16 @@ export function IntegrationChannelList({
                   dispatch and trigger are different decisions, not one bar. */}
               <span className="hidden h-[18px] w-px flex-none bg-(--border-subtle) desktop:block" />
             </>
+          )}
+          {/* Channel rows only — see SessionModeToggle. It renders nothing where the platform
+              offers one mode, so no branch on a platform name is needed here. */}
+          {!isDirectConversation(c.kind) && (
+            <SessionModeToggle
+              channel={c}
+              platform={platform}
+              disabled={!integrationId}
+              onChange={(mode) => setChannelSessionMode(integrationId!, c.channelId, mode)}
+            />
           )}
           <TriggerToggle
             channel={c}
