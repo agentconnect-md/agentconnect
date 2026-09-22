@@ -1,13 +1,13 @@
-import { z } from 'zod'
-import {
+import type {
   ChannelDecisionBinding,
-  type DecisionDefinition,
-  type DecisionDraft,
-  type DecisionDraftInput,
-  type DecisionEvaluation,
-  type DecisionQuestion,
-  type DecisionValidationIssue,
-  type SharedBotDecisionRouting
+  DecisionChannelSettings,
+  DecisionDefinition,
+  DecisionDraft,
+  DecisionDraftInput,
+  DecisionEvaluation,
+  DecisionQuestion,
+  DecisionValidationIssue,
+  SharedBotDecisionRouting
 } from './decision.js'
 
 export interface DecisionReadiness {
@@ -45,12 +45,6 @@ export interface DecisionDetail {
 }
 
 export type DecisionSummary = DecisionDefinition & { usageCount: number }
-
-export const DecisionChannelSettings = z.discriminatedUnion('trigger', [
-  z.strictObject({ trigger: z.enum(['off', 'mention', 'auto']) }),
-  z.strictObject({ trigger: z.literal('decision'), decisionBinding: ChannelDecisionBinding })
-])
-export type DecisionChannelSettings = z.infer<typeof DecisionChannelSettings>
 
 export interface DecisionChannel {
   id: string

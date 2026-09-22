@@ -14,7 +14,9 @@ routing remains Stage 2 even though its configuration can be prototyped now.
 | `packages/web/src/lib/decisions/mock-api.ts` | Opt-in `createDecisionMockApi()` implementing `DecisionApi` with isolated in-memory saves                                         |
 | `packages/web/src/lib/decisions/fixtures.ts` | Example Decisions, direct/shared bots, channels, provider options, canned evaluations, and repeated-mention context               |
 
-Import protocol leaf modules from browser code. Keep one mock API instance for the
+Import runtime schemas from `protocol/decision`; import API contracts from
+`protocol/decision-api` with `import type` so the browser never resolves its relative
+type references. Keep one mock API instance for the
 prototype's lifetime, for example in a React state initializer or prototype provider;
 creating an instance on each render resets saved state. Returned objects are copies,
 so editing or cancelling a form never changes saved state until a save method succeeds.
@@ -126,5 +128,5 @@ Focused validation:
 
 ```sh
 pnpm --filter @agentconnect.md/protocol exec vitest run src/decision.test.ts --maxWorkers=1
-pnpm --filter @agentconnect.md/web exec vitest run src/lib/decisions/mock-api.test.ts --maxWorkers=1
+pnpm --filter @agentconnect.md/web exec vitest run src/protocol-imports.leaf.test.ts src/lib/decisions/mock-api.test.ts --maxWorkers=1
 ```

@@ -79,6 +79,12 @@ export const ChannelDecisionBinding = z.discriminatedUnion('type', [
 ])
 export type ChannelDecisionBinding = z.infer<typeof ChannelDecisionBinding>
 
+export const DecisionChannelSettings = z.discriminatedUnion('trigger', [
+  z.strictObject({ trigger: z.enum(['off', 'mention', 'auto']) }),
+  z.strictObject({ trigger: z.literal('decision'), decisionBinding: ChannelDecisionBinding })
+])
+export type DecisionChannelSettings = z.infer<typeof DecisionChannelSettings>
+
 export const RoutingAction = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('agent'), agentId: Id }),
   z.strictObject({ type: z.literal('skip') })

@@ -1,4 +1,5 @@
 import {
+  DecisionChannelSettings,
   DecisionDraft,
   DecisionEvaluation,
   SharedBotDecisionRouting,
@@ -11,15 +12,14 @@ import {
   type DecisionDefinition,
   type DecisionValidationIssue
 } from '@agentconnect.md/protocol/decision'
-import {
-  DecisionChannelSettings,
-  type DecisionApi,
-  type DecisionApiErrorBody,
-  type DecisionPreviewEvaluator,
-  type DecisionPreviewResult,
-  type DecisionReadiness,
-  type DecisionRoutingDetail,
-  type DecisionUsage
+import type {
+  DecisionApi,
+  DecisionApiErrorBody,
+  DecisionPreviewEvaluator,
+  DecisionPreviewResult,
+  DecisionReadiness,
+  DecisionRoutingDetail,
+  DecisionUsage
 } from '@agentconnect.md/protocol/decision-api'
 import {
   createDecisionMockSeed,
