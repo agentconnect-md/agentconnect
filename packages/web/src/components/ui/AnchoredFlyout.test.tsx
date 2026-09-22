@@ -38,6 +38,33 @@ describe('shared AnchoredFlyout', () => {
     ).toMatchObject({ left: 8, top: 55, width: 234 })
   })
 
+  it('grows to a wider trigger only when asked, still inside the viewport', () => {
+    const wide = { left: 16, right: 359, top: 100, bottom: 144 }
+    const options = { width: 248, estimatedHeight: 300, align: 'end' as const, gap: 6, margin: 8 }
+    expect(placeAnchoredFlyout(wide, { width: 375, height: 812 }, options)).toMatchObject({ left: 111, width: 248 })
+    expect(
+      placeAnchoredFlyout(wide, { width: 375, height: 812 }, { ...options, matchTriggerWidth: true })
+    ).toMatchObject({ left: 16, width: 343 })
+    // A narrow trigger keeps the flyout's own width.
+    expect(
+      placeAnchoredFlyout(
+        { left: 700, right: 850, top: 100, bottom: 128 },
+        { width: 1200, height: 800 },
+        { ...options, matchTriggerWidth: true }
+      )
+    ).toMatchObject({ left: 602, width: 248 })
+    expect(
+      placeAnchoredFlyout(
+        { left: 0, right: 400, top: 100, bottom: 144 },
+        { width: 375, height: 812 },
+        {
+          ...options,
+          matchTriggerWidth: true
+        }
+      )
+    ).toMatchObject({ left: 8, width: 359 })
+  })
+
   it('portals its menu to body and distinguishes internal from external scrolling', () => {
     act(() =>
       root.render(

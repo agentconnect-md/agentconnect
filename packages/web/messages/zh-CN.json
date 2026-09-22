@@ -1258,14 +1258,13 @@
       "trigger": {
         "off": "关闭",
         "on": "开启",
-        "anyMessage": "每条消息",
+        "anyMessage": "所有消息",
         "mention": "@提及",
-        "offHint": "Agent不会在{room}中响应，即使被@提及也不会响应。",
-        "anyMessageHint": "Agent会响应{room}中的每条消息。",
-        "mentionHint": "Agent在被@提及时响应。已加入线程中的后续消息无需再次@提及。",
-        "dmOffHint": "Agent不会在此对话中响应。",
-        "dmOnHint": "Agent会响应此对话中的消息。",
-        "ariaLabel": "{name}的触发条件",
+        "offHint": "留在{room}中，但从不回复。",
+        "anyMessageHint": "回复{room}中的每条消息。",
+        "mentionHint": "被@提及时回复，也会在已加入的话题中回复。",
+        "dmOffHint": "不在此对话中回复。",
+        "dmOnHint": "回复此对话中的每条消息。",
         "hint": "触发条件——Agent何时响应",
         "decision": "按决策",
         "decisionHint": "已保存的决策会评估{room}中的每条消息；Agent 仅在结果符合你选择的答案时回复。"
@@ -1303,12 +1302,17 @@
         "busy": "更改中…"
       },
       "sessionMode": {
-        "createNew": "新会话",
-        "createNewHint": "{room}中的每条新消息都会创建新会话。话题内的回复会延续该话题的会话。",
-        "append": "同一会话",
-        "appendHint": "{room}中的所有消息都会加入同一个持续会话。发送 `!new` 可开始新会话。",
-        "ariaLabel": "{name}的会话模式",
-        "hint": "会话——此处的消息加入哪个会话"
+        "createNew": "按话题",
+        "createNewHint": "每个话题有自己的会话，话题内的回复延续该会话。",
+        "append": "单一会话",
+        "appendHint": "{room}只有一个会话，所有话题共享。发送 <code>!new</code> 可开始新会话。"
+      },
+      "settings": {
+        "respondTo": "触发条件",
+        "sessionMode": "会话模式",
+        "ariaLabel": "{name}的设置：{value}",
+        "menuLabel": "{name}的设置",
+        "optionHint": "<b>{label}</b>——<hint></hint>"
       }
     },
     "github": {
