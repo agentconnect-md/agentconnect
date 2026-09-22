@@ -850,6 +850,14 @@ const AgentActivate = z.object({
 
 For a placement move, the CP first sends an acknowledged source detach with `discardActiveTurns`. The source closes admission synchronously, cancels admitted turns without waiting for a final reply, stops their runtime authority, and archives its local replica. The CP then releases the source session assignments and compare-and-sets `Agent.daemonId`. No ACP session state, transcript, workspace, or memory bytes are copied or replayed; subsequent messages create fresh target sessions. The CP stages the target with `agent/detach` (an absent agent is valid), followed by one acknowledged authoritative `agent/activate` bundle. Both target requests use the same fresh `moveId`; a daemon persists that fence and rejects a late activate from a superseded move. Activation exact-converges CP integrations and CP crons, validates capacity/runtime/model/MCP support, warms the ACP host, and only then opens the dispatch gate.
 
+The source keeps its `staging` fence after the move, as a durable fail-closed
+tombstone: the archived replica must never become servable again, and only a later
+activate or a removal lifts it. That fence keeps the agent in the daemon's draining
+set indefinitely, so session retention does not read it as a drain in progress. A
+drain guards an agent's sessions only while something of the agent is still on the
+daemon — loaded, or with a host running, starting or stopping — and the old
+sessions a completed move leaves behind age out like any others.
+
 An explicit force reassign is available only while the source is not READY. It
 still attempts `agent/detach`, but an unavailable or negative source response is logged
 and does not block the placement CAS. Session affinities are released before the CAS,
