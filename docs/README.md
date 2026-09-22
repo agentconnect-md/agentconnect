@@ -42,6 +42,7 @@ the picture it draws.
 - [slack-code-channels.md](designs/slack-code-channels.md) — Slack Code code channels: what is buildable now on generally available primitives, and what waits on the partner-only API.
 - [feishu-integration.md](designs/feishu-integration.md) — The Lark / Feishu integration, international and CN variants.
 - [qq-integration.md](designs/qq-integration.md) — Official QQ bot integration, attachment support, and shared group-context and approval dependencies.
+- [google-chat-integration.md](designs/google-chat-integration.md) — Proposed native Google Chat integration with daemon-owned Pub/Sub ingress, threaded replies, and durable admission.
 
 ### Webchat and console
 
