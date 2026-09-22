@@ -19,6 +19,8 @@ interface AnchoredFlyoutProps {
   children: (controls: Pick<AnchoredFlyoutControls, 'close'>) => ReactNode
   ariaLabel: string
   width?: number
+  /** Grow to the trigger's width when it is wider than `width` — a full-width mobile control. */
+  matchTriggerWidth?: boolean
   estimatedHeight?: number
   align?: 'start' | 'end'
   gap?: number
@@ -27,20 +29,21 @@ interface AnchoredFlyoutProps {
   triggerClassName?: string
 }
 
-/** Place a fixed flyout inside the viewport, preferring below its trigger and
- * flipping above when that side has meaningfully more space. */
+/** Place a fixed flyout inside the viewport, below its trigger unless above has meaningfully more room. */
 export function placeAnchoredFlyout(
   trigger: { left: number; right: number; top: number; bottom: number },
   viewport: { width: number; height: number },
   options: {
     width: number
+    matchTriggerWidth?: boolean
     estimatedHeight: number
     align: 'start' | 'end'
     gap: number
     margin: number
   }
 ): AnchoredFlyoutStyle {
-  const width = Math.min(options.width, Math.max(0, viewport.width - options.margin * 2))
+  const wanted = options.matchTriggerWidth ? Math.max(options.width, trigger.right - trigger.left) : options.width
+  const width = Math.min(wanted, Math.max(0, viewport.width - options.margin * 2))
   const maxLeft = Math.max(options.margin, viewport.width - width - options.margin)
   const alignedLeft = options.align === 'end' ? trigger.right - width : trigger.left
   const left = Math.min(Math.max(options.margin, alignedLeft), maxLeft)
@@ -61,6 +64,7 @@ export function AnchoredFlyout({
   children,
   ariaLabel,
   width = 280,
+  matchTriggerWidth = false,
   estimatedHeight = 160,
   align = 'end',
   gap = 5,
@@ -89,7 +93,7 @@ export function AnchoredFlyout({
       placeAnchoredFlyout(
         anchor.getBoundingClientRect(),
         { width: window.innerWidth, height: window.innerHeight },
-        { width, estimatedHeight, align, gap, margin: viewportMargin }
+        { width, matchTriggerWidth, estimatedHeight, align, gap, margin: viewportMargin }
       )
     )
   }

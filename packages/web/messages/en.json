@@ -1256,18 +1256,17 @@
       },
       "thisRoom": "this {noun}",
       "trigger": {
-        "off": "off",
-        "on": "on",
-        "anyMessage": "any message",
-        "mention": "@-mention",
-        "offHint": "The agent doesn't respond in {room}, even when @-mentioned.",
-        "anyMessageHint": "The agent responds to every message in {room}.",
-        "mentionHint": "The agent responds when @-mentioned. Follow-ups in a thread it has joined don't need another mention.",
-        "dmOffHint": "The agent doesn't respond in this conversation.",
-        "dmOnHint": "The agent responds to messages in this conversation.",
-        "ariaLabel": "Trigger for {name}",
+        "off": "Off",
+        "on": "On",
+        "anyMessage": "All messages",
+        "mention": "@-mentions",
+        "offHint": "Stays in {room} but never replies.",
+        "anyMessageHint": "Replies to every message in {room}.",
+        "mentionHint": "Replies when mentioned, and in threads it has joined.",
+        "dmOffHint": "Never replies in this conversation.",
+        "dmOnHint": "Replies to every message in this conversation.",
         "hint": "Trigger — when the agent responds here",
-        "decision": "by decision",
+        "decision": "By decision",
         "decisionHint": "A saved decision judges each message in {room}; the agent answers only for the answers you pick."
       },
       "action": {
@@ -1303,12 +1302,17 @@
         "busy": "Moving…"
       },
       "sessionMode": {
-        "createNew": "new session",
-        "createNewHint": "Each new message in {room} starts a fresh session. Replies inside a thread continue that thread's session.",
-        "append": "one session",
-        "appendHint": "Every message in {room} is added to one ongoing session. Send `!new` there to start a fresh one.",
-        "ariaLabel": "Session mode for {name}",
-        "hint": "Session — which session a message here joins"
+        "createNew": "Per thread",
+        "createNewHint": "Each thread has its own session. Replies continue that session.",
+        "append": "Single session",
+        "appendHint": "One session for {room}, shared across threads. Send <code>!new</code> to start a fresh one."
+      },
+      "settings": {
+        "respondTo": "Respond to",
+        "sessionMode": "Session mode",
+        "ariaLabel": "Settings for {name}: {value}",
+        "menuLabel": "Settings for {name}",
+        "optionHint": "<b>{label}</b> — <hint></hint>"
       }
     },
     "github": {

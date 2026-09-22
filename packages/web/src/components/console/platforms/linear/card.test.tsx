@@ -254,20 +254,21 @@ describe('the team rows', () => {
 
   it('carries a trigger per team, Mention or Off and nothing else', async () => {
     await render()
-    await act(async () => buttonWithLabel('Trigger for Acme / Engineering')!.click())
+    await act(async () => buttonWithLabel('Settings for Acme / Engineering')!.click())
 
+    // Every issue is its own thread, so a team offers one session mode — which is no choice, and no group.
     const menu = [...document.querySelectorAll('[role="menuitemradio"]')].map((o) => o.textContent)
-    expect(menu).toEqual(['off', '@-mention'])
-    // The platform emits no unaddressed traffic (§6.1), so nothing would match "any message".
-    expect(menu).not.toContain('any message')
+    expect(menu).toEqual(['@-mentions', 'Off'])
+    // The platform emits no unaddressed traffic (§6.1), so nothing would match "All messages".
+    expect(menu).not.toContain('All messages')
   })
 
   it('writes a team’s trigger through the generic per-conversation PATCH', async () => {
     await render()
-    await act(async () => buttonWithLabel('Trigger for Acme / Design')!.click())
+    await act(async () => buttonWithLabel('Settings for Acme / Design')!.click())
     await act(async () =>
       [...document.querySelectorAll('[role="menuitemradio"]')]
-        .at(-1)!
+        .find((o) => o.textContent === '@-mentions')!
         .dispatchEvent(new MouseEvent('click', { bubbles: true }))
     )
     await settle()
@@ -285,6 +286,7 @@ describe('the team rows', () => {
 
   it('names the room the way Linear does — the trigger copy says team, never channel', async () => {
     await render()
+    await act(async () => buttonWithLabel('Settings for Acme / Design')!.click())
 
     const markup = document.body.innerHTML
     expect(markup).toContain('this team')

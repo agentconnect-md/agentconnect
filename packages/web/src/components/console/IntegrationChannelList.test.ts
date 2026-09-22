@@ -286,33 +286,46 @@ describe('roomGlyph', () => {
   })
 })
 
-// channel-session-mode.md §8. The control answers a different question from the trigger —
-// which session a message joins, not whether the agent responds — and is scoped to rows
-// where that question means something.
+// channel-session-mode.md §8: the session mode shares the trigger's button, offered only where the choice means something.
 describe('IntegrationChannelList session mode', () => {
   const render = (channels: IntegrationChannelRow[], platform = 'slack') =>
     renderToStaticMarkup(createElement(IntegrationChannelList, { platform, gated: false, channels }))
 
-  it('offers the choice on a channel row, defaulting to a session per thread', () => {
+  it('reads both choices on a channel row, defaulting to a session per thread', () => {
     const html = render([{ channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention' }])
-    expect(html).toContain('Session mode for')
-    expect(html).toContain('new session')
+    expect(html).toContain('aria-label="Settings for deploys: @-mentions, Per thread"')
+    expect(html).toContain('title="Respond to · Session mode"')
   })
 
   it('shows the conversation is on one session when it is', () => {
     const html = render([
       { channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention', sessionMode: 'append' }
     ])
-    expect(html).toContain('one session')
+    expect(html).toContain('<span>Single session</span>')
   })
 
-  // A DM is one continuous exchange already, so the choice would name a distinction that
-  // does not exist there — and a group DM is not a place this is configured either.
+  it('leaves the mode unsaid while the row is Off', () => {
+    const html = render([{ channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'off' }])
+    expect(html).toContain('aria-label="Settings for deploys: Off"')
+    expect(html).not.toContain('Per thread')
+  })
+
+  // A DM is one continuous exchange already, and a group DM is not a place this is configured either.
   it('offers it on no direct conversation', () => {
     for (const kind of ['im', 'mpim'] as const) {
       const html = render([{ channelId: 'D1', name: '@alice', kind, trigger: 'any' }])
-      expect(html, kind).not.toContain('Session mode for')
+      expect(html, kind).not.toContain('Session mode')
+      expect(html, kind).not.toContain('Per thread')
     }
+  })
+
+  it('offers it nowhere the platform allows only one mode', () => {
+    const html = render(
+      [{ channelId: 'T1', name: 'Acme / Engineering', kind: 'channel', trigger: 'mention' }],
+      'linear'
+    )
+    expect(html).toContain('aria-label="Settings for Acme / Engineering: @-mentions"')
+    expect(html).not.toContain('Session mode')
   })
 })
 
@@ -490,7 +503,7 @@ describe('IntegrationChannelList default dispatch control', () => {
 })
 
 describe('IntegrationChannelList direct rows', () => {
-  it('renders an Everyone DM with its on/off trigger dropdown', () => {
+  it('renders an Everyone DM with its On/Off trigger', () => {
     const html = renderToStaticMarkup(
       createElement(IntegrationChannelList, {
         platform: 'discord',
@@ -499,9 +512,9 @@ describe('IntegrationChannelList direct rows', () => {
       })
     )
     expect(html).toContain('Direct messages')
-    // The closed control READS the current choice; "off" is one menu item away.
-    expect(html).toContain('aria-label="Trigger for Alice"')
-    expect(html).toContain('>on</span>')
+    // The closed control READS the current choice; Off is one menu item away.
+    expect(html).toContain('aria-label="Settings for Alice: On"')
+    expect(html).toContain('<span>On</span>')
   })
 
   it('renders shared-bot default dispatch for a DM', () => {

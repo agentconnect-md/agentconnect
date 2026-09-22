@@ -8,7 +8,11 @@ import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
 import { AgentIconView } from '@/components/marks'
 import { channelListSemantics } from '@/components/console/platforms/registry'
-import { TriggerSelect, type TriggerOption } from '@/components/console/TriggerSelect'
+import {
+  ChannelSettingsPopover,
+  type ChannelSettingsGroup,
+  type ChannelSettingsOption
+} from '@/components/console/ChannelSettingsPopover'
 import { useOwnerChangeGuard } from '@/components/console/OwnerChangeGuard'
 import { DecisionBindingStrip } from '@/components/console/decisions/DecisionBindingStrip'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
@@ -45,16 +49,17 @@ function resolveMessage(
  *  no such value yet, so picking it writes a prototype gate instead of a channel PATCH. */
 type RowTrigger = IntegrationChannelRow['trigger'] | 'decision'
 
-/** The per-conversation trigger dropdown: channels take "off" / "any message" / "@-mention" (the
- *  default, so it sits last), DM rows are binary off/on, and shared bots project that state across
- *  every membership row. Every choice carries hover copy. */
-function TriggerToggle({
+type SessionMode = NonNullable<IntegrationChannelRow['sessionMode']>
+
+/** A row's two per-conversation choices behind one button: whether the agent responds here, and which session a message joins. */
+function RowSettings({
   channel,
   platform,
   disabled,
-  value,
+  trigger,
   allowDecision,
-  onChange
+  onTrigger,
+  onSessionMode
 }: {
   channel: IntegrationChannelRow
   /** Names the room the way its platform does — one noun per card. */
@@ -62,117 +67,94 @@ function TriggerToggle({
   /** Demo rows (no live integration id) render the control inert. */
   disabled: boolean
   /** The row's effective choice, which is the memory trigger unless a gate overrides it. */
-  value: RowTrigger
+  trigger: RowTrigger
   /** Whether `by decision` is offered here at all — the flag, a group room, and a non-shared bot. */
   allowDecision: boolean
-  onChange: (trigger: RowTrigger) => void
+  onTrigger: (trigger: RowTrigger) => void | Promise<void>
+  onSessionMode: (mode: SessionMode) => Promise<void>
 }) {
   const t = useTranslations('Integrations.channelList')
   const translate: ChannelListTranslator = (key, values) => t(key as never, values as never)
-  const [saving, setSaving] = useState(false)
-  const pick = (trigger: RowTrigger) => {
-    if (disabled || saving || trigger === value) return
-    setSaving(true)
-    Promise.resolve(onChange(trigger)).finally(() => setSaving(false))
-  }
-  // A DM conversation activates on any message once enabled — binary off/on. A
-  // channel takes the full three-way choice for EVERY agent, gated or not: an operator
-  // who wants the bot silent here but still in the channel on the platform has nowhere
-  // else to say so. A GROUP DM takes the channel's choice, not the DM's: several people
-  // share it, so "every message" must stay opt-in.
-  const noun = localNoun(translate, rowNoun(channel.kind, platform))
-  const here = translate('thisRoom', { noun })
-  // The room's vocabulary is the platform's: nothing matches "any message" where no unaddressed traffic exists.
-  const allowed = channelListSemantics(platform).triggers
-  const roomOptions: TriggerOption<RowTrigger>[] = [
-    { value: 'off', label: translate('trigger.off'), hint: translate('trigger.offHint', { room: here }) },
-    { value: 'any', label: translate('trigger.anyMessage'), hint: translate('trigger.anyMessageHint', { room: here }) },
-    {
-      value: 'mention',
-      label: translate('trigger.mention'),
-      hint: translate('trigger.mentionHint')
-    },
-    {
-      value: 'decision',
-      label: translate('trigger.decision'),
-      hint: translate('trigger.decisionHint', { room: here })
-    }
-  ]
-  const options: TriggerOption<RowTrigger>[] =
+  const here = translate('thisRoom', { noun: localNoun(translate, rowNoun(channel.kind, platform)) })
+  const semantics = channelListSemantics(platform)
+  // Only a 1:1 DM is On/Off; a group DM keeps a channel's choices (several people share it), and every agent gets Off.
+  const respond: ChannelSettingsOption<RowTrigger>[] =
     channel.kind === 'im'
       ? [
-          { value: 'off', label: translate('trigger.off'), hint: translate('trigger.dmOffHint') },
-          { value: 'any', label: translate('trigger.on'), hint: translate('trigger.dmOnHint') }
+          { value: 'any', label: translate('trigger.on'), hint: translate('trigger.dmOnHint') },
+          { value: 'off', label: translate('trigger.off'), hint: translate('trigger.dmOffHint') }
         ]
-      : roomOptions.filter((o) => (o.value === 'decision' ? allowDecision : !allowed || allowed.includes(o.value)))
-  return (
-    <TriggerSelect
-      options={options}
-      value={value}
-      onChange={pick}
-      ariaLabel={translate('trigger.ariaLabel', { name: rowLabel(channel) })}
-      hint={translate('trigger.hint')}
-      disabled={disabled}
-      busy={saving}
-      className="max-desktop:w-full"
-    />
-  )
-}
-
-/** The per-conversation session-mode dropdown: which session a message here joins. It sits
- *  beside the trigger because the two are the room's only per-conversation choices, and it
- *  answers a different question — the trigger decides WHETHER the agent responds, this
- *  decides which session it responds in.
- *
- *  Channel rows only. A direct conversation is one continuous exchange already, so the
- *  choice would name a distinction that does not exist there. */
-function SessionModeToggle({
-  channel,
-  platform,
-  disabled,
-  onChange
-}: {
-  channel: IntegrationChannelRow
-  platform?: string
-  disabled: boolean
-  onChange: (mode: NonNullable<IntegrationChannelRow['sessionMode']>) => void
-}) {
-  const t = useTranslations('Integrations.channelList')
-  const translate: ChannelListTranslator = (key, values) => t(key as never, values as never)
-  const [saving, setSaving] = useState(false)
-  const current = channel.sessionMode ?? 'createNew'
-  const allowed = channelListSemantics(platform).sessionModes
-  const here = translate('thisRoom', { noun: localNoun(translate, rowNoun(channel.kind, platform)) })
-  const options: TriggerOption<NonNullable<IntegrationChannelRow['sessionMode']>>[] = [
+      : (
+          [
+            { value: 'mention', label: translate('trigger.mention'), hint: translate('trigger.mentionHint') },
+            {
+              value: 'any',
+              label: translate('trigger.anyMessage'),
+              hint: translate('trigger.anyMessageHint', { room: here })
+            },
+            {
+              value: 'decision',
+              label: translate('trigger.decision'),
+              hint: translate('trigger.decisionHint', { room: here })
+            },
+            { value: 'off', label: translate('trigger.off'), hint: translate('trigger.offHint', { room: here }) }
+          ] satisfies ChannelSettingsOption<RowTrigger>[]
+        ).filter((o) =>
+          // The room's vocabulary is the platform's: nothing matches "All messages" where no unaddressed traffic exists.
+          o.value === 'decision' ? allowDecision : !semantics.triggers || semantics.triggers.includes(o.value)
+        )
+  // A direct conversation is one continuous exchange already, so only a channel row chooses its session.
+  const sessions = isDirectConversation(channel.kind)
+    ? []
+    : (
+        [
+          {
+            value: 'createNew',
+            label: translate('sessionMode.createNew'),
+            hint: translate('sessionMode.createNewHint')
+          },
+          {
+            value: 'append',
+            label: translate('sessionMode.append'),
+            hint: t.rich(
+              'sessionMode.appendHint' as never,
+              {
+                room: here,
+                code: (chunks: ReactNode) => <span className="mono">{chunks}</span>
+              } as never
+            )
+          }
+        ] satisfies ChannelSettingsOption<SessionMode>[]
+      ).filter((o) => !semantics.sessionModes || semantics.sessionModes.includes(o.value))
+  const groups: ChannelSettingsGroup[] = [
     {
-      value: 'createNew',
-      label: t('sessionMode.createNew'),
-      hint: t('sessionMode.createNewHint', { room: here })
-    },
-    {
-      value: 'append',
-      label: t('sessionMode.append'),
-      hint: t('sessionMode.appendHint', { room: here })
+      id: 'trigger',
+      label: translate('settings.respondTo'),
+      options: respond,
+      value: trigger,
+      onPick: (value) => onTrigger(value as RowTrigger)
     }
   ]
-  const offered = allowed ? options.filter((o) => allowed.includes(o.value)) : options
-  if (offered.length < 2) return null
-  const pick = (mode: NonNullable<IntegrationChannelRow['sessionMode']>) => {
-    if (disabled || saving || mode === current) return
-    setSaving(true)
-    Promise.resolve(onChange(mode)).finally(() => setSaving(false))
+  // One mode is no choice, so a platform that offers only one shows no group for it.
+  if (sessions.length > 1) {
+    groups.push({
+      id: 'session',
+      label: translate('settings.sessionMode'),
+      options: sessions,
+      value: channel.sessionMode ?? 'createNew',
+      // An Off row starts no session, so the button leaves the mode unsaid.
+      summarize: (chosen) => chosen.trigger !== 'off',
+      onPick: (value) => onSessionMode(value as SessionMode)
+    })
   }
   return (
-    <TriggerSelect
-      options={offered}
-      value={current}
-      onChange={pick}
-      ariaLabel={t('sessionMode.ariaLabel', { name: rowLabel(channel) })}
-      hint={t('sessionMode.hint')}
-      disabled={disabled}
-      busy={saving}
-      className="max-desktop:w-full"
-    />
+    <span className="inline-flex items-center gap-[7px] max-desktop:w-full">
+      {/* ⚡ is the console's one trigger glyph, on every platform's rows and the code-host rows alike. */}
+      <span title={translate('trigger.hint')} className="flex-none leading-none">
+        <Icon name="zap" size={14} color="var(--text-tertiary)" />
+      </span>
+      <ChannelSettingsPopover groups={groups} name={rowLabel(channel)} disabled={disabled} />
+    </span>
   )
 }
 
@@ -646,14 +628,7 @@ function DefaultAgentPicker({
   )
 }
 
-/**
- * The conversation rows of one integration — one row per channel the bot is in
- * (plus one row per reported direct conversation), each
- * with its trigger toggle (and, for a SHARED bot, the per-conversation default-dispatch
- * popover ahead of it), closed by the "invite the bot" hint. Render inside a
- * padding-less card whose header row sits above. Demo rows (no `integrationId`)
- * are inert.
- */
+/** An integration's conversation rows and their controls, for a padding-less card; demo rows (no id) are inert. */
 export function IntegrationChannelList({
   integrationId,
   channels,
@@ -850,25 +825,15 @@ export function IntegrationChannelList({
                 <span className="hidden h-[18px] w-px flex-none bg-(--border-subtle) desktop:block" />
               </>
             )}
-            {/* Channel rows only — see SessionModeToggle. It renders nothing where the platform
-              offers one mode, so no branch on a platform name is needed here. */}
-            {!isDirectConversation(c.kind) && (
-              <SessionModeToggle
-                channel={c}
-                platform={platform}
-                disabled={!integrationId}
-                onChange={(mode) => setChannelSessionMode(integrationId!, c.channelId, mode)}
-              />
-            )}
-            <TriggerToggle
+            <RowSettings
               channel={c}
               platform={platform}
               disabled={!integrationId}
-              value={trigger}
-              // A shared bot's consumer is its own routing rules (§3.2), not a per-channel gate,
-              // and that router is not implemented — so the choice is withheld there.
+              trigger={trigger}
+              // A shared bot routes by its own rules (§3.2), a router not built yet, so it gets no per-channel gate.
               allowDecision={decisionsOffered && !shareable}
-              onChange={(next) => pickTrigger(c, next)}
+              onTrigger={(next) => pickTrigger(c, next)}
+              onSessionMode={(mode) => setChannelSessionMode(integrationId!, c.channelId, mode)}
             />
             {/* Demo rows carry no button rather than an inert one, and a derived roster none at all — the
               platform owns the list. Which of the two callbacks a row spends is `rowMenuAction`'s call. */}

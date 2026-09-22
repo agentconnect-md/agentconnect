@@ -669,8 +669,8 @@ on observation, when an inbound message names the bot — and never through a me
 snapshot. It appears under **Direct messages** for both visibilities, with the same
 three-way trigger as a channel:
 
-- An **Everyone** agent's newly observed group DM starts on **@-mention** and may be
-  changed to Off or Any message.
+- An **Everyone** agent's newly observed group DM starts on **@-mentions** and may be
+  changed to Off or All messages.
 - A **restricted** agent's group DM is surfaced as a row that starts Off and stays
   unroutable until a Console editor enables it.
 

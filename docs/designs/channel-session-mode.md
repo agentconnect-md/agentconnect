@@ -1,7 +1,7 @@
 # Per-Conversation Session Mode
 
-> Status: Implemented on the daemon and the Control Plane; the console control (§8) and the
-> unbounded transcript read (§10) are still outstanding. `auto` remains reserved (§12).
+> Status: Implemented on the daemon, the Control Plane and the console (§8); the unbounded
+> read §10 once called for does not exist. `auto` remains reserved (§12).
 > The transcript layout of §6.2 and the retention question of §12.2 are superseded by
 > [message-intake.md](message-intake.md); the sections say so inline.
 > Scope: chat conversations that are channels, on every platform that has them, over
@@ -46,7 +46,7 @@ coordinate, in `createNew` it clears the current thread's session in place.
 - Read on the daemon by `integrationCore()` → `integrationRouting()`
   (`packages/daemon/src/platforms/integration-config.ts`,
   `packages/daemon/src/router/routing-rule.ts`).
-- Rendered by `TriggerToggle` in `packages/web/src/components/console/IntegrationChannelList.tsx`,
+- Rendered by `RowSettings` in `packages/web/src/components/console/IntegrationChannelList.tsx` (§8),
   narrowed per platform through `channelListSemantics(platform).triggers`.
 
 ### 2.2 How a message picks its session today
@@ -499,16 +499,19 @@ and `/new` on Telegram and Discord, and it joins the advertised menus — `BOT_C
 
 ## 8. Web console
 
-`IntegrationChannelList.tsx` renders a second `TriggerSelect` in the conversation row,
-left of the trigger dropdown, with its own hover copy:
+The session mode shares one control with the trigger. After the row's ⚡, a single button
+(`ChannelSettingsPopover.tsx`, rendered by `IntegrationChannelList.tsx`) reads both choices —
+`@-mentions · Per thread` — and opens a popover holding a **Respond to** group and a
+**Session mode** group. A pick saves at once and leaves the popover open. The footer
+describes the hovered option, else the chosen one:
 
-- `new session` — "Each new message in this channel starts a fresh session. Replies inside a
-  thread continue that thread's session."
-- `one session` — "Every message in this channel is added to one ongoing session. Send
-  `!new` there to start a fresh one."
+- `Per thread` — "Each thread has its own session. Replies continue that session."
+- `Single session` — "One session for this channel, shared across threads. Send `!new` to
+  start a fresh one."
 
-The labels name the OUTCOME rather than the mechanism, so the row reads as a choice about
-this conversation instead of a term from this document.
+An Off row starts no session, so its button reads `Off` alone; the popover still offers the
+mode for when the row is back on. The labels name the OUTCOME rather than the mechanism, so
+the row reads as a choice about this conversation instead of a term from this document.
 
 **Scope: channel rows, on every platform that has channels.** A direct conversation is not
 a channel and does not get the control. Per-platform narrowing uses the same mechanism as
