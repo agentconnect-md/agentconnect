@@ -1642,6 +1642,7 @@ export default function AgentDetailView() {
                     // A module's own card body replaces the generic conversation list and the header's first-channel subline.
                     const card = platformAgentCard(g.platform)
                     const AgentCardBody = card?.Body
+                    const CardNotice = card?.Notice
                     const HeaderActions = card?.HeaderActions
                     const CardScope = card?.CardProvider ?? PlainCardScope
                     return (
@@ -1697,6 +1698,7 @@ export default function AgentDetailView() {
                               </button>
                             </span>
                           </div>
+                          {CardNotice && <CardNotice integration={g} padX={16} />}
                           {AgentCardBody ? (
                             <AgentCardBody integration={g} padX={16} />
                           ) : (
@@ -1955,6 +1957,7 @@ export default function AgentDetailView() {
                   {agentInts.map((g, i) => {
                     const card = platformAgentCard(g.platform)
                     const AgentCardBody = card?.Body
+                    const CardNotice = card?.Notice
                     const HeaderActions = card?.HeaderActions
                     const CardScope = card?.CardProvider ?? PlainCardScope
                     return (
@@ -2001,6 +2004,7 @@ export default function AgentDetailView() {
                               <Icon name="unplug" size={15} />
                             </button>
                           </div>
+                          {CardNotice && <CardNotice integration={g} padX={14} />}
                           {AgentCardBody ? (
                             <AgentCardBody integration={g} padX={14} />
                           ) : (

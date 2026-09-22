@@ -224,6 +224,11 @@ settings, and schedule targets survive; distribution then follows §5 and §6. A
 built-in app reconnects by reinstalling it instead
 ([preset-agents.md](preset-agents.md) §5.3).
 
+The console offers the matching repair wherever a revoked app appears, to
+members who may change bots: the header of the agent page's Slack card, and the
+app's row on the Integrations page. That row keeps listing the agents the app
+served, marked revoked, although its active install count is zero.
+
 Agent moves use the mutation gate and transfer the desired integration set from
 the old daemon to the new daemon. Reconciliation repairs any missed live event.
 

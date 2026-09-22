@@ -1,4 +1,4 @@
-// No 'use client' here: rendered only inside client boundaries (the Integrations view's Slack fragments).
+// No 'use client' here: rendered only inside client boundaries (the Integrations view's Slack fragments, the agent page's Slack card).
 
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -83,11 +83,19 @@ export function SlackReplaceTokenModal({
   )
 }
 
-/** The icon control that opens {@link SlackReplaceTokenModal}, highlighted while the bot is revoked. */
-export function SlackReplaceTokenAction({ bot, onReplaced }: { bot: BotDto; onReplaced?: (bot: BotDto) => void }) {
+/** The icon control that opens {@link SlackReplaceTokenModal}, highlighted while the bot is revoked (or `attention` says so). */
+export function SlackReplaceTokenAction({
+  bot,
+  attention,
+  onReplaced
+}: {
+  bot: BotDto
+  attention?: boolean
+  onReplaced?: (bot: BotDto) => void
+}) {
   const t = useTranslations('Platforms.slack.replaceToken')
   const [open, setOpen] = useState(false)
-  const revoked = !!bot.revokedAt
+  const revoked = attention ?? !!bot.revokedAt
 
   useEffect(() => {
     if (!open) return
