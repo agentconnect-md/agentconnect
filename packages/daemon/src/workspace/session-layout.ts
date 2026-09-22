@@ -99,6 +99,20 @@ export async function sessionClonesUnder(
   return out
 }
 
+/** Whether `dir` holds nothing but empty directories, within `budget` entries — a tree with no file in it holds no work. */
+export async function holdsNoFiles(
+  fs: Pick<WorkspaceFs, 'stat' | 'readdir'>,
+  dir: string,
+  budget = { entries: 64 }
+): Promise<boolean> {
+  for (const name of await fs.readdir(dir)) {
+    if (--budget.entries < 0) return false
+    const path = join(dir, name)
+    if ((await fs.stat(path)) !== 'dir' || !(await holdsNoFiles(fs, path, budget))) return false
+  }
+  return true
+}
+
 /** Child directories of `dir` whose names are legal repository segments, sorted, as `fs` reports them; a missing parent is empty. */
 async function dirEntriesUnder(fs: Pick<WorkspaceFs, 'stat' | 'readdir'>, dir: string): Promise<string[]> {
   if ((await fs.stat(dir)) !== 'dir') return []

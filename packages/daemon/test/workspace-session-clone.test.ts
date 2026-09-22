@@ -877,6 +877,29 @@ describe('retiring a confined session', () => {
     expect(existsSync(join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra', 'checkout', '.git'))).toBe(true)
   })
 
+  it('removes a session whose workspace holds only the empty mountpoints a sandbox left (#2246)', async () => {
+    const agent = agentFixture()
+    serveAll(agent)
+    const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
+    rmSync(cwd, { recursive: true, force: true })
+    for (const name of ['.git', '.agents', '.codex']) mkdirSync(join(cwd, name), { recursive: true })
+
+    expect(await workspaces.removeSessionWorktree(agent, KEY)).toEqual({ outcome: 'removed' })
+    expect(existsSync(leafOf(agent))).toBe(false)
+  })
+
+  it('keeps a workspace with a file beside an unreadable `.git`, and says it could not judge it', async () => {
+    const agent = agentFixture()
+    serveAll(agent)
+    const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
+    rmSync(cwd, { recursive: true, force: true })
+    mkdirSync(join(cwd, '.git'), { recursive: true })
+    writeFileSync(join(cwd, 'notes.md'), 'work\n')
+
+    expect((await workspaces.removeSessionWorktree(agent, KEY)).outcome).toBe('failed')
+    expect(existsSync(join(cwd, 'notes.md'))).toBe(true)
+  })
+
   it('retains a dirty clone', async () => {
     const agent = agentFixture()
     serveAll(agent)
