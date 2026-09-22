@@ -1134,7 +1134,10 @@ export class SlackConnection implements PlatformConnection {
     // Credential lifecycle, Socket Mode arm: only an explicit event for this install revokes, never a Web API error.
     for (const type of SLACK_LIFECYCLE_EVENTS) {
       this.app.event(type, async ({ event, body }) => {
-        const revocation = slackLifecycleRevocation(type, event, body, { teamId: this.teamId })
+        const revocation = slackLifecycleRevocation(type, event, body, {
+          teamId: this.teamId,
+          botUserId: this.botUserId
+        })
         if (!revocation) {
           log?.debug(`slack: ${type} ignored — it does not revoke this install's bot token`)
           return

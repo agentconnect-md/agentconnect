@@ -319,12 +319,15 @@ installed via standard OAuth v2. Verified gaps against current code:
   connection rather than the relay. The daemon reports them as `integration/revoked`
   (the integrations that socket serves, the reason, and Slack's `event_time`) and
   keeps the report until the Control Plane answers, as the relay does for
-  `rc/bot-revoked`; `tokens_revoked` counts only when it lists a bot token, and a Web
-  API error is never read as a revocation. The Control Plane accepts the report only
-  from a daemon that serves the integration's agent, for a socket-transport bot of
-  the same organization, and applies the same revocation fenced by the event time
-  alone. A daemon sends the frame only to a Control Plane that advertises
-  `integration-revoked-v1`.
+  `rc/bot-revoked`. The check fails closed, because a socket receives every
+  workspace's events for its app: an event counts only when its envelope `team_id`
+  equals the workspace `auth.test` reported for this connection, and
+  `tokens_revoked` only when it lists this connection's bot user. Anything that
+  cannot be matched is ignored, and a Web API error is never read as a revocation.
+  The Control Plane accepts the report only from a daemon that serves the
+  integration's agent, for a socket-transport bot of the same organization, and
+  applies the same revocation fenced by the event time alone. A daemon sends the
+  frame only to a Control Plane that advertises `integration-revoked-v1`.
 
 - **Transport.** Distributed apps are Events-API-only — a socket-mode app token is
   per-app and cannot be demuxed per workspace — so this path hard-depends on the relay
