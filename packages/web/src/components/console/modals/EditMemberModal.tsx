@@ -1,8 +1,6 @@
 // No 'use client' here: rendered only inside SettingsView (a client component).
 
-// Edit-member dialog (design: `isEditModal`). Owners can re-role/remove any
-// member; every member can open their own row and leave. The CP refuses to
-// demote/remove the LAST owner (409), and the dialog pre-disables those paths.
+// Owners manage members; self-removal is allowed unless it would remove the last owner.
 
 import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
@@ -71,7 +69,8 @@ export default function EditMemberModal({
       daemon: t('resources.daemon', { count: 2 }),
       cron: t('resources.cron', { count: 2 }),
       mcpProvider: t('resources.mcpProvider', { count: 2 }),
-      skillSource: t('resources.skillSource', { count: 2 })
+      skillSource: t('resources.skillSource', { count: 2 }),
+      decision: t('resources.decision', { count: 2 })
     }
     return resources
       .map((resource) => t('resourceCount', { count: resource.selected, kind: labels[resource.kind] }))
@@ -93,8 +92,7 @@ export default function EditMemberModal({
     return `${removed} ${t('reassigned', { count: reassigned, recipient })}`
   }
 
-  // Advisory read — a failure just leaves the generic copy in place rather than
-  // blocking the dialog (the removal itself re-derives all of this server-side).
+  // Failed previews leave generic copy; removal rechecks the audience server-side.
   useEffect(() => {
     let live = true
     void fetchMemberRemovalPreview(member.userId)

@@ -46,6 +46,23 @@ function setup(over: { configured?: boolean; timeoutMs?: number } = {}) {
 }
 
 describe('daemon Decision evaluator', () => {
+  it('projects supported models and Cloud availability without requesting keys or calling a provider', () => {
+    const { evaluator, credentials, providerFetch, issuerFetch } = setup()
+    expect(evaluator.catalog()).toMatchObject({
+      providers: [
+        {
+          id: 'typesafe',
+          cloudAvailable: true,
+          models: [{ id: 'jev-1.13.0' }, { id: 'jev-latest' }, { id: 'jev-preview' }]
+        }
+      ]
+    })
+    expect(credentials).not.toHaveBeenCalled()
+    expect(providerFetch).not.toHaveBeenCalled()
+    expect(issuerFetch).not.toHaveBeenCalled()
+    const local = new DecisionEvaluator({ orgForAgent: () => undefined, credentials, keyServer: () => undefined })
+    expect(local.catalog().providers[0]!.cloudAvailable).toBe(false)
+  })
   it('uses BYOK endpoint and headers, sends context/model, and reads replacements on the next evaluation', async () => {
     const { evaluator, credentials, providerFetch, issuerFetch } = setup()
     const result = await evaluator.evaluate(input)

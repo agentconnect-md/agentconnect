@@ -112,6 +112,7 @@ model Org {
   inviteLink                OrgInviteLink?
   mcpProviders              McpProvider[]
   skillSources              SkillSource[]
+  decisions                 Decision[]
   memoryPluginInstallations MemoryPluginInstallation[]
   externalMemoryConnections ExternalMemoryConnection[]
   webchatConversations      WebchatConversation[]
@@ -185,6 +186,7 @@ model User {
   createdIntegrations              Integration[]
   createdBots                      Bot[]
   createdMcpProviders              McpProvider[]              @relation("McpProviderCreatedBy")
+  createdDecisions                 Decision[]                 @relation("DecisionCreatedBy")
   createdSkillSources              SkillSource[]              @relation("SkillSourceCreatedBy")
   createdMemoryPluginInstallations MemoryPluginInstallation[] @relation("MemoryPluginInstallationCreatedBy")
   createdExternalMemoryConnections ExternalMemoryConnection[] @relation("ExternalMemoryConnectionCreatedBy")
@@ -3900,4 +3902,24 @@ model AgentMemoryMutation {
   @@index([agentId, sourceTurnId])
   @@index([orgId])
   @@map("agent_memory_mutation")
+}
+
+model Decision {
+  id              String             @id @default(uuid()) @db.Uuid
+  orgId           String
+  name            String
+  providerId      String
+  model           String
+  question        Json
+  visibility      ResourceVisibility @default(org)
+  sharedWith      String[]           @default([])
+  createdByUserId String?
+  createdAt       DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime           @updatedAt @db.Timestamptz(6)
+  org             Org                @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy       User?              @relation("DecisionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([orgId])
+  @@index([sharedWith], type: Gin)
+  @@map("decision")
 }

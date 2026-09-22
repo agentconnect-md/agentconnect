@@ -1,3 +1,4 @@
+import type { DecisionEvaluator } from '../decisions/evaluator.js'
 import { createMemoryEntriesWriter, createMemoryEntriesReader } from './memory-entries.js'
 import type { MemoryProvider } from '../memory/provider.js'
 // The `CpClientDeps` literal the daemon hands `CpClient`, hoisted out of `Daemon.startCpClient`.
@@ -146,6 +147,7 @@ export interface CpClientOrgHost {
 
 /** The read/write seams the CP serves the console from — sessions, workspaces, memory, tasks. */
 export interface CpClientSeamHost {
+  decisionEvaluator(): DecisionEvaluator
   configApply(): ConfigApply
   store(): LocalStore
   agents(): ReadonlyMap<string, LoadedAgent>
@@ -444,6 +446,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     ),
     memoryReader: createMemoryReader((id) => host.memoryHomePortsFor(id), host.memory()),
     dreamReader: createDreamReader(host.dreamRunner()),
+    decisionEvaluator: host.decisionEvaluator(),
     localSkillsReader: createLocalSkillsReader(
       host.workspaces(),
       // The workspace root in EXECUTION coordinates, like the file reader's: the skill roots the

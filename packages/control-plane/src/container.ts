@@ -1,3 +1,4 @@
+import { PgDecisionRepo } from './persistence/repositories/decision.repo.js'
 import { PgAgentMemoryTransactionRepo } from './persistence/repositories/agent-memory-transaction.repo.js'
 import { AgentMemoryTransactionService } from './agent-memory/transaction.service.js'
 /**
@@ -446,6 +447,7 @@ export function buildContainer(
     // Owns its transaction: install/revoke each write two tables behind the
     // credential-generation fence, and serialize on the bot row (§5.3).
     botCredential: new PgBotCredentialWriter(prisma, secretCipher),
+    decision: new PgDecisionRepo(prisma),
     providerKey: new PgProviderKeyStore(prisma, secretCipher),
     agentSecret: new PgAgentSecretStore(prisma, secretCipher),
     agentConfig: new PgAgentConfigWriter(prisma, secretCipher),
@@ -1710,6 +1712,7 @@ export function buildContainer(
       bot: repos.bot,
       botSecret: repos.botSecret,
       botCredential: repos.botCredential,
+      decision: repos.decision,
       providerKey: repos.providerKey,
       agentSecret: repos.agentSecret,
       agentConfig: repos.agentConfig,

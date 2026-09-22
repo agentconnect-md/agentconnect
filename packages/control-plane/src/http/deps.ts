@@ -232,6 +232,7 @@ export interface HttpDeps {
     mcpProviderOauthSecret: McpProviderOauthSecretStore
     /** One-shot start → begin → callback rows (sealed PKCE verifier, recorded issuer). */
     mcpProviderOauthState: McpProviderOauthStateStore
+    decision: import('../persistence/ports.js').DecisionRepo
     /** Org-level shared-skills sources (metadata only; content stays daemon-side). */
     skillSource: SkillSourceRepo
     /** Accepted organization Knowledge, managed-skill revisions, and pending suggestion metadata. */

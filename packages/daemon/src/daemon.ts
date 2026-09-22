@@ -2,6 +2,7 @@ import { memorySourceTurnId } from './memory/source-turn.js'
 import {
   MEMORY_ENTRIES_V1_FEATURE,
   PROVIDER_CREDENTIALS_V1_FEATURE,
+  DECISION_PREVIEW_V1_FEATURE,
   MEMORY_ENTRIES_SEARCH_V1_FEATURE,
   MEMORY_ENTRIES_HISTORY_V1_FEATURE,
   MEMORY_ENTRIES_WRITE_V1_FEATURE,
@@ -5882,6 +5883,7 @@ export class Daemon {
   private registrationFeatures(): string[] {
     return [
       PROVIDER_CREDENTIALS_V1_FEATURE,
+      DECISION_PREVIEW_V1_FEATURE,
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
       'workspace-file-edit-v1',
       'workspace-file-delete-v1',
@@ -20139,6 +20141,7 @@ export class Daemon {
         this.withWorkspaceSkillTarget(id, cwd, async ({ client }) => (await client.verify(roots)).intact),
       memory: () => this.memory,
       dreamRunner: () => this.dreamRunner(),
+      decisionEvaluator: () => this.decisionEvaluator,
       runtimeCommands: () => this.runtimeCommands,
       memoryHomePortsFor: (agentId) => this.memoryHomePortsFor(agentId),
       wakeMemoryOutbox: () => this.memoryOutbox?.wake(),

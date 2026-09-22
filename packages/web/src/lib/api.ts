@@ -4,6 +4,7 @@
 // mappers translate the lean wire DTOs into the richer UI shapes from `./data`,
 // filling fields the API does not (yet) expose with placeholders.
 
+import type { DecisionApi } from '@agentconnect.md/protocol/decision-api'
 import type {
   Agent,
   AgentCallPolicy,
@@ -1260,7 +1261,7 @@ export interface MemberDto {
 }
 
 // What leaving / removing a member would do to Selected audiences.
-export type VisibilityResourceKind = 'agent' | 'daemon' | 'cron' | 'mcpProvider' | 'skillSource'
+export type VisibilityResourceKind = 'agent' | 'daemon' | 'cron' | 'mcpProvider' | 'skillSource' | 'decision'
 
 export interface MemberRemovalPreviewDto {
   replacement: MemberDto | null // null only when removal is refused (final organization owner)
@@ -6302,4 +6303,29 @@ export function setProviderKey(
 
 export function deleteProviderKey(orgId: string, provider: ProviderKeyProvider): Promise<void> {
   return apiDelete<void>(`${orgBase(orgId)}/provider-keys/${encodeURIComponent(provider)}`)
+}
+
+// Every operation captures its organization; changing the active org cannot redirect an in-flight mutation.
+export function createDecisionApi(orgId: string): DecisionApi {
+  const base = `${orgBase(orgId)}/decisions`
+  const path = (id: string) => `${base}/${encodeURIComponent(id)}`
+  const unsupported = async (): Promise<never> => {
+    throw new ApiError('Decision message triggers are not available yet.', 501)
+  }
+  return {
+    mode: 'live',
+    listProviders: (daemonId) =>
+      apiGet(`${base}/providers${daemonId ? `?daemonId=${encodeURIComponent(daemonId)}` : ''}`),
+    listDecisions: () => apiGet(base),
+    getDecision: (id) => apiGet(path(id)),
+    createDecision: (draft) => apiPost(base, draft),
+    updateDecision: (id, draft) => apiPatch(path(id), draft),
+    deleteDecision: (id) => apiDelete(path(id)),
+    preview: (input) => apiPost(`${base}/preview`, input),
+    listBots: unsupported,
+    listChannels: unsupported,
+    saveChannel: unsupported,
+    getRouting: unsupported,
+    saveRouting: unsupported
+  }
 }

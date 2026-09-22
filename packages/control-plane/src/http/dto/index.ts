@@ -2446,7 +2446,7 @@ export const MemberRemovalPreviewDto = z.object({
   replacement: MemberDto.nullable(),
   resources: z.array(
     z.object({
-      kind: z.enum(['agent', 'daemon', 'cron', 'mcpProvider', 'skillSource']),
+      kind: z.enum(['agent', 'daemon', 'cron', 'mcpProvider', 'skillSource', 'decision']),
       // Selected resources whose explicit audience contains the departing member.
       selected: z.number().int(),
       // The subset with no other current member; `replacement` is added to these.

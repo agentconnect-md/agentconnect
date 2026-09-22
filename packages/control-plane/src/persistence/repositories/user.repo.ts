@@ -28,7 +28,7 @@ import {
 } from '../ports.js'
 import { OrgMembershipMissing, OrgOwnerRequired } from '../errors.js'
 
-const RESOURCE_AUDIENCE_TABLES = ['agent', 'daemon', 'cron_def', 'mcp_provider', 'skill_source'] as const
+const RESOURCE_AUDIENCE_TABLES = ['agent', 'daemon', 'cron_def', 'mcp_provider', 'skill_source', 'decision'] as const
 const ORG_ROLE_RANK: Record<OrgMemberRole, number> = { viewer: 0, collaborator: 1, owner: 2 }
 
 interface LockedOrgMembership {
@@ -101,7 +101,8 @@ const VISIBILITY_RESOURCE_KINDS = [
   ['daemon', 'daemon'],
   ['cron', 'cron_def'],
   ['mcpProvider', 'mcp_provider'],
-  ['skillSource', 'skill_source']
+  ['skillSource', 'skill_source'],
+  ['decision', 'decision']
 ] as const satisfies ReadonlyArray<readonly [VisibilityResourceKind, (typeof RESOURCE_AUDIENCE_TABLES)[number]]>
 
 interface SelectedResourceCountRow {

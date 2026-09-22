@@ -186,6 +186,7 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
   }
 
   return {
+    mode: 'mock',
     async listProviders(daemonId) {
       return copy(seed.providers.filter((entry) => !daemonId || entry.daemonId === daemonId))
     },

@@ -1,8 +1,6 @@
 'use client'
 
-// The console's prototype Decisions store: one mock `DecisionApi` per organization, the
-// visible decision list every reader shares, and the channel gate bindings the Control
-// Plane has no field for yet. Never a production API, never a failed-request fallback.
+// Organization-scoped Decision APIs; only explicit mock mode enables the prototype channel gates.
 
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
 import useSWR from 'swr'
@@ -18,6 +16,8 @@ import type { DecisionApi, DecisionProviderOption, DecisionSummary } from '@agen
 import { useOrgs } from '@/lib/org-context'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { createDecisionMockApi } from './mock-api'
+import { createDecisionApi } from '@/lib/api'
+import { MOCK_MODE } from '@/lib/data'
 
 /** A Stage 1 fixed-target gate: one conversation, one decision, one trigger condition. */
 export interface DecisionGateBinding {
@@ -40,8 +40,7 @@ export interface DecisionGateUsage {
   needsReview: boolean
 }
 
-/** A gate's identity: organization, owning bot, conversation. A platform coordinate alone
- *  is not unique — two bots share one channel — while a bot's sibling integrations share it. */
+/** Gate identity includes the organization and owning bot because bots may share a channel. */
 export function gateKey(orgId: string | null | undefined, botId: string | null | undefined, channelId: string): string {
   return `${orgId ?? ''}|${botId ?? ''}|${channelId}`
 }
@@ -71,22 +70,21 @@ interface DecisionsPrototype {
 const DecisionsContext = createContext<DecisionsPrototype | null>(null)
 
 export function DecisionsPrototypeProvider({ children }: { children: ReactNode }) {
-  // The store sits inside OrgProvider and outlives an org switch, so the tenant is its own
-  // state: the API partition, the cached read, and the gate usages all key off `activeOrg.id`.
+  // The API, cached reads, and prototype gates stay partitioned by organization.
   const { activeOrg } = useOrgs()
   const orgId = activeOrg?.id ?? ''
   const [apis] = useState(() => new Map<string, DecisionApi>())
   const api = useMemo(() => {
     const cached = apis.get(orgId)
     if (cached) return cached
-    const created = createDecisionMockApi()
+    const created = MOCK_MODE ? createDecisionMockApi() : createDecisionApi(orgId)
     apis.set(orgId, created)
     return created
   }, [apis, orgId])
   const [gates, setGates] = useState<Record<string, StoredGate>>({})
-  // A null key while the flag is off keeps the mock opt-in: no page reads it otherwise.
+  // Disabled features and an unresolved organization must not make API requests.
   const { data, error, isLoading, mutate } = useSWR(
-    featureFlagEnabled('decisions') ? ['decisions-prototype', orgId] : null,
+    orgId && featureFlagEnabled('decisions') ? ['decisions', api.mode, orgId] : null,
     () => api.listDecisions()
   )
   const reload = useCallback(async () => mutate(), [mutate])
@@ -105,8 +103,7 @@ export function DecisionsPrototypeProvider({ children }: { children: ReactNode }
   const clearGate = useCallback((key: string) => {
     setGates((current) => Object.fromEntries(Object.entries(current).filter(([entry]) => entry !== key)))
   }, [])
-  // The mock service cannot see these bindings, so the invalidation the CP would record is
-  // recorded here — including a Score rubric change, whose old interval may still fit (§6.1).
+  // Local mock gates track invalidation, including Score rubric changes (§6.1).
   const markGatesForReview = useCallback(
     (decisionId: string, previous: DecisionQuestion, next: DecisionQuestion) => {
       setGates((current) =>
@@ -178,10 +175,22 @@ export function boundDecision(
 }
 
 /** The daemon catalog a preview resolves against, read from the active organization's API. */
-export function useDecisionProviders(): { providers: DecisionProviderOption[]; daemonId: string | null } {
+export function useDecisionProviders(): {
+  providers: DecisionProviderOption[]
+  daemonId: string | null
+  error: string | null
+} {
   const { api, orgId } = useDecisionsPrototype()
-  const { data } = useSWR(['decisions-prototype-providers', orgId], () => api.listProviders())
-  return { providers: data ?? [], daemonId: data?.[0]?.daemonId ?? null }
+  const { data, error } = useSWR(
+    orgId && featureFlagEnabled('decisions') ? ['decision-providers', api.mode, orgId] : null,
+    () => api.listProviders(),
+    { refreshInterval: 30000 }
+  )
+  return {
+    providers: data ?? [],
+    daemonId: data?.[0]?.daemonId ?? null,
+    error: error instanceof Error ? error.message : error ? String(error) : null
+  }
 }
 
 /** The gate's inline errors, as the editor renders them. */
@@ -209,8 +218,7 @@ export function gateUsagesIn(
     }))
 }
 
-/** The canonical fresh-gate defaults: every Choice key at 50%, both Booleans, the whole
- *  Score rubric — an untouched gate must not silently skip every No. */
+/** Fresh mock gates accept every Choice key at 50%, both Booleans, or the whole Score rubric. */
 export function defaultConditionFor(decision: DecisionDefinition): DecisionCondition {
   const question = decision.question
   if (question.type === 'boolean') return { type: 'boolean', values: [true, false] }

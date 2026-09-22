@@ -1,9 +1,8 @@
 'use client'
 
-// One decision (`/decisions/new`, `/decisions/:id`): the question, its answer domain, and a
-// sandbox over canned model output. Its consumers' conditions live where they are used (§2).
+// The reusable question and standalone preview; consumers own their conditions.
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
@@ -11,10 +10,12 @@ import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { LoadingState } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
 import { useDecisionProviders, useDecisionsPrototype } from '@/lib/decisions/provider'
+import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
 import { DecisionsNotOffered } from '@/components/console/decisions/DecisionsNotOffered'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import {
   DecisionDraft,
+  DECISION_PROVIDER_PROFILES,
   decisionConditionNeedsReview,
   type DecisionQuestion,
   type DecisionValidationIssue
@@ -129,19 +130,28 @@ function Field({ label, hint, children }: { label: string; hint?: ReactNode; chi
 }
 
 export default function DecisionEditorView() {
+  const { activeOrg } = useOrgs()
+  const { id } = useParams<{ id?: string }>()
+  return <DecisionEditor key={`${activeOrg?.id ?? ''}:${id ?? 'new'}`} />
+}
+
+function DecisionEditor() {
   const t = useTranslations('Decisions')
-  const { orgPath } = useOrgs()
+  const { orgPath, myRole } = useOrgs()
   const router = useRouter()
   const search = useSearchParams()
   const { id } = useParams<{ id?: string }>()
   // `returnTo` is attacker-controllable: only a console-relative target may be followed.
   const requested = search.get('returnTo')
   const returnTo = requested?.startsWith('/') && !requested.startsWith('//') ? requested : null
-  const { decisions, loading, api, reload, gateUsages, markGatesForReview } = useDecisionsPrototype()
-  const { providers } = useDecisionProviders()
+  const { decisions, loading, error, api, reload, gateUsages, markGatesForReview } = useDecisionsPrototype()
+  const { providers, error: providerError } = useDecisionProviders()
   const definition = id ? decisions.find((entry) => entry.id === id) : undefined
 
+  const [selectedDaemon, setSelectedDaemon] = useState<string | null>(null)
+  const editable = myRole !== 'viewer' && (!id || (!!definition && definition.canEdit !== false))
   const [draft, setDraft] = useState<Draft | null>(null)
+  const initialSharing = useRef<SharingValue | null>(null)
   const [usages, setUsages] = useState<DecisionUsage[]>([])
   const [issues, setIssues] = useState<DecisionValidationIssue[]>([])
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -156,14 +166,19 @@ export default function DecisionEditorView() {
     model: string
     context: number
     unavailable: boolean
+    error?: string
+    sample?: string
   } | null>(null)
 
-  const firstProvider = providers[0]
-  // The blank draft waits for the provider catalog, so a new decision starts on a real option.
+  const firstProvider = providers[0] ?? DECISION_PROVIDER_PROFILES[0]
+  // Shipped models let users save a definition even when no daemon is available.
   useEffect(() => {
     if (draft) return
     if (id) {
-      if (definition) setDraft(draftFrom(definition))
+      if (definition) {
+        initialSharing.current = { visibility: definition.visibility, sharedWith: [...definition.sharedWith] }
+        setDraft(draftFrom(definition))
+      }
       return
     }
     if (!firstProvider) return
@@ -192,12 +207,18 @@ export default function DecisionEditorView() {
   }, [api, id])
 
   // The decision keeps its provider, so the model list comes from the provider that owns it.
-  const provider = providers.find((entry) => entry.id === draft?.providerId) ?? firstProvider
+  const candidates = providers.filter((entry) => entry.id === draft?.providerId)
+  const provider =
+    candidates.find((entry) => entry.daemonId === selectedDaemon) ??
+    candidates.find((entry) => entry.readiness.status === 'ready') ??
+    candidates[0]
+  const profile = provider ?? DECISION_PROVIDER_PROFILES.find((entry) => entry.id === draft?.providerId)
+  const previewReady = editable && !providerError && provider?.readiness.status === 'ready'
   const models = useMemo(
-    () => (provider?.models ?? []).filter((model) => model.questionTypes.includes(draft?.type ?? 'choice')),
-    [provider, draft?.type]
+    () => (profile?.models ?? []).filter((model) => model.questionTypes.includes(draft?.type ?? 'choice')),
+    [profile, draft?.type]
   )
-  const signature = draft ? JSON.stringify({ ...draft, criteria: draft.criteria }) : ''
+  const signature = JSON.stringify({ draft, history, current, daemonId: provider?.daemonId })
   const stale = !!result && result.signature !== signature
   // Conversations gated on this decision: an edit can strand their saved conditions.
   const gated = id && definition ? gateUsages(id) : []
@@ -215,7 +236,7 @@ export default function DecisionEditorView() {
           <LoadingState size={22} padding={30} />
         ) : (
           <div className="card px-5 py-10 text-center font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
-            {t('notFound')}
+            {error ?? t('notFound')}
           </div>
         )}
       </div>
@@ -225,7 +246,7 @@ export default function DecisionEditorView() {
   const patch = (values: Partial<Draft>) => setDraft((current) => (current ? { ...current, ...values } : current))
   const setType = (type: QuestionType) => {
     if (type === draft.type) return
-    const eligible = (provider?.models ?? []).find((model) => model.questionTypes.includes(type))
+    const eligible = (profile?.models ?? []).find((model) => model.questionTypes.includes(type))
     patch({ type, criteria: criteriaForType(type), ...(eligible ? { model: eligible.id } : {}) })
     setIssues([])
   }
@@ -276,7 +297,7 @@ export default function DecisionEditorView() {
   const previewIssues = validate().filter((issue) => issue.path[0] === 'question')
 
   const run = async () => {
-    if (!provider || running || previewIssues.length) return
+    if (!provider || !previewReady || running || previewIssues.length) return
     setRunning(true)
     setResult(null)
     try {
@@ -304,7 +325,9 @@ export default function DecisionEditorView() {
           rows: [],
           model: draft.model,
           context: history.length,
-          unavailable: true
+          unavailable: true,
+          sample: current,
+          error: evaluation?.status === 'unavailable' ? t(`try.failures.${evaluation.reason}`) : undefined
         })
         return
       }
@@ -323,15 +346,25 @@ export default function DecisionEditorView() {
               ]
       const badge =
         answer.type === 'boolean' ? (answer.value ? t('condition.yes') : t('condition.no')) : String(answer.value)
-      setResult({ signature, badge, rows, model: evaluation.model, context: history.length, unavailable: false })
-    } catch {
+      setResult({
+        signature,
+        badge,
+        rows,
+        model: evaluation.model,
+        context: history.length,
+        unavailable: false,
+        sample: current
+      })
+    } catch (cause) {
       setResult({
         signature,
         badge: t('try.unavailableBadge'),
         rows: [],
         model: draft.model,
         context: history.length,
-        unavailable: true
+        unavailable: true,
+        sample: current,
+        error: cause instanceof Error ? cause.message : undefined
       })
     } finally {
       setRunning(false)
@@ -339,6 +372,7 @@ export default function DecisionEditorView() {
   }
 
   const save = async () => {
+    if (!editable) return
     const found = validate()
     setIssues(found)
     setSaveError(null)
@@ -359,7 +393,13 @@ export default function DecisionEditorView() {
     setSaving(true)
     try {
       if (id) {
-        await api.updateDecision(id, parsed.data)
+        const { visibility, sharedWith, ...question } = parsed.data
+        await api.updateDecision(
+          id,
+          initialSharing.current && sameSharing(draft, initialSharing.current)
+            ? question
+            : { ...question, visibility, sharedWith }
+        )
         // The mock service has no bindings, so the invalidation is recorded here (§6.1).
         if (definition) markGatesForReview(id, definition.question, parsed.data.question)
       } else await api.createDecision(parsed.data)
@@ -384,7 +424,7 @@ export default function DecisionEditorView() {
         <Button variant="secondary" size="sm" onClick={() => router.push(returnTo ?? orgPath('/decisions'))}>
           {t('cancel')}
         </Button>
-        <Button variant="primary" size="sm" disabled={saving} onClick={() => void save()}>
+        <Button variant="primary" size="sm" disabled={saving || !editable} onClick={() => void save()}>
           {id ? t('save') : t('create')}
         </Button>
       </div>
@@ -405,7 +445,7 @@ export default function DecisionEditorView() {
             </div>
           )}
 
-          <div className="card flex flex-col gap-[15px] p-4">
+          <fieldset disabled={!editable || saving} className="card min-w-0 flex flex-col gap-[15px] p-4">
             <div className="grid grid-cols-1 gap-3 desktop:grid-cols-3">
               <Field label={t('name')}>
                 <input
@@ -419,7 +459,7 @@ export default function DecisionEditorView() {
               <Field label={t('provider')}>
                 <span className="inp min-h-9 items-center">
                   <span className="truncate font-sans text-[13px] font-normal leading-normal">
-                    {provider?.name ?? draft.providerId}
+                    {profile?.name ?? draft.providerId}
                   </span>
                 </span>
               </Field>
@@ -507,9 +547,10 @@ export default function DecisionEditorView() {
               />
               {issueFor('question.instructions') && <IssueLine>{issueFor('question.instructions')}</IssueLine>}
             </Field>
-          </div>
+            <VisibilityField value={draft} onChange={(sharing) => patch(sharing)} disabled={!editable || saving} />
+          </fieldset>
 
-          <div className="card">
+          <fieldset disabled={!editable || saving} className="card min-w-0">
             <div className="cardhead justify-between">
               <span className="cardtitle">{t('criteria')}</span>
               <span className="font-mono text-[11px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
@@ -634,7 +675,7 @@ export default function DecisionEditorView() {
               )}
               {criteriaIssue && <IssueLine>{criteriaIssue}</IssueLine>}
             </div>
-          </div>
+          </fieldset>
 
           <div className="card">
             <div className="cardhead justify-between">
@@ -703,6 +744,28 @@ export default function DecisionEditorView() {
               </button>
             </div>
             <div className="flex flex-col gap-[11px] px-[15px] py-[13px]">
+              <Field label={t('try.daemon')}>
+                {providerError && <IssueLine>{providerError}</IssueLine>}
+                <select
+                  className="inp min-h-9"
+                  aria-label={t('try.daemon')}
+                  value={provider?.daemonId ?? ''}
+                  onChange={(event) => setSelectedDaemon(event.target.value)}
+                >
+                  {candidates.length === 0 && <option value="">{t('try.noDaemon')}</option>}
+                  {candidates.map((candidate) => (
+                    <option key={candidate.daemonId} value={candidate.daemonId}>
+                      {candidate.daemonName ?? candidate.daemonId}
+                    </option>
+                  ))}
+                </select>
+                {provider && (
+                  <span className="text-[12px] text-(--text-secondary)">
+                    {t(`try.states.${provider.readiness.status}`)}
+                    {provider.source && ` · ${t(`try.sources.${provider.source}`)}`}
+                  </span>
+                )}
+              </Field>
               <div className="fld">
                 <span className="fldlbl">{t('try.history')}</span>
                 {history.map((message, index) => (
@@ -766,7 +829,7 @@ export default function DecisionEditorView() {
                 <Button
                   variant="primary"
                   size="sm"
-                  disabled={running || !provider || previewIssues.length > 0}
+                  disabled={running || !previewReady || previewIssues.length > 0}
                   onClick={() => void run()}
                 >
                   <Icon name="play" size={14} />
@@ -791,7 +854,7 @@ export default function DecisionEditorView() {
                 <div className="overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card)">
                   <div className="flex items-center gap-[9px] px-[12px] py-[10px]">
                     <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-[1.45]">
-                      {current || t('try.currentPlaceholder')}
+                      {result.sample || t('try.currentPlaceholder')}
                     </span>
                     <span
                       className={`badge flex-none ${
@@ -806,7 +869,7 @@ export default function DecisionEditorView() {
                   <div className="flex flex-col gap-[7px] border-t border-(--border-subtle) bg-(--surface-app) px-[12px] py-[11px]">
                     {result.unavailable ? (
                       <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                        {t('try.unavailableBody')}
+                        {result.error ?? t('try.unavailableBody')}
                       </span>
                     ) : (
                       result.rows.map((row) => (

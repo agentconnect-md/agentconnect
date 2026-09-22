@@ -3878,7 +3878,8 @@
           "daemon": "{count, plural, one {daemon} other {daemons}}",
           "cron": "{count, plural, one {schedule} other {schedules}}",
           "mcpProvider": "{count, plural, one {MCP provider} other {MCP providers}}",
-          "skillSource": "{count, plural, one {skill source} other {skill sources}}"
+          "skillSource": "{count, plural, one {skill source} other {skill sources}}",
+          "decision": "{count, plural, one {Decision} other {Decisions}}"
         },
         "roles": {
           "owner": {
@@ -4168,7 +4169,30 @@
       "unavailableBadge": "Evaluation unavailable",
       "unavailableBody": "Evaluation unavailable — the provider returned no answer. This is not a No and not a skip.",
       "context": "Context",
-      "messages": "{count, plural, one {1 message} other {# messages}}"
+      "messages": "{count, plural, one {1 message} other {# messages}}",
+      "daemon": "Daemon",
+      "noDaemon": "No daemon is available for this preview.",
+      "states": {
+        "ready": "Ready",
+        "pending_sync": "No available agent on this daemon",
+        "needs_review": "Needs review",
+        "missing_credentials": "Configure a provider key in Infra",
+        "daemon_offline": "Daemon offline",
+        "unsupported": "Update this daemon to use Decision previews",
+        "insufficient_credits": "Insufficient credits"
+      },
+      "sources": {
+        "byok": "Your provider key",
+        "ac_credits": "AC credits"
+      },
+      "failures": {
+        "timeout": "The evaluation timed out. Try again.",
+        "capacity": "The provider is busy. Try again shortly.",
+        "credentials": "Check your provider key or Cloud credits.",
+        "provider": "The provider could not complete the evaluation.",
+        "invalid_response": "The provider returned an invalid answer.",
+        "unsupported_input": "This input or model is not supported. Shorten the sample or check the model."
+      }
     },
     "breaksChannels": "These channel bindings lose their trigger condition: {names}. They are flagged Needs review after saving; nothing is reselected for you.",
     "notOffered": {

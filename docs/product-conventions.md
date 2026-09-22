@@ -19,7 +19,7 @@ actually about organization management, membership, or ownership.
 
 ## Team visibility always has an audience
 
-Every Agent, Daemon, scheduled task, MCP provider, and skill source set to
+Every Agent, Daemon, scheduled task, MCP provider, skill source, and Decision set to
 **Selected** has at least one current organization member who can see it. The
 selected-member list records explicit sharing. Organization Owners can also view,
 edit, and re-share every resource in their organization; creation attribution

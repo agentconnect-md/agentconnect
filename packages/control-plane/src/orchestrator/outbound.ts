@@ -1,4 +1,8 @@
 import {
+  DECISION_PREVIEW_V1_FEATURE,
+  DecisionCatalogReply,
+  DecisionPreviewReply,
+  type DecisionPreviewRequest,
   MEMORY_ENTRIES_V1_FEATURE,
   MEMORY_ENTRIES_SEARCH_V1_FEATURE,
   MEMORY_ENTRIES_HISTORY_V1_FEATURE,
@@ -824,6 +828,36 @@ export class ControlSender {
   async dreamSkillRead(daemonId: string, req: DreamSkillReadReq): Promise<DreamSkillContent> {
     const c = this.must(daemonId)
     return c.conn.request<DreamSkillContent>('memory/dream/skill/read', req, { epoch: c.sessionEpoch })
+  }
+
+  async decisionCatalog(daemonId: string, orgId: string): Promise<DecisionCatalogReply> {
+    const c = this.must(daemonId)
+    if (c.state !== 'READY' || !c.capabilities?.features.includes(DECISION_PREVIEW_V1_FEATURE))
+      throw new NoConnection(daemonId)
+    return DecisionCatalogReply.parse(
+      await c.conn.request(
+        'decision/catalog',
+        {},
+        { epoch: c.sessionEpoch },
+        { ackTimeoutMs: 3000, maxTries: 1 },
+        orgId
+      )
+    )
+  }
+
+  async decisionPreview(daemonId: string, orgId: string, req: DecisionPreviewRequest): Promise<DecisionPreviewReply> {
+    const c = this.must(daemonId)
+    if (c.state !== 'READY' || !c.capabilities?.features.includes(DECISION_PREVIEW_V1_FEATURE))
+      throw new NoConnection(daemonId)
+    return DecisionPreviewReply.parse(
+      await c.conn.request(
+        'decision/preview',
+        req,
+        { epoch: c.sessionEpoch, agentId: req.agentId },
+        { ackTimeoutMs: 7000, maxTries: 1 },
+        orgId
+      )
+    )
   }
 
   /** Read-only inventory of the skills an agent's workspace can load, tagged by origin. */

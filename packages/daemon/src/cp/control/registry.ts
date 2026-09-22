@@ -1,3 +1,4 @@
+import { decisionCatalog, decisionPreview, type DecisionControlDeps } from './decision.js'
 import { memoryEntriesWrite, memoryEntriesRead } from './memory.js'
 import {
   agentActivate,
@@ -95,6 +96,7 @@ import {
 export interface ControlDeps
   extends
     AgentControlDeps,
+    DecisionControlDeps,
     CodeHostControlDeps,
     ConfigApplyDeps,
     DaemonOpsDeps,
@@ -111,6 +113,8 @@ export interface ControlDeps
 
 /** Every dispatchable C→D control frame kind, by wire type. A type absent here is ignored. */
 export const CONTROL_HANDLERS: Map<string, ControlHandler<ControlDeps>> = new Map<string, ControlHandler<ControlDeps>>([
+  ['decision/catalog', decisionCatalog],
+  ['decision/preview', decisionPreview],
   ['config/push', configPush],
   ['duty/grant', dutyGrant],
   ['duty/renewed', dutyRenewed],

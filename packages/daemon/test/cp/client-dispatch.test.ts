@@ -4,6 +4,7 @@ import {
   decodeEnvelope,
   MAX_FRAME_BYTES,
   SESSION_LIVE_TAIL_FEATURE,
+  DECISION_PROVIDER_PROFILES,
   PROVIDER_CREDENTIALS_V1_FEATURE
 } from '@agentconnect.md/protocol'
 import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
@@ -176,6 +177,56 @@ async function readyClient(
 }
 
 describe('CpClient dispatch', () => {
+  it('serves scoped Decision previews and refuses a mismatched organization before evaluation', async () => {
+    const result = {
+      status: 'answered' as const,
+      model: 'jev-1.13.0',
+      answer: { type: 'boolean' as const, value: true, probability: 0.9 },
+      usage: { inputTokens: 4, outputTokens: 1 }
+    }
+    const decisionEvaluator = {
+      catalog: () => ({
+        providers: DECISION_PROVIDER_PROFILES.map((profile) => ({ ...profile, cloudAvailable: false }))
+      }),
+      evaluate: vi.fn(async () => result)
+    }
+    const { client, t } = await readyClient({ decisionEvaluator, orgForAgent: () => 'example-org' }, [], 'frame')
+    try {
+      const payload = {
+        agentId: CRON_AGENT_ID,
+        evaluationId: MOVE_ID,
+        decision: {
+          name: 'Reply',
+          providerId: 'typesafe',
+          model: 'jev-latest',
+          question: { type: 'boolean', instructions: 'Reply?', criteria: { true: 'Useful', false: 'Noise' } }
+        },
+        state: { text: 'Example' }
+      }
+      t.pushInbound(frame('decision/preview', payload, { orgId: 'other-org' }))
+      await tick()
+      expect(t.lastSent()).toMatchObject({ type: 'error', payload: { code: 'SCOPE_DENIED' } })
+      expect(decisionEvaluator.evaluate).not.toHaveBeenCalled()
+      t.pushInbound(frame('decision/preview', payload, { orgId: 'example-org' }))
+      await tick()
+      expect(t.lastSent()).toMatchObject({
+        type: 'decision/preview/result',
+        orgId: 'example-org',
+        payload: { evaluation: result }
+      })
+      expect(decisionEvaluator.evaluate).toHaveBeenCalledTimes(1)
+      t.pushInbound(frame('decision/catalog', {}, { orgId: 'example-org' }))
+      await tick()
+      expect(t.lastSent()).toMatchObject({
+        type: 'decision/catalog/result',
+        orgId: 'example-org',
+        payload: { providers: [{ id: 'typesafe', cloudAvailable: false }] }
+      })
+    } finally {
+      await client.stop()
+    }
+  })
+
   it('leases organization-scoped provider credentials, invalidates updates, and cancels pending requests', async () => {
     const unsupported = await readyClient()
     await expect(

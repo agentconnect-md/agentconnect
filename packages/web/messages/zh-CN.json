@@ -3878,7 +3878,8 @@
           "daemon": "{count, plural, other {Daemon}}",
           "cron": "{count, plural, other {定时任务}}",
           "mcpProvider": "{count, plural, other {MCP 提供方}}",
-          "skillSource": "{count, plural, other {技能来源}}"
+          "skillSource": "{count, plural, other {技能来源}}",
+          "decision": "{count, plural, other {决策}}"
         },
         "roles": {
           "owner": {
@@ -4168,7 +4169,30 @@
       "unavailableBadge": "评估不可用",
       "unavailableBody": "评估不可用——提供方没有返回答案。这既不是 No，也不是跳过。",
       "context": "上下文",
-      "messages": "{count, plural, other {# 条消息}}"
+      "messages": "{count, plural, other {# 条消息}}",
+      "daemon": "Daemon",
+      "noDaemon": "暂无可用于试跑的 Daemon。",
+      "states": {
+        "ready": "可用",
+        "pending_sync": "此 Daemon 暂无可用 Agent",
+        "needs_review": "需要检查",
+        "missing_credentials": "请在 Infra 中配置 Provider key",
+        "daemon_offline": "Daemon 离线",
+        "unsupported": "请更新此 Daemon 以使用 Decision 试跑",
+        "insufficient_credits": "Credits 不足"
+      },
+      "sources": {
+        "byok": "使用你的 Provider key",
+        "ac_credits": "AC credits"
+      },
+      "failures": {
+        "timeout": "判定超时，请重试。",
+        "capacity": "服务繁忙，请稍后重试。",
+        "credentials": "请检查 Provider key 或 Cloud credits。",
+        "provider": "服务未能完成此次判定。",
+        "invalid_response": "服务返回了无效的答案。",
+        "unsupported_input": "不支持此输入或模型，请缩短样例或检查模型。"
+      }
     },
     "breaksChannels": "这些频道绑定会失去触发条件：{names}。保存后它们会标记为“需要复核”；系统不会替你重新选择。",
     "notOffered": {
