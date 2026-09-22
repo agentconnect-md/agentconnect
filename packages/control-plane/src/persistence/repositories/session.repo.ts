@@ -1483,7 +1483,8 @@ export class PgSessionRepo implements SessionRepo {
     agentId: AgentId,
     sessionIds: SessionId[],
     reason: string,
-    at: Date
+    at: Date,
+    recordedBy?: DaemonId
   ): Promise<{ marked: SessionId[]; alreadyPurged: number }> {
     if (sessionIds.length === 0) return { marked: [], alreadyPurged: 0 }
     // `contentPurgedAt: null` in the predicate is what makes the stamp first-wins
@@ -1492,7 +1493,12 @@ export class PgSessionRepo implements SessionRepo {
     // (via updateManyAndReturn) reports exactly what this call changed, so the
     // handler can distinguish "newly purged" from "already known" for its log.
     const rows = await this.db.sessionMeta.updateManyAndReturn({
-      where: { id: { in: sessionIds }, agentId, contentPurgedAt: null },
+      where: {
+        id: { in: sessionIds },
+        agentId,
+        contentPurgedAt: null,
+        ...(recordedBy !== undefined ? { daemonId: recordedBy } : {})
+      },
       data: { contentPurgedAt: at, contentPurgedReason: reason },
       select: { id: true }
     })

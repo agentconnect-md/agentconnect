@@ -54,21 +54,33 @@ describe('handleSessionPurged', () => {
 
     await handleSessionPurged(frame, c, deps)
 
-    expect(markContentPurged).toHaveBeenCalledWith(AGENT_ID, ['acp-1', 'acp-2'], 'retention', new Date(PURGED_AT))
+    expect(markContentPurged).toHaveBeenCalledWith(
+      AGENT_ID,
+      ['acp-1', 'acp-2'],
+      'retention',
+      new Date(PURGED_AT),
+      undefined
+    )
     expect(c.replyTo).toHaveBeenCalledWith(frame, 'ack', { ok: true })
     expect(release).toHaveBeenCalledOnce()
   })
 
-  it('ignores a report from a daemon that does not own the agent, but still ACKs it', async () => {
-    // The daemon's local row is gone either way, so its receipt has nothing left
-    // to converge — an error would make it retry a report that can never land.
-    const markContentPurged = vi.fn()
+  it('stamps only the sessions it recorded from a daemon the agent moved away from, and ACKs (#2246)', async () => {
+    // Its store was its own, so the content it purged was only ever there; an error would make it retry a
+    // report that can never land, and dropping it unstamped would render a deleted transcript as empty.
+    const markContentPurged = vi.fn().mockResolvedValue({ marked: ['acp-1'], alreadyPurged: 1 })
     const { deps } = depsWith(markContentPurged, crypto.randomUUID())
     const c = conn()
 
     await handleSessionPurged(purgedFrame(), c, deps)
 
-    expect(markContentPurged).not.toHaveBeenCalled()
+    expect(markContentPurged).toHaveBeenCalledWith(
+      AGENT_ID,
+      ['acp-1', 'acp-2'],
+      'retention',
+      new Date(PURGED_AT),
+      DAEMON_ID
+    )
     expect(c.replyTo).toHaveBeenCalledWith(expect.anything(), 'ack', { ok: true })
     expect(c.sendError).not.toHaveBeenCalled()
   })

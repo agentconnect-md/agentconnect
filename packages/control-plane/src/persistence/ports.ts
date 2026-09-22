@@ -1401,7 +1401,9 @@ export interface SessionRepo {
     agentId: AgentId,
     sessionIds: SessionId[],
     reason: string,
-    at: Date
+    at: Date,
+    /** Only rows this daemon recorded — a recorder that no longer holds the agent purges its own content alone (#2246). */
+    recordedBy?: DaemonId
   ): Promise<{ marked: SessionId[]; alreadyPurged: number }>
   /** Filter, keyset-page, and order in Postgres; usage is hydrated only for the
    *  returned page. `total` is computed only when explicitly requested. */
