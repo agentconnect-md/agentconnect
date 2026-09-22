@@ -1160,6 +1160,19 @@ describe('microsandbox process and VM ownership', () => {
     await manager.discard(environment.id)
   })
 
+  it('suspends a VM that still runs a runtime only when asked to drain it, ending the runtime first (#2246)', async () => {
+    const { manager, environment, request, created } = await fixture()
+    const runtime = await manager.driverFor(environment).launch(request)
+    const exited = vi.fn()
+    runtime.onExit(exited)
+    await expect(manager.suspend(environment.id)).rejects.toThrow('has 1 active executions')
+    expect(created[0]!.status).not.toBe('stopped')
+    await manager.suspend(environment.id, { drain: true })
+    expect(exited).toHaveBeenCalledOnce()
+    expect(created[0]!.status).toBe('stopped')
+    await manager.discard(environment.id)
+  })
+
   it('fences the VM when a stop is not confirmed by the runtime exiting', async () => {
     const { manager, environment, request, created, shims } = await fixture()
     const driver = manager.driverFor(environment)

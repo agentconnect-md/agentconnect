@@ -284,8 +284,9 @@ export class MicrosandboxManager {
     }
   }
 
-  async suspend(id: string): Promise<void> {
-    await this.closeEnvironment(id, false)
+  /** Stop the VM, keeping its disk; `drain` ends what still runs in it first instead of refusing. */
+  async suspend(id: string, options: { drain?: boolean } = {}): Promise<void> {
+    await this.closeEnvironment(id, false, options.drain === true)
   }
 
   async discard(id: string): Promise<void> {
