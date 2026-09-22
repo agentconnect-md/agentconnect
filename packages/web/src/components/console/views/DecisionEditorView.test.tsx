@@ -149,6 +149,9 @@ describe('DecisionEditorView', () => {
     expect(preview.mock.lastCall?.[0]).not.toHaveProperty('daemonId')
 
     await click(picker())
+    await click(document.body.querySelector('.fscrim'))
+    expect(picker()?.getAttribute('aria-expanded')).toBe('false')
+    await click(picker())
     const options = [...document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')]
     expect(options.filter((option) => option.dataset.pool)).toHaveLength(1)
     expect(document.body.textContent).not.toContain('Example pool node')

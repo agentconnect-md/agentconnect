@@ -798,7 +798,8 @@ function DecisionEditor() {
               </button>
             </div>
             <div className="flex flex-col gap-[11px] px-[15px] py-[13px]">
-              <Field label={placementT('runsOn')}>
+              <div className="fld">
+                <span className="fldlbl">{placementT('runsOn')}</span>
                 {providerError && <IssueLine>{providerError}</IssueLine>}
                 <DaemonSelect
                   ariaLabel={placementT('runsOn')}
@@ -813,7 +814,7 @@ function DecisionEditor() {
                     {provider.source && ` · ${t(`try.sources.${provider.source}`)}`}
                   </span>
                 )}
-              </Field>
+              </div>
               <div className="fld">
                 <span className="fldlbl">{t('try.history')}</span>
                 {history.map((message, index) => (
