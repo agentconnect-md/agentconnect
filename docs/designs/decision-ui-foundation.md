@@ -139,8 +139,13 @@ flag, so an unconfigured deployment neither shows nor reads the prototype.
 ## Console surface
 
 `DecisionsPrototypeProvider` is mounted once inside the console shell, below
-`ConsoleDataProvider`, so one mock instance and one shared decision list outlive every
-route: a decision created on the editor is still there when a conversation row binds it.
+`ConsoleDataProvider`, so the store outlives every route: a decision created on the editor
+is still there when a conversation row binds it. Because that outlives an **organization
+switch** too, the organization is part of its state and not merely of a row key — the mock
+API instance, the cached decision list, and the exposed gate usages are all partitioned by
+`activeOrg.id`, so one tenant's definitions and consumers never reach another's `Used by`,
+edit warnings, or delete guard. Switching back finds the previous tenant's partition intact
+rather than reset.
 
 - `/decisions` lists the visible definitions — name, question type, provider/model,
   `Used by`, updated — with search, duplicate, and a delete that refuses a decision a

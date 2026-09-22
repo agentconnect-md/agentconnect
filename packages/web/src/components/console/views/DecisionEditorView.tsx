@@ -11,7 +11,7 @@ import { Button, Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { LoadingState } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
-import { gateUsages, useDecisionProviders, useDecisionsPrototype } from '@/lib/decisions/provider'
+import { useDecisionProviders, useDecisionsPrototype } from '@/lib/decisions/provider'
 import { DecisionsNotOffered } from '@/components/console/decisions/DecisionsNotOffered'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import {
@@ -139,7 +139,7 @@ export default function DecisionEditorView() {
   // URL here would turn our own editor into an open redirect.
   const requested = search.get('returnTo')
   const returnTo = requested?.startsWith('/') && !requested.startsWith('//') ? requested : null
-  const { decisions, loading, api, reload, gates, markGatesForReview } = useDecisionsPrototype()
+  const { decisions, loading, api, reload, gateUsages, markGatesForReview } = useDecisionsPrototype()
   const { providers } = useDecisionProviders()
   const definition = id ? decisions.find((entry) => entry.id === id) : undefined
 
@@ -204,7 +204,7 @@ export default function DecisionEditorView() {
   const stale = !!result && result.signature !== signature
   // Conversations this decision is gated on. A save that changes the question can strand
   // their saved conditions, which is the one consequence the editor must warn about first.
-  const gated = id && definition ? gateUsages(gates, id) : []
+  const gated = id && definition ? gateUsages(id) : []
   const brokenGates =
     draft && definition
       ? gated.filter((usage) => decisionConditionNeedsReview(definition.question, questionFrom(draft), usage.when))

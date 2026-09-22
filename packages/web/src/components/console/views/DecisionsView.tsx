@@ -14,7 +14,7 @@ import { LoadingState } from '@/components/marks'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
 import { formatDateTime } from '@/i18n/format'
 import { useOrgs } from '@/lib/org-context'
-import { gateUsages, useDecisionProviders, useDecisionsPrototype } from '@/lib/decisions/provider'
+import { useDecisionProviders, useDecisionsPrototype } from '@/lib/decisions/provider'
 import { DecisionsNotOffered } from '@/components/console/decisions/DecisionsNotOffered'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import type { DecisionSummary, DecisionUsage } from '@agentconnect.md/protocol/decision-api'
@@ -34,7 +34,7 @@ export default function DecisionsView() {
   const format = useFormatter()
   const { orgPath } = useOrgs()
   const router = useRouter()
-  const { decisions, loading, error, reload, api, gates } = useDecisionsPrototype()
+  const { decisions, loading, error, reload, api, gateUsages } = useDecisionsPrototype()
   const { providers } = useDecisionProviders()
   const [query, setQuery] = useState('')
   const [pendingDelete, setPendingDelete] = useState<{ decision: DecisionSummary; usages: DecisionUsage[] } | null>(
@@ -51,7 +51,8 @@ export default function DecisionsView() {
   const providerName = (providerId: string) => providers.find((entry) => entry.id === providerId)?.name ?? providerId
   // A prototype gate is a real consumer of this decision, even though the mock service cannot
   // see it: it counts toward `Used by`, and it blocks deletion the same way a saved binding does.
-  const gatedIn = (decisionId: string) => gateUsages(gates, decisionId)
+  // The store resolves only this organization's gates, so a sibling tenant cannot block a delete.
+  const gatedIn = gateUsages
   const usageCount = (entry: DecisionSummary) => entry.usageCount + gatedIn(entry.id).length
   const usageNames = (entry: DecisionSummary, mockUsages: DecisionUsage[]) => [
     ...mockUsages.map((usage) => usage.label),

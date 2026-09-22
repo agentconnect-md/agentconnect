@@ -1,20 +1,25 @@
 // @vitest-environment happy-dom
 
-// The prototype gates are the one invalidation the mock service cannot record, so the
-// provider has to: an edit that strands a saved condition must leave that gate flagged for
-// review — including a Score rubric-length change, whose old interval still fits but no
-// longer means the same thing (docs/designs/decisions.md §6.1).
+// The store is deliberately shell-wide: it outlives a route change so a decision created on
+// the editor is still there when a conversation row binds it. That makes the ORGANIZATION
+// part of its state, not just of a row key — it must never let one tenant's decisions, or
+// its gates, reach another tenant's Used by, edit warnings, or delete guard.
+// The gates are also the one invalidation the mock service cannot record, so the store has
+// to: an edit that strands a saved condition must leave it flagged for review, including a
+// Score rubric-length change whose old interval still fits but no longer means the same.
 
-import { act } from 'react'
+import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { SWRConfig } from 'swr'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DecisionsPrototypeProvider, useDecisionsPrototype } from './provider'
 import type { DecisionQuestion } from '@agentconnect.md/protocol/decision'
 
+const mocks = vi.hoisted(() => ({ orgId: 'org-a' }))
+
 vi.mock('@/lib/feature-flags', () => ({ featureFlagEnabled: () => true }))
 vi.mock('@/lib/org-context', () => ({
-  useOrgs: () => ({ activeOrg: { id: 'org-a' }, myRole: 'owner', orgPath: (path: string) => path })
+  useOrgs: () => ({ activeOrg: { id: mocks.orgId }, myRole: 'owner', orgPath: (path: string) => path })
 }))
 
 let root: Root | undefined
@@ -27,6 +32,7 @@ afterEach(async () => {
   container?.remove()
   root = undefined
   container = undefined
+  mocks.orgId = 'org-a'
 })
 
 const fourLevels: DecisionQuestion = {
@@ -36,16 +42,123 @@ const fourLevels: DecisionQuestion = {
 }
 const fiveLevels: DecisionQuestion = { ...fourLevels, criteria: [...fourLevels.criteria, 'Escalated'] }
 
+const read = (testId: string) => container?.querySelector(`[data-testid="${testId}"]`)?.textContent
+const press = async (label: string) => {
+  const node = [...(container?.querySelectorAll('button') ?? [])].find((button) => button.textContent === label)
+  if (!node) throw new Error(`no button reading "${label}"`)
+  await act(async () => {
+    node.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+}
+
+function tree(node: ReactNode) {
+  return (
+    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <DecisionsPrototypeProvider>{node}</DecisionsPrototypeProvider>
+    </SWRConfig>
+  )
+}
+
+async function mount(node: ReactNode) {
+  container = document.createElement('div')
+  document.body.append(container)
+  root = createRoot(container)
+  await act(async () => {
+    root?.render(tree(node))
+  })
+  await act(async () => {})
+}
+
+/** Re-renders the SAME provider instance, which is what an organization switch does. */
+async function rerender(node: ReactNode) {
+  await act(async () => {
+    root?.render(tree(node))
+  })
+  await act(async () => {})
+}
+
+/** Drives the provider the way the views do, and reports what they would read. */
+function TenantProbe({ tick }: { tick: number }) {
+  const { decisions, setGate, gateUsages, gateKeyFor, api, reload } = useDecisionsPrototype()
+  const first = decisions[0]
+  return (
+    <div data-tick={tick}>
+      <span data-testid="org-key">{gateKeyFor('bot-a', 'C123')}</span>
+      <span data-testid="usages">{first ? gateUsages(first.id).length : 'no decision'}</span>
+      <span data-testid="decisions">{decisions.length}</span>
+      <button
+        type="button"
+        onClick={() => {
+          if (!first) return
+          setGate(gateKeyFor('bot-a', 'C123'), {
+            decisionId: first.id,
+            when: { type: 'boolean', values: [true, false] },
+            channelName: '#help'
+          })
+        }}
+      >
+        gate
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          void api
+            .createDecision({
+              name: 'Tenant-local',
+              providerId: 'typesafe-byok',
+              model: 'jev-1.13.0',
+              question: { type: 'boolean', instructions: 'Tenant local?', criteria: { true: 'y', false: 'n' } }
+            })
+            .then(() => reload())
+        }}
+      >
+        create
+      </button>
+    </div>
+  )
+}
+
+describe('organization partition', () => {
+  it('composes the active organization, the owning bot, and the conversation', async () => {
+    await mount(<TenantProbe tick={0} />)
+    expect(read('org-key')).toBe('org-a|bot-a|C123')
+  })
+
+  // A decision id is only unique inside its tenant, and one mount serves every tenant — so
+  // the definitions, the usages, and the row key all have to move together.
+  it('keeps each organization’s decisions and gate usages in its own partition', async () => {
+    await mount(<TenantProbe tick={0} />)
+    const seeded = Number(read('decisions'))
+    await press('gate')
+    await press('create')
+    expect(read('usages')).toBe('1')
+    expect(read('decisions')).toBe(String(seeded + 1))
+
+    mocks.orgId = 'org-b'
+    await rerender(<TenantProbe tick={1} />)
+    expect(read('org-key')).toBe('org-b|bot-a|C123')
+    // Neither the other tenant's gate nor its decision may surface here.
+    expect(read('usages')).toBe('0')
+    expect(read('decisions')).toBe(String(seeded))
+
+    // Switching back finds the first tenant's partition intact, not reset.
+    mocks.orgId = 'org-a'
+    await rerender(<TenantProbe tick={2} />)
+    expect(read('usages')).toBe('1')
+    expect(read('decisions')).toBe(String(seeded + 1))
+  })
+})
+
 /** Drives the provider exactly as the editor does, and reports what a usage row would read. */
-function Probe({ previous, next }: { previous: DecisionQuestion; next: DecisionQuestion }) {
-  const { gates, setGate, markGatesForReview, decisions } = useDecisionsPrototype()
+function ReviewProbe({ previous, next }: { previous: DecisionQuestion; next: DecisionQuestion }) {
+  const { decisions, setGate, gateKeyFor, markGatesForReview, gateUsages } = useDecisionsPrototype()
   const decision = decisions[0]
   if (!decision) return <span>loading</span>
   return (
     <button
       type="button"
       onClick={() => {
-        setGate('org-a|bot-a|C1', {
+        setGate(gateKeyFor('bot-a', 'C1'), {
           decisionId: decision.id,
           when: { type: 'score', min: 2.5, max: 3 },
           channelName: '#help'
@@ -53,58 +166,16 @@ function Probe({ previous, next }: { previous: DecisionQuestion; next: DecisionQ
         markGatesForReview(decision.id, previous, next)
       }}
     >
-      {String(gates['org-a|bot-a|C1']?.needsReview === true)}
+      {String(gateUsages(decision.id)[0]?.needsReview === true)}
     </button>
   )
 }
 
-async function render(previous: DecisionQuestion, next: DecisionQuestion) {
-  container = document.createElement('div')
-  document.body.append(container)
-  root = createRoot(container)
-  await act(async () => {
-    root?.render(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <DecisionsPrototypeProvider>
-          <Probe previous={previous} next={next} />
-        </DecisionsPrototypeProvider>
-      </SWRConfig>
-    )
-  })
-  await act(async () => {})
-  await act(async () => {
-    container?.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-  })
-  return container?.querySelector('button')?.textContent
-}
-
-/** The store owns the tenant half of a binding's identity, so a row never asks the org context. */
-function KeyProbe() {
-  const { gateKeyFor } = useDecisionsPrototype()
-  return <span>{gateKeyFor('bot-a', 'C123')}</span>
-}
-
-describe('gateKeyFor', () => {
-  it('composes the active organization, the owning bot, and the conversation', async () => {
-    container = document.createElement('div')
-    document.body.append(container)
-    root = createRoot(container)
-    await act(async () => {
-      root?.render(
-        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-          <DecisionsPrototypeProvider>
-            <KeyProbe />
-          </DecisionsPrototypeProvider>
-        </SWRConfig>
-      )
-    })
-    expect(container.querySelector('span')?.textContent).toBe('org-a|bot-a|C123')
-  })
-})
-
 describe('markGatesForReview', () => {
   it('flags a gate whose interval survives a rubric-length change but no longer means the same', async () => {
-    expect(await render(fourLevels, fiveLevels)).toBe('true')
+    await mount(<ReviewProbe previous={fourLevels} next={fiveLevels} />)
+    await press('false')
+    expect(container?.querySelector('button')?.textContent).toBe('true')
   })
 
   it('flags a gate the edited question genuinely invalidates', async () => {
@@ -113,10 +184,14 @@ describe('markGatesForReview', () => {
       instructions: 'Same?',
       criteria: { true: 'y', false: 'n' }
     }
-    expect(await render(fourLevels, booleanNext)).toBe('true')
+    await mount(<ReviewProbe previous={fourLevels} next={booleanNext} />)
+    await press('false')
+    expect(container?.querySelector('button')?.textContent).toBe('true')
   })
 
   it('leaves a gate alone when the edit does not touch its condition', async () => {
-    expect(await render(fourLevels, { ...fourLevels })).toBe('false')
+    await mount(<ReviewProbe previous={fourLevels} next={{ ...fourLevels }} />)
+    await press('false')
+    expect(container?.querySelector('button')?.textContent).toBe('false')
   })
 })

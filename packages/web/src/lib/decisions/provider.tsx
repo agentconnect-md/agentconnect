@@ -31,6 +31,9 @@ export interface DecisionGateBinding {
   needsReview?: boolean
 }
 
+/** The stored form: the organization is stamped by the store, so a caller cannot get it wrong. */
+type StoredGate = DecisionGateBinding & { orgId: string }
+
 /** One conversation a decision is bound to, for the editor's `Used by` card and delete guard. */
 export interface DecisionGateUsage {
   channelId: string
@@ -58,11 +61,15 @@ interface DecisionsPrototype {
   /** Re-read after a write; a failed read is reported to the caller instead. */
   reload: () => Promise<unknown>
   /** Gate binding by {@link gateKey} — the conversation owns it, as on the CP. */
-  gates: Readonly<Record<string, DecisionGateBinding>>
+  gates: Readonly<Record<string, StoredGate>>
   /** This store's identity for one conversation. The org is the store's, not the row's. */
   gateKeyFor: (botId: string | null | undefined, channelId: string) => string
   setGate: (key: string, binding: DecisionGateBinding) => void
   clearGate: (key: string) => void
+  /** The active organization's gates on one decision — never another tenant's. */
+  gateUsages: (decisionId: string) => DecisionGateUsage[]
+  /** The organization this store is currently partitioned by. */
+  orgId: string
   /** Flag the gates an edit to this decision invalidated, before the caller re-reads. */
   markGatesForReview: (decisionId: string, previous: DecisionQuestion, next: DecisionQuestion) => void
 }
@@ -73,41 +80,62 @@ export function DecisionsPrototypeProvider({ children }: { children: ReactNode }
   // The store sits inside OrgProvider, so it — not each conversation row — owns the tenant
   // half of a binding's identity. A row that had to ask would depend on the org context.
   const { activeOrg } = useOrgs()
-  // The instance must outlive every render: one created per render would reset saved state.
-  const [api] = useState<DecisionApi>(() => createDecisionMockApi())
-  const [gates, setGates] = useState<Record<string, DecisionGateBinding>>({})
+  // The tenant is the store's, not a row's: this provider deliberately outlives an org switch,
+  // so the API partition, the cached read, and the gate usages all move together with
+  // `activeOrg.id` — the same way the real client is scoped by the caller's organization.
+  const orgId = activeOrg?.id ?? ''
+  const [apis] = useState(() => new Map<string, DecisionApi>())
+  const api = useMemo(() => {
+    const cached = apis.get(orgId)
+    if (cached) return cached
+    const created = createDecisionMockApi()
+    apis.set(orgId, created)
+    return created
+  }, [apis, orgId])
+  const [gates, setGates] = useState<Record<string, StoredGate>>({})
   // A null key while the flag is off is what keeps the mock opt-in: no page reads it
   // unless a deployment asked for this surface.
   const { data, error, isLoading, mutate } = useSWR(
-    featureFlagEnabled('decisions') ? ['decisions-prototype'] : null,
+    featureFlagEnabled('decisions') ? ['decisions-prototype', orgId] : null,
     () => api.listDecisions()
   )
   const reload = useCallback(async () => mutate(), [mutate])
   const gateKeyFor = useCallback(
-    (botId: string | null | undefined, channelId: string) => gateKey(activeOrg?.id, botId, channelId),
-    [activeOrg?.id]
+    (botId: string | null | undefined, channelId: string) => gateKey(orgId, botId, channelId),
+    [orgId]
   )
-  const setGate = useCallback((key: string, binding: DecisionGateBinding) => {
-    setGates((current) => ({ ...current, [key]: binding }))
-  }, [])
+  // The org is stamped here rather than accepted from a caller, so a binding can never be
+  // written into the wrong tenant's partition.
+  const setGate = useCallback(
+    (key: string, binding: DecisionGateBinding) => {
+      setGates((current) => ({ ...current, [key]: { ...binding, orgId } }))
+    },
+    [orgId]
+  )
+  const gateUsagesFor = useCallback((decisionId: string) => gateUsagesIn(gates, orgId, decisionId), [gates, orgId])
   const clearGate = useCallback((key: string) => {
     setGates((current) => Object.fromEntries(Object.entries(current).filter(([entry]) => entry !== key)))
   }, [])
   // The mock service cannot see these bindings, so the invalidation the CP would record has
   // to be recorded here — including a Score rubric-length change, which leaves an interval
   // that still fits but no longer means what it did (docs/designs/decisions.md §6.1).
-  const markGatesForReview = useCallback((decisionId: string, previous: DecisionQuestion, next: DecisionQuestion) => {
-    setGates((current) =>
-      Object.fromEntries(
-        Object.entries(current).map(([key, binding]) => [
-          key,
-          binding.decisionId === decisionId && decisionConditionNeedsReview(previous, next, binding.when)
-            ? { ...binding, needsReview: true }
-            : binding
-        ])
+  const markGatesForReview = useCallback(
+    (decisionId: string, previous: DecisionQuestion, next: DecisionQuestion) => {
+      setGates((current) =>
+        Object.fromEntries(
+          Object.entries(current).map(([key, binding]) => [
+            key,
+            binding.orgId === orgId &&
+            binding.decisionId === decisionId &&
+            decisionConditionNeedsReview(previous, next, binding.when)
+              ? { ...binding, needsReview: true }
+              : binding
+          ])
+        )
       )
-    )
-  }, [])
+    },
+    [orgId]
+  )
   const value = useMemo<DecisionsPrototype>(
     () => ({
       api,
@@ -119,9 +147,24 @@ export function DecisionsPrototypeProvider({ children }: { children: ReactNode }
       gateKeyFor,
       setGate,
       clearGate,
+      gateUsages: gateUsagesFor,
+      orgId,
       markGatesForReview
     }),
-    [api, data, isLoading, error, reload, gates, gateKeyFor, setGate, clearGate, markGatesForReview]
+    [
+      api,
+      data,
+      isLoading,
+      error,
+      reload,
+      gates,
+      gateKeyFor,
+      setGate,
+      clearGate,
+      gateUsagesFor,
+      orgId,
+      markGatesForReview
+    ]
   )
   return <DecisionsContext.Provider value={value}>{children}</DecisionsContext.Provider>
 }
@@ -146,10 +189,10 @@ export function boundDecision(
   return decisions.find((entry) => entry.id === binding.decisionId) ?? null
 }
 
-/** The daemon catalog a preview resolves against. One logical provider in the prototype. */
+/** The daemon catalog a preview resolves against, read from the active organization's API. */
 export function useDecisionProviders(): { providers: DecisionProviderOption[]; daemonId: string | null } {
-  const { api } = useDecisionsPrototype()
-  const { data } = useSWR(['decisions-prototype-providers'], () => api.listProviders())
+  const { api, orgId } = useDecisionsPrototype()
+  const { data } = useSWR(['decisions-prototype-providers', orgId], () => api.listProviders())
   return { providers: data ?? [], daemonId: data?.[0]?.daemonId ?? null }
 }
 
@@ -162,13 +205,16 @@ export function gateIssues(
   return decisionConditionIssues(decision.question, when)
 }
 
-/** Every conversation currently gated on one decision — in binding order, so the list is stable. */
-export function gateUsages(
-  gates: Readonly<Record<string, DecisionGateBinding>>,
+/** One organization's conversations gated on one decision, in binding order so the list is stable.
+ *  A decision id is only unique within its tenant, so the org is part of the query, not a filter
+ *  the caller may forget. */
+export function gateUsagesIn(
+  gates: Readonly<Record<string, StoredGate>>,
+  orgId: string,
   decisionId: string
 ): DecisionGateUsage[] {
   return Object.entries(gates)
-    .filter(([, binding]) => binding.decisionId === decisionId)
+    .filter(([, binding]) => binding.orgId === orgId && binding.decisionId === decisionId)
     .map(([key, binding]) => ({
       channelId: key,
       channelName: binding.channelName,

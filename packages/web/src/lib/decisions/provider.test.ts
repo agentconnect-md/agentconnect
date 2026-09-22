@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { DecisionDefinition } from '@agentconnect.md/protocol/decision'
-import { boundDecision, defaultConditionFor, gateIssues, gateKey, gateUsages } from './provider'
+import { boundDecision, defaultConditionFor, gateIssues, gateKey, gateUsagesIn } from './provider'
 import type { DecisionGateBinding } from './provider'
+
+/** The stored form: the store stamps the tenant, so the fixture has to as well. */
+type Stored = DecisionGateBinding & { orgId: string }
 
 const metadata = {
   orgId: 'example-org',
@@ -130,27 +133,41 @@ describe('gateKey', () => {
   })
 })
 
-describe('gateUsages', () => {
-  const binding = (decisionId: string, channelName: string, needsReview?: boolean): DecisionGateBinding => ({
+describe('gateUsagesIn', () => {
+  const binding = (orgId: string, decisionId: string, channelName: string, needsReview?: boolean): Stored => ({
+    orgId,
     decisionId,
     when: { type: 'boolean', values: [true] },
     channelName,
     ...(needsReview === undefined ? {} : { needsReview })
   })
 
-  it('lists only the gates on the named decision, carrying each one’s review state', () => {
+  it('lists only the named organization’s gates on the named decision', () => {
     const gates = {
-      'org-a|bot-a|C1': binding('support-category', '#help'),
-      'org-a|bot-b|C1': binding('other', '#help', true),
-      'org-a|bot-a|C2': binding('support-category', '#deploys', true)
+      'org-a|bot-a|C1': binding('org-a', 'support-category', '#help'),
+      'org-a|bot-b|C1': binding('org-a', 'other', '#help', true),
+      'org-a|bot-a|C2': binding('org-a', 'support-category', '#deploys', true)
     }
-    expect(gateUsages(gates, 'support-category').map((usage) => [usage.channelName, usage.needsReview])).toEqual([
+    expect(
+      gateUsagesIn(gates, 'org-a', 'support-category').map((usage) => [usage.channelName, usage.needsReview])
+    ).toEqual([
       ['#help', false],
       ['#deploys', true]
     ])
   })
 
+  // A decision id is only unique inside its tenant: the same fixture id exists in every org.
+  it('never reports another organization’s gate on the same decision id', () => {
+    const gates = {
+      'org-a|bot-a|C1': binding('org-a', 'support-category', '#help'),
+      'org-b|bot-a|C1': binding('org-b', 'support-category', '#deploys')
+    }
+    expect(gateUsagesIn(gates, 'org-b', 'support-category').map((usage) => usage.channelName)).toEqual(['#deploys'])
+    expect(gateUsagesIn(gates, 'org-c', 'support-category')).toEqual([])
+  })
+
   it('reports no usages for a decision nothing gates', () => {
-    expect(gateUsages({ 'org-a|bot-a|C1': binding('support-category', '#help') }, 'unused')).toEqual([])
+    const gates = { 'org-a|bot-a|C1': binding('org-a', 'support-category', '#help') }
+    expect(gateUsagesIn(gates, 'org-a', 'unused')).toEqual([])
   })
 })
