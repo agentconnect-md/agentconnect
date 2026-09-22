@@ -413,27 +413,67 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
     expect(await driver.suspendIfIdle(AGENT)).toBe('suspended')
   })
 
-  it('reports a launched pod as a stalled wake only once the pod-up bound passes with it still not up and never bound', async () => {
-    const { api, claims, sandboxes } = cluster()
+  it('suspends a launched pod still not up a full pod-up bound later and never bound, and nothing else', async () => {
+    const { api, claims, sandboxes, modeWrites } = cluster()
+    const { driver, clock } = member(api, podSide().connect)
+    const stuck = sandboxSubjectFor(T1)
+    const bound = sandboxSubjectFor(T2)
+    await driver.ensureBoundChannel(bound)
+    await driver.ensureSandbox(stuck)
+    const sandboxOf = (subject: string): string => claims.get(driver.claimName(subject))!.status!.sandbox!.name!
+    const readiness = (subject: string, status: 'True' | 'False'): void => {
+      const name = sandboxOf(subject)
+      const sandbox = sandboxes.get(name)!
+      sandboxes.set(name, { ...sandbox, status: { ...sandbox.status, conditions: [{ type: 'Ready', status }] } })
+    }
+    readiness(stuck, 'False')
+    readiness(bound, 'False')
+
+    // Inside the bound it may still be coming up.
+    expect(await driver.suspendIfStalled(stuck)).toBe('absent')
+    clock.advance(driver.podUpTimeoutMs)
+    // One this member ever bound is judged as bound, whatever its pod does next; a subject with no launch has nothing to suspend.
+    expect(await driver.suspendIfStalled(bound)).toBe('absent')
+    expect(await driver.suspendIfStalled(AGENT)).toBe('absent')
+    // A pod that is up is idle, not stalled, and is left to the activity window.
+    readiness(stuck, 'True')
+    expect(await driver.suspendIfStalled(stuck)).toBe('absent')
+    expect(modeWrites).toEqual([])
+
+    readiness(stuck, 'False')
+    expect(await driver.suspendIfStalled(stuck)).toBe('suspended')
+    expect(driver.currentLaunch(stuck)).toBeUndefined()
+    expect(modeWrites).toEqual([{ sandbox: sandboxOf(stuck), desired: 'Suspended' }])
+  })
+
+  it('lets a bind that lands during the readiness read win over a stalled suspension', async () => {
+    // The read can outlive what justified it: the pod comes up and a console wake binds it before the stale `starting` answer returns.
+    const { api, claims, sandboxes, modeWrites } = cluster()
     const { driver, clock } = member(api, podSide().connect)
     const session = sandboxSubjectFor(T1)
     await driver.ensureSandbox(session)
     const name = claims.get(driver.claimName(session))!.status!.sandbox!.name!
     const ready = sandboxes.get(name)!
     sandboxes.set(name, { ...ready, status: { conditions: [{ type: 'Ready', status: 'False' }] } })
-
-    // Inside the bound it may still be coming up.
-    expect(await driver.stalledWake(session)).toBe(false)
     clock.advance(driver.podUpTimeoutMs)
-    expect(await driver.stalledWake(session)).toBe(true)
-    // A pod that is up is idle, not stalled, and is left to the activity window.
+    const read = api.getSandbox
+    let answer: () => void = () => {}
+    const answered = new Promise<void>((resolve) => (answer = resolve))
+    api.getSandbox = async (sandboxName: string) => {
+      api.getSandbox = read
+      const snapshot = await read(sandboxName)
+      await answered
+      return snapshot
+    }
+
+    const suspending = driver.suspendIfStalled(session)
     sandboxes.set(name, ready)
-    expect(await driver.stalledWake(session)).toBe(false)
-    // One this member ever bound is judged as bound, whatever its pod does next.
     await driver.ensureBoundChannel(session)
-    sandboxes.set(name, { ...ready, status: { conditions: [{ type: 'Ready', status: 'False' }] } })
-    expect(await driver.stalledWake(session)).toBe(false)
-    expect(await driver.stalledWake(sandboxSubjectFor(T2))).toBe(false)
+    answer()
+
+    expect(await suspending).toBe('absent')
+    expect(modeWrites).toEqual([])
+    expect(driver.sessionFor(session)?.isAttached()).toBe(true)
   })
 
   it('still degrades rather than failing the launch when only the companion cannot come up', async () => {

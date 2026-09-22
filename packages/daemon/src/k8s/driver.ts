@@ -394,14 +394,15 @@ export class K8sDriver implements SpawnDriver {
     await this.setMode(subject, 'Suspended')
   }
 
-  // Suspend a quiet subject's Sandbox: the pod goes, object and volume stay, the next message resumes
-  // onto the same checkout. Session and launch drop TOGETHER once the write lands — the pod they name
-  // is being deleted, so its replacement binds at a fresh generation instead of waiting for the
-  // channel-loss timer. The re-read guards a launch replaced during the write.
+  // Suspend a quiet subject's Sandbox, keeping object and volume; session and launch drop TOGETHER once the write lands, so the replacement binds at a fresh generation.
   async suspendIfIdle(subject: string): Promise<'suspended' | 'busy' | 'absent'> {
     const launch = this.registry.currentLaunch(subject)
-    if (!launch) return 'absent'
-    return await this.lease.suspendIfIdle(subject, launch.sandboxName, () => {
+    return launch ? await this.suspendLaunch(subject, launch) : 'absent'
+  }
+
+  // Opens the lease's gate synchronously, so a caller that judged `launch` in the same tick decides against exactly that launch; the re-read guards one replaced during the write.
+  private suspendLaunch(subject: string, launch: SandboxLaunch): Promise<'suspended' | 'busy'> {
+    return this.lease.suspendIfIdle(subject, launch.sandboxName, () => {
       if (this.registry.currentLaunch(subject) === launch) {
         this.binder.dropSession(subject)
         this.forgetLaunch(subject)
@@ -413,7 +414,7 @@ export class K8sDriver implements SpawnDriver {
   private putBackAfterFailedBind(subject: string, launch: SandboxLaunch): void {
     // Replaced, released, or bound by a later attempt meanwhile: not this failure's pod to suspend.
     if (this.registry.currentLaunch(subject) !== launch || this.binder.sessionFor(subject)?.isAttached()) return
-    void this.suspendIfIdle(subject).then(
+    void this.suspendLaunch(subject, launch).then(
       (outcome) => {
         if (outcome === 'suspended') this.deps.log.info(`cluster: sandbox ${subject} suspended after its bind failed`)
       },
@@ -424,13 +425,15 @@ export class K8sDriver implements SpawnDriver {
     )
   }
 
-  /** Whether the subject's pod is still not up a full pod-up bound after its launch, with no channel ever bound to it here. */
+  /** Suspend the subject's pod if it is still not up a full pod-up bound after its launch, with no channel ever bound to it here; `absent` when it is no such pod. */
   // The idle sweep judges such a pod apart from the agent's activity: it serves nothing and holds its node's resources while it waits.
-  async stalledWake(subject: string): Promise<boolean> {
+  async suspendIfStalled(subject: string): Promise<'suspended' | 'busy' | 'absent'> {
     const launch = this.registry.currentLaunch(subject)
-    if (!launch || this.binder.sessionFor(subject)) return false
-    if (this.clock.now() - launch.since < this.podUpTimeoutMs) return false
-    return (await this.sandboxReadiness(subject)) === 'starting'
+    const unbound = (): boolean => this.registry.currentLaunch(subject) === launch && !this.binder.sessionFor(subject)
+    if (!launch || !unbound() || this.clock.now() - launch.since < this.podUpTimeoutMs) return 'absent'
+    if ((await this.sandboxReadiness(subject)) !== 'starting') return 'absent'
+    // Re-judged after the read, in the tick that opens the gate: a bind or a replacement that landed during it wins.
+    return unbound() ? await this.suspendLaunch(subject, launch) : 'absent'
   }
 
   /** Subjects this daemon holds a Sandbox for, and since when — the idle sweep's candidates. */

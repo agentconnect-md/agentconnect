@@ -19122,15 +19122,14 @@ export class Daemon {
           : await this.store.sessionLastActivityTs(sessionKey)
       const last = Math.max(activity ?? 0, since)
       const quiet = now - last > ttl
-      // A pod that never came up is judged on its own: the agent's traffic says nothing about it, and it holds its node's resources while it waits.
-      if (!quiet && !(await plane.stalledWake(subject))) continue
       // An open page watching THIS pod's dirty volume or armed merge watcher defers the suspend; its lease lapses within one TTL of closing (§11).
       if (this.sandboxHolds.holds(subject)) {
-        this.log.debug?.(`idle: holding the sandbox "${subject}" — ${this.sandboxHolds.reasons(subject).join(', ')}`)
+        if (quiet)
+          this.log.debug?.(`idle: holding the sandbox "${subject}" — ${this.sandboxHolds.reasons(subject).join(', ')}`)
         continue
       }
-      void plane
-        .suspendIdle(subject)
+      // Inside the window only a pod that never came up goes, judged by the plane against the launch it reads: the agent's traffic says nothing about that pod, and it holds its node's resources while it waits.
+      void (quiet ? plane.suspendIdle(subject) : plane.suspendStalled(subject))
         .then((outcome) => {
           if (outcome !== 'suspended') return
           this.log.info(

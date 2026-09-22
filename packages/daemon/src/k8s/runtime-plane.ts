@@ -217,8 +217,8 @@ export interface K8sRuntimePlane extends ExecutionPlane {
    *  still holds it and the caller should try again later; `absent` means there is nothing to
    *  suspend. Waking is not a separate call — the next launch's bind does it. */
   suspendIdle: (subject: string) => Promise<'suspended' | 'busy' | 'absent'>
-  /** Whether a subject's launched pod never came up within the pod-up bound, which the idle sweep judges apart from activity. */
-  stalledWake: (subject: string) => Promise<boolean>
+  /** Suspend a subject's launched pod that never came up within the pod-up bound, whatever its activity; `absent` when it is no such pod. */
+  suspendStalled: (subject: string) => Promise<'suspended' | 'busy' | 'absent'>
   /** Destroy every sandbox of an agent for good: the claims go, and their workspace volumes with them. For
    *  agent REMOVAL only — the local path deletes the checkout at the same point. */
   discardAgent: (agentId: string) => Promise<void>
@@ -500,7 +500,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     shimGenerationFor: (subject) => driver.currentLaunch(subject)?.generation,
     launched: () => driver.launched(),
     suspendIdle: (subject) => driver.suspendIfIdle(subject),
-    stalledWake: (subject) => driver.stalledWake(subject),
+    suspendStalled: (subject) => driver.suspendIfStalled(subject),
     adoptAgent: async (agentId) => {
       await driver.adopt(agentSandboxSubject(agentId))
       // Its session pods too, so a Running one left by a departed member has a holder to suspend it.

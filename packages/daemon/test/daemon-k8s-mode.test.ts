@@ -114,7 +114,7 @@ function daemon(opts: {
               gitRunnerFor: () => undefined,
               launched: () => [],
               suspendIdle: async () => 'absent',
-              stalledWake: async () => false,
+              suspendStalled: async () => 'absent',
               discardAgent: async () => {},
               stop: async () => {},
               ...opts.plane
@@ -623,6 +623,7 @@ describe('daemon --k8s mode', () => {
   it('suspends a pod that never came up inside its agent activity window, and leaves one still coming up alone', async () => {
     // The agent's traffic keeps the window open for all of its host-less session pods, so a pod the scheduler cannot place would otherwise hold its CPU request for as long as the agent is in use.
     const suspended: string[] = []
+    const asked: string[] = []
     const k8sDaemon = daemon({
       root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
       k8s: true,
@@ -631,9 +632,15 @@ describe('daemon --k8s mode', () => {
           { subject: 'busy-agent/session-stuck', agentId: 'busy-agent', since: Date.now() },
           { subject: 'busy-agent/session-starting', agentId: 'busy-agent', since: Date.now() }
         ],
-        stalledWake: async (subject: string) => subject === 'busy-agent/session-stuck',
-        suspendIdle: async (subject: string) => {
+        // The plane owns the stalled judgement, so the sweep hands it every pod inside the window rather than a verdict it read first.
+        suspendStalled: async (subject: string) => {
+          asked.push(subject)
+          if (subject !== 'busy-agent/session-stuck') return 'absent'
           suspended.push(subject)
+          return 'suspended'
+        },
+        suspendIdle: async (subject: string) => {
+          suspended.push(`idle:${subject}`)
           return 'suspended'
         }
       }
@@ -641,7 +648,10 @@ describe('daemon --k8s mode', () => {
     try {
       await k8sDaemon.start()
       ;(k8sDaemon as any).sweepIdle()
-      await vi.waitFor(() => expect(suspended).toEqual(['busy-agent/session-stuck']))
+      await vi.waitFor(() =>
+        expect([...asked].sort()).toEqual(['busy-agent/session-starting', 'busy-agent/session-stuck'])
+      )
+      expect(suspended).toEqual(['busy-agent/session-stuck'])
     } finally {
       await k8sDaemon.stop()
     }
