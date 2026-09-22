@@ -437,7 +437,7 @@ describe('TurnOutputWorkflow', () => {
           const clarification = msg('100.2', 'late clarification')
           clarification.transportScope = context.firstMessage.transportScope
           clarification.quoted = { messageId: '99.9', sender: 'U2', text: 'peer-only quoted source' }
-          await (context.daemon as any).recordObservedInbound(clarification, 'bot-a')
+          await (context.daemon as any).admitInbound(clarification, 'bot-a')
         } else if (generation === 2) {
           const approval = (context.daemon as any).permissions.onAcpPermission('bot-a', sessionId, {
             sessionId,
@@ -458,7 +458,7 @@ describe('TurnOutputWorkflow', () => {
           await approval
           const clarification = msg('100.3', 'clarification after approval')
           clarification.transportScope = context.firstMessage.transportScope
-          await (context.daemon as any).recordObservedInbound(clarification, 'bot-a')
+          await (context.daemon as any).admitInbound(clarification, 'bot-a')
         }
         return { stopReason: 'end_turn' }
       }),
@@ -526,7 +526,7 @@ describe('TurnOutputWorkflow', () => {
       sender: 'U2',
       text: 'durable quote: keep the compatibility branch'
     }
-    await (firstDaemon as any).recordObservedInbound(unrouted)
+    await (firstDaemon as any).recordChannelInbound(unrouted)
     const transcriptChannel = transcriptChannelKey('C1', firstMessage.transportScope)
     expect(
       (
@@ -602,7 +602,7 @@ describe('TurnOutputWorkflow', () => {
         })
         const change = msg(`100.${generation + 1}`, `change ${generation}`)
         change.transportScope = context.firstMessage.transportScope
-        ;(context.daemon as any).recordObservedInbound(change, 'bot-a')
+        ;(context.daemon as any).admitInbound(change, 'bot-a')
         return { stopReason: 'end_turn' }
       }),
       cancel: vi.fn(async () => {}),

@@ -423,8 +423,8 @@ describe('SessionReader', () => {
   })
 
   it('strips a label the row does not literally agree with (observer wrote it pre-download)', async () => {
-    // recordObservedInbound recorded the Feishu label before any download settled the
-    // type, so the row says application/octet-stream while the stored image is a PNG.
+    // The step-1 channel record wrote the Feishu label before any download settled the type, so the
+    // row says application/octet-stream while the stored image is a PNG.
     const s = await store()
     seedHistorySession(s, { platform: 'feishu', channel: 'oc_1', thread: 'oc_1' })
     await s.appendTranscript({

@@ -44,6 +44,16 @@ describe('planReplay — in-order activation', () => {
     expect(p.context.map((e) => e.sender)).toEqual(['u1'])
   })
 
+  it('never replays a recorded control, and keeps the `!queue` row it strips', () => {
+    // Step 1 records commands (message-intake.md §5), so the replay is where they must not
+    // reappear: `!stop` acted on the session rather than being said to it.
+    const p = plan({
+      gap: [entry(at(1), 'u1', '!stop'), entry(at(2), 'u1', '/status'), entry(at(3), 'u1', '!queue do it')]
+    })
+    expect(p.context.map((e) => e.text)).toEqual(['!queue do it'])
+    expect(renderReplayContext(p.context)).toBe('[u1] do it')
+  })
+
   it('sorts a natively ordered gap before deciding, keeping legacy ids first', () => {
     const p = plan({ gap: [entry(at(2), 'u1'), entry('legacy-uuid', 'u1'), entry(at(1), 'u1')] })
     expect(p.context.map((e) => e.ts)).toEqual(['legacy-uuid', at(1), at(2)])

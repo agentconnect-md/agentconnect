@@ -4,7 +4,7 @@
  * Some user messages are meant to control the *running* agent (or query its state)
  * rather than be fed to it as a prompt — e.g. interrupt the current turn, buffer a
  * message until the agent is idle, or ask for the session status. They are detected
- * at the edge (daemon) before routing and never reach the agent or the transcript.
+ * at the edge (daemon) after the channel record is written and never reach the agent as a prompt.
  * `!resume` is also the explicit recovery control for a durable loop guard.
  *
  * Prefixes: Slack reserves `/xxx` for its own slash commands (the bot never
@@ -107,4 +107,22 @@ export function parseCommand(raw: string): AgentCommand | null {
   if (EFFORT_WORDS.has(word)) return { kind: 'effort', value: arg || null }
   if (PERMISSION_WORDS.has(word)) return { kind: 'permission', value: arg || null }
   return null
+}
+
+/** The prompt text of a recorded `!queue <text>` row: the row keeps the command as typed (that is
+ *  what the channel shows), so the strip happens at prompt assembly (message-intake.md §5 step 2).
+ *  Pure, so a replay rebuilds the identical prompt. A bare `!queue` is never admitted — it draws a
+ *  usage reply — so it is left alone rather than blanked. */
+export function queuePromptText(text: string): string {
+  const parsed = parseCommand(text)
+  return parsed?.kind === 'queue' && parsed.text !== '' ? parsed.text : text
+}
+
+/** Does this recorded row's text read as a control? Step 1 now records commands, but a command
+ *  acted on the session instead of being said to it, so it is never session context
+ *  (message-intake.md §5 step 2). `!queue <text>` is the exception — its row IS admitted, and
+ *  {@link queuePromptText} strips the prefix. Pure, like the strip, so every reader agrees. */
+export function isControlCommandText(text: string): boolean {
+  const parsed = parseCommand(text)
+  return parsed !== null && parsed.kind !== 'queue'
 }

@@ -27,6 +27,7 @@ import type { NoteProjectionOutcome, NoteProjectionPhase, NoteProjectionRow } fr
 import type { ReviewIntentRow } from '../gitlab/review-adapter.js'
 import { SESSION_TITLE_TOOL_TITLES } from '../mcp/session-title-tool.js'
 import type { ScheduleRun } from '../scheduler/scheduler.js'
+import { isControlCommandText, queuePromptText } from '../commands/commands.js'
 import { AsyncMutex } from './async-mutex.js'
 import { STORE_RETENTION_SCAN_LIMIT, type StoreRetentionCandidate, type StoreRetentionRule } from './retention.js'
 import {
@@ -490,7 +491,8 @@ export interface TranscriptRow extends Omit<TranscriptEntry, 'thread'> {
  *  carries one, else the row's own text. Fail-closed like the quote sidecar — a malformed body
  *  from an older schema or a corrupt store must never turn arbitrary JSON into prompt context. */
 export function transcriptPromptText(entry: Pick<TranscriptEntry, 'kind' | 'text' | 'body'>): string {
-  if (entry.kind !== 'text' || !entry.body) return entry.text
+  // A persisted prompt is already stripped — the turn was dispatched with the stripped payload.
+  if (entry.kind !== 'text' || !entry.body) return queuePromptText(entry.text)
   try {
     const parsed: unknown = JSON.parse(entry.body)
     const prompt = (parsed as { prompt?: unknown } | null)?.prompt
@@ -498,7 +500,7 @@ export function transcriptPromptText(entry: Pick<TranscriptEntry, 'kind' | 'text
   } catch {
     // fall through — the row's text stands
   }
-  return entry.text
+  return queuePromptText(entry.text)
 }
 
 /** Decode daemon-private quote metadata fail-closed. Local DB corruption or a row from
@@ -5466,20 +5468,22 @@ export class LocalStore {
    *  "Session <id>". Returns undefined when the thread holds no non-agent text row
    *  yet. Indexed by (channel, thread, seq). */
   async firstMessageText(scope: TranscriptSessionScope): Promise<string | undefined> {
-    const row = (await this.db
+    // A small window rather than LIMIT 1: controls are recorded now (message-intake.md §5 step 2)
+    // and a thread opened with `!status` must not be titled by it.
+    const rows = (await this.db
       .prepare(
         `SELECT text FROM transcript WHERE orgId = ? AND channel = ? AND kind = 'text'
            AND ${SESSION_ROW_SCOPE_SQL}
-           AND sender != ? ORDER BY seq ASC LIMIT 1`
+           AND sender != ? ORDER BY seq ASC LIMIT 8`
       )
-      .get(
+      .all(
         this.orgForRead(scope.agentId, scope.orgId),
         scope.transcriptChannel,
         scope.coordinate,
         scope.sessionKey,
         scope.agentId
-      )) as { text: string } | undefined
-    return row?.text
+      )) as { text: string }[]
+    return rows.find((row) => !isControlCommandText(row.text))?.text
   }
 
   /** Full activity log for a thread (all kinds), in insertion order — for the Web UI.
@@ -5601,25 +5605,6 @@ export class LocalStore {
    *  multi-agent disambiguation (2+ open owners → mention-gated) is never perturbed. */
   async closedSessionAgents(channel: string, thread: string, transportScope?: string | null): Promise<string[]> {
     return await this.threadAgentsByState(channel, thread, transportScope, 'closed')
-  }
-
-  /** Count non-closed sessions in (channel, thread) touched at/after `sinceTs`
-   *  (epoch ms). Used to bound unrouted-transcript growth to recently-active
-   *  threads, since there is no session-`closed` lifecycle yet. */
-  async activeSessionCountSince(
-    channel: string,
-    thread: string,
-    sinceTs: number,
-    transportScope?: string | null
-  ): Promise<number> {
-    const row = (await this.db
-      .prepare(
-        `SELECT COUNT(*) AS n FROM sessions
-         WHERE channel = ? AND thread = ? AND COALESCE(transportScope, '') = ?
-           AND state != 'closed' AND updatedAt >= ?`
-      )
-      .get(channel, thread, transportScope ?? '', sinceTs)) as { n: number } | undefined
-    return row?.n ?? 0
   }
 
   /** Cache a platform id's human display name (channel or user; Slack ids don't

@@ -27,6 +27,12 @@ export const discordThreadPromotion: ThreadPromotion<ThreadPromotionMessage> = {
     return msg.promoteToThread === true
   },
 
+  // Discord gives the opened thread the starter message's own id, so the row the channel record
+  // writes before promotion can already carry it — `msgId` is `discord:<channel>:<id>`.
+  physicalThread(msg: ThreadPromotionMessage): string | undefined {
+    return msg.msgId.split(':').pop() || undefined
+  },
+
   async promote(host: ThreadPromotionHost, conn: unknown, msg: ThreadPromotionMessage): Promise<void> {
     const dc = conn as DiscordConnection | undefined
     const messageId = msg.msgId.split(':').pop() ?? ''

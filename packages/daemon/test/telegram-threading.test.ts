@@ -373,6 +373,51 @@ describe('canonicalizeTelegramThread', () => {
   })
 })
 
+// message-intake.md §5 step 1 runs AFTER this normalization, so the row carries the canonical
+// thread — the doc's step-3 list is wrong about where canonicalization sits (see the PR body).
+describe('the step-1 channel record and Telegram threading', () => {
+  const rows = async (daemon: Daemon): Promise<{ thread: string; ts: string }[]> =>
+    (await (daemon as any).store.db.prepare('SELECT thread, ts FROM transcript ORDER BY seq').all()) as {
+      thread: string
+      ts: string
+    }[]
+
+  it('records the CANONICAL thread, never the message id', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
+    await daemon.start()
+    makeTelegramRoutable(daemon)
+    vi.spyOn(daemon as any, 'dispatch').mockResolvedValue('acp')
+
+    await (daemon as any).onInboundOutcome(tg(100, { mentionedBots: ['mybot'] }), ['i-tg'])
+
+    expect(await rows(daemon)).toEqual([{ thread: 'tg:100', ts: '100' }])
+    await daemon.stop()
+  })
+
+  it('continues the thread of a message that was only ever recorded, never admitted', async () => {
+    // A live behavior change: step 1 makes far more messages visible to the reply-chain lookup, so
+    // a reply to an unrouted message now joins ITS thread instead of minting tg:<replyTo>.
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
+    await daemon.start()
+    makeTelegramRoutable(daemon)
+    vi.spyOn(daemon as any, 'dispatch').mockResolvedValue('acp')
+
+    await (daemon as any).onInboundOutcome(tg(100, { mentionedBots: ['mybot'] }), ['i-tg'])
+    // Unrouted (no mention), so nothing admits it — but it is in the record, at tg:100.
+    await (daemon as any).onInboundOutcome(tg(101, { threadRoot: '100' }), ['i-tg'])
+    const reply = tg(102, { replyTo: '101' })
+    await (daemon as any).onInboundOutcome(reply, ['i-tg'])
+
+    expect(reply.thread).toBe('tg:100')
+    expect(await rows(daemon)).toEqual([
+      { thread: 'tg:100', ts: '100' },
+      { thread: 'tg:100', ts: '101' },
+      { thread: 'tg:100', ts: '102' }
+    ])
+    await daemon.stop()
+  })
+})
+
 describe('reply-based session continuity (routing)', () => {
   it('routes a reply-to-bot to the session owner via thread affinity — no @mention needed', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })

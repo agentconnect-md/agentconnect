@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { isAppendCoordinate } from '../src/session/append-coordinate.js'
+import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 
 /**
  * channel-session-mode.md §3 — a conversation on `append` keys every message onto ONE
@@ -170,6 +171,51 @@ describe('append mode keys one session per conversation', () => {
     const byAgent = new Map(calls.map((c) => [c.agentId, c.msg]))
     expect(isAppendCoordinate(byAgent.get('bot-a')!.sessionThread)).toBe(true)
     expect(byAgent.get('bot-b')!.sessionThread).toBeUndefined()
+    await daemon.stop()
+  })
+
+  // A BEHAVIOUR CHANGE pinned deliberately (message-intake.md §5 step 1): the per-agent admission
+  // `recordUnrouted` wrote for every append session in the room is gone, so until Stage 3's
+  // background block lands an append session sees only what it admitted — an `append:<epoch>`
+  // coordinate matches no row's physical thread, which is what the createNew disjunct relies on.
+  it('records an unrouted message with no admission the append session could read it through', async () => {
+    const { daemon } = await boot('append', true)
+    const store = (daemon as never as { store: any }).store
+    const scope = (
+      daemon as never as { transportScopeForIntegrationIds: (i: string[]) => string | undefined }
+    ).transportScopeForIntegrationIds(['int-bot-a'])
+    const channel = transcriptChannelKey('C1', scope)
+
+    await route(daemon, human({ ts: '1720000000.000100', text: 'first' }))
+    await vi.waitFor(async () =>
+      expect(await store.db.prepare('SELECT seq FROM transcript_recipient').all()).toHaveLength(1)
+    )
+    // §7: an AgentConnect-authored post nothing can attribute is recorded and never routed.
+    await route(
+      daemon,
+      human({
+        ts: '1720000000.000200',
+        msgId: 'slack:C1:1720000000.000200',
+        text: 'an unattributable echo',
+        sender: { id: 'U_FAKE_BOT', isBot: true }
+      })
+    )
+
+    const rows = (await store.db
+      .prepare('SELECT text FROM transcript WHERE channel = ? ORDER BY seq')
+      .all(channel)) as { text: string }[]
+    expect(rows.map((r) => r.text)).toEqual(['first', 'an unattributable echo'])
+    const coordinate = (await store.currentAppendCoordinate('bot-a', 'C1', scope)) as string
+    const visible = await store.transcriptSince(
+      {
+        transcriptChannel: channel,
+        coordinate,
+        sessionKey: sessionKey('slack', 'C1', coordinate, 'bot-a', scope),
+        agentId: 'bot-a'
+      },
+      null
+    )
+    expect(visible.map((r: { text: string }) => r.text)).toEqual(['first'])
     await daemon.stop()
   })
 

@@ -1,3 +1,4 @@
+import { isControlCommandText } from '../commands/commands.js'
 import {
   transcriptPromptText,
   type LocalStore,
@@ -113,8 +114,10 @@ export class ThreadContextCoordinator {
     const observed = input.scopeReadsToAgent
       ? await this.store.transcriptSinceRevisionForAgent(input.scope, input.afterRevision)
       : await this.store.transcriptSinceRevision(input.scope, input.afterRevision)
+    // A recorded control is not something the conversation said (§5 step 2): it must not discard
+    // the candidate answer of the very turn it was typed at, nor re-enter as a prompt line.
     const rows = observed
-      .filter((row) => row.kind === 'text' && row.sender !== input.scope.agentId)
+      .filter((row) => row.kind === 'text' && row.sender !== input.scope.agentId && !isControlCommandText(row.text))
       .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
     const revision = observed.reduce((max, row) => Math.max(max, row.revision), fence)
 

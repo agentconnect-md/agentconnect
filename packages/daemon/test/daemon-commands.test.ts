@@ -337,7 +337,7 @@ describe('Daemon in-conversation commands', () => {
     ;(daemon as any).connByIntegration.set('int-a', { botUserId: 'U-SELF' })
     ;(daemon as any).commands.isSessionMuted = () => true
     ;(daemon as any).commands.setSessionMuted = setSessionMuted
-    ;(daemon as any).recordUnrouted = vi.fn()
+    ;(daemon as any).recordChannelInbound = vi.fn()
     ;(daemon as any).dispatch = dispatch
     const frame = (msgId: string, mentionedBots: string[]): RdMsgIm => {
       const { trigger: _t, ...bare } = dm(msgId, 'wake up')
@@ -1489,12 +1489,11 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
     await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
 
-    // age the session record so the recency window alone would exclude it
+    // age the session record so a recency window alone would have excluded it
     const rec = await store.getSession(SESSION_KEY)
     await store.upsertSession({ ...rec, updatedAt: rec.updatedAt - 60 * 60 * 1000 })
-    expect(await store.activeSessionCountSince('C1', 'T1', Date.now() - 900_000, TRANSPORT_SCOPE)).toBe(0)
 
-    // An unrouted peer mention arrives mid-turn → still recorded (in-flight keeps it active).
+    // An unrouted peer mention arrives mid-turn → recorded by step 1, whatever the session looks like.
     await (daemon as any).onInboundOutcome({
       msgId: 'slack:C1:200',
       traceId: '200',
@@ -1527,7 +1526,7 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
     await daemon.stop()
   })
 
-  it('does not record an unrouted message when no session is open in its thread', async () => {
+  it('records an unrouted message in a conversation with no open session (step 1 has no recency gate)', async () => {
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
       root: scaffold(),
@@ -1550,11 +1549,13 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
       isDm: false
     })
     expect(
-      await store.transcriptSince(
-        { transcriptChannel: 'C9', coordinate: 'T9', sessionKey: 'k', agentId: 'bot-a' },
-        null
-      )
-    ).toEqual([])
+      (
+        await store.transcriptSince(
+          { transcriptChannel: 'C9', coordinate: 'T9', sessionKey: 'k', agentId: 'bot-a' },
+          null
+        )
+      ).map((r: any) => r.text)
+    ).toEqual(['orphan chatter'])
 
     await daemon.stop()
   })

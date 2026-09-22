@@ -1,3 +1,4 @@
+import { isControlCommandText } from '../../commands/commands.js'
 import { transcriptPromptText, type TranscriptEntry } from '../../store/local-store.js'
 import type { MessageOrdering } from '../../platforms/message-ordering.js'
 
@@ -57,8 +58,12 @@ export function planReplay(input: ReplayPlanInput): ReplayPlan {
   // turn. Replay that one root exactly once, alongside the first real reply, so the new ACP
   // session understands what the thread is about. Ordinary own-authored rows stay filtered:
   // after this activation advances the cursor, the root cannot re-enter a later prompt.
+  // Controls are recorded (§5 step 1) but never replayed: they acted on the session rather than
+  // being said to it, and `!queue <text>` — the one admitted command — keeps its text.
   const participantGap = gap.filter(
-    (e) => e.sender !== agentId || (firstPromptAfterOwnRootInitialization && e.ts === thread)
+    (e) =>
+      (e.sender !== agentId || (firstPromptAfterOwnRootInitialization && e.ts === thread)) &&
+      !isControlCommandText(e.text)
   )
   // The initialized root is the only own-authored row admitted above, and it is the
   // founding context for a runtime session that has never seen a prompt. Keep it outside

@@ -879,6 +879,8 @@ export class CommandHandlers {
     // bare command thread to the channel's latest session). A synthetic coordinate rides
     // `sessionThread`, never `thread`: putting it there would make the reply and the status
     // bar address `append:…` as a platform thread id.
+    // The retarget moves only the admission's coordinate: `transcriptCoords(payload).ts` is
+    // unchanged, so the admission binds to the step-1 row that still holds `!queue …` as typed.
     const payload: NormalizedMessage = isAppendCoordinate(thread)
       ? { ...msg, text: command.text, sessionThread: thread }
       : { ...msg, text: command.text, thread }
