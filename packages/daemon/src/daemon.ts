@@ -18355,6 +18355,20 @@ export class Daemon {
     )
   }
 
+  /** Whether an agent that is not loaded yet still will be — its replica or file is here and no move, removal or roster drop holds it back; the startup pass runs before the roster loads. */
+  private agentYetToLoad(agentId: string): boolean {
+    if (
+      this.agents.has(agentId) ||
+      this.moveStagedAgents.has(agentId) ||
+      this.removedAgentTombstones.has(agentId) ||
+      // A move missed while offline arrives as a roster detach: the marker stays, the agent never loads here again.
+      this.cpDroppedAgents.has(agentId)
+    ) {
+      return false
+    }
+    return this.fileAgents.has(agentId) || (this.cpAgents?.replicaIds().includes(agentId) ?? false)
+  }
+
   /** The retention sweep's active-turn exclusion: a claimed gate, a live turn, pending inbox work or background tasks — all member-local, so on a shared store only the holder judges (#1032). */
   private async sessionRetentionActive(rec: {
     key: string
@@ -18363,6 +18377,8 @@ export class Daemon {
   }): Promise<boolean> {
     return (
       !this.judgesStoredSessions(rec.agentId) ||
+      // Its worktrees can only be judged once it is loaded: purging the row now would strand the work beside it.
+      this.agentYetToLoad(rec.agentId) ||
       this.drainGuardsSessions(rec.agentId) ||
       this.turnRunsHere(rec.key) ||
       (await this.store.sessionHasPendingInboxRows(rec.key)) ||

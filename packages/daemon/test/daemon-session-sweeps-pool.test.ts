@@ -398,6 +398,45 @@ describe('on a private store, a daemon judges every agent it keeps rows for (#22
     await a.daemon.stop()
   })
 
+  it('keeps the expired session of an agent whose replica is here but not loaded yet, as at startup before the roster', async () => {
+    const a = await bootAlone()
+    const store: LocalStore = a.inner.store
+    const replicas = vi.spyOn(a.inner.cpAgents, 'replicaIds').mockReturnValue(['bot-cp'])
+    await seedSession(store, 'cp-old', 'bot-cp', 'closed', 0)
+    await advance(a, 8 * DAY_MS)
+
+    await a.inner.sweepSessionRetention()
+    expect(await store.getSession('cp-old')).toBeDefined()
+    // A replica that is no longer here holds no worktree to judge: the row goes with its age.
+    replicas.mockReturnValue([])
+    await a.inner.sweepSessionRetention()
+    expect(await store.getSession('cp-old')).toBeUndefined()
+    await a.daemon.stop()
+  })
+
+  it('retires the expired session of a replica the roster detached for a move this daemon missed', async () => {
+    const a = await bootAlone()
+    const store: LocalStore = a.inner.store
+    // The marker stays behind a reconnect detach, so the replica still lists; the drop is what says it never loads here again.
+    vi.spyOn(a.inner.cpAgents, 'replicaIds').mockReturnValue(['bot-cp'])
+    await seedSession(store, 'cp-moved', 'bot-cp', 'closed', 0)
+    await a.inner.cpConfigApply().applyReconcileSnapshot({
+      routingEpoch: 1,
+      assignments: [],
+      agents: [],
+      integrations: [],
+      crons: [],
+      leases: [],
+      drop: { assignments: [], crons: [], agents: [{ agentId: 'bot-cp', action: 'detach' }], integrations: [] }
+    })
+    expect(a.inner.cpDroppedAgents.has('bot-cp')).toBe(true)
+    await advance(a, 8 * DAY_MS)
+
+    await a.inner.sweepSessionRetention()
+    expect(await store.getSession('cp-moved')).toBeUndefined()
+    await a.daemon.stop()
+  })
+
   it('still leaves the TTL close of that agent to its holder', async () => {
     const a = await bootAlone()
     const store: LocalStore = a.inner.store

@@ -856,7 +856,10 @@ activate or a removal lifts it. That fence keeps the agent in the daemon's drain
 set indefinitely, so session retention does not read it as a drain in progress. A
 drain guards an agent's sessions only while something of the agent is still on the
 daemon — loaded, or with a host running, starting or stopping — and the old
-sessions a completed move leaves behind age out like any others.
+sessions a completed move leaves behind age out like any others. The reverse case
+waits: an agent whose replica or file is still here but that has not loaded yet —
+the startup pass runs before the roster arrives — keeps its expired sessions until it
+loads, because only then can its worktrees be judged for work to keep.
 
 An explicit force reassign is available only while the source is not READY. It
 still attempts `agent/detach`, but an unavailable or negative source response is logged
