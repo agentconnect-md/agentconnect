@@ -35,6 +35,7 @@ function ProviderKeysForOrg({ orgId, isOwner }: { orgId: string; isOwner: boolea
   const [apiKey, setApiKey] = useState('')
   const [endpoint, setEndpoint] = useState('')
   const [headers, setHeaders] = useState<HeaderDraft[]>([])
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const activeHeaderNames = headers
@@ -140,6 +141,7 @@ function ProviderKeysForOrg({ orgId, isOwner }: { orgId: string; isOwner: boolea
                         setEditing(entry)
                         setEndpoint(entry.endpoint ?? '')
                         setHeaders(entry.headerNames.map((name) => ({ name, value: '', saved: true, removed: false })))
+                        setSettingsOpen(entry.endpointRequired || !!entry.endpoint || entry.headerNames.length > 0)
                         setApiKey('')
                         setError(null)
                       }}
@@ -194,9 +196,7 @@ function ProviderKeysForOrg({ orgId, isOwner }: { orgId: string; isOwner: boolea
                   <p id={`${inputId}-help`} className="text-[12px] text-(--text-secondary)">
                     {t('writeOnly')}
                   </p>
-                  <details
-                    open={entry.endpointRequired || !!entry.endpoint || headers.some((header) => !header.removed)}
-                  >
+                  <details open={settingsOpen} onToggle={(event) => setSettingsOpen(event.currentTarget.open)}>
                     <summary className="cursor-pointer text-[12px] text-(--text-secondary)">
                       {t('connectionSettings')}
                     </summary>

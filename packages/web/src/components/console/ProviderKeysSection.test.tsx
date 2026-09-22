@@ -75,6 +75,34 @@ afterEach(async () => {
 })
 
 describe('Provider keys configuration', () => {
+  it('keeps optional connection settings open while editing the endpoint and headers', async () => {
+    await render()
+    await click('Add key')
+    const details = element.querySelector('details')!
+    expect(details.open).toBe(false)
+    await act(async () => {
+      details.open = true
+      details.dispatchEvent(new Event('toggle'))
+    })
+    const endpoint = element.querySelector<HTMLInputElement>('input[type="url"]')!
+    await enterKey('h', endpoint)
+    expect(details.open).toBe(true)
+    await enterKey('https://gateway.example.test/v1', endpoint)
+    await click('Add header')
+    await act(async () => {
+      element.querySelector<HTMLButtonElement>('button[aria-label="Remove header"]')!.click()
+    })
+    expect(details.open).toBe(true)
+    expect(endpoint.value).toBe('https://gateway.example.test/v1')
+    await enterKey('example-key')
+    await click('Save')
+    expect(mocks.setProviderKey).toHaveBeenCalledWith('example-org', 'typesafe', {
+      apiKey: 'example-key',
+      endpoint: 'https://gateway.example.test/v1',
+      headers: {}
+    })
+  })
+
   it('edits a gateway and patches headers while preserving omitted credentials', async () => {
     const gateway = {
       ...configured,
