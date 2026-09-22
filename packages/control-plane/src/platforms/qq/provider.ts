@@ -23,7 +23,7 @@ export async function verifyQQBot(
         ok: false,
         status: 400,
         code: 'QQ_CREDENTIALS_INVALID',
-        message: 'QQ rejected the AppID or AppSecret. Check the credentials in the QQ bot developer portal.'
+        message: 'QQ rejected the AppID or AppSecret — copy them again from the QQ developer portal.'
       }
     return { ok: true, identity: { externalAppId: credentials.appId } }
   } catch {
@@ -36,7 +36,7 @@ function unavailable(): CpConfigValidation {
     ok: false,
     status: 503,
     code: 'QQ_CHECK_UNAVAILABLE',
-    message: 'Could not reach QQ to verify this bot. Try again shortly.'
+    message: 'AgentConnect could not reach QQ to check this bot. Try again in a moment.'
   }
 }
 

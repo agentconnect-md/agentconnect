@@ -34,9 +34,7 @@ function SecretForm({ bot }: { bot: BotDto }) {
     try {
       await updateQQBotCredentials(bot.id, secret.trim())
       setSecret('')
-      setMessage(
-        'AppSecret updated. Existing conversations are preserved. Send a private message or group @mention to verify delivery.'
-      )
+      setMessage('AppSecret updated — the bot’s conversations are unchanged.')
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
     } finally {
@@ -52,17 +50,17 @@ function SecretForm({ bot }: { bot: BotDto }) {
         void submit()
       }}
     >
-      <label className="flex flex-col gap-2">
-        New QQ AppSecret
+      <div className="fld">
+        <span className="fldlbl">New AppSecret</span>
         <input
-          className="inp"
+          className="inp mn"
           type="password"
           autoComplete="new-password"
           value={secret}
           onChange={(event) => setSecret(event.target.value)}
           disabled={busy}
         />
-      </label>
+      </div>
       <div className="flex gap-2">
         <button className="dsbtn sm dsbtn-primary" disabled={busy || !secret.trim()} type="submit">
           {busy ? 'Checking…' : 'Save'}

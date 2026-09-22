@@ -104,7 +104,7 @@ export const INTEGRATION_BLURB: Record<string, string> = {
   discord: 'Reply in servers',
   feishu: 'Reply in groups & chats',
   linear: 'Work delegated issues',
-  qq: 'Reply in private chats & group @mentions',
+  qq: 'Reply in groups & chats',
   // One row per code host the picker offers, read from the table above — which stays total over the
   // providers, so a host cannot reach the picker unblurbed.
   ...Object.fromEntries(PICKABLE_CODE_HOST_PROVIDERS.map((provider) => [provider, CODE_HOST_BLURB[provider]])),
