@@ -27,6 +27,8 @@ export interface DecisionProviderOption {
   id: string
   daemonId: string
   daemonName?: string
+  pool?: boolean
+  memberSetId?: string | null
   name: string
   kind: string
   source: 'byok' | 'ac_credits' | null
@@ -82,9 +84,11 @@ export interface DecisionRoutingDetail {
 
 export type DecisionTargetConstraint = { type: 'new' } | { type: 'mention' | 'thread'; agentIds: string[] }
 
-export interface DecisionPreviewInput {
+export type DecisionPreviewTarget =
+  { kind: 'daemon'; daemonId: string } | { kind: 'pool' } | { kind: 'set'; setId: string }
+
+export type DecisionPreviewInput = {
   decision: DecisionDraftInput
-  daemonId: string
   state: Record<string, unknown>
   consumer:
     | { type: 'none' }
@@ -102,7 +106,7 @@ export interface DecisionPreviewInput {
         config: SharedBotDecisionRouting
         targets: DecisionTargetConstraint
       }
-}
+} & ({ target: DecisionPreviewTarget; daemonId?: never } | { daemonId: string; target?: never })
 
 export interface DecisionPreviewResult {
   mode: 'mock' | 'live'

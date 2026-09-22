@@ -9,7 +9,10 @@ import { Button, Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { LoadingState } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
+import { useConsoleData } from '@/lib/data-context'
+import { groupPlacementValue, poolLabel, POOL_PLACEMENT } from '@/lib/data'
 import { useDecisionProviders, useDecisionsPrototype } from '@/lib/decisions/provider'
+import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
 import { DecisionsNotOffered } from '@/components/console/decisions/DecisionsNotOffered'
 import { featureFlagEnabled } from '@/lib/feature-flags'
@@ -20,7 +23,11 @@ import {
   type DecisionQuestion,
   type DecisionValidationIssue
 } from '@agentconnect.md/protocol/decision'
-import type { DecisionUsage } from '@agentconnect.md/protocol/decision-api'
+import type {
+  DecisionPreviewTarget,
+  DecisionProviderOption,
+  DecisionUsage
+} from '@agentconnect.md/protocol/decision-api'
 
 type QuestionType = DecisionQuestion['type']
 /** One editable criterion. Choice keys are free text; boolean keys and score levels are positional. */
@@ -137,7 +144,9 @@ export default function DecisionEditorView() {
 
 function DecisionEditor() {
   const t = useTranslations('Decisions')
+  const placementT = useTranslations('Agents.dialog.daemonSelect')
   const { orgPath, myRole } = useOrgs()
+  const { memberSets } = useConsoleData()
   const router = useRouter()
   const search = useSearchParams()
   const { id } = useParams<{ id?: string }>()
@@ -148,7 +157,7 @@ function DecisionEditor() {
   const { providers, error: providerError } = useDecisionProviders()
   const definition = id ? decisions.find((entry) => entry.id === id) : undefined
 
-  const [selectedDaemon, setSelectedDaemon] = useState<string | null>(null)
+  const [selectedTargetValue, setSelectedTargetValue] = useState<string | null>(null)
   const editable = myRole !== 'viewer' && (!id || (!!definition && definition.canEdit !== false))
   const [draft, setDraft] = useState<Draft | null>(null)
   const initialSharing = useRef<SharingValue | null>(null)
@@ -208,17 +217,62 @@ function DecisionEditor() {
 
   // The decision keeps its provider, so the model list comes from the provider that owns it.
   const candidates = providers.filter((entry) => entry.id === draft?.providerId)
-  const provider =
-    candidates.find((entry) => entry.daemonId === selectedDaemon) ??
-    candidates.find((entry) => entry.readiness.status === 'ready') ??
-    candidates[0]
+  const supportsDraft = (entry: DecisionProviderOption) =>
+    !!draft && entry.models.some((model) => model.id === draft.model && model.questionTypes.includes(draft.type))
+  const ready = (entry: DecisionProviderOption) => entry.readiness.status === 'ready' && supportsDraft(entry)
+  const providerFor = (members: DecisionProviderOption[]) => members.find(ready) ?? members[0]
+  const pool = candidates.filter((entry) => entry.pool)
+  const targets: Array<DaemonSelectOption & { target: DecisionPreviewTarget; provider?: DecisionProviderOption }> = [
+    ...(featureFlagEnabled('daemon-pool') && pool.length
+      ? [
+          {
+            value: POOL_PLACEMENT,
+            label: poolLabel(),
+            kind: 'pool' as const,
+            target: { kind: 'pool' as const },
+            provider: providerFor(pool)
+          }
+        ]
+      : []),
+    ...(featureFlagEnabled('daemon-groups') ? memberSets : []).map((group) => ({
+      value: groupPlacementValue(group.setId),
+      label: group.name,
+      kind: 'group' as const,
+      target: { kind: 'set' as const, setId: group.setId },
+      meta: placementT('groupMeta', { count: group.memberDaemonIds.length }),
+      provider: providerFor(candidates.filter((entry) => !entry.pool && entry.memberSetId === group.setId))
+    })),
+    ...candidates
+      .filter((entry) => !entry.pool)
+      .map((entry) => ({
+        value: entry.daemonId,
+        label: entry.daemonName ?? entry.daemonId,
+        kind: 'daemon' as const,
+        target: { kind: 'daemon' as const, daemonId: entry.daemonId },
+        provider: entry
+      }))
+  ]
+  const selectedTarget =
+    selectedTargetValue === null
+      ? (targets.find((entry) => entry.provider && ready(entry.provider)) ?? targets[0])
+      : targets.find((entry) => entry.value === selectedTargetValue)
+  const provider = selectedTarget?.provider
+  const targetOptions = targets.map((entry) => ({
+    ...entry,
+    disabled: !entry.provider || !ready(entry.provider),
+    title: !entry.provider
+      ? t('try.noDaemon')
+      : !ready(entry.provider)
+        ? t(`try.states.${supportsDraft(entry.provider) ? entry.provider.readiness.status : 'unsupported'}`)
+        : undefined
+  }))
   const profile = provider ?? DECISION_PROVIDER_PROFILES.find((entry) => entry.id === draft?.providerId)
-  const previewReady = editable && !providerError && provider?.readiness.status === 'ready'
+  const previewReady = editable && !providerError && !!provider && ready(provider)
   const models = useMemo(
     () => (profile?.models ?? []).filter((model) => model.questionTypes.includes(draft?.type ?? 'choice')),
     [profile, draft?.type]
   )
-  const signature = JSON.stringify({ draft, history, current, daemonId: provider?.daemonId })
+  const signature = JSON.stringify({ draft, history, current, target: selectedTarget?.target ?? selectedTargetValue })
   const stale = !!result && result.signature !== signature
   // Conversations gated on this decision: an edit can strand their saved conditions.
   const gated = id && definition ? gateUsages(id) : []
@@ -297,7 +351,7 @@ function DecisionEditor() {
   const previewIssues = validate().filter((issue) => issue.path[0] === 'question')
 
   const run = async () => {
-    if (!provider || !previewReady || running || previewIssues.length) return
+    if (!selectedTarget || !previewReady || running || previewIssues.length) return
     setRunning(true)
     setResult(null)
     try {
@@ -310,7 +364,7 @@ function DecisionEditor() {
           visibility: draft.visibility,
           sharedWith: draft.sharedWith
         },
-        daemonId: provider.daemonId,
+        target: selectedTarget.target,
         state: {
           history: history.map((message) => ({ sender: message.sender, text: message.text })),
           currentMessage: { text: current }
@@ -744,24 +798,18 @@ function DecisionEditor() {
               </button>
             </div>
             <div className="flex flex-col gap-[11px] px-[15px] py-[13px]">
-              <Field label={t('try.daemon')}>
+              <Field label={placementT('runsOn')}>
                 {providerError && <IssueLine>{providerError}</IssueLine>}
-                <select
-                  className="inp min-h-9"
-                  aria-label={t('try.daemon')}
-                  value={provider?.daemonId ?? ''}
-                  onChange={(event) => setSelectedDaemon(event.target.value)}
-                >
-                  {candidates.length === 0 && <option value="">{t('try.noDaemon')}</option>}
-                  {candidates.map((candidate) => (
-                    <option key={candidate.daemonId} value={candidate.daemonId}>
-                      {candidate.daemonName ?? candidate.daemonId}
-                    </option>
-                  ))}
-                </select>
+                <DaemonSelect
+                  ariaLabel={placementT('runsOn')}
+                  placeholder={t('try.noDaemon')}
+                  value={selectedTargetValue ?? selectedTarget?.value ?? ''}
+                  options={targetOptions}
+                  onChange={setSelectedTargetValue}
+                />
                 {provider && (
                   <span className="text-[12px] text-(--text-secondary)">
-                    {t(`try.states.${provider.readiness.status}`)}
+                    {t(`try.states.${supportsDraft(provider) ? provider.readiness.status : 'unsupported'}`)}
                     {provider.source && ` · ${t(`try.sources.${provider.source}`)}`}
                   </span>
                 )}
