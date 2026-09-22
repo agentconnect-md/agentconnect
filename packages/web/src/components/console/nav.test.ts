@@ -41,6 +41,18 @@ describe('navVisible', () => {
     for (const hrefs of tables()) expect(hrefs).toContain('/billing')
   })
 
+  // Decisions reads an opt-in mock service, so a deployment that never asked for the
+  // surface must not be able to reach it from the rail, the More sheet, or search.
+  it('hides the Decisions surface everywhere until its flag is on', () => {
+    const tables = () => [offered(NAV_GROUPS.flat()), offered(MORE_ROWS), offered(SEARCH_PAGES)]
+
+    setFlags('billing,daemon-pool')
+    for (const hrefs of tables()) expect(hrefs).not.toContain('/decisions')
+
+    setFlags('decisions')
+    for (const hrefs of tables()) expect(hrefs).toContain('/decisions')
+  })
+
   it('leaves the rest of the rail alone when a flag is off', () => {
     setFlags()
     expect(offered(NAV_GROUPS.flat())).toContain('/home')
