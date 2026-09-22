@@ -30,13 +30,19 @@ const telegramInt: Integration = {
   core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
   config: { botToken: '123456:ABC' }
 }
+const qqInt: Integration = {
+  id: 'int-3',
+  platform: 'qq',
+  core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
+  config: { appId: '123456', appSecret: 'secret' }
+}
 
 const ALL_CAPABILITIES = new Set(['recall', 'create', 'get', 'update', 'delete'] as const)
 
 // Port gates open per SESSION platform, so one platform's tool list is not the whole surface:
 // a tool only Telegram declares is advertised only to a Telegram session.
 const advertised: ToolDescriptor[] = [
-  ...toolsForIntegrations([slackInt, telegramInt], {
+  ...toolsForIntegrations([slackInt, telegramInt, qqInt], {
     organizationKnowledge: true,
     currentPlatform: 'slack'
   }),

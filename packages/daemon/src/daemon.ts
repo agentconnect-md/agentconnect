@@ -2931,6 +2931,8 @@ export class Daemon {
       now: () => Date.now(),
       canRun: (ctx) => this.toolTurnRunnable(ctx),
       gatewayFor: (integrationId) => this.connForIntegration(integrationId),
+      attachmentReaderFor: (integrationId) =>
+        this.connForIntegration(integrationId) ?? this.QQConnByIntegration.get(integrationId),
       // The live turn's own delivery thread, which `activeTurnShare` already records per
       // turn from `plan.thread`. The bridge context froze the opening turn's value at
       // registration, and a session that spans several threads outgrows it immediately.

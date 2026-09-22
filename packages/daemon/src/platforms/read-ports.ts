@@ -12,7 +12,7 @@
  * spelled the answer as a platform name:
  *
  *  - which agent-facing attachment tool to inject (`platform === 'slack'` →
- *    `readSlackFile`, `=== 'telegram'` → `readTelegramFile`) — decided at
+ *    `readSlackFile`, `=== 'telegram'` → `readTelegramFile`, …) — decided at
  *    `session/new` from the agent's CONFIGURED integrations, long before any
  *    connection is resolved;
  *  - which platform a `toUser` direct message defaults to (`?? 'slack'`);
@@ -42,6 +42,7 @@ import type { SessionContext } from '../mcp/ops/context.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import type { ToolDescriptor } from '../tool-schema/descriptor.js'
 import { LINEAR_SESSION_TOOLS } from './linear/agent-tools.js'
+import { QQ_ATTACHMENT_TOOL } from './qq/attachments.js'
 import { SLACK_ATTACHMENT_TOOL } from './slack/attachments.js'
 import { TELEGRAM_ATTACHMENT_TOOL } from './telegram/attachments.js'
 
@@ -177,6 +178,14 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       label: 'Telegram',
       messageDelete: true,
       attachmentReadTool: TELEGRAM_ATTACHMENT_TOOL
+    }
+  ],
+  [
+    'qq',
+    {
+      platform: 'qq',
+      label: 'QQ',
+      attachmentReadTool: QQ_ATTACHMENT_TOOL
     }
   ],
   [

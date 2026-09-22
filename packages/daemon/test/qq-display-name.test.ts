@@ -6,7 +6,7 @@ import { QQConnection } from '../src/platforms/qq/connection.js'
 
 afterEach(() => vi.restoreAllMocks())
 
-it('feeds QQ gateway sender names into the existing transcript name cache without changing the sender id', async () => {
+it('feeds QQ gateway sender names into the existing transcript cache under an app-scoped user id', async () => {
   vi.spyOn(QQConnection.prototype, 'start').mockResolvedValue()
   const names = new Map<string, string>()
   const resolver = new ChannelNameResolver((id, name) => {
@@ -40,9 +40,23 @@ it('feeds QQ gateway sender names into the existing transcript name cache withou
     })!
     const ingress = conn as unknown as { deps: { onMessage(msg: typeof message): void } }
     ingress.deps.onMessage(message)
-    expect(names.get('openid')).toBe('Alice')
-    expect(message.sender.id).toBe('openid')
+    expect(names.get('qq:user:100:openid')).toBe('Alice')
+    expect(message.sender).toMatchObject({
+      id: 'qq:user:100:openid',
+      name: 'Alice',
+      avatarUrl: 'https://q.qlogo.cn/qqapp/100/openid/640'
+    })
     expect(onInbound).toHaveBeenCalledWith(message, ['qq-install'])
+
+    const namelessDm = conn.normalizeMessage({
+      rawEventType: 'C2C_MESSAGE_CREATE',
+      kind: 'c2c',
+      senderId: 'openid',
+      content: 'hello again',
+      messageId: 'dm-message'
+    })!
+    ingress.deps.onMessage(namelessDm)
+    await vi.waitFor(() => expect(names.get('qq:user:100:openid')).toBe('Alice'))
   } finally {
     await reconciler.dispose()
   }

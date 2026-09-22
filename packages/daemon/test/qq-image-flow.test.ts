@@ -1,9 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ApiClient, TokenManager } from '@tencent-connect/qqbot-nodejs/protocol'
-import { normalizeQQMessage } from '@agentconnect.md/message'
 import type { ContentBlock } from '@agentclientprotocol/sdk'
 import { Daemon } from '../src/daemon.js'
 import { QQConnection } from '../src/platforms/qq/connection.js'
@@ -15,6 +14,7 @@ const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=',
   'base64'
 )
+const pdf = Buffer.from('%PDF-1.4 QQ attachment')
 let daemon: Daemon | undefined
 let root: string | undefined
 
@@ -69,7 +69,8 @@ describe('QQ images through the daemon', () => {
       vi.spyOn(QQConnection.prototype, 'start').mockResolvedValue()
       vi.spyOn(TokenManager.prototype, 'getAccessToken').mockImplementation(async (appId) => `token-${appId}`)
       vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-        if (String(input).startsWith('https://gchat.qpic.cn/')) return new Response(png)
+        if (String(input) === 'https://gchat.qpic.cn/invoice.pdf') return new Response(pdf)
+        if (String(input) === 'https://gchat.qpic.cn/image') return new Response(png)
         if (String(input) === 'https://upload.example/image') return new Response(null, { status: 200 })
         throw new Error('Unexpected network request in QQ image test')
       })
@@ -84,7 +85,9 @@ describe('QQ images through the daemon', () => {
         return { id: 'posted-image' }
       })
       const outcomes: unknown[] = []
+      const fileReads: unknown[] = []
       const prompts: ContentBlock[][] = []
+      let sessionCwd = ''
       daemon = new Daemon({
         root,
         hostFactory: () =>
@@ -94,6 +97,7 @@ describe('QQ images through the daemon', () => {
             cancel: async () => {},
             promptSupports: (kind: string) => kind === 'image',
             newSession: async (cwd: string) => {
+              sessionCwd = cwd
               mkdirSync(cwd, { recursive: true })
               writeFileSync(join(cwd, 'picture.png'), png)
               writeFileSync(join(cwd, 'document.pdf'), '%PDF not an image')
@@ -102,6 +106,14 @@ describe('QQ images through the daemon', () => {
             prompt: async (_sid: string, blocks: ContentBlock[]) => {
               prompts.push(blocks)
               const deps = (daemon as any).mcp.deps
+              fileReads.push(
+                await executeTool(
+                  context,
+                  'readQQFile',
+                  { url: 'https://gchat.qpic.cn/invoice.pdf', mimeType: 'application/pdf' },
+                  deps
+                )
+              )
               await expect(executeTool(context, 'shareFile', { path: 'document.pdf' }, deps)).rejects.toThrow(
                 'not a PNG'
               )
@@ -139,24 +151,40 @@ describe('QQ images through the daemon', () => {
         },
         { deliveryThread: thread }
       )
-      const received = normalizeQQMessage(
-        '101',
-        {
-          rawEventType: isDm ? 'C2C_MESSAGE_CREATE' : 'GROUP_AT_MESSAGE_CREATE',
-          kind: isDm ? 'c2c' : 'group',
-          ...(!isDm ? { groupOpenid: 'group' } : {}),
-          senderId: 'user',
-          messageId: 'incoming-image',
-          content: isDm ? '' : '<@!101>',
-          attachments: [{ content_type: 'image/png', filename: 'received.png', url: 'https://gchat.qpic.cn/image' }]
-        },
-        'image-trace'
-      )!
-      const download = vi.spyOn((daemon as any).QQConnByIntegration.get('image') as QQConnection, 'downloadFile')
+      const connection = (daemon as any).QQConnByIntegration.get('image') as QQConnection
+      const received = connection.normalizeMessage({
+        rawEventType: isDm ? 'C2C_MESSAGE_CREATE' : 'GROUP_AT_MESSAGE_CREATE',
+        kind: isDm ? 'c2c' : 'group',
+        ...(!isDm ? { groupOpenid: 'group' } : {}),
+        senderId: 'user',
+        messageId: 'incoming-image',
+        content: isDm ? '' : '<@!101>',
+        attachments: [
+          { content_type: 'image/png', filename: 'received.png', url: 'https://gchat.qpic.cn/image' },
+          {
+            content_type: 'file',
+            filename: 'invoice.pdf',
+            url: 'https://gchat.qpic.cn/invoice.pdf'
+          }
+        ]
+      })!
+      const download = vi.spyOn(connection, 'downloadFile')
       const wrongDownload = vi.spyOn((daemon as any).QQConnByIntegration.get('other') as QQConnection, 'downloadFile')
       await (daemon as any).onInboundOutcome(received, ['image'])
       await vi.waitFor(() => expect(outcomes).toHaveLength(1), { timeout: 10_000 })
       expect(prompts[0]).toContainEqual({ type: 'image', data: png.toString('base64'), mimeType: 'image/png' })
+      expect(prompts[0]).toContainEqual(
+        expect.objectContaining({
+          type: 'resource_link',
+          name: 'invoice.pdf',
+          uri: 'https://gchat.qpic.cn/invoice.pdf',
+          description: expect.stringContaining('readQQFile')
+        })
+      )
+      expect(fileReads[0]).toMatchObject({
+        mcpContent: [{ type: 'text', text: expect.stringContaining('uploads/invoice.pdf') }]
+      })
+      expect(readFileSync(join(sessionCwd, 'uploads', 'invoice.pdf'))).toEqual(pdf)
       expect(download).toHaveBeenCalled()
       expect(wrongDownload).not.toHaveBeenCalled()
       expect(outcomes[0]).toMatchObject({ ok: true, post: { platform: 'qq', channel, ts: 'posted-image' } })

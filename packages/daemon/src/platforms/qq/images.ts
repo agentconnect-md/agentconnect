@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { QQImageUrl } from '@agentconnect.md/message'
+import { QQAttachmentUrl } from '@agentconnect.md/message'
 import type { UploadPrepareResponse } from '@tencent-connect/qqbot-nodejs/protocol'
 import { sniffImageMimeType } from '../../session/attachment-block.js'
 import type { QQRestPort, QQTarget } from './sender.js'
@@ -8,19 +8,20 @@ export const QQImageMaxBytes = 30 * 1024 * 1024
 
 export class QQImageUploadError extends Error {}
 
-export async function downloadQQImage(
+async function downloadQQBytes(
   source: string,
   maxBytes: number,
   signal: AbortSignal,
   fetchImpl: typeof fetch = fetch,
-  reportFailure?: (reason: string) => void
+  reportFailure?: (reason: string) => void,
+  requireImage = false
 ): Promise<Buffer | null> {
   const unavailable = (reason: string): null => {
     reportFailure?.(reason)
     return null
   }
   try {
-    let url = QQImageUrl(source)
+    let url = QQAttachmentUrl(source)
     if (!url) return unavailable('invalid_url')
     if (!Number.isFinite(maxBytes) || maxBytes <= 0) return unavailable('invalid_size_limit')
     const cap = Math.min(maxBytes, QQImageMaxBytes)
@@ -30,7 +31,7 @@ export async function downloadQQImage(
       if ([301, 302, 303, 307, 308].includes(response.status)) {
         await response.body?.cancel()
         const location = response.headers.get('location')
-        url = location ? QQImageUrl(new URL(location, url).href) : undefined
+        url = location ? QQAttachmentUrl(new URL(location, url).href) : undefined
         if (!url) return unavailable('invalid_redirect')
         continue
       }
@@ -55,7 +56,7 @@ export async function downloadQQImage(
         reader.releaseLock()
       }
       const bytes = Buffer.concat(chunks)
-      return sniffImageMimeType(bytes) ? bytes : unavailable('unsupported_format')
+      return !requireImage || sniffImageMimeType(bytes) ? bytes : unavailable('unsupported_format')
     }
     return unavailable('redirect_limit')
   } catch (error) {
@@ -67,6 +68,26 @@ export async function downloadQQImage(
           : 'network_error'
     )
   }
+}
+
+export function downloadQQAttachment(
+  source: string,
+  maxBytes: number,
+  signal: AbortSignal,
+  fetchImpl: typeof fetch = fetch,
+  reportFailure?: (reason: string) => void
+): Promise<Buffer | null> {
+  return downloadQQBytes(source, maxBytes, signal, fetchImpl, reportFailure)
+}
+
+export function downloadQQImage(
+  source: string,
+  maxBytes: number,
+  signal: AbortSignal,
+  fetchImpl: typeof fetch = fetch,
+  reportFailure?: (reason: string) => void
+): Promise<Buffer | null> {
+  return downloadQQBytes(source, maxBytes, signal, fetchImpl, reportFailure, true)
 }
 
 // Upload bytes without publishing; the sender alone commits the visible media message.

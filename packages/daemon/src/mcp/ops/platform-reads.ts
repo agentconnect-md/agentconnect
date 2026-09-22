@@ -70,6 +70,8 @@ export const READ_ATTACHMENT_ARGS = z.object({
 
 /** The platform-neutral read deps: live gateways plus the history-backed fallbacks for platforms whose bot API cannot enumerate chats or users. `AskDeps` is restated rather than inherited by accident: these reads ask on their OWN (`historyBot`), not only through the resolver. */
 export interface PlatformReadDeps extends GatewayDeps, AskDeps {
+  /** Resolve the narrower authenticated-download port for platforms without the generic reply gateway. */
+  attachmentReaderFor?: (integrationId: string) => Pick<MessageGateway, 'downloadFile'> | undefined
   /** Conversation targets this agent has been triggered in on a platform, from local session history; backs the `listChannels` fallback for platforms whose bot API can't enumerate chats (Telegram), and absent ⇒ no fallback (the empty live list stands). `integrationId` scopes the answer to ONE physical bot's history; omitted ⇒ the agent's only bot on the platform, and nothing at all when it has several. */
   observedChannels?: (
     agentId: string,
@@ -439,7 +441,7 @@ export async function readAttachment(
   ctx: SessionContext,
   args: Record<string, unknown>,
   deps: PlatformReadDeps,
-  gw: MessageGateway
+  gw: Pick<MessageGateway, 'downloadFile'>
 ): Promise<unknown> {
   const { url, mimeType: mimeTypeHint } = parseArgs(READ_ATTACHMENT_ARGS, args)
   const max = deps.maxAttachmentBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES

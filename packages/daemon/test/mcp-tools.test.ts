@@ -23,6 +23,13 @@ const telegramInt: Integration = {
   config: { botToken: '123456:ABC' }
 }
 
+const qqInt: Integration = {
+  id: 'int-qq',
+  platform: 'qq',
+  core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
+  config: { appId: '100', appSecret: 'secret' }
+}
+
 // Connected platforms that declare NO credentialed-attachment read port — the
 // arm the file-tool matrix below would never exercise with Slack/Telegram alone.
 const discordInt: Integration = {
@@ -235,10 +242,11 @@ describe('toolsForIntegrations', () => {
     expect(fileTools([])).toEqual([])
     expect(fileTools([slackInt])).toEqual(['readSlackFile'])
     expect(fileTools([telegramInt])).toEqual(['readTelegramFile'])
-    expect(fileTools([slackInt, telegramInt])).toEqual(['readSlackFile', 'readTelegramFile'])
+    expect(fileTools([qqInt])).toEqual(['readQQFile'])
+    expect(fileTools([slackInt, telegramInt, qqInt])).toEqual(['readSlackFile', 'readTelegramFile', 'readQQFile'])
     // Registry order, not integration order — a stored-the-other-way-round agent
     // must not see its tool list reshuffle.
-    expect(fileTools([telegramInt, slackInt])).toEqual(['readSlackFile', 'readTelegramFile'])
+    expect(fileTools([qqInt, telegramInt, slackInt])).toEqual(['readSlackFile', 'readTelegramFile', 'readQQFile'])
     // A connected platform that declares no such port contributes no tool, alone…
     expect(fileTools([discordInt])).toEqual([])
     expect(fileTools([feishuInt])).toEqual([])
