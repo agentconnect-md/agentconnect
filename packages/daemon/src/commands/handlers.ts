@@ -24,7 +24,6 @@ import { routeRules, type RouteVia } from '../router/routing-table.js'
 import { conversationAdmitted, integrationRouting, type RoutingRule } from '../router/routing-rule.js'
 import { sessionKey, type LocalStore, type SessionRecord } from '../store/local-store.js'
 import { isAppendCoordinate } from '../session/append-coordinate.js'
-import { monotonicTs } from '../store/monotonic-ts.js'
 import { transcriptCoords } from '../session/session-manager.js'
 import {
   CommandChromeRegistry,
@@ -699,6 +698,17 @@ export class CommandHandlers {
       reply('🆕 Started a new session. New messages from here on begin it.')
       return true
     }
+    // BEFORE the in-flight check: a retargeted command would otherwise be told to `!cancel`
+    // first, and `!cancel` retargets the same way — so following the instruction would
+    // interrupt a turn in a thread the user is not even in.
+    //
+    // The retarget itself is right for a reversible control like `!stop` and wrong here:
+    // `!new` destroys context, and the reply lands on the command's own thread, so the people
+    // working in the cleared one would never be told. Make them say it there.
+    if (key !== typedKey) {
+      reply('Run `!new` in the conversation you want to clear — it only clears the one it is sent in.')
+      return true
+    }
     // Clearing nulls the acpSessionId the running turn is identified by, so it would pull
     // that turn's identity out from under it (§7.3).
     if (inflight) {
@@ -709,28 +719,30 @@ export class CommandHandlers {
       reply('Nothing to clear here yet — the next message starts a session.')
       return true
     }
-    // The latest-session fallback retargeted this command at a thread it was not typed in.
-    // That is right for a reversible control like `!stop`, and wrong here: `!new` destroys
-    // context, and the reply lands on the command's own thread, so the people working in the
-    // cleared one would never be told. Make them say it there.
-    if (key !== typedKey) {
-      reply('Run `!new` inside the thread you want to clear — it only clears the thread it is typed in.')
-      return true
-    }
     // The cursor is "the moment this ran" IN THE PLATFORM'S OWN ID SPACE, derived from the
     // command message exactly as a turn derives its own. A wall-clock stamp is an id the
     // platform never issued, and the replay path discards such a cursor outright
     // (`ordering.coordinate(...) === null` ⇒ catch up from scratch) — which would replay the
     // whole thread and restore precisely what the clear removed.
+    // Webchat has no command surface — its transport dispatches straight past the parser —
+    // so every message that reaches here carries a platform id.
     const { ts } = transcriptCoords(msg)
-    const cursor = msg.platform === 'webchat' ? (msg.transcriptTs ?? monotonicTs()) : ts
     const cleared = await this.host
       .store()
-      .clearSessionContext(key, cursor, Date.now(), ctx.acpSessionId ?? rec.acpSessionId)
+      .clearSessionContext(key, ts, Date.now(), ctx.acpSessionId ?? rec.acpSessionId)
     if (!cleared) {
-      // Either the row went away, or a turn started between the in-flight check and this
-      // write and now owns a different runtime session. Both mean: do not clear silently.
+      // The row went away, or a turn started in the window and minted a different runtime
+      // session. Either way this must not report a clear that did not happen.
       reply('A turn started just now — `!cancel` it first, then `!new`.')
+      return true
+    }
+    // The pin above covers only the interleaving that CHANGED the runtime id. A turn that
+    // started in the same window on an unchanged id has already read the row, and its own
+    // end-of-turn write restores what was just cleared — so say so rather than report a
+    // success the user will not get. (Closing this properly means running the clear under
+    // the session's own gate; §7.2 records that.)
+    if (this.gateActiveFor(key)) {
+      reply('A turn started while clearing — run `!new` again once it finishes.')
       return true
     }
     this.logSessionAction('new', key, senderActor(msg))

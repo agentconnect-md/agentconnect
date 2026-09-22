@@ -2779,10 +2779,11 @@ export class LocalStore {
     at: number,
     expectAcpSessionId?: string | null
   ): Promise<boolean> {
-    // Pinned on the runtime id the caller read. The in-flight refusal above it is a
-    // check-then-act — a turn admitted between the check and this write would have already
-    // read the row, and its own upsert would silently undo the clear — so the write applies
-    // only while the session still holds the id the decision was made on.
+    // Pinned on the runtime id the caller read, which narrows the check-then-act above it:
+    // a turn admitted in the window that MINTED a new id loses here. It does not cover a turn
+    // that kept the same id — that one has already read the row and its end-of-turn write
+    // restores what this clears — so the caller re-checks the gate afterwards and reports
+    // rather than claiming a success the user will not get.
     const res = await this.db
       .prepare(
         `UPDATE sessions SET acpSessionId = NULL, lastDeliveredTs = ?,

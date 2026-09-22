@@ -438,16 +438,25 @@ from the `!new` point with nothing before it.
 `ts`, and the replay path discards a cursor its platform's ordering cannot parse — falling
 back to a full catch-up, which restores exactly what was cleared. So it is derived from the
 `!new` message itself, the way a turn derives its own coordinates, and a wall-clock stamp is
-wrong on every platform whose ids are not wall-clock shaped. Feishu's `om_` ids are opaque
-and unordered, so the cursor there is only as good as their lexical order — a pre-existing
-limitation of that platform's transcript, not of this command.
+wrong on every platform whose ids are not wall-clock shaped. Only Slack registers an ordering
+strategy; every other platform's cursor is compared as text, so it is only as good as its
+ids' lexical order — Feishu's opaque `om_` ids most obviously, but Telegram's per-chat
+numbers and Discord's snowflakes are compared the same way. That is a pre-existing property
+of every cursor in the transcript, not something this command introduces.
 
 Two guards the shape of this operation earns. The write is pinned on the runtime session id
-the command read, because the in-flight refusal above it is a check-then-act: a turn admitted
-in between has already read the row, and its own write would silently undo the clear.
-And a `!new` that the latest-session fallback retargeted to another thread is refused rather
-than performed — the reply lands on the command's own thread, so the people working in the
-cleared one would never be told.
+the command read, which narrows the check-then-act above it: a turn admitted in the window
+that minted a NEW id loses the pin. It does not cover a turn that kept the same id — that one
+read the row before the clear and its end-of-turn write restores what was cleared — so the
+command re-checks the gate afterwards and says so rather than reporting a success the user
+will not get. Closing this properly means running the clear under the session's own serial
+gate, as a zero-length turn, so a concurrent dispatch queues behind it; that is worth doing
+if the window turns out to matter in practice.
+
+And a `!new` that the latest-session fallback retargeted to another conversation is refused
+rather than performed — the reply lands on the command's own thread, so the people working in
+the cleared one would never be told. The refusal is checked BEFORE the in-flight one, or a
+retargeted command would be told to `!cancel` first, and `!cancel` retargets the same way.
 
 The cleared session is the same session afterwards: same key, so the same
 `session_outward_ids` row and the same console entry. The clear leaves **no console
@@ -467,7 +476,10 @@ trace** — a deliberate choice, not an oversight.
 
 `commandSenderAllowed`, the same gate `!stop` takes, plus the trusted-actor check `!resume`
 takes: `!new` discards a conversation's working context and cannot be undone, so a bot echo
-or a wrapper reporting no actor must not be able to forge it. **Not** marked `runtimeChange` —
+or a wrapper reporting no actor must not be able to forge it. The check is one predicate
+(`requiresTrustedActor`) applied at BOTH ingress paths — direct and relay — because relay is
+where the HTTP callbacks that can carry no actor at all arrive, and a gate on one path only
+is the failure mode this shape exists to prevent. **Not** marked `runtimeChange` —
 that flag guards Agent-level runtime settings behind an Agent editor, and `!new` changes
 no setting. No confirmation step. `logSessionAction('new', key, actor)` records who ran
 it, which is what that function exists for.

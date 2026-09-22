@@ -67,6 +67,17 @@ const EFFORT_WORDS = new Set(['effort'])
 const PERMISSION_WORDS = new Set(['permission', 'permissions', 'perm'])
 
 /**
+ * Commands that may only come from a real person: they are destructive or reset a durable
+ * safety latch, so a bot echo or a wrapper that reports no actor must not be able to forge
+ * them. Lives beside the parser because EVERY ingress path that parses a command has to ask
+ * the same question — the gate drifting between direct and relay ingress is the failure this
+ * exists to prevent.
+ */
+export function requiresTrustedActor(kind: AgentCommand['kind']): boolean {
+  return kind === 'resume' || kind === 'new'
+}
+
+/**
  * Parse a leading control command from a message's text. Returns `null` when the
  * text is not a recognized command (so it flows to the agent unchanged). The
  * prefix must be the first non-whitespace character and be followed immediately by
