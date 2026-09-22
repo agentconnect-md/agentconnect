@@ -81,23 +81,6 @@ describe('PostgreSQL daemon capacity harness', () => {
         'capacity-agent-001': 'benchmark-org',
         'capacity-agent-002': 'benchmark-org'
       })
-      expect(harness.plane.ensureChannelCalls).toEqual(expect.arrayContaining(harness.agentIds))
-      await expect(harness.plane.withSandbox('capacity-agent-001', async () => 'held')).resolves.toBe('held')
-      await expect(harness.plane.probeRuntimes()).resolves.toEqual({
-        runtimes: [{ id: 'capacity-runtime', version: 'test', models: [] }]
-      })
-      await expect(harness.plane.clearPath('capacity-agent-001', '/workspace')).resolves.toBeUndefined()
-      await expect(harness.plane.suspendIdle('capacity-agent-001')).resolves.toBe('absent')
-      expect(harness.plane.runsInSandbox('capacity-agent-001')).toBe(true)
-      expect(harness.plane.workspaceRootFor('capacity-agent-001')).toContain('sandbox-workspaces')
-      expect(harness.plane.gitRunnerFor('capacity-agent-001')).toBeUndefined()
-      expect(harness.plane.workspaceFilesFor('capacity-agent-001')).toBeUndefined()
-      expect(harness.plane.memoryFsFor('capacity-agent-001')).toBeUndefined()
-      expect(harness.plane.launched()).toEqual([])
-      await expect(harness.plane.adoptAgent('capacity-agent-001')).resolves.toBeUndefined()
-      expect(() => harness.plane.releaseAgent('capacity-agent-001')).not.toThrow()
-      await expect(harness.plane.discardAgent('capacity-agent-001')).resolves.toBeUndefined()
-
       observations.prompts.length = 0
       observations.maxPerAgentActive['capacity-agent-001'] = 99
       expect(harness.observations().prompts).toHaveLength(6)
@@ -105,7 +88,6 @@ describe('PostgreSQL daemon capacity harness', () => {
     } finally {
       await Promise.all([harness.close(), harness.close()])
     }
-    expect(harness.plane.stopped).toBe(true)
     expect(existsSync(harness.root)).toBe(false)
   }, 15_000)
 

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -7,11 +7,8 @@ import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import type { AcpHost } from '../../src/acp/acp-host.js'
 import { Daemon, type DaemonEvaluationTurnResult } from '../../src/daemon.js'
 import { EvaluationEventCollector } from '../../src/evaluation/artifacts.js'
-import type { K8sRuntimePlane } from '../../src/k8s/runtime-plane.js'
-import type { K8sDriver } from '../../src/k8s/driver.js'
 import type { ResolvedRuntimeCatalog } from '../../src/runtimes/registry.js'
 import type { TranscriptRow } from '../../src/store/local-store.js'
-import type { ShimDialer } from '../../src/shim/dialer.js'
 import {
   createEventLoopDriftSampler,
   measureWithTimeout,
@@ -61,11 +58,6 @@ export interface HarnessObservations {
   maxGlobalActive: number
   maxPerAgentActive: Record<string, number>
   overlapViolations: string[]
-}
-
-export interface FakeK8sRuntimePlane extends K8sRuntimePlane {
-  ensureChannelCalls: string[]
-  stopped: boolean
 }
 
 export interface MeasuredDaemonTurn {
@@ -137,28 +129,40 @@ function scaffoldRoot(concurrency: number): { root: string; agentIds: string[] }
     join(root, 'config.json'),
     JSON.stringify({
       version: 1,
-      controlPlane: { enabled: false },
+      // What a daemon on the shared store is: it asks for PostgreSQL by configuration, and the Control
+      // Plane names the organization of every row it writes (#2188). No agent files — an agent on this
+      // store belongs to an organization, so it arrives on the roster instead.
+      store: { backend: 'postgres', configFile: 'data-plane.json' },
+      controlPlane: { enabled: true, url: 'https://cp.example.test' },
       limits: { maxAgents: concurrency, maxConcurrentSessions: concurrency },
       runtimes: { [RUNTIME_ID]: { command: 'capacity-runtime', args: [] } }
     })
   )
-  for (const agentId of agentIds) {
-    const agentDir = join(root, 'agents', agentId)
-    mkdirSync(agentDir, { recursive: true })
-    writeFileSync(
-      join(agentDir, 'agent.json'),
-      JSON.stringify({
-        id: agentId,
-        name: agentId,
-        status: 'active',
-        runtime: RUNTIME_ID,
-        workspace: { mode: 'from-scratch', path: join(agentDir, 'workspace') },
-        integrations: [],
-        output: { mode: 'medium' }
-      })
-    )
-  }
   return { root, agentIds }
+}
+
+/** The reconcile snapshot a Control Plane opens with: this daemon's agents, each with its organization. */
+function rosterSnapshot(agentIds: string[], organizationId: string) {
+  return {
+    routingEpoch: 1,
+    assignments: [],
+    agents: agentIds.map((agentId) => ({ agentId, orgId: organizationId, name: agentId, runtime: RUNTIME_ID })),
+    integrations: [],
+    crons: [],
+    leases: [],
+    drop: { assignments: [], crons: [] }
+  }
+}
+
+interface ConfigApplySeam {
+  applyReconcileSnapshot: (snap: ReturnType<typeof rosterSnapshot>) => Promise<void>
+}
+
+/** Apply that roster the way the CP client does on register/ok, then converge the agent set it names. */
+async function loadRoster(daemon: Daemon, agentIds: string[], organizationId: string): Promise<void> {
+  const configApply = (daemon as unknown as { cpConfigApply: () => ConfigApplySeam }).cpConfigApply()
+  await configApply.applyReconcileSnapshot(rosterSnapshot(agentIds, organizationId))
+  await daemon.reconcile()
 }
 
 function runtimeCatalog(): ResolvedRuntimeCatalog {
@@ -179,58 +183,6 @@ function runtimeCatalog(): ResolvedRuntimeCatalog {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-export function createFakeK8sRuntimePlane(workspaceRoot: string): FakeK8sRuntimePlane {
-  let stopped = false
-  const driver = {
-    claimName: (agentId: string) => `capacity-${agentId}`
-  } as unknown as K8sDriver
-  const plane = {
-    driver,
-    dialer: {} as ShimDialer,
-    memberId: 'capacity-member',
-    // No pool template behind the fake, so the probe path stays on its "probe alone" arm.
-    runtimeImage: async (): Promise<string> => {
-      throw new Error('the fake plane pins no pool runtime image')
-    },
-    ensureChannelCalls: [] as string[],
-    get stopped() {
-      return stopped
-    },
-    ensureChannel: async (agentId: string) => {
-      plane.ensureChannelCalls.push(agentId)
-    },
-    withSandbox: async <T>(_agentId: string, work: () => Promise<T>) => work(),
-    probeRuntimes: async () => ({ runtimes: [{ id: RUNTIME_ID, version: 'test', models: [] }] }),
-    workspacesOffDisk: true,
-    spawnFor: () => ({ driver }),
-    gitRunnerFor: () => undefined,
-    workspaceFilesFor: () => undefined,
-    workspaceFsFor: () => undefined,
-    memoryFsFor: () => undefined,
-    autoMergeFor: () => undefined,
-    runsInSandbox: () => true,
-    subjectForPath: (agentId: string) => agentId,
-    sandboxBound: () => true,
-    holdIfBound: () => () => {},
-    clearPath: async () => undefined,
-    workspaceRootFor: () => workspaceRoot,
-    sessionDirFor: (_agentId: string, leaf: string) => `${workspaceRoot}/sessions/${leaf}`,
-    launched: () => [],
-    adoptAgent: async () => {},
-    releaseAgent: () => {},
-    suspendAgent: async () => {},
-    suspendIdle: async () => 'absent' as const,
-    discardAgent: async () => {},
-    discardSession: async () => {},
-    discardSessions: async () => {},
-    hasSandbox: async () => false,
-    stop: async () => {
-      stopped = true
-    }
-  } satisfies FakeK8sRuntimePlane
-  return plane
 }
 
 function createScriptedHostFactory(
@@ -354,24 +306,22 @@ export async function createPostgresDaemonHarness(options: PostgresDaemonHarness
     maxPerAgentActive: {},
     overlapViolations: []
   }
-  const plane = createFakeK8sRuntimePlane(join(root, 'sandbox-workspaces'))
   const organizationId = options.organizationId ?? 'benchmark-org'
   const resolvedOrganizationByAgent: Record<string, string> = {}
-  const authoritativeOrgForAgent = (agentId?: string) => {
-    if (agentId && agentIds.includes(agentId)) resolvedOrganizationByAgent[agentId] = organizationId
-    return organizationId
-  }
   let dataPlane: OpenedDataPlane | undefined
   const daemon = new Daemon({
     root,
-    k8s: true,
     evaluation: { observer: collector, runId: `capacity-${Date.now()}`, capabilityProfile: { memory: 'off' } },
     hostFactory: createScriptedHostFactory(options.streamDelayMs, observations, options.promptBehavior),
-    openDataPlane: async (_orgForAgent, onFailure) => {
-      dataPlane = await options.openDataPlane(authoritativeOrgForAgent, onFailure)
+    // The store attributes a row to the organization the daemon resolves for its agent; record what it resolved.
+    openDataPlane: async (orgForAgent, onFailure) => {
+      dataPlane = await options.openDataPlane((agentId: string) => {
+        const resolved = orgForAgent(agentId)
+        if (resolved) resolvedOrganizationByAgent[agentId] = resolved
+        return resolved
+      }, onFailure)
       return dataPlane
     },
-    startK8sPlane: async () => plane,
     startControlPlane: async () => {},
     resolveCatalog: async () => runtimeCatalog(),
     installed: (runtimes) => runtimes,
@@ -382,11 +332,11 @@ export async function createPostgresDaemonHarness(options: PostgresDaemonHarness
   let measuredTurns: MeasuredDaemonTurn[] = []
   try {
     await daemon.start()
+    await loadRoster(daemon, agentIds, organizationId)
   } catch (error) {
     try {
       await daemon.stop()
     } catch {}
-    if (!plane.stopped) await plane.stop().catch(() => undefined)
     rmSync(root, { recursive: true, force: true })
     throw error
   }
@@ -401,7 +351,6 @@ export async function createPostgresDaemonHarness(options: PostgresDaemonHarness
   const result = {
     root,
     agentIds,
-    plane,
     dataPlane: () => dataPlane,
     observations: (): HarnessObservations => ({
       prompts: observations.prompts.map((prompt) => ({ ...prompt, updateKinds: [...prompt.updateKinds] })),
