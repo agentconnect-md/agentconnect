@@ -810,6 +810,14 @@ started a channel conversation may later pull it private, and only a private ses
 owner may publish it back. Roles grant no re-classification rights — an org owner cannot
 flip someone else's session in either direction.
 
+Usage summaries have a separate governance permission: organization Owners can
+attribute the organization's complete persisted usage by Agent, model, source,
+and time, including spend from private or external Sessions. Aggregate usage
+does not expose Session IDs, titles, transcripts, or tool payloads, and grants
+no access to those Sessions. Collaborators and viewers retain attribution only
+for Agents and Sessions they can access; withheld usage remains in the
+organization and metering-source totals and the `unattributed` rollup.
+
 An agent-to-agent child inherits its parent's visibility, because a delegation copies the
 parent's prompt into the child's transcript. Tightening a session therefore cascades to its
 descendants; publishing one never does — widening a child stays that child's own decision.

@@ -56,15 +56,16 @@ interface ViewCtx {
 
 The action vocabulary represents the distinct OSS policies that exist today:
 
-| Action                      | Resource facts                                        | Baseline decision                                                 |
-| --------------------------- | ----------------------------------------------------- | ----------------------------------------------------------------- |
-| `organization.write`        | none                                                  | owner or collaborator                                             |
-| `organization.manage`       | none                                                  | owner only                                                        |
-| `resource.view`             | visibility, Selected audience                         | organization owner, org-visible, or explicitly selected           |
-| `resource.edit`             | shareable resource                                    | visible and role is not viewer                                    |
-| `resource.sharing.manage`   | shareable resource                                    | same as `resource.edit`                                           |
-| `session.view`              | tier, owner identity, identity set, external access   | org-visible, identity-owned, or admitted by the external audience |
-| `session.visibility.change` | tier, owner identity, identity set, external provider | identity-owned and not provider-bound                             |
+| Action                      | Resource facts                                        | Baseline decision                                                  |
+| --------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------ |
+| `organization.write`        | none                                                  | owner or collaborator                                              |
+| `organization.manage`       | none                                                  | owner only                                                         |
+| `usage.attribute.all`       | none                                                  | owner only; aggregate usage, independent of session content access |
+| `resource.view`             | visibility, Selected audience                         | organization owner, org-visible, or explicitly selected            |
+| `resource.edit`             | shareable resource                                    | visible and role is not viewer                                     |
+| `resource.sharing.manage`   | shareable resource                                    | same as `resource.edit`                                            |
+| `session.view`              | tier, owner identity, identity set, external access   | org-visible, identity-owned, or admitted by the external audience  |
+| `session.visibility.change` | tier, owner identity, identity set, external provider | identity-owned and not provider-bound                              |
 
 Membership removal uses the target-aware `organization.membership.remove`
 action: every role may remove itself, while removing another member requires
@@ -72,6 +73,12 @@ the owner role.
 
 The vocabulary can gain finer-grained OSS actions when the product adds a new
 role or capability. The principal and resource shapes do not need to change.
+
+`usage.attribute.all` permits organization-wide agent, model, and
+time-series breakdowns without resolving session audiences. It grants no
+session list, metadata, transcript, or tool-body access. Other members retain
+the intersection of resource and session access for usage attribution.
+Organization and metering-source totals remain complete for every member.
 
 ## 4. Role and visibility
 

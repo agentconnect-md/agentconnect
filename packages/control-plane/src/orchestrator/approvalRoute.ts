@@ -1,23 +1,4 @@
-/**
- * slack-approval-dm.md §3–§4 — pick, or revalidate, the one human a pending
- * approval DMs.
- *
- * Both forms of `agent/approval-route` land here. The ROUTE form walks the §3
- * preference chain — turn owner → session owner → restricted audience →
- * creator — once per candidate Slack workspace, in the daemon's order, and
- * answers with the first hit; every rung must name a console user who can
- * edit the agent (§2's authority gate) AND whose Logto-linked Slack identity
- * lives in that workspace (the identity gate). The VERIFY form re-asks both
- * gates for one `(consoleUserId, teamId, userId)` binding at click time.
- *
- * There is deliberately no reverse Slack→console index (slack-identity.md),
- * so Slack-id rungs resolve by the same forward scan linkedDm.ts uses,
- * bounded by MAX_AUDIENCE over the eligible-editor set; past the cap those
- * rungs are skipped fail-closed while console-user rungs (a `user:<id>`
- * session owner, the creator) stay single lookups. Everything here fails
- * CLOSED to "no DM" / "click refused" — no sign-in configured, an upstream
- * that cannot answer, an unknown agent, a workspace mismatch.
- */
+// Pick one approval recipient by preference, or revalidate their edit authority and linked Slack identity.
 import type { AgentApprovalRoute, AgentApprovalRouted, ApprovalRouteTarget } from '@agentconnect.md/protocol'
 import type { SlackIdentity } from '../github/logto-identity.js'
 import type {
@@ -30,6 +11,7 @@ import type {
 } from '../persistence/ports.js'
 import { AgentId, OrgId, SessionId } from '../domain/ids.js'
 import { AUDIENCE_CONCURRENCY, MAX_AUDIENCE, mapLimited } from './linkedDm.js'
+import { canEdit } from '../authorization/policy.js'
 
 export interface ApprovalRouteDeps {
   agent: Pick<AgentRepo, 'getUnscoped'>
@@ -57,10 +39,8 @@ export async function resolveApprovalRoute(
   if (!agent || (expectedOrgId && agent.orgId !== expectedOrgId) || !deps.identity) return none
 
   const members = await deps.users.listMembers(agent.orgId)
-  // The eligible-editor set: canEdit(agent) inlined — non-viewer role plus visibility.
-  const editors = members.filter(
-    (m) => m.role !== 'viewer' && (agent.visibility === 'org' || agent.sharedWith.includes(m.userId))
-  )
+  // Authority includes organization owners; recipient selection below still follows the explicit preference chain.
+  const editors = members.filter((member) => canEdit(agent, member))
   if (editors.length === 0) return none
 
   const owned = await deps.integration.activeForAgents([req.agentId])
@@ -91,7 +71,7 @@ export async function resolveApprovalRoute(
     const v = req.verify
     const workspace = await workspaceFor(v.integrationId)
     if (!workspace || workspace !== v.teamId) return none
-    // Membership + role + visibility re-checked live: left org / demoted / unshared all refuse.
+    // Recheck current membership and edit authority before verifying the linked actor pair.
     const member = editors.find((m) => m.userId === v.consoleUserId)
     if (!member) return none
     const pair = await pairOf(member.userId)

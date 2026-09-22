@@ -115,11 +115,14 @@ describe('can — organization role actions', () => {
     expect(can(ctx(OTHER, 'owner'), { action: AuthorizationAction.OrganizationWrite })).toBe(true)
   })
 
-  it('keeps organization governance owner-only', () => {
-    expect(can(ctx(OTHER, 'viewer'), { action: AuthorizationAction.OrganizationManage })).toBe(false)
-    expect(can(ctx(OTHER, 'collaborator'), { action: AuthorizationAction.OrganizationManage })).toBe(false)
-    expect(can(ctx(OTHER, 'owner'), { action: AuthorizationAction.OrganizationManage })).toBe(true)
-  })
+  it.each([AuthorizationAction.OrganizationManage, AuthorizationAction.UsageAttributeAll])(
+    'keeps %s owner-only',
+    (action) => {
+      expect(can(ctx(OTHER, 'viewer'), { action })).toBe(false)
+      expect(can(ctx(OTHER, 'collaborator'), { action })).toBe(false)
+      expect(can(ctx(OTHER, 'owner'), { action })).toBe(true)
+    }
+  )
 
   it('lets every role leave while keeping removal of another member owner-only', () => {
     for (const role of ['viewer', 'collaborator', 'owner'] as const) {

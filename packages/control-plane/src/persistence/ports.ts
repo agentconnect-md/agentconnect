@@ -1991,15 +1991,10 @@ export interface SessionUsageRepo {
   record(input: SessionUsageInput): Promise<void>
   /** Read one session's latest cumulative usage snapshot. */
   get(agentId: AgentId, sessionId: string): Promise<SessionUsageCounts | null>
-  /** Aggregate usage for an org over the half-open window `[from, to)`.
-   *  `source` scopes the whole answer — totals, every breakdown, and the series — to
-   *  one ingress; omitted, it counts both.
-   *  `viewer`/`sessionViewer` scope ATTRIBUTION, not the sums: see `UsageAggregate`.
-   *  When a `viewer` is supplied, sessions of restricted agents they can't see keep their
-   *  place in `totals` but are folded into `unattributed` instead of into their agent's
-   *  row (derived visibility, via the `agent` relation — undefined alone attributes all).
-   *  `tzOffsetMin` (UTC − local, as `getTimezoneOffset()` reports) aligns the spend
-   *  `series` buckets to the viewer's local day/hour; 0 (default) ⇒ UTC. */
+  // Aggregate persisted deltas for an org over [from, to); source scopes every grouping and the series.
+  // Omit both viewer contexts only for authorized organization-wide attribution (owners or settlement workloads).
+  // Viewer predicates scope attribution, not totals; withheld deltas form an independently summed unattributed rollup.
+  // tzOffsetMin is UTC minus local, aligning series buckets to local day/hour; zero means UTC.
   aggregate(
     orgId: OrgId,
     window: UsageWindow,

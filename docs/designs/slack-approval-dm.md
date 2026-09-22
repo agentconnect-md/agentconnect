@@ -102,12 +102,19 @@ The rungs, in order (from the issue discussion):
    sessions this is the `slack:T…:U…` pair; for webchat/API sessions it is
    `user:<id>`, a console user directly (which then only needs the identity
    gate to find its Slack account).
-3. **Agent visibility audience** — for a `restricted` agent, the members of
-   `Agent.sharedWith` (this is the _human_ console audience — not
+3. **Explicitly selected audience** — for a `restricted` agent, the members of
+   `Agent.sharedWith` (this is the explicit human sharing list — not
    `callPolicy`, which governs agent-to-agent reach). The first member that
    passes both gates wins; ties break deterministically (stable audience
    order) so retries pick the same person.
 4. **Agent creator** — `Agent.createdByUserId`.
+
+Authority and notification preference are separate. Organization owners pass
+`canEdit` even when absent from `sharedWith`, so an owner can be selected as
+the requester, session owner, or authorized creator. The role alone adds no
+recipient rung and never displaces an explicitly selected member at rung 3.
+Do not add owners to `sharedWith` or broadcast approvals to them. Click-time
+verification reuses the same live `canEdit` decision and linked-identity check.
 
 If no rung produces a target, behavior is **exactly today's**: the chat
 notice plus the console queue. Resolution failing can never fail, delay, or
@@ -120,8 +127,8 @@ index from a Slack user to a console account
 verified by a forward scan over the **eligible-editor set** — the console
 users who can edit the agent: forward-resolve their linked Slack identities
 and check whether the rung's `(teamId, userId)` pair is among them. One
-scan serves every Slack-id rung plus rung 3. That set is small for a
-`restricted` agent (its `sharedWith`), but for an `org`-visible agent it is
+scan serves every Slack-id rung plus rung 3. For a `restricted` agent the set
+includes selected editors and organization owners; for an `org`-visible agent it is
 the org's whole editor-capable membership — so the scan is capped, not
 assumed cheap (§4.2).
 

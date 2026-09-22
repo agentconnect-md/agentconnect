@@ -18,6 +18,7 @@ import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { PgSessionUsageRepo } from '../../src/persistence/repositories/session-usage.repo.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { AgentId } from '../../src/domain/ids.js'
+import type { UsageAggregate } from '../../src/persistence/ports.js'
 
 /** Sum the series' decimal-string amounts exactly — the same primitive the aggregate
  *  itself adds with, so the test cannot drift where the implementation does not. */
@@ -810,45 +811,93 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
     }
   })
 
-  it.each(['org', 'restricted'] as const)(
-    'withholds private spend from an owner when agent visibility is %s',
-    async (visibility) => {
-      // Owners can attribute an unshared restricted agent, but its private sessions retain their own audience.
-      await seedAgent(prisma, AGENT_A, { visibility, sharedWith: [SOMEONE_ELSE] })
+  it.each([
+    { role: 'owner', attributed: '14' },
+    { role: 'collaborator', attributed: '4' },
+    { role: 'viewer', attributed: '4' }
+  ] as const)(
+    'attributes private and external spend according to the $role role without exposing sessions',
+    async ({ role, attributed }) => {
+      const users = new PgUserRepo(prisma)
+      const readerEmail = `usage-reader-${randomUUID()}@example.test`
+      const { userId: reader } = await users.provisionOidcUser({
+        oidcSubject: `usage-reader-${randomUUID()}`,
+        email: readerEmail,
+        emailVerified: true
+      })
+      await users.addMemberByEmail(DEFAULT_ORG_ID, readerEmail, role)
+      await seedAgent(prisma, AGENT_A, {
+        visibility: 'restricted',
+        sharedWith: [role === 'owner' ? SOMEONE_ELSE : reader]
+      })
       const repo = new PgSessionUsageRepo(prisma)
       const at = new Date(Date.now() - 60_000)
       await seedSessionMeta(prisma, 'shared', AGENT_A, { lastActivityAt: at })
-      await seedSessionMeta(prisma, 'someone-elses', AGENT_A, {
+      await seedSessionMeta(prisma, 'hidden-private', AGENT_A, {
         lastActivityAt: at,
         visibility: 'private',
         ownerIdentity: `user:${SOMEONE_ELSE}`
       })
-      for (const [sessionId, costAmount] of [
-        ['shared', '4'],
-        ['someone-elses', '7']
+      await seedSessionMeta(prisma, 'hidden-external', AGENT_A, { lastActivityAt: at })
+      await prisma.sessionMeta.update({
+        where: { id: 'hidden-external' },
+        data: {
+          visibility: 'external',
+          externalProvider: 'slack',
+          externalResolution: 'pending',
+          classifiedPolicyRev: 1n
+        }
+      })
+      for (const [sessionId, model, costAmount] of [
+        ['shared', 'public-model', '4'],
+        ['hidden-private', 'private-model', '7'],
+        ['hidden-external', 'external-model', '3']
       ] as const) {
         await repo.record({
           agentId: AgentId(AGENT_A),
           sessionId,
+          model,
           source: 'daemon',
           lastActivityAt: at,
           usage: { totalTokens: 100, costAmount, costCurrency: 'USD' }
         })
       }
 
-      const { app, close } = buildHttpApp(prisma)
+      const otherOrg = await prisma.org.create({ data: { slug: `usage-other-${randomUUID()}` } })
+      await seedAgent(prisma, AGENT_B, { orgId: otherOrg.id })
+      await repo.record({
+        agentId: AgentId(AGENT_B),
+        sessionId: 'outside-organization',
+        source: 'daemon',
+        lastActivityAt: at,
+        usage: { totalTokens: 100, costAmount: '99', costCurrency: 'USD' }
+      })
+
+      const { app, close } = buildHttpApp(prisma, { DEFAULT_OWNER_ID: reader })
       try {
         const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${preset('d1')}` })
         expect(res.statusCode).toBe(200)
-        const body = res.json() as {
-          totals: { costAmount: string }
-          agents: { agentId: string; costAmount: string }[]
-          unattributed?: { costAmount: string }
+        const body = res.json() as UsageAggregate
+        expect(body.totals).toMatchObject({ costAmount: '14', totalTokens: 300, sessions: 3 })
+        expect(body.agents).toEqual([expect.objectContaining({ agentId: AGENT_A, costAmount: attributed })])
+        expect(Object.fromEntries(body.models.map((row) => [row.model, row.costAmount]))).toEqual(
+          role === 'owner'
+            ? { 'public-model': '4', 'private-model': '7', 'external-model': '3' }
+            : { 'public-model': '4' }
+        )
+        expect(sum(body.series.points)).toBe(attributed)
+        expect(sum(body.sources)).toBe('14')
+        expect(sumAmounts([sum(body.agents), body.unattributed?.costAmount ?? '0'])).toBe('14')
+        if (role === 'owner') expect(body).not.toHaveProperty('unattributed')
+        else expect(body.unattributed?.costAmount).toBe('10')
+
+        const sessions = await app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat` })
+        expect(sessions.statusCode).toBe(200)
+        for (const sessionId of ['hidden-private', 'hidden-external']) {
+          expect(res.body).not.toContain(sessionId)
+          expect(sessions.body).not.toContain(sessionId)
+          expect((await app.inject({ method: 'GET', url: `${ORG}/sessions/${sessionId}` })).statusCode).toBe(404)
         }
-        expect(body.totals.costAmount).toBe('11')
-        // The agent is right there, carrying only the session this reader may attribute.
-        expect(body.agents).toEqual([expect.objectContaining({ agentId: AGENT_A, costAmount: '4' })])
-        expect(body.unattributed?.costAmount).toBe('7')
       } finally {
         await close()
       }
