@@ -108,7 +108,7 @@ All changes are to the daemon store, in both dialects, through `SCHEMA_MIGRATION
 
 | Change               | Detail                                                                                                                                                                                                                                                                                   |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `thread`             | The physical thread as the platform normalizes it (root = its own id). Never an `append:*` coordinate.                                                                                                                                                                                   |
+| `thread`             | The physical thread as the platform normalizes it (root = its own id). Never an `append:*` coordinate. Nullable: `NULL` means the thread was not recorded (only rows migrated from `append` coordinates, §10), and §9 reports it as unknown rather than as a root.                       |
 | `transcript_text_ts` | Unique on `(orgId, channel, ts) WHERE kind = 'text'`. One conversational message is one row per conversation. Internal rows (`tool`, `reasoning`, `app`) have no platform `ts` and are not deduplicated, as today.                                                                       |
 | `recipient`          | Retired from the visibility predicate. It stays as provenance of the first delivery; admissions are the authority.                                                                                                                                                                       |
 | Indexes              | `transcript_thread_seq`, `transcript_thread_event_time`, `transcript_thread_revision` lose `thread` from their leading columns and become `(orgId, channel, …)`; the physical thread is a filter, not a partition. `transcript_app_card` and `transcript_agent_tool_call` are unchanged. |
@@ -152,8 +152,17 @@ The `decision_conversation`, `decision_observation`, and `decision_lane` tables 
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `decision_observation`  | The `transcript` row itself.                                                                                                                           |
 | `decision_conversation` | Nothing. The next ingestion sequence is `seq`; observation start and gap markers are derived (§9).                                                     |
-| `decision_lane`         | `decision_release (orgId, channel, agentId, releasedSeq)` — one durable cursor per conversation and target, advanced only in `seq` order (§5.3).       |
-| `decision_delivery`     | `decision_verdict (seq, agentId, frozenInput, answer, disposition, deadline, ownerFence, …)` — the frozen input, the typed answer, and how it settled. |
+| `decision_lane`         | `decision_release (orgId, channel, subject, releasedSeq)` — one durable cursor per conversation and **subject**, advanced only in `seq` order (§5.1).  |
+| `decision_delivery`     | `decision_verdict (seq, subject, frozenInput, answer, disposition, deadline, ownerFence, …)` — the frozen input, the typed answer, and how it settled. |
+
+The **subject** is what one evaluation is for. A Stage 1 gate's subject is the target agent: one
+verdict per `(seq, agentId)`, settled as `skip`, `match`, or `unavailable`. A Stage 2 router's
+subject is the bot's routing scope for that conversation: **one** verdict per `seq`, taken before any
+target is known, whose settlement is the frozen, deduplicated target set — each entry an
+`(agentId, daemonId)` with its own forwarding/admission disposition — or `skip`. That is the
+pre-target selection receipt decisions.md §7.4 requires, kept separate from the per-target
+admissions that follow it; a retry reads the frozen set and never re-evaluates. The two subjects
+never coexist for one conversation (decisions.md §3.1: one effective consumer).
 
 `decision_verdict` keeps every field decisions.md §8.3 freezes (Decision id, provider, model,
 question, condition, binding, session mode, owner fence) minus anything already on the transcript
@@ -189,8 +198,13 @@ mention, `eventTimeUs`, and `postId` exactly as today; it carries no recipient a
 `INSERT OR IGNORE` on `(orgId, channel, ts)` makes a redelivery a no-op, and the closing edit of a
 streamed reply still refreshes its row through the `authoritative` path.
 
-**Step 2 — commands.** `parseCommand` runs on the recorded message. A command is never admitted and
-never judged; it acts on the target's session as today. `!stop` additionally cancels every pending
+**Step 2 — commands.** `parseCommand` runs on the recorded message. A command is never judged and,
+with one exception, never admitted; it acts on the target's session as today. The exception is
+`!queue <text>`, which is a delivery: `runQueue` dispatches the stripped payload through the ordinary
+admission gate, so the admission attaches to the recorded row — the row keeps the command as typed,
+which is also what the channel shows, and prompt assembly strips the `!queue` prefix from an admitted
+row whose text parses as that command. Stripping is a pure function of the text, so a replay builds
+the same prompt. `!stop` additionally cancels every pending
 `decision_verdict` for that agent in that conversation, so a stop never waits on Jev (decisions.md
 §8.3). The row stays in the record: a Decision may well want to know someone said stop.
 
@@ -235,11 +249,13 @@ wrote plus this admission.
 ### 5.1 Ordering
 
 A verdict is reserved at the row's `seq` before provider I/O. A conversation's candidates for one
-agent are released strictly in `seq` order: the oldest unreleased candidate is the only one that can
+subject are released strictly in `seq` order: the oldest unreleased candidate is the only one that can
 drain, `skip`/cancel advances `decision_release.releasedSeq` at once, `match`/`unavailable` advance
 it after inbox admission is acknowledged or terminally rejected. This is decisions.md §8.3 with the
 lane's own sequence replaced by the record's; the recovery table there applies unchanged. Candidates
-of different agents in one conversation, and of different conversations, are independent.
+of different subjects in one conversation, and of different conversations, are independent. A
+router's frozen target set is released as one unit: its slot advances once every target is admitted
+or terminally rejected, not when their turns finish (decisions.md §7.4).
 
 ### 5.2 What the admission gives the agent
 
@@ -283,15 +299,21 @@ first preference and completes with a fallback).
 1. Records the message in its channel record (Case A step 1). The host is the one daemon whose
    record of this conversation is complete; other members see only what is forwarded to them, and
    their records of it are their own sessions' history.
-2. Runs Case A steps 2–5 for the bot's candidate set as the relay resolved it (explicit mention,
-   affinity, `auto` routes, participants) — the constrained recipients of decisions.md §3.2 — plus,
-   for a new unaddressed conversation, the routing rules' selected targets.
-3. For each surviving target on **this** daemon, admits it (step 6).
-4. For each surviving target on **another** daemon, forwards the message with its `decision_verdict`
-   evidence over the existing cross-daemon relay path (`rd/agentmsg`-style pre-addressed forwarding,
-   the same transport the collaboration router uses), so the target daemon runs step 6 for its own
-   agent and the verdict is not recomputed. The frozen target set is settled before the first forward
-   and retries reuse it (decisions.md §7.4).
+2. Runs Case A steps 2–4 with the candidate set the relay resolved (explicit mention, affinity,
+   `auto` routes, participants) as the **target constraint** of decisions.md §3.2.
+3. Evaluates **once**, with the router as subject (§4.3), unless every constrained recipient already
+   participates in the message's physical thread — the same skip rule as Case A step 5. The single
+   answer is matched against the bot's routing rules; the settlement is the frozen target set: the
+   constrained recipients when there are any, otherwise the rules' selected agents deduplicated by
+   id, otherwise `skip`. No candidate is evaluated on its own, so one message costs one model call and
+   yields one answer, whatever the size of the target set.
+4. For each target in the frozen set on **this** daemon, resolves and admits (step 6) and records the
+   disposition on the selection.
+5. For each target on **another** daemon, forwards the message with the selection's evidence over the
+   existing cross-daemon relay path (`rd/agentmsg`-style pre-addressed forwarding, the same transport
+   the collaboration router uses). The target daemon runs step 6 for its own agent, does not
+   evaluate, and acknowledges; the host records the disposition. One target's refusal does not
+   reclassify the others or invoke Otherwise; a retry reuses the frozen set (decisions.md §7.4).
 
 Observation-only forwarding to non-host members (decisions.md §7.2) is not needed: the host's record
 is the window, and a member that later becomes host on a shared PostgreSQL store inherits it. On
@@ -316,10 +338,14 @@ Two rules, in this order.
 1. **An admission lives as long as its session.** `deleteSession(key)` deletes
    `transcript_recipient WHERE sessionKey = key` in the same transaction that removes the session
    row and clears the append reservation. Nothing else deletes an admission.
-2. **An unadmitted row lives while it is among the newest 100 of its conversation.** After every
-   insert, and periodically while idle, delete rows in `(orgId, channel)` that have no admission and
-   whose `seq` is below the 100th-newest row's. The cap counts rows, not messages-per-agent, because
-   there is one row per message.
+2. **An unadmitted row lives while it is among the newest 100 conversational rows of its
+   conversation, or while a verdict may still admit it.** After every insert, and periodically while
+   idle, delete `text` rows in `(orgId, channel)` that have no admission, whose `seq` is below the
+   100th-newest `text` row's, and that no `decision_verdict` in a non-terminal state (`reserved`,
+   `evaluating`, or settled but not yet released) references. The cutoff is counted over `text` rows
+   because those are what §9 reads; a tool-heavy turn's `tool`/`reasoning`/`app` rows all carry an
+   admission and neither count toward nor fall under the floor. The cap counts rows, not
+   messages-per-agent, because there is one row per message.
 
 So a conversation with a long-lived `append` session keeps that session's rows for as long as the
 session exists, plus a floor of the newest 100 rows of everything else. When the session is
@@ -333,7 +359,7 @@ actually working — with a bounded observation layer under it, and it resolves 
 Built from the channel record at the reserved `seq`:
 
 - `currentMessage`: the row at `seq`.
-- `history`: rows of the same `(orgId, channel)` with `seq < current`, newest 100, oldest-first,
+- `history`: `text` rows of the same `(orgId, channel)` with `seq < current`, newest 100, oldest-first,
   then trimmed from the oldest end to the evaluator's input budget (8,000 tokens and 32 KiB as in
   decisions.md §8.2). Each carries sender, text, quote, `thread`, and event time. Rows written by
   agents are included as visible replies (decisions.md §3.3); `tool`/`reasoning`/`app` rows are
@@ -342,7 +368,9 @@ Built from the channel record at the reserved `seq`:
 - `context.partial`: true when the oldest included row is not the oldest the conversation has
   (retention trimmed), when the budget trimmed, or when this daemon's record of the conversation
   began after the conversation did — detected as the first row of the conversation being younger
-  than the daemon's participation in it. `omittedMessages` counts rows the budget dropped.
+  than the daemon's participation in it, or when any included row has `thread = NULL` (a row
+  migrated from an `append` coordinate, §10), reported as `legacy_thread_unknown` with that row's
+  `threadId` emitted as `null`. `omittedMessages` counts rows the budget dropped.
 
 The 100 here is a read window and coincides with the retention floor of §8 only so that the window
 is always fully resident; the two limits are separate constants.
@@ -360,9 +388,11 @@ One `SCHEMA_MIGRATIONS` step, run in a transaction before the `CREATE` block:
    `sender` and `(channel, thread)`.
 3. **Merge `append` duplicates.** Rows sharing `(orgId, channel, ts)` collapse onto the smallest
    `seq`; their admissions are rewritten to point at it; the others are deleted.
-4. **Rewrite `append:*` threads.** Their physical thread was never stored. Set `thread = ts` (the
-   root-message convention) and accept the loss: these rows are session history, never Decision
-   input, and participation for their threads is already in `thread_participation`.
+4. **Null `append:*` threads.** Their physical thread was never stored, and inventing one would
+   present every old message to a future evaluation as its own root. Set `thread = NULL`; §9 reports
+   such rows as thread-unknown and marks the context partial while any is in the window, which a
+   busy conversation outgrows within 100 messages. Participation for their real threads is already in
+   `thread_participation`.
 5. Drop and recreate the transcript indexes with the new leading columns; the `CREATE` block emits
    them.
 
@@ -377,18 +407,18 @@ disposable across a shape change.
 
 ## 11. What this supersedes
 
-| Document                | Section                                      | Conclusion replaced                                                                                                                                                          |
-| ----------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| decisions.md            | §4 Observation window                        | Separate store with separate retention → the channel record (§3, §8 here). "Off stops observation" → every conversation is recorded.                                         |
-| decisions.md            | §1, §3.2                                     | "Every eligible message is evaluated, including replies in established threads" → replies in a thread the agent participates in are admitted without evaluation (§5 step 5). |
-| decisions.md            | §7.2                                         | Observation-only destinations → not needed; the evaluation host's record is the window (§6).                                                                                 |
-| decisions.md            | §7.4                                         | Evaluation host = default agent's daemon → same, with a `createdAt`-earliest fallback, projected by the CP (§6).                                                             |
-| decisions.md            | §8.1                                         | `decision_conversation`, `decision_observation`, `decision_lane`, `decision_delivery` → `transcript`, `decision_release`, `decision_verdict` (§4.3).                         |
-| decisions.md            | §8.3                                         | Lane ingestion sequence → `transcript.seq` (§5.1). Lifecycle and recovery unchanged.                                                                                         |
-| decisions.md            | §8.4                                         | Dedup by stable message id across two stores → `NOT EXISTS` on admissions (§5.2).                                                                                            |
-| channel-session-mode.md | §6.2                                         | One transcript row per agent under the append coordinate → one row, one admission per agent (§4).                                                                            |
-| channel-session-mode.md | §6.3 "The observer uses the same coordinate" | Observer writes under the session coordinate → observer writes the channel record; the coordinate is on the admission.                                                       |
-| channel-session-mode.md | §10, §12.2                                   | Unbounded growth of transcript rows → retention (§8).                                                                                                                        |
+| Document                | Section                                      | Conclusion replaced                                                                                                                                                                     |
+| ----------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| decisions.md            | §4 Observation window                        | Separate store with separate retention → the channel record (§3, §8 here). "Off stops observation" → every conversation is recorded.                                                    |
+| decisions.md            | §1, §3.2                                     | "Every eligible message is evaluated, including replies in established threads" → replies in a thread the agent participates in are admitted without evaluation (§5 step 5).            |
+| decisions.md            | §7.2                                         | Observation-only destinations → not needed; the evaluation host's record is the window (§6).                                                                                            |
+| decisions.md            | §7.4                                         | Evaluation host = default agent's daemon → same, with a `createdAt`-earliest fallback, projected by the CP (§6). The pre-target selection receipt is the router-subject verdict (§4.3). |
+| decisions.md            | §8.1                                         | `decision_conversation`, `decision_observation`, `decision_lane`, `decision_delivery` → `transcript`, `decision_release`, `decision_verdict` (§4.3).                                    |
+| decisions.md            | §8.3                                         | Lane ingestion sequence → `transcript.seq` (§5.1). Lifecycle and recovery unchanged.                                                                                                    |
+| decisions.md            | §8.4                                         | Dedup by stable message id across two stores → `NOT EXISTS` on admissions (§5.2).                                                                                                       |
+| channel-session-mode.md | §6.2                                         | One transcript row per agent under the append coordinate → one row, one admission per agent (§4).                                                                                       |
+| channel-session-mode.md | §6.3 "The observer uses the same coordinate" | Observer writes under the session coordinate → observer writes the channel record; the coordinate is on the admission.                                                                  |
+| channel-session-mode.md | §10, §12.2                                   | Unbounded growth of transcript rows → retention (§8).                                                                                                                                   |
 
 Everything else in both documents — the coordinate model, `!new`, the reservation, the participation
 record, the Decision resource, conditions, the Jev adapter, the console — stands.
@@ -401,19 +431,25 @@ record, the Decision resource, conditions, the Jev adapter, the console — stan
   admission; a session's rows are one index range on `(sessionKey, seq)`.
 - **Migration.** A v23 SQLite fixture with createNew rows, append duplicates, recipient rows, and
   GC'd sessions upgrades to: unchanged createNew rows with admissions, merged append rows with one
-  admission per former copy, `thread = ts` on former `append:*` rows, and no admission for rows
+  admission per former copy, `thread = NULL` on former `append:*` rows, and no admission for rows
   whose session is gone. Same fixture through the PostgreSQL dialect.
 - **Case A.** A message in an `off` conversation is recorded and not routed; a `!stop` is recorded,
-  never admitted, and cancels that agent's pending verdicts; two agents with different session modes
+  never admitted, and cancels that agent's pending verdicts; a `!queue hello` row is admitted as
+  recorded and prompts as `hello`; two agents with different session modes
   in one conversation each get one admission at their own coordinate from one row; a reply in a
   thread the agent participates in reaches admission with no verdict row; a top-level message and a
   mention each produce a verdict; a `skip` leaves the row with no admission and advances the cursor; a
   faster `match` for a later `seq` waits for an earlier candidate's release.
+- **Retention.** A row whose verdict is `evaluating`, or settled behind an unreleased earlier
+  candidate, survives 100 newer rows and is admitted afterwards with its row intact; 200 tool rows
+  from one turn do not push a 50-row conversation's observations under the floor.
 - **Case B.** CP projects `evaluationDaemonId` as the default agent's daemon, then as the
   earliest-created candidate daemon when the default is absent, and re-projects on a placement
-  move; the relay forwards a By decision conversation's messages to that host and nowhere else; the
-  host forwards a verdict with the message to a target on another daemon, which admits without
-  evaluating.
+  move; the relay forwards a By decision conversation's messages to that host and nowhere else; a new
+  unaddressed message whose Choice answer selects three agents on two daemons produces exactly one
+  provider call and one selection receipt with three dispositions; the host forwards the selection
+  with the message to a target on another daemon, which admits without evaluating; a crash after
+  settlement and before the second forward resumes from the frozen set.
 - **Prompt.** An agent admitted at C after skips at A and B receives A and B once as background;
   a retry of C builds the identical prompt.
 
