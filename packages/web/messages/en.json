@@ -60,18 +60,18 @@
       "everyone": "Everyone",
       "everyoneDescription": "All members can see it.",
       "selected": "Selected",
-      "selectedDescription": "Only people you choose.",
+      "selectedDescription": "Selected members and org owners.",
       "shareWith": "Share with",
       "removeLastMember": "Select another member before removing the last person",
-      "removeAccess": "Remove access",
+      "removeAccess": "Remove from selection",
       "searchMembers": "Search members…",
-      "selectAtLeastOne": "Select at least one organization member.",
-      "atLeastOneMustRemain": "At least one organization member must remain selected.",
+      "selectAtLeastOne": "Select at least one member. Organization owners always have access.",
+      "atLeastOneMustRemain": "Keep at least one member selected. Organization owners always have access.",
       "noOtherMembers": "No other members to share with yet",
       "everyoneSelected": "Everyone is already selected",
       "noMembersMatch": "No members match “{query}”",
       "canAccess": "{members} can access this restricted resource.",
-      "restrictedResource": "Selected members can access this resource."
+      "restrictedResource": "Selected members and organization owners can access this resource."
     },
     "actions": {
       "save": "Save",

@@ -272,7 +272,7 @@ export interface DaemonView {
   createdByUserId: string | null
   /** Per-resource visibility (docs/designs/resource-visibility.md). */
   visibility: ResourceVisibility
-  /** Complete app_user.id audience when `visibility === 'restricted'`. */
+  /** Explicit app_user.id audience when restricted; organization owners also have access. */
   sharedWith: string[]
   /** Console-set finished-session retention window ('never' | '7d' | '30d' | '90d'). */
   sessionRetention: string

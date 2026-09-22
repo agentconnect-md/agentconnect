@@ -1,24 +1,5 @@
-// No 'use client' here: this module is imported only by client components (the
-// modals under ModalProvider + the detail/list views), so it's already in the
-// client bundle — and keeping the directive off avoids Next's "props must be
-// serializable" entry-file check on the onChange callback.
-
-/**
- * Per-resource visibility / sharing UI (docs/designs/resource-visibility.md,
- * design files "AgentConnect Console" + "AgentConnect Mobile App").
- *
- * - `VisibilityField` — the create/edit control: an Everyone vs Selected picker
- *   plus, when restricted, a member multi-select. Desktop = two tiles + a searchable
- *   member list; mobile = two pills + toggleable "Share with" pills.
- * - `VisibilityRow` — the read-only detail row (globe "Everyone" or lock + an
- *   overlapping avatar stack of the shared members).
- * - `RestrictedLock` — the small lock glyph shown next to a restricted resource's
- *   name in list rows.
- *
- * Selected stores the complete audience. Every selected member is removable as
- * long as at least one current organization member remains. Sharing is gated
- * server-side by canManageSharing.
- */
+// Client-only imports keep callbacks inside the client boundary without a 'use client' entry point.
+// Sharing stores explicit selections; organization owners also have access without joining that selection.
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Avatar, Icon } from '@/components/ui'
 import { useConsoleData } from '@/lib/data-context'
@@ -122,7 +103,7 @@ function VisibilityTiles({ restricted, onPick }: { restricted: boolean; onPick: 
         </span>
         <div className="min-w-0 flex-1">
           <div className="font-sans text-[13px] font-semibold leading-normal">{title}</div>
-          <div className="mt-[2px] truncate font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
+          <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
             {desc}
           </div>
         </div>
@@ -160,8 +141,7 @@ function ShareWithList({ selected, onToggle }: { selected: string[]; onToggle: (
   )
   const chips = selected.map((id) => byId.get(id)).filter((m): m is MemberDto => !!m)
 
-  // The member list is a dropdown: it only opens once the search field is focused,
-  // and a click anywhere outside collapses it back to just the chips row.
+  // Collapse the member dropdown when the user clicks outside it.
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent) => {
@@ -348,7 +328,7 @@ export function VisibilityValue({ visibility, sharedWith }: { visibility: Resour
       </span>
     )
   }
-  const resolved = sharedWith.map((id) => members.find((m) => m.userId === id)).filter((m): m is MemberDto => !!m)
+  const resolved = members.filter((m) => m.role === 'owner' || sharedWith.includes(m.userId))
   const shown = resolved.slice(0, 3)
   const extra = resolved.length - shown.length
   const title =
@@ -359,15 +339,14 @@ export function VisibilityValue({ visibility, sharedWith }: { visibility: Resour
     <span className="inline-flex items-center gap-2" title={title}>
       <Icon name="lock" size={14} color="var(--text-tertiary)" className="flex-none" />
       {resolved.length === 0 ? (
-        // Only for a legacy/corrupt row whose audience no longer resolves.
+        // Member details may still be loading; the tooltip states the owner exception either way.
         <span className="font-sans text-[12.5px] font-medium leading-normal">{t('selected')}</span>
       ) : (
         <span className="inline-flex">
           {shown.map((m, i) => (
             <span
               key={m.userId}
-              // Nested titles replace the parent's on hover, and the avatars are
-              // the main hover target, so repeat this member's access state.
+              // Repeat access on each avatar because its title replaces the parent tooltip.
               title={t('canAccess', { members: memberDisplayName(m) })}
               className={i === 0 ? 'inline-flex' : 'inline-flex -ml-[6px]'}
             >

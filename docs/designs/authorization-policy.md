@@ -18,8 +18,8 @@ decision delegates to one `can(principal, request)` entry point. Prisma list
 filters use the colocated `visibilityWhere` projection of the same resource
 rule.
 
-This is a behavior-preserving architecture seam except for the intentional
-removal of the organization-owner visibility bypass described in section 4.
+Section 4 defines the current owner exception for shareable resources. Session
+audiences remain independently authorized.
 
 ## 2. Boundary
 
@@ -56,15 +56,15 @@ interface ViewCtx {
 
 The action vocabulary represents the distinct OSS policies that exist today:
 
-| Action                      | Resource facts                     | Baseline decision                                             |
-| --------------------------- | ---------------------------------- | ------------------------------------------------------------- |
-| `organization.write`        | none                               | owner or collaborator                                         |
-| `organization.manage`       | none                               | owner only                                                    |
-| `resource.view`             | visibility, Selected audience      | org-visible or explicitly selected                            |
-| `resource.edit`             | shareable resource                 | visible and role is not viewer                                |
-| `resource.sharing.manage`   | shareable resource                 | same as `resource.edit`                                       |
-| `session.view`              | tier, owner identity, identity set | org-visible or identity-owned                                 |
-| `session.visibility.change` | tier, owner identity, identity set | identity-owned, or an org owner while the session remains org |
+| Action                      | Resource facts                                        | Baseline decision                                                 |
+| --------------------------- | ----------------------------------------------------- | ----------------------------------------------------------------- |
+| `organization.write`        | none                                                  | owner or collaborator                                             |
+| `organization.manage`       | none                                                  | owner only                                                        |
+| `resource.view`             | visibility, Selected audience                         | organization owner, org-visible, or explicitly selected           |
+| `resource.edit`             | shareable resource                                    | visible and role is not viewer                                    |
+| `resource.sharing.manage`   | shareable resource                                    | same as `resource.edit`                                           |
+| `session.view`              | tier, owner identity, identity set, external access   | org-visible, identity-owned, or admitted by the external audience |
+| `session.visibility.change` | tier, owner identity, identity set, external provider | identity-owned and not provider-bound                             |
 
 Membership removal uses the target-aware `organization.membership.remove`
 action: every role may remove itself, while removing another member requires
@@ -103,7 +103,7 @@ oracle.
 
 ## 5. List-query equivalence
 
-Human list queries apply:
+Collaborator and viewer list queries apply:
 
 ```sql
 WHERE "orgId" = $orgId
@@ -113,10 +113,9 @@ WHERE "orgId" = $orgId
   )
 ```
 
-Every human role, including owner, uses this predicate. Only callers that omit
-the principal are unfiltered; this is reserved for daemon reconciliation,
-placement, and other internal operations that must continue serving active
-restricted resources.
+Organization owners omit the visibility filter while retaining `orgId` scoping.
+Internal callers that omit the principal use the same org-scoped form for daemon
+reconciliation, placement, and other operations serving restricted resources.
 
 The SQL projection and in-memory `resource.view` rule are colocated and covered
 by the same truth-table tests. Paginated queries must not post-filter an
@@ -124,7 +123,8 @@ already-sized page.
 
 ## 6. Audience repair on member removal
 
-`sharedWith` is the complete audience for a restricted resource;
+`sharedWith` is the explicit audience for a restricted resource, in addition to
+the role-based owner exception;
 `createdByUserId` remains immutable creation attribution and grants no access.
 Removing a member prunes their ID from every Selected visibility carrier before
 deleting the membership. If an audience would otherwise become empty, removal

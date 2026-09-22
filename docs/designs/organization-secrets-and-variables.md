@@ -197,19 +197,18 @@ already-bound agents — where the delegation exists and the write genuinely rea
 them — covers them all but describes an agent the caller cannot view without
 naming it.
 
-An authorized binding is the target-level grant that lets future
-`organization.manage` operations rotate or delete the bound entry without
-granting organization owners visibility into the agent. This delegation is
-limited to that exact entry and agent; it does not confer general agent edit or
-discovery rights. Creating the binding, changing its target, or re-enrolling a
-previously unbound agent always requires a fresh `resource.edit` decision.
+An authorized binding lets future `organization.manage` operations rotate or
+delete that entry on the bound agent. Owners already have agent visibility and
+edit access through their role; the binding records configuration distribution,
+not an additional visibility grant. Creating the binding, changing its target,
+or re-enrolling a previously unbound agent still requires a fresh `resource.edit`
+decision.
 
 Selected bindings are edited as per-agent add/remove commands, not by replacing
-one returned array. A Settings response returns only bindings whose agents the
-caller can view. Bindings to other restricted agents, if any, are neither
-returned nor removed when the owner edits the visible selection. The UI always
-explains, without revealing whether hidden bindings exist, that only agents the
-viewer can access are listed and other private-agent assignments are unchanged.
+one returned array. A Settings response returns bindings whose agents the
+caller can view, which includes every agent for an organization owner. The
+operation still applies only the submitted binding deltas; it does not replace
+other assignments from a potentially stale client snapshot.
 
 Changing `selected` to `all` materializes every newly authorized binding and
 retains prior delegated bindings. Changing `all` to `selected` disables future

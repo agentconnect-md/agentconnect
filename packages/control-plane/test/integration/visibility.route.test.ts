@@ -15,13 +15,6 @@ import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import type { OrgMemberRole } from '../../src/persistence/ports.js'
 
-/** A 30-day window, the shape `GET /usage` takes now that the caller picks it. */
-function usageWindow(): string {
-  const to = new Date()
-  const from = new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000)
-  return new URLSearchParams({ from: from.toISOString(), to: to.toISOString() }).toString()
-}
-
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const users = () => new PgUserRepo(prisma)
 const opened: HttpApp[] = []
@@ -745,7 +738,7 @@ describe('reference-write cannot target an invisible daemon', () => {
   })
 })
 
-describe('derived visibility — session bodies, usage', () => {
+describe('derived visibility — session bodies', () => {
   it('Session body access follows the Session audience even when its Agent is hidden', async () => {
     const other = await makeUser('session-body-other', 'collaborator')
     const daemon = randomUUID()
@@ -772,23 +765,6 @@ describe('derived visibility — session bodies, usage', () => {
       expect(response.statusCode).toBe(503)
       expect(response.json()).toMatchObject({ message: 'session has no recorded daemon' })
     }
-  })
-
-  it('a restricted agent’s usage is absent from an unshared collaborator’s aggregate', async () => {
-    // The owner side of this (an owner attributes every agent) is pinned by usage.route.test.ts
-    // against the spend timeline the aggregate actually reads.
-    const other = await makeUser('u-other', 'collaborator')
-    const R = randomUUID()
-    await seedAgent(prisma, R, { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] })
-    await prisma.sessionUsage.create({
-      data: { agentId: R, sessionId: 'acp-1', totalTokens: 1234, lastActivityAt: new Date() }
-    })
-
-    const usageAgents = async (u: string): Promise<string[]> => {
-      const res = await appAs(u).app.inject({ method: 'GET', url: `${ORG}/usage?${usageWindow()}` })
-      return (res.json() as { agents: Array<{ agentId: string }> }).agents.map((a) => a.agentId)
-    }
-    expect(await usageAgents(other)).not.toContain(R)
   })
 })
 

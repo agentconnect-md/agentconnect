@@ -355,8 +355,8 @@ export interface AgentDto {
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for daemon/CLI-created
   lastModifiedAt: string // ISO-8601
   lastModifiedBy: string | null // editor's userId (resolved to a name / "You" in the UI); null for daemon/CLI-created
-  visibility: ResourceVisibility // 'org' = all members; 'restricted' = the complete sharedWith audience
-  sharedWith: string[] // complete app_user.id audience when restricted
+  visibility: ResourceVisibility // 'org' = all members; 'restricted' = sharedWith plus organization owners
+  sharedWith: string[] // explicit app_user.id audience when restricted
   canEdit: boolean // whether the caller may change non-sharing agent settings
   canManageSharing: boolean // whether the caller may change this resource's sharing
   callPolicy: AgentCallPolicy // which peer agents may call this agent as a sub-agent
@@ -4708,8 +4708,8 @@ export interface McpProviderDto {
   /** Open-connector service slug (e.g. "stripe") for kind='open_connector' — used to
    *  resolve the provider's catalog icon. Absent for custom providers. */
   service?: string
-  visibility: ResourceVisibility // 'org' = everyone; 'restricted' = the complete sharedWith audience
-  sharedWith: string[] // complete app_user.id audience when restricted
+  visibility: ResourceVisibility // 'org' = everyone; 'restricted' = sharedWith plus organization owners
+  sharedWith: string[] // explicit app_user.id audience when restricted
   createdBy: string | null // immutable creator audit
   canEdit: boolean // whether THIS caller may change non-sharing provider settings
   canManageSharing: boolean // whether THIS caller may change the provider's sharing

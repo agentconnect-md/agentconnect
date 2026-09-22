@@ -60,13 +60,11 @@ export const SessionVisibilityEnum = z.enum(['private', 'org', 'external'])
 export const MutableSessionVisibilityEnum = z.enum(['private', 'org'])
 /** Whether a visibility change has reached the daemons that enforce it (§5.1). */
 export const SessionVisibilityStateEnum = z.enum(['pending', 'applied'])
-/** `PUT /{agents|daemons|crons}/:id/sharing` — set a resource's visibility + share
- *  set. Gated exactly like a content edit (`canEdit`, decision §13.3). */
+/** Resource sharing changes use the same canEdit gate as content changes. */
 export const SetSharingBody = z
   .object({
     visibility: ResourceVisibilityEnum,
-    // Complete app_user.id audience; ignored while `visibility === 'org'`
-    // (kept, restore-friendly). The route intersects it with current members.
+    // Explicit current-member audience; preserved while org-visible, with owner access independent of this list.
     sharedWith: z.array(z.string()).default([])
   })
   .strict()
@@ -271,7 +269,7 @@ export const DaemonViewDto = z.object({
   pinnable: z.boolean(),
   // ── visibility / sharing (docs/designs/resource-visibility.md) ──
   visibility: ResourceVisibilityEnum,
-  sharedWith: z.array(z.string()), // complete app_user.id audience when restricted
+  sharedWith: z.array(z.string()), // explicit app_user.id audience; owners also have access
   canEdit: z.boolean(), // visible + non-viewer; gates non-sharing edits
   canManageSharing: z.boolean(), // visible + non-viewer; gates the sharing control
   /** Whether the CALLER may command restart/upgrade on this daemon (org OWNER only, §7).
@@ -874,7 +872,7 @@ export const AgentDto = z.object({
   lastModifiedBy: z.string().nullable(), // editor's userId (web resolves to a name / "You"); null for daemon/CLI-created
   // ── visibility / sharing (docs/designs/resource-visibility.md) ──
   visibility: ResourceVisibilityEnum,
-  sharedWith: z.array(z.string()), // complete app_user.id audience when restricted
+  sharedWith: z.array(z.string()), // explicit app_user.id audience; owners also have access
   canEdit: z.boolean(), // visible + non-viewer; gates non-sharing edits
   canManageSharing: z.boolean(), // visible + non-viewer; gates sharing
   callPolicy: AgentCallPolicyEnum, // which peer agents may call this agent as a sub-agent
@@ -1047,7 +1045,7 @@ export const McpProviderDto = z.object({
   // non-secret binding marker, surfaced so the console can show the provider's icon.
   service: z.string().optional(),
   visibility: z.string(), // 'org' | 'restricted'
-  sharedWith: z.array(z.string()), // complete app_user.id audience when restricted
+  sharedWith: z.array(z.string()), // explicit app_user.id audience; owners also have access
   // MCP Apps (webchat-mcp-apps.md §4): the owning daemon hosts this provider itself so it can
   // render the server's `ui://` interfaces in webchat. Explicit rather than probed — see the
   // wire field's own note; flipping it also renames the provider's tools.
@@ -2699,7 +2697,7 @@ export const CronDto = z.object({
   lastModifiedAt: z.string(),
   // ── visibility / sharing (docs/designs/resource-visibility.md) ──
   visibility: ResourceVisibilityEnum,
-  sharedWith: z.array(z.string()), // complete app_user.id audience when restricted
+  sharedWith: z.array(z.string()), // explicit app_user.id audience; owners also have access
   canEdit: z.boolean(), // visible + non-viewer; gates non-sharing edits
   canManageSharing: z.boolean() // visible + non-viewer; gates the sharing control
 })

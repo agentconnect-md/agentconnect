@@ -5,8 +5,9 @@
 > visibility contract. User-facing labels are **Everyone** and **Selected**.
 > Resource and session decisions converge through
 > [`authorization-policy.md`](authorization-policy.md). A Selected member list
-> is the complete human audience; immutable creation attribution grants no
-> access. Normal member removal prunes all five visibility carriers atomically
+> records explicit sharing; organization owners also have access through their
+> role, while immutable creation attribution grants none. Normal member removal
+> prunes all five visibility carriers atomically
 > and repairs only audiences that would otherwise become empty.
 > Section 14 (platform conversation gating) extends the same model to platform
 > ingress and is implemented.
@@ -31,7 +32,7 @@ This design adds **per-resource visibility**:
 
 - A new resource is **visible to everyone in its organization by default** with
   `visibility = org`.
-- It may instead be **restricted to selected users** with
+- It may instead be **restricted to selected users and organization owners** with
   `visibility = restricted`. Whether a selected user can only view or also edit
   depends on their **organization role**: viewers are read-only, while
   collaborators and owners can edit.
@@ -48,8 +49,9 @@ This design adds **per-resource visibility**:
 
 ```ts
 canView(res, { userId, role }) =
+  role === 'owner' || // Organization-wide resource governance
   res.visibility === 'org' || // Visible to everyone by default
-  res.sharedWith.includes(userId) // Complete Selected audience
+  res.sharedWith.includes(userId) // Explicit Selected audience
 
 canEdit(res, ctx) =
   ctx.role === 'viewer'
@@ -86,6 +88,14 @@ This has two consequences:
 
 Both are accepted under a model of collaborator trust within an organization.
 
+The owner exception applies to existing restricted resources immediately when
+the updated policy is deployed; no audience backfill is required. This widens
+access to the Agent's configuration, shared workspace, memory, and editor
+approval queue, as well as other routes authorized by the same resource policy.
+Private and external Session audiences, including isolated session-workspace
+reads, retain their own authorization. Saved secret values remain write-only.
+The sharing UI must disclose the owner exception wherever it presents Selected.
+
 ## 2. Resource taxonomy
 
 | Category                 | Resource                                                   | Own audience fields?                                        | Source                                               |
@@ -117,7 +127,7 @@ Each visibility carrier keeps immutable creator audit separate from access:
 ```prisma
 createdByUserId String? // immutable attribution
 visibility  ResourceVisibility @default(org)
-sharedWith  String[]           @default([])  // complete, non-empty app_user.id audience when restricted
+sharedWith  String[]           @default([])  // explicit, non-empty app_user.id audience when restricted
 ```
 
 `String[] @default([])` is an established repository pattern used by
@@ -163,8 +173,9 @@ can(principal, { action: 'session.visibility.change', resource, identitySet })
 Readable `canView`/`canEdit`/`canManageSharing` adapters delegate to `can`.
 `rbac.ts` delegates its role guards to the organization actions, and the
 session visibility-change predicate also lives in this module. The
-`visibilityWhere` SQL projection is colocated with the in-memory rule; only an
-undefined principal, reserved for daemon/orchestration reads, is unfiltered.
+`visibilityWhere` SQL projection is colocated with the in-memory rule. An
+organization owner or an undefined principal reserved for daemon/orchestration
+reads omits the visibility filter; callers always retain organization scoping.
 See [`authorization-policy.md`](authorization-policy.md) for the boundary.
 
 The only context-pipeline change is adding `userId` to `OrgCtx` in
@@ -537,7 +548,7 @@ migrations and must not rewrite that file:
 ```sql
 -- Per-resource visibility for Agent, Daemon, and CronDef.
 -- 'org' is the current default visible to everyone.
--- 'restricted' means the complete, non-empty sharedWith audience.
+-- 'restricted' admits its non-empty sharedWith audience and organization owners.
 -- DEFAULT 'org' and an empty array backfill every row in place without a null
 -- intermediate.
 CREATE TYPE "ResourceVisibility" AS ENUM ('org', 'restricted');
@@ -588,15 +599,21 @@ handler.
   `dto.createdBy` may be null for a synthetic-email creator because of the
   `isSyntheticEmail` gates at `agents.ts:69`, `crons.ts:44`, and
   `daemons.ts:61`. Client derivation would diverge from the server predicate.
-- **Member selector:** store and transmit raw user IDs. The selected IDs are the
-  complete audience; `createdBy` is display-only audit. Reuse the ID-to-name
+- **Member selector:** store and transmit only explicitly selected user IDs.
+  Owners also have access through their role, but are not automatically added to
+  `sharedWith`: that list also drives gated DM defaults and approval routing.
+  Read-only access summaries include current owners without changing the saved
+  selection; `createdBy` is display-only audit. Reuse the ID-to-name
   directory through `setMemberDirectory`, `creatorLabel`,
   `useConsoleData().members`, `Avatar` at `ui.tsx:39`, and
   `memberDisplayName` at `api.ts:607`. The member data comes from
   `data-context.tsx:69-70,:209`. Follow the role-tile interaction in
   `InviteMembersModal`.
 - **Visibility control:** radio options are Everyone and Selected. Selecting
-  Selected expands member multi-selection. When switching from Everyone with
+  Selected expands member multi-selection and states that organization owners
+  retain access on both desktop and mobile. Removing a member changes the
+  explicit selection; removing an owner does not revoke role-based access.
+  When switching from Everyone with
   no saved selection, the Console initially selects the current user. Any
   selected member can be replaced, but the final one cannot be removed until
   another current member is selected.
@@ -626,7 +643,7 @@ edits; a shared viewer only views; and `visibilityWhere(owner)` equals
 
 1. An unauthorized collaborator does not receive a restricted agent from
    `list`, and `get` returns 404.
-2. Exactly the explicitly selected members can see it; the creator has no implicit access.
+2. Explicitly selected members and organization owners can see it; creation grants no implicit access.
 3. An unshared organization owner receives the restricted resource from `list` and `get`.
 4. An authorized viewer gets 200 from GET and 403 from PATCH.
 5. A shared collaborator can edit content and sharing; a shared viewer cannot.
