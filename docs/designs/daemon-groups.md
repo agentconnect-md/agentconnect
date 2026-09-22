@@ -288,7 +288,10 @@ These are the operator's, not the code's:
   database share those rows, the same way pool members do
   ([cloud-data-plane-postgres.md](cloud-data-plane-postgres.md)). A session that ran on
   its holder still keeps its runtime state on that machine; one placed on an executor
-  resumes from the successor.
+  resumes from the successor. On a member's own store, the rows a moved duty leaves
+  behind are that member's alone, so its retention sweep ages them out like any others
+  even though it no longer serves the agent, and reports each purge receipt; the idle
+  close stays with the holder, since it reports to the control plane (#2246).
 - **Re-cloneable workspaces.** A GitHub-mode workspace re-materializes on the new holder
   from its repo; a scratch workspace does not follow. This is already true for the pool
   and is documented there; a group inherits the same constraint and the same guidance

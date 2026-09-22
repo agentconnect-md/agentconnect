@@ -549,6 +549,33 @@ describe('SessionRepo.markContentPurged — retention-GC receipt (#485)', () => 
     expect((await repo.getUnscoped(SessionId(SESSION)))?.contentPurgedAt).toEqual(purgedAt)
   })
 
+  it('stamps only the rows a named recorder wrote (#2246)', async () => {
+    await fixtures()
+    const repo = new PgSessionRepo(prisma)
+    await repo.recordMilestone(ev('end', { daemonId: DaemonId(DAEMON) }))
+    const purgedAt = new Date('2026-08-04T09:00:00.000Z')
+
+    const foreign = await repo.markContentPurged(
+      AgentId(AGENT),
+      [SessionId(SESSION)],
+      'retention',
+      purgedAt,
+      DaemonId(OTHER_DAEMON)
+    )
+    expect(foreign.marked).toEqual([])
+    expect((await repo.getUnscoped(SessionId(SESSION)))?.contentPurgedAt).toBeNull()
+
+    const own = await repo.markContentPurged(
+      AgentId(AGENT),
+      [SessionId(SESSION)],
+      'retention',
+      purgedAt,
+      DaemonId(DAEMON)
+    )
+    expect(own.marked).toEqual([SessionId(SESSION)])
+    expect((await repo.getUnscoped(SessionId(SESSION)))?.contentPurgedAt).toEqual(purgedAt)
+  })
+
   it('is a no-op for an unknown session and for an empty report', async () => {
     await fixtures()
     const repo = new PgSessionRepo(prisma)

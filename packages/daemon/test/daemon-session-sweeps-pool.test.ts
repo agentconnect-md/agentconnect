@@ -63,6 +63,8 @@ async function boot(root: string, daemonId: string) {
   await daemon.start()
   const inner = daemon as any
   inner.cfg.daemonId = daemonId
+  // Both members open one database, as pool members share the data plane.
+  inner.sharedStore = true
   const emitSessionPurged = vi.fn<(purged: SessionPurged) => Promise<'acknowledged'>>(
     async () => 'acknowledged' as const
   )
@@ -348,5 +350,43 @@ describe('session sweeps on a daemon pool are holder-only (#1032)', () => {
     expect(await shared.listSessionPurges(10, b.clock.now(), 'daemon-b', [AGENT_A])).toEqual([])
     await stop()
     for (const local of locals) await local.close()
+  })
+})
+
+describe('on a private store, a daemon judges every agent it keeps rows for (#2246)', () => {
+  /** One member on its own store, serving only bot-b: bot-a's duty is held elsewhere, or the agent is gone. */
+  async function bootAlone() {
+    const member = await boot(scaffold(), 'daemon-a')
+    member.inner.sharedStore = false
+    hold(member.inner, GROUP_B, AGENT_B)
+    return member
+  }
+
+  it('retires an expired session of an agent it no longer serves, and reports its receipt', async () => {
+    const a = await bootAlone()
+    const store: LocalStore = a.inner.store
+    await seedSession(store, 'a-old', AGENT_A, 'closed', 0)
+    await advance(a, 8 * DAY_MS)
+
+    await a.inner.sweepSessionRetention()
+    expect(await store.getSession('a-old')).toBeUndefined()
+    // No other member will ever hold this receipt; the CP ACKs it whether or not the agent is still placed here.
+    await a.inner.drainSessionPurges()
+    expect(a.emitSessionPurged).toHaveBeenCalledWith(expect.objectContaining({ agentId: AGENT_A }))
+    expect(await store.listSessionPurges(10, a.clock.now())).toEqual([])
+    await a.daemon.stop()
+  })
+
+  it('still leaves the TTL close of that agent to its holder', async () => {
+    const a = await bootAlone()
+    const store: LocalStore = a.inner.store
+    await seedSession(store, 'a-quiet', AGENT_A, 'idle', 0)
+    await seedSession(store, 'b-quiet', AGENT_B, 'idle', 0)
+    await advance(a, TTL_MS + 1)
+
+    await a.inner.sweepIdle()
+    expect((await store.getSession('a-quiet'))?.state).toBe('idle')
+    expect((await store.getSession('b-quiet'))?.state).toBe('closed')
+    await a.daemon.stop()
   })
 })

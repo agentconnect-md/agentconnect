@@ -828,6 +828,8 @@ export class Daemon {
   }
   private store!: LocalStore
   private dataPlane?: PostgresDataPlane
+  // Whether other members read and write this daemon's session rows; set once the shared data plane opens.
+  private sharedStore = false
   private mcp!: McpControlServer
   // The agent memory provider. Per-agent: it dispatches each call to the agent's
   // configured backend (managed = our <agent-root>/memory/ dir; native = the
@@ -2155,6 +2157,7 @@ export class Daemon {
         },
         dataPlaneConfig
       )
+      this.sharedStore = true
       if (!this.k8s) this.log.info('store: PostgreSQL (a shared store; this machine keeps no local session history)')
     }
     if (this.k8s) {
@@ -18335,17 +18338,19 @@ export class Daemon {
    *  state is disposable). A worktree that fails the Git safety checks is only
    *  reported — its session row is kept so the working state stays reachable
    *  through the same logical session. */
-  /** The retention sweep's active-turn exclusion, beyond the durable-state filter:
-   *  a claimed serial gate (owns cold dispatch + queued arrivals), a live Pending
-   *  turn, pending durable inbox work, or unsettled SDK background tasks. All are
-   *  member-local, so an agent this member does not serve counts as active (#1032). */
+  /** Whether this member judges an agent's stored sessions: its holder, or on a private store — which no other member reads — this daemon for every agent (#2246). */
+  private judgesStoredSessions(agentId: string): boolean {
+    return this.servesAgent(agentId) || !this.sharedStore
+  }
+
+  /** The retention sweep's active-turn exclusion: a claimed gate, a live turn, pending inbox work or background tasks — all member-local, so on a shared store only the holder judges (#1032). */
   private async sessionRetentionActive(rec: {
     key: string
     agentId: string
     acpSessionId: string | null
   }): Promise<boolean> {
     return (
-      !this.servesAgent(rec.agentId) ||
+      !this.judgesStoredSessions(rec.agentId) ||
       this.drainingAgents.has(rec.agentId) ||
       this.turnRunsHere(rec.key) ||
       (await this.store.sessionHasPendingInboxRows(rec.key)) ||
@@ -18444,9 +18449,9 @@ export class Daemon {
   private async sweepExpiredSessions(): Promise<void> {
     const windowMs = sessionRetentionMs(this.cfg.sessions.retention)
     if (windowMs === null) return
-    // Holder-only on a pool: the active-turn exclusions are member-local, so only the holder can judge a row.
+    // Holder-only on a shared store: the active-turn exclusions are member-local, so only the holder can judge a row.
     const expired = (await this.store.listExpiredSessions(this.clock.now() - windowMs)).filter((rec) =>
-      this.servesAgent(rec.agentId)
+      this.judgesStoredSessions(rec.agentId)
     )
     if (!expired.length) return
     // ONE stamp for the whole pass, not one per session: it is the sweep that
@@ -18684,7 +18689,8 @@ export class Daemon {
         const { agentId, reason, purgedAt } = rows[0]!
         // The CP ACKs a non-holder without marking, so a foreign agent's rows are left for the holder
         // (the claim lapses) — and skipped, never returned on, so they cannot block the groups behind them.
-        if (!this.servesAgent(agentId)) {
+        // On a private store nobody else holds them: the CP marks a receipt from the agent's placement and ACKs any other.
+        if (!this.judgesStoredSessions(agentId)) {
           leftForHolder += rows.length
           continue
         }
@@ -18837,8 +18843,12 @@ export class Daemon {
     // The hosts and start generations the close decision is taken against; a re-admitted session has newer ones.
     const hostsAtDecision = new Map(this.hosts)
     const generationsAtDecision = new Map(this.hostStartGeneration)
-    const closed = await this.store.closeIdleSessions(now, ttl, (agentId, acpSessionId, key) =>
-      this.sessionRetentionActive({ key, agentId, acpSessionId })
+    // The TTL close stays with the agent's holder even on a private store: it reports the close to the control plane.
+    const closed = await this.store.closeIdleSessions(
+      now,
+      ttl,
+      (agentId, acpSessionId, key) =>
+        !this.servesAgent(agentId) || this.sessionRetentionActive({ key, agentId, acpSessionId })
     )
     if (closed.length) this.log.info(`idle: TTL-closed ${closed.length} session(s) (>${Math.round(ttl / 1000)}s)`)
     // A failed remote revoke is queued durably by the grant ledger; the periodic

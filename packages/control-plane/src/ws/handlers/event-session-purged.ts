@@ -8,9 +8,9 @@
  * console say "the transcript was deleted" instead of rendering a permanently
  * empty history as "this session said nothing".
  *
- * Trust boundary: same as `event/session` — the reported agent must be placed on
- * the authenticated daemon, and the stamp only touches rows already bound to that
- * agent.
+ * Trust boundary: the stamp only touches rows bound to the reported agent, and a daemon
+ * the agent is no longer placed on stamps only the rows it recorded — on its own store
+ * the content it purged was only ever there (#2246).
  *
  * WHAT THE REPLY MEANS, and why this does not use `runForReportingAgent`: the ACK
  * is what releases the daemon's receipt, and that receipt is the LAST COPY of the
@@ -19,10 +19,11 @@
  * helper collapses into one `false`:
  *   - the placement lease is held by a cold move (transient, and a move lasts as
  *     long as a drain) ⇒ retryable error, receipt KEPT;
- *   - the agent is not placed here / no longer exists (permanent) ⇒ ACK, because
- *     the claim can never be accepted and retrying it forever is worse than
- *     dropping it. This is also what garbage-collects receipts for a deleted
- *     agent, whose `SessionMeta` rows cascaded away with it.
+ *   - the agent no longer exists (permanent) ⇒ ACK, because the claim can never
+ *     be accepted and retrying it forever is worse than dropping it. This is what
+ *     garbage-collects receipts for a deleted agent, whose `SessionMeta` rows
+ *     cascaded away with it; a reporter the agent moved away from is ACKed too,
+ *     after stamping what it recorded.
  */
 import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import { isFrame } from '@agentconnect.md/protocol'
@@ -46,12 +47,16 @@ export const handleSessionPurged: Handler = async (frame, conn, deps) => {
   }
   try {
     const agent = await deps.agent.get(orgId, agentId)
-    if (agent && (await (deps.placementResolver ?? PLACEMENT_ONLY).mayAct(agent, DaemonId(conn.daemonId)))) {
+    if (agent) {
+      const reporter = DaemonId(conn.daemonId)
+      const placed = await (deps.placementResolver ?? PLACEMENT_ONLY).mayAct(agent, reporter)
+      // A recorder the agent moved away from still purges what it recorded: on its own store the content was only ever there (#2246).
       await deps.session.markContentPurged(
         agentId,
         p.sessionIds.map((id) => SessionId(id)),
         p.reason,
-        new Date(p.ts)
+        new Date(p.ts),
+        placed ? undefined : reporter
       )
     }
     // ACK only after the commit — the daemon releases its receipt on it.
