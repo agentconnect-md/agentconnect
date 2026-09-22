@@ -138,13 +138,13 @@ describe('organization environment — authorization and visibility', () => {
     expect((await asOwner.app.inject({ method: 'GET', url: ENV })).statusCode).toBe(200)
   })
 
-  it('never creates the first binding to another member’s restricted agent, via `all` or a point request', async () => {
+  it('reaches another member’s restricted agent as an owner, via `all` or a point request (owner exception)', async () => {
     const ownerId = await makeUser(`owner-${randomUUID()}`, 'owner')
     const otherId = await makeUser(`other-${randomUUID()}`, 'collaborator')
     await seedDaemon(prisma, DAEMON, { capabilities: CAPABLE })
     const privateAgent = randomUUID()
-    // Restricted to someone else: invisible AND non-editable
-    // to the organization owner below.
+    // Restricted to someone else. The organization owner below is not selected,
+    // but the owner exception makes every agent of the organization editable to them.
     await seedAgent(prisma, privateAgent, {
       daemonId: DAEMON,
       visibility: 'restricted',
@@ -153,26 +153,26 @@ describe('organization environment — authorization and visibility', () => {
     })
 
     const http = app({ userId: ownerId })
-    // `all` enrollment must not reach it.
+    // `all` enrollment binds it like any other agent.
     const all = await createEntry(http, { key: 'SHARED_VAR', kind: 'variable', value: 'x', audience: 'all' })
     expect(all.status).toBe(201)
-    expect(all.entry.visibleAgentIds).not.toContain(privateAgent)
+    expect(all.entry.visibleAgentIds).toContain(privateAgent)
     expect(
       await prisma.organizationEnvironmentAssignment.count({ where: { entryId: all.entry.id, agentId: privateAgent } })
-    ).toBe(0)
+    ).toBe(1)
 
-    // A point request is indistinguishable from a missing agent.
+    // A point request binds it; a truly absent agent id still 404s.
     const selected = await createEntry(http, { key: 'PT', kind: 'variable', value: 'x', audience: 'selected' })
     const bind = await http.app.inject({
       method: 'PUT',
       url: `${ENV}/${selected.entry.id}/agents/${privateAgent}`
     })
-    expect(bind.statusCode).toBe(404)
-    // …and the same as a truly absent agent id, so nothing can be probed.
+    expect(bind.statusCode).toBe(200)
+    expect((bind.json() as EntryDto).visibleAgentIds).toEqual([privateAgent])
     const absent = await http.app.inject({ method: 'PUT', url: `${ENV}/${selected.entry.id}/agents/${randomUUID()}` })
     expect(absent.statusCode).toBe(404)
 
-    // A create naming it up-front is refused outright, and nothing is persisted.
+    // A create naming it up-front binds it as well.
     const upfront = await createEntry(http, {
       key: 'UPFRONT',
       kind: 'variable',
@@ -180,11 +180,11 @@ describe('organization environment — authorization and visibility', () => {
       audience: 'selected',
       agentIds: [privateAgent]
     })
-    expect(upfront.status).toBe(404)
-    expect(await prisma.organizationEnvironmentEntry.count({ where: { key: 'UPFRONT' } })).toBe(0)
+    expect(upfront.status).toBe(201)
+    expect(upfront.entry.visibleAgentIds).toEqual([privateAgent])
   })
 
-  it('rotates through an already-authorized durable binding without granting agent visibility', async () => {
+  it('rotates through an already-authorized durable binding, and an owner sees the agent it reaches', async () => {
     const ownerId = await makeUser(`owner-${randomUUID()}`, 'owner')
     const otherId = await makeUser(`other-${randomUUID()}`, 'collaborator')
     await seedDaemon(prisma, DAEMON, { capabilities: CAPABLE })
@@ -211,7 +211,8 @@ describe('organization environment — authorization and visibility', () => {
     )
 
     // Establish the delegation directly (as the authorized agent editor would),
-    // then prove the OWNER can rotate without ever seeing the agent.
+    // then rotate as the OWNER. The binding is durable regardless of who can see
+    // the agent; under the owner exception the owner also sees it in the response.
     await prisma.organizationEnvironmentAssignment.create({
       data: { orgId: DEFAULT_ORG_ID, entryId: entry.id, agentId: privateAgent, authorizedByUserId: otherId }
     })
@@ -221,11 +222,9 @@ describe('organization environment — authorization and visibility', () => {
       payload: { expectedVersion: entry.version, value: 'v2' }
     })
     expect(rotate.statusCode).toBe(200)
-    // The response does NOT disclose the private agent it reaches.
-    expect((rotate.json() as EntryDto).visibleAgentIds).toEqual([])
-    // Nor does the owner's own listing.
+    expect((rotate.json() as EntryDto).visibleAgentIds).toEqual([privateAgent])
     const list = (await asOwner.app.inject({ method: 'GET', url: ENV })).json() as EntryDto[]
-    expect(list.find((e) => e.id === entry.id)?.visibleAgentIds).toEqual([])
+    expect(list.find((e) => e.id === entry.id)?.visibleAgentIds).toEqual([privateAgent])
   })
 
   it('does not remove an invisible binding when the visible selection is edited', async () => {
@@ -797,11 +796,12 @@ describe('organization environment — daemon feature gate', () => {
 })
 
 describe('organization environment — review follow-ups', () => {
-  it('does not disclose a restricted agent through the daemon-compatibility preflight', async () => {
+  it('answers the daemon-compatibility verdict for a restricted agent the owner can see', async () => {
     const ownerId = await makeUser(`owner-${randomUUID()}`, 'owner')
     const otherId = await makeUser(`other-${randomUUID()}`, 'collaborator')
-    // The private agent sits on a daemon WITHOUT the revision fence, which is
-    // exactly the case that used to answer 409 and name it.
+    // The private agent sits on a daemon WITHOUT the revision fence. The owner is
+    // not selected on it, but the owner exception makes it visible, so the
+    // preflight answers 409 and may name it — there is nothing to hide from an owner.
     await seedDaemon(prisma, LEGACY_DAEMON, { capabilities: LEGACY })
     const privateAgent = randomUUID()
     await seedAgent(prisma, privateAgent, {
@@ -817,9 +817,8 @@ describe('organization environment — review follow-ups', () => {
       .entry
 
     const bind = await http.app.inject({ method: 'PUT', url: `${ENV}/${entry.id}/agents/${privateAgent}` })
-    // 404, not 409 — and the response must not carry the agent's name.
-    expect(bind.statusCode).toBe(404)
-    expect(bind.body).not.toContain('private-legacy-bot')
+    expect(bind.statusCode).toBe(409)
+    expect(bind.body).toContain('private-legacy-bot')
 
     // Naming an agent up-front on create behaves the same way.
     const upfront = await createEntry(http, {
@@ -829,8 +828,8 @@ describe('organization environment — review follow-ups', () => {
       audience: 'selected',
       agentIds: [privateAgent]
     })
-    expect(upfront.status).toBe(404)
-    expect(upfront.raw).not.toContain('private-legacy-bot')
+    expect(upfront.status).toBe(409)
+    expect(upfront.raw).toContain('private-legacy-bot')
   })
 
   it('counts the STORED value when a retarget omits a replacement', async () => {

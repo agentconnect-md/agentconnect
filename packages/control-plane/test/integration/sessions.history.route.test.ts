@@ -591,6 +591,15 @@ describe('GET /sessions/:id/messages (history pull via the session daemon)', () 
       emailVerified: true
     })
     await users.addMemberByEmail(DEFAULT_ORG_ID, selectedEmail, 'collaborator')
+    // The caller: a collaborator outside the audience (the seeded default principal is an
+    // organization owner, to whom the owner exception would show the Agent).
+    const outsiderEmail = `history-outsider-${randomUUID()}@acme.dev`
+    const { userId: outsider } = await users.provisionOidcUser({
+      oidcSubject: `history-outsider-${randomUUID()}`,
+      email: outsiderEmail,
+      emailVerified: true
+    })
+    await users.addMemberByEmail(DEFAULT_ORG_ID, outsiderEmail, 'collaborator')
     await seedAgent(prisma, AGENT, {
       daemonId: DAEMON,
       visibility: 'restricted',
@@ -617,7 +626,7 @@ describe('GET /sessions/:id/messages (history pull via the session daemon)', () 
         liveMore: true
       }
     )
-    running = buildHttpApp(prisma, undefined, LIVE, spy as unknown as ControlSender)
+    running = buildHttpApp(prisma, { DEFAULT_OWNER_ID: outsider }, LIVE, spy as unknown as ControlSender)
 
     // Agent Team visibility still protects Agent configuration/workspace routes.
     expect((await running.app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}` })).statusCode).toBe(404)

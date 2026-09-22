@@ -105,11 +105,11 @@ interface RuntimeOverridesEnv {
 /**
  * The `resource.edit` projection, evaluated in SQL so `all` enrollment and the
  * selected-agent picker share ONE policy with `authorization/policy.ts`. A viewer
- * role may edit nothing; every other role may edit exactly what it can see.
- * `viewer: undefined` is the internal/unfiltered form.
+ * role may edit nothing; an owner sees (and so edits) every agent; a collaborator
+ * edits exactly what it can see. `viewer: undefined` is the internal/unfiltered form.
  */
 function editableAgentWhere(orgId: string, viewer: ViewCtx | undefined): Prisma.AgentWhereInput {
-  if (!viewer) return { orgId }
+  if (!viewer || viewer.role === 'owner') return { orgId }
   if (viewer.role === 'viewer') return { orgId, id: { in: [] } }
   return {
     orgId,

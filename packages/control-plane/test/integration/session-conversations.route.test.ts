@@ -13,6 +13,7 @@ import { prisma } from '../setup.db.js'
 import { seedDaemon, seedAgent, defaultAgentName } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PgAgentRepo, PgHookRepo, PgSessionRepo, PgWebchatConversationRepo } from '../../src/persistence/index.js'
+import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { AgentId, OrgId, SessionId } from '../../src/domain/ids.js'
 import { handleEventSession } from '../../src/ws/handlers/index.js'
 import type { DaemonConnection } from '../../src/ws/connection.js'
@@ -33,6 +34,17 @@ afterEach(async () => {
   await running?.close()
   running = undefined
 })
+
+/** An app acting as a fresh collaborator — a caller to whom a restricted Agent shared with
+ *  someone else is hidden (the seeded default principal is an organization owner, and the
+ *  owner exception would show them every Agent). */
+async function collaboratorApp(): Promise<HttpApp> {
+  const users = new PgUserRepo(prisma)
+  const email = `conv-collaborator-${randomUUID().slice(0, 8)}@acme.dev`
+  const { userId } = await users.provisionOidcUser({ oidcSubject: `conv-${randomUUID()}`, email, emailVerified: true })
+  await users.addMemberByEmail(DEFAULT_ORG_ID, email, 'collaborator')
+  return buildHttpApp(prisma, { DEFAULT_OWNER_ID: userId })
+}
 
 async function reportSession(payload: Record<string, unknown>, daemonId = DAEMON): Promise<void> {
   const frame = {
@@ -176,7 +188,7 @@ describe('GET /sessions — grouped conversations', () => {
       visibility: 'restricted',
       sharedWith: [stranger.id]
     })
-    running = buildHttpApp(prisma)
+    running = await collaboratorApp()
 
     await slackReport('sess-vis', AGENT_A, 1_000)
     await slackReport('sess-hidden', AGENT_B, 2_000)
@@ -340,7 +352,7 @@ describe('GET /sessions — multi-agent conversation filter', () => {
       data: { id: randomUUID(), email: `stranger-${randomUUID().slice(0, 8)}@example.com`, displayName: 'Stranger' }
     })
     await seedAgent(prisma, AGENT_B, { daemonId: DAEMON, visibility: 'restricted', sharedWith: [stranger.id] })
-    running = buildHttpApp(prisma)
+    running = await collaboratorApp()
 
     await slackReport('sess-vis', AGENT_A, 1_000)
     await slackReport('sess-hidden', AGENT_B, 2_000)
@@ -359,7 +371,7 @@ describe('GET /sessions — multi-agent conversation filter', () => {
       data: { id: randomUUID(), email: `stranger-${randomUUID().slice(0, 8)}@example.com`, displayName: 'Stranger' }
     })
     await seedAgent(prisma, AGENT_B, { daemonId: DAEMON, visibility: 'restricted', sharedWith: [stranger.id] })
-    running = buildHttpApp(prisma)
+    running = await collaboratorApp()
 
     await slackReport('sess-vis', AGENT_A, 1_000)
     await slackReport('sess-hidden', AGENT_B, 2_000)

@@ -646,6 +646,45 @@ describe('PgWebchatMcpOperationRepo (real Postgres)', () => {
     expect(await prisma.webchatMcpTransportReceipt.count()).toBe(2)
   })
 
+  it('admits an organization owner outside a restricted agent’s audience, and denies a collaborator', async () => {
+    // The transaction-time fence mirrors `resource.view` (authorization/policy.ts): the
+    // conversation owner is selected, or the agent is org-visible, or the member is an
+    // organization owner. The seeded default principal is an owner; the same membership
+    // demoted to collaborator must be refused by the very same query.
+    const { authority, grant } = await operationFixture()
+    await prisma.agent.update({
+      where: { id: AGENT },
+      data: { visibility: 'restricted', sharedWith: ['someone-else'] }
+    })
+    const repo = new PgWebchatMcpOperationRepo(prisma)
+    const base = {
+      conversationId: CONVERSATION,
+      grantId: grant.id,
+      authorityGeneration: authority.generation,
+      userId: DEFAULT_OWNER_ID,
+      requestHash: 'owner-request',
+      toolName: 'updateAgent',
+      canonicalArguments: { id: AGENT, displayName: 'New name' },
+      intentHash: 'owner-intent',
+      confirmationExpiresAt: at(30_000),
+      now: NOW
+    }
+    const asOwner = await repo.createOrReplay({ ...base, jsonRpcRequestId: 'o:1' })
+    expect(asOwner.kind).toBe('created')
+
+    await prisma.membership.updateMany({
+      where: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID },
+      data: { role: 'collaborator' }
+    })
+    const asCollaborator = await repo.createOrReplay({
+      ...base,
+      jsonRpcRequestId: 'c:1',
+      requestHash: 'collaborator-request',
+      intentHash: 'collaborator-intent'
+    })
+    expect(asCollaborator.kind).toBe('denied')
+  })
+
   it('fails closed on a mutated nonterminal receipt and fences completion to the elected attempt', async () => {
     const { authority, grant } = await operationFixture()
     const repo = new PgWebchatMcpOperationRepo(prisma)

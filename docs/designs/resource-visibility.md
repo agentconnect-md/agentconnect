@@ -41,7 +41,7 @@ This design adds **per-resource visibility**:
 | Decision                                   | Choice                                                                                                                                                                                                                                                                                                              | Meaning                                                                                                               |
 | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | How is the access level determined?        | **Visibility first, then organization role**                                                                                                                                                                                                                                                                        | Everyone/Selected controls who can see a resource. Existing roles determine editing. There is no per-grant edit flag. |
-| Does an owner have a governance exception? | **No**                                                                                                                                                                                                                                                                                                              | Organization ownership grants org administration, never access to another member's restricted resource.               |
+| Does an owner have a governance exception? | **Yes**                                                                                                                                                                                                                                                                                                             | An organization owner sees, and may therefore edit, every resource of the organization, shared with them or not.      |
 | Which resource types carry visibility?     | **Agent, Daemon, Cron, MCP provider, and skill source carry Team visibility independently.** Session has a separate audience boundary. Integration derives from Agent; Usage intersects Agent visibility with Session audience; CronRun and daemon API keys derive from their parent. Bot is shared infrastructure. | See the taxonomy in section 2.                                                                                        |
 
 ### Authoritative predicates
@@ -68,11 +68,12 @@ The unit-test truth table follows directly:
 | Selected, unshared collaborator       | collaborator | No               | restricted | No        | No        | No                 |
 | Selected, shared collaborator         | collaborator | Yes              | restricted | Yes       | Yes       | Yes                |
 | Selected, shared viewer               | viewer       | Yes              | restricted | Yes       | No        | No                 |
-| Selected, unshared organization owner | owner        | No               | restricted | No        | No        | No                 |
+| Selected, unshared organization owner | owner        | No               | restricted | Yes       | Yes       | Yes                |
 
 A collaborator or organization owner for whom `canView` is true may change
 `visibility` and `sharedWith`. Viewers remain read-only. Creation attribution
-and the organization Owner role never create a hidden visibility arm.
+never creates a hidden visibility arm; the organization Owner role does (the
+owner exception above).
 
 This has two consequences:
 
@@ -80,8 +81,8 @@ This has two consequences:
    can share onward or switch the resource to Everyone. Use viewers when the
    selected members should remain read-only.
 2. **Any collaborator can change an Everyone resource to Selected** and choose
-   a non-empty audience. The creator and organization owners retain no implicit
-   access if omitted.
+   a non-empty audience. The creator retains no implicit access if omitted;
+   organization owners keep access through the owner exception.
 
 Both are accepted under a model of collaborator trust within an organization.
 
@@ -353,9 +354,9 @@ WHERE "orgId" = $1
   AND ("visibility" = 'org' OR "sharedWith" @> ARRAY[$2])
 ```
 
-Only internal callers that omit the principal receive an unfiltered
-`{ orgId }` query. Organization owners use the same predicate as every other
-human principal.
+Internal callers that omit the principal and organization owners (the owner
+exception) receive an unfiltered `{ orgId }` query; every other human principal
+uses the predicate above.
 
 **Index requirements:**
 
@@ -616,17 +617,17 @@ handler.
 
 **Unit test in `authorization/policy.test.ts`, with no database:** follow the
 truth table from section 1. A shared viewer still has `canEdit=false`; an
-unshared organization owner cannot view or edit a restricted resource; the
-creator has no implicit access; a shared collaborator views and edits; a shared
-viewer only views; and `visibilityWhere(owner)` matches every other human principal
-while `visibilityWhere(undefined)` equals `{}`.
+unshared organization owner views and edits a restricted resource (owner
+exception); the creator has no implicit access; a shared collaborator views and
+edits; a shared viewer only views; and `visibilityWhere(owner)` equals
+`visibilityWhere(undefined)` equals `{}`.
 
 **Integration tests against real Postgres, per resource type:**
 
 1. An unauthorized collaborator does not receive a restricted agent from
    `list`, and `get` returns 404.
 2. Exactly the explicitly selected members can see it; the creator has no implicit access.
-3. An unshared organization owner receives the same hidden result as any other role.
+3. An unshared organization owner receives the restricted resource from `list` and `get`.
 4. An authorized viewer gets 200 from GET and 403 from PATCH.
 5. A shared collaborator can edit content and sharing; a shared viewer cannot.
 6. Session list/detail/body reads follow the Session audience even when the
@@ -663,8 +664,8 @@ while `visibilityWhere(undefined)` equals `{}`.
    architecture supports a separate surface.
 2. **Add GIN indexes immediately** for `sharedWith` on all three tables.
 3. **Use `canManageSharing = canEdit`.** An Owner or collaborator who can view
-   and edit a resource can change sharing; only a viewer is read-only. Role
-   never widens resource visibility.
+   and edit a resource can change sharing; only a viewer is read-only. Only the
+   owner role widens resource visibility (owner exception).
 4. **Preserve `sharedWith` when changing `restricted -> org`** so switching
    back restores the selection. The `org` predicate already ignores shares.
 5. **Creation attribution is audit-only.** `createdByUserId` remains immutable

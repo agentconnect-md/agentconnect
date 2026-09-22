@@ -34,10 +34,13 @@ describe('canView', () => {
     expect(canView(orgVisible, ctx(OTHER, 'owner'))).toBe(true)
   })
 
-  it('restricted resource hides from every non-grantee, regardless of role', () => {
+  it('restricted resource hides from every non-grantee collaborator and viewer', () => {
     expect(canView(restricted, ctx(OTHER, 'collaborator'))).toBe(false)
     expect(canView(restricted, ctx(OTHER, 'viewer'))).toBe(false)
-    expect(canView(restricted, ctx(OTHER, 'owner'))).toBe(false)
+  })
+
+  it('restricted resource is visible to an unshared organization owner (owner exception)', () => {
+    expect(canView(restricted, ctx(OTHER, 'owner'))).toBe(true)
   })
 
   it('restricted resource is visible to a shared member (any role)', () => {
@@ -45,10 +48,10 @@ describe('canView', () => {
     expect(canView(restricted, ctx(GRANTEE, 'viewer'))).toBe(true)
   })
 
-  it('an invalid empty restricted resource fails closed for every role', () => {
+  it('an invalid empty restricted resource fails closed for every role but owner', () => {
     expect(canView(emptyRestricted, ctx(OTHER, 'collaborator'))).toBe(false)
     expect(canView(emptyRestricted, ctx(GRANTEE, 'collaborator'))).toBe(false)
-    expect(canView(emptyRestricted, ctx(OTHER, 'owner'))).toBe(false)
+    expect(canView(emptyRestricted, ctx(OTHER, 'owner'))).toBe(true)
   })
 })
 
@@ -58,10 +61,10 @@ describe('canEdit', () => {
     expect(canEdit(restricted, ctx(GRANTEE, 'viewer'))).toBe(false) // visible but read-only
   })
 
-  it('owner edit rights never widen resource visibility', () => {
+  it('owner edits every resource, shared with them or not', () => {
     expect(canEdit(orgVisible, ctx(OTHER, 'owner'))).toBe(true)
     expect(canEdit(restricted, ctx(GRANTEE, 'owner'))).toBe(true)
-    expect(canEdit(restricted, ctx(OTHER, 'owner'))).toBe(false)
+    expect(canEdit(restricted, ctx(OTHER, 'owner'))).toBe(true)
   })
 
   it('collaborator edits iff they can view', () => {
@@ -369,10 +372,8 @@ describe('canContinueSession (webchat-cross-integration-continuation.md §5.1)',
 })
 
 describe('visibilityWhere', () => {
-  it('filters owners through the same resource-visibility projection as every human role', () => {
-    expect(visibilityWhere(ctx(OTHER, 'owner'))).toEqual({
-      OR: [{ visibility: 'org' }, { sharedWith: { has: OTHER } }]
-    })
+  it('is empty (unfiltered) for an owner — the owner exception, mirroring canView', () => {
+    expect(visibilityWhere(ctx(OTHER, 'owner'))).toEqual({})
   })
 
   it('is empty (unfiltered) for an undefined viewer — internal / daemon-facing callers', () => {

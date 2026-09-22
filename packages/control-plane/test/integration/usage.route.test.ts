@@ -8,6 +8,7 @@
  *    excluding sessions whose last activity falls outside the range.
  */
 import { describe, it, expect, vi } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import { sumAmounts } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { buildWsHarness } from '../fakes/build-ws.js'
@@ -15,6 +16,7 @@ import { buildHttpApp } from '../fakes/build-http.js'
 import { seedAgent, seedSessionMeta } from '../fixtures/seed.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { PgSessionUsageRepo } from '../../src/persistence/repositories/session-usage.repo.js'
+import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { AgentId } from '../../src/domain/ids.js'
 
 /** Sum the series' decimal-string amounts exactly — the same primitive the aggregate
@@ -738,10 +740,18 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
   // unattributed = totals` is an invariant a bug breaks rather than a plug figure.
   it('keeps a hidden agent’s spend in the totals, as an id-less residual', async () => {
     await seedAgent(prisma, AGENT_A)
-    // Restricted and shared with someone else — invisible to this reader, who IS the org
-    // owner: roles never widen resource visibility. (`sharedWith` cannot be empty; the
-    // schema's `agent_selected_audience_nonempty` check refuses an audience of nobody.)
+    // Restricted and shared with someone else — invisible to this reader, a collaborator.
+    // (An organization owner would see it through the owner exception; `sharedWith` cannot
+    // be empty, the schema's `agent_selected_audience_nonempty` check refuses an audience of nobody.)
     await seedAgent(prisma, AGENT_B, { visibility: 'restricted', sharedWith: [SOMEONE_ELSE] })
+    const users = new PgUserRepo(prisma)
+    const readerEmail = `usage-residual-reader-${randomUUID()}@acme.dev`
+    const { userId: reader } = await users.provisionOidcUser({
+      oidcSubject: `usage-residual-reader-${randomUUID()}`,
+      email: readerEmail,
+      emailVerified: true
+    })
+    await users.addMemberByEmail(DEFAULT_ORG_ID, readerEmail, 'collaborator')
     const repo = new PgSessionUsageRepo(prisma)
     const at = new Date(Date.now() - 60_000)
     const spend = async (agentId: string, sessionId: string, model: string, costAmount: string) => {
@@ -758,7 +768,7 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
     await spend(AGENT_A, 'visible', 'claude-sonnet-4-5', '12.75')
     await spend(AGENT_B, 'hidden', 'secret-model-only-b-uses', '3.25')
 
-    const { app, close } = buildHttpApp(prisma)
+    const { app, close } = buildHttpApp(prisma, { DEFAULT_OWNER_ID: reader })
     try {
       const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${preset('d1')}` })
       expect(res.statusCode).toBe(200)
