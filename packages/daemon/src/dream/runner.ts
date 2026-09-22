@@ -20,6 +20,7 @@ import {
   OrganizationSuggestionContentBody,
   organizationSuggestionCanonical
 } from '@agentconnect.md/protocol'
+import { transcriptChannelKey, type TranscriptSessionScope } from '../store/local-store.js'
 import { memoryNameForTopic, parseMemoryFrontmatter } from '../memory/frontmatter.js'
 import type { MemoryHomePorts } from '../memory/home.js'
 import {
@@ -138,17 +139,21 @@ export interface DreamStorePort {
     agentId: string,
     limit: number
   ): Promise<
-    { sessionId: string; channel: string; thread: string; transportScope?: string | null; updatedAt: number }[]
+    {
+      sessionId: string
+      key: string
+      channel: string
+      thread: string
+      transportScope?: string | null
+      updatedAt: number
+    }[]
   >
-  /** Chronological text rows of one session thread, scoped to the agent. */
+  /** Chronological text rows of one session, scoped to that session's own admissions. */
   dreamTranscriptText(
-    channel: string,
-    thread: string,
-    agentId: string,
+    scope: TranscriptSessionScope,
     limit: number,
     /** Include tool TITLES too — the trajectory skill mining reads (never bodies). */
-    includeTools?: boolean,
-    transportScope?: string | null
+    includeTools?: boolean
   ): Promise<{ sender: string; text: string; kind?: string; input?: string }[]>
 }
 
@@ -531,7 +536,14 @@ export class DreamRunner {
     agentId: string,
     explicitWindow?: number
   ): Promise<
-    { sessionId: string; channel: string; thread: string; transportScope?: string | null; updatedAt: number }[]
+    {
+      sessionId: string
+      key: string
+      channel: string
+      thread: string
+      transportScope?: string | null
+      updatedAt: number
+    }[]
   > {
     if (explicitWindow !== undefined) return await this.deps.store.dreamSessionSources(agentId, explicitWindow)
     const recent = await this.deps.store.dreamSessionSources(agentId, MAX_AUTO_SESSION_WINDOW)
@@ -676,7 +688,7 @@ export class DreamRunner {
   private async run(
     dream: DreamInfo,
     files: { name: string; content: string }[],
-    sources: { sessionId: string; channel: string; thread: string; transportScope?: string | null }[],
+    sources: { sessionId: string; key: string; channel: string; thread: string; transportScope?: string | null }[],
     signal: AbortSignal
   ): Promise<void> {
     const { agentId, dreamId } = dream
@@ -690,12 +702,14 @@ export class DreamRunner {
         transcripts.push({
           sessionId: source.sessionId,
           rows: await this.deps.store.dreamTranscriptText(
-            source.channel,
-            source.thread,
-            agentId,
+            {
+              transcriptChannel: transcriptChannelKey(source.channel, source.transportScope),
+              coordinate: source.thread,
+              sessionKey: source.key,
+              agentId
+            },
             TRANSCRIPT_ROWS_PER_SESSION,
-            mineSkills,
-            source.transportScope
+            mineSkills
           )
         })
       }

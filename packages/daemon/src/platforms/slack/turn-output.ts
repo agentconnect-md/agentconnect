@@ -160,6 +160,8 @@ export interface SlackTurnHost<TTurn> {
   appendTranscript(row: {
     channel: string
     thread: string
+    /** The session the row is admitted into (message-intake.md §4.2). */
+    admission: { agentId: string; sessionKey: string }
     ts: string
     sender: string
     kind: 'text'
@@ -512,7 +514,8 @@ export async function applySlackAction<TTurn extends SlackTurn>(
     if (action.kind === 'post') {
       await host.appendTranscript({
         channel: p.plan.transcriptChannel,
-        thread: p.plan.sessionThread,
+        thread: p.plan.statusThread,
+        admission: { agentId: p.plan.agentId, sessionKey: p.plan.sessionKey },
         ts: host.monotonicTs(),
         sender: p.plan.agentId,
         kind: 'text',
@@ -550,7 +553,8 @@ export async function applySlackAction<TTurn extends SlackTurn>(
       const ts = await postSlackReply(host, conn, p, state, action.text, trackReply, action.terminal === true)
       await host.appendTranscript({
         channel: p.plan.transcriptChannel,
-        thread: p.plan.sessionThread,
+        thread: p.plan.statusThread,
+        admission: { agentId: p.plan.agentId, sessionKey: p.plan.sessionKey },
         ts: ts ?? `local-${Date.now()}`,
         sender: p.plan.agentId,
         kind: 'text',

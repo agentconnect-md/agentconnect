@@ -295,22 +295,17 @@ export class WebchatTransport {
     )
     // Broadcast the reconciliation post daemon-wide so a cold attach through another relay receives it.
     stream.postSink = (p) => this.host.sendWebchatPost(p)
-    // Observed-inbound analogue for webchat (turn-final refresh, §5.4): record the
-    // user message at ADMISSION — not only when its turn eventually runs — so a
-    // generation already in flight for this agent can see it at the final fence
-    // and coalesce the queued activation. The identical later append from
-    // SessionManager.handle dedups in place (same canonical ts, sender, text).
+    // Observed-inbound analogue for webchat (turn-final refresh, §5.4): record the user message at
+    // ADMISSION so an in-flight generation sees it at the final fence; the identical later append
+    // from SessionManager.handle dedups in place on (channel, ts).
     // A steer-only turn writes no row of its own: steered, the live turn's settlement appends it
     // as a delivery; refused, nothing must remain for the final fence to regenerate over — the
     // browser re-sends the same text later as an ordinary turn. It still needs the canonical ts.
     if (post && steer) msg.transcriptTs = String(post.at)
     if (post && this.host.turnFinalContextRefresh() && !steer) {
       const observedMention = attachmentMention(msg.attachments)
-      // The bounded inline image must ride the ADMISSION write: it wins the slot,
-      // and SessionManager's later identical append dedups via INSERT OR IGNORE —
-      // an attachment-less row here would pin attachmentsJson to NULL, so the
-      // session reader could neither strip the `[attached: …]` suffix nor hand
-      // the console back the image.
+      // The bounded inline image rides the ADMISSION write: it wins the slot, and an
+      // attachment-less row here would pin attachmentsJson to NULL for the session reader.
       const observedAttachments = transcriptImageAttachments(msg.attachments)
       const observedTs = await appendWebchatTextRow(
         this.host.store(),
@@ -320,10 +315,12 @@ export class WebchatTransport {
         {
           sender: author.id,
           recipient: result.agentId,
-          // The canonical identity must ride the ADMISSION write too — without
-          // it the probe falls back to (sender, text) and a distinct same-ms
-          // same-text post from another tab would reuse this row instead of
-          // bumping (§6).
+          admission: {
+            agentId: result.agentId,
+            sessionKey: sessionKey('webchat', chatId, `webchat:${chatId}`, result.agentId, undefined)
+          },
+          // The canonical identity rides the admission write too: without it the probe falls back
+          // to (sender, text) and a distinct same-ms same-text post would reuse this row (§6).
           postId: post.postId,
           text: observedMention ? `${text}\n${observedMention}`.trim() : text,
           ...(observedAttachments.length ? { attachments: observedAttachments } : {})
@@ -895,10 +892,8 @@ export class WebchatTransport {
     if (contextPost.author.kind === 'user' && contextPost.author.userId && contextPost.author.user) {
       await this.rememberAuthorName({ id: contextPost.author.userId, name: contextPost.author.user })
     }
-    // The canonical origin-minted ts. A re-fanned identical copy dedups in place
-    // (the recipient tag still records the delivery for THIS agent when the text
-    // row was already written by a co-hosted participant's turn); a foreign post
-    // occupying the slot bumps by 1 ms instead of being silently dropped.
+    // The canonical origin-minted ts. A re-fanned identical copy dedups in place — the admission
+    // still records it for THIS agent — and a foreign post on the slot bumps by 1 ms.
     return appendWebchatTextRow(
       this.host.store(),
       transcriptChannelKey(chatId, undefined),
@@ -907,6 +902,7 @@ export class WebchatTransport {
       {
         sender,
         recipient: agentId,
+        admission: { agentId, sessionKey: sessionKey('webchat', chatId, `webchat:${chatId}`, agentId, undefined) },
         postId: contextPost.postId,
         text: contextPost.text,
         ...(contextPost.author.kind === 'agent' ? { trustedAgentBot: true } : {}),

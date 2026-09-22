@@ -197,7 +197,15 @@ describe('TurnOutputWorkflow', () => {
     expect(publishedBodies).toContain('fresh replacement')
     expect(publishedBodies.join('\n')).not.toContain('stale candidate')
     const replies = (
-      await (daemon as any).store.transcriptSince(transcriptChannelKey('C1', firstMessage.transportScope), 'T1', null)
+      await (daemon as any).store.transcriptSince(
+        {
+          transcriptChannel: transcriptChannelKey('C1', firstMessage.transportScope),
+          coordinate: 'T1',
+          sessionKey: 'slack:C1:T1:bot-a',
+          agentId: 'bot-a'
+        },
+        null
+      )
     )
       .filter((row: any) => row.sender === 'bot-a')
       .map((row: any) => row.text)
@@ -521,9 +529,12 @@ describe('TurnOutputWorkflow', () => {
     await (firstDaemon as any).recordObservedInbound(unrouted)
     const transcriptChannel = transcriptChannelKey('C1', firstMessage.transportScope)
     expect(
-      (await (firstDaemon as any).store.transcriptSince(transcriptChannel, 'T1', '100.1')).find(
-        (row: any) => row.ts === '100.2'
-      )
+      (
+        await (firstDaemon as any).store.transcriptSince(
+          { transcriptChannel, coordinate: 'T1', sessionKey: 'slack:C1:T1:bot-a', agentId: 'bot-a' },
+          '100.1'
+        )
+      ).find((row: any) => row.ts === '100.2')
     ).toMatchObject({ recipient: null, quoteJson: expect.stringContaining('durable quote') })
     await firstDaemon.stop()
 
@@ -619,7 +630,15 @@ describe('TurnOutputWorkflow', () => {
     )
     expect(churnNotice?.[3]).toMatchObject({ chrome: true })
     const replies = (
-      await (daemon as any).store.transcriptSince(transcriptChannelKey('C1', firstMessage.transportScope), 'T1', null)
+      await (daemon as any).store.transcriptSince(
+        {
+          transcriptChannel: transcriptChannelKey('C1', firstMessage.transportScope),
+          coordinate: 'T1',
+          sessionKey: 'slack:C1:T1:bot-a',
+          agentId: 'bot-a'
+        },
+        null
+      )
     ).filter((row: any) => row.sender === 'bot-a')
     expect(replies).toEqual([])
     await daemon.stop()

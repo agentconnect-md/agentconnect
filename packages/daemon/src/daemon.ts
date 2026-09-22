@@ -111,7 +111,9 @@ import {
   type InboxRow,
   type SessionPurgeRow,
   type SessionRecord,
+  type TranscriptAdmission,
   type TranscriptEntry,
+  type TranscriptSessionScope,
   type TranscriptMutation,
   type TranscriptRow,
   type StoredUsage
@@ -1153,6 +1155,7 @@ export class Daemon {
             await this.store.appendTranscript({
               channel: p.plan.transcriptChannel,
               thread: p.plan.statusThread,
+              admission: { agentId: p.plan.agentId, sessionKey: p.plan.sessionKey },
               ts: monotonicTs(),
               sender: p.plan.agentId,
               kind: 'text',
@@ -3123,9 +3126,12 @@ export class Daemon {
       }),
       resolveAttachment: async (ctx, name) => {
         const found = await this.store.transcriptAttachmentByName(
-          transcriptChannelKey(ctx.channel, ctx.transportScope),
-          ctx.thread,
-          ctx.agentId,
+          {
+            transcriptChannel: transcriptChannelKey(ctx.channel, ctx.transportScope),
+            coordinate: ctx.thread,
+            sessionKey: sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope),
+            agentId: ctx.agentId
+          },
           name
         )
         return found
@@ -3310,7 +3316,11 @@ export class Daemon {
             : undefined
         await this.store.appendTranscript({
           channel: transcriptChannelKey(ctx.channel, ctx.transportScope),
-          thread: ctx.thread,
+          thread: ctx.deliveryThread,
+          admission: {
+            agentId: ctx.agentId,
+            sessionKey: sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+          },
           ts: row.ts,
           sender: ctx.agentId,
           kind: 'text',
@@ -3321,7 +3331,11 @@ export class Daemon {
       recordOutbound: async (ctx, channel, thread, text, ts, integrationId) =>
         await this.store.appendTranscript({
           channel: transcriptChannelKey(channel, this.transportScopeForIntegrationIds([integrationId])),
-          thread: thread ?? ctx.thread,
+          thread: thread ?? ctx.deliveryThread,
+          admission: {
+            agentId: ctx.agentId,
+            sessionKey: sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+          },
           ts,
           sender: ctx.agentId,
           kind: 'text',
@@ -6896,6 +6910,7 @@ export class Daemon {
     await this.store.appendTranscript({
       channel: 'memory',
       thread: context.dreamId,
+      admission: { agentId, sessionKey: executionKey },
       ts: monotonicTs(),
       sender: agentId,
       kind: 'text',
@@ -6953,6 +6968,7 @@ export class Daemon {
         await this.store.appendTranscript({
           channel: 'memory',
           thread: context.dreamId,
+          admission: { agentId, sessionKey: executionKey },
           ts: monotonicTs(),
           sender: 'memory',
           recipient: agentId,
@@ -7007,12 +7023,14 @@ export class Daemon {
       signal.removeEventListener('abort', onAbort)
       if (collector?.transcript) {
         const { channel, thread, recorder } = collector.transcript
-        for (const ev of recorder.onFinal()) await this.recordEvent(agentId, channel, thread, ev)
+        const admission = { agentId, sessionKey: executionKey }
+        for (const ev of recorder.onFinal()) await this.recordEvent(agentId, channel, thread, admission, ev)
         const output = collector.chunks.join('')
         if (output) {
           await this.store.appendTranscript({
             channel,
             thread,
+            admission,
             ts: monotonicTs(),
             sender: agentId,
             kind: 'text',
@@ -7028,6 +7046,7 @@ export class Daemon {
       await this.store.appendTranscript({
         channel: 'memory',
         thread: context.dreamId,
+        admission: { agentId, sessionKey: executionKey },
         ts: monotonicTs(),
         sender: agentId,
         kind: 'text',
@@ -7122,6 +7141,7 @@ export class Daemon {
       await this.store.appendTranscript({
         channel: rec.channel,
         thread: rec.thread,
+        admission: { agentId: dream.agentId, sessionKey: rec.key },
         ts: monotonicTs(),
         sender: dream.agentId,
         kind: 'text',
@@ -9861,18 +9881,11 @@ export class Daemon {
    *  transcript growth to threads with live work — without it, a thread that ever
    *  held a session would record forever (no session-`closed` lifecycle yet). */
   private async recordUnrouted(msg: NormalizedMessage): Promise<void> {
-    // A conversation that appends has no session at the thread this message arrived in, so
-    // an unrouted row filed there is invisible to the session that should catch up on it —
-    // and the recency and in-flight probes, which look for the SESSION, would drop it
-    // outright. §6.2: one row per agent holding a live append session here. Read-only: a
+    // One row for the conversation, unconditionally: a channel may hold both session modes, and
+    // this is the only row a `createNew` agent's in-flight turn can catch up on. Read-only — a
     // message that routed to nobody must not create a conversation by being observed.
-    // Preserve the established default transcript shape until the rollout flag is enabled;
-    // the new observer folds attachment mentions into context prompts. UNCONDITIONAL: a
-    // channel may hold both modes, and this is the only row a `createNew` agent's in-flight
-    // turn can catch up on.
     await this.recordObservedInbound(msg, undefined, this.cfg.features.turnFinalContextRefresh)
-    // Plus one row per agent whose session here belongs to no thread, which the row above
-    // cannot reach (§6.2).
+    // One ADMISSION per agent whose session here belongs to no thread; the row above dedups.
     for (const { agentId, coordinate } of await this.appendAgentsIn(msg))
       await this.recordObservedInbound(
         { ...msg, sessionThread: coordinate },
@@ -9936,10 +9949,18 @@ export class Daemon {
     // The row is observed before routing names a recipient, so the org that owns it comes
     // from whichever agent made the thread live — a shared store has no other partition.
     const owner = recipient ?? inFlightAgent ?? initializingAgent
-    const before = await this.store.threadTranscriptRevision(transcriptChannel, thread, owner)
     await this.threadContext.observeInbound({
       channel: transcriptChannel,
-      thread,
+      // The row carries the PHYSICAL thread; the session coordinate rides the admission.
+      thread: msg.thread ?? msg.msgId,
+      ...(recipient
+        ? {
+            admission: {
+              agentId: recipient,
+              sessionKey: sessionKey(msg.platform, msg.channel, thread, recipient, msg.transportScope)
+            }
+          }
+        : {}),
       ts,
       sender: msg.sender.id,
       ...(owner ? { orgAgentId: owner } : {}),
@@ -9962,9 +9983,7 @@ export class Daemon {
       // authoritative ingest, which runs after both, is the one writer that persists it.
       ...(msg.quoted?.text ? { quoted: msg.quoted } : {})
     })
-    const after = await this.store.threadTranscriptRevision(transcriptChannel, thread, owner)
-    if (after > before)
-      this.log.debug(`transcript: observed inbound msg ch=${msg.channel} thread=${thread} ts=${ts} (live session)`)
+    this.log.debug(`transcript: observed inbound msg ch=${msg.channel} thread=${thread} ts=${ts} (live session)`)
   }
 
   /**
@@ -10081,6 +10100,16 @@ export class Daemon {
     }
   }
 
+  /** One turn's session read scope: its conversation, its coordinate, its key, its agent. */
+  private planReadScope(plan: TurnPlan): TranscriptSessionScope {
+    return {
+      transcriptChannel: plan.transcriptChannel,
+      coordinate: plan.sessionThread,
+      sessionKey: plan.sessionKey,
+      agentId: plan.agentId
+    }
+  }
+
   private async refreshTurnContext(
     pending: Pending,
     afterRevision: number,
@@ -10095,9 +10124,13 @@ export class Daemon {
     const snapshot =
       includeProviderSnapshot && physical ? this.finalThreadSnapshot(pending, providerCheckpoint) : undefined
     const refresh = await this.threadContext.refresh({
-      agentId: pending.plan.agentId,
-      transcriptChannel: pending.plan.transcriptChannel,
-      thread: pending.plan.sessionThread,
+      scope: {
+        transcriptChannel: pending.plan.transcriptChannel,
+        coordinate: pending.plan.sessionThread,
+        sessionKey: pending.plan.sessionKey,
+        agentId: pending.plan.agentId
+      },
+      deliveryThread: pending.plan.statusThread,
       afterRevision,
       // Pairwise a2a threads are shared storage but private conversations:
       // scope the refresh to this agent's own rows (#967).
@@ -10125,18 +10158,8 @@ export class Daemon {
     const rows = isSyntheticA2aChannel(pending.plan.transcriptChannel)
       ? // Pairwise a2a threads: only this agent's own rows may invalidate its
         // turn — a sibling's private delivery is not its context (#967).
-        await this.store.transcriptSinceRevisionForAgent(
-          pending.plan.transcriptChannel,
-          pending.plan.sessionThread,
-          afterRevision,
-          pending.plan.agentId
-        )
-      : await this.store.transcriptSinceRevision(
-          pending.plan.transcriptChannel,
-          pending.plan.sessionThread,
-          afterRevision,
-          pending.plan.agentId
-        )
+        await this.store.transcriptSinceRevisionForAgent(this.planReadScope(pending.plan), afterRevision)
+      : await this.store.transcriptSinceRevision(this.planReadScope(pending.plan), afterRevision)
     return rows
       .filter((row) => row.kind === 'text' && row.sender !== pending.plan.agentId)
       .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
@@ -10146,7 +10169,10 @@ export class Daemon {
     return (this.serialQueue.get(key) ?? []).filter((entry) => eventTs.has(transcriptCoords(entry.msg).ts))
   }
 
-  private observedQuoteBlock(event: TranscriptEntry, replayed: readonly TranscriptEntry[]): string | undefined {
+  private observedQuoteBlock(
+    event: Pick<TranscriptEntry, 'quoted' | 'quoteJson'>,
+    replayed: readonly Pick<TranscriptEntry, 'ts' | 'text'>[]
+  ): string | undefined {
     const quoted = transcriptQuoted(event)
     return quoted ? quotedSourceBlock({ quoted }, { replayed }) : undefined
   }
@@ -10182,7 +10208,11 @@ export class Daemon {
     const mention = attachmentMention(entry.msg.attachments)
     await this.store.appendTranscript({
       channel: transcriptChannelKey(entry.msg.channel, entry.msg.transportScope),
-      thread,
+      thread: entry.msg.thread ?? entry.msg.msgId,
+      admission: {
+        agentId: entry.agentId,
+        sessionKey: sessionKey(entry.msg.platform, entry.msg.channel, thread, entry.agentId, entry.msg.transportScope)
+      },
       ts,
       sender: entry.msg.sender.id,
       // Carried so a live agent-wake post (postAgentWakeInbound) reconciles against
@@ -10561,7 +10591,7 @@ export class Daemon {
 
   /** Only an UNCHANGED row is already represented: the closing edit of a streamed peer post
    *  rewrites the same coordinates with the completed text, and that really is new context. */
-  private absorbedContext(key: string, event: TranscriptEntry): boolean {
+  private absorbedContext(key: string, event: Pick<TranscriptEntry, 'ts' | 'text'>): boolean {
     const absorbed = this.absorbedContextTs.get(key)?.get(event.ts)
     return absorbed !== undefined && (absorbed.text === undefined || absorbed.text === event.text)
   }
@@ -10956,10 +10986,9 @@ export class Daemon {
     if (ctx.statusThread) {
       await this.store.appendTranscript({
         channel: ctx.transcriptChannel,
-        // Falls back to the chrome target so a caller that knows only that coordinate still
-        // records the notice: gating the WRITE on the session coordinate would drop it
-        // silently wherever it is not supplied, which is every failure path but one.
-        thread: ctx.sessionThread ?? ctx.statusThread,
+        // The chrome target IS the physical thread the notice belongs in.
+        thread: ctx.statusThread,
+        admission: { agentId: ctx.agentId, sessionKey: ctx.sessionKey },
         ts: monotonicTs(),
         sender: ctx.agentId,
         kind: 'text',
@@ -11033,8 +11062,8 @@ export class Daemon {
       transcriptChannel: string
       thread?: string
       statusThread: string
-      /** Session coordinate for transcript rows; `statusThread` above is the chrome target. */
-      sessionThread: string
+      /** The session the notice is admitted into; the row itself carries `statusThread`. */
+      sessionKey: string
     }
   ): Promise<void> {
     const notices = this.pendingSpawnNotices.get(agentId)
@@ -11048,7 +11077,8 @@ export class Daemon {
     }
     await this.store.appendTranscript({
       channel: ctx.transcriptChannel,
-      thread: ctx.sessionThread,
+      thread: ctx.statusThread,
+      admission: { agentId, sessionKey: ctx.sessionKey },
       ts: monotonicTs(),
       sender: agentId,
       kind: 'text',
@@ -12978,7 +13008,7 @@ export class Daemon {
       transcriptChannel: plan.transcriptChannel,
       thread: msg.thread,
       statusThread: plan.statusThread,
-      sessionThread: plan.sessionThread
+      sessionKey: plan.sessionKey
     })
     if (created) {
       // Classify for session visibility BEFORE the first milestone: the CP's
@@ -13522,8 +13552,7 @@ export class Daemon {
     const promptBlocks = [...handled.blocks]
     let finalCaptureInput = handled.captureInput ?? msg.text
     let baseRevision =
-      handled.contextRevision ??
-      (await this.store.threadTranscriptRevision(p.plan.transcriptChannel, p.plan.sessionThread, p.plan.agentId))
+      handled.contextRevision ?? (await this.store.threadTranscriptRevision(this.planReadScope(p.plan)))
     let providerCheckpoint = handled.providerCheckpoint
     if (p.plan.refreshBeforePrompt) {
       // Queue entries remain untouched until every gate above has succeeded.
@@ -13554,11 +13583,7 @@ export class Daemon {
         finalCaptureInput = recallQueryFromBlocks([{ type: 'text', text: finalCaptureInput }, ...deltaBlocks])
       }
       await this.coalesceQueuedContext(key, sessionId, representedEventTs)
-      baseRevision = await this.store.threadTranscriptRevision(
-        p.plan.transcriptChannel,
-        p.plan.sessionThread,
-        p.plan.agentId
-      )
+      baseRevision = await this.store.threadTranscriptRevision(this.planReadScope(p.plan))
       providerCheckpoint = initialRefresh.providerCheckpoint ?? providerCheckpoint
     }
     // What this conversation's live MCP App frames asked the next turn to know
@@ -13737,11 +13762,7 @@ export class Daemon {
         // async store lets a later write bump its revision and re-surface it here.
         .filter((event) => !this.absorbedContext(key, event))
         .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
-      const finalRevision = await this.store.threadTranscriptRevision(
-        p.plan.transcriptChannel,
-        p.plan.sessionThread,
-        p.plan.agentId
-      )
+      const finalRevision = await this.store.threadTranscriptRevision(this.planReadScope(p.plan))
 
       if (invalidatingEvents.length === 0) {
         if (p.plan.stageAnswer) this.commitStagedSegment(p)
@@ -13845,11 +13866,7 @@ export class Daemon {
       }
       defaultTurnOutputMetrics.candidateDiscarded('context_changed')
       await this.coalesceQueuedContext(key, sessionId, eventTs)
-      baseRevision = await this.store.threadTranscriptRevision(
-        p.plan.transcriptChannel,
-        p.plan.sessionThread,
-        p.plan.agentId
-      )
+      baseRevision = await this.store.threadTranscriptRevision(this.planReadScope(p.plan))
       generation += 1
       promptBlocks = [
         {
@@ -13945,6 +13962,7 @@ export class Daemon {
           {
             postId: replyPostId,
             sender: agentId,
+            admission: { agentId, sessionKey: plan.sessionKey },
             text: p.webchat.replyText
           }
         )
@@ -14040,7 +14058,14 @@ export class Daemon {
     const { rec, sessionId, handled, memoryCaptureTarget } = turn
     const { stopReason, usage, finalCaptureInput } = turn.outcome
     // …and any trailing reasoning the agent emitted after its last reply.
-    for (const ev of rec.onFinal()) await this.recordEvent(agentId, plan.transcriptChannel, plan.sessionThread, ev)
+    for (const ev of rec.onFinal())
+      await this.recordEvent(
+        agentId,
+        plan.transcriptChannel,
+        plan.statusThread,
+        { agentId, sessionKey: plan.sessionKey },
+        ev
+      )
     // The turn is over, so nothing more will supersede a coalesced tool body: make the last
     // state of every streamed tool call durable now rather than on the buffer's own timer.
     await this.store.flushToolCallWrites()
@@ -14208,6 +14233,7 @@ export class Daemon {
           {
             postId: partialPostId,
             sender: agentId,
+            admission: { agentId, sessionKey: plan.sessionKey },
             text: p.webchat.replyText
           }
         )
@@ -14677,12 +14703,27 @@ export class Daemon {
   ): Promise<void> {
     if (reason !== 'cancel' && !(reason === 'stop' && actor)) return
     if (!anchor) return
+    // The row carries the PHYSICAL thread; the session it belongs to rides the admission.
     const coords =
       'plan' in anchor
-        ? { channel: anchor.plan.transcriptChannel, thread: anchor.plan.sessionThread }
+        ? {
+            channel: anchor.plan.transcriptChannel,
+            thread: anchor.plan.statusThread,
+            admission: { agentId, sessionKey: anchor.plan.sessionKey }
+          }
         : {
             channel: transcriptChannelKey(anchor.msg.channel, anchor.msg.transportScope),
-            thread: transcriptCoords(anchor.msg).thread
+            thread: anchor.msg.thread ?? anchor.msg.msgId,
+            admission: {
+              agentId,
+              sessionKey: sessionKey(
+                anchor.msg.platform,
+                anchor.msg.channel,
+                transcriptCoords(anchor.msg).thread,
+                agentId,
+                anchor.msg.transportScope
+              )
+            }
           }
     const who = actor?.name?.trim() || actor?.userId
     const by = who ? ` by ${who}` : ''
@@ -14836,7 +14877,8 @@ export class Daemon {
   private async recordReplySegment(p: Pending, text: string): Promise<void> {
     await this.store.appendTranscript({
       channel: p.plan.transcriptChannel,
-      thread: p.plan.sessionThread,
+      thread: p.plan.statusThread,
+      admission: { agentId: p.plan.agentId, sessionKey: p.plan.sessionKey },
       ts: monotonicTs(),
       sender: p.plan.agentId,
       kind: 'text',
@@ -15069,7 +15111,8 @@ export class Daemon {
     if (!posted.shown) return
     const row: AppRow = {
       channel: p.plan.transcriptChannel,
-      thread: p.plan.sessionThread,
+      thread: p.plan.statusThread,
+      sessionKey: p.plan.sessionKey,
       ts: monotonicTs(),
       sender: p.plan.agentId,
       appId,
@@ -15152,7 +15195,8 @@ export class Daemon {
       const row: AppRow | undefined = p
         ? {
             channel: p.plan.transcriptChannel,
-            thread: p.plan.sessionThread,
+            thread: p.plan.statusThread,
+            sessionKey: p.plan.sessionKey,
             // The monotonic internal-event clock, as every other non-conversational row uses: it
             // keeps the card where it was opened and cannot collide with a second card's row.
             ts: monotonicTs(),
@@ -15417,6 +15461,7 @@ export class Daemon {
       .upsertApp({
         channel: row.channel,
         thread: row.thread,
+        admission: { agentId: row.sender, sessionKey: row.sessionKey },
         ts: row.ts,
         sender: row.sender,
         appId: row.appId,
@@ -16225,8 +16270,10 @@ export class Daemon {
       }
       if (extraction.transcript) {
         const { channel, thread, recorder } = extraction.transcript
+        // The dream's own execution key: its internal rows belong to that session alone.
+        const admission = { agentId, sessionKey: extraction.sessionKey ?? dreamExecutionKey(agentId, thread) }
         for (const ev of recorder.onUpdate(update)) {
-          await this.recordEvent(agentId, channel, thread, ev)
+          await this.recordEvent(agentId, channel, thread, admission, ev)
         }
       }
       // Distillation uses an unlisted cached extractor and therefore has neither
@@ -16443,16 +16490,32 @@ export class Daemon {
     }
     // Full activity log (tool/reasoning), recorded regardless of output mode.
     for (const ev of p.rec.onUpdate(update))
-      await this.recordEvent(p.plan.agentId, p.plan.transcriptChannel, p.plan.sessionThread, ev)
+      await this.recordEvent(
+        p.plan.agentId,
+        p.plan.transcriptChannel,
+        p.plan.statusThread,
+        {
+          agentId: p.plan.agentId,
+          sessionKey: p.plan.sessionKey
+        },
+        ev
+      )
   }
 
   /** Persist one internal activity event (tool/reasoning/plan). Ordered by row `seq`, so its
    *  `ts` is just a wall-clock stamp for display — never used for replay/sorting. */
-  private async recordEvent(agentId: string, channel: string, thread: string, ev: TranscriptEvent): Promise<void> {
+  private async recordEvent(
+    agentId: string,
+    channel: string,
+    thread: string,
+    admission: TranscriptAdmission,
+    ev: TranscriptEvent
+  ): Promise<void> {
     if (ev.kind === 'plan') {
       await this.store.upsertPlan({
         channel,
         thread,
+        admission,
         ts: String(Date.now()),
         sender: agentId,
         planId: ev.planId,
@@ -16466,6 +16529,7 @@ export class Daemon {
         await this.store.insertToolCall({
           channel,
           thread,
+          admission,
           ts: String(Date.now()),
           sender: agentId,
           toolCallId: ev.toolCallId,
@@ -16473,13 +16537,21 @@ export class Daemon {
           body: ev.body
         })
       } else {
-        await this.store.updateToolCall(channel, thread, agentId, ev.toolCallId, { title: ev.text, body: ev.body })
+        await this.store.updateToolCall(
+          channel,
+          thread,
+          agentId,
+          ev.toolCallId,
+          { title: ev.text, body: ev.body },
+          admission.sessionKey
+        )
       }
       return
     }
     await this.store.appendTranscript({
       channel,
       thread,
+      admission,
       ts: String(Date.now()),
       sender: agentId,
       kind: ev.kind,
@@ -17673,6 +17745,8 @@ export class Daemon {
     this.storeRetentionTimer = this.clock.setTimeout(async () => {
       this.storeRetentionTimer = undefined
       await this.storeRetention.sweepAgeOnly()
+      // message-intake.md §8 rule 2's idle pass; the per-insert arming catches the hot path.
+      await this.store.sweepAllObservations().catch(() => undefined)
       if (!this.draining) this.armStoreRetentionSweep()
     }, SESSION_RETENTION_SWEEP_INTERVAL_MS)
   }
@@ -17961,7 +18035,9 @@ export class Daemon {
     if (rec.thread) {
       await this.store.appendTranscript({
         channel: transcriptChannelKey(rec.channel, rec.transportScope),
-        thread: rec.thread,
+        // A session whose coordinate is synthetic belongs to no physical thread; leave it unknown.
+        ...(isAppendCoordinate(rec.thread) ? {} : { thread: rec.thread }),
+        admission: { agentId, sessionKey: rec.key },
         ts: monotonicTs(),
         sender: agentId,
         kind: 'text',
@@ -20461,8 +20537,16 @@ export class Daemon {
   /** Coalesce hot transcript writes into body-free, per-session invalidations. */
   private async scheduleSessionActivity(mutation: TranscriptMutation): Promise<void> {
     const ts = new Date(this.clock.now()).toISOString()
+    // The admissions first: an append session's `sessions.thread` is a coordinate the row no
+    // longer carries, so the key path is the only one that resolves it. The thread lookup stays
+    // as the fallback for rows written with no admission (a provider snapshot, an observation).
+    const admitted = await this.store.sessionIdsForKeys(mutation.sessionKeys)
     for (const agentId of mutation.agentIds) {
-      for (const sessionId of await this.store.sessionIdsForTranscript(agentId, mutation.channel, mutation.thread)) {
+      const ids = new Set([
+        ...admitted,
+        ...(await this.store.sessionIdsForTranscript(agentId, mutation.channel, mutation.thread))
+      ])
+      for (const sessionId of ids) {
         const key = `${agentId}\0${sessionId}`
         const existing = this.transcriptActivityTimers.get(key)
         if (existing) {

@@ -2,7 +2,8 @@ import {
   transcriptPromptText,
   type LocalStore,
   type TranscriptEntry,
-  type TranscriptRow
+  type TranscriptRow,
+  type TranscriptSessionScope
 } from '../store/local-store.js'
 
 export const MAX_CONTEXT_REFRESH_EVENTS = 50
@@ -24,9 +25,10 @@ export interface ContextRefresh {
 }
 
 export interface ThreadContextRefreshInput {
-  agentId: string
-  transcriptChannel: string
-  thread: string
+  /** The session's own read scope — its conversation, coordinate, key, and agent. */
+  scope: TranscriptSessionScope
+  /** The PHYSICAL thread a provider-snapshot row is imported under. */
+  deliveryThread: string
   afterRevision: number
   providerCheckpoint?: string
   /** Provider I/O is deliberately supplied by the daemon edge. The coordinator
@@ -86,8 +88,15 @@ export class ThreadContextCoordinator {
           // Skip this agent's OWN rows, as backfillThreadHistory does: replies are recorded at the send boundary, and a
           // console-mirrored human turn wears this agent's authorship on Slack while its human row already exists under
           // the dispatch ts — re-importing either under its Slack ts lands a duplicate the (channel,thread,ts) index misses.
-          if (event.sender === input.agentId) continue
-          await this.store.appendTranscript({ ...event, orgAgentId: input.agentId })
+          if (event.sender === input.scope.agentId) continue
+          // The refresh hands these rows straight to the session, so they are its history and
+          // carry its admission (message-intake.md §4.2/§5.2).
+          await this.store.appendTranscript({
+            ...event,
+            thread: input.deliveryThread,
+            admission: { agentId: input.scope.agentId, sessionKey: input.scope.sessionKey },
+            orgAgentId: input.scope.agentId
+          })
         }
         completeness = snapshot.completeness
         providerCheckpoint = snapshot.checkpoint ?? providerCheckpoint
@@ -100,22 +109,12 @@ export class ThreadContextCoordinator {
     // The fence is read BEFORE the rows and only ever moved up to a revision this read
     // actually returned, so a row appended between the two awaits is re-observed next
     // refresh (a harmless duplicate) instead of being skipped (a permanent gap).
-    const fence = await this.store.threadTranscriptRevision(input.transcriptChannel, input.thread, input.agentId)
+    const fence = await this.store.threadTranscriptRevision(input.scope)
     const observed = input.scopeReadsToAgent
-      ? await this.store.transcriptSinceRevisionForAgent(
-          input.transcriptChannel,
-          input.thread,
-          input.afterRevision,
-          input.agentId
-        )
-      : await this.store.transcriptSinceRevision(
-          input.transcriptChannel,
-          input.thread,
-          input.afterRevision,
-          input.agentId
-        )
+      ? await this.store.transcriptSinceRevisionForAgent(input.scope, input.afterRevision)
+      : await this.store.transcriptSinceRevision(input.scope, input.afterRevision)
     const rows = observed
-      .filter((row) => row.kind === 'text' && row.sender !== input.agentId)
+      .filter((row) => row.kind === 'text' && row.sender !== input.scope.agentId)
       .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
     const revision = observed.reduce((max, row) => Math.max(max, row.revision), fence)
 

@@ -52,6 +52,7 @@ class PostgresStatement implements StoreStatement {
 
 /** Synchronous facade over a dedicated PostgreSQL worker, preserving LocalStore's commit-before-return contract. */
 export class FrozenSyncDatabase implements StoreDatabase {
+  readonly dialect = 'postgres' as const
   private readonly worker: Worker
   private readonly replies
   private nextId = 1

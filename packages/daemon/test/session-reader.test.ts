@@ -8,12 +8,35 @@ import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { createSessionReader, previewAppBody } from '../src/cp/session-reader.js'
 import { sessionThreadUrlFor } from '../src/platforms/session-links.js'
 
+/** The admission a session-internal row (tool / plan / card) always carries — its own sender's
+ *  session, keyed exactly as {@link readScope} keys a `createNew` conversation. */
+export const admitted = <T extends { sender: string; channel: string; thread: string }>(
+  e: T
+): T & { admission: { agentId: string; sessionKey: string } } => ({
+  ...e,
+  admission: { agentId: e.sender, sessionKey: `k:${e.channel}:${e.thread}:${e.sender}` }
+})
+
 const AGENT = '11111111-1111-4111-8111-111111111111'
 const OTHER_AGENT = '22222222-2222-4222-8222-222222222222'
 const HOOK = '33333333-3333-4333-8333-333333333333'
 
 async function store(): Promise<LocalStore> {
   return await LocalStore.open(join(mkdtempSync(join(tmpdir(), 'ac-reader-')), 'local.sqlite'))
+}
+
+/** The pair the ingest path writes for a delivery: provenance plus the admission naming the
+ *  session this row joined, resolved from the session the fixture seeded. */
+async function delivered(
+  s: LocalStore,
+  agentId: string,
+  channel: string,
+  thread: string
+): Promise<{ recipient: string; admission: { agentId: string; sessionKey: string } }> {
+  const rec = (await s.listSessions(agentId)).find(
+    (r) => transcriptChannelKey(r.channel, r.transportScope) === channel && r.thread === thread
+  )
+  return { recipient: agentId, admission: { agentId, sessionKey: rec?.key ?? `k:${channel}:${thread}:${agentId}` } }
 }
 
 async function seedHistorySession(
@@ -92,7 +115,7 @@ describe('SessionReader', () => {
       thread: 'dm',
       ts: '1',
       sender: 'user-a',
-      recipient: AGENT,
+      ...(await delivered(s, AGENT, transcriptChannelKey('42', 'telegram:bot-a'), 'dm')),
       kind: 'text',
       text: 'private to bot A'
     })
@@ -101,7 +124,7 @@ describe('SessionReader', () => {
       thread: 'dm',
       ts: '1',
       sender: 'user-b',
-      recipient: AGENT,
+      ...(await delivered(s, AGENT, transcriptChannelKey('42', 'telegram:bot-b'), 'dm')),
       kind: 'text',
       text: 'private to bot B'
     })
@@ -352,7 +375,7 @@ describe('SessionReader', () => {
       thread: 'T1',
       ts: '1',
       sender: 'U1',
-      recipient: AGENT,
+      ...(await delivered(s, AGENT, transcriptChannel, 'T1')),
       kind: 'text',
       text: 'hi'
     })
@@ -384,7 +407,7 @@ describe('SessionReader', () => {
       thread: 'webchat:conv-1',
       ts: '1',
       sender: 'alice',
-      recipient: AGENT,
+      ...(await delivered(s, AGENT, 'conv-1', 'webchat:conv-1')),
       kind: 'text',
       text: 'Identify this\n[attached: screen.webp (image/webp)]',
       attachments: [{ name: 'screen.webp', mimeType: 'image/webp', data: 'aW1hZ2U=' }]
@@ -409,7 +432,7 @@ describe('SessionReader', () => {
       thread: 'oc_1',
       ts: '1',
       sender: 'ou_1',
-      recipient: AGENT,
+      ...(await delivered(s, AGENT, 'oc_1', 'oc_1')),
       kind: 'text',
       text: 'look\n[attached: img_v3_abc (application/octet-stream)]',
       attachments: [{ name: 'img_v3_abc', mimeType: 'image/png', data: 'aW1hZ2U=' }]
@@ -434,7 +457,7 @@ describe('SessionReader', () => {
       thread: 'T1',
       ts: '1',
       sender: 'U1',
-      recipient: AGENT,
+      ...(await delivered(s, AGENT, 'C1', 'T1')),
       kind: 'text',
       text: 'review these\n[attached: small.png (image/png), report, final.pdf (application/pdf), huge.png (image/png)]',
       attachments: [{ name: 'small.png', mimeType: 'image/png', data: 'aW1hZ2U=' }]
@@ -458,7 +481,7 @@ describe('SessionReader', () => {
       thread: 'T1',
       ts: '1',
       sender: 'U1',
-      recipient: AGENT,
+      ...(await delivered(s, AGENT, 'C1', 'T1')),
       kind: 'text',
       text: 'see\n[attached: other.pdf (application/pdf)]',
       attachments: [{ name: 'shot.png', mimeType: 'image/png', data: 'aW1hZ2U=' }]
@@ -479,7 +502,7 @@ describe('SessionReader', () => {
       ts: '1',
       sender: 'UAPPBOT',
       trustedAgentBot: true,
-      recipient: AGENT,
+      ...(await delivered(s, AGENT, 'C1', 'T1')),
       kind: 'text',
       text: 'legacy agent reply'
     })
@@ -502,7 +525,7 @@ describe('SessionReader', () => {
       thread: 'T1',
       ts: '1',
       sender: 'U1',
-      recipient: AGENT,
+      ...(await delivered(s, AGENT, 'C1', 'T1')),
       kind: 'text',
       text: 'Opened #1',
       body: small
@@ -516,7 +539,7 @@ describe('SessionReader', () => {
       thread: 'T1',
       ts: '2',
       sender: 'U1',
-      recipient: AGENT,
+      ...(await delivered(s, AGENT, 'C1', 'T1')),
       kind: 'text',
       text: 'Opened #2',
       body: big
@@ -544,15 +567,17 @@ describe('SessionReader', () => {
       html: '<p>chart</p>',
       outcome: 'closed'
     })
-    await s.upsertApp({
-      channel: 'C1',
-      thread: 'T1',
-      ts: '1',
-      sender: AGENT,
-      appId: 'app-1',
-      text: 'Token balances',
-      body
-    })
+    await s.upsertApp(
+      admitted({
+        channel: 'C1',
+        thread: 'T1',
+        ts: '1',
+        sender: AGENT,
+        appId: 'app-1',
+        text: 'Token balances',
+        body
+      })
+    )
     const { messages } = await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
     // A card that fits rides whole — template included, which is what re-renders the page.
     expect(messages).toEqual([
@@ -574,15 +599,17 @@ describe('SessionReader', () => {
       toolResult: { structuredContent: { total: 1 } }
     }
     const body = JSON.stringify({ ...card, html: `<p>${'x'.repeat(40 * 1024)}</p>` })
-    await s.upsertApp({
-      channel: 'C1',
-      thread: 'T1',
-      ts: '1',
-      sender: AGENT,
-      appId: 'app-2',
-      text: 'Token balances',
-      body
-    })
+    await s.upsertApp(
+      admitted({
+        channel: 'C1',
+        thread: 'T1',
+        ts: '1',
+        sender: AGENT,
+        appId: 'app-2',
+        text: 'Token balances',
+        body
+      })
+    )
     const { messages } = await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
     const row = messages[0]!
     // The page never rides a transcript page; the row says so and names the key the console
@@ -619,15 +646,17 @@ describe('SessionReader', () => {
       }
     }
     const body = JSON.stringify({ ...card, html: `<p>${'x'.repeat(200 * 1024)}</p>` })
-    await s.upsertApp({
-      channel: 'C1',
-      thread: 'T1',
-      ts: '1',
-      sender: AGENT,
-      appId: 'app-3',
-      text: 'DeFi positions',
-      body
-    })
+    await s.upsertApp(
+      admitted({
+        channel: 'C1',
+        thread: 'T1',
+        ts: '1',
+        sender: AGENT,
+        appId: 'app-3',
+        text: 'DeFi positions',
+        body
+      })
+    )
     const { messages } = await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
     const row = messages[0]!
     const preview = JSON.parse(row.body!) as Record<string, unknown>
@@ -669,15 +698,17 @@ describe('SessionReader', () => {
       updatedAt: 1
     })
     const body = JSON.stringify({ toolCallId: 'peer-tc', rawOutput: 'restricted output' })
-    await s.insertToolCall({
-      channel: 'C1',
-      thread: 'T1',
-      ts: '1',
-      sender: OTHER_AGENT,
-      toolCallId: 'peer-tc',
-      title: 'restricted tool call',
-      body
-    })
+    await s.insertToolCall(
+      admitted({
+        channel: 'C1',
+        thread: 'T1',
+        ts: '1',
+        sender: OTHER_AGENT,
+        toolCallId: 'peer-tc',
+        title: 'restricted tool call',
+        body
+      })
+    )
 
     const reader = createSessionReader(s)
     // A peer's private tool row is absent from both the visible agent's history
@@ -701,15 +732,17 @@ describe('SessionReader', () => {
     const s = await store()
     seedHistorySession(s)
     const body = JSON.stringify({ toolCallId: 'tc-1', rawOutput: 'ok' })
-    await s.insertToolCall({
-      channel: 'C1',
-      thread: 'T1',
-      ts: '1',
-      sender: AGENT,
-      toolCallId: 'tc-1',
-      title: 'legacy-compatible tool call',
-      body
-    })
+    await s.insertToolCall(
+      admitted({
+        channel: 'C1',
+        thread: 'T1',
+        ts: '1',
+        sender: AGENT,
+        toolCallId: 'tc-1',
+        title: 'legacy-compatible tool call',
+        body
+      })
+    )
 
     const reader = createSessionReader(s)
     expect((await reader.history({ sessionId: 'acp-1', limit: 50 })).messages).toHaveLength(1)
@@ -737,7 +770,7 @@ describe('SessionReader', () => {
       thread: 'T1',
       ts: '1',
       sender: 'U1',
-      recipient: AGENT,
+      ...(await delivered(s, AGENT, 'C1', 'T1')),
       kind: 'text',
       text: 'to-me'
     })
@@ -749,7 +782,7 @@ describe('SessionReader', () => {
       thread: 'T1',
       ts: '3',
       sender: 'U1',
-      recipient: 'other-agent',
+      ...(await delivered(s, 'other-agent', 'C1', 'T1')),
       kind: 'text',
       text: 'to-other'
     })
@@ -776,6 +809,59 @@ describe('SessionReader', () => {
     await s.close()
   })
 
+  // message-intake.md §4: an append session's rows carry a physical thread its coordinate never
+  // matches, so the console page can only find them through the admission.
+  it('returns an append session its admitted rows, and no peer internal row from the same thread', async () => {
+    const s = await store()
+    const coordinate = 'append:1700000000000'
+    const key = sessionKey('slack', 'C1', coordinate, AGENT)
+    await s.upsertSession({
+      key,
+      agentId: AGENT,
+      platform: 'slack',
+      channel: 'C1',
+      thread: coordinate,
+      acpSessionId: 'acp-append',
+      sessionId: 'sid-append',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+    await s.appendTranscript({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '1',
+      sender: 'U1',
+      recipient: AGENT,
+      admission: { agentId: AGENT, sessionKey: key },
+      kind: 'text',
+      text: 'mine'
+    })
+    // A peer's private rows in the SAME physical thread must not leak into this session.
+    await s.appendTranscript({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '2',
+      sender: OTHER_AGENT,
+      kind: 'reasoning',
+      text: 'peer-thinks'
+    })
+    await s.insertToolCall({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '3',
+      sender: OTHER_AGENT,
+      toolCallId: 'tc-peer',
+      title: 'Bash',
+      body: '{}',
+      admission: { agentId: OTHER_AGENT, sessionKey: 'slack:C1:append:2:other' }
+    })
+
+    const { messages } = await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-append', limit: 50 })
+    expect(messages.map((m) => m.text)).toEqual(['mine'])
+    await s.close()
+  })
+
   it('tails inserts, same-seq tool updates, and newly visible shared deliveries', async () => {
     const s = await store()
     seedHistorySession(s)
@@ -788,19 +874,21 @@ describe('SessionReader', () => {
       thread: 'T1',
       ts: '1',
       sender: 'U1',
-      recipient: AGENT,
+      ...(await delivered(s, AGENT, 'C1', 'T1')),
       kind: 'text',
       text: 'first'
     })
-    await s.insertToolCall({
-      channel: 'C1',
-      thread: 'T1',
-      ts: '2',
-      sender: AGENT,
-      toolCallId: 'tc-live',
-      title: 'Running',
-      body: JSON.stringify({ toolCallId: 'tc-live', status: 'in_progress' })
-    })
+    await s.insertToolCall(
+      admitted({
+        channel: 'C1',
+        thread: 'T1',
+        ts: '2',
+        sender: AGENT,
+        toolCallId: 'tc-live',
+        title: 'Running',
+        body: JSON.stringify({ toolCallId: 'tc-live', status: 'in_progress' })
+      })
+    )
 
     const inserted = await reader.history({
       agentId: AGENT,
@@ -848,7 +936,7 @@ describe('SessionReader', () => {
         thread: 'T1',
         ts: '4',
         sender: 'U1',
-        recipient,
+        ...(await delivered(s, recipient, 'C1', 'T1')),
         kind: 'text',
         text: 'shared-later'
       })
@@ -881,7 +969,7 @@ describe('SessionReader', () => {
         channel: 'C1',
         thread: 'T1',
         ...row,
-        ...(row.kind === 'text' ? { recipient: AGENT } : {})
+        ...(row.kind === 'text' ? await delivered(s, AGENT, 'C1', 'T1') : {})
       })
     }
 
@@ -908,7 +996,7 @@ describe('SessionReader', () => {
         thread: 'T1',
         ts: `178409870${n}.000000`,
         sender: 'U1',
-        recipient: AGENT,
+        ...(await delivered(s, AGENT, 'C1', 'T1')),
         kind: 'text',
         text: `message-${n}`
       })
@@ -974,7 +1062,7 @@ describe('SessionReader', () => {
         thread: 'T1',
         ts: `178409870${n}.000000`,
         sender: 'U1',
-        recipient: AGENT,
+        ...(await delivered(s, AGENT, 'C1', 'T1')),
         kind: 'text',
         text: `seq-${n}`
       })
@@ -1005,7 +1093,7 @@ describe('SessionReader', () => {
         channel: 'chat-1',
         thread: 'T1',
         ...row,
-        ...(row.kind === 'text' ? { recipient: AGENT } : {})
+        ...(row.kind === 'text' ? await delivered(s, AGENT, 'chat-1', 'T1') : {})
       })
     }
 
@@ -1035,7 +1123,7 @@ describe('SessionReader', () => {
           thread: 'T1',
           ts: ts!,
           sender: 'user-1',
-          recipient: AGENT,
+          ...(await delivered(s, AGENT, 'chat-1', 'T1')),
           kind: 'text',
           text: text!
         })
@@ -1073,7 +1161,7 @@ describe('SessionReader', () => {
       thread: 'T1',
       ts: '1',
       sender: 'user-1',
-      recipient: AGENT,
+      ...(await delivered(holder, AGENT, transcriptChannelKey('C1', null), 'T1')),
       kind: 'text',
       text: 'still there'
     })

@@ -145,7 +145,15 @@ describe('webchat turn-final context refresh', () => {
     expect(posts).toHaveLength(1)
     expect(posts[0]!.post.text).toBe('fresh replacement')
     const replies = (
-      await (daemon as any).store.transcriptSince(transcriptChannelKey(CONV, undefined), `webchat:${CONV}`, null)
+      await (daemon as any).store.transcriptSince(
+        {
+          transcriptChannel: transcriptChannelKey(CONV, undefined),
+          coordinate: `webchat:${CONV}`,
+          sessionKey: 'webchat',
+          agentId: 'bot-a'
+        },
+        null
+      )
     )
       .filter((row: { sender: string }) => row.sender === AGENT_ID)
       .map((row: { text: string }) => row.text)
@@ -156,8 +164,12 @@ describe('webchat turn-final context refresh', () => {
     // relay-minted one, the peer's context copy the peer's, and the reply row
     // the SAME id its rd/webchat-post fan-out announced.
     const rows = (await (daemon as any).store.transcriptSince(
-      transcriptChannelKey(CONV, undefined),
-      `webchat:${CONV}`,
+      {
+        transcriptChannel: transcriptChannelKey(CONV, undefined),
+        coordinate: `webchat:${CONV}`,
+        sessionKey: 'webchat',
+        agentId: 'bot-a'
+      },
       null
     )) as { sender: string; text: string; postId?: string | null }[]
     expect(rows.find((r) => r.text === 'original request')?.postId).toBe(TURN)
@@ -391,7 +403,15 @@ describe('webchat turn-final context refresh', () => {
     // The churned candidate is never committed: no canonical post, no reply row.
     expect(posts).toHaveLength(0)
     const replies = (
-      await (daemon as any).store.transcriptSince(transcriptChannelKey(CONV, undefined), `webchat:${CONV}`, null)
+      await (daemon as any).store.transcriptSince(
+        {
+          transcriptChannel: transcriptChannelKey(CONV, undefined),
+          coordinate: `webchat:${CONV}`,
+          sessionKey: 'webchat',
+          agentId: 'bot-a'
+        },
+        null
+      )
     ).filter((row: { sender: string }) => row.sender === AGENT_ID)
     expect(replies).toEqual([])
     await daemon.stop()
@@ -428,8 +448,12 @@ describe('webchat turn-final context refresh', () => {
     ).toMatchObject({ accepted: true })
 
     const rows = (await (daemon as any).store.transcriptSince(
-      transcriptChannelKey(CONV, undefined),
-      `webchat:${CONV}`,
+      {
+        transcriptChannel: transcriptChannelKey(CONV, undefined),
+        coordinate: `webchat:${CONV}`,
+        sessionKey: 'webchat',
+        agentId: 'bot-a'
+      },
       null
     )) as { ts: string; postId?: string | null }[]
     expect(rows.map((r) => [r.ts, r.postId])).toEqual([
@@ -479,8 +503,12 @@ describe('webchat turn-final context refresh', () => {
     ).toMatchObject({ accepted: true })
 
     const rows = (await (daemon as any).store.transcriptSince(
-      transcriptChannelKey(CONV, undefined),
-      `webchat:${CONV}`,
+      {
+        transcriptChannel: transcriptChannelKey(CONV, undefined),
+        coordinate: `webchat:${CONV}`,
+        sessionKey: 'webchat',
+        agentId: 'bot-a'
+      },
       null
     )) as { ts: string; postId?: string | null; text: string }[]
     expect(rows.filter((r) => r.text === 'same words').map((r) => [r.ts, r.postId])).toEqual([

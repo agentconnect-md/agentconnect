@@ -4,7 +4,12 @@ import {
   MEMORY_CONTINUATION_MAX_BYTES
 } from '../memory/entries/state.js'
 import { randomUUID } from 'node:crypto'
-import { appendCoordinate, isAppendCoordinate, nextAppendCoordinate } from '../session/append-coordinate.js'
+import {
+  APPEND_COORDINATE_PREFIX,
+  appendCoordinate,
+  isAppendCoordinate,
+  nextAppendCoordinate
+} from '../session/append-coordinate.js'
 import type { SQLInputValue } from 'node:sqlite'
 import { chmodSync, mkdirSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -23,7 +28,7 @@ import type { ReviewIntentRow } from '../gitlab/review-adapter.js'
 import { SESSION_TITLE_TOOL_TITLES } from '../mcp/session-title-tool.js'
 import type { ScheduleRun } from '../scheduler/scheduler.js'
 import { AsyncMutex } from './async-mutex.js'
-import type { StoreRetentionCandidate, StoreRetentionRule } from './retention.js'
+import { STORE_RETENTION_SCAN_LIMIT, type StoreRetentionCandidate, type StoreRetentionRule } from './retention.js'
 import {
   ClusterSkillLedgerSchema,
   type ClusterSkillLedger,
@@ -111,6 +116,8 @@ interface PendingToolWrite {
   channel: string
   thread: string
   agentId: string
+  /** The session whose row this updates — the only handle an `append` session's live view has. */
+  sessionKey: string
   toolCallId: string
   title: string
   body: string
@@ -404,9 +411,19 @@ function appRowId(appId: string): string {
   return `app:${appId}`
 }
 
+/** The session a row is admitted into (message-intake.md §4.2). Absent ⇒ the row is an observation. */
+export interface TranscriptAdmission {
+  agentId: string
+  /** The LOCAL `sessions.key` — `sessionKey(platform, channel, coordinate, agentId, transportScope)`. */
+  sessionKey: string
+}
+
 export interface TranscriptEntry {
   channel: string
-  thread: string
+  /** The PHYSICAL platform thread, never a session coordinate; absent ⇒ unknown (§4.1). */
+  thread?: string
+  /** The session that took this row in; its absence makes the row an observation (§4.2). */
+  admission?: TranscriptAdmission
   // Platform message ts for `text`; a daemon wall-clock stamp for internal events
   // (`tool`/`reasoning`). Slack console history normalizes both forms onto eventTimeUs;
   // prompt replay still compares the original platform `ts`.
@@ -446,10 +463,7 @@ export interface TranscriptEntry {
    *  `quoted`; retaining this field on read-back entries makes replay/reconciliation
    *  preserve the sidecar without adding it to the user-visible message contract. */
   quoteJson?: string | null
-  /** The agent this row was delivered TO (an inbound trigger / replayed context), when
-   *  known. Absent for an agent's own output rows (those attribute via `sender`) and for
-   *  unrouted messages. Lets the console session view show what one agent actually
-   *  received + produced instead of the whole shared (channel, thread) thread. */
+  /** First-delivery provenance only; `admission` is the authority on who may see the row. */
   recipient?: string
   /** Names the org that owns this row when neither `sender` nor `recipient` is an agent —
    *  an inbound observed before routing picks one. Attribution only: never a column, and
@@ -457,8 +471,10 @@ export interface TranscriptEntry {
   orgAgentId?: string
 }
 
-/** A transcript row as read back (raw `SELECT *`), including its insertion-order sequence. */
-export interface TranscriptRow extends TranscriptEntry {
+/** A transcript row as read back (raw `SELECT *`), including its insertion-order sequence.
+ *  `thread` reads back NULL on a row the v24 migration rewrote from an `append:*` coordinate. */
+export interface TranscriptRow extends Omit<TranscriptEntry, 'thread'> {
+  thread: string | null
   seq: number
   /** Monotonic mutation watermark; changes when a stable row is updated in place. */
   revision: number
@@ -505,7 +521,22 @@ export interface TranscriptMutation {
   channel: string
   thread: string
   agentIds: string[]
+  /** Session keys the mutation was admitted into — the only handle an `append` session has. */
+  sessionKeys: string[]
   revision: number
+}
+
+/** One session's transcript read scope: the org partition, the conversation, the session's own
+ *  coordinate, its key, and the agent whose visibility applies. */
+export interface TranscriptSessionScope {
+  transcriptChannel: string
+  /** The session coordinate (`sessions.thread`) — a physical thread, or an `append:*` coordinate. */
+  coordinate: string
+  /** `sessions.key`. */
+  sessionKey: string
+  agentId: string
+  /** CP-supplied partition for a BFF read; omitted ⇒ resolved from `agentId`. */
+  orgId?: string
 }
 
 /** What the CP classifies a session's visibility from (session-visibility.md §4.1). */
@@ -545,20 +576,29 @@ export function transcriptChannelKey(channel: string, transportScope?: string | 
   return transportScope ? `${channel}\u001f${transportScope}` : channel
 }
 
-/**
- * The per-agent delivery scope shared by every agent-scoped transcript read: a
- * row is visible to an agent when the agent SENT it (`sender`), was the row's
- * first-recorded recipient (`recipient`), or the message was delivered to it
- * per `transcript_recipient` (which captures deliveries the text-row dedup
- * would otherwise drop when several co-daemon agents catch up on the same
- * message). The delivery-table match is gated on `kind = 'text'` because
- * internal rows (reasoning/tool) are not deduped by ts and can share a ts with
- * a delivered text row. Binds three parameters: (agentId, agentId, agentId).
- */
-const AGENT_DELIVERY_SCOPE_SQL = `(sender = ? OR recipient = ? OR (transcript.kind = 'text' AND EXISTS (
-        SELECT 1 FROM transcript_recipient tr
-        WHERE tr.orgId = transcript.orgId AND tr.channel = transcript.channel AND tr.thread = transcript.thread
-          AND tr.ts = transcript.ts AND tr.agentId = ?)))`
+/** The U+001F that {@link transcriptChannelKey} joins a channel to its physical-bot scope with. */
+export const TRANSCRIPT_SCOPE_SEPARATOR = '\u001f'
+
+// One session's rows, binding (coordinate, sessionKey). The thread disjunct is a Stage 1 stopgap: a createNew coordinate IS the physical thread, keeping §8.5 cross-agent catch-up alive until Stage 3's admitted-history/background split (message-intake.md §5.2) retires it; append matches no thread, so there it is admissions alone.
+const SESSION_ROW_SCOPE_SQL = `(transcript.thread = ? OR EXISTS (
+        SELECT 1 FROM transcript_recipient tr_s
+        WHERE tr_s.seq = transcript.seq AND tr_s.sessionKey = ?))`
+
+// Whether one AGENT may see a row (§4.2): it sent it or admitted it; `recipient` is provenance only and the join on `seq` needs no kind guard. Binds (agentId, agentId).
+const AGENT_DELIVERY_SCOPE_SQL = `(sender = ? OR EXISTS (
+        SELECT 1 FROM transcript_recipient tr_a
+        WHERE tr_a.seq = transcript.seq AND tr_a.agentId = ?))`
+
+/** Retention floor (§8 rule 2): an unadmitted row survives while it is above the Nth-newest text
+ *  row. Deliberately separate from §9's read window, which happens to share the number today. */
+export const OBSERVATION_FLOOR_TEXT_ROWS = 100
+
+/** §8 rule 2's third clause: rows a reserved/evaluating/unreleased verdict still needs. Stage 3
+ *  fills this in; no verdict table exists yet, so nothing is held back. */
+export const RETAINED_BY_PENDING_VERDICT_SQL = ''
+
+/** How many inserts into one conversation arm an observation sweep for it. */
+export const OBSERVATION_SWEEP_INSERTS = 32
 
 /**
  * A durably-persisted admitted-but-not-yet-completed inbox message (§6.9 #353). Holds the
@@ -977,7 +1017,34 @@ export const THREAD_PARTICIPATION_BACKFILL = `
       WHERE channel IS NOT NULL AND thread IS NOT NULL AND agentId IS NOT NULL
 `
 
-export const SCHEMA_VERSION = 23
+// §10 step 2: every pre-v24 row was written only while a session was live, so each is an admission.
+// The agent set is `recipient` ∪ the old delivery rows ∪ sender-if-agent; the JOIN on `sessions` IS
+// the "where it is an agent id" filter and supplies the key, so a row whose session is gone gets
+// none and is correctly an observation. Channel is rebuilt from the sessions side rather than split
+// off `transcript.channel`, because splitting on a separator in portable SQL is far uglier.
+export const TRANSCRIPT_ADMISSION_BACKFILL = `
+      INSERT OR IGNORE INTO transcript_recipient (seq, agentId, sessionKey)
+      SELECT a.seq, a.agentId, s.key
+      FROM (
+        SELECT t.seq AS seq, t.recipient AS agentId, t.channel AS channel, t.thread AS thread
+          FROM transcript t WHERE t.recipient IS NOT NULL
+        UNION
+        SELECT t.seq, l.agentId, t.channel, t.thread
+          FROM transcript t
+          JOIN transcript_recipient_legacy l
+            ON l.orgId = t.orgId AND l.channel = t.channel AND l.thread = t.thread AND l.ts = t.ts
+         WHERE t.kind = 'text'
+        UNION
+        SELECT t.seq, t.sender, t.channel, t.thread FROM transcript t
+      ) a
+      JOIN sessions s
+        ON s.agentId = a.agentId
+       AND s.thread = a.thread
+       AND a.channel = CASE WHEN COALESCE(s.transportScope, '') = '' THEN s.channel
+                            ELSE CONCAT(s.channel, '${TRANSCRIPT_SCOPE_SEPARATOR}', s.transportScope) END
+`
+
+export const SCHEMA_VERSION = 24
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1004,7 +1071,7 @@ export const SCHEMA_VERSION = 23
  *  window costs nothing; past it, one member probes the image again. */
 const RUNTIME_IMAGE_PROBE_RETENTION_MS = 30 * 24 * 60 * 60_000
 
-const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<void>)[] = [
+const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: boolean }) => Promise<void>)[] = [
   async (db) => await db.exec('ALTER TABLE permission_requests ADD COLUMN ownerId TEXT'),
   async (db) =>
     await db.exec(`
@@ -1178,6 +1245,87 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<v
   async (db) => {
     await db.exec('ALTER TABLE sessions ADD COLUMN originCodeHostReplyTarget TEXT')
     await db.exec('ALTER TABLE inbox ADD COLUMN codeHostReplyTarget TEXT')
+  },
+  // message-intake.md §10: the transcript becomes a per-conversation channel record and
+  // transcript_recipient becomes the per-session admission. thread goes nullable and holds the
+  // PHYSICAL thread; the dedup index drops it; admissions are backfilled from recipient, the old
+  // delivery rows and sender-if-agent, joined to sessions for the key a row's session was under.
+  async (db, store) => {
+    await db.exec('ALTER TABLE transcript_recipient RENAME TO transcript_recipient_legacy')
+    // SQLite cannot drop a NOT NULL in place, so `thread` goes nullable by copy-rename (the #1041
+    // shape); PostgreSQL alters instead, because its `seq` identity rejects an explicit-seq copy.
+    if (store.postgres)
+      await db.exec(`
+      ALTER TABLE transcript ALTER COLUMN thread DROP NOT NULL;
+      DROP INDEX IF EXISTS transcript_thread_seq;
+      DROP INDEX IF EXISTS transcript_text_ts;
+      DROP INDEX IF EXISTS transcript_thread_event_time;
+      DROP INDEX IF EXISTS transcript_thread_revision;
+    `)
+    else
+      await db.exec(`
+      CREATE TABLE transcript_rekeyed (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        orgId TEXT NOT NULL DEFAULT '',
+        channel TEXT NOT NULL, thread TEXT, ts TEXT,
+        sender TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
+        tool_call_id TEXT, body TEXT, recipient TEXT, eventTimeUs INTEGER,
+        attachmentsJson TEXT, quoteJson TEXT, trustedAgentBot INTEGER, revision INTEGER NOT NULL DEFAULT 0,
+        postId TEXT
+      );
+      INSERT INTO transcript_rekeyed
+        (seq, orgId, channel, thread, ts, sender, kind, text, tool_call_id, body, recipient,
+         eventTimeUs, attachmentsJson, quoteJson, trustedAgentBot, revision, postId)
+      SELECT seq, orgId, channel, thread, ts, sender, kind, text, tool_call_id, body, recipient,
+             eventTimeUs, attachmentsJson, quoteJson, trustedAgentBot, revision, postId
+      FROM transcript;
+      DROP TABLE transcript;
+      ALTER TABLE transcript_rekeyed RENAME TO transcript;
+    `)
+    await db.exec(`
+      CREATE TABLE transcript_recipient (
+        seq INTEGER NOT NULL,
+        agentId TEXT NOT NULL,
+        sessionKey TEXT NOT NULL,
+        PRIMARY KEY (seq, agentId)
+      );
+    `)
+    // Its own exec: the PostgreSQL rewrite converts `INSERT OR IGNORE` only when it STARTS the
+    // statement, and appends the conflict clause at the very end of the text.
+    await db.exec(TRANSCRIPT_ADMISSION_BACKFILL)
+    // §10 step 3: rows sharing (orgId, channel, ts) collapse onto the smallest seq. A mapping
+    // table, plus a DELETE that keeps only one agent's LOWEST-seq admission per merge group —
+    // repointing two admissions of one agent onto one (seq, agentId) would violate the PK.
+    await db.exec(`
+      CREATE TABLE transcript_merge_map (oldSeq INTEGER PRIMARY KEY, newSeq INTEGER NOT NULL);
+      INSERT INTO transcript_merge_map (oldSeq, newSeq)
+      SELECT t.seq, m.keepSeq
+        FROM transcript t
+        JOIN (SELECT orgId, channel, ts, MIN(seq) AS keepSeq
+                FROM transcript
+               WHERE kind = 'text' AND ts IS NOT NULL
+               GROUP BY orgId, channel, ts
+              HAVING COUNT(*) > 1) m
+          ON m.orgId = t.orgId AND m.channel = t.channel AND m.ts = t.ts
+       WHERE t.kind = 'text' AND t.seq <> m.keepSeq;
+      DELETE FROM transcript_recipient
+       WHERE EXISTS (
+         SELECT 1 FROM transcript_merge_map mm, transcript_recipient k
+          WHERE mm.oldSeq = transcript_recipient.seq
+            AND k.agentId = transcript_recipient.agentId
+            AND k.seq < transcript_recipient.seq
+            AND mm.newSeq = COALESCE((SELECT mm2.newSeq FROM transcript_merge_map mm2 WHERE mm2.oldSeq = k.seq), k.seq));
+      UPDATE transcript_recipient
+         SET seq = (SELECT mm.newSeq FROM transcript_merge_map mm WHERE mm.oldSeq = transcript_recipient.seq)
+       WHERE seq IN (SELECT oldSeq FROM transcript_merge_map);
+      DELETE FROM transcript WHERE seq IN (SELECT oldSeq FROM transcript_merge_map);
+      DROP TABLE transcript_merge_map;
+    `)
+    // §10 step 4: a former append coordinate was never a physical thread, so it reads back unknown.
+    await db.exec(`
+      UPDATE transcript SET thread = NULL WHERE thread LIKE '${APPEND_COORDINATE_PREFIX}%';
+      DROP TABLE transcript_recipient_legacy;
+    `)
   }
 ]
 
@@ -1200,6 +1348,8 @@ export class LocalStore {
    *  flush also needs, so a statement inside it must never try to flush. */
   private readonly lockedDb: StoreAccess
   private readonly shared: boolean
+  /** True when the backend speaks PostgreSQL — only a migration step that cannot be portable reads it. */
+  private readonly postgres: boolean
   private readonly ownerId: string | undefined
   /** Partition key for per-member cache rows; a single-daemon store owns one partition forever. */
   private readonly cacheOwnerId: string
@@ -1207,6 +1357,8 @@ export class LocalStore {
   private readonly orgForAgent: OrgForAgent | undefined
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void | Promise<void>
+  /** Per-(orgId, channel) insert counter arming the §8 rule 2 sweep. */
+  private readonly observationSweepCounters = new Map<string, number>()
   private readonly pendingToolWrites = new Map<string, PendingToolWrite>()
   private pendingToolWriteBytes = 0
   private toolWriteTimer?: ReturnType<typeof setTimeout>
@@ -1222,6 +1374,7 @@ export class LocalStore {
     this.db = drainPendingWritesFirst(backend, () => this.drainToolCallWrites())
     this.lockedDb = accessOf(backend)
     this.shared = options.shared
+    this.postgres = backend.dialect === 'postgres'
     this.ownerId = options.ownerId
     this.orgForAgent = options.orgForAgent
     this.cacheOwnerId = this.ownerId ?? ''
@@ -1436,33 +1589,33 @@ export class LocalStore {
       );
       CREATE INDEX IF NOT EXISTS permission_requests_agent_created
         ON permission_requests (agentId, createdAt DESC);
-      -- orgId fences every thread on the org that owns it (#1041 item 7): a pool's shared
-      -- store carries several orgs' threads, and platform channel/thread ids are only
-      -- unique WITHIN one of them. A store no pool shares holds one org and stores ''.
+      -- orgId fences every conversation on the org that owns it (#1041 item 7). thread is the
+      -- PHYSICAL platform thread, never a session coordinate; NULL means a row the v24 migration
+      -- rewrote from an append:* coordinate, reported as thread-unknown (message-intake.md §4.1).
       CREATE TABLE IF NOT EXISTS transcript (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
         orgId TEXT NOT NULL DEFAULT '',
-        channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT,
+        channel TEXT NOT NULL, thread TEXT, ts TEXT,
         sender TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
         tool_call_id TEXT, body TEXT, recipient TEXT, eventTimeUs INTEGER,
         attachmentsJson TEXT, quoteJson TEXT, trustedAgentBot INTEGER, revision INTEGER NOT NULL DEFAULT 0,
         postId TEXT
       );
-      CREATE INDEX IF NOT EXISTS transcript_thread_seq ON transcript (orgId, channel, thread, seq);
-      -- Dedup conversational rows by platform ts (double-fired inbound / redelivery);
-      -- internal events have no platform ts and are intentionally never deduped here.
+      CREATE INDEX IF NOT EXISTS transcript_channel_seq ON transcript (orgId, channel, seq);
+      -- One conversational message is one row per conversation, whoever admits it. Internal rows
+      -- (tool/reasoning/plan/elicit/app) carry no platform ts and are deliberately not deduped here.
       CREATE UNIQUE INDEX IF NOT EXISTS transcript_text_ts
-        ON transcript (orgId, channel, thread, ts) WHERE kind = 'text';
-      -- Per-agent DELIVERY of a shared thread message. The transcript row itself is deduped
-      -- by (orgId, channel, thread, ts), so the recipient column only records the FIRST agent a
-      -- message reached; when several agents on one daemon each catch up on the same message
-      -- their deliveries are recorded here so no agent's scoped session view (transcriptPage-
-      -- ForAgent) hides a message it actually received.
+        ON transcript (orgId, channel, ts) WHERE kind = 'text';
+      -- The admission record (message-intake.md §4.2): the row seq, the agent that took it in, and
+      -- the LOCAL sessions.key it joined. One per agent per row, INSERT OR IGNORE so two concurrent
+      -- admitters both succeed. The recipient column survives only as first-delivery provenance.
       CREATE TABLE IF NOT EXISTS transcript_recipient (
-        orgId TEXT NOT NULL DEFAULT '',
-        channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT NOT NULL, agentId TEXT NOT NULL,
-        PRIMARY KEY (orgId, channel, thread, ts, agentId)
+        seq INTEGER NOT NULL,
+        agentId TEXT NOT NULL,
+        sessionKey TEXT NOT NULL,
+        PRIMARY KEY (seq, agentId)
       );
+      CREATE INDEX IF NOT EXISTS transcript_recipient_session ON transcript_recipient (sessionKey, seq);
       -- ACP tool ids are session-local, so same-thread agents may legitimately reuse
       -- them; the uniqueness that matters is per agent.
       CREATE UNIQUE INDEX IF NOT EXISTS transcript_agent_tool_call
@@ -1472,13 +1625,12 @@ export class LocalStore {
       -- handful per conversation, so the write cost is paid only where the read happens.
       CREATE INDEX IF NOT EXISTS transcript_app_card
         ON transcript (tool_call_id) WHERE kind = 'app';
-      -- Chronological history key: rows carry both an insertion-order seq and an
-      -- event time, and the console reads in event-time order.
-      CREATE INDEX IF NOT EXISTS transcript_thread_event_time
-        ON transcript (orgId, channel, thread, eventTimeUs DESC, seq DESC);
+      -- Chronological history key: the console reads in event-time order, seq breaks ties.
+      CREATE INDEX IF NOT EXISTS transcript_channel_event_time
+        ON transcript (orgId, channel, eventTimeUs DESC, seq DESC);
       -- Stable-row updates need a cursor independent of insertion-order seq.
-      CREATE INDEX IF NOT EXISTS transcript_thread_revision
-        ON transcript (orgId, channel, thread, revision);
+      CREATE INDEX IF NOT EXISTS transcript_channel_revision
+        ON transcript (orgId, channel, revision);
       -- Written ONLY by an exclusively owned store: a shared store's members would each
       -- serialize their own map over this one row, so they do not persist here at all.
       CREATE TABLE IF NOT EXISTS cp_routing (
@@ -1900,7 +2052,7 @@ export class LocalStore {
       if (!step) throw new Error(`local store is missing a migration step for schema v${version}`)
       const upgraded = version + 1
       await this.transaction(async (tx) => {
-        await step(tx, { shared: this.shared })
+        await step(tx, { shared: this.shared, postgres: this.postgres })
         await tx.exec(`PRAGMA user_version = ${upgraded}`)
       })
       version = upgraded
@@ -2338,7 +2490,7 @@ export class LocalStore {
    *  with live work is recorded at all. */
   private async transcriptOrg(
     channel: string,
-    thread: string,
+    thread: string | undefined,
     ...candidates: Array<string | undefined>
   ): Promise<string> {
     if (!this.shared) return LOCAL_TRANSCRIPT_ORG
@@ -2346,7 +2498,7 @@ export class LocalStore {
       const orgId = candidate ? this.orgForAgent?.(candidate) : undefined
       if (orgId) return orgId
     }
-    return this.orgFor(await this.threadSessionAgent(channel, thread))
+    return this.orgFor(thread === undefined ? undefined : await this.threadSessionAgent(channel, thread))
   }
 
   /** An agent holding a session in a transcript thread, for that fallback attribution. */
@@ -2359,6 +2511,19 @@ export class LocalStore {
     return rows.find(
       (row) => transcriptChannelKey(row.channel, row.transportScope) === channel && this.orgForAgent?.(row.agentId)
     )?.agentId
+  }
+
+  /** Addressable session ids for the session keys a mutation was admitted into — the only handle
+   *  an `append` session has, since its `sessions.thread` is a coordinate the row no longer wears. */
+  async sessionIdsForKeys(keys: string[]): Promise<string[]> {
+    if (keys.length === 0) return []
+    const rows = (await this.db
+      .prepare(
+        `SELECT DISTINCT COALESCE(sessionId, acpSessionId) AS sessionId FROM sessions
+         WHERE key IN (${keys.map(() => '?').join(', ')}) AND acpSessionId IS NOT NULL`
+      )
+      .all(...keys)) as { sessionId: string }[]
+    return rows.map((row) => row.sessionId)
   }
 
   /** Addressable session ids whose authorized transcript scope may have changed. */
@@ -2443,44 +2608,37 @@ export class LocalStore {
    *  transcriptPageForAgentByEventTime; this method remains for non-Slack platform ids
    *  and numeric cursors issued by a pre-upgrade daemon. */
   async transcriptPageForAgent(
-    channel: string,
-    thread: string,
-    agentId: string,
+    scope: TranscriptSessionScope,
     beforeSeq: number | null,
-    limit: number,
-    orgId?: string
+    limit: number
   ): Promise<{ rows: TranscriptRow[]; hasMore: boolean }> {
-    // The delivery-table match is keyed by (channel, thread, ts), but internal rows
-    // (reasoning/tool) are NOT deduped by ts and can share a ts with a delivered text row —
-    // so gate the delivery match on `kind = 'text'`, else a peer's reasoning/tool row at the
-    // same ts would be pulled back in. Deliveries only ever concern conversational messages;
-    // own internal rows still surface via `sender`.
-    const scope = AGENT_DELIVERY_SCOPE_SQL
-    const partition = this.orgForRead(agentId, orgId)
+    const partition = this.orgForRead(scope.agentId, scope.orgId)
+    const session = [scope.coordinate, scope.sessionKey]
+    const agent = [scope.agentId, scope.agentId]
     const hiddenToolTitles = [...SESSION_TITLE_TOOL_TITLES]
     const rows = (beforeSeq !== null
       ? await this.db
           .prepare(
-            `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND seq < ?
-               AND ${scope}
+            `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND seq < ?
+               AND ${SESSION_ROW_SCOPE_SQL}
+               AND ${AGENT_DELIVERY_SCOPE_SQL}
                AND NOT (kind = 'tool' AND text IN (?, ?))
              ORDER BY seq DESC LIMIT ?`
           )
-          .all(partition, channel, thread, beforeSeq, agentId, agentId, agentId, ...hiddenToolTitles, limit + 1)
+          .all(partition, scope.transcriptChannel, beforeSeq, ...session, ...agent, ...hiddenToolTitles, limit + 1)
       : await this.db
           .prepare(
-            `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?
-               AND ${scope}
+            `SELECT * FROM transcript WHERE orgId = ? AND channel = ?
+               AND ${SESSION_ROW_SCOPE_SQL}
+               AND ${AGENT_DELIVERY_SCOPE_SQL}
                AND NOT (kind = 'tool' AND text IN (?, ?))
              ORDER BY seq DESC LIMIT ?`
           )
           .all(
             partition,
-            channel,
-            thread,
-            agentId,
-            agentId,
-            agentId,
+            scope.transcriptChannel,
+            ...session,
+            ...agent,
             ...hiddenToolTitles,
             limit + 1
           )) as unknown as TranscriptRow[]
@@ -2499,52 +2657,48 @@ export class LocalStore {
    * from leaking into the session view.
    */
   async transcriptPageForAgentByEventTime(
-    channel: string,
-    thread: string,
-    agentId: string,
+    scope: TranscriptSessionScope,
     before: TranscriptEventCursor | null,
-    limit: number,
-    orgId?: string
+    limit: number
   ): Promise<{ rows: TranscriptRow[]; hasMore: boolean }> {
-    const scope = AGENT_DELIVERY_SCOPE_SQL
-    const partition = this.orgForRead(agentId, orgId)
+    const partition = this.orgForRead(scope.agentId, scope.orgId)
+    const session = [scope.coordinate, scope.sessionKey]
+    const agent = [scope.agentId, scope.agentId]
     const hiddenToolTitles = [...SESSION_TITLE_TOOL_TITLES]
     const rows = (before !== null
       ? await this.db
           .prepare(
-            `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?
+            `SELECT * FROM transcript WHERE orgId = ? AND channel = ?
                AND (eventTimeUs < ? OR (eventTimeUs = ? AND seq < ?))
-               AND ${scope}
+               AND ${SESSION_ROW_SCOPE_SQL}
+               AND ${AGENT_DELIVERY_SCOPE_SQL}
                AND NOT (kind = 'tool' AND text IN (?, ?))
              ORDER BY eventTimeUs DESC, seq DESC LIMIT ?`
           )
           .all(
             partition,
-            channel,
-            thread,
+            scope.transcriptChannel,
             before.eventTimeUs,
             before.eventTimeUs,
             before.seq,
-            agentId,
-            agentId,
-            agentId,
+            ...session,
+            ...agent,
             ...hiddenToolTitles,
             limit + 1
           )
       : await this.db
           .prepare(
-            `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?
-               AND ${scope}
+            `SELECT * FROM transcript WHERE orgId = ? AND channel = ?
+               AND ${SESSION_ROW_SCOPE_SQL}
+               AND ${AGENT_DELIVERY_SCOPE_SQL}
                AND NOT (kind = 'tool' AND text IN (?, ?))
              ORDER BY eventTimeUs DESC, seq DESC LIMIT ?`
           )
           .all(
             partition,
-            channel,
-            thread,
-            agentId,
-            agentId,
-            agentId,
+            scope.transcriptChannel,
+            ...session,
+            ...agent,
             ...hiddenToolTitles,
             limit + 1
           )) as unknown as TranscriptRow[]
@@ -2558,30 +2712,27 @@ export class LocalStore {
    * cursor skips unrelated/global revisions only after this scope is fully drained.
    */
   async transcriptTailForAgent(
-    channel: string,
-    thread: string,
-    agentId: string,
+    scope: TranscriptSessionScope,
     afterRevision: number,
-    limit: number,
-    orgId?: string
+    limit: number
   ): Promise<{ rows: TranscriptRow[]; hasMore: boolean; cursor: number }> {
-    const scope = AGENT_DELIVERY_SCOPE_SQL
     const rows = (await this.db
       .prepare(
         `SELECT * FROM transcript
-         WHERE orgId = ? AND channel = ? AND thread = ? AND revision > ?
-           AND ${scope}
+         WHERE orgId = ? AND channel = ? AND revision > ?
+           AND ${SESSION_ROW_SCOPE_SQL}
+           AND ${AGENT_DELIVERY_SCOPE_SQL}
            AND NOT (kind = 'tool' AND text IN (?, ?))
          ORDER BY revision ASC LIMIT ?`
       )
       .all(
-        this.orgForRead(agentId, orgId),
-        channel,
-        thread,
+        this.orgForRead(scope.agentId, scope.orgId),
+        scope.transcriptChannel,
         afterRevision,
-        agentId,
-        agentId,
-        agentId,
+        scope.coordinate,
+        scope.sessionKey,
+        scope.agentId,
+        scope.agentId,
         ...SESSION_TITLE_TOOL_TITLES,
         limit + 1
       )) as unknown as TranscriptRow[]
@@ -2590,7 +2741,9 @@ export class LocalStore {
     return {
       rows: kept,
       hasMore,
-      cursor: hasMore ? kept[kept.length - 1]!.revision : await this.currentTranscriptRevision(agentId, orgId)
+      cursor: hasMore
+        ? kept[kept.length - 1]!.revision
+        : await this.currentTranscriptRevision(scope.agentId, scope.orgId)
     }
   }
 
@@ -3509,8 +3662,9 @@ export class LocalStore {
   /** Retention-GC delete (#485): remove one session row and its dependent rows —
    *  mute, memory-capture gate, durable inbox, permission-request history.
    *  Two deliberate survivors:
-   *  - transcript rows — (channel, thread)-scoped and shared across agents, the
-   *    thread's history outlives the session;
+   *  - conversational transcript rows — they belong to the conversation, not the session, and stay
+   *    as observations (message-intake.md §8 rule 1) while this key's admissions and the internal
+   *    rows only they cover are removed below;
    *  - unacknowledged terminal hook reports (`terminalReport IS NOT NULL`) — an
    *    outbox the CP has not converged yet, preserved exactly like
    *    removeInboxByAgentId does.
@@ -3548,6 +3702,20 @@ export class LocalStore {
       await tx.prepare('DELETE FROM session_mutes WHERE key = ?').run(key)
       // The affinity record outlives nothing: its whole meaning is the session it names.
       await tx.prepare('DELETE FROM thread_participation WHERE sessionKey = ?').run(key)
+      // §8 rule 1: the session's admissions go, and with them the internal rows only this session
+      // produced; conversational rows stay as observations for rule 2's floor to reclaim.
+      await tx
+        .prepare(
+          `DELETE FROM transcript
+            WHERE seq IN (
+              SELECT tr.seq FROM transcript_recipient tr
+                JOIN transcript t ON t.seq = tr.seq
+               WHERE tr.sessionKey = ? AND t.kind <> 'text'
+                 AND NOT EXISTS (SELECT 1 FROM transcript_recipient o
+                                  WHERE o.seq = tr.seq AND o.sessionKey <> ?))`
+        )
+        .run(key, key)
+      await tx.prepare('DELETE FROM transcript_recipient WHERE sessionKey = ?').run(key)
       // A reservation that survived its session would hand the next message a coordinate
       // whose transcript is still on disk — the inheritance the timestamp exists to prevent.
       // Conditional, so a reservation a concurrent `!new` already rotated is left alone.
@@ -4157,20 +4325,28 @@ export class LocalStore {
     agentId: string,
     limit: number
   ): Promise<
-    { sessionId: string; channel: string; thread: string; transportScope?: string | null; updatedAt: number }[]
+    {
+      sessionId: string
+      key: string
+      channel: string
+      thread: string
+      transportScope?: string | null
+      updatedAt: number
+    }[]
   > {
     const rows = (await this.db
       .prepare(
         // Outward ids (§1.1): these become the citations the model grounds a skill candidate in,
         // and from there the dream's durable, CP-visible provenance. A pre-v12 row answers with
         // its ACP id, which is what that session was reported under.
-        `SELECT COALESCE(sessionId, acpSessionId) AS sessionId, channel, thread, transportScope, updatedAt
+        `SELECT COALESCE(sessionId, acpSessionId) AS sessionId, key, channel, thread, transportScope, updatedAt
          FROM sessions
          WHERE agentId = ? AND acpSessionId IS NOT NULL AND platform <> 'dream'
          ORDER BY updatedAt DESC LIMIT ?`
       )
       .all(agentId, limit)) as {
       sessionId: string
+      key: string
       channel: string
       thread: string
       transportScope: string | null
@@ -4179,8 +4355,8 @@ export class LocalStore {
     return rows.map(({ transportScope, ...row }) => (transportScope ? { ...row, transportScope } : row))
   }
 
-  /** Chronological conversational text of one session thread, scoped like
-   *  `transcriptPageForAgent` (a peer's private rows never enter a dream). */
+  /** Chronological conversational text of one session, scoped like `transcriptPageForAgent`
+   *  (a peer's private rows never enter a dream). */
   /**
    * Rows for one session thread. `includeTools` additionally returns tool
    * TITLES — the ACP `title` (e.g. `Bash(npm run deploy)`), which carries the
@@ -4210,39 +4386,28 @@ export class LocalStore {
   }
 
   async dreamTranscriptText(
-    channel: string,
-    thread: string,
-    agentId: string,
+    scope: TranscriptSessionScope,
     limit: number,
-    includeTools = false,
-    transportScope?: string | null
+    includeTools = false
   ): Promise<{ sender: string; text: string; kind?: string; input?: string }[]> {
-    const transcriptChannel = transcriptChannelKey(channel, transportScope)
     const rows = (await this.db
       .prepare(
-        // SECURITY: gate the delivery-table match on `kind = 'text'`, exactly as
-        // the session-history query does. Internal rows (tool/reasoning) are NOT
-        // deduped by ts and can share a ts with a delivered text row, so an
-        // ungated EXISTS would pull a PEER's private tool title into this agent's
-        // mining prompt. Deliveries only ever concern conversational messages;
-        // this agent's own tool rows still surface through `sender`.
+        // SECURITY: a peer's private rows stay out because the admission names the session, not a
+        // shared (channel, thread, ts) slot — the join is on `seq`, which no two rows share.
         `SELECT sender, text, kind, body FROM transcript
-         WHERE orgId = ? AND channel = ? AND thread = ? AND kind ${includeTools ? "IN ('text','tool')" : "= 'text'"}
-           AND (sender = ? OR recipient = ? OR (transcript.kind = 'text' AND EXISTS (
-             SELECT 1 FROM transcript_recipient tr
-             WHERE tr.orgId = transcript.orgId AND tr.channel = transcript.channel
-               AND tr.thread = transcript.thread
-               AND tr.ts = transcript.ts AND tr.agentId = ?)))
+         WHERE orgId = ? AND channel = ? AND kind ${includeTools ? "IN ('text','tool')" : "= 'text'"}
+           AND ${SESSION_ROW_SCOPE_SQL}
+           AND ${AGENT_DELIVERY_SCOPE_SQL}
            AND NOT (kind = 'tool' AND text IN (?, ?))
          ORDER BY seq DESC LIMIT ?`
       )
       .all(
-        this.orgFor(agentId),
-        transcriptChannel,
-        thread,
-        agentId,
-        agentId,
-        agentId,
+        this.orgForRead(scope.agentId, scope.orgId),
+        scope.transcriptChannel,
+        scope.coordinate,
+        scope.sessionKey,
+        scope.agentId,
+        scope.agentId,
         ...SESSION_TITLE_TOOL_TITLES,
         limit
       )) as {
@@ -4267,34 +4432,31 @@ export class LocalStore {
    *  the slot first and bump when it holds foreign content. */
   async transcriptTextAt(
     channel: string,
-    thread: string,
     ts: string,
     row: { sender: string; recipient?: string }
   ): Promise<{ sender: string; text: string; postId: string | null } | undefined> {
     // Attributed exactly like the append it guards, or the probe would read a partition
     // the write does not land in and every slot would look free.
-    const orgId = await this.transcriptOrg(channel, thread, row.recipient, row.sender)
+    const orgId = await this.transcriptOrg(channel, undefined, row.recipient, row.sender)
     return (await this.db
       .prepare(
         `SELECT sender, text, postId FROM transcript
-         WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text'`
+         WHERE orgId = ? AND channel = ? AND ts = ? AND kind = 'text'`
       )
-      .get(orgId, channel, thread, ts)) as { sender: string; text: string; postId: string | null } | undefined
+      .get(orgId, channel, ts)) as { sender: string; text: string; postId: string | null } | undefined
   }
 
   async appendTranscript(e: TranscriptEntry): Promise<void> {
-    const { attachments, trustedAgentBot, quoted, quoteJson, authoritative, orgAgentId, ...entry } = e
+    const { attachments, trustedAgentBot, quoted, quoteJson, authoritative, orgAgentId, admission, ...entry } = e
     const durableQuoteJson = quoted?.text ? JSON.stringify(quoted) : (quoteJson ?? null)
     // Attribution is a plain read, resolved before the lock the write path below holds.
-    const orgId = await this.transcriptOrg(e.channel, e.thread, e.recipient, e.sender, orgAgentId)
-    // The row, its delivery record, and the thread revision the caller needs next, in one
-    // round trip. `transcript_recipient` is a different table, so its insert moving ahead of
-    // the in-place upgrades below changes nothing either statement can observe.
-    const recordsDelivery = !!e.recipient && !!e.ts
-    return this.transcriptMutex.run(() =>
+    const orgId = await this.transcriptOrg(e.channel, e.thread, admission?.agentId, e.recipient, e.sender, orgAgentId)
+    // The row, its admission, and the conversation revision the caller needs next, in one round
+    // trip. The admission is a different table, so its insert moving ahead of the in-place
+    // upgrades below changes nothing either statement can observe.
+    await this.transcriptMutex.run(() =>
       this.appendTranscriptLocked(e, {
         orgId,
-        recordsDelivery,
         entry,
         attachments,
         trustedAgentBot,
@@ -4302,6 +4464,49 @@ export class LocalStore {
         authoritative
       })
     )
+    this.armObservationSweep(orgId, e.channel)
+  }
+
+  /** The admission beside a row the same batch wrote — keyed by the row's own `seq`, looked up
+   *  rather than bound, because `INSERT OR IGNORE` may have dropped the row onto an existing one. */
+  private admissionStatement(
+    e: Pick<TranscriptEntry, 'channel' | 'ts' | 'sender' | 'kind'>,
+    orgId: string,
+    admission: TranscriptAdmission
+  ): StoreBatchStatement {
+    return e.kind === 'text'
+      ? {
+          kind: 'run',
+          sql: `INSERT OR IGNORE INTO transcript_recipient (seq, agentId, sessionKey)
+                SELECT t.seq, ?, ? FROM transcript t
+                 WHERE t.orgId = ? AND t.channel = ? AND t.ts = ? AND t.kind = 'text'`,
+          params: [admission.agentId, admission.sessionKey, orgId, e.channel, e.ts]
+        }
+      : {
+          kind: 'run',
+          sql: `INSERT OR IGNORE INTO transcript_recipient (seq, agentId, sessionKey)
+                SELECT t.seq, ?, ? FROM transcript t
+                 WHERE t.orgId = ? AND t.channel = ? AND t.ts = ? AND t.kind = ? AND t.sender = ?
+                 ORDER BY t.seq DESC LIMIT 1`,
+          params: [admission.agentId, admission.sessionKey, orgId, e.channel, e.ts, e.kind, e.sender]
+        }
+  }
+
+  /** The admission for a card/tool row, found by the identity its own upsert dedups on. */
+  private cardAdmissionStatement(
+    e: { channel: string; sender: string },
+    orgId: string,
+    kind: string,
+    cardId: string,
+    admission: TranscriptAdmission
+  ): StoreBatchStatement {
+    return {
+      kind: 'run',
+      sql: `INSERT OR IGNORE INTO transcript_recipient (seq, agentId, sessionKey)
+            SELECT t.seq, ?, ? FROM transcript t
+             WHERE t.orgId = ? AND t.channel = ? AND t.sender = ? AND t.tool_call_id = ? AND t.kind = ?`,
+      params: [admission.agentId, admission.sessionKey, orgId, e.channel, e.sender, cardId, kind]
+    }
   }
 
   /** The transcript write itself, under {@link transcriptMutex}: its statements and the
@@ -4310,10 +4515,9 @@ export class LocalStore {
     e: TranscriptEntry,
     ctx: {
       orgId: string
-      recordsDelivery: boolean
       entry: Omit<
         TranscriptEntry,
-        'attachments' | 'trustedAgentBot' | 'quoted' | 'quoteJson' | 'authoritative' | 'orgAgentId'
+        'attachments' | 'trustedAgentBot' | 'quoted' | 'quoteJson' | 'authoritative' | 'orgAgentId' | 'admission'
       >
       attachments: SessionImageAttachment[] | undefined
       trustedAgentBot: boolean | undefined
@@ -4321,8 +4525,9 @@ export class LocalStore {
       authoritative: boolean | undefined
     }
   ): Promise<void> {
-    const { orgId, recordsDelivery, entry, attachments, trustedAgentBot, durableQuoteJson, authoritative } = ctx
-    const { changes, revision } = await this.writeTranscriptRows(orgId, e.channel, e.thread, [
+    const { orgId, entry, attachments, trustedAgentBot, durableQuoteJson, authoritative } = ctx
+    const admission = e.admission
+    const { changes, revision } = await this.writeTranscriptRows(orgId, e.channel, [
       {
         kind: 'run',
         sql: `INSERT OR IGNORE INTO transcript
@@ -4344,37 +4549,34 @@ export class LocalStore {
           } as unknown as SqlParams
         ]
       },
-      // Recorded separately so it survives the text-row dedup above: if this same
-      // (channel, thread, ts) was already recorded by another agent, the INSERT OR IGNORE
-      // dropped this row and its `recipient`, but the message WAS delivered to this agent too.
-      ...(recordsDelivery
-        ? [
-            {
-              kind: 'run' as const,
-              sql: 'INSERT OR IGNORE INTO transcript_recipient (orgId, channel, thread, ts, agentId) VALUES (?, ?, ?, ?, ?)',
-              params: [orgId, e.channel, e.thread, e.ts, e.recipient]
-            }
-          ]
-        : [])
+      // Written beside the row so it survives that dedup: the same message admitted by a second
+      // agent leaves this daemon one row and two admissions (message-intake.md §4.2).
+      ...(admission ? [this.admissionStatement(e, orgId, admission)] : [])
     ])
     const inserted = changes[0] ?? 0
-    const delivered = recordsDelivery ? (changes[1] ?? 0) : 0
+    const delivered = admission ? (changes[1] ?? 0) : 0
     if (inserted === 1) this.transcriptRevision = revision
     // The closing edit of a streamed reply lands on the row its own post created, so the
     // text is refreshed in place rather than lost to INSERT OR IGNORE. Scoped to text
     // rows on identical coordinates, and only ever toward the authoritative version.
     if (inserted === 0 && authoritative && e.kind === 'text') {
-      const refreshed = await this.writeTranscriptRows(orgId, e.channel, e.thread, [
+      const refreshed = await this.writeTranscriptRows(orgId, e.channel, [
         {
           kind: 'run',
           sql: `UPDATE transcript SET text = ?, revision = ?
-           WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND text IS NOT ?`,
-          params: [e.text, this.transcriptRevision + 1, orgId, e.channel, e.thread, e.ts, e.text]
+           WHERE orgId = ? AND channel = ? AND ts = ? AND kind = 'text' AND text IS NOT ?`,
+          params: [e.text, this.transcriptRevision + 1, orgId, e.channel, e.ts, e.text]
         }
       ])
       if (refreshed.changes[0] === 1) {
         this.transcriptRevision = refreshed.revision
-        this.notifyTranscriptMutation(e.channel, e.thread, e.recipient ? [e.recipient] : [], this.transcriptRevision)
+        this.notifyTranscriptMutation(
+          e.channel,
+          e.thread ?? '',
+          [e.recipient, admission?.agentId],
+          this.transcriptRevision,
+          [admission?.sessionKey]
+        )
       }
     }
     // A row may predate this column and later be re-observed in an authoritative Slack
@@ -4385,10 +4587,10 @@ export class LocalStore {
         ? await this.lockedDb
             .prepare(
               `UPDATE transcript SET trustedAgentBot = 1
-               WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text'
+               WHERE orgId = ? AND channel = ? AND ts = ? AND kind = 'text'
                  AND COALESCE(trustedAgentBot, 0) = 0`
             )
-            .run(orgId, e.channel, e.thread, e.ts)
+            .run(orgId, e.channel, e.ts)
         : undefined
     // The same canonical post can be recorded first by a pre-upgrade write (no
     // postId column value) and re-observed by a copy that carries it. Upgrade in
@@ -4398,9 +4600,9 @@ export class LocalStore {
         ? await this.lockedDb
             .prepare(
               `UPDATE transcript SET postId = ?
-               WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND postId IS NULL`
+               WHERE orgId = ? AND channel = ? AND ts = ? AND kind = 'text' AND postId IS NULL`
             )
-            .run(e.postId, orgId, e.channel, e.thread, e.ts)
+            .run(e.postId, orgId, e.channel, e.ts)
         : undefined
     // The observer often wins the INSERT race against the ingest that carries the turn body, so
     // the body upgrades in place like the post id: added once, never changed or cleared.
@@ -4409,9 +4611,9 @@ export class LocalStore {
         ? await this.lockedDb
             .prepare(
               `UPDATE transcript SET body = ?
-               WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND body IS NULL`
+               WHERE orgId = ? AND channel = ? AND ts = ? AND kind = 'text' AND body IS NULL`
             )
-            .run(e.body, orgId, e.channel, e.thread, e.ts)
+            .run(e.body, orgId, e.channel, e.ts)
         : undefined
     // A later duplicate can be the first copy that carries the AUTHORITATIVE
     // provider send time (an early observer wrote the row with the derived
@@ -4421,9 +4623,9 @@ export class LocalStore {
         ? await this.lockedDb
             .prepare(
               `UPDATE transcript SET eventTimeUs = ?
-               WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND eventTimeUs IS NOT ?`
+               WHERE orgId = ? AND channel = ? AND ts = ? AND kind = 'text' AND eventTimeUs IS NOT ?`
             )
-            .run(e.eventTimeUs, orgId, e.channel, e.thread, e.ts, e.eventTimeUs)
+            .run(e.eventTimeUs, orgId, e.channel, e.ts, e.eventTimeUs)
         : undefined
     // The observer often wins the INSERT race against SessionManager's authoritative
     // append, and only that append has fetched the image bytes — upgrade the row in
@@ -4434,9 +4636,9 @@ export class LocalStore {
         ? await this.lockedDb
             .prepare(
               `UPDATE transcript SET attachmentsJson = ?
-               WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND attachmentsJson IS NULL`
+               WHERE orgId = ? AND channel = ? AND ts = ? AND kind = 'text' AND attachmentsJson IS NULL`
             )
-            .run(JSON.stringify(attachments), orgId, e.channel, e.thread, e.ts)
+            .run(JSON.stringify(attachments), orgId, e.channel, e.ts)
         : undefined
     // A later duplicate can be the first copy that carries provider reply metadata
     // (or a corrected selected passage). Upgrade it without ever clearing a quote when
@@ -4446,13 +4648,19 @@ export class LocalStore {
         ? await this.lockedDb
             .prepare(
               `UPDATE transcript SET quoteJson = ?
-               WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text'
+               WHERE orgId = ? AND channel = ? AND ts = ? AND kind = 'text'
                  AND COALESCE(quoteJson, '') <> ?`
             )
-            .run(durableQuoteJson, orgId, e.channel, e.thread, e.ts, durableQuoteJson)
+            .run(durableQuoteJson, orgId, e.channel, e.ts, durableQuoteJson)
         : undefined
     if (inserted === 1) {
-      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender, e.recipient], this.transcriptRevision)
+      this.notifyTranscriptMutation(
+        e.channel,
+        e.thread ?? '',
+        [e.sender, e.recipient, admission?.agentId],
+        this.transcriptRevision,
+        [admission?.sessionKey]
+      )
     } else if (
       Number(provenanceUpgraded?.changes ?? 0) === 1 ||
       Number(attachmentsUpgraded?.changes ?? 0) === 1 ||
@@ -4469,27 +4677,30 @@ export class LocalStore {
       const bumped = await this.lockedDb.batch([
         {
           kind: 'run',
-          sql: "UPDATE transcript SET revision = ? WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text'",
-          params: [this.transcriptRevision + 1, orgId, e.channel, e.thread, e.ts]
+          sql: "UPDATE transcript SET revision = ? WHERE orgId = ? AND channel = ? AND ts = ? AND kind = 'text'",
+          params: [this.transcriptRevision + 1, orgId, e.channel, e.ts]
         },
         {
           kind: 'read',
-          sql: 'SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?',
-          params: [orgId, e.channel, e.thread]
+          sql: 'SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript WHERE orgId = ? AND channel = ?',
+          params: [orgId, e.channel]
         },
         {
           kind: 'read',
-          sql: 'SELECT agentId FROM transcript_recipient WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ?',
-          params: [orgId, e.channel, e.thread, e.ts]
+          sql: `SELECT tr.agentId AS agentId, tr.sessionKey AS sessionKey FROM transcript_recipient tr
+                JOIN transcript t ON t.seq = tr.seq
+                WHERE t.orgId = ? AND t.channel = ? AND t.ts = ? AND t.kind = 'text'`,
+          params: [orgId, e.channel, e.ts]
         }
       ])
       this.transcriptRevision = Number((bumped[1]?.rows[0] as { revision: number } | undefined)?.revision ?? 0)
-      const sharedRecipients = (bumped[2]?.rows as { agentId: string }[]).map((r) => r.agentId)
+      const admitted = bumped[2]?.rows as { agentId: string; sessionKey: string }[]
       this.notifyTranscriptMutation(
         e.channel,
-        e.thread,
-        [e.sender, e.recipient, ...sharedRecipients],
-        this.transcriptRevision
+        e.thread ?? '',
+        [e.sender, e.recipient, ...admitted.map((r) => r.agentId)],
+        this.transcriptRevision,
+        admitted.map((r) => r.sessionKey)
       )
     }
   }
@@ -4502,25 +4713,35 @@ export class LocalStore {
    *  two cards in one thread never share a row. Shares the tool row's `tool_call_id` column as
    *  its identity, exactly as {@link upsertPlan} does — the value is namespaced and both
    *  statements are fenced on kind, so a real tool id can never collide with one. */
-  upsertElicit(e: {
+  async upsertElicit(e: {
     channel: string
     thread: string
     ts: string
     sender: string
     text: string
     body: string
+    admission: TranscriptAdmission
   }): Promise<void> {
     const orgId = this.orgFor(e.sender)
-    return this.transcriptMutex.run(() => this.upsertElicitLocked(e, orgId))
+    await this.transcriptMutex.run(() => this.upsertElicitLocked(e, orgId))
+    this.armObservationSweep(orgId, e.channel)
   }
 
   /** The upsert itself, under {@link transcriptMutex} — see {@link appendTranscriptLocked}. */
   private async upsertElicitLocked(
-    e: { channel: string; thread: string; ts: string; sender: string; text: string; body: string },
+    e: {
+      channel: string
+      thread: string
+      ts: string
+      sender: string
+      text: string
+      body: string
+      admission: TranscriptAdmission
+    },
     orgId: string
   ): Promise<void> {
     const revision = this.transcriptRevision + 1
-    const written = await this.writeTranscriptRows(orgId, e.channel, e.thread, [
+    const written = await this.writeTranscriptRows(orgId, e.channel, [
       {
         kind: 'run',
         sql: `INSERT OR IGNORE INTO transcript
@@ -4547,13 +4768,14 @@ export class LocalStore {
          WHERE orgId = ? AND channel = ? AND thread = ? AND sender = ? AND tool_call_id = ? AND kind = 'elicit'
            AND (text IS NOT ? OR body IS NOT ?)`,
         params: [e.text, e.body, revision, orgId, e.channel, e.thread, e.sender, elicitRowId(e.ts), e.text, e.body]
-      }
+      },
+      this.cardAdmissionStatement(e, orgId, 'elicit', elicitRowId(e.ts), e.admission)
     ])
     // An unchanged re-write changes neither statement and must not bump the revision a live
     // console polls on — the same rule the plan upsert follows.
     if (written.changes.some((changed) => changed > 0)) {
       this.transcriptRevision = written.revision
-      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], this.transcriptRevision)
+      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], this.transcriptRevision, [e.admission.sessionKey])
     }
   }
 
@@ -4565,7 +4787,7 @@ export class LocalStore {
    * the interface back. Keeping it out of transcript PAGES is the history projection's job — it
    * strips the template and the console fetches the full body on demand.
    */
-  upsertApp(e: {
+  async upsertApp(e: {
     channel: string
     thread: string
     ts: string
@@ -4573,17 +4795,28 @@ export class LocalStore {
     appId: string
     text: string
     body: string
+    admission: TranscriptAdmission
   }): Promise<void> {
     const orgId = this.orgFor(e.sender)
-    return this.transcriptMutex.run(() => this.upsertAppLocked(e, orgId))
+    await this.transcriptMutex.run(() => this.upsertAppLocked(e, orgId))
+    this.armObservationSweep(orgId, e.channel)
   }
 
   private async upsertAppLocked(
-    e: { channel: string; thread: string; ts: string; sender: string; appId: string; text: string; body: string },
+    e: {
+      channel: string
+      thread: string
+      ts: string
+      sender: string
+      appId: string
+      text: string
+      body: string
+      admission: TranscriptAdmission
+    },
     orgId: string
   ): Promise<void> {
     const revision = this.transcriptRevision + 1
-    const written = await this.writeTranscriptRows(orgId, e.channel, e.thread, [
+    const written = await this.writeTranscriptRows(orgId, e.channel, [
       {
         kind: 'run',
         sql: `INSERT OR IGNORE INTO transcript
@@ -4610,13 +4843,14 @@ export class LocalStore {
          WHERE orgId = ? AND channel = ? AND thread = ? AND sender = ? AND tool_call_id = ? AND kind = 'app'
            AND (text IS NOT ? OR body IS NOT ?)`,
         params: [e.text, e.body, revision, orgId, e.channel, e.thread, e.sender, appRowId(e.appId), e.text, e.body]
-      }
+      },
+      this.cardAdmissionStatement(e, orgId, 'app', appRowId(e.appId), e.admission)
     ])
     // An unchanged re-write must not bump the revision a live console polls on — the same rule
     // the elicit and plan upserts follow.
     if (written.changes.some((changed) => changed > 0)) {
       this.transcriptRevision = written.revision
-      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], this.transcriptRevision)
+      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], this.transcriptRevision, [e.admission.sessionKey])
     }
   }
 
@@ -4631,15 +4865,38 @@ export class LocalStore {
    */
   async getAppCard(
     appId: string
-  ): Promise<{ channel: string; thread: string; ts: string; sender: string; body: string } | undefined> {
+  ): Promise<
+    { channel: string; thread: string; ts: string; sender: string; sessionKey: string; body: string } | undefined
+  > {
+    // The admission carries the session; a migrated append row reads its thread back as NULL,
+    // which the card only ever uses as the rewrite target, so '' stands in for it.
     const row = (await this.db
       .prepare(
-        "SELECT channel, thread, ts, sender, body FROM transcript WHERE tool_call_id = ? AND kind = 'app' LIMIT 1"
+        `SELECT t.channel AS channel, t.thread AS thread, t.ts AS ts, t.sender AS sender, t.body AS body,
+                tr.sessionKey AS sessionKey
+           FROM transcript t
+           LEFT JOIN transcript_recipient tr ON tr.seq = t.seq AND tr.agentId = t.sender
+          WHERE t.tool_call_id = ? AND t.kind = 'app' LIMIT 1`
       )
       .get(appRowId(appId))) as
-      { channel: string; thread: string; ts: string; sender: string; body: string | null } | undefined
+      | {
+          channel: string
+          thread: string | null
+          ts: string
+          sender: string
+          sessionKey: string | null
+          body: string | null
+        }
+      | undefined
     return row?.body
-      ? { channel: row.channel, thread: row.thread, ts: row.ts, sender: row.sender, body: row.body }
+      ? {
+          channel: row.channel,
+          thread: row.thread ?? '',
+          ts: row.ts,
+          sender: row.sender,
+          sessionKey: row.sessionKey ?? '',
+          body: row.body
+        }
       : undefined
   }
 
@@ -4650,7 +4907,7 @@ export class LocalStore {
    *  turn. Shares the tool row's `tool_call_id` column as its identity — `planId` is minted
    *  per turn and namespaced, and both statements are fenced on kind so a tool id can never
    *  collide with one. */
-  upsertPlan(e: {
+  async upsertPlan(e: {
     channel: string
     thread: string
     ts: string
@@ -4658,18 +4915,29 @@ export class LocalStore {
     planId: string
     title: string
     body: string
+    admission: TranscriptAdmission
   }): Promise<void> {
     const orgId = this.orgFor(e.sender)
-    return this.transcriptMutex.run(() => this.upsertPlanLocked(e, orgId))
+    await this.transcriptMutex.run(() => this.upsertPlanLocked(e, orgId))
+    this.armObservationSweep(orgId, e.channel)
   }
 
   /** The upsert itself, under {@link transcriptMutex} — see {@link appendTranscriptLocked}. */
   private async upsertPlanLocked(
-    e: { channel: string; thread: string; ts: string; sender: string; planId: string; title: string; body: string },
+    e: {
+      channel: string
+      thread: string
+      ts: string
+      sender: string
+      planId: string
+      title: string
+      body: string
+      admission: TranscriptAdmission
+    },
     orgId: string
   ): Promise<void> {
     const revision = this.transcriptRevision + 1
-    const written = await this.writeTranscriptRows(orgId, e.channel, e.thread, [
+    const written = await this.writeTranscriptRows(orgId, e.channel, [
       {
         kind: 'run',
         sql: `INSERT OR IGNORE INTO transcript
@@ -4696,13 +4964,14 @@ export class LocalStore {
          WHERE orgId = ? AND channel = ? AND thread = ? AND sender = ? AND tool_call_id = ? AND kind = 'plan'
            AND (text IS NOT ? OR body IS NOT ?)`,
         params: [e.title, e.body, revision, orgId, e.channel, e.thread, e.sender, e.planId, e.title, e.body]
-      }
+      },
+      this.cardAdmissionStatement(e, orgId, 'plan', e.planId, e.admission)
     ])
     // Either statement changing a row means this thread moved; an unchanged re-send changes
     // neither and must not bump the revision a live console polls on.
     if (written.changes.some((changed) => changed > 0)) {
       this.transcriptRevision = written.revision
-      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], this.transcriptRevision)
+      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], this.transcriptRevision, [e.admission.sessionKey])
     }
   }
 
@@ -4710,7 +4979,7 @@ export class LocalStore {
    *  serialized ToolBody in `body`). INSERT OR IGNORE so a re-fired first update is a
    *  no-op — the partial unique index on (channel, thread, sender, tool_call_id)
    *  dedups within one agent. `seq` stays stable across later updates. */
-  insertToolCall(e: {
+  async insertToolCall(e: {
     channel: string
     thread: string
     ts: string
@@ -4718,17 +4987,28 @@ export class LocalStore {
     toolCallId: string
     title: string
     body: string
+    admission: TranscriptAdmission
   }): Promise<void> {
     const orgId = this.orgFor(e.sender)
-    return this.transcriptMutex.run(() => this.insertToolCallLocked(e, orgId))
+    await this.transcriptMutex.run(() => this.insertToolCallLocked(e, orgId))
+    this.armObservationSweep(orgId, e.channel)
   }
 
   /** The insert itself, under {@link transcriptMutex} — see {@link appendTranscriptLocked}. */
   private async insertToolCallLocked(
-    e: { channel: string; thread: string; ts: string; sender: string; toolCallId: string; title: string; body: string },
+    e: {
+      channel: string
+      thread: string
+      ts: string
+      sender: string
+      toolCallId: string
+      title: string
+      body: string
+      admission: TranscriptAdmission
+    },
     orgId: string
   ): Promise<void> {
-    const { changes, revision } = await this.writeTranscriptRows(orgId, e.channel, e.thread, [
+    const { changes, revision } = await this.writeTranscriptRows(orgId, e.channel, [
       {
         kind: 'run',
         sql: `INSERT OR IGNORE INTO transcript
@@ -4748,11 +5028,12 @@ export class LocalStore {
             revision: this.transcriptRevision + 1
           }
         ]
-      }
+      },
+      this.cardAdmissionStatement(e, orgId, 'tool', e.toolCallId, e.admission)
     ])
     if (changes[0] === 1) {
       this.transcriptRevision = revision
-      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], this.transcriptRevision)
+      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], this.transcriptRevision, [e.admission.sessionKey])
     }
   }
 
@@ -4767,12 +5048,13 @@ export class LocalStore {
     thread: string,
     agentId: string,
     toolCallId: string,
-    patch: { title: string; body: string }
+    patch: { title: string; body: string },
+    sessionKey = ''
   ): Promise<void> {
     // Resolved here, not at flush time: the org fence must reject an unattributable agent at
     // the same call, with the same inputs, as the per-chunk write it replaces.
     const orgId = this.orgFor(agentId)
-    const write = { orgId, channel, thread, agentId, toolCallId, bytes: 0, ...patch }
+    const write = { orgId, channel, thread, agentId, sessionKey, toolCallId, bytes: 0, ...patch }
     const key = writeKeyOf(write)
     this.pendingToolWriteBytes -= this.pendingToolWrites.get(key)?.bytes ?? 0
     const bytes = patch.title.length + patch.body.length
@@ -4831,8 +5113,8 @@ export class LocalStore {
         })),
         ...threadList.map((write) => ({
           kind: 'read' as const,
-          sql: 'SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?',
-          params: [write.orgId, write.channel, write.thread]
+          sql: 'SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript WHERE orgId = ? AND channel = ?',
+          params: [write.orgId, write.channel]
         }))
       ])
     } catch (error) {
@@ -4860,18 +5142,26 @@ export class LocalStore {
     this.transcriptRevision = Math.max(this.transcriptRevision, ...revisions.values())
     // One notification per thread that actually changed, carrying that thread's own revision —
     // the per-chunk path emitted one per write, and every intermediate one is now superseded.
-    const changed = new Map<string, string[]>()
+    const changed = new Map<string, { agentIds: string[]; sessionKeys: string[] }>()
     for (const [index, write] of pending.entries()) {
       if (Number(results[index]?.changes ?? 0) !== 1) continue
       const key = threadKeyOf(write)
-      const agentIds = changed.get(key)
-      if (agentIds) agentIds.push(write.agentId)
-      else changed.set(key, [write.agentId])
+      const entry = changed.get(key) ?? { agentIds: [], sessionKeys: [] }
+      entry.agentIds.push(write.agentId)
+      if (write.sessionKey) entry.sessionKeys.push(write.sessionKey)
+      changed.set(key, entry)
     }
     for (const write of threadList) {
       const key = threadKeyOf(write)
-      const agentIds = changed.get(key)
-      if (agentIds) this.notifyTranscriptMutation(write.channel, write.thread, agentIds, revisions.get(key) ?? 0)
+      const entry = changed.get(key)
+      if (entry)
+        this.notifyTranscriptMutation(
+          write.channel,
+          write.thread,
+          entry.agentIds,
+          revisions.get(key) ?? 0,
+          entry.sessionKeys
+        )
     }
   }
 
@@ -4892,21 +5182,73 @@ export class LocalStore {
     this.toolWriteTimer = undefined
   }
 
+  /** §8 rule 2: reclaim every unadmitted row in one conversation that fell under the newest
+   *  {@link OBSERVATION_FLOOR_TEXT_ROWS} CONVERSATIONAL rows, so a tool-heavy turn cannot push a
+   *  short conversation's observations out. Under the floor the subquery yields the oldest text
+   *  row's seq, with none it yields NULL, and both make this a no-op in either dialect. */
+  async sweepObservations(orgId: string, channel: string): Promise<number> {
+    // Drain OUTSIDE the mutex: the flush takes it too, and it is not reentrant.
+    await this.drainToolCallWrites()
+    return await this.transcriptMutex.run(() => this.sweepObservationsLocked(orgId, channel))
+  }
+
+  /** The sweep itself, under {@link transcriptMutex} — see {@link appendTranscriptLocked}. */
+  private async sweepObservationsLocked(orgId: string, channel: string): Promise<number> {
+    const held = RETAINED_BY_PENDING_VERDICT_SQL ? `AND NOT EXISTS (${RETAINED_BY_PENDING_VERDICT_SQL})` : ''
+    const result = await this.lockedDb.query(
+      `DELETE FROM transcript
+        WHERE orgId = ? AND channel = ?
+          AND NOT EXISTS (SELECT 1 FROM transcript_recipient tr WHERE tr.seq = transcript.seq)
+          ${held}
+          AND seq < (SELECT MIN(floor.seq) FROM (
+                SELECT seq FROM transcript
+                 WHERE orgId = ? AND channel = ? AND kind = 'text'
+                 ORDER BY seq DESC LIMIT ?) floor)`,
+      [orgId, channel, orgId, channel, OBSERVATION_FLOOR_TEXT_ROWS]
+    )
+    return Number(result.changes)
+  }
+
+  /** Every conversation this store holds, swept in one bounded idle pass. */
+  async sweepAllObservations(limit = STORE_RETENTION_SCAN_LIMIT): Promise<number> {
+    const conversations = (await this.db
+      .prepare('SELECT DISTINCT orgId, channel FROM transcript LIMIT ?')
+      .all(limit)) as { orgId: string; channel: string }[]
+    let deleted = 0
+    for (const row of conversations) deleted += await this.sweepObservations(row.orgId, row.channel)
+    return deleted
+  }
+
+  /** Arm a sweep for one conversation: every {@link OBSERVATION_SWEEP_INSERTS} inserts, from a
+   *  microtask so it never runs inside a caller's {@link transcriptMutex} hold, which is not
+   *  reentrant. A missed pass the idle {@link sweepAllObservations} takes. */
+  private armObservationSweep(orgId: string, channel: string): void {
+    const key = `${orgId}\u0000${channel}`
+    const count = (this.observationSweepCounters.get(key) ?? 0) + 1
+    if (count < OBSERVATION_SWEEP_INSERTS) {
+      this.observationSweepCounters.set(key, count)
+      return
+    }
+    this.observationSweepCounters.set(key, 0)
+    queueMicrotask(() => {
+      void this.sweepObservations(orgId, channel).catch(() => undefined)
+    })
+  }
+
   /** One round trip for a transcript mutation plus the thread revision the caller needs next.
    *  Each statement still commits on its own, so a failure leaves what the same sequence of
    *  single-statement calls would have left. Callers hold {@link transcriptMutex}. */
   private async writeTranscriptRows(
     orgId: string,
     channel: string,
-    thread: string,
     statements: StoreBatchStatement[]
   ): Promise<{ changes: number[]; revision: number }> {
     const results = await this.lockedDb.batch([
       ...statements,
       {
         kind: 'read',
-        sql: 'SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?',
-        params: [orgId, channel, thread]
+        sql: 'SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript WHERE orgId = ? AND channel = ?',
+        params: [orgId, channel]
       }
     ])
     return {
@@ -4919,10 +5261,12 @@ export class LocalStore {
     channel: string,
     thread: string,
     candidates: Array<string | undefined>,
-    revision: number
+    revision: number,
+    sessionCandidates: Array<string | undefined> = []
   ): void {
     const agentIds = [...new Set(candidates.filter((candidate): candidate is string => !!candidate))]
-    if (agentIds.length === 0) return
+    const sessionKeys = [...new Set(sessionCandidates.filter((candidate): candidate is string => !!candidate))]
+    if (agentIds.length === 0 && sessionKeys.length === 0) return
     if (!this.transcriptMutationListener) return
     // Post-commit dispatch: the listener reads the store, so it must never run mid-write and
     // observe a half-applied batch (or re-enter an open transaction). Re-read at dispatch so a
@@ -4930,9 +5274,9 @@ export class LocalStore {
     queueMicrotask(() => {
       try {
         // Listener may be async now; a rejected store read stays best-effort, never unhandled.
-        void Promise.resolve(this.transcriptMutationListener?.({ channel, thread, agentIds, revision })).catch(
-          () => undefined
-        )
+        void Promise.resolve(
+          this.transcriptMutationListener?.({ channel, thread, agentIds, sessionKeys, revision })
+        ).catch(() => undefined)
       } catch {
         // Live-view invalidation is best-effort and must never fail a durable write.
       }
@@ -4940,19 +5284,21 @@ export class LocalStore {
   }
 
   /** One agent's full stored ToolBody JSON, or undefined if unknown/not owned. */
-  async getToolBodyForAgent(
-    channel: string,
-    thread: string,
-    agentId: string,
-    toolCallId: string,
-    orgId?: string
-  ): Promise<string | undefined> {
+  async getToolBodyForAgent(scope: TranscriptSessionScope, toolCallId: string): Promise<string | undefined> {
     const row = (await this.db
       .prepare(
-        'SELECT body FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND sender = ? AND tool_call_id = ?'
+        `SELECT body FROM transcript WHERE orgId = ? AND channel = ?
+           AND ${SESSION_ROW_SCOPE_SQL}
+           AND sender = ? AND tool_call_id = ?`
       )
-      .get(this.orgForRead(agentId, orgId), channel, thread, agentId, toolCallId)) as
-      { body: string | null } | undefined
+      .get(
+        this.orgForRead(scope.agentId, scope.orgId),
+        scope.transcriptChannel,
+        scope.coordinate,
+        scope.sessionKey,
+        scope.agentId,
+        toolCallId
+      )) as { body: string | null } | undefined
     return row?.body ?? undefined
   }
 
@@ -4961,26 +5307,23 @@ export class LocalStore {
    * are audit/UI data and must never be replayed back into an agent's prompt. Ordered by
    * platform `ts` (every text row carries one), compared against the session marker.
    */
-  async transcriptSince(
-    channel: string,
-    thread: string,
-    sinceTs: string | null,
-    agentId: string
-  ): Promise<TranscriptEntry[]> {
-    const orgId = this.orgFor(agentId)
+  async transcriptSince(scope: TranscriptSessionScope, sinceTs: string | null): Promise<TranscriptEntry[]> {
+    const orgId = this.orgForRead(scope.agentId, scope.orgId)
     if (sinceTs === null) {
       return (await this.db
         .prepare(
-          "SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text' ORDER BY ts ASC"
+          `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND kind = 'text'
+             AND ${SESSION_ROW_SCOPE_SQL} ORDER BY ts ASC`
         )
-        .all(orgId, channel, thread)) as unknown as TranscriptEntry[]
+        .all(orgId, scope.transcriptChannel, scope.coordinate, scope.sessionKey)) as unknown as TranscriptEntry[]
     }
     return (await this.db
       .prepare(
-        `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text' AND ts > ?
+        `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND kind = 'text' AND ts > ?
+           AND ${SESSION_ROW_SCOPE_SQL}
          ORDER BY ts ASC`
       )
-      .all(orgId, channel, thread, sinceTs)) as unknown as TranscriptEntry[]
+      .all(orgId, scope.transcriptChannel, sinceTs, scope.coordinate, scope.sessionKey)) as unknown as TranscriptEntry[]
   }
 
   /**
@@ -4991,27 +5334,39 @@ export class LocalStore {
    * private pairwise delivery: the §8.5 model catch-up must read only this
    * pair's rows, or siblings see each other's private deliveries (#967).
    */
-  async transcriptSinceForAgent(
-    channel: string,
-    thread: string,
-    sinceTs: string | null,
-    agentId: string
-  ): Promise<TranscriptEntry[]> {
-    const orgId = this.orgFor(agentId)
+  async transcriptSinceForAgent(scope: TranscriptSessionScope, sinceTs: string | null): Promise<TranscriptEntry[]> {
+    const orgId = this.orgForRead(scope.agentId, scope.orgId)
     if (sinceTs === null) {
       return (await this.db
         .prepare(
-          `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text'
+          `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND kind = 'text'
+             AND ${SESSION_ROW_SCOPE_SQL}
              AND ${AGENT_DELIVERY_SCOPE_SQL} ORDER BY ts ASC`
         )
-        .all(orgId, channel, thread, agentId, agentId, agentId)) as unknown as TranscriptEntry[]
+        .all(
+          orgId,
+          scope.transcriptChannel,
+          scope.coordinate,
+          scope.sessionKey,
+          scope.agentId,
+          scope.agentId
+        )) as unknown as TranscriptEntry[]
     }
     return (await this.db
       .prepare(
-        `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text' AND ts > ?
+        `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND kind = 'text' AND ts > ?
+           AND ${SESSION_ROW_SCOPE_SQL}
            AND ${AGENT_DELIVERY_SCOPE_SQL} ORDER BY ts ASC`
       )
-      .all(orgId, channel, thread, sinceTs, agentId, agentId, agentId)) as unknown as TranscriptEntry[]
+      .all(
+        orgId,
+        scope.transcriptChannel,
+        sinceTs,
+        scope.coordinate,
+        scope.sessionKey,
+        scope.agentId,
+        scope.agentId
+      )) as unknown as TranscriptEntry[]
   }
 
   /**
@@ -5019,60 +5374,61 @@ export class LocalStore {
    * `transcriptSince`, this never compares provider message ids from different
    * ordering domains; it follows the daemon's monotonic observation revision.
    */
-  async threadTranscriptRevision(channel: string, thread: string, agentId?: string): Promise<number> {
-    return await this.threadRevisionInOrg(await this.transcriptOrg(channel, thread, agentId), channel, thread)
-  }
-
-  /** {@link threadTranscriptRevision} for a partition already resolved by a write. */
-  private async threadRevisionInOrg(orgId: string, channel: string, thread: string): Promise<number> {
+  async threadTranscriptRevision(scope: TranscriptSessionScope): Promise<number> {
+    const orgId =
+      scope.orgId !== undefined && this.shared
+        ? scope.orgId
+        : await this.transcriptOrg(scope.transcriptChannel, scope.coordinate, scope.agentId)
     const row = (await this.db
       .prepare(
-        'SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?'
+        `SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript
+         WHERE orgId = ? AND channel = ? AND ${SESSION_ROW_SCOPE_SQL}`
       )
-      .get(orgId, channel, thread)) as { revision: number }
+      .get(orgId, scope.transcriptChannel, scope.coordinate, scope.sessionKey)) as { revision: number }
     return row.revision
   }
 
   /** Conversation and audit rows observed after a thread-local revision fence. */
-  async transcriptSinceRevision(
-    channel: string,
-    thread: string,
-    afterRevision: number,
-    agentId: string
-  ): Promise<TranscriptRow[]> {
+  async transcriptSinceRevision(scope: TranscriptSessionScope, afterRevision: number): Promise<TranscriptRow[]> {
     return (await this.db
       .prepare(
         `SELECT * FROM transcript
-         WHERE orgId = ? AND channel = ? AND thread = ? AND revision > ?
+         WHERE orgId = ? AND channel = ? AND revision > ?
+           AND ${SESSION_ROW_SCOPE_SQL}
          ORDER BY revision ASC, seq ASC`
       )
-      .all(this.orgFor(agentId), channel, thread, afterRevision)) as unknown as TranscriptRow[]
+      .all(
+        this.orgForRead(scope.agentId, scope.orgId),
+        scope.transcriptChannel,
+        afterRevision,
+        scope.coordinate,
+        scope.sessionKey
+      )) as unknown as TranscriptRow[]
   }
 
   /** `transcriptSinceRevision`, scoped to one agent's sent/received rows — the
    *  turn-context refresh's read on a synthetic pairwise `a2a:<caller>` thread,
    *  for the same reason as {@link transcriptSinceForAgent} (#967). */
   async transcriptSinceRevisionForAgent(
-    channel: string,
-    thread: string,
-    afterRevision: number,
-    agentId: string
+    scope: TranscriptSessionScope,
+    afterRevision: number
   ): Promise<TranscriptRow[]> {
     return (await this.db
       .prepare(
         `SELECT * FROM transcript
-         WHERE orgId = ? AND channel = ? AND thread = ? AND revision > ?
+         WHERE orgId = ? AND channel = ? AND revision > ?
+           AND ${SESSION_ROW_SCOPE_SQL}
            AND ${AGENT_DELIVERY_SCOPE_SQL}
          ORDER BY revision ASC, seq ASC`
       )
       .all(
-        this.orgFor(agentId),
-        channel,
-        thread,
+        this.orgForRead(scope.agentId, scope.orgId),
+        scope.transcriptChannel,
         afterRevision,
-        agentId,
-        agentId,
-        agentId
+        scope.coordinate,
+        scope.sessionKey,
+        scope.agentId,
+        scope.agentId
       )) as unknown as TranscriptRow[]
   }
 
@@ -5081,18 +5437,20 @@ export class LocalStore {
    *  supplied one. Before the first meaningful request, this avoids showing only
    *  "Session <id>". Returns undefined when the thread holds no non-agent text row
    *  yet. Indexed by (channel, thread, seq). */
-  async firstMessageText(
-    channel: string,
-    thread: string,
-    agentId: string,
-    orgId?: string
-  ): Promise<string | undefined> {
+  async firstMessageText(scope: TranscriptSessionScope): Promise<string | undefined> {
     const row = (await this.db
       .prepare(
-        `SELECT text FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text'
+        `SELECT text FROM transcript WHERE orgId = ? AND channel = ? AND kind = 'text'
+           AND ${SESSION_ROW_SCOPE_SQL}
            AND sender != ? ORDER BY seq ASC LIMIT 1`
       )
-      .get(this.orgForRead(agentId, orgId), channel, thread, agentId)) as { text: string } | undefined
+      .get(
+        this.orgForRead(scope.agentId, scope.orgId),
+        scope.transcriptChannel,
+        scope.coordinate,
+        scope.sessionKey,
+        scope.agentId
+      )) as { text: string } | undefined
     return row?.text
   }
 
@@ -5114,18 +5472,22 @@ export class LocalStore {
    * than what arrived. Bounded scan depth for the same reason the copy is bounded.
    */
   async transcriptAttachmentByName(
-    channel: string,
-    thread: string,
-    agentId: string | undefined,
+    scope: TranscriptSessionScope,
     name: string
   ): Promise<SessionImageAttachment | undefined> {
     const rows = (await this.db
       .prepare(
         `SELECT attachmentsJson FROM transcript
-          WHERE orgId = ? AND channel = ? AND thread = ? AND attachmentsJson IS NOT NULL
+          WHERE orgId = ? AND channel = ? AND attachmentsJson IS NOT NULL
+            AND ${SESSION_ROW_SCOPE_SQL}
           ORDER BY seq DESC LIMIT 100`
       )
-      .all(this.orgFor(agentId), channel, thread)) as unknown as { attachmentsJson: string }[]
+      .all(
+        this.orgForRead(scope.agentId, scope.orgId),
+        scope.transcriptChannel,
+        scope.coordinate,
+        scope.sessionKey
+      )) as unknown as { attachmentsJson: string }[]
     for (const row of rows) {
       let raw: unknown
       try {
@@ -5155,7 +5517,10 @@ export class LocalStore {
    */
   async telegramThreadForMessage(channel: string, messageId: string): Promise<string | undefined> {
     const row = (await this.db
-      .prepare("SELECT thread FROM transcript WHERE channel = ? AND ts = ? AND kind = 'text' ORDER BY seq DESC LIMIT 1")
+      .prepare(
+        `SELECT thread FROM transcript WHERE channel = ? AND ts = ? AND kind = 'text'
+           AND thread IS NOT NULL ORDER BY seq DESC LIMIT 1`
+      )
       .get(channel, messageId)) as { thread: string } | undefined
     return row?.thread
   }

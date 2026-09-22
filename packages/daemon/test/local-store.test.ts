@@ -9,10 +9,29 @@ import {
   sessionKey,
   type SessionRecord,
   type StoreDatabase,
+  OBSERVATION_SWEEP_INSERTS,
   SCHEMA_VERSION
 } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { memoryStoreDatabase, openTestStore, usingPostgresStore } from './store-support.js'
+
+/** The admission a session-internal row (tool / plan / card) always carries — its own sender's
+ *  session, keyed exactly as {@link readScope} keys a `createNew` conversation. */
+export const admitted = <T extends { sender: string; channel: string; thread: string }>(
+  e: T
+): T & { admission: { agentId: string; sessionKey: string } } => ({
+  ...e,
+  admission: { agentId: e.sender, sessionKey: `k:${e.channel}:${e.thread}:${e.sender}` }
+})
+
+/** One session's transcript read scope. In a `createNew` conversation the coordinate IS the
+ *  physical thread, so a scope built this way reads exactly what `(channel, thread)` used to. */
+export const readScope = (
+  transcriptChannel: string,
+  coordinate: string,
+  agentId: string,
+  sessionKey = `k:${transcriptChannel}:${coordinate}:${agentId}`
+) => ({ transcriptChannel, coordinate, sessionKey, agentId })
 
 /** True in the `store-postgres` project, where every store below is the real pool store. */
 const pg = usingPostgresStore()
@@ -70,9 +89,47 @@ const revertSessionGateKey = (db: DatabaseSync): void => {
   )`)
 }
 
+/** Undo the v24 channel record, so a fixture looks like the transcript a v23 daemon wrote:
+ *  `thread` NOT NULL, the dedup index on the full key, and a (channel, thread, ts, agent) delivery table. */
+const revertTranscriptAdmissions = (db: DatabaseSync): void => {
+  db.exec(`
+    DROP INDEX transcript_channel_seq;
+    DROP INDEX transcript_text_ts;
+    DROP INDEX transcript_channel_event_time;
+    DROP INDEX transcript_channel_revision;
+    DROP INDEX transcript_recipient_session;
+    DROP TABLE transcript_recipient;
+    CREATE TABLE transcript_recipient (
+      orgId TEXT NOT NULL DEFAULT '',
+      channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT NOT NULL, agentId TEXT NOT NULL,
+      PRIMARY KEY (orgId, channel, thread, ts, agentId)
+    );
+    CREATE TABLE transcript_v23 (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      orgId TEXT NOT NULL DEFAULT '',
+      channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT,
+      sender TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
+      tool_call_id TEXT, body TEXT, recipient TEXT, eventTimeUs INTEGER,
+      attachmentsJson TEXT, quoteJson TEXT, trustedAgentBot INTEGER, revision INTEGER NOT NULL DEFAULT 0,
+      postId TEXT
+    );
+    DROP TABLE transcript;
+    ALTER TABLE transcript_v23 RENAME TO transcript;
+    CREATE INDEX transcript_thread_seq ON transcript (orgId, channel, thread, seq);
+    CREATE UNIQUE INDEX transcript_text_ts ON transcript (orgId, channel, thread, ts) WHERE kind = 'text';
+    CREATE UNIQUE INDEX transcript_agent_tool_call
+      ON transcript (orgId, channel, thread, sender, tool_call_id) WHERE tool_call_id IS NOT NULL;
+    CREATE INDEX transcript_app_card ON transcript (tool_call_id) WHERE kind = 'app';
+    CREATE INDEX transcript_thread_event_time ON transcript (orgId, channel, thread, eventTimeUs DESC, seq DESC);
+    CREATE INDEX transcript_thread_revision ON transcript (orgId, channel, thread, revision);
+  `)
+}
+
 /** Undo the v11 transcript fence, so a fixture looks like a store an older daemon wrote. */
 const dropTranscriptOrg = (db: DatabaseSync): void => {
+  revertTranscriptAdmissions(db)
   db.exec(`
+    DROP INDEX transcript_app_card;
     DROP INDEX transcript_thread_seq;
     DROP INDEX transcript_text_ts;
     DROP INDEX transcript_agent_tool_call;
@@ -88,6 +145,7 @@ const dropTranscriptOrg = (db: DatabaseSync): void => {
     CREATE UNIQUE INDEX transcript_text_ts ON transcript (channel, thread, ts) WHERE kind = 'text';
     CREATE UNIQUE INDEX transcript_agent_tool_call
       ON transcript (channel, thread, sender, tool_call_id) WHERE tool_call_id IS NOT NULL;
+    CREATE INDEX transcript_app_card ON transcript (tool_call_id) WHERE kind = 'app';
     CREATE INDEX transcript_thread_event_time ON transcript (channel, thread, eventTimeUs DESC, seq DESC);
     CREATE INDEX transcript_thread_revision ON transcript (channel, thread, revision);
   `)
@@ -183,6 +241,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     await initial.close()
     const legacy = new DatabaseSync(path)
     dropCodeHostReplyTarget(legacy)
+    revertTranscriptAdmissions(legacy)
     legacy.exec('PRAGMA user_version = 22')
     legacy.close()
     const upgraded = await LocalStore.open(path)
@@ -397,6 +456,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     dropBirthVerdict(old)
     dropCodeHostReplyTarget(old)
     revertSessionGateKey(old)
+    revertTranscriptAdmissions(old)
     old.exec('PRAGMA user_version = 11')
     old.close()
 
@@ -425,6 +485,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     dropBirthVerdict(old)
     dropCodeHostReplyTarget(old)
     revertSessionGateKey(old)
+    revertTranscriptAdmissions(old)
     old.exec('PRAGMA user_version = 12')
     old.close()
 
@@ -484,7 +545,7 @@ describe('transcript text-row body', () => {
     })
     // Ingest first: the body rides the insert itself.
     await s.appendTranscript({ channel: 'C', thread: 'T', ts: '2', sender: 'u', kind: 'text', text: 'yo', body })
-    const rows = await s.transcriptSince('C', 'T', null, 'u')
+    const rows = await s.transcriptSince(readScope('C', 'T', 'u'), null)
     expect(rows.map((r) => [r.ts, r.text, r.body])).toEqual([
       ['1', 'hi', body],
       ['2', 'yo', body]
@@ -640,7 +701,7 @@ describe('LocalStore', () => {
     const outward = (await s.getSession(sessionKey('slack', 'C1', 'T1', 'bot-a')))!.sessionId
     expect(outward).not.toBe('source-session')
     expect(await s.dreamSessionSources('bot-a', 20)).toEqual([
-      { sessionId: outward, channel: 'C1', thread: 'T1', updatedAt: 1 }
+      { sessionId: outward, key: sessionKey('slack', 'C1', 'T1', 'bot-a'), channel: 'C1', thread: 'T1', updatedAt: 1 }
     ])
     await s.close()
   })
@@ -657,9 +718,9 @@ describe('LocalStore', () => {
       text: 'second'
     })
     await s.appendTranscript({ channel: 'C1', thread: '100.1', ts: '100.4', sender: 'U1', kind: 'text', text: 'third' })
-    const gap = await s.transcriptSince('C1', '100.1', '100.2', 'bot-a')
+    const gap = await s.transcriptSince(readScope('C1', '100.1', 'bot-a'), '100.2')
     expect(gap.map((e) => e.text)).toEqual(['second', 'third'])
-    const all = await s.transcriptSince('C1', '100.1', null, 'bot-a')
+    const all = await s.transcriptSince(readScope('C1', '100.1', 'bot-a'), null)
     expect(all).toHaveLength(3)
     await s.close()
   })
@@ -668,28 +729,32 @@ describe('LocalStore', () => {
     const s = await store()
     await s.appendTranscript({ channel: 'C1', thread: 'T', ts: '1', sender: 'U1', kind: 'text', text: 'ask' })
     const card = { requestId: 'elicit-1', message: 'Which branch?', options: [{ value: 'main', label: 'main' }] }
-    await s.upsertElicit({
-      channel: 'C1',
-      thread: 'T',
-      ts: '2',
-      sender: 'bot',
-      text: card.message,
-      body: JSON.stringify(card)
-    })
+    await s.upsertElicit(
+      admitted({
+        channel: 'C1',
+        thread: 'T',
+        ts: '2',
+        sender: 'bot',
+        text: card.message,
+        body: JSON.stringify(card)
+      })
+    )
     // The settlement rewrites the SAME row rather than appending a second one below the reply.
-    await s.upsertElicit({
-      channel: 'C1',
-      thread: 'T',
-      ts: '2',
-      sender: 'bot',
-      text: card.message,
-      body: JSON.stringify({ ...card, outcome: 'accepted', answerLabel: 'main' })
-    })
+    await s.upsertElicit(
+      admitted({
+        channel: 'C1',
+        thread: 'T',
+        ts: '2',
+        sender: 'bot',
+        text: card.message,
+        body: JSON.stringify({ ...card, outcome: 'accepted', answerLabel: 'main' })
+      })
+    )
     await s.appendTranscript({ channel: 'C1', thread: 'T', ts: '3', sender: 'bot', kind: 'text', text: 'answer' })
 
     // The card is read-only history: the runtime already had its answer over ACP, so re-feeding
     // the row as conversation would ask the same question again.
-    expect((await s.transcriptSince('C1', 'T', null, 'bot-a')).map((e) => e.text)).toEqual(['ask', 'answer'])
+    expect((await s.transcriptSince(readScope('C1', 'T', 'bot-a'), null)).map((e) => e.text)).toEqual(['ask', 'answer'])
     const rows = (await s.threadTranscript('C1', 'T')) as { kind: string; text: string; body?: string | null }[]
     expect(rows.map((r) => [r.kind, r.text])).toEqual([
       ['text', 'ask'],
@@ -711,9 +776,9 @@ describe('LocalStore', () => {
       html: '<p>chart</p>'
     }
     const row = { channel: 'C1', thread: 'T', ts: '2', sender: 'bot', appId: 'app-1', text: card.title }
-    await s.upsertApp({ ...row, body: JSON.stringify(card) })
+    await s.upsertApp(admitted({ ...row, body: JSON.stringify(card) }))
     // The settlement rewrites the SAME row: one card is one row, whatever happened to it.
-    await s.upsertApp({ ...row, body: JSON.stringify({ ...card, outcome: 'expired' }) })
+    await s.upsertApp(admitted({ ...row, body: JSON.stringify({ ...card, outcome: 'expired' }) }))
     const rows = (await s.threadTranscript('C1', 'T')) as { kind: string; text: string }[]
     expect(rows.map((r) => [r.kind, r.text])).toEqual([['app', 'Token balances']])
 
@@ -726,7 +791,7 @@ describe('LocalStore', () => {
 
     // Read-only history, exactly as an elicitation card is: the model already had the tool result.
     await s.appendTranscript({ channel: 'C1', thread: 'T', ts: '3', sender: 'bot', kind: 'text', text: 'done' })
-    expect((await s.transcriptSince('C1', 'T', null, 'bot-a')).map((e) => e.text)).toEqual(['done'])
+    expect((await s.transcriptSince(readScope('C1', 'T', 'bot-a'), null)).map((e) => e.text)).toEqual(['done'])
     await s.close()
   })
 
@@ -738,7 +803,7 @@ describe('LocalStore', () => {
     await s.appendTranscript({ channel: 'C1', thread: 'T', ts: '4', sender: 'bot', kind: 'text', text: 'answer' })
 
     // §8.5 replay: conversational text only
-    expect((await s.transcriptSince('C1', 'T', null, 'bot-a')).map((e) => e.text)).toEqual(['ask', 'answer'])
+    expect((await s.transcriptSince(readScope('C1', 'T', 'bot-a'), null)).map((e) => e.text)).toEqual(['ask', 'answer'])
     // Web UI: every kind, insertion order
     expect((await s.threadTranscript('C1', 'T')).map((r) => [r.kind, r.text])).toEqual([
       ['text', 'ask'],
@@ -1358,18 +1423,20 @@ describe('LocalStore session/transcript read-back (session/list, session/history
     }
     // A title-tool row persisted by an older daemon is internal housekeeping. It must
     // not consume page slots or surface after that daemon upgrades.
-    await s.insertToolCall({
-      channel: 'C1',
-      thread: 'T',
-      ts: '5',
-      sender: 'bot-a',
-      toolCallId: 'title-tool',
-      title: 'mcp.agentconnect.setSessionTitle',
-      body: JSON.stringify({
+    await s.insertToolCall(
+      admitted({
+        channel: 'C1',
+        thread: 'T',
+        ts: '5',
+        sender: 'bot-a',
         toolCallId: 'title-tool',
-        rawInput: { server: 'agentconnect', tool: 'setSessionTitle', arguments: { title: 'Hidden' } }
+        title: 'mcp.agentconnect.setSessionTitle',
+        body: JSON.stringify({
+          toolCallId: 'title-tool',
+          rawInput: { server: 'agentconnect', tool: 'setSessionTitle', arguments: { title: 'Hidden' } }
+        })
       })
-    })
+    )
     // newest page of 2: seq 4,3 (DESC), more older rows remain
     const page1 = await s.transcriptPage('C1', 'T', null, 2)
     expect(page1.rows.map((r) => r.text)).toEqual(['m4', 'm3'])
@@ -1393,28 +1460,32 @@ describe('LocalStore session/transcript read-back (session/list, session/history
     const aBody = JSON.stringify({ toolCallId, rawOutput: 'agent-a output' })
     const bInitial = JSON.stringify({ toolCallId, rawOutput: 'agent-b partial' })
     const bFinal = JSON.stringify({ toolCallId, rawOutput: 'agent-b final' })
-    await s.insertToolCall({
-      channel: 'C1',
-      thread: 'T',
-      ts: '1',
-      sender: 'bot-a',
-      toolCallId,
-      title: 'agent-a tool',
-      body: aBody
-    })
-    await s.insertToolCall({
-      channel: 'C1',
-      thread: 'T',
-      ts: '2',
-      sender: 'bot-b',
-      toolCallId,
-      title: 'agent-b tool',
-      body: bInitial
-    })
+    await s.insertToolCall(
+      admitted({
+        channel: 'C1',
+        thread: 'T',
+        ts: '1',
+        sender: 'bot-a',
+        toolCallId,
+        title: 'agent-a tool',
+        body: aBody
+      })
+    )
+    await s.insertToolCall(
+      admitted({
+        channel: 'C1',
+        thread: 'T',
+        ts: '2',
+        sender: 'bot-b',
+        toolCallId,
+        title: 'agent-b tool',
+        body: bInitial
+      })
+    )
     await s.updateToolCall('C1', 'T', 'bot-b', toolCallId, { title: 'agent-b done', body: bFinal })
 
-    expect(await s.getToolBodyForAgent('C1', 'T', 'bot-a', toolCallId)).toBe(aBody)
-    expect(await s.getToolBodyForAgent('C1', 'T', 'bot-b', toolCallId)).toBe(bFinal)
+    expect(await s.getToolBodyForAgent(readScope('C1', 'T', 'bot-a'), toolCallId)).toBe(aBody)
+    expect(await s.getToolBodyForAgent(readScope('C1', 'T', 'bot-b'), toolCallId)).toBe(bFinal)
     await s.close()
   })
 
@@ -1427,6 +1498,7 @@ describe('LocalStore session/transcript read-back (session/list, session/history
       ts: '1',
       sender: 'U1',
       recipient: 'bot-a',
+      admission: { agentId: 'bot-a', sessionKey: 'k:C1:T:bot-a' },
       kind: 'text',
       text: 'to-a'
     })
@@ -1438,6 +1510,7 @@ describe('LocalStore session/transcript read-back (session/list, session/history
       ts: '3',
       sender: 'U1',
       recipient: 'bot-b',
+      admission: { agentId: 'bot-b', sessionKey: 'k:C1:T:bot-b' },
       kind: 'text',
       text: 'to-b'
     })
@@ -1453,39 +1526,39 @@ describe('LocalStore session/transcript read-back (session/list, session/history
     })
     // bot-a owns this legacy row, so the agent scope alone would include it. The
     // internal-housekeeping filter must still remove it from console history.
-    await s.insertToolCall({
-      channel: 'C1',
-      thread: 'T',
-      ts: '6',
-      sender: 'bot-a',
-      toolCallId: 'title-tool',
-      title: 'mcp.agentconnect.setSessionTitle',
-      body: JSON.stringify({ toolCallId: 'title-tool' })
-    })
+    await s.insertToolCall(
+      admitted({
+        channel: 'C1',
+        thread: 'T',
+        ts: '6',
+        sender: 'bot-a',
+        toolCallId: 'title-tool',
+        title: 'mcp.agentconnect.setSessionTitle',
+        body: JSON.stringify({ toolCallId: 'title-tool' })
+      })
+    )
 
-    expect((await s.transcriptPageForAgent('C1', 'T', 'bot-a', null, 50)).rows.map((r) => r.text).reverse()).toEqual([
-      'to-a',
-      'a-reply'
-    ])
-    expect((await s.transcriptPageForAgent('C1', 'T', 'bot-b', null, 50)).rows.map((r) => r.text).reverse()).toEqual([
-      'to-b',
-      'b-reply',
-      'b-thinks'
-    ])
+    expect(
+      (await s.transcriptPageForAgent(readScope('C1', 'T', 'bot-a'), null, 50)).rows.map((r) => r.text).reverse()
+    ).toEqual(['to-a', 'a-reply'])
+    expect(
+      (await s.transcriptPageForAgent(readScope('C1', 'T', 'bot-b'), null, 50)).rows.map((r) => r.text).reverse()
+    ).toEqual(['to-b', 'b-reply', 'b-thinks'])
     await s.close()
   })
 
   it('transcriptPageForAgent shows a shared message to EVERY agent it was delivered to (dedup survival)', async () => {
     const s = await store()
-    // A shared thread message that both agents catch up on. The second appendTranscript is
-    // deduped by the (channel, thread, ts) unique index, so the row keeps recipient='bot-a'
-    // — but the delivery to 'bot-b' must still be recorded so bot-b's view shows it.
+    // A shared thread message both agents catch up on. The second append dedups on
+    // (channel, ts), so the row keeps recipient='bot-a' — but bot-b's ADMISSION is still
+    // written beside it, which is what keeps the message in bot-b's view.
     await s.appendTranscript({
       channel: 'C1',
       thread: 'T',
       ts: '1',
       sender: 'U1',
       recipient: 'bot-a',
+      admission: { agentId: 'bot-a', sessionKey: 'k:C1:T:bot-a' },
       kind: 'text',
       text: 'shared'
     })
@@ -1495,14 +1568,21 @@ describe('LocalStore session/transcript read-back (session/list, session/history
       ts: '1',
       sender: 'U1',
       recipient: 'bot-b',
+      admission: { agentId: 'bot-b', sessionKey: 'k:C1:T:bot-b' },
       kind: 'text',
       text: 'shared'
     })
 
-    expect((await s.transcriptPageForAgent('C1', 'T', 'bot-a', null, 50)).rows.map((r) => r.text)).toEqual(['shared'])
-    expect((await s.transcriptPageForAgent('C1', 'T', 'bot-b', null, 50)).rows.map((r) => r.text)).toEqual(['shared'])
+    expect((await s.transcriptPageForAgent(readScope('C1', 'T', 'bot-a'), null, 50)).rows.map((r) => r.text)).toEqual([
+      'shared'
+    ])
+    expect((await s.transcriptPageForAgent(readScope('C1', 'T', 'bot-b'), null, 50)).rows.map((r) => r.text)).toEqual([
+      'shared'
+    ])
     // A third agent it was never delivered to does not see it.
-    expect((await s.transcriptPageForAgent('C1', 'T', 'bot-c', null, 50)).rows.map((r) => r.text)).toEqual([])
+    expect((await s.transcriptPageForAgent(readScope('C1', 'T', 'bot-c'), null, 50)).rows.map((r) => r.text)).toEqual(
+      []
+    )
     await s.close()
   })
 
@@ -1515,12 +1595,12 @@ describe('LocalStore session/transcript read-back (session/list, session/history
       ts: '7',
       sender: 'U1',
       recipient: 'bot-a',
+      admission: { agentId: 'bot-a', sessionKey: 'k:C1:T:bot-a' },
       kind: 'text',
       text: 'to-a'
     })
-    // A peer's PRIVATE reasoning that happens to share ts='7' (internal rows aren't ts-deduped,
-    // so a collision is possible). The delivery match is keyed by ts, so it must be gated to
-    // text rows or this peer row would leak into bot-a's view.
+    // A peer's PRIVATE reasoning sharing ts='7' (internal rows are not ts-deduped). The
+    // admission joins on `seq`, which no two rows share, so it cannot pull this one in.
     await s.appendTranscript({
       channel: 'C1',
       thread: 'T',
@@ -1530,7 +1610,7 @@ describe('LocalStore session/transcript read-back (session/list, session/history
       text: 'b-secret'
     })
 
-    const aRows = (await s.transcriptPageForAgent('C1', 'T', 'bot-a', null, 50)).rows
+    const aRows = (await s.transcriptPageForAgent(readScope('C1', 'T', 'bot-a'), null, 50)).rows
     expect(aRows.map((r) => r.text)).toEqual(['to-a'])
     expect(aRows.some((r) => r.text === 'b-secret')).toBe(false)
     await s.close()
@@ -1802,7 +1882,7 @@ describe('LocalStore session retention GC (#485)', () => {
     expect(await s.listPermissionRequests('bot-a')).toEqual([])
     expect((await s.listPermissionRequests('bot-b')).map((r) => r.id)).toEqual(['p2'])
     // The gate row is gone: an unknown session falls back to excluded-by-default.
-    expect((await s.transcriptSince('C1', 'gone', null, 'bot-a')).map((r) => r.text)).toEqual(['hello'])
+    expect((await s.transcriptSince(readScope('C1', 'gone', 'bot-a'), null)).map((r) => r.text)).toEqual(['hello'])
     // Idempotent: a second delete (or an unknown key) reports false, not an error.
     expect(await s.deleteSession('gone')).toBe(false)
     await s.close()
@@ -2219,7 +2299,7 @@ describe('LocalStore webchat MCP grant ledger', () => {
     // deduped row (and bump its revision); derived recomputes never flap it.
     const s = await store()
     await s.appendTranscript({ channel: 'C1', thread: 'T', ts: '4821', sender: 'U1', kind: 'text', text: 'hi' })
-    const before = (await s.transcriptSince('C1', 'T', null, 'bot-a'))[0] as { eventTimeUs?: number }
+    const before = (await s.transcriptSince(readScope('C1', 'T', 'bot-a'), null))[0] as { eventTimeUs?: number }
     expect(before.eventTimeUs).toBe(4_821_000_000)
     await s.appendTranscript({
       channel: 'C1',
@@ -2230,7 +2310,7 @@ describe('LocalStore webchat MCP grant ledger', () => {
       text: 'hi',
       eventTimeUs: 1_754_123_458_000_000
     })
-    const after = (await s.transcriptSince('C1', 'T', null, 'bot-a'))[0] as { eventTimeUs?: number }
+    const after = (await s.transcriptSince(readScope('C1', 'T', 'bot-a'), null))[0] as { eventTimeUs?: number }
     expect(after.eventTimeUs).toBe(1_754_123_458_000_000)
   })
 
@@ -2250,7 +2330,7 @@ describe('LocalStore webchat MCP grant ledger', () => {
       text,
       attachments: [{ name: 'shot.png', mimeType: 'image/png', data: 'aW1n' }]
     })
-    const row = (await s.transcriptSince('C1', 'T', null, 'bot-a'))[0] as { attachmentsJson?: string | null }
+    const row = (await s.transcriptSince(readScope('C1', 'T', 'bot-a'), null))[0] as { attachmentsJson?: string | null }
     expect(JSON.parse(row.attachmentsJson ?? 'null')).toEqual([
       { name: 'shot.png', mimeType: 'image/png', data: 'aW1n' }
     ])
@@ -2276,11 +2356,11 @@ describe('LocalStore webchat MCP grant ledger', () => {
     await append('T_OTHER', '3', 'ZWxzZQ==')
 
     // The same name can recur in a long conversation; the latest one is what "that image" means.
-    expect((await s.transcriptAttachmentByName('C1', 'T', undefined, 'shot.png'))?.data).toBe('bmV3')
+    expect((await s.transcriptAttachmentByName(readScope('C1', 'T', 'bot-a'), 'shot.png'))?.data).toBe('bmV3')
     // A neighbouring thread's image is not addressable from here — an agent forwards only
     // what its own conversation received.
-    expect(await s.transcriptAttachmentByName('C1', 'T_MISSING', undefined, 'shot.png')).toBeUndefined()
-    expect(await s.transcriptAttachmentByName('C1', 'T', undefined, 'other.png')).toBeUndefined()
+    expect(await s.transcriptAttachmentByName(readScope('C1', 'T_MISSING', 'bot-a'), 'shot.png')).toBeUndefined()
+    expect(await s.transcriptAttachmentByName(readScope('C1', 'T', 'bot-a'), 'other.png')).toBeUndefined()
     await s.close()
   })
 })
@@ -2698,36 +2778,46 @@ describe('transcript org fence on a shared store', () => {
     // the other org's console.
     const [a, b] = await twoOrgMembers()
     const row = { channel: 'C1', thread: 'T1', ts: '1', sender: 'U', kind: 'text' as const }
-    await a.appendTranscript({ ...row, recipient: 'agent-a', text: 'org A' })
-    await b.appendTranscript({ ...row, recipient: 'agent-b', text: 'org B' })
+    const admit = (agentId: string) => ({
+      recipient: agentId,
+      admission: { agentId, sessionKey: `k:C1:T1:${agentId}` }
+    })
+    await a.appendTranscript({ ...row, ...admit('agent-a'), text: 'org A' })
+    await b.appendTranscript({ ...row, ...admit('agent-b'), text: 'org B' })
 
     expect((await a.threadTranscript('C1', 'T1', 'agent-a')).map((r) => r.text)).toEqual(['org A'])
     expect((await b.threadTranscript('C1', 'T1', 'agent-b')).map((r) => r.text)).toEqual(['org B'])
-    expect((await a.transcriptPageForAgent('C1', 'T1', 'agent-a', null, 10)).rows.map((r) => r.text)).toEqual(['org A'])
-    expect((await b.transcriptPageForAgent('C1', 'T1', 'agent-b', null, 10)).rows.map((r) => r.text)).toEqual(['org B'])
-    expect((await a.transcriptSince('C1', 'T1', null, 'agent-a')).map((e) => e.text)).toEqual(['org A'])
-    expect(await a.firstMessageText('C1', 'T1', 'agent-a')).toBe('org A')
-    expect(await b.firstMessageText('C1', 'T1', 'agent-b')).toBe('org B')
+    expect(
+      (await a.transcriptPageForAgent(readScope('C1', 'T1', 'agent-a'), null, 10)).rows.map((r) => r.text)
+    ).toEqual(['org A'])
+    expect(
+      (await b.transcriptPageForAgent(readScope('C1', 'T1', 'agent-b'), null, 10)).rows.map((r) => r.text)
+    ).toEqual(['org B'])
+    expect((await a.transcriptSince(readScope('C1', 'T1', 'agent-a'), null)).map((e) => e.text)).toEqual(['org A'])
+    expect(await a.firstMessageText(readScope('C1', 'T1', 'agent-a'))).toBe('org A')
+    expect(await b.firstMessageText(readScope('C1', 'T1', 'agent-b'))).toBe('org B')
     await a.close()
   })
 
   it('keeps a tool call, its body and the thread revision inside one org', async () => {
     const [a, b] = await twoOrgMembers()
     const call = { channel: 'C1', thread: 'T1', ts: '2', toolCallId: 'call-1', title: 'Bash' }
-    await a.insertToolCall({ ...call, sender: 'agent-a', body: '{"rawInput":"A"}' })
-    await b.insertToolCall({ ...call, sender: 'agent-b', body: '{"rawInput":"B"}' })
-    expect(await a.getToolBodyForAgent('C1', 'T1', 'agent-a', 'call-1')).toBe('{"rawInput":"A"}')
-    expect(await b.getToolBodyForAgent('C1', 'T1', 'agent-b', 'call-1')).toBe('{"rawInput":"B"}')
+    await a.insertToolCall(admitted({ ...call, sender: 'agent-a', body: '{"rawInput":"A"}' }))
+    await b.insertToolCall(admitted({ ...call, sender: 'agent-b', body: '{"rawInput":"B"}' }))
+    expect(await a.getToolBodyForAgent(readScope('C1', 'T1', 'agent-a'), 'call-1')).toBe('{"rawInput":"A"}')
+    expect(await b.getToolBodyForAgent(readScope('C1', 'T1', 'agent-b'), 'call-1')).toBe('{"rawInput":"B"}')
 
     // A peer org's update can never reach this row: the fence is in the WHERE clause.
     await b.updateToolCall('C1', 'T1', 'agent-b', 'call-1', { title: 'Bash', body: '{"rawInput":"B2"}' })
-    expect(await a.getToolBodyForAgent('C1', 'T1', 'agent-a', 'call-1')).toBe('{"rawInput":"A"}')
+    expect(await a.getToolBodyForAgent(readScope('C1', 'T1', 'agent-a'), 'call-1')).toBe('{"rawInput":"A"}')
 
     // One org's write never moves the other org's context fence for the same thread key.
-    const peerRevision = await b.threadTranscriptRevision('C1', 'T1', 'agent-b')
+    const peerRevision = await b.threadTranscriptRevision(readScope('C1', 'T1', 'agent-b'))
     await a.appendTranscript({ channel: 'C1', thread: 'T1', ts: '3', sender: 'agent-a', kind: 'text', text: 'A reply' })
-    expect(await b.threadTranscriptRevision('C1', 'T1', 'agent-b')).toBe(peerRevision)
-    expect(await a.currentTranscriptRevision('agent-a')).toBe(await a.threadTranscriptRevision('C1', 'T1', 'agent-a'))
+    expect(await b.threadTranscriptRevision(readScope('C1', 'T1', 'agent-b'))).toBe(peerRevision)
+    expect(await a.currentTranscriptRevision('agent-a')).toBe(
+      await a.threadTranscriptRevision(readScope('C1', 'T1', 'agent-a'))
+    )
     await a.close()
   })
 
@@ -2820,6 +2910,9 @@ describe.skipIf(pg)('transcript org migration from a v10 store', () => {
     old.exec(`INSERT INTO transcript (channel, thread, ts, sender, kind, text, recipient, eventTimeUs, revision)
       VALUES ('C1', 'T1', '1', 'U', 'text', 'kept', 'agent-a', 1000000, 1)`)
     old.exec("INSERT INTO transcript_recipient (channel, thread, ts, agentId) VALUES ('C1', 'T1', '1', 'agent-b')")
+    // The session the v24 admission backfill joins on; without it the row is correctly an observation.
+    old.exec(`INSERT INTO sessions (key, agentId, platform, channel, thread, acpSessionId, state, updatedAt)
+      VALUES ('slack:C1:T1:agent-b', 'agent-b', 'slack', 'C1', 'T1', 'acp-b', 'idle', 1)`)
     old.exec('ALTER TABLE sessions DROP COLUMN sessionId')
     old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
     dropApprovalDmColumns(old)
@@ -2836,10 +2929,12 @@ describe.skipIf(pg)('transcript org migration from a v10 store', () => {
     const path = await v10Store('ac-transcript-v10-')
     const upgraded = await LocalStore.open(path)
     expect((await upgraded.threadTranscript('C1', 'T1')).map((r) => r.text)).toEqual(['kept'])
-    // The delivery table came across too, so the co-hosted recipient still sees the row.
-    expect((await upgraded.transcriptPageForAgent('C1', 'T1', 'agent-b', null, 10)).rows.map((r) => r.text)).toEqual([
-      'kept'
-    ])
+    // The old delivery row became an admission on the session it named, so that agent still sees it.
+    expect(
+      (
+        await upgraded.transcriptPageForAgent(readScope('C1', 'T1', 'agent-b', 'slack:C1:T1:agent-b'), null, 10)
+      ).rows.map((r) => r.text)
+    ).toEqual(['kept'])
     await upgraded.close()
 
     const after = new DatabaseSync(path)
@@ -2849,7 +2944,7 @@ describe.skipIf(pg)('transcript org migration from a v10 store', () => {
       .filter((column) => column.pk > 0)
       .sort((first, second) => first.pk - second.pk)
       .map((column) => column.name)
-    expect(recipientKey).toEqual(['orgId', 'channel', 'thread', 'ts', 'agentId'])
+    expect(recipientKey).toEqual(['seq', 'agentId'])
     after.close()
   })
 
@@ -2865,7 +2960,7 @@ describe.skipIf(pg)('transcript org migration from a v10 store', () => {
       orgForAgent: () => 'org-a'
     })
     expect(await shared.threadTranscript('C1', 'T1', 'agent-a')).toEqual([])
-    expect((await shared.transcriptPageForAgent('C1', 'T1', 'agent-b', null, 10)).rows).toEqual([])
+    expect((await shared.transcriptPageForAgent(readScope('C1', 'T1', 'agent-b'), null, 10)).rows).toEqual([])
     await shared.close()
   })
 })
@@ -2898,6 +2993,7 @@ it.skipIf(pg)('backfills thread affinity from the sessions a v20 store already h
   // Rewind to the shape a daemon without the table wrote.
   const legacy = new DatabaseSync(path)
   dropCodeHostReplyTarget(legacy)
+  revertTranscriptAdmissions(legacy)
   legacy.exec('DROP TABLE thread_participation; PRAGMA user_version = 20;')
   legacy.close()
 
@@ -3196,6 +3292,7 @@ it.skipIf(pg)('upgrades a v17 store to durable memory continuations without chan
   const legacy = new DatabaseSync(path)
   dropBirthVerdict(legacy)
   dropCodeHostReplyTarget(legacy)
+  revertTranscriptAdmissions(legacy)
   legacy.exec('DROP TABLE memory_entry_continuation; PRAGMA user_version = 17;')
   legacy.close()
   const upgraded = await openTestStore(path)
@@ -3205,4 +3302,371 @@ it.skipIf(pg)('upgrades a v17 store to durable memory continuations without chan
   const check = new DatabaseSync(path)
   expect(check.prepare('PRAGMA user_version').get()).toEqual({ user_version: SCHEMA_VERSION })
   check.close()
+})
+
+// message-intake.md §4: the transcript is a per-conversation channel record and
+// `transcript_recipient` is the per-session admission. These run on BOTH dialects.
+describe('the channel record and its admissions', () => {
+  const admissionsOf = async (s: LocalStore, sessionKeyValue: string): Promise<{ seq: number; kind: string }[]> =>
+    (await (s as unknown as { db: { prepare(sql: string): { all(...p: unknown[]): Promise<unknown[]> } } }).db
+      .prepare(
+        `SELECT tr.seq AS seq, t.kind AS kind FROM transcript_recipient tr
+           JOIN transcript t ON t.seq = tr.seq WHERE tr.sessionKey = ? ORDER BY tr.seq`
+      )
+      .all(sessionKeyValue)) as { seq: number; kind: string }[]
+
+  it('is one row per (orgId, channel, ts) however many agents admit it, with one admission each', async () => {
+    const s = await store()
+    const row = { channel: 'C1', thread: 'T1', ts: '1', sender: 'U1', kind: 'text' as const, text: 'shared' }
+    // Two agents at DIFFERENT coordinates — the §12 Case A shape: one row, two admissions.
+    await s.appendTranscript({ ...row, admission: { agentId: 'bot-a', sessionKey: 'k:C1:T1:bot-a' } })
+    await s.appendTranscript({
+      ...row,
+      thread: 'T1',
+      admission: { agentId: 'bot-b', sessionKey: 'k:C1:append:9:bot-b' }
+    })
+    expect((await s.threadTranscript('C1', 'T1')).map((r) => r.text)).toEqual(['shared'])
+    expect((await admissionsOf(s, 'k:C1:T1:bot-a')).length).toBe(1)
+    expect((await admissionsOf(s, 'k:C1:append:9:bot-b')).length).toBe(1)
+    // The append-coordinate session reads its row through the admission alone.
+    expect(
+      (await s.transcriptPageForAgent(readScope('C1', 'append:9', 'bot-b', 'k:C1:append:9:bot-b'), null, 10)).rows.map(
+        (r) => r.text
+      )
+    ).toEqual(['shared'])
+    await s.close()
+  })
+
+  it('records both admissions when two agents admit one message concurrently', async () => {
+    const s = await store()
+    const row = { channel: 'C2', thread: 'T2', ts: '5', sender: 'U1', kind: 'text' as const, text: 'race' }
+    await Promise.all([
+      s.appendTranscript({ ...row, admission: { agentId: 'bot-a', sessionKey: 'k:C2:T2:bot-a' } }),
+      s.appendTranscript({ ...row, admission: { agentId: 'bot-b', sessionKey: 'k:C2:T2:bot-b' } })
+    ])
+    expect((await s.threadTranscript('C2', 'T2')).length).toBe(1)
+    expect((await admissionsOf(s, 'k:C2:T2:bot-a')).length).toBe(1)
+    expect((await admissionsOf(s, 'k:C2:T2:bot-b')).length).toBe(1)
+    await s.close()
+  })
+
+  it("an agent's own output and its internal rows are one contiguous admission range", async () => {
+    const s = await store()
+    const key = 'k:C3:T3:bot-a'
+    const admission = { agentId: 'bot-a', sessionKey: key }
+    await s.appendTranscript({
+      channel: 'C3',
+      thread: 'T3',
+      ts: '1',
+      sender: 'bot-a',
+      kind: 'text',
+      text: 'hi',
+      admission
+    })
+    await s.insertToolCall({
+      channel: 'C3',
+      thread: 'T3',
+      ts: '2',
+      sender: 'bot-a',
+      toolCallId: 'tc-1',
+      title: 'Bash',
+      body: '{}',
+      admission
+    })
+    await s.appendTranscript({
+      channel: 'C3',
+      thread: 'T3',
+      ts: '3',
+      sender: 'bot-a',
+      kind: 'reasoning',
+      text: 'hmm',
+      admission
+    })
+    const rows = await admissionsOf(s, key)
+    expect(rows.map((r) => r.kind)).toEqual(['text', 'tool', 'reasoning'])
+    expect(rows.map((r) => r.seq)).toEqual([...rows].map((r) => r.seq).sort((a, b) => a - b))
+    await s.close()
+  })
+})
+
+describe('deleteSession reclaims its own rows (message-intake.md §8 rule 1)', () => {
+  it("removes the key's admissions and its internal rows, and leaves the conversational ones", async () => {
+    const s = await store()
+    const key = sessionKey('slack', 'C9', 'T9', 'bot-a')
+    const peer = sessionKey('slack', 'C9', 'T9', 'bot-b')
+    for (const [k, agentId] of [
+      [key, 'bot-a'],
+      [peer, 'bot-b']
+    ] as const)
+      await s.upsertSession({
+        key: k,
+        agentId,
+        platform: 'slack',
+        channel: 'C9',
+        thread: 'T9',
+        acpSessionId: `acp-${agentId}`,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: 1
+      })
+    const admission = { agentId: 'bot-a', sessionKey: key }
+    await s.appendTranscript({
+      channel: 'C9',
+      thread: 'T9',
+      ts: '1',
+      sender: 'U1',
+      kind: 'text',
+      text: 'ask',
+      admission
+    })
+    // Co-admitted by a peer: it belongs to both, so rule 1 must leave it alone.
+    await s.appendTranscript({
+      channel: 'C9',
+      thread: 'T9',
+      ts: '1',
+      sender: 'U1',
+      kind: 'text',
+      text: 'ask',
+      admission: { agentId: 'bot-b', sessionKey: peer }
+    })
+    await s.insertToolCall({
+      channel: 'C9',
+      thread: 'T9',
+      ts: '2',
+      sender: 'bot-a',
+      toolCallId: 'tc-1',
+      title: 'Bash',
+      body: '{}',
+      admission
+    })
+    await s.appendTranscript({
+      channel: 'C9',
+      thread: 'T9',
+      ts: '3',
+      sender: 'bot-a',
+      kind: 'reasoning',
+      text: 'hmm',
+      admission
+    })
+
+    expect(await s.deleteSession(key)).toBe(true)
+    expect((await s.threadTranscript('C9', 'T9')).map((r) => [r.kind, r.text])).toEqual([['text', 'ask']])
+    // A second call is still idempotent.
+    expect(await s.deleteSession(key)).toBe(false)
+    // The peer's admission on the shared conversational row survives.
+    expect(
+      (await s.transcriptPageForAgent(readScope('C9', 'T9', 'bot-b', peer), null, 10)).rows.map((r) => r.text)
+    ).toEqual(['ask'])
+    await s.close()
+  })
+})
+
+describe('the observation floor (message-intake.md §8 rule 2)', () => {
+  const text = (ts: number) => ({
+    channel: 'CF',
+    thread: 'TF',
+    ts: String(ts),
+    sender: 'U1',
+    kind: 'text' as const,
+    text: `m${ts}`
+  })
+
+  it('reclaims only unadmitted rows below the 100th-newest conversational row', async () => {
+    const s = await store()
+    for (let i = 1; i <= 120; i++) {
+      const admitted30 = i > 90
+      await s.appendTranscript({
+        ...text(i),
+        ...(admitted30 ? { admission: { agentId: 'bot-a', sessionKey: 'k:CF:TF:bot-a' } } : {})
+      })
+    }
+    // One ADMITTED row well below the floor must survive the sweep.
+    await s.appendTranscript({ ...text(1000), admission: { agentId: 'bot-a', sessionKey: 'k:CF:TF:bot-a' } })
+    // 121 text rows: the 100th-newest is m22, so the 21 unadmitted rows below it go.
+    const deleted = await s.sweepObservations('', 'CF')
+    expect(deleted).toBe(21)
+    const kept = (await s.threadTranscript('CF', 'TF')).map((r) => r.text)
+    expect(kept).toHaveLength(100)
+    expect(kept).toContain('m1000')
+    expect(kept).not.toContain('m1')
+    expect(kept).not.toContain('m21')
+    expect(kept).toContain('m22')
+    await s.close()
+  })
+
+  it('counts the floor over text rows alone, so a tool-heavy turn cannot push observations under it', async () => {
+    const s = await store()
+    for (let i = 1; i <= 50; i++) await s.appendTranscript(text(i))
+    for (let i = 0; i < 200; i++)
+      await s.insertToolCall({
+        channel: 'CF',
+        thread: 'TF',
+        ts: String(1000 + i),
+        sender: 'bot-a',
+        toolCallId: `tc-${i}`,
+        title: 'Bash',
+        body: '{}',
+        admission: { agentId: 'bot-a', sessionKey: 'k:CF:TF:bot-a' }
+      })
+    expect(await s.sweepObservations('', 'CF')).toBe(0)
+    await s.close()
+  })
+
+  it('keeps writing after the armed sweep fires with a coalesced tool write still buffered', async () => {
+    const s = await store()
+    const admission = { agentId: 'bot-a', sessionKey: 'k:CF:TF:bot-a' }
+    await s.insertToolCall({
+      channel: 'CF',
+      thread: 'TF',
+      ts: 'tc',
+      sender: 'bot-a',
+      toolCallId: 'tc-1',
+      title: 'Bash',
+      body: '{}',
+      admission
+    })
+    // Leaves a PENDING coalesced write: whatever drains it takes the transcript mutex, which the
+    // armed sweep must therefore not already be holding.
+    await s.updateToolCall('CF', 'TF', 'bot-a', 'tc-1', { title: 'Bash', body: '{"x":1}' }, admission.sessionKey)
+    for (let i = 1; i <= OBSERVATION_SWEEP_INSERTS; i++) await s.appendTranscript(text(i))
+    // The first write behind the armed sweep: a deadlock never settles this.
+    await expect(
+      Promise.race([
+        s.appendTranscript(text(OBSERVATION_SWEEP_INSERTS + 1)).then(() => 'wrote'),
+        new Promise((resolve) => setTimeout(() => resolve('stalled'), 3_000))
+      ])
+    ).resolves.toBe('wrote')
+    await s.close()
+  })
+
+  it('is a no-op for a conversation under the floor, and for one with no conversational row', async () => {
+    const s = await store()
+    for (let i = 1; i <= 10; i++) await s.appendTranscript(text(i))
+    expect(await s.sweepObservations('', 'CF')).toBe(0)
+    await s.appendTranscript({ channel: 'CG', thread: 'TG', ts: '1', sender: 'bot-a', kind: 'reasoning', text: 'x' })
+    expect(await s.sweepObservations('', 'CG')).toBe(0)
+    expect((await s.threadTranscript('CG', 'TG')).length).toBe(1)
+    await s.close()
+  })
+})
+
+// message-intake.md §10. SQLite-only fixture building (raw v23 DDL), but every assertion below
+// is about the MIGRATED store, which the `store-postgres` project exercises through its own arm.
+describe.skipIf(pg)('the v23 → v24 channel-record migration', () => {
+  /** A v23 store holding: a createNew row with a live session, an append pair of one message,
+   *  an old co-daemon delivery row, and a row whose session is already gone. */
+  const v23Store = async (): Promise<string> => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-intake-v23-')), 'local.sqlite')
+    await (await LocalStore.open(path)).close()
+    const old = new DatabaseSync(path)
+    revertTranscriptAdmissions(old)
+    old.exec(`
+      INSERT INTO sessions (key, agentId, platform, channel, thread, acpSessionId, state, updatedAt)
+        VALUES ('slack:C1:T1:bot-a', 'bot-a', 'slack', 'C1', 'T1', 'acp-a', 'idle', 1);
+      INSERT INTO sessions (key, agentId, platform, channel, thread, acpSessionId, state, updatedAt)
+        VALUES ('slack:C1:T1:bot-b', 'bot-b', 'slack', 'C1', 'T1', 'acp-b', 'idle', 1);
+      INSERT INTO sessions (key, agentId, platform, channel, thread, acpSessionId, state, updatedAt)
+        VALUES ('slack:C2:append:7:bot-a', 'bot-a', 'slack', 'C2', 'append:7', 'acp-c', 'idle', 1);
+      INSERT INTO sessions (key, agentId, platform, channel, thread, acpSessionId, state, updatedAt)
+        VALUES ('slack:C2:append:8:bot-b', 'bot-b', 'slack', 'C2', 'append:8', 'acp-d', 'idle', 1);
+      -- (a) a createNew row plus this agent's own reply.
+      INSERT INTO transcript (orgId, channel, thread, ts, sender, kind, text, recipient, revision)
+        VALUES ('', 'C1', 'T1', '1', 'U1', 'text', 'ask', 'bot-a', 1);
+      INSERT INTO transcript (orgId, channel, thread, ts, sender, kind, text, revision)
+        VALUES ('', 'C1', 'T1', '2', 'bot-a', 'text', 'answer', 2);
+      -- (c) a co-daemon delivery the old table recorded for a SECOND agent.
+      INSERT INTO transcript_recipient (orgId, channel, thread, ts, agentId)
+        VALUES ('', 'C1', 'T1', '1', 'bot-b');
+      -- (b) the same message stored once per append coordinate.
+      INSERT INTO transcript (orgId, channel, thread, ts, sender, kind, text, recipient, revision)
+        VALUES ('', 'C2', 'append:7', '10', 'U1', 'text', 'dup', 'bot-a', 3);
+      INSERT INTO transcript (orgId, channel, thread, ts, sender, kind, text, recipient, revision)
+        VALUES ('', 'C2', 'append:8', '10', 'U1', 'text', 'dup', 'bot-b', 4);
+      -- (d) a row whose session is already gone.
+      INSERT INTO transcript (orgId, channel, thread, ts, sender, kind, text, recipient, revision)
+        VALUES ('', 'C3', 'T3', '20', 'U1', 'text', 'orphan', 'bot-z', 5);
+      -- (e) THREE copies of one message, two of them ONE agent's (a rotated append session) and
+      -- neither of those the kept copy: the shape that can repoint two admissions onto one PK.
+      INSERT INTO sessions (key, agentId, platform, channel, thread, acpSessionId, state, updatedAt)
+        VALUES ('slack:C4:append:6:bot-b', 'bot-b', 'slack', 'C4', 'append:6', 'acp-e', 'idle', 1);
+      INSERT INTO sessions (key, agentId, platform, channel, thread, acpSessionId, state, updatedAt)
+        VALUES ('slack:C4:append:7:bot-a', 'bot-a', 'slack', 'C4', 'append:7', 'acp-f', 'idle', 1);
+      INSERT INTO sessions (key, agentId, platform, channel, thread, acpSessionId, state, updatedAt)
+        VALUES ('slack:C4:append:9:bot-a', 'bot-a', 'slack', 'C4', 'append:9', 'acp-g', 'idle', 1);
+      INSERT INTO transcript (orgId, channel, thread, ts, sender, kind, text, recipient, revision)
+        VALUES ('', 'C4', 'append:6', '30', 'U1', 'text', 'trip', 'bot-b', 6);
+      INSERT INTO transcript (orgId, channel, thread, ts, sender, kind, text, recipient, revision)
+        VALUES ('', 'C4', 'append:7', '30', 'U1', 'text', 'trip', 'bot-a', 7);
+      INSERT INTO transcript (orgId, channel, thread, ts, sender, kind, text, recipient, revision)
+        VALUES ('', 'C4', 'append:9', '30', 'U1', 'text', 'trip', 'bot-a', 8);
+      PRAGMA user_version = 23;
+    `)
+    old.close()
+    return path
+  }
+
+  it('re-keys the record, backfills admissions, merges append duplicates and nulls their threads', async () => {
+    const path = await v23Store()
+    const upgraded = await LocalStore.open(path)
+
+    // The createNew rows keep their physical thread and gain one admission each.
+    expect((await upgraded.threadTranscript('C1', 'T1')).map((r) => r.text)).toEqual(['ask', 'answer'])
+    expect(
+      (await upgraded.transcriptPageForAgent(readScope('C1', 'T1', 'bot-a', 'slack:C1:T1:bot-a'), null, 10)).rows.map(
+        (r) => r.text
+      )
+    ).toEqual(['answer', 'ask'])
+    // The old delivery row became bot-b's admission on the SAME row.
+    expect(
+      (await upgraded.transcriptPageForAgent(readScope('C1', 'T1', 'bot-b', 'slack:C1:T1:bot-b'), null, 10)).rows.map(
+        (r) => r.text
+      )
+    ).toEqual(['ask'])
+    await upgraded.close()
+
+    const after = new DatabaseSync(path)
+    // The append pair is ONE row at MIN(seq), carrying both former copies' admissions, with its
+    // former coordinate reported as thread-unknown.
+    const merged = after.prepare("SELECT seq, thread FROM transcript WHERE channel = 'C2'").all() as {
+      seq: number
+      thread: string | null
+    }[]
+    expect(merged).toHaveLength(1)
+    expect(merged[0]!.thread).toBeNull()
+    const keys = (
+      after
+        .prepare('SELECT sessionKey FROM transcript_recipient WHERE seq = ? ORDER BY sessionKey')
+        .all(merged[0]!.seq) as { sessionKey: string }[]
+    ).map((r) => r.sessionKey)
+    expect(keys).toEqual(['slack:C2:append:7:bot-a', 'slack:C2:append:8:bot-b'])
+    // Three copies also collapse to one row, and the agent that admitted two of the non-kept
+    // copies keeps exactly ONE admission on it rather than aborting the migration on the PK.
+    const tripled = after.prepare("SELECT seq FROM transcript WHERE channel = 'C4'").all() as { seq: number }[]
+    expect(tripled).toHaveLength(1)
+    expect(
+      (
+        after
+          .prepare('SELECT sessionKey FROM transcript_recipient WHERE seq = ? ORDER BY sessionKey')
+          .all(tripled[0]!.seq) as { sessionKey: string }[]
+      ).map((r) => r.sessionKey)
+    ).toEqual(['slack:C4:append:6:bot-b', 'slack:C4:append:7:bot-a'])
+    // A row whose session is gone is correctly an observation.
+    const orphan = after.prepare("SELECT seq FROM transcript WHERE channel = 'C3'").get() as { seq: number }
+    expect(after.prepare('SELECT COUNT(*) AS n FROM transcript_recipient WHERE seq = ?').get(orphan.seq)).toEqual({
+      n: 0
+    })
+    // The legacy delivery table is gone.
+    expect(() => after.prepare('SELECT COUNT(*) FROM transcript_recipient_legacy').get()).toThrow()
+    expect(after.prepare('PRAGMA user_version').get()).toEqual({ user_version: SCHEMA_VERSION })
+    const maxSeq = (after.prepare('SELECT MAX(seq) AS m FROM transcript').get() as { m: number }).m
+    after.close()
+
+    // A row inserted after the upgrade continues past every migrated seq.
+    const restarted = await LocalStore.open(path)
+    await restarted.appendTranscript({ channel: 'C1', thread: 'T1', ts: '99', sender: 'U1', kind: 'text', text: 'new' })
+    await restarted.close()
+    const check = new DatabaseSync(path)
+    expect((check.prepare('SELECT MAX(seq) AS m FROM transcript').get() as { m: number }).m).toBeGreaterThan(maxSeq)
+    check.close()
+  })
 })

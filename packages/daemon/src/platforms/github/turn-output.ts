@@ -67,6 +67,7 @@ export interface GithubTurn {
   plan: {
     statusThread: string
     sessionThread: string
+    sessionKey: string
     transcriptChannel: string
     agentId: string
     platform: string
@@ -81,6 +82,8 @@ export interface GithubTurnHost {
   appendTranscript(row: {
     channel: string
     thread: string
+    /** The session the row is admitted into (message-intake.md §4.2). */
+    admission: { agentId: string; sessionKey: string }
     ts: string
     sender: string
     kind: 'text'
@@ -144,7 +147,8 @@ export async function finalizeGithubTurn<TTurn extends GithubTurn>(
   if (state.deferredFinalTranscript && final?.trim()) {
     await host.appendTranscript({
       channel: turn.plan.transcriptChannel,
-      thread: turn.plan.sessionThread,
+      thread: turn.plan.statusThread,
+      admission: { agentId: turn.plan.agentId, sessionKey: turn.plan.sessionKey },
       ts: host.monotonicTs(),
       sender: turn.plan.agentId,
       kind: 'text',

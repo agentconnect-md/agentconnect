@@ -2039,7 +2039,15 @@ describe('Daemon idle sweep — background-task lease', () => {
       expect(thread).toBe('T1')
       expect(options).toMatchObject({ username: 'bot-a', agentAuthorId: 'bot-a' })
       // Recorded like a reply row, so the console reads it back.
-      const rows = await (daemon as any).store.transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)
+      const rows = await (daemon as any).store.transcriptSince(
+        {
+          transcriptChannel: transcriptChannelKey('C1', TRANSPORT_SCOPE),
+          coordinate: 'T1',
+          sessionKey: 'slack:C1:T1:bot-a',
+          agentId: 'bot-a'
+        },
+        null
+      )
       expect(rows.some((row: any) => row.sender === 'bot-a' && row.text === 'first sleep done')).toBe(true)
       // The narration covered this settle, so the wake stands down entirely — no extra turn,
       // and the fence slot is released so the session can quiesce.

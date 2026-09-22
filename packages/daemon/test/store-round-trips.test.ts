@@ -3,6 +3,15 @@ import { describe, expect, it, vi } from 'vitest'
 import { LocalStore, type StoreDatabase } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 
+/** The admission a session-internal row (tool / plan / card) always carries — its own sender's
+ *  session, keyed exactly as {@link readScope} keys a `createNew` conversation. */
+export const admitted = <T extends { sender: string; channel: string; thread: string }>(
+  e: T
+): T & { admission: { agentId: string; sessionKey: string } } => ({
+  ...e,
+  admission: { agentId: e.sender, sessionKey: `k:${e.channel}:${e.thread}:${e.sender}` }
+})
+
 /**
  * Round trips, not statements. A pool member's store is one worker thread holding one
  * PostgreSQL client, and every call blocks the daemon's event loop until it answers — so the
@@ -67,15 +76,17 @@ const body = (n: number): string => JSON.stringify({ toolCallId: 'tc-1', status:
 
 async function seeded(): Promise<Awaited<ReturnType<typeof countingStore>>> {
   const counting = await countingStore()
-  await counting.store.insertToolCall({
-    channel: CHANNEL,
-    thread: THREAD,
-    ts: '1',
-    sender: AGENT,
-    toolCallId: 'tc-1',
-    title: 'Bash',
-    body: body(0)
-  })
+  await counting.store.insertToolCall(
+    admitted({
+      channel: CHANNEL,
+      thread: THREAD,
+      ts: '1',
+      sender: AGENT,
+      toolCallId: 'tc-1',
+      title: 'Bash',
+      body: body(0)
+    })
+  )
   counting.reset()
   return counting
 }
@@ -105,15 +116,17 @@ describe('store round trips per streaming turn', () => {
   it('costs one round trip to insert a tool row and read the thread revision', async () => {
     const { store, roundTrips, reset } = await countingStore()
     reset()
-    await store.insertToolCall({
-      channel: CHANNEL,
-      thread: THREAD,
-      ts: '1',
-      sender: AGENT,
-      toolCallId: 'tc-1',
-      title: 'Bash',
-      body: body(0)
-    })
+    await store.insertToolCall(
+      admitted({
+        channel: CHANNEL,
+        thread: THREAD,
+        ts: '1',
+        sender: AGENT,
+        toolCallId: 'tc-1',
+        title: 'Bash',
+        body: body(0)
+      })
+    )
     expect(roundTrips()).toBe(1)
   })
 
@@ -133,15 +146,17 @@ describe('store round trips per streaming turn', () => {
   it('keeps the buffer bounded: a burst past the row bound flushes instead of growing', async () => {
     const { store, roundTrips, reset } = await seeded()
     for (let call = 0; call < 200; call++) {
-      await store.insertToolCall({
-        channel: CHANNEL,
-        thread: THREAD,
-        ts: '1',
-        sender: AGENT,
-        toolCallId: `tc-${call}`,
-        title: 'Bash',
-        body: body(0)
-      })
+      await store.insertToolCall(
+        admitted({
+          channel: CHANNEL,
+          thread: THREAD,
+          ts: '1',
+          sender: AGENT,
+          toolCallId: `tc-${call}`,
+          title: 'Bash',
+          body: body(0)
+        })
+      )
     }
     reset()
     for (let call = 0; call < 200; call++) {
@@ -156,15 +171,17 @@ describe('store round trips per streaming turn', () => {
     const { store, roundTrips, reset } = await seeded()
     // Eight rows is far under the 64-row bound, but 8 MiB of bodies is over the byte bound.
     for (let call = 0; call < 8; call++) {
-      await store.insertToolCall({
-        channel: CHANNEL,
-        thread: THREAD,
-        ts: '1',
-        sender: AGENT,
-        toolCallId: `big-${call}`,
-        title: 'Bash',
-        body: body(0)
-      })
+      await store.insertToolCall(
+        admitted({
+          channel: CHANNEL,
+          thread: THREAD,
+          ts: '1',
+          sender: AGENT,
+          toolCallId: `big-${call}`,
+          title: 'Bash',
+          body: body(0)
+        })
+      )
     }
     reset()
     const megabyte = 'x'.repeat(1024 * 1024)
@@ -251,15 +268,17 @@ describe('the coalescing buffer is invisible to a reader', () => {
       close: async () => undefined
     }
     const first = await LocalStore.open({ database: borrowed })
-    await first.insertToolCall({
-      channel: CHANNEL,
-      thread: THREAD,
-      ts: '1',
-      sender: AGENT,
-      toolCallId: 'tc-1',
-      title: 'Bash',
-      body: body(0)
-    })
+    await first.insertToolCall(
+      admitted({
+        channel: CHANNEL,
+        thread: THREAD,
+        ts: '1',
+        sender: AGENT,
+        toolCallId: 'tc-1',
+        title: 'Bash',
+        body: body(0)
+      })
+    )
     await first.updateToolCall(CHANNEL, THREAD, AGENT, 'tc-1', { title: 'Bash', body: body(7) })
     await first.close()
     expect((await toolRow(await LocalStore.open({ database: borrowed }))).body).toBe(body(7))
@@ -288,15 +307,17 @@ describe('the coalescing buffer is invisible to a reader', () => {
       { thread: 'T1', id: 'tc-c' }
     ]
     for (const { thread, id } of rows) {
-      await store.insertToolCall({
-        channel: CHANNEL,
-        thread,
-        ts: id,
-        sender: AGENT,
-        toolCallId: id,
-        title: 'Bash',
-        body: body(0)
-      })
+      await store.insertToolCall(
+        admitted({
+          channel: CHANNEL,
+          thread,
+          ts: id,
+          sender: AGENT,
+          toolCallId: id,
+          title: 'Bash',
+          body: body(0)
+        })
+      )
     }
     // Interleaved threads, so the thread read last is NOT the one holding the highest revision.
     for (const { thread, id } of rows) {

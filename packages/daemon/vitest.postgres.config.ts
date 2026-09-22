@@ -24,7 +24,8 @@ export default defineConfig({
       'test/store-retention.test.ts',
       'test/postgres-async-database.int.test.ts',
       'test/postgres-pool-store.int.test.ts',
-      'test/postgres-transcript-org.int.test.ts'
+      'test/postgres-transcript-org.int.test.ts',
+      'test/postgres-intake-migration.int.test.ts'
     ],
     globalSetup: ['./test/store-postgres/global-setup.ts'],
     setupFiles: ['./test/store-postgres/setup.ts'],

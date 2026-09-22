@@ -37,6 +37,24 @@ import { pod } from './fixtures/memory-fs-pod.js'
 import { WAIT } from './wait-support.js'
 import { writeWithSidecar } from './fixtures/memory-sidecar.js'
 
+/** The admission a session-internal row (tool / plan / card) always carries — its own sender's
+ *  session, keyed exactly as {@link readScope} keys a `createNew` conversation. */
+export const admitted = <T extends { sender: string; channel: string; thread: string }>(
+  e: T
+): T & { admission: { agentId: string; sessionKey: string } } => ({
+  ...e,
+  admission: { agentId: e.sender, sessionKey: `k:${e.channel}:${e.thread}:${e.sender}` }
+})
+
+/** One session's transcript read scope. In a `createNew` conversation the coordinate IS the
+ *  physical thread, so a scope built this way reads exactly what `(channel, thread)` used to. */
+export const readScope = (
+  transcriptChannel: string,
+  coordinate: string,
+  agentId: string,
+  sessionKey = `k:${transcriptChannel}:${coordinate}:${agentId}`
+) => ({ transcriptChannel, coordinate, sessionKey, agentId })
+
 const local = (dir: string) => new LocalMemoryFs(dir)
 /** One tree for both roles and the sidecar sink, the way the daemon resolves a home today. */
 const home = (fs: MemoryFs, historyFor = sidecarMemoryHistory): MemoryHomePorts => ({
@@ -71,7 +89,7 @@ class FakeStore implements DreamStorePort {
   // `updatedAt` is optional in fixtures; dreamSessionSources defaults it to "now"
   // so a source without an explicit time reads as recent (newer than any dream
   // created earlier in a test). Auto-window tests set it explicitly.
-  sources: { sessionId: string; channel: string; thread: string; updatedAt?: number }[] = [
+  sources: { sessionId: string; key?: string; channel: string; thread: string; updatedAt?: number }[] = [
     { sessionId: 'sess-1', channel: 'C1', thread: 'T1' }
   ]
   rows: { sender: string; text: string }[] = [{ sender: 'user-1', text: 'please use tabs' }]
@@ -133,15 +151,13 @@ class FakeStore implements DreamStorePort {
   async dreamSessionSources(
     _agentId: string,
     _limit: number
-  ): Promise<{ sessionId: string; channel: string; thread: string; updatedAt: number }[]> {
+  ): Promise<{ sessionId: string; key: string; channel: string; thread: string; updatedAt: number }[]> {
     const now = Date.now()
-    return this.sources.map((s) => ({ ...s, updatedAt: s.updatedAt ?? now }))
+    return this.sources.map((s) => ({ key: `k:${s.channel}:${s.thread}`, ...s, updatedAt: s.updatedAt ?? now }))
   }
   toolRows: { sender: string; text: string; kind?: string }[] = []
   async dreamTranscriptText(
-    _c: string,
-    _t: string,
-    _a: string,
+    _scope: unknown,
     _l: number,
     includeTools?: boolean
   ): Promise<{ sender: string; text: string; kind?: string }[]> {
@@ -2443,35 +2459,40 @@ describe('dreamTranscriptText tool rows (real LocalStore)', () => {
       sender: 'user-1',
       kind: 'text',
       text: 'ship it',
-      recipient: 'me'
+      recipient: 'me',
+      admission: { agentId: 'me', sessionKey: `k:${CH}:${TH}:me` }
     })
     // …and a PEER's private tool row that happens to share the same ts. Internal
     // rows are not deduped by ts, so this collision is ordinary, not contrived.
-    await store.insertToolCall({
-      channel: CH,
-      thread: TH,
-      ts: TS,
-      sender: 'peer-agent',
-      toolCallId: 'tc-peer',
-      title: 'Bash(peer-secret-command)',
-      body: JSON.stringify({ rawInput: 'peer-secret-command --token hunter2', rawOutput: 'peer output' })
-    })
+    await store.insertToolCall(
+      admitted({
+        channel: CH,
+        thread: TH,
+        ts: TS,
+        sender: 'peer-agent',
+        toolCallId: 'tc-peer',
+        title: 'Bash(peer-secret-command)',
+        body: JSON.stringify({ rawInput: 'peer-secret-command --token hunter2', rawOutput: 'peer output' })
+      })
+    )
     // Our own tool row.
-    await store.insertToolCall({
-      channel: CH,
-      thread: TH,
-      ts: '2026-07-26T00:00:01.000Z',
-      sender: 'me',
-      toolCallId: 'tc-mine',
-      title: 'Bash',
-      body: JSON.stringify({ rawInput: 'npm run deploy --prod', rawOutput: 'lots of build output' })
-    })
+    await store.insertToolCall(
+      admitted({
+        channel: CH,
+        thread: TH,
+        ts: '2026-07-26T00:00:01.000Z',
+        sender: 'me',
+        toolCallId: 'tc-mine',
+        title: 'Bash',
+        body: JSON.stringify({ rawInput: 'npm run deploy --prod', rawOutput: 'lots of build output' })
+      })
+    )
     return store
   }
 
   it('never returns a peer-private tool row via the shared delivery table', async () => {
     const store = await storeWithPeerToolRow()
-    const rows = await store.dreamTranscriptText(CH, TH, 'me', 100, true)
+    const rows = await store.dreamTranscriptText(readScope(CH, TH, 'me'), 100, true)
     const text = rows.map((r) => `${r.text} ${r.input ?? ''}`).join('\n')
     expect(text).not.toContain('peer-secret-command')
     expect(text).not.toContain('hunter2')
@@ -2483,7 +2504,7 @@ describe('dreamTranscriptText tool rows (real LocalStore)', () => {
 
   it('carries a bounded rawInput so a generic title still identifies the command', async () => {
     const store = await storeWithPeerToolRow()
-    const mine = (await store.dreamTranscriptText(CH, TH, 'me', 100, true)).find((r) => r.kind === 'tool')
+    const mine = (await store.dreamTranscriptText(readScope(CH, TH, 'me'), 100, true)).find((r) => r.kind === 'tool')
     expect(mine?.text).toBe('Bash') // the title alone says nothing
     expect(mine?.input).toBe('npm run deploy --prod')
     // rawOutput is the bulk/secret-bearing half and never leaves the store.
@@ -2493,7 +2514,7 @@ describe('dreamTranscriptText tool rows (real LocalStore)', () => {
 
   it('omits tool rows entirely when mining is off', async () => {
     const store = await storeWithPeerToolRow()
-    const rows = await store.dreamTranscriptText(CH, TH, 'me', 100)
+    const rows = await store.dreamTranscriptText(readScope(CH, TH, 'me'), 100)
     expect(rows.every((r) => r.kind !== 'tool')).toBe(true)
     expect(rows.map((r) => r.text)).toContain('ship it')
     await store.close()

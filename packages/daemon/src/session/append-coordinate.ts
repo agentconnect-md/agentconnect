@@ -14,7 +14,10 @@
  * forward, so a coordinate minted after a purge is one that has never been used.
  */
 
-const PREFIX = 'append:'
+/** The reserved prefix an append coordinate wears; exported so the store migration can match on it. */
+export const APPEND_COORDINATE_PREFIX = 'append:'
+
+const PREFIX = APPEND_COORDINATE_PREFIX
 
 /** The coordinate for a given mint time. */
 export function appendCoordinate(ts: number): string {

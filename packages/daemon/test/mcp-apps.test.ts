@@ -421,6 +421,7 @@ describe('reviveAppRow — rebuilding a card from what the daemon recorded (§8)
     thread: 'T1',
     ts: '100',
     sender: 'bot-a',
+    sessionKey: 'slack:C1:T1:bot-a',
     body: JSON.stringify(body)
   })
   const RECORDED = {
@@ -438,6 +439,7 @@ describe('reviveAppRow — rebuilding a card from what the daemon recorded (§8)
     expect(reviveAppRow('app-1', 'conv-1', stored(RECORDED))).toEqual({
       channel: 'C1',
       thread: 'T1',
+      sessionKey: 'slack:C1:T1:bot-a',
       ts: '100',
       sender: 'bot-a',
       appId: 'app-1',

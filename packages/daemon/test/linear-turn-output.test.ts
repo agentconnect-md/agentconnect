@@ -718,7 +718,15 @@ describe('applyLinearAction', () => {
     await applyLinearAction(turn, state, { kind: 'activity', type: 'response', body: 'done\n\nsent by agent' }, host)
     await applyLinearAction(turn, state, { kind: 'transcript', text: 'done' }, host)
     expect(rows).toEqual([
-      { channel: 'team-1scope', thread: 'agent-session-uuid', ts: '7', sender: 'a1', kind: 'text', text: 'done' }
+      {
+        channel: 'team-1scope',
+        thread: 'agent-session-uuid',
+        admission: { agentId: 'a1', sessionKey: 'k1' },
+        ts: '7',
+        sender: 'a1',
+        kind: 'text',
+        text: 'done'
+      }
     ])
     expect(port.activities.map((a) => a.activity)).toEqual([{ type: 'response', body: 'done\n\nsent by agent' }])
     expect(state.activityBudget).toBe(initialLinearTurnState().activityBudget)
@@ -738,7 +746,15 @@ describe('applyLinearAction', () => {
     }
     await applyLinearAction(turn, initialLinearTurnState(), { kind: 'transcript', text: 'done' }, host)
     expect(rows).toEqual([
-      { channel: 'team-1scope', thread: 'agent-session-uuid', ts: '7', sender: 'a1', kind: 'text', text: 'done' }
+      {
+        channel: 'team-1scope',
+        thread: 'agent-session-uuid',
+        admission: { agentId: 'a1', sessionKey: 'k1' },
+        ts: '7',
+        sender: 'a1',
+        kind: 'text',
+        text: 'done'
+      }
     ])
   })
 

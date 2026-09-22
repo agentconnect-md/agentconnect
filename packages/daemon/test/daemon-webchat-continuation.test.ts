@@ -116,7 +116,15 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     expect(prompts.get(REF)!.length).toBeGreaterThanOrEqual(1)
     expect(posts.some((p) => p.agentId === REF)).toBe(false)
     const refRows = (
-      await (daemon as any).store.transcriptSince(transcriptChannelKey(CONV, undefined), `webchat:${CONV}`, null)
+      await (daemon as any).store.transcriptSince(
+        {
+          transcriptChannel: transcriptChannelKey(CONV, undefined),
+          coordinate: `webchat:${CONV}`,
+          sessionKey: 'webchat',
+          agentId: 'bot-a'
+        },
+        null
+      )
     ).filter((row: { sender: string }) => row.sender === REF)
     expect(refRows).toEqual([])
 
@@ -224,7 +232,15 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     await settle()
     // Recorded for §8.5 catch-up…
     const rows = (
-      await (daemon as any).store.transcriptSince(transcriptChannelKey(CONV, undefined), `webchat:${CONV}`, null)
+      await (daemon as any).store.transcriptSince(
+        {
+          transcriptChannel: transcriptChannelKey(CONV, undefined),
+          coordinate: `webchat:${CONV}`,
+          sessionKey: 'webchat',
+          agentId: 'bot-a'
+        },
+        null
+      )
     ).map((row: { text: string }) => row.text)
     expect(rows).toEqual(['legacy peer post'])
     // …but no activation.
@@ -250,8 +266,12 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     await settle()
 
     const rows = (await (daemon as any).store.transcriptSince(
-      transcriptChannelKey(CONV, undefined),
-      `webchat:${CONV}`,
+      {
+        transcriptChannel: transcriptChannelKey(CONV, undefined),
+        coordinate: `webchat:${CONV}`,
+        sessionKey: 'webchat',
+        agentId: 'bot-a'
+      },
       null
     )) as { sender: string; text: string }[]
     expect(rows.map((r) => r.text)).toEqual(['a peer sees this'])
@@ -286,7 +306,15 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     await settle()
     expect(prompts.get(P1)).toHaveLength(0) // transcript-only; the row still records
     const rows = (
-      await (daemon as any).store.transcriptSince(transcriptChannelKey(CONV, undefined), `webchat:${CONV}`, null)
+      await (daemon as any).store.transcriptSince(
+        {
+          transcriptChannel: transcriptChannelKey(CONV, undefined),
+          coordinate: `webchat:${CONV}`,
+          sessionKey: 'webchat',
+          agentId: 'bot-a'
+        },
+        null
+      )
     ).map((row: { text: string }) => row.text)
     expect(rows).toEqual(['not allowed to wake you'])
     await daemon.stop()

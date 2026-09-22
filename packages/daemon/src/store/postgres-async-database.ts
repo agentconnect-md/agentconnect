@@ -28,6 +28,7 @@ type Queryable = Pick<pg.PoolClient, 'query'>
  * writes are durable, so the commit-before-return contract survives the move to promises.
  */
 export class PostgresAsyncDatabase implements StoreDatabase {
+  readonly dialect = 'postgres' as const
   private closed = false
 
   private constructor(

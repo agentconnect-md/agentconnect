@@ -254,12 +254,13 @@ export function createSessionReader(
         const rawTitle =
           r.title ||
           deriveTitle(
-            await store.firstMessageText(
-              transcriptChannelKey(r.channel, r.transportScope),
-              r.thread,
-              r.agentId,
-              scope?.orgId
-            )
+            await store.firstMessageText({
+              transcriptChannel: transcriptChannelKey(r.channel, r.transportScope),
+              coordinate: r.thread,
+              sessionKey: r.key,
+              agentId: r.agentId,
+              ...(scope?.orgId !== undefined ? { orgId: scope.orgId } : {})
+            })
           )
         enriched.push({ r, rawTitle })
       }
@@ -326,33 +327,19 @@ export function createSessionReader(
       // Scope to what THIS agent's session received + produced, not the whole shared
       // (channel, thread) thread — an agent-called session only ever saw the message handed
       // to it (context isolation), so the view must not leak other participants' cross-talk.
+      const readScope = {
+        transcriptChannel,
+        coordinate: rec.thread,
+        sessionKey: rec.key,
+        agentId: rec.agentId,
+        ...(scope?.orgId !== undefined ? { orgId: scope.orgId } : {})
+      }
       const page =
         afterRevision !== null
-          ? await transcriptRead.transcriptTailForAgent(
-              transcriptChannel,
-              rec.thread,
-              rec.agentId,
-              afterRevision,
-              req.limit,
-              scope?.orgId
-            )
+          ? await transcriptRead.transcriptTailForAgent(readScope, afterRevision, req.limit)
           : chronological
-            ? await transcriptRead.transcriptPageForAgentByEventTime(
-                transcriptChannel,
-                rec.thread,
-                rec.agentId,
-                eventCursor,
-                req.limit,
-                scope?.orgId
-              )
-            : await transcriptRead.transcriptPageForAgent(
-                transcriptChannel,
-                rec.thread,
-                rec.agentId,
-                legacyBefore,
-                req.limit,
-                scope?.orgId
-              )
+            ? await transcriptRead.transcriptPageForAgentByEventTime(readScope, eventCursor, req.limit)
+            : await transcriptRead.transcriptPageForAgent(readScope, legacyBefore, req.limit)
       const { rows, hasMore } = page
       // rows are newest-first; the page itself is oldest→newest.
       const ordered = tailing ? rows : rows.slice().reverse()
@@ -548,11 +535,14 @@ export function createSessionReader(
       }
       if (!rec) return empty
       const body = await transcriptRead.getToolBodyForAgent(
-        transcriptChannelKey(rec.channel, rec.transportScope),
-        rec.thread,
-        rec.agentId,
-        req.toolCallId,
-        scope?.orgId
+        {
+          transcriptChannel: transcriptChannelKey(rec.channel, rec.transportScope),
+          coordinate: rec.thread,
+          sessionKey: rec.key,
+          agentId: rec.agentId,
+          ...(scope?.orgId !== undefined ? { orgId: scope.orgId } : {})
+        },
+        req.toolCallId
       )
       if (body === undefined) return empty
       const buf = Buffer.from(body, 'utf8')

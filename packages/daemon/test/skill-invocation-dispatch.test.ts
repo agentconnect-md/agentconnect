@@ -105,7 +105,10 @@ describe('skill-invocation translation through dispatch', () => {
 
       // The transcript kept the user's words, not the instruction (prompt ≠ transcript).
       const store = (daemon as any).store
-      const rows = await store.transcriptSince('slack:C1', 'slack:C1:2', null, 'bot-a')
+      const rows = await store.transcriptSince(
+        { transcriptChannel: 'slack:C1', coordinate: 'slack:C1:2', sessionKey: 'k', agentId: 'bot-a' },
+        null
+      )
       const all = rows.map((r: { text?: string }) => r.text ?? '').join('\n')
       expect(all).not.toContain('Run the command')
     } finally {

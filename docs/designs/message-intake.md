@@ -90,6 +90,13 @@ session by the thread, `append` still keys it by the per-agent reservation of
 channel-session-mode.md §3.3. What changes is that the transcript no longer has to be laid out along
 it.
 
+**Stage 1 keeps a coordinate disjunct, deliberately.** Until §5.2's admitted-history / background
+split exists, the only thing that feeds a `createNew` session the §8.5 cross-agent catch-up is the
+physical-thread partition — a peer's replies carry the _peer's_ admission, and "not admitted at all"
+is not the set they fall in. So the Stage 1 session scope is `thread = <coordinate> OR admitted into
+<sessionKey>`: exact for `append` (its coordinate is no thread) and unchanged-from-today for
+`createNew`. The disjunct is removed with the Stage 3 background block, which is what replaces it.
+
 **The two coordinates of channel-session-mode.md §3.1 stay split, and gain a third reader.** The
 delivery coordinate (`msg.thread`) says where an answer posts; the session coordinate says which
 session an admission joins; the channel record's `thread` says which physical thread the message was
@@ -411,14 +418,28 @@ One `SCHEMA_MIGRATIONS` step, run in a transaction before the `CREATE` block:
 5. Drop and recreate the transcript indexes with the new leading columns; the `CREATE` block emits
    them.
 
-**Downgrade** is refused by the existing `user_version` check. **Mixed versions on a shared
-PostgreSQL pool**: the pool rolls by surging and then draining old members slowly
-([k8s-daemon-pool.md](k8s-daemon-pool.md)), and the version check runs only at open, so an old member
-still draining writes old-shaped rows into the migrated table until it exits — `append:*` threads,
-no admission row, second-agent copies swallowed by the new unique index. This window is accepted
-without a mechanism: it is bounded by the drain, the affected rows are only the draining member's own
-session history, and the #1041 step set the precedent of treating shared-store transcript content as
-disposable across a shape change.
+**Downgrade** is refused by the existing `user_version` check.
+
+**Mixed versions on a shared PostgreSQL pool are NOT a soft window for this step, and the pool must
+roll by stop/start rather than by a slow drain.** The version check runs only at open, so a v23
+member keeps serving after a v24 member migrates the shared store — but it does not merely write
+old-shaped rows. v23's `transcript_recipient` is `(orgId, channel, thread, ts, agentId)` and those
+columns no longer exist, so from the instant the migration commits:
+
+- every v23 inbound turn fails before the prompt is built — `ingestInboundTranscript` always sets
+  `recipient`, which makes `appendTranscriptLocked` batch an insert into the dropped columns, and
+  `SessionManager.handle` awaits it un-caught;
+- every v23 agent-scoped transcript read fails too — its `AGENT_DELIVERY_SCOPE_SQL` joins
+  `tr.orgId/channel/thread/ts`.
+
+That is an outage on the old side lasting the whole drain, not a bounded loss of a few rows, so the
+[k8s-daemon-pool.md](k8s-daemon-pool.md) surge-and-drain roll is the wrong shape here: this version
+is rolled by taking the old members down first and bringing the new ones up after, and a Cloud
+install schedules it as a brief maintenance stop. (The alternative — keeping a
+`transcript_recipient_legacy` shim alive with the old columns through the window — is deliberately
+not taken: it would have to accept writes the new predicate cannot see, so it buys availability for
+turns whose rows are invisible to the agent anyway.) Within a single self-hosted daemon, which owns
+its SQLite store alone, none of this applies.
 
 ## 11. What this supersedes
 
