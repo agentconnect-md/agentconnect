@@ -8,6 +8,7 @@ import { CredentialRevocationReporter } from '../src/platforms/credential-revoca
 import { FakeClock } from './cp/fake-clock.js'
 
 const CP_INTEGRATION = '0f0e0d0c-0b0a-4908-8706-050403020100'
+const LATE_CP_INTEGRATION = '1f1e1d1c-1b1a-4918-9716-151413121110'
 const LOCAL_INTEGRATION = 'hand-authored-slack'
 const EVENT_TIME = 1_780_000_000
 const SLACK = { botToken: 'xoxb-fixture', appToken: 'xapp-1-A0FIXTURE-1-fixture' }
@@ -32,15 +33,24 @@ function fakeCp() {
   return { cp, sent }
 }
 
-/** One socket serving a CP-owned and a hand-authored integration on the same Slack app. */
-async function openSocket(cp: ReturnType<typeof fakeCp>['cp']) {
+type Fire = (type: string, event: unknown) => unknown
+
+/** One socket opening with a CP-owned and a hand-authored integration of one Slack app; as in the daemon, bindings land only after start() resolves. */
+async function openSocket(
+  cp: ReturnType<typeof fakeCp>['cp'],
+  opts: { duringStart?: (fire: Fire, bound: ReadonlyMap<string, unknown>) => Promise<unknown> } = {}
+) {
   const handlers = new Map<string, (a: { event: unknown; body?: unknown }) => unknown>()
   const clock = new FakeClock()
   const integrations = [
     { id: CP_INTEGRATION, origin: 'cp', platform: 'slack', core: { bindRules: [] }, config: SLACK },
     { id: LOCAL_INTEGRATION, platform: 'slack', core: { bindRules: [] }, config: SLACK }
   ]
+  // A CP-owned integration outside the opening roster, bound onto the open socket later.
+  const late = { id: LATE_CP_INTEGRATION, origin: 'cp', platform: 'slack', core: { bindRules: [] }, config: SLACK }
   const agent = { id: 'agent', integrations } as unknown as LoadedAgent
+  const bound = new Map<string, unknown>()
+  const fire: Fire = (type, event) => handlers.get(type)!({ event, body: { team_id: 'T1', event_time: EVENT_TIME } })
   const reconciler = new ConnectionReconciler({
     log: () => quietLog,
     clock: () => clock,
@@ -55,31 +65,54 @@ async function openSocket(cp: ReturnType<typeof fakeCp>['cp']) {
       shortcut() {},
       view() {},
       client: { auth: { test: async () => ({ user_id: 'UBOT', bot_id: 'BBOT', team_id: 'T1' }) } },
-      start: async () => {},
+      // Bolt's start opens the socket, so Slack may deliver an event before it resolves.
+      start: async () => void (await opts.duringStart?.(fire, bound)),
       stop: async () => {}
     }),
     transportAgents: (agents?: LoadedAgent[]) => agents ?? [agent],
     cpClient: () => cp,
-    bindSlack: () => {},
+    bindSlack: (id: string, conn: unknown) => void bound.set(id, conn),
     refreshChannels: async () => {},
     slackNameResolver: () => undefined,
-    srcIntegrationIds: () => integrations.map((i) => i.id),
-    integrationConfigById: (id: string) => integrations.find((i) => i.id === id)
+    srcIntegrationIds: (conn: unknown) => [...bound].filter(([, c]) => c === conn).map(([id]) => id),
+    integrationConfigById: (id: string) => [...integrations, late].find((i) => i.id === id)
   } as unknown as ConnectionReconcilerHost)
   await reconciler.openInitialSlackConnections([agent])
-  const fire = (type: string, event: unknown) =>
-    handlers.get(type)!({ event, body: { team_id: 'T1', event_time: EVENT_TIME } })
-  return { reconciler, clock, fire }
+  const bindLate = () => bound.set(LATE_CP_INTEGRATION, reconciler.slackPool.all()[0])
+  return { reconciler, clock, fire, bound, bindLate }
 }
 
 const uninstalled = { integrationIds: [CP_INTEGRATION], reason: 'app_uninstalled', eventAtMs: EVENT_TIME * 1000 }
 
 describe('socket credential revocation → integration/revoked', () => {
-  it('reports an uninstall for the CP-owned integrations the socket serves', async () => {
+  it('reports an uninstall for the CP-owned integrations the socket serves, never a hand-authored one', async () => {
     const { cp, sent } = fakeCp()
-    const { fire } = await openSocket(cp)
+    const { fire, bound } = await openSocket(cp)
+    expect([...bound.keys()]).toEqual([CP_INTEGRATION, LOCAL_INTEGRATION])
     await fire('app_uninstalled', { type: 'app_uninstalled' })
     await vi.waitFor(() => expect(sent).toEqual([uninstalled]))
+  })
+
+  it('reports the opening roster for an event that lands before the socket is bound', async () => {
+    const { cp, sent } = fakeCp()
+    let boundAtEvent: string[] | undefined
+    await openSocket(cp, {
+      duringStart: async (fire, bound) => {
+        boundAtEvent = [...bound.keys()]
+        await fire('app_uninstalled', { type: 'app_uninstalled' })
+      }
+    })
+    expect(boundAtEvent).toEqual([])
+    await vi.waitFor(() => expect(sent).toEqual([uninstalled]))
+  })
+
+  it('also reports a CP-owned integration bound onto the open socket later', async () => {
+    const { cp, sent } = fakeCp()
+    const { fire, bindLate } = await openSocket(cp)
+    bindLate()
+    await fire('app_uninstalled', { type: 'app_uninstalled' })
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    expect([...sent[0]!.integrationIds].sort()).toEqual([CP_INTEGRATION, LATE_CP_INTEGRATION].sort())
   })
 
   it('ignores a user-token-only revocation and reports one that names the bot token', async () => {

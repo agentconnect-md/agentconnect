@@ -38,6 +38,7 @@ import {
   slackSharedKey,
   slackSocketKey,
   SlackConnection,
+  type ConsolidatedGroup,
   type SlackAppFactory,
   type SlackDeps
 } from '../slack/connection.js'
@@ -259,10 +260,15 @@ export class ConnectionReconciler {
     ]
   }
 
-  /** The deps every Slack SOCKET shares — the action sink, the name-resolver hand-off and
-   *  the membership-snapshot callback. `conn` is a thunk so each callback reads the
-   *  connection it was built for, never a stale one from an earlier attempt. */
-  private slackSocketDeps(conn: () => SlackConnection): Omit<SlackDeps, 'group'> {
+  /** The CP-owned integrations a socket speaks for: its bindings, plus the roster it opened with, since bindings land only after start() resolves. */
+  private revocableIntegrations(conn: SlackConnection, group: ConsolidatedGroup): string[] {
+    const ids = new Set([...this.host.srcIntegrationIds(conn), ...group.integrations.map((i) => i.integrationId)])
+    // Only a CP-owned integration has a bot the CP can revoke; the CP refuses one this daemon no longer serves.
+    return [...ids].filter((id) => this.host.integrationConfigById(id)?.origin === 'cp')
+  }
+
+  /** The deps every Slack SOCKET shares; `conn` is a thunk so each callback reads the connection it was built for, and `group` is the roster it opens with. */
+  private slackSocketDeps(conn: () => SlackConnection, group: ConsolidatedGroup): Omit<SlackDeps, 'group'> {
     return {
       newTraceId: () => randomUUID(),
       onMessage: (msg) => {
@@ -270,12 +276,8 @@ export class ConnectionReconciler {
         this.host.onInbound(msg, this.host.srcIntegrationIds(conn()))
       },
       onChannelsChanged: () => void this.host.refreshChannels(conn()),
-      // Only CP-owned integrations have a bot the CP can revoke.
       onCredentialRevoked: (revocation) =>
-        this.revocations.report(
-          this.host.srcIntegrationIds(conn()).filter((id) => this.host.integrationConfigById(id)?.origin === 'cp'),
-          revocation
-        ),
+        this.revocations.report(this.revocableIntegrations(conn(), group), revocation),
       onMessageShortcut: (shortcut) => this.host.slackShortcutSession(shortcut, this.host.srcIntegrationIds(conn())),
       onThreadSessions: (a) => this.host.slackThreadSessions(a, this.host.srcIntegrationIds(conn())),
       onSlotSettle: (a) => this.host.settleSlackSlot(conn(), a),
@@ -300,7 +302,7 @@ export class ConnectionReconciler {
     else this.log.info(`slack: opening ${groups.size} socket connection(s)`)
     for (const group of groups.values()) {
       const conn: SlackConnection = new SlackConnection(
-        { group, ...this.slackSocketDeps(() => conn) },
+        { group, ...this.slackSocketDeps(() => conn, group) },
         this.host.slackAppFactory()
       )
       this.log.info(
@@ -524,7 +526,7 @@ export class ConnectionReconciler {
       // and leaves existing sockets intact instead of throwing out of reconcile.
       try {
         const conn: SlackConnection = new SlackConnection(
-          { group, ...this.slackSocketDeps(() => conn) },
+          { group, ...this.slackSocketDeps(() => conn, group) },
           this.host.slackAppFactory()
         )
         this.log.info(
@@ -1186,7 +1188,7 @@ export class ConnectionReconciler {
     // The thunk captures the NEW `conn` ref so the name resolver / onInbound use the
     // successfully-retried connection, not a stale one from an earlier attempt.
     const conn: SlackConnection = new SlackConnection(
-      { group, ...this.slackSocketDeps(() => conn) },
+      { group, ...this.slackSocketDeps(() => conn, group) },
       this.host.slackAppFactory()
     )
     try {
