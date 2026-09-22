@@ -936,6 +936,8 @@ export class Daemon {
   // mirrors only the loaded local files and is rebuilt each reconcile.
   private agents = new Map<string, LoadedAgent>()
   private fileAgents = new Map<string, LoadedAgent>()
+  // File-authored agents a self-hosted shared store cannot attribute to an organization (#2188), warned once each.
+  private readonly unattributableFileAgents = new Set<string>()
   // Every live ACP host by HostKey (agent id, or agent id + session key for a confined session); every per-host map below is keyed alike.
   private hosts = new Map<HostKey, AcpHost>()
   // Per-host launch facts: the agent dir (the roster entry is gone when a removed agent's host stops) and the launch cwd.
@@ -2121,6 +2123,9 @@ export class Daemon {
         ? resolve(root, cfg.store.configFile)
         : undefined
     if (dataPlaneConfig !== undefined) {
+      // The shared store attributes every row to its agent's organization, which only the Control Plane knows.
+      if (!this.k8s && !cfg.controlPlane?.enabled)
+        throw new Error('store: a postgres store needs the control plane, which names the organization of every row')
       const openDataPlane = this.opts.openDataPlane ?? openPostgresDataPlane
       this.dataPlane = await openDataPlane(
         (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
@@ -3931,6 +3936,18 @@ export class Daemon {
       for (const previous of preserved.values()) {
         if (!agents.some((agent) => agent.dir === previous.dir)) agents.push(previous)
       }
+    }
+
+    // A file-authored agent belongs to no organization, and its id is unique only on this machine (#2188).
+    if (this.dataPlane && !this.k8s) {
+      for (const agent of agents) {
+        if (this.unattributableFileAgents.has(agent.id)) continue
+        this.unattributableFileAgents.add(agent.id)
+        this.log.warn(
+          `agent "${agent.id}" in ${this.agentsDir} is not served: a postgres store holds Control Plane agents only`
+        )
+      }
+      agents = []
     }
 
     // §6.4: an integration entry whose opaque `config` its platform module

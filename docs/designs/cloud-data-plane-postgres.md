@@ -46,6 +46,10 @@ root:
   machine, not only its group agents. A group that wants shared history sets it on every
   member against one database; a group without it keeps working, and history stays on
   the member that ran each conversation.
+- It needs the Control Plane, which names the organization every row is attributed to; a
+  daemon with `controlPlane.enabled: false` refuses to start on it. An agent defined in
+  the machine's own agents directory has no organization, and its id is unique only on
+  that machine, so it is not served on this store: the daemon logs it and skips it.
 - Nothing is migrated. Switching a machine to `postgres` leaves `state/local.sqlite` in
   place and unread; the machine starts with the database's history, which is empty for
   its own past conversations. Switching back does the reverse.

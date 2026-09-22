@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AGENT_WAKE_FEATURE, DAEMON_BOOTSTRAP_UPGRADE_FEATURE } from '@agentconnect.md/protocol'
@@ -17,14 +17,14 @@ import { SANDBOX_TUNNEL_PATHS } from '../src/shim/sandbox-paths.js'
  *  contract, so k8s and self-hosted behavior cannot drift apart unnoticed. */
 
 function root(
-  opts: { declared?: unknown; requireSandbox?: boolean; cliEntry?: boolean; store?: unknown } = {}
+  opts: { declared?: unknown; requireSandbox?: boolean; cliEntry?: boolean; store?: unknown; cp?: boolean } = {}
 ): string {
   const path = mkdtempSync(join(tmpdir(), 'ac-k8s-mode-'))
   writeFileSync(
     join(path, 'config.json'),
     JSON.stringify({
       version: 1,
-      controlPlane: { enabled: false },
+      controlPlane: { enabled: opts.cp ?? false },
       ...(opts.requireSandbox ? { security: { requireSandbox: true } } : {}),
       ...(opts.store ? { store: opts.store } : {})
     })
@@ -271,7 +271,7 @@ describe('daemon --k8s mode', () => {
   })
 
   it('opens a postgres store named by its file outside k8s mode, and keeps no SQLite database (#2188)', async () => {
-    const rootDir = root({ store: { backend: 'postgres', configFile: 'data-plane.json' } })
+    const rootDir = root({ store: { backend: 'postgres', configFile: 'data-plane.json' }, cp: true })
     const openDataPlane = vi.fn(() => fakeDataPlane())
     const local = daemon({ root: rootDir, k8s: false, openDataPlane })
     try {
@@ -285,6 +285,41 @@ describe('daemon --k8s mode', () => {
     } finally {
       await local.stop()
     }
+  })
+
+  it('serves no file-authored agent on a postgres store, since none has an organization to attribute rows to', async () => {
+    const rootDir = root({ store: { backend: 'postgres', configFile: 'data-plane.json' }, cp: true })
+    const agentDir = join(rootDir, 'agents', 'bot-local')
+    mkdirSync(agentDir, { recursive: true })
+    writeFileSync(
+      join(agentDir, 'agent.json'),
+      JSON.stringify({
+        id: 'bot-local',
+        name: 'bot-local',
+        status: 'active',
+        runtime: 'claude',
+        workspace: { mode: 'from-scratch', path: join(agentDir, 'workspace') },
+        integrations: []
+      })
+    )
+    const local = daemon({ root: rootDir, k8s: false, openDataPlane: vi.fn(() => fakeDataPlane()) })
+    try {
+      await local.start()
+      expect((local as any).agents.has('bot-local')).toBe(false)
+    } finally {
+      await local.stop()
+    }
+  })
+
+  it('refuses a postgres store on a daemon without the control plane', async () => {
+    const openDataPlane = vi.fn(() => fakeDataPlane())
+    const local = daemon({
+      root: root({ store: { backend: 'postgres', configFile: 'data-plane.json' } }),
+      k8s: false,
+      openDataPlane
+    })
+    await expect(local.start()).rejects.toThrow(/postgres store needs the control plane/)
+    expect(openDataPlane).not.toHaveBeenCalled()
   })
 
   it('reads the mounted configuration under --k8s whatever the store setting names', async () => {
