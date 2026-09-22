@@ -11,7 +11,7 @@ import { NotificationProvider, useNotifications } from '@/lib/notifications'
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const orgPath = (path: string) => `/acme${path}`
-const agents = [{ id: 'agent-a', name: 'Butler' }]
+const agents = [{ id: 'agent-a', name: 'Butler', canEdit: true }]
 const revokedRow: IntegrationRow = {
   id: 'int-1',
   agentId: 'agent-a',
@@ -83,7 +83,7 @@ describe('useIntegrationNotifier', () => {
     expect(items()).toEqual([['Integration revoked', false, false]])
 
     await render({ integrations: [{ ...revokedRow, revoked: false }], integrationsLoaded: true, agentsLoading: false })
-    expect(items()).toEqual([['Revocation cleared', true, true]])
+    expect(items()).toEqual([['Revocation resolved', true, true]])
     expect(latest.current?.toasts).toEqual([])
 
     await act(async () => root.unmount())
