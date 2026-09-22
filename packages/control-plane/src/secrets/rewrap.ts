@@ -143,7 +143,7 @@ export async function rewrapAllSecrets(
     let skipped = 0
     for (const r of await prisma.providerKey.findMany()) {
       const res = await prisma.providerKey.updateMany({
-        where: { orgId: r.orgId, provider: r.provider, value: r.value },
+        where: { orgId: r.orgId, provider: r.provider, value: r.value, updatedAt: r.updatedAt },
         data: { value: await reseal(r.value, orgScope(OrgId(r.orgId))), updatedAt: r.updatedAt }
       })
       if (res.count === 0) skipped += 1

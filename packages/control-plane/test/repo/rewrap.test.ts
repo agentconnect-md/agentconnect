@@ -258,6 +258,28 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
     expect(bot2.botToken).toBe('sealed:xoxb-plain')
   })
 
+  it('preserves the timestamp of a concurrent same-key save with the identity cipher', async () => {
+    const where = { orgId_provider: { orgId: DEFAULT_ORG_ID, provider: 'typesafe' } }
+    const updatedAt = new Date('2026-02-01T00:00:00Z')
+    await prisma.providerKey.create({
+      data: {
+        orgId: DEFAULT_ORG_ID,
+        provider: 'typesafe',
+        value: 'example-key',
+        updatedAt: new Date('2026-01-01T00:00:00Z')
+      }
+    })
+    const stats = await rewrapAllSecrets(prisma, {
+      open: async (value) => value,
+      seal: async (value) => {
+        await prisma.providerKey.update({ where, data: { value, updatedAt } })
+        return value
+      }
+    })
+    expect(stats.find((s) => s.table === 'provider_key')).toMatchObject({ rows: 0, skipped: 1 })
+    expect((await prisma.providerKey.findUniqueOrThrow({ where })).updatedAt).toEqual(updatedAt)
+  })
+
   it('SKIPS a row a live CP updated between snapshot and write — never reverts the newer credential', async () => {
     await seedAgent(prisma, AGENT)
     await prisma.bot.create({ data: { id: BOT, orgId: DEFAULT_ORG_ID, platform: 'slack', name: 'raced-bot' } })
