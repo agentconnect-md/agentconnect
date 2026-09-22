@@ -830,6 +830,29 @@ describe('reconnect after an unacked turn', () => {
     expect(getLiveSteps('s1').some((step) => /could not be resumed/.test(step.text ?? ''))).toBe(false)
   })
 
+  // A daemon that faulted taking the turn in (a full disk) is not contended: name the fault it reported.
+  it('names the fault of a turn the daemon failed to admit instead of calling the agent busy', async () => {
+    const { first, turn } = await sendAndOpen()
+    await act(async () => {
+      first.onmessage?.({
+        data: JSON.stringify({
+          type: 'ack',
+          ack: {
+            accepted: false,
+            reason: 'admission_failed',
+            detail: 'database or disk is full',
+            turnId: turn.turnId,
+            agentId: 'agent-1'
+          }
+        })
+      })
+    })
+    const texts = getLiveSteps('s1').map((step) => step.text ?? '')
+    const fault = 'could not take the message — database or disk is full'
+    expect(texts.filter((text) => text.endsWith(fault))).toHaveLength(1)
+    expect(texts.some((text) => /busy|no live daemon/.test(text))).toBe(false)
+  })
+
   // The relay mints the canonical post identity per received frame, so a re-sent multi-agent turn
   // partially admitted the first time would duplicate the user message on the rest of the roster.
   it('never re-sends a multi-agent turn — those lanes resume as before', async () => {
