@@ -4473,7 +4473,8 @@ export class Daemon {
               agent.workspace.path === path ||
               this.workspaces.trustedWorkspaceWriteRoots(agent).includes(path)
           if (!manager || !mountRoot) return false
-          await manager.suspend(placement.id)
+          // A session's own VM serves that session alone, and its removal was judged with no turn holding it: an idle runtime still there goes with it (#2246).
+          await manager.suspend(placement.id, { drain: placement.trustedSessionDir === path })
           return true
         }
       )

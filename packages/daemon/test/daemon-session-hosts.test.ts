@@ -620,6 +620,29 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     }
   })
 
+  it("drains a session's own VM when its directory is removed, and never the agent's VM (#2246)", async () => {
+    const root = scaffold({}, 'shared')
+    const { daemon } = await startDaemon(root)
+    const manager = Object.assign(useMicrosandbox(daemon), { environment: vi.fn(() => undefined) })
+    try {
+      const agent = (daemon as any).agents.get('bot-a')
+      const leaf = `session-${'a'.repeat(24)}`
+      const sessionDir = join(agent.dir, 'sessions', leaf)
+      mkdirSync(join(sessionDir, 'workspace'), { recursive: true })
+      const fs = (daemon as any).microsandboxWorkspaceFs('bot-a').fs
+      await fs.rmTree(sessionDir)
+      expect(manager.suspend).toHaveBeenCalledWith(`bot-a/${leaf}`, { drain: true })
+      expect(existsSync(sessionDir)).toBe(false)
+
+      manager.suspend.mockClear()
+      mkdirSync(agent.workspace.path, { recursive: true })
+      await fs.rmTree(agent.workspace.path)
+      expect(manager.suspend).toHaveBeenCalledWith('bot-a/agent', { drain: false })
+    } finally {
+      await daemon.stop()
+    }
+  })
+
   it('purges every expired session even when one will not stop, and still retires its pod', async () => {
     // The row is deleted before the pod is, so a throw from stopping the host used to escape the
     // purge, abort the rest of the sweep, and leave a claim alive with this member's launch still
