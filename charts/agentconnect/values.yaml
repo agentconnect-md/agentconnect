@@ -823,15 +823,7 @@ migrate:
   tag: 7.8.0-node24-r1
 
 # ────────────────────────── managed model egress ───────────────────────────
-# Point agent runtimes at a managed egress endpoint instead of at the provider, so the provider
-# credential never enters a sandbox. Off by default: without it a daemon holds the key itself,
-# which is the existing behaviour and stays supported.
-#
-# This chart knows nothing about what serves that endpoint. It does not install it, does not name
-# a gateway implementation, and does not know whether the credential below is checked — it knows
-# only that a runtime can be pointed at a base URL with a key. Everything else is told to it. The
-# AgentConnect deployment's own egress gateway lives in charts/agentconnect-private;
-# any endpoint that speaks the providers' APIs works here.
+# Configure provider endpoints for daemon clients and agent runtimes.
 modelEgress:
   enabled: false
   # Where the endpoint lives, for the sandbox egress rule only — the agents namespace is
@@ -850,17 +842,8 @@ modelEgress:
   # which dialect a client speaks. A client may still set `baseUrl` to override the whole
   # thing, for an endpoint laid out some other way.
   gatewayUrl: ''
-  # One entry per runtime, keyed by client id (`claude`, `codex`, `deepseek`). Listing a client
-  # asserts its runtime actually honours an injected base URL: one that does not would take the
-  # key below straight to the provider and fail, or fall back to a real key and keep spending
-  # from inside the sandbox — the opposite of the point.
-  #
-  # Each entry reaches two surfaces: the daemon, which writes the runtime's own provider variables
-  # when it spawns one, and the sandbox pod, which carries the same values as a fill-in floor for a
-  # runtime the daemon aimed nowhere. The daemon's write wins.
-  #
-  # `apiKey` is whatever that endpoint expects; if it verifies nothing, a placeholder is honest
-  # about that.
+  # Clients: claude, codex, deepseek, typesafe; each accepts an optional baseUrl override.
+  # Runtime clients also accept apiKey and populate sandbox defaults; typesafe supplies only a daemon endpoint.
   #
   # The codex entry may also carry `sessionConfig`, a map of codex session config this deployment
   # asserts about the endpoint — e.g. disabling a feature whose request shape the gateway rejects.

@@ -161,33 +161,32 @@ app.kubernetes.io/component: {{ .component }}
 {{- end }}
 {{- end -}}
 
-{{/* One env pair per `modelEgress` client, rendered onto whichever surface asks. Two surfaces
-     name the same endpoint in different vocabularies — the daemon writes each runtime's own
-     provider variables at spawn and wins, the sandbox pod carries a fill-in floor for a runtime
-     the daemon aimed nowhere — so the client set, the base resolution and the "is this a runtime
-     we can project" refusal live here once instead of drifting between them.
-     Args: ctx, prefixes (client → variable prefix), urlSuffix, keySuffix. */}}
+{{/* Project each model-egress client onto its consuming host; args: ctx, target. */}}
 {{- define "agentconnect.modelEgressEnv" -}}
-{{- $prefixes := .prefixes -}}
-{{- $urlSuffix := .urlSuffix -}}
-{{- $keySuffix := .keySuffix -}}
+{{- $target := .target -}}
 {{- $egress := .ctx.Values.modelEgress -}}
-{{- /* One gateway address, one path per provider dialect. The runtimes each append their own
-       remainder to what they are given (`/v1/messages`, `/responses`, `/chat/completions`), so
-       the gateway is what routes those onto its upstreams — the chart states only which dialect
-       a client speaks. */ -}}
-{{- $providers := dict "claude" "anthropic" "codex" "openai" "deepseek" "deepseek" -}}
+{{- $clients := dict
+  "claude" (dict "provider" "anthropic" "daemon" (dict "base" "ANTHROPIC_MODEL_BASE_URL" "key" "ANTHROPIC_MODEL_TOKEN") "runtime" (dict "base" "AC_CLAUDE_BASE_URL" "key" "AC_CLAUDE_API_KEY"))
+  "codex" (dict "provider" "openai" "daemon" (dict "base" "OPENAI_MODEL_BASE_URL" "key" "OPENAI_MODEL_TOKEN") "runtime" (dict "base" "AC_CODEX_BASE_URL" "key" "AC_CODEX_API_KEY"))
+  "deepseek" (dict "provider" "deepseek" "daemon" (dict "base" "DEEPSEEK_MODEL_BASE_URL" "key" "DEEPSEEK_MODEL_TOKEN") "runtime" (dict "base" "AC_DEEPSEEK_BASE_URL" "key" "AC_DEEPSEEK_API_KEY"))
+  "typesafe" (dict "provider" "typesafe" "daemon" (dict "base" "TYPESAFE_MODEL_BASE_URL"))
+-}}
 {{- range $client, $cfg := $egress.clients }}
-{{- $prefix := index $prefixes $client }}
-{{- if not $prefix }}{{ fail (printf "modelEgress.clients.%s is not a runtime this chart can project (%s)" $client (join ", " (keys $prefixes | sortAlpha))) }}{{ end }}
+{{- $profile := get $clients $client }}
+{{- if not $profile }}{{ fail (printf "modelEgress.clients.%s is not a supported client (%s)" $client (join ", " (keys $clients | sortAlpha))) }}{{ end }}
+{{- if and $cfg.apiKey (not (get $profile.daemon "key")) }}{{ fail (printf "modelEgress.clients.%s does not accept an apiKey" $client) }}{{ end }}
 {{- $base := $cfg.baseUrl }}
 {{- if not $base }}
 {{- if not $egress.gatewayUrl }}{{ fail (printf "modelEgress.clients.%s needs a baseUrl, or modelEgress.gatewayUrl to derive one from" $client) }}{{ end }}
-{{- $base = printf "%s/%s" (trimSuffix "/" $egress.gatewayUrl) (index $providers $client) }}
+{{- $base = printf "%s/%s" (trimSuffix "/" $egress.gatewayUrl) $profile.provider }}
 {{- end }}
-- name: {{ printf "%s%s" $prefix $urlSuffix }}
+{{- with (get $profile $target) }}
+- name: {{ .base }}
   value: {{ $base | quote }}
-- name: {{ printf "%s%s" $prefix $keySuffix }}
-  value: {{ $cfg.apiKey | quote }}
+{{- with .key }}
+- name: {{ . }}
+  value: {{ $cfg.apiKey | default "" | quote }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- end -}}

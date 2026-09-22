@@ -111,20 +111,8 @@ spec:
               value: 'on'
             {{- end }}
             {{- if $.Values.modelEgress.enabled }}
-            # Point the runtimes at a managed egress endpoint instead of the provider. The shim
-            # maps these onto the runtime's own ANTHROPIC_*/OPENAI_* at spawn, fill-in only —
-            # anything the daemon sends wins, so this is the floor rather than an override.
-            #
-            # Everything about that endpoint is TOLD to this chart. It does not know what serves
-            # the URL, how the credential is checked, or whether one is checked at all: it knows
-            # that a runtime can be pointed at a base URL with a key. That is the whole of what
-            # AgentConnect needs, and keeping it that way is why the gateway is a separate chart.
-            #
-            # Per client, not one switch for all: a client whose runtime does not honour the
-            # injected base URL would take this key straight to the provider and fail, or fall
-            # back to a real key and keep spending from inside the sandbox — the opposite of what
-            # this exists for. Listing a client here asserts its runtime honours the URL.
-            {{- include "agentconnect.modelEgressEnv" (dict "ctx" $ "prefixes" (dict "claude" "AC_CLAUDE" "codex" "AC_CODEX" "deepseek" "AC_DEEPSEEK") "urlSuffix" "_BASE_URL" "keySuffix" "_API_KEY") | nindent 12 }}
+            # Only runtime clients get sandbox defaults; daemon-authored values take precedence.
+            {{- include "agentconnect.modelEgressEnv" (dict "ctx" $ "target" "runtime") | nindent 12 }}
             {{- with (get $.Values.modelEgress.clients "codex" | default dict).sessionConfig }}
             # Codex session config this deployment asserts about the endpoint — e.g. disabling a
             # feature whose request shape the gateway rejects. Same floor contract as the pair
