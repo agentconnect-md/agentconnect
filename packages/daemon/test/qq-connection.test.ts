@@ -169,8 +169,10 @@ describe('QQ gateway lifecycle', () => {
         supports: () => true
       })
       expect(unavailable).toEqual([{ type: 'text', text: expect.stringContaining('QQ image unavailable') }])
-      expect(await conn.getChannelInfo('group:group')).toMatchObject({ isIm: false, name: 'QQ group' })
-      expect(await conn.getChannelInfo('dm:user')).toMatchObject({ isIm: true })
+      expect(await conn.getChannelInfo('group:group')).toMatchObject({ isIm: false, name: 'QQ group · group' })
+      expect(await conn.getChannelInfo('dm:user')).toMatchObject({ isIm: true, name: 'QQ user · user' })
+      // QQ names neither groups nor people, so two rooms are told apart by their openid tails.
+      expect((await conn.getChannelInfo('group:7A1B2C3D4E5F60718293A4B5C6D7E8F9')).name).toBe('QQ group · C6D7E8F9')
       expect(await conn.listChannels()).toEqual([
         { id: 'group:group', isPrivate: true },
         { id: 'dm:user', isPrivate: true }

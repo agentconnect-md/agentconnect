@@ -170,9 +170,11 @@ export class QQConnection implements PlatformConnection {
   workspaceId(): string {
     return this.group.appId
   }
+  // QQ hands a bot no group or user names, so a row is told apart by its openid's tail — as senders are.
   async getChannelInfo(channel: string) {
-    const isIm = QQTargetForChannel(channel).kind === 'c2c'
-    return { id: channel, name: isIm ? 'QQ direct message' : 'QQ group', isIm, isPrivate: true }
+    const target = QQTargetForChannel(channel)
+    const isIm = target.kind === 'c2c'
+    return { id: channel, name: `${isIm ? 'QQ user' : 'QQ group'} · ${target.id.slice(-8)}`, isIm, isPrivate: true }
   }
   async listMembers() {
     return []
