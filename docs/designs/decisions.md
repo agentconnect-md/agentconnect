@@ -1564,11 +1564,14 @@ its supported models, and BYOK/Cloud readiness. Configured BYOK takes priority o
 Cloud; no upstream authentication or credit check is performed by this read. Offline,
 unsupported, and pending execution contexts are represented explicitly.
 
-Standalone preview selects a visible daemon and uses one currently served, visible
-agent in the same organization as the existing credential/token attribution identity.
+Standalone preview uses the Agent placement picker: the managed pool, an organization
+daemon group, or one visible daemon. Pool members appear as one target. For a pool or
+group, the server selects a ready member supporting the requested model on each run;
+an unavailable target never falls back outside the selected scope. The preview uses
+one currently served, visible agent in the same organization as its execution identity.
 It does not run that agent or bind the Decision to it. A daemon with no authorized,
 currently served agent is not ready for preview. The server rechecks membership,
-daemon/agent visibility, and placement before dispatch and before returning the result.
+daemon/agent visibility, group membership, and placement before dispatch and before returning the result.
 Viewers cannot run a paid preview. The sample request is limited to 32 KiB; the
 daemon keeps the existing concurrency and deadline limits. The RPC is sent once,
 without automatic evaluation retries. Transport failures return 503; provider outcomes

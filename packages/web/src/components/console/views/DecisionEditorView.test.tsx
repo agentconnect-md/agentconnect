@@ -6,19 +6,24 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { SWRConfig } from 'swr'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DecisionsPrototypeProvider, useDecisionsPrototype } from '@/lib/decisions/provider'
+import * as decisionProvider from '@/lib/decisions/provider'
+import * as decisionMock from '@/lib/decisions/mock-api'
+import { createDecisionMockSeed } from '@/lib/decisions/fixtures'
+import type { MemberSetRow } from '@/lib/data'
 
+const { DecisionsPrototypeProvider, useDecisionsPrototype } = decisionProvider
 const push = vi.fn()
 /** Per-test query string, so the `returnTo` guard can be exercised. */
 let searchParams = new URLSearchParams()
 let params: { id?: string } = {}
 let store: ReturnType<typeof useDecisionsPrototype>
+let memberSets: MemberSetRow[] = []
 function StoreProbe() {
   store = useDecisionsPrototype()
   return null
 }
 
-vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ members: [] }) }))
+vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ members: [], memberSets }) }))
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push, replace: vi.fn() }),
   useParams: () => params,
@@ -46,6 +51,8 @@ afterEach(async () => {
   push.mockClear()
   searchParams = new URLSearchParams()
   params = {}
+  memberSets = []
+  vi.restoreAllMocks()
 })
 
 async function render() {
@@ -99,6 +106,80 @@ async function fillValidChoice() {
 }
 
 describe('DecisionEditorView', () => {
+  it('offers Cloud, named groups, and machines and submits the selected scope', async () => {
+    params = { id: 'support-category' }
+    const seed = createDecisionMockSeed()
+    const provider = seed.providers[0]!
+    const providers = [
+      { ...provider, daemonName: 'Example machine' },
+      {
+        ...provider,
+        daemonId: 'pool-member-a',
+        daemonName: 'Example pool node A',
+        pool: true,
+        readiness: { status: 'pending_sync' as const }
+      },
+      { ...provider, daemonId: 'pool-member-b', daemonName: 'Example pool node B', pool: true },
+      { ...provider, daemonId: 'group-member', daemonName: 'Build machine', memberSetId: 'example-group' }
+    ]
+    const api = decisionMock.createDecisionMockApi({ seed: { ...seed, providers } })
+    vi.spyOn(decisionMock, 'createDecisionMockApi').mockReturnValue(api)
+    memberSets = [
+      {
+        setId: 'example-group',
+        name: 'Build group',
+        memberDaemonIds: ['group-member'],
+        agentCount: 1,
+        spreadSessions: false
+      },
+      { setId: 'empty-group', name: 'Empty group', memberDaemonIds: [], agentCount: 0, spreadSessions: false }
+    ]
+    const catalog = vi.spyOn(decisionProvider, 'useDecisionProviders').mockReturnValue({
+      providers,
+      daemonId: provider.daemonId,
+      error: null
+    })
+    await render()
+    const picker = () => document.body.querySelector('button[aria-label="Runs on"]')
+    const run = () => [...document.body.querySelectorAll('button')].find((node) => node.textContent?.trim() === 'Run')!
+    const preview = vi.spyOn(store.api, 'preview')
+    expect(picker()?.textContent).toContain('AgentConnect Cloud')
+    await click(run())
+    expect(preview.mock.lastCall?.[0].target).toEqual({ kind: 'pool' })
+    expect(preview.mock.lastCall?.[0]).not.toHaveProperty('daemonId')
+
+    await click(picker())
+    await click(document.body.querySelector('.fscrim'))
+    expect(picker()?.getAttribute('aria-expanded')).toBe('false')
+    await click(picker())
+    const options = [...document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+    expect(options.filter((option) => option.dataset.pool)).toHaveLength(1)
+    expect(document.body.textContent).not.toContain('Example pool node')
+    expect(options.find((option) => option.textContent?.includes('Empty group'))?.disabled).toBe(true)
+    expect(options.find((option) => option.textContent?.includes('Example machine'))).toBeTruthy()
+    await click(options.find((option) => option.textContent?.includes('Build group')))
+    await click(run())
+    expect(preview.mock.lastCall?.[0].target).toEqual({ kind: 'set', setId: 'example-group' })
+
+    catalog.mockReturnValue({
+      providers: providers.filter((entry) => entry.daemonId !== 'group-member'),
+      daemonId: provider.daemonId,
+      error: null
+    })
+    await type('input[placeholder="Request type"]', 0, 'Updated category')
+    expect(picker()?.textContent).toContain('Build group')
+    expect(run().disabled).toBe(true)
+
+    await click(picker())
+    await click(
+      [...document.body.querySelectorAll('[role="option"]')].find((option) =>
+        option.textContent?.includes('Example machine')
+      )
+    )
+    await click(run())
+    expect(preview.mock.lastCall?.[0].target).toEqual({ kind: 'daemon', daemonId: provider.daemonId })
+  })
+
   it('starts a new decision on a choice question with two empty answers', async () => {
     await render()
     expect(byText('New decision')).toBeTruthy()

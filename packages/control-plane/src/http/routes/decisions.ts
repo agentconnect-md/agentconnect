@@ -39,6 +39,8 @@ const ProviderDto = z.object({
   kind: z.string(),
   daemonId: z.string(),
   daemonName: z.string(),
+  pool: z.boolean(),
+  memberSetId: z.string().nullable(),
   source: z.enum(['byok', 'ac_credits']).nullable(),
   readiness: ReadinessDto,
   models: z.array(
@@ -50,12 +52,21 @@ const UpdateBody = z.strictObject({
   visibility: z.enum(['org', 'restricted']).optional(),
   sharedWith: z.array(z.string().min(1).max(128)).max(1000).optional()
 })
-const PreviewBody = z.strictObject({
-  decision: DecisionDraft,
-  daemonId: z.string().uuid(),
-  state: z.record(z.string(), z.unknown()),
-  consumer: z.strictObject({ type: z.literal('none') })
-})
+const PreviewBody = z
+  .strictObject({
+    decision: DecisionDraft,
+    daemonId: z.string().uuid().optional(),
+    target: z
+      .discriminatedUnion('kind', [
+        z.strictObject({ kind: z.literal('daemon'), daemonId: z.string().uuid() }),
+        z.strictObject({ kind: z.literal('pool') }),
+        z.strictObject({ kind: z.literal('set'), setId: z.string().uuid() })
+      ])
+      .optional(),
+    state: z.record(z.string(), z.unknown()),
+    consumer: z.strictObject({ type: z.literal('none') })
+  })
+  .refine((input) => !!input.daemonId !== !!input.target, 'Select exactly one execution target.')
 const PreviewDto = z.object({
   mode: z.literal('live'),
   readiness: ReadinessDto,
@@ -66,7 +77,7 @@ const notFound = { error: 'Not Found', statusCode: 404, message: 'Decision or ex
 const unavailable = {
   error: 'Service Unavailable',
   statusCode: 503,
-  message: 'Decision preview is unavailable. Check the selected daemon and try again.'
+  message: 'Decision preview is unavailable. Check the selected execution target and try again.'
 }
 const invalidModel = {
   error: 'Bad Request',
@@ -95,9 +106,14 @@ export function decisionRoutes(deps: HttpDeps) {
       }
       return null
     }
-    const catalog = async (req: FastifyRequest, selected?: string): Promise<z.infer<typeof ProviderDto>[]> => {
+    const catalog = async (
+      req: FastifyRequest,
+      scope: { daemonId?: string; setId?: string } = {}
+    ): Promise<z.infer<typeof ProviderDto>[]> => {
       const daemons = (await deps.registry.listAvailable(orgOf(req), ctxOf(req))).filter(
-        (daemon) => !selected || daemon.daemonId === selected
+        (daemon) =>
+          (!scope.daemonId || daemon.daemonId === scope.daemonId) &&
+          (!scope.setId || daemon.memberSetId === scope.setId)
       )
       const keys = await deps.repos.providerKey.list(orgOf(req))
       const result: z.infer<typeof ProviderDto>[] = []
@@ -131,6 +147,8 @@ export function decisionRoutes(deps: HttpDeps) {
             models: profile.models,
             daemonId: daemon.daemonId,
             daemonName: daemon.name ?? daemon.daemonId,
+            pool: daemon.orgId === null,
+            memberSetId: daemon.memberSetId,
             source,
             readiness: { status: status === 'ready' && !source ? 'missing_credentials' : status }
           })
@@ -152,7 +170,7 @@ export function decisionRoutes(deps: HttpDeps) {
           response: { 200: z.array(ProviderDto) }
         }
       },
-      (req) => catalog(req, req.query.daemonId)
+      (req) => catalog(req, req.query)
     )
 
     r.get(
@@ -278,15 +296,40 @@ export function decisionRoutes(deps: HttpDeps) {
           summary: 'Try a Decision',
           operationId: 'previewDecision',
           description:
-            'Evaluates a draft and bounded sample state on an authorized daemon. Uses provider credentials or Cloud credits without creating a session or storing sample content.',
+            'Evaluates a draft and bounded sample state on an authorized daemon, resolving pool or organization group targets within their current ready members. Does not create a session or store sample content.',
           body: PreviewBody,
           response: { 200: PreviewDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
-        const { daemonId, decision, state } = req.body
+        const { decision, state } = req.body
         if (!supportsDecision(decision)) return reply.code(400).send(invalidModel)
+        const target = req.body.target ?? { kind: 'daemon' as const, daemonId: req.body.daemonId! }
+        let daemonId: string
+        let setId: string | null = null
+        if (target.kind === 'daemon') {
+          daemonId = target.daemonId
+        } else {
+          const set = target.kind === 'set' ? await deps.repos.memberSet.get(target.setId) : null
+          setId =
+            target.kind === 'pool'
+              ? await deps.repos.memberSet.crossOrgSetId()
+              : set?.orgId === orgOf(req)
+                ? set.id
+                : null
+          if (!setId) return reply.code(404).send(notFound)
+          const provider = (await catalog(req, { setId })).find(
+            (entry) =>
+              entry.id === decision.providerId &&
+              entry.readiness.status === 'ready' &&
+              entry.models.some(
+                (model) => model.id === decision.model && model.questionTypes.includes(decision.question.type)
+              )
+          )
+          if (!provider) return reply.code(503).send(unavailable)
+          daemonId = provider.daemonId
+        }
         const daemon = await deps.registry.getAvailable(orgOf(req), DaemonId(daemonId))
         if (!daemon || !canView(daemon, ctxOf(req))) return reply.code(404).send(notFound)
         const agent = await executionAgent(req, daemonId)
@@ -315,6 +358,7 @@ export function decisionRoutes(deps: HttpDeps) {
             canView(currentAgent, viewer) &&
             !!currentDaemon &&
             canView(currentDaemon, viewer) &&
+            (!setId || currentDaemon.memberSetId === setId) &&
             (await deps.placementResolver.routableDaemons(currentAgent)).includes(daemonId)
           )
         }

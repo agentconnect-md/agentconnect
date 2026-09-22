@@ -317,6 +317,20 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
     async preview(input) {
       input = copy(input)
       const draft = validateDraft(input.decision)
+      const target = input.target ?? { kind: 'daemon' as const, daemonId: input.daemonId }
+      const candidates = seed.providers.filter(
+        (entry) =>
+          entry.id === draft.providerId &&
+          (target.kind === 'daemon'
+            ? entry.daemonId === target.daemonId
+            : target.kind === 'pool'
+              ? entry.pool
+              : !entry.pool && entry.memberSetId === target.setId)
+      )
+      const daemonId =
+        candidates.find((entry) => providerReadiness(draft, entry.daemonId).status === 'ready')?.daemonId ??
+        candidates[0]?.daemonId ??
+        ''
       const consumer = input.consumer
       const channel = consumer.type === 'none' ? null : get(channels, consumer.channelId)
       const bot =
@@ -327,7 +341,7 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
           : consumer.type === 'gate'
             ? (consumer.targets ?? { type: 'new' as const })
             : { type: 'new' as const }
-      if (bot && input.daemonId !== bot.daemonId) conflict('Use this consumer’s evaluation daemon for preview.')
+      if (bot && daemonId !== bot.daemonId) conflict('Use this consumer’s evaluation daemon for preview.')
       if (
         targets.type !== 'new' &&
         (!targets.agentIds.length ||
@@ -346,7 +360,7 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
             conflict('Select group channels belonging to this bot.')
         }
       }
-      const readiness = providerReadiness(draft, input.daemonId)
+      const readiness = providerReadiness(draft, daemonId)
       const result: DecisionPreviewResult = {
         mode: 'mock',
         readiness,

@@ -2,10 +2,11 @@ import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DECISION_PROVIDER_PROFILES, DECISION_PREVIEW_V1_FEATURE, type DecisionDraft } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
-import { seedAgent, seedDaemon } from '../fixtures/seed.js'
+import { seedAgent, seedDaemon, seedDutyGroup } from '../fixtures/seed.js'
+import { poolSetId, seedPoolMember } from '../fakes/member-set.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
-import { OrgId } from '../../src/domain/ids.js'
+import { DaemonId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 const BASE = `/api/v1/orgs/${DEFAULT_ORG_ID}/decisions`
@@ -204,7 +205,12 @@ describe('Decision management and standalone preview', () => {
   it('sends sample context and model to the authorized daemon without persisting sample, evaluation, or session', async () => {
     const { app, agentId, daemonId, preview, payload } = await execution()
     const sessions = await prisma.sessionMeta.count()
-    const response = await app.inject({ method: 'POST', url: `${BASE}/preview`, payload })
+    const { daemonId: _daemonId, ...sample } = payload
+    const response = await app.inject({
+      method: 'POST',
+      url: `${BASE}/preview`,
+      payload: { ...sample, target: { kind: 'daemon', daemonId } }
+    })
     expect(response.statusCode).toBe(200)
     expect(response.json()).toEqual({ mode: 'live', readiness: { status: 'ready' }, evaluation, consumer: null })
     expect(preview).toHaveBeenCalledExactlyOnceWith(
@@ -219,6 +225,78 @@ describe('Decision management and standalone preview', () => {
     )
     expect(await prisma.decision.count()).toBe(0)
     expect(await prisma.sessionMeta.count()).toBe(sessions)
+  })
+
+  it.each(['pool', 'set'] as const)('resolves a %s target within its current ready members', async (kind) => {
+    const { app, deps, preview, payload } = await execution()
+    const setId =
+      kind === 'pool'
+        ? await poolSetId(prisma)
+        : (await deps.repos.memberSet.createForOrg(DEFAULT_ORG_ID, 'Example group')).id
+    const first = randomUUID(),
+      second = randomUUID(),
+      agentId = randomUUID(),
+      dutyId = randomUUID()
+    for (const daemonId of [first, second]) {
+      if (kind === 'pool') await seedPoolMember(prisma, daemonId)
+      else {
+        await seedDaemon(prisma, daemonId)
+        await deps.repos.memberSet.enroll(setId, DaemonId(daemonId))
+      }
+    }
+    await seedAgent(prisma, agentId, { setId })
+    await seedDutyGroup(prisma, dutyId, second, [agentId], { confirmed: true })
+    const { daemonId: _daemonId, ...sample } = payload
+    const input = { ...sample, target: kind === 'pool' ? { kind } : { kind, setId } }
+    const catalog = (await app.inject({ method: 'GET', url: `${BASE}/providers` })).json()
+    expect(catalog.find((entry: { daemonId: string }) => entry.daemonId === second)).toMatchObject({
+      pool: kind === 'pool',
+      memberSetId: setId,
+      readiness: { status: 'ready' }
+    })
+    expect((await app.inject({ method: 'POST', url: `${BASE}/preview`, payload: input })).statusCode).toBe(200)
+    expect(preview).toHaveBeenLastCalledWith(second, DEFAULT_ORG_ID, expect.objectContaining({ agentId }))
+
+    await prisma.dutyGroup.update({ where: { id: dutyId }, data: { holder: first, confirmedHolder: first } })
+    expect((await app.inject({ method: 'POST', url: `${BASE}/preview`, payload: input })).statusCode).toBe(200)
+    expect(preview).toHaveBeenLastCalledWith(first, DEFAULT_ORG_ID, expect.objectContaining({ agentId }))
+
+    await prisma.memberSetMember.deleteMany({ where: { setId } })
+    expect((await app.inject({ method: 'POST', url: `${BASE}/preview`, payload: input })).statusCode).toBe(503)
+    expect(preview).toHaveBeenCalledTimes(2)
+  })
+
+  it('fences group tenancy and suppresses results after the execution daemon leaves the group', async () => {
+    const { app, deps, daemonId, preview, payload } = await execution()
+    const other = await prisma.org.create({ data: { slug: 'other-preview-org' } })
+    const foreign = await deps.repos.memberSet.createForOrg(other.id, 'Other group')
+    const { daemonId: _daemonId, ...sample } = payload
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: `${BASE}/preview`,
+          payload: { ...sample, target: { kind: 'set', setId: foreign.id } }
+        })
+      ).statusCode
+    ).toBe(404)
+    expect(preview).not.toHaveBeenCalled()
+
+    const group = await deps.repos.memberSet.createForOrg(DEFAULT_ORG_ID, 'Example group')
+    await deps.repos.memberSet.enroll(group.id, DaemonId(daemonId))
+    preview.mockImplementationOnce(async () => {
+      await prisma.memberSetMember.delete({ where: { daemonId } })
+      return { evaluation }
+    })
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: `${BASE}/preview`,
+          payload: { ...sample, target: { kind: 'set', setId: group.id } }
+        })
+      ).statusCode
+    ).toBe(404)
   })
 
   it('rejects oversized or consumer-bound previews and returns unavailable distinctly from No', async () => {
