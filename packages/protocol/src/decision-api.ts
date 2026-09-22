@@ -93,7 +93,14 @@ export interface DecisionPreviewInput {
         when: Extract<ChannelDecisionBinding, { type: 'gate' }>['when']
         targets?: DecisionTargetConstraint
       }
-    | { type: 'shared_bot_routing'; botId: string; config: SharedBotDecisionRouting; targets: DecisionTargetConstraint }
+    | {
+        type: 'shared_bot_routing'
+        botId: string
+        channelId: string
+        channelIds: string[]
+        config: SharedBotDecisionRouting
+        targets: DecisionTargetConstraint
+      }
 }
 
 export interface DecisionPreviewResult {
@@ -101,7 +108,8 @@ export interface DecisionPreviewResult {
   readiness: DecisionReadiness
   evaluation: DecisionEvaluation | null
   consumer: null | {
-    outcome: 'activate' | 'skip' | 'continue' | 'blocked'
+    outcome: 'activate' | 'skip' | 'continue' | 'blocked' | 'not_applied'
+    notAppliedReason?: 'off' | 'outside_scope' | 'paused'
     matchedRuleIds: string[]
     matchedKeys: string[]
     matchedAgentIds: string[]
@@ -117,6 +125,7 @@ export interface DecisionApi {
   listDecisions(): Promise<DecisionSummary[]>
   getDecision(id: string): Promise<DecisionDetail>
   createDecision(draft: DecisionDraftInput): Promise<DecisionDefinition>
+  // Omitted sharing fields retain the saved audience; only creation applies the defaults.
   updateDecision(id: string, draft: DecisionDraftInput): Promise<DecisionDefinition>
   deleteDecision(id: string): Promise<void>
   listBots(): Promise<DecisionBot[]>

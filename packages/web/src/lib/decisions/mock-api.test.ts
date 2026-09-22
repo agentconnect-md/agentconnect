@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest'
 import type { DecisionDraftInput } from '@agentconnect.md/protocol/decision'
 import type { DecisionPreviewInput } from '@agentconnect.md/protocol/decision-api'
 import { createDecisionMockApi } from './mock-api'
-import { createDecisionMockSeed, evaluateRepeatedMentionFixture, repeatedMentionFixture } from './fixtures'
+import {
+  createDecisionMockSeed,
+  evaluateDecisionFixture,
+  evaluateRepeatedMentionFixture,
+  repeatedMentionFixture
+} from './fixtures'
 
 const draft = (id: string): DecisionDraftInput => {
   const entry = createDecisionMockSeed().decisions.find((decision) => decision.id === id)!
@@ -15,6 +20,8 @@ const routerPreview = (): DecisionPreviewInput => ({
   consumer: {
     type: 'shared_bot_routing',
     botId: 'support-bot',
+    channelId: 'help-channel',
+    channelIds: ['help-channel'],
     config: createDecisionMockSeed().routings[0]!.config,
     targets: { type: 'new' }
   }
@@ -59,6 +66,32 @@ describe('Decision mock API', () => {
     })
     preview.readiness.status = 'daemon_offline'
     expect((await api.listProviders())[0]!.readiness.status).toBe('ready')
+  })
+
+  it('preserves omitted sharing fields during edits and still accepts explicit audience changes', async () => {
+    const api = createDecisionMockApi()
+    const input = draft('needs-response')
+    const created = await api.createDecision({ ...input, visibility: 'restricted', sharedWith: ['example-user'] })
+    expect(await api.updateDecision(created.id, { ...input, name: 'Renamed' })).toMatchObject({
+      name: 'Renamed',
+      visibility: 'restricted',
+      sharedWith: ['example-user']
+    })
+    expect(
+      await api.updateDecision(created.id, { ...input, visibility: undefined, sharedWith: ['other-user'] })
+    ).toMatchObject({ visibility: 'restricted', sharedWith: ['other-user'] })
+    expect(
+      await api.updateDecision(created.id, { ...input, visibility: 'restricted', sharedWith: undefined })
+    ).toMatchObject({ visibility: 'restricted', sharedWith: ['other-user'] })
+    await expect(api.updateDecision(created.id, { ...input, sharedWith: [] })).rejects.toMatchObject({ status: 400 })
+    expect((await api.getDecision(created.id)).decision).toMatchObject({
+      visibility: 'restricted',
+      sharedWith: ['other-user']
+    })
+    expect(await api.updateDecision(created.id, { ...input, visibility: 'org', sharedWith: [] })).toMatchObject({
+      visibility: 'org',
+      sharedWith: []
+    })
   })
 
   it('saves routing and scope atomically and requires explicit channel replacements', async () => {
@@ -151,6 +184,75 @@ describe('Decision mock API', () => {
     expect(result.consumer).toMatchObject({ outcome: 'skip', effectiveAgentIds: [] })
     expect(evaluate.mock.calls[0]![0].model).toBe('jev-1.13.0')
     expect(evaluate.mock.calls[0]![1]).toEqual(repeatedMentionFixture)
+  })
+
+  it('uses the selected channel default for Otherwise and provider-failure continuation', async () => {
+    const seed = createDecisionMockSeed()
+    seed.channels.find((channel) => channel.id === 'help-channel')!.agentId = 'technical-agent'
+    const input = routerPreview()
+    if (input.consumer.type !== 'shared_bot_routing') throw new Error('Expected routing fixture')
+    input.consumer.config.rules = []
+    input.consumer.config.otherwise = { type: 'default_agent' }
+    expect((await createDecisionMockApi({ seed }).preview(input)).consumer).toMatchObject({
+      outcome: 'activate',
+      usedOtherwise: true,
+      matchedAgentIds: ['technical-agent'],
+      effectiveAgentIds: ['technical-agent']
+    })
+    const failed = createDecisionMockApi({ seed, scenario: 'provider_unavailable' })
+    expect((await failed.preview(input)).consumer).toMatchObject({
+      outcome: 'continue',
+      usedOtherwise: false,
+      effectiveAgentIds: ['technical-agent']
+    })
+    input.consumer.targets = { type: 'thread', agentIds: ['sales-agent'] }
+    expect((await failed.preview(input)).consumer?.effectiveAgentIds).toEqual(['sales-agent'])
+  })
+
+  it('previews draft channel scope without evaluating Off, outside-scope or paused routing', async () => {
+    const evaluate = vi.fn(evaluateDecisionFixture)
+    const api = createDecisionMockApi({ evaluate })
+    const input = routerPreview()
+    if (input.consumer.type !== 'shared_bot_routing') throw new Error('Expected routing fixture')
+    for (const [channelId, reason] of [
+      ['new-channel', 'outside_scope'],
+      ['off-channel', 'off']
+    ] as const) {
+      input.consumer.channelId = channelId
+      const result = await api.preview(input)
+      expect(result.evaluation).toBeNull()
+      expect(result.consumer).toMatchObject({
+        outcome: 'not_applied',
+        notAppliedReason: reason,
+        effectiveAgentIds: []
+      })
+    }
+    input.consumer.channelId = 'help-channel'
+    input.consumer.config.enabled = false
+    expect(await api.preview(input)).toMatchObject({
+      evaluation: null,
+      consumer: { outcome: 'not_applied', notAppliedReason: 'paused' }
+    })
+    expect(evaluate).not.toHaveBeenCalled()
+    input.consumer.config.enabled = true
+    input.consumer.channelId = 'new-channel'
+    input.consumer.channelIds = ['new-channel']
+    expect((await api.preview(input)).consumer?.outcome).toBe('activate')
+    expect(evaluate).toHaveBeenCalledOnce()
+    expect((await api.getRouting('support-bot')).channelIds).toEqual(['help-channel'])
+  })
+
+  it('rejects preview channels and draft scopes belonging to another bot', async () => {
+    const evaluate = vi.fn(evaluateDecisionFixture)
+    const api = createDecisionMockApi({ evaluate })
+    const input = routerPreview()
+    if (input.consumer.type !== 'shared_bot_routing') throw new Error('Expected routing fixture')
+    input.consumer.channelId = 'moderation-channel'
+    await expect(api.preview(input)).rejects.toMatchObject({ status: 409 })
+    input.consumer.channelId = 'help-channel'
+    input.consumer.channelIds = ['moderation-channel']
+    await expect(api.preview(input)).rejects.toMatchObject({ status: 409 })
+    expect(evaluate).not.toHaveBeenCalled()
   })
 
   it('distinguishes failed evaluation, missing configuration and successful skip', async () => {

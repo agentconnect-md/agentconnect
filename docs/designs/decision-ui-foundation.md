@@ -45,6 +45,8 @@ const preview = await api.preview({
   consumer: {
     type: 'shared_bot_routing',
     botId: 'support-bot',
+    channelId: 'help-channel',
+    channelIds: routing.channelIds,
     config: routing.config!,
     targets: { type: 'new' }
   }
@@ -54,7 +56,11 @@ const preview = await api.preview({
 
 For standalone preview, use `consumer: { type: 'none' }`. For a fixed-target gate,
 pass `{ type: 'gate', channelId, when }`. A routing preview accepts the draft config
-without saving it. Use `targets: { type: 'thread', agentIds: [...] }` or `mention`
+and draft scope (`channelIds`) without saving either; `channelId` selects the sample
+channel. Otherwise and provider-failure continuation use that channel's resolved
+default agent. Off, outside-scope, and paused routing return `not_applied` with a
+`notAppliedReason` and no evaluation. Channels must belong to the selected shared bot.
+Use `targets: { type: 'thread', agentIds: [...] }` or `mention`
 to demonstrate constrained recipients. Compare `matchedAgentIds` with
 `effectiveAgentIds`: an activating answer preserves existing/addressed recipients;
 a skip still skips. `unavailableAgentIds` identifies selected targets that cannot
@@ -71,6 +77,8 @@ Invalid fixture output becomes `unavailable`, never an invented negative answer.
 - Use `DecisionDraft.safeParse` for the resource form and `decisionConditionIssues`
   or `decisionRoutingIssues` for question-dependent inline errors. Error paths point
   to fields or routing rows. Choice/Boolean gates can select none; routing rules cannot.
+- `updateDecision` preserves saved `visibility` and `sharedWith` when omitted.
+  Only explicitly supplied sharing fields change the audience; creation keeps its defaults.
 - Choice thresholds use `[0, 1]` in the contract and percentages in UI. All passing
   rules contribute actions and target IDs are deduplicated. A matched skip does not
   invoke Otherwise or veto a matched agent action.

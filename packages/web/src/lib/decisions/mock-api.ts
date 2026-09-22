@@ -213,7 +213,11 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
     async updateDecision(id, input) {
       options.beforeSave?.()
       const previous = get(definitions, id)
-      const draft = validateDraft(input)
+      const draft = validateDraft({
+        ...input,
+        visibility: input.visibility === undefined ? previous.visibility : input.visibility,
+        sharedWith: input.sharedWith === undefined ? previous.sharedWith : input.sharedWith
+      })
       const definition = { ...previous, ...draft, updatedAt: new Date().toISOString() }
       definitions.set(id, definition)
       for (const channel of channels.values()) {
@@ -313,7 +317,7 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
       input = copy(input)
       const draft = validateDraft(input.decision)
       const consumer = input.consumer
-      const channel = consumer.type === 'gate' ? get(channels, consumer.channelId) : null
+      const channel = consumer.type === 'none' ? null : get(channels, consumer.channelId)
       const bot =
         consumer.type === 'shared_bot_routing' ? get(bots, consumer.botId) : channel ? get(bots, channel.botId) : null
       const targets =
@@ -327,13 +331,20 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
         targets.type !== 'new' &&
         (!targets.agentIds.length ||
           targets.agentIds.some(
-            (id) => !bot?.agents.some((agent) => agent.id === id) || (channel && channel.agentId !== id)
+            (id) =>
+              !bot?.agents.some((agent) => agent.id === id) || (consumer.type === 'gate' && channel?.agentId !== id)
           ))
       )
         invalid([{ path: ['targets'], message: 'Select existing recipients of this consumer.' }])
       if (consumer.type === 'gate') invalid(decisionConditionIssues(draft.question, consumer.when))
-      if (consumer.type === 'shared_bot_routing')
+      if (consumer.type === 'shared_bot_routing') {
         invalid(routingIssues(consumer.botId, parse(SharedBotDecisionRouting, consumer.config), draft))
+        for (const id of new Set([consumer.channelId, ...consumer.channelIds])) {
+          const selected = get(channels, id)
+          if (selected.botId !== consumer.botId || selected.kind !== 'channel')
+            conflict('Select group channels belonging to this bot.')
+        }
+      }
       const readiness = providerReadiness(draft, input.daemonId)
       const result: DecisionPreviewResult = {
         mode: 'mock',
@@ -353,8 +364,22 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
                 targetConstraint: copy(targets)
               }
       }
-      if (readiness.status !== 'ready' || (consumer.type === 'shared_bot_routing' && !consumer.config.enabled))
-        return result
+      if (consumer.type === 'shared_bot_routing' && result.consumer) {
+        const reason =
+          channel?.settings.trigger === 'off'
+            ? 'off'
+            : !consumer.channelIds.includes(consumer.channelId)
+              ? 'outside_scope'
+              : !consumer.config.enabled
+                ? 'paused'
+                : undefined
+        if (reason) {
+          result.consumer.outcome = 'not_applied'
+          result.consumer.notAppliedReason = reason
+          return result
+        }
+      }
+      if (readiness.status !== 'ready') return result
       let evaluation: DecisionEvaluation
       try {
         const parsed = DecisionEvaluation.safeParse(await evaluate(copy(draft), copy(input.state)))
@@ -371,7 +396,8 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
       }
       result.evaluation = copy(evaluation)
       if (!result.consumer) return result
-      const fallback = channel ? [channel.agentId] : bot ? [bot.defaultAgentId] : []
+      const defaultAgentId = channel?.agentId ?? bot?.defaultAgentId
+      const fallback = defaultAgentId ? [defaultAgentId] : []
       if (evaluation.status === 'unavailable') {
         result.consumer.outcome = 'continue'
         result.consumer.effectiveAgentIds = targets.type === 'new' ? fallback : [...new Set(targets.agentIds)]
@@ -383,7 +409,7 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
           result.consumer.matchedAgentIds = match.matched ? fallback : []
           activates = match.matched
         } else if (consumer.type === 'shared_bot_routing') {
-          const match = matchDecisionRouting(draft.question, consumer.config, evaluation.answer, bot?.defaultAgentId)
+          const match = matchDecisionRouting(draft.question, consumer.config, evaluation.answer, defaultAgentId)
           result.consumer.matchedKeys = match.matchedKeys
           result.consumer.matchedRuleIds = match.matchedRuleIds
           result.consumer.matchedAgentIds = match.agentIds
