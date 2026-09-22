@@ -1,22 +1,23 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import type { MemoryEntryHistoryEvent, MemoryEntryHistoryResult } from '@agentconnect.md/protocol'
 import { ApiError, listAgentMemoryEntryHistory } from '@/lib/api'
 import { Button } from '@/components/ui'
 import { LineDiff } from '@/components/console/LineDiff'
 
-function kindLabel(kind: MemoryEntryHistoryEvent['kind']): string {
-  if (kind === 'create') return 'Created'
-  if (kind === 'delete') return 'Deleted'
-  return 'Updated'
+function kindLabel(kind: MemoryEntryHistoryEvent['kind']): 'created' | 'deleted' | 'updated' {
+  if (kind === 'create') return 'created'
+  if (kind === 'delete') return 'deleted'
+  return 'updated'
 }
-function sourceLabel(source: MemoryEntryHistoryEvent['source']): string {
-  if (source === 'console') return 'Console'
-  if (source === 'distill') return 'Automatic distillation'
-  if (source === 'dream') return 'Dream adoption'
-  if (source === 'tool') return 'Agent tool'
-  return 'Backend'
+function sourceLabel(source: MemoryEntryHistoryEvent['source']): 'console' | 'distill' | 'dream' | 'tool' | 'backend' {
+  if (source === 'console') return 'console'
+  if (source === 'distill') return 'distill'
+  if (source === 'dream') return 'dream'
+  if (source === 'tool') return 'tool'
+  return 'backend'
 }
 function formatTime(value?: string): string {
   if (!value) return 'Time unknown'
@@ -27,6 +28,7 @@ function formatTime(value?: string): string {
 }
 
 function HistoryEvent({ event }: { event: MemoryEntryHistoryEvent }) {
+  const t = useTranslations('Knowledge.memoryHistory')
   const [expanded, setExpanded] = useState(false)
   const diffable = event.before !== undefined || event.kind === 'create'
   return (
@@ -35,9 +37,9 @@ function HistoryEvent({ event }: { event: MemoryEntryHistoryEvent }) {
       onToggle={(toggle) => setExpanded(toggle.currentTarget.open)}
     >
       <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-3 py-2">
-        <span className="font-semibold">{kindLabel(event.kind)}</span>
+        <span className="font-semibold">{t(`kinds.${kindLabel(event.kind)}`)}</span>
         <span className="rounded-full bg-(--surface-sunken) px-2 py-1 text-[10px] text-(--text-secondary)">
-          {sourceLabel(event.source)}
+          {t(`sources.${sourceLabel(event.source)}`)}
         </span>
         <time className="text-[10.5px] text-(--text-tertiary)" dateTime={event.at}>
           {formatTime(event.at)}
@@ -46,7 +48,7 @@ function HistoryEvent({ event }: { event: MemoryEntryHistoryEvent }) {
       {expanded ? (
         <div className="border-t border-(--border-subtle) p-3">
           {event.after === undefined && event.before === undefined ? (
-            <p className="m-0 text-[11px] text-(--text-tertiary)">No snapshot was recorded for this change.</p>
+            <p className="m-0 text-[11px] text-(--text-tertiary)">{t('noSnapshot')}</p>
           ) : diffable ? (
             <LineDiff before={event.before ?? ''} after={event.after ?? ''} />
           ) : (
@@ -55,9 +57,7 @@ function HistoryEvent({ event }: { event: MemoryEntryHistoryEvent }) {
             </pre>
           )}
           {event.truncated ? (
-            <p className="mb-0 mt-2 text-[10.5px] text-(--text-tertiary)">
-              Long snapshots were shortened when this change was recorded.
-            </p>
+            <p className="mb-0 mt-2 text-[10.5px] text-(--text-tertiary)">{t('longSnapshot')}</p>
           ) : null}
         </div>
       ) : null}
@@ -75,6 +75,7 @@ export function UnifiedMemoryHistory({
   entryRef: string
   channelKey?: string
 }) {
+  const t = useTranslations('Knowledge.memoryHistory')
   const request = useRef(0)
   const [events, setEvents] = useState<MemoryEntryHistoryEvent[] | null>(null)
   const [order, setOrder] = useState<MemoryEntryHistoryResult['order']>('newest-first')
@@ -118,27 +119,26 @@ export function UnifiedMemoryHistory({
   }, [load])
 
   return (
-    <section className="mt-3 flex flex-col gap-2" aria-label="Change history" aria-live="polite">
-      {loading && events === null ? <p role="status">Loading change history…</p> : null}
+    <section className="mt-3 flex flex-col gap-2" aria-label={t('changeHistory')} aria-live="polite">
+      {loading && events === null ? <p role="status">{t('loading')}</p> : null}
       {error ? (
         <p role="alert" className="text-(--text-secondary)">
           {error}
         </p>
       ) : null}
-      {events?.length === 0 ? <p className="text-(--text-tertiary)">No recorded changes for this memory.</p> : null}
+      {events?.length === 0 ? <p className="text-(--text-tertiary)">{t('noChanges')}</p> : null}
       {events?.map((event, index) => (
         <HistoryEvent key={event.id ?? `${event.at ?? ''}:${event.kind}:${index}`} event={event} />
       ))}
       {events?.length ? (
         <p className="m-0 text-[10.5px] text-(--text-tertiary)">
-          {order === 'newest-first' ? 'Newest first.' : 'In the order the backend reports.'} Only what the memory home
-          keeps is shown.
+          {order === 'newest-first' ? t('newestFirst') : t('backendOrder')} {t('onlyHomeKeeps')}
         </p>
       ) : null}
       {nextCursor ? (
         <div>
           <Button size="sm" variant="secondary" disabled={loading} onClick={() => void load(nextCursor)}>
-            {loading ? 'Loading…' : 'Load older changes'}
+            {loading ? t('loading') : t('loadOlder')}
           </Button>
         </div>
       ) : null}

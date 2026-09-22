@@ -1,6 +1,7 @@
 // No 'use client' here: rendered only inside ModalProvider's tree (the client boundary).
 
 import { useEffect, useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { ApiError } from '@/lib/api'
@@ -11,62 +12,26 @@ import { BotSetupWalkthrough, DeliveryLine } from '../wizard-chrome'
 import { feishuApi, type FeishuRegion } from './api'
 import { feishuWalkthroughSteps } from './steps'
 
-/** This platform's delivery vocabulary — {@link WebTransportAffordance.labels}. */
+/** This platform's delivery vocabulary — {@link WebTransportAffordance.labels}.
+ *  Message keys, not copy: the Body resolves them for its own delivery line. */
 export const FEISHU_TRANSPORT_LABEL: Record<WebWizardTransport, string> = {
-  socket: 'Long connection',
-  http: 'HTTP callbacks'
+  socket: 'Platforms.feishu.transport.socket',
+  http: 'Platforms.feishu.transport.http'
 }
 
-const FEISHU_REGISTRATION_FAILURES: Record<string, string> = {
-  denied: 'The Lark/Feishu app setup was cancelled.',
-  expired: 'This setup link expired — start again.',
-  agent_unavailable: 'This agent moved or was removed during setup. Check its daemon, then try again.',
-  invalid_credentials: 'The app was created, but its credentials could not be verified.',
-  org_mismatch:
-    'This app belongs to a different Lark/Feishu organization from this AgentConnect deployment. Create it in the same organization and try again.',
-  setup_failed: 'Lark/Feishu could not complete the app setup. Please try again.'
-}
+/** A registration failure key on the pane's own namespace, with the fallback. */
+type FeishuRegistrationKey =
+  Parameters<ReturnType<typeof useTranslations<'Platforms.feishu'>>>[0] | 'registration.setupFailed'
 
-// Feishu needs a few app-level settings beyond the credentials that aren't obvious
-// and each fails silently if missed — surfaced as a transport-aware checklist.
-const FEISHU_COMMON_REQS: { icon: string; title: string; desc: string }[] = [
-  {
-    icon: 'building-complex',
-    title: 'Use the same organization',
-    desc: 'Create every Bot App in the same Lark/Feishu organization as the App used to sign in to AgentConnect.'
-  },
-  {
-    icon: 'bot',
-    title: 'Enable the bot capability',
-    desc: 'In the app’s “Add features”, turn on Bot — otherwise it can’t send or receive messages.'
-  },
-  {
-    icon: 'shield-check',
-    title: 'Grant message, contact and tenant scopes',
-    desc: 'Request the message, chat and resource scopes, the two basic-contact read scopes, and tenant:tenant:readonly, then publish.'
-  },
-  {
-    icon: 'users',
-    title: 'Add the bot to your group',
-    desc: 'Invite the bot into the target chat — it replies wherever it’s a member and @-mentioned.'
-  }
-]
-
-const FEISHU_DELIVERY_REQS: Record<WebWizardTransport, { icon: string; title: string; desc: string }[]> = {
-  socket: [
-    {
-      icon: 'radio',
-      title: 'Use Long Connection',
-      desc: 'Under Event Subscriptions, choose Long Connection and subscribe to im.message.receive_v1.'
-    }
-  ],
-  http: [
-    {
-      icon: 'radio',
-      title: 'Use HTTP callbacks',
-      desc: 'Connect here first, then add the Request URL shown above under Event Subscriptions and subscribe to im.message.receive_v1.'
-    }
-  ]
+// Failures the CP can report for a registration. Keys, not copy — the poll below
+// resolves them, and an unknown reason falls back to `setupFailed`.
+const FEISHU_REGISTRATION_FAILURES: Record<string, FeishuRegistrationKey> = {
+  denied: 'registration.denied',
+  expired: 'registration.expired',
+  agent_unavailable: 'registration.agentUnavailable',
+  invalid_credentials: 'registration.invalidCredentials',
+  org_mismatch: 'registration.orgMismatch',
+  setup_failed: 'registration.setupFailed'
 }
 
 /**
@@ -78,6 +43,7 @@ const FEISHU_DELIVERY_REQS: Record<WebWizardTransport, { icon: string; title: st
  * same app-level settings.
  */
 export function FeishuWizardBody({ agent, host }: { agent: Agent; host: WizardHost }) {
+  const t = useTranslations('Platforms.feishu')
   // §5 `regions` vocabulary: the host owns the pick (its switcher lives on the
   // picker tile); legacy/unset reads as the international Lark cloud.
   const region: FeishuRegion = host.region === 'feishu' ? 'feishu' : 'lark'
@@ -116,6 +82,20 @@ export function FeishuWizardBody({ agent, host }: { agent: Agent; host: WizardHo
   const checklistTransport: WebWizardTransport =
     host.mode === 'existing' ? (host.selectedBot?.transport ?? 'socket') : transport
   const isDeeplink = host.mode === 'create' && method === 'deeplink'
+
+  // Feishu needs a few app-level settings beyond the credentials that aren't obvious
+  // and each fails silently if missed — surfaced as a transport-aware checklist.
+  // Resolved per render so the list follows the console language.
+  const commonReqs: { icon: string; title: string; desc: string }[] = [
+    { icon: 'building-complex', title: t('checklist.sameOrg.title'), desc: t('checklist.sameOrg.desc') },
+    { icon: 'bot', title: t('checklist.botCapability.title'), desc: t('checklist.botCapability.desc') },
+    { icon: 'shield-check', title: t('checklist.scopes.title'), desc: t('checklist.scopes.desc') },
+    { icon: 'users', title: t('checklist.inviteBot.title'), desc: t('checklist.inviteBot.desc') }
+  ]
+  const deliveryReqs: Record<WebWizardTransport, { icon: string; title: string; desc: string }[]> = {
+    socket: [{ icon: 'radio', title: t('checklist.longConnection.title'), desc: t('checklist.longConnection.desc') }],
+    http: [{ icon: 'radio', title: t('checklist.httpCallbacks.title'), desc: t('checklist.httpCallbacks.desc') }]
+  }
 
   const submit = async () => {
     setShowErrors(true)
@@ -200,14 +180,11 @@ export function FeishuWizardBody({ agent, host }: { agent: Agent; host: WizardHo
           invalidate()
           return close()
         }
-        stop(
-          FEISHU_REGISTRATION_FAILURES[status.failureReason ?? ''] ??
-            'Lark/Feishu could not complete the app setup. Please try again.'
-        )
+        stop(t(FEISHU_REGISTRATION_FAILURES[status.failureReason ?? ''] ?? 'registration.setupFailed'))
       } catch (e) {
         // A missing short-lived session is terminal; ordinary network failures
         // remain retryable and the next poll keeps the setup moving.
-        if (alive && e instanceof ApiError && e.status === 404) stop(FEISHU_REGISTRATION_FAILURES.expired!)
+        if (alive && e instanceof ApiError && e.status === 404) stop(t('registration.expired'))
       }
     }
     const timer = setInterval(() => void tick(), 2000)
@@ -216,10 +193,10 @@ export function FeishuWizardBody({ agent, host }: { agent: Agent; host: WizardHo
       alive = false
       clearInterval(timer)
     }
-  }, [close, invalidate, polling, registrationId, setError])
+  }, [close, invalidate, polling, registrationId, setError, t])
 
   usePublishedFooter(host, {
-    label: saving ? 'Connecting…' : 'Connect & authorize',
+    label: saving ? t('footer.connecting') : t('footer.connect'),
     enabled: valid && !saving,
     onSubmit: () => void submit(),
     // The deeplink flow's commit is its own inline "Create … bot" button and the
@@ -249,25 +226,23 @@ export function FeishuWizardBody({ agent, host }: { agent: Agent; host: WizardHo
                       setShowErrors(false)
                       host.setError(null)
                     }}
-                    title={phase === 'authorizing' ? 'App setup is in progress' : undefined}
+                    title={phase === 'authorizing' ? t('method.locked') : undefined}
                     className={`rounded-[6px] px-[11px] py-[5px] font-sans text-[12px] font-semibold leading-normal ${
                       on ? 'bg-(--brand-soft) text-(--brand)' : 'bg-transparent text-(--text-tertiary)'
                     } ${phase === 'authorizing' ? 'cursor-not-allowed opacity-50' : ''}`}
                   >
-                    {candidate === 'deeplink' ? 'One-click' : 'Manual'}
+                    {candidate === 'deeplink' ? t('method.deeplink') : t('method.manual')}
                   </button>
                 )
               })}
             </div>
             <span className="min-w-0 flex-1 font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-              {method === 'deeplink'
-                ? `Recommended — approve in ${brand}; permissions, events and credentials are connected automatically.`
-                : 'Advanced — configure a self-built app yourself and paste its credentials.'}
+              {method === 'deeplink' ? t('method.deeplinkHint', { brand }) : t('method.manualHint')}
             </span>
           </div>
           <div className="mb-3 flex justify-end">
             <DeliveryLine
-              labels={FEISHU_TRANSPORT_LABEL}
+              labels={{ socket: t('transport.socket'), http: t('transport.http') }}
               transport={registration?.transport ?? transport}
               relayAvailable={host.relayCapability.available}
               locked={phase === 'authorizing'}
@@ -283,11 +258,10 @@ export function FeishuWizardBody({ agent, host }: { agent: Agent; host: WizardHo
                   </span>
                   <div className="min-w-0 flex-1">
                     <div className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                      Approve the app setup in {brand}
+                      {t('deeplink.approveTitle', { brand })}
                     </div>
                     <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                      We opened the authorization page in a new tab. Confirm the app and permissions; this dialog
-                      updates automatically.
+                      {t('deeplink.approveBody')}
                     </div>
                     <a
                       href={registration.authorizationUrl}
@@ -295,7 +269,7 @@ export function FeishuWizardBody({ agent, host }: { agent: Agent; host: WizardHo
                       rel="noopener noreferrer"
                       className="lnk mt-2 inline-flex items-center gap-[5px]"
                     >
-                      Reopen {brand} setup
+                      {t('deeplink.reopen', { brand })}
                       <Icon name="external-link" size={12} />
                     </a>
                   </div>
@@ -303,13 +277,13 @@ export function FeishuWizardBody({ agent, host }: { agent: Agent; host: WizardHo
               ) : (
                 <>
                   <div className="mb-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                    Name and create the bot
+                    {t('deeplink.nameTitle')}
                   </div>
                   <div className="flex flex-col gap-2 desktop:flex-row">
                     <div className="fld flex-1">
                       <input
                         className="inp mn"
-                        placeholder="Bot name"
+                        placeholder={t('deeplink.botNamePlaceholder')}
                         value={appName}
                         onChange={(e) => setAppName(e.target.value)}
                       />
@@ -322,7 +296,7 @@ export function FeishuWizardBody({ agent, host }: { agent: Agent; host: WizardHo
                       <span className="imark h-4 w-4 border-0 bg-transparent">
                         <PlatformMark platform="feishu" />
                       </span>
-                      {saving ? 'Creating…' : `Create ${brand} bot`}
+                      {saving ? t('deeplink.creating') : t('deeplink.create', { brand })}
                     </Button>
                   </div>
                 </>
@@ -335,8 +309,7 @@ export function FeishuWizardBody({ agent, host }: { agent: Agent; host: WizardHo
                   </span>
                   <div className="min-w-0 flex-1">
                     <div className="mb-2 font-sans text-[12.5px] font-medium leading-[1.45] text-(--text-secondary)">
-                      Create a self-built app in the {brand}&#32;console, enable the bot, then copy its App ID and App
-                      Secret.
+                      {t('manual.step1', { brand })}
                     </div>
                     <div className="group relative">
                       <a
@@ -352,16 +325,16 @@ export function FeishuWizardBody({ agent, host }: { agent: Agent; host: WizardHo
                         <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
                           <PlatformMark platform="feishu" />
                         </span>
-                        Create {brand} bot
+                        {t('deeplink.create', { brand })}
                         <Icon name="external-link" size={14} />
                       </a>
                       <BotSetupWalkthrough
-                        steps={
-                          region === 'lark'
-                            ? feishuWalkthroughSteps('Lark', 'open.larksuite.com')
-                            : feishuWalkthroughSteps('Feishu', 'open.feishu.cn')
-                        }
-                        label={region === 'lark' ? 'Lark bot setup steps' : 'Feishu bot setup steps'}
+                        steps={feishuWalkthroughSteps(
+                          t,
+                          region === 'lark' ? 'Lark' : 'Feishu',
+                          region === 'lark' ? 'open.larksuite.com' : 'open.feishu.cn'
+                        )}
+                        label={t('walkthroughLabel', { brand })}
                       />
                     </div>
                   </div>
@@ -371,24 +344,24 @@ export function FeishuWizardBody({ agent, host }: { agent: Agent; host: WizardHo
                     2
                   </span>
                   <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                    Paste the App ID &amp; App Secret
+                    {t('manual.step2')}
                   </span>
                 </div>
                 <div className="grid grid-cols-1 gap-[10px] pl-[30px] min-[440px]:grid-cols-2">
                   <div className="fld">
-                    <span className="fldlbl">App ID</span>
+                    <span className="fldlbl">{t('manual.appId')}</span>
                     <input
                       className={`inp mn ${showErrors && !appIdOk ? 'border-(--status-error)' : ''}`}
-                      placeholder="cli_…"
+                      placeholder={t('manual.appIdPlaceholder')}
                       value={appId}
                       onChange={(e) => setAppId(e.target.value)}
                     />
                   </div>
                   <div className="fld">
-                    <span className="fldlbl">App Secret</span>
+                    <span className="fldlbl">{t('manual.appSecret')}</span>
                     <input
                       className={`inp mn ${showErrors && !secretOk ? 'border-(--status-error)' : ''}`}
-                      placeholder="App Secret"
+                      placeholder={t('manual.appSecretPlaceholder')}
                       value={appSecret}
                       onChange={(e) => setAppSecret(e.target.value)}
                     />
@@ -401,26 +374,27 @@ export function FeishuWizardBody({ agent, host }: { agent: Agent; host: WizardHo
                         3
                       </span>
                       <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                        Configure HTTP callback security
+                        {t('manual.step3')}
                       </span>
                     </div>
                     <div className="grid grid-cols-1 gap-[10px] pl-[30px] min-[440px]:grid-cols-2">
                       <div className="fld">
-                        <span className="fldlbl">Verification Token</span>
+                        <span className="fldlbl">{t('manual.verificationToken')}</span>
                         <input
                           className={`inp mn ${showErrors && !verificationOk ? 'border-(--status-error)' : ''}`}
-                          placeholder="From Event Subscriptions"
+                          placeholder={t('manual.fromEventSubscriptions')}
                           value={verificationToken}
                           onChange={(e) => setVerificationToken(e.target.value)}
                         />
                       </div>
                       <div className="fld">
                         <span className="fldlbl">
-                          Encrypt Key <span className="font-normal text-(--text-tertiary)">· optional</span>
+                          {t('manual.encryptKey')}{' '}
+                          <span className="font-normal text-(--text-tertiary)">{t('manual.optional')}</span>
                         </span>
                         <input
                           className="inp mn"
-                          placeholder="From Event Subscriptions"
+                          placeholder={t('manual.fromEventSubscriptions')}
                           value={encryptKey}
                           onChange={(e) => setEncryptKey(e.target.value)}
                         />
@@ -429,7 +403,7 @@ export function FeishuWizardBody({ agent, host }: { agent: Agent; host: WizardHo
                     {callbackUrl && (
                       <div className="mt-[10px] pl-[30px]">
                         <div className="fld">
-                          <span className="fldlbl">Request URL</span>
+                          <span className="fldlbl">{t('manual.requestUrl')}</span>
                           <input
                             className="inp mn"
                             readOnly
@@ -438,8 +412,7 @@ export function FeishuWizardBody({ agent, host }: { agent: Agent; host: WizardHo
                           />
                         </div>
                         <div className="mt-[6px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                          Connect here first, then save this Request URL in {brand}. It starts receiving as soon as the
-                          integration is connected.
+                          {t('manual.requestUrlHint', { brand })}
                         </div>
                       </div>
                     )}
@@ -454,14 +427,10 @@ export function FeishuWizardBody({ agent, host }: { agent: Agent; host: WizardHo
         <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
           <div className="mb-[11px] flex items-center gap-2 font-sans text-[12.5px] font-semibold leading-normal text-(--text-secondary)">
             <Icon name="shield-check" size={14} color="var(--brand)" className="flex-none" />
-            {brand} setup checklist
+            {t('checklistTitle', { brand })}
           </div>
           <ul className="flex flex-col gap-[10px]">
-            {[
-              ...FEISHU_COMMON_REQS.slice(0, 1),
-              ...FEISHU_DELIVERY_REQS[checklistTransport],
-              ...FEISHU_COMMON_REQS.slice(1)
-            ].map((r) => (
+            {[...commonReqs.slice(0, 1), ...deliveryReqs[checklistTransport], ...commonReqs.slice(1)].map((r) => (
               <li key={r.title} className="flex items-start gap-2">
                 <Icon name={r.icon} size={14} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
                 <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">

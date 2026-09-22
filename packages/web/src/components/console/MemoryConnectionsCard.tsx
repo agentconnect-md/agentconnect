@@ -345,7 +345,8 @@ function ConnectionRow({
             </span>
             {connection.pluginVersion && (
               <span className="font-mono text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
-                v{connection.pluginVersion}
+                {t('versionPrefix')}
+                {connection.pluginVersion}
               </span>
             )}
             <span className={`badge ${statusClasses(connection.status)}`} title={connection.reasonCode ?? undefined}>
@@ -505,14 +506,14 @@ function FieldRowsEditor({
             <div key={index} className="grid grid-cols-1 gap-2 desktop:grid-cols-[1fr_1fr_auto]">
               <input
                 className="dsinput-field mono"
-                placeholder="apiKey"
+                placeholder={t('apiKeyPlaceholder')}
                 aria-label={t('fieldName')}
                 value={row.name}
                 onChange={(event) => set(index, { name: event.target.value })}
               />
               <input
                 className="dsinput-field mono"
-                placeholder="Authorization"
+                placeholder={t('authorizationPlaceholder')}
                 aria-label={t('fieldHeader')}
                 value={row.header}
                 onChange={(event) => set(index, { header: event.target.value })}
@@ -730,7 +731,7 @@ function CreateMemoryConnectionModal({
                   <span className="fldlbl">{t('pluginId')}</span>
                   <input
                     className="dsinput-field mono"
-                    placeholder="ai.mem0.memory"
+                    placeholder={t('pluginIdPlaceholder')}
                     value={pluginId}
                     onChange={(event) => setPluginId(event.target.value)}
                   />
@@ -760,7 +761,7 @@ function CreateMemoryConnectionModal({
                   <span className="fldlbl">{t('commandName')}</span>
                   <input
                     className="dsinput-field mono"
-                    placeholder="mem0-oss"
+                    placeholder={t('commandReferencePlaceholder')}
                     value={commandRef}
                     onChange={(event) => setCommandRef(event.target.value)}
                   />
@@ -772,7 +773,7 @@ function CreateMemoryConnectionModal({
                   <input
                     className="dsinput-field mono"
                     type="url"
-                    placeholder="https://memory-plugin.example/mcp"
+                    placeholder={t('endpointPlaceholder')}
                     value={endpoint}
                     onChange={(event) => setEndpoint(event.target.value)}
                   />
@@ -794,7 +795,7 @@ function CreateMemoryConnectionModal({
                     <span className="fldlbl">{t('manifestDigest')}</span>
                     <input
                       className="dsinput-field mono"
-                      placeholder="sha256:…"
+                      placeholder={t('digestPlaceholder')}
                       value={manifestDigest}
                       onChange={(event) => setManifestDigest(event.target.value)}
                     />

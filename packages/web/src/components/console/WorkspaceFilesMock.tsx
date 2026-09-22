@@ -7,6 +7,7 @@
 // `workspace.files`; live agents stream the real working tree from the daemon.
 
 import { Fragment, useEffect, useMemo, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import dynamic from 'next/dynamic'
 import { flattenFiles, type WorkspaceFile } from '@/lib/data'
 import { indexWorkspaceFileTree, resolveWorkspaceMarkdownLink } from '@/components/console/workspace-links'
@@ -126,6 +127,7 @@ function MockPreview({
   resolveLink: (href: string) => MarkdownLinkResolution | undefined
   onBack?: () => void
 }) {
+  const t = useTranslations('Agents.workspaceFiles')
   const isMd = MARKDOWN_FILE_RE.test(file.name)
   const [mode, setMode] = useState<'preview' | 'code'>('preview')
 
@@ -143,13 +145,13 @@ function MockPreview({
                 className={mode === 'preview' ? 'pill on py-[3px]' : 'pill py-[3px]'}
                 onClick={() => setMode('preview')}
               >
-                Preview
+                {t('preview')}
               </button>
               <button
                 className={mode === 'code' ? 'pill on py-[3px]' : 'pill py-[3px]'}
                 onClick={() => setMode('code')}
               >
-                Code
+                {t('code')}
               </button>
             </span>
           ) : undefined
@@ -157,7 +159,7 @@ function MockPreview({
       />
       {!file.content ? (
         <div className="flex flex-1 items-center justify-center px-4 py-10 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          No preview for this item.
+          {t('noPreview')}
         </div>
       ) : isMd && mode === 'preview' ? (
         <div className="max-h-[420px] overflow-auto px-[18px] py-4">

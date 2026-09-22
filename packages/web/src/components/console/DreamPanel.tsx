@@ -16,6 +16,7 @@
 // expected state (503 → a friendly notice), not an error.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import Link from 'next/link'
 import {
   startDream,
@@ -122,6 +123,7 @@ export function DreamPanel({
   autoAcceptMemory: boolean
   sessionBasePath?: string
 }) {
+  const t = useTranslations('Agents.detail.dreams')
   const [dreams, setDreams] = useState<DreamDto[] | null>(null)
   // Fetched separately: a proposal outlives the store lifecycle, so it must not
   // depend on how deep the newest-first history has grown.
@@ -297,10 +299,10 @@ export function DreamPanel({
     return (
       <div className="card overflow-hidden max-desktop:rounded-lg">
         <div className="cardhead">
-          <div className="cardtitle">Dreams</div>
+          <div className="cardtitle">{t('title')}</div>
         </div>
         <div className="p-4 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-          Dreams need a newer version of this agent’s daemon. Upgrade it to consolidate memory here.
+          {t('unsupported')}
         </div>
       </div>
     )
@@ -320,7 +322,7 @@ export function DreamPanel({
     void run(async () => {
       await discardDream(agentId, dreamId)
       setReviewing((current) => (current === dreamId ? null : current))
-      setActionNotice('Dream discarded.')
+      setActionNotice(t('dreamDiscarded'))
     })
 
   const renderDreamRows = (rows: DreamDto[]) => (
@@ -353,7 +355,7 @@ export function DreamPanel({
             <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
               <span className={`font-sans text-[12.5px] font-semibold leading-normal ${statusTone(dream.status)}`}>
                 {STATUS_LABEL[dream.status]}
-                {dream.trigger === 'schedule' ? ' · scheduled' : ''}
+                {dream.trigger === 'schedule' ? ` · ${t('scheduled')}` : ''}
               </span>
               <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
                 {when(dream.createdAt)}
@@ -371,7 +373,7 @@ export function DreamPanel({
                   href={`${sessionBasePath}/${encodeURIComponent(dream.executionSessionId)}`}
                   className="lnk font-sans text-[11.5px] font-semibold leading-normal"
                 >
-                  Open session
+                  {t('openSession')}
                 </Link>
               ) : null}
               {dream.status === 'completed' ? (
@@ -380,12 +382,12 @@ export function DreamPanel({
                   size="xs"
                   onClick={() => setReviewing(reviewing === dream.dreamId ? null : dream.dreamId)}
                 >
-                  {reviewing === dream.dreamId ? 'Hide' : 'Review'}
+                  {reviewing === dream.dreamId ? t('hide') : t('review')}
                 </Button>
               ) : null}
               {dream.status === 'completed' && canEdit ? (
                 <Button variant="secondary" size="xs" disabled={busy} onClick={() => discard(dream.dreamId)}>
-                  Discard
+                  {t('discard')}
                 </Button>
               ) : null}
               {!isDreamTerminal(dream.status) && canEdit ? (
@@ -395,7 +397,7 @@ export function DreamPanel({
                   disabled={busy}
                   onClick={() => void run(() => cancelDream(agentId, dream.dreamId))}
                 >
-                  Cancel
+                  {t('cancel')}
                 </Button>
               ) : null}
             </span>
@@ -408,10 +410,10 @@ export function DreamPanel({
   return (
     <div className="card overflow-hidden max-desktop:rounded-lg">
       <div className="cardhead min-w-0 justify-between">
-        <div className="cardtitle min-w-0 flex-1">Dreams</div>
+        <div className="cardtitle min-w-0 flex-1">{t('title')}</div>
         <span title={startBlocker ?? undefined}>
           <Button variant="secondary" size="xs" disabled={busy || !!startBlocker} onClick={() => setConfirmStart(true)}>
-            {inFlight ? 'Dreaming…' : 'Dream now'}
+            {inFlight ? t('dreaming') : t('dreamNow')}
           </Button>
         </span>
       </div>
@@ -434,10 +436,10 @@ export function DreamPanel({
 
         {dreams === null ? (
           <div className="flex items-center gap-2 font-sans text-[12px] text-(--text-tertiary)">
-            <Spinner /> Loading dreams…
+            <Spinner /> {t('loading')}
           </div>
         ) : dreams.length === 0 && !listError ? (
-          <div className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">No dreams yet.</div>
+          <div className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">{t('empty')}</div>
         ) : null}
 
         {activeDreams.length ? renderDreamRows(activeDreams) : null}
@@ -484,7 +486,7 @@ export function DreamPanel({
             >
               <span className="inline-flex items-center gap-1">
                 <Icon name="chevron-right" size={13} className="transition-transform group-open:rotate-90" />
-                History
+                {t('history')}
               </span>
               <span className="font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">
                 {pastDreams.length}
@@ -496,26 +498,22 @@ export function DreamPanel({
 
         {confirmStart ? (
           <ConfirmationDialog
-            title="Start a memory dream?"
-            confirmLabel="Start dream"
+            title={t('startTitle')}
+            confirmLabel={t('start')}
             onClose={() => setConfirmStart(false)}
             onConfirm={() => {
               setConfirmStart(false)
               void run(() => startDream(agentId), 'start')
             }}
           >
-            {`This runs a model over the agent’s memory and recent sessions. It takes a few minutes and uses model tokens. ${
-              autoAcceptMemory
-                ? 'The memory result is adopted automatically unless live-memory changes conflict. Suggested skills still require review.'
-                : 'Nothing changes until you review and adopt the memory result. Suggested skills still require review.'
-            }`}
+            {autoAcceptMemory ? t('startBodyAuto') : t('startBody')}
           </ConfirmationDialog>
         ) : null}
 
         {confirmAdopt ? (
           <ConfirmationDialog
-            title="Adopt this dream?"
-            confirmLabel="Adopt"
+            title={t('adoptTitle')}
+            confirmLabel={t('adopt')}
             onClose={() => setConfirmAdopt(null)}
             onConfirm={() => {
               const { dreamId, reviewToken } = confirmAdopt
@@ -523,15 +521,14 @@ export function DreamPanel({
               void adopt(dreamId, reviewToken, false)
             }}
           >
-            This replaces the agent’s live memory with the staged version. The current store is kept as a backup, and
-            adopting is refused if memory changed underneath this dream.
+            {t('adoptBody')}
           </ConfirmationDialog>
         ) : null}
 
         {forceAdopt ? (
           <ConfirmationDialog
-            title="Adopt anyway?"
-            confirmLabel="Adopt anyway"
+            title={t('adoptAnywayTitle')}
+            confirmLabel={t('adoptAnyway')}
             onClose={() => setForceAdopt(null)}
             onConfirm={() => {
               const { dreamId, reviewToken } = forceAdopt
@@ -539,13 +536,7 @@ export function DreamPanel({
               void adopt(dreamId, reviewToken, true)
             }}
           >
-            {`Memory changed underneath this dream since it was snapshotted. Adopting replaces the whole store with the staged version` +
-              (forceAdopt.droppedFiles.length
-                ? ` and drops ${forceAdopt.droppedFiles.length} live file${
-                    forceAdopt.droppedFiles.length === 1 ? '' : 's'
-                  } not in the staged version: ${forceAdopt.droppedFiles.join(', ')}.`
-                : `. Any live file not in the staged version is dropped.`) +
-              ` The current store is kept as a backup. To keep the newer changes instead, re-run the dream.`}
+            {t('forceAdoptBody', { count: forceAdopt.droppedFiles.length, files: forceAdopt.droppedFiles.join(', ') })}
           </ConfirmationDialog>
         ) : null}
       </div>
@@ -609,6 +600,7 @@ function DreamReview({
   onAdopt: (reviewToken?: string) => void
   onDiscard: () => void
 }) {
+  const t = useTranslations('Agents.detail.dreams')
   // The UNION of live and staged paths, not just the staged tree. Adoption swaps
   // the whole directory, and a dream deletes a topic simply by omitting it — so
   // a live-only path is a DELETION the reviewer must see. Listing only staged
@@ -701,20 +693,20 @@ function DreamReview({
               }
             >
               {file.name}
-              {file.live && !file.staged ? ' · deleted' : ''}
+              {file.live && !file.staged ? ` · ${t('deleted')}` : ''}
             </button>
           ))}
           {paths?.length === 0 ? (
-            <span className="font-sans text-[12px] text-(--text-tertiary)">Nothing staged.</span>
+            <span className="font-sans text-[12px] text-(--text-tertiary)">{t('nothingStaged')}</span>
           ) : null}
         </span>
         {canEdit ? (
           <span className="flex flex-none items-center gap-2">
             <Button variant="secondary" disabled={busy} onClick={onDiscard}>
-              Discard
+              {t('discard')}
             </Button>
             <Button disabled={busy || !paths?.some((p) => p.staged)} onClick={() => onAdopt(reviewToken)}>
-              <Icon name="check" size={13} /> Adopt
+              <Icon name="check" size={13} /> {t('adopt')}
             </Button>
           </span>
         ) : null}
@@ -722,14 +714,13 @@ function DreamReview({
 
       {deleting.length ? (
         <div className="font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
-          Adopting removes {deleting.length} file{deleting.length === 1 ? '' : 's'} the dream left out:{' '}
-          {deleting.map((p) => p.name).join(', ')}.
+          {t('deletingFiles', { count: deleting.length, files: deleting.map((p) => p.name).join(', ') })}
         </div>
       ) : null}
 
       {loading ? (
         <div className="flex items-center gap-2 font-sans text-[12px] text-(--text-tertiary)">
-          <Spinner /> Loading…
+          <Spinner /> {t('loading')}
         </div>
       ) : selected ? (
         <LineDiff before={live} after={staged} />
@@ -759,6 +750,7 @@ function DreamSkills({
   onAccept: (name: string, reviewToken?: string) => void
   onDismiss: (name: string) => void
 }) {
+  const t = useTranslations('Agents.detail.dreams')
   // Accept stays disabled until the body has been opened. The whole safety
   // argument for mined skills is that a human reviewed them, and a
   // model-authored description is not evidence for itself. The map also carries
@@ -768,7 +760,7 @@ function DreamSkills({
   return (
     <div className="flex flex-col gap-2 rounded-md border border-(--border-subtle) bg-(--surface-sunken) p-3">
       <span className="font-sans text-[12px] font-semibold leading-normal text-(--text-secondary)">
-        Suggested skills
+        {t('suggestedSkills')}
       </span>
       {proposed.map((skill) => (
         <div
@@ -783,13 +775,13 @@ function DreamSkills({
           </span>
           <span className="flex flex-none items-center gap-2">
             <Button variant="secondary" disabled={busy} onClick={() => onDismiss(skill.name)}>
-              Dismiss
+              {t('dismiss')}
             </Button>
             <Button
               disabled={busy || !reviewTokens.has(skill.name)}
               onClick={() => onAccept(skill.name, reviewTokens.get(skill.name))}
             >
-              Accept
+              {t('accept')}
             </Button>
           </span>
           <SkillBody
@@ -817,6 +809,7 @@ function SkillBody({
   name: string
   onRead: (reviewToken?: string) => void
 }) {
+  const t = useTranslations('Agents.detail.dreams')
   const [content, setContent] = useState<DreamSkillContentDto | null>(null)
   const [open, setOpen] = useState(false)
   const { attempt, error, asleepNotice, reset, refused } = useStagedRead(agentId, content !== null)
@@ -848,11 +841,11 @@ function SkillBody({
   return (
     <details className="w-full" onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
       <summary className="cursor-pointer list-none font-sans text-[11px] font-medium leading-normal text-(--brand-soft-text) [&::-webkit-details-marker]:hidden">
-        Show what this installs
+        {t('showSkill')}
       </summary>
       {asleepNotice ?? (error ? <div className="mt-1 font-sans text-[11px] text-(--status-error)">{error}</div> : null)}
       {content?.exists === false ? (
-        <div className="mt-1 font-sans text-[11px] text-(--text-tertiary)">This candidate is no longer staged.</div>
+        <div className="mt-1 font-sans text-[11px] text-(--text-tertiary)">{t('candidateGone')}</div>
       ) : null}
       {content?.skill ? (
         <pre className="mt-1 max-h-[240px] overflow-auto rounded-sm border border-(--border-subtle) bg-(--surface-card) p-2 font-mono text-[11px] leading-[1.5] whitespace-pre-wrap text-(--text-primary)">
@@ -862,7 +855,8 @@ function SkillBody({
       {(content?.scripts ?? []).map((script) => (
         <div key={script.path} className="mt-1 flex flex-col gap-[2px]">
           <span className="font-mono text-[10.5px] font-medium leading-normal text-(--text-tertiary)">
-            scripts/{script.path}
+            {t('scriptsPrefix')}
+            {script.path}
           </span>
           <pre className="max-h-[240px] overflow-auto rounded-sm border border-(--border-subtle) bg-(--surface-card) p-2 font-mono text-[11px] leading-[1.5] whitespace-pre-wrap text-(--text-primary)">
             {script.content}

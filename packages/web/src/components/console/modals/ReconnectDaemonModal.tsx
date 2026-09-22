@@ -1,6 +1,7 @@
 // No 'use client' here: rendered only by ModalProvider (the client boundary).
 
 import { useEffect, useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { useConsoleData } from '@/lib/data-context'
 import type { DaemonRow } from '@/lib/data'
 import type { MintedKeyDto } from '@/lib/api'
@@ -12,6 +13,7 @@ import { Spinner } from '@/components/marks'
 // first-time connect, shown once. Re-running it on the daemon's host re-auths it
 // (the key carries the existing daemonId), so the row flips back to `online`.
 export default function ReconnectDaemonModal({ daemon, onClose }: { daemon: DaemonRow; onClose: () => void }) {
+  const t = useTranslations('Daemons.reconnectModal')
   const { reconnectDaemon, daemons, refresh } = useConsoleData()
   const [minted, setMinted] = useState<MintedKeyDto | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -58,7 +60,7 @@ export default function ReconnectDaemonModal({ daemon, onClose }: { daemon: Daem
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-subtle) bg-(--surface-sunken)">
           <Icon name="refresh-cw" size={16} color="var(--brand)" />
         </span>
-        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Reconnect daemon</span>
+        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('title')}</span>
         <button className="iconbtn" onClick={onClose}>
           <Icon name="x" size={16} />
         </button>
@@ -67,15 +69,14 @@ export default function ReconnectDaemonModal({ daemon, onClose }: { daemon: Daem
         <div className="mb-[14px] flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[11px]">
           <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
           <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-            Run this on <span className="mono text-(--text-primary)">{daemon.name}</span>&rsquo;s host to reconnect it;
-            its agents are preserved.
+            {t('runOnHost', { daemon: daemon.name })}
           </span>
         </div>
         <div className="overflow-hidden rounded-[9px] border border-(--gray-800) bg-(--gray-1000)">
           <div className="flex items-center gap-2 border-b border-(--gray-800) px-[13px] py-[9px]">
             <Icon name="terminal" size={13} color="var(--text-inverse-dim)" />
             <span className="font-mono text-[11px] font-medium leading-normal text-(--text-inverse-dim)">
-              {daemon.name} · terminal
+              {t('terminal', { daemon: daemon.name })}
             </span>
             <button
               type="button"
@@ -84,7 +85,7 @@ export default function ReconnectDaemonModal({ daemon, onClose }: { daemon: Daem
               className="ml-auto inline-flex cursor-pointer items-center gap-[5px] border-0 bg-transparent font-mono text-[11px] font-medium leading-normal text-(--text-inverse-dim) disabled:cursor-default disabled:opacity-50"
             >
               <Icon name={copied ? 'check' : 'copy'} size={12} />
-              {copied ? 'copied' : 'copy'}
+              {copied ? t('copied') : t('copy')}
             </button>
           </div>
           <div className="break-all px-[14px] py-[13px] font-mono text-[12px] leading-[1.7] text-[#cdd6e0]">
@@ -93,9 +94,9 @@ export default function ReconnectDaemonModal({ daemon, onClose }: { daemon: Daem
                 <span className="text-(--magenta-300)">$</span> {runCommand}
               </div>
             ) : err ? (
-              <div className="text-(--status-error)">Could not mint a key — {err}</div>
+              <div className="text-(--status-error)">{t('mintError', { error: err })}</div>
             ) : (
-              <div className="text-(--text-inverse-dim)">Minting key…</div>
+              <div className="text-(--text-inverse-dim)">{t('minting')}</div>
             )}
           </div>
         </div>
@@ -106,8 +107,10 @@ export default function ReconnectDaemonModal({ daemon, onClose }: { daemon: Daem
                 <Icon name="check" size={13} color="#fff" />
               </span>
               <div className="flex-1">
-                <div className="font-sans text-[13px] font-semibold leading-normal">Daemon reconnected</div>
-                <div className="mono text-[11px] text-(--text-tertiary)">{daemon.name} is back online.</div>
+                <div className="font-sans text-[13px] font-semibold leading-normal">{t('reconnected')}</div>
+                <div className="mono text-[11px] text-(--text-tertiary)">
+                  {t('backOnline', { daemon: daemon.name })}
+                </div>
               </div>
             </>
           ) : (
@@ -116,22 +119,18 @@ export default function ReconnectDaemonModal({ daemon, onClose }: { daemon: Daem
                 <Spinner size={22} />
               </span>
               <div className="flex-1">
-                <div className="font-sans text-[13px] font-semibold leading-normal">Waiting for daemon…</div>
-                <div className="mono text-[11px] text-(--text-tertiary)">
-                  It&apos;ll flip back to online once it re-runs the command.
-                </div>
+                <div className="font-sans text-[13px] font-semibold leading-normal">{t('waiting')}</div>
+                <div className="mono text-[11px] text-(--text-tertiary)">{t('waitingHint')}</div>
               </div>
             </>
           )}
         </div>
       </div>
       <div className="modalfoot">
-        <span className="mono text-[11px] text-(--text-tertiary)">
-          {minted ? 'copy this key now — shown only once' : 'minting key…'}
-        </span>
+        <span className="mono text-[11px] text-(--text-tertiary)">{minted ? t('copyKeyNow') : t('minting')}</span>
         <div className="flex-1" />
         <Button variant={reconnected ? 'primary' : 'ghost'} onClick={onClose}>
-          Done
+          {t('done')}
         </Button>
       </div>
     </>

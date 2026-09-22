@@ -1,6 +1,7 @@
 // No 'use client' here: rendered only inside ModalProvider's tree (the client boundary).
 
 import { useEffect, useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { PlatformMark } from '@/components/marks'
 import { Icon } from '@/components/ui'
@@ -11,10 +12,23 @@ import type { WizardHost } from '../contract'
 import { usePublishedFooter } from '../publish'
 import { TokenGuidePane } from '../wizard-chrome'
 import { useTelegramPrivacyAutoRefresh } from './privacy-auto-refresh'
-import { TG_STEPS } from './steps'
+import { telegramWalkthroughSteps } from './steps'
 
 type TelegramCheckState = 'idle' | 'checking' | TelegramBotCheckDto['status']
 const TELEGRAM_CHECK_DEBOUNCE_MS = 350
+
+type TelegramPrivacyTranslator = ReturnType<typeof useTranslations<'Platforms.telegram.privacy'>>
+
+// The probe's outcome, as the sentence a reader needs. `checking` covers both a token
+// too short to probe yet and a probe in flight — the reader's next action is the same.
+const PRIVACY_MESSAGE_KEY: Record<TelegramCheckState, Parameters<TelegramPrivacyTranslator>[0]> = {
+  idle: 'checking',
+  checking: 'checking',
+  ready: 'ready',
+  privacy_enabled: 'privacyEnabled',
+  invalid: 'invalid',
+  unreachable: 'unreachable'
+}
 
 function TelegramPrivacyStatus({
   status,
@@ -25,19 +39,11 @@ function TelegramPrivacyStatus({
   refreshing: boolean
   onRetry: () => void
 }) {
+  const t = useTranslations('Platforms.telegram.privacy')
   if (status === 'idle') return null
   const checking = status === 'checking'
   const ready = status === 'ready'
-  const message =
-    status === 'checking'
-      ? 'Checking the token and Privacy Mode…'
-      : status === 'ready'
-        ? 'Privacy Mode is off. This bot can receive ordinary group messages.'
-        : status === 'privacy_enabled'
-          ? 'Privacy Mode is still on. Disable it in @BotFather. Checking automatically.'
-          : status === 'invalid'
-            ? 'Telegram rejected this token. Copy it again from @BotFather.'
-            : 'AgentConnect could not reach Telegram. Try the check again.'
+  const message = t(PRIVACY_MESSAGE_KEY[status])
   const retryable = status === 'privacy_enabled' || status === 'unreachable'
 
   return (
@@ -66,7 +72,7 @@ function TelegramPrivacyStatus({
           onClick={onRetry}
         >
           <Icon name="refresh-cw" size={12} className={refreshing ? 'animate-spin' : ''} />
-          {refreshing ? 'Checking…' : status === 'privacy_enabled' ? 'Check now' : 'Try again'}
+          {refreshing ? t('checkingNow') : status === 'privacy_enabled' ? t('checkNow') : t('tryAgain')}
         </button>
       )}
     </div>
@@ -80,6 +86,8 @@ function TelegramPrivacyStatus({
  * a silent dead end and the primary stays disabled until the probe says ready.
  */
 export function TelegramWizardBody({ agent, host }: { agent: Agent; host: WizardHost }) {
+  const t = useTranslations('Platforms.telegram')
+  const tokenT = useTranslations('Platforms.chrome.token')
   const [botToken, setBotToken] = useState('')
   const [showErrors, setShowErrors] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -148,7 +156,7 @@ export function TelegramWizardBody({ agent, host }: { agent: Agent; host: Wizard
   }
 
   usePublishedFooter(host, {
-    label: saving ? 'Connecting…' : 'Connect & authorize',
+    label: saving ? t('footer.connecting') : t('footer.connect'),
     enabled: valid && !saving,
     onSubmit: () => void submit()
   })
@@ -158,21 +166,17 @@ export function TelegramWizardBody({ agent, host }: { agent: Agent; host: Wizard
   return (
     <TokenGuidePane
       mark={<PlatformMark platform="telegram" />}
-      step1="Open @BotFather → New bot (or send /newbot), give it a display name and a username ending in “bot” — it hands back the token."
-      step1Warning={
-        check === 'ready'
-          ? undefined
-          : 'In @BotFather, send /setprivacy, select this bot and choose Disable. AgentConnect checks it after you paste the token.'
-      }
+      step1={t('guide.step1')}
+      step1Warning={check === 'ready' ? undefined : t('guide.step1Warning')}
       linkHref="https://t.me/BotFather"
-      linkLabel="Open @BotFather"
-      steps={TG_STEPS}
-      walkthroughLabel="Telegram bot setup steps"
-      step2="Paste the bot token — required to connect"
+      linkLabel={t('guide.link')}
+      steps={telegramWalkthroughSteps(t)}
+      walkthroughLabel={t('guide.walkthroughLabel')}
+      step2={tokenT('prompt')}
       fields={[
         {
-          label: 'Bot token',
-          placeholder: '123456789:AAE…',
+          label: tokenT('label'),
+          placeholder: t('guide.tokenPlaceholder'),
           value: botToken,
           invalid:
             (showErrors && !telegramOk) ||

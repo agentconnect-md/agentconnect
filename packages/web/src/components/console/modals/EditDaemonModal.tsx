@@ -1,6 +1,7 @@
 // No 'use client' here: rendered only by ModalProvider (the client boundary).
 
 import { useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import type { DaemonRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { Button, Icon } from '@/components/ui'
@@ -13,6 +14,7 @@ import { SessionRetentionField } from '@/components/console/SessionRetentionFiel
 // (canManageSharing gate). Each write is skipped when its field is unchanged.
 export default function EditDaemonModal({ daemon, onClose }: { daemon: DaemonRow; onClose: () => void }) {
   const { renameDaemon, setDaemonSessionRetention, saveSharing } = useConsoleData()
+  const t = useTranslations('Daemons.dialog')
   const [name, setName] = useState(daemon.name)
   const [retention, setRetention] = useState(daemon.sessionRetention)
   const [sharing, setSharing] = useState<SharingValue>({ visibility: daemon.visibility, sharedWith: daemon.sharedWith })
@@ -44,21 +46,21 @@ export default function EditDaemonModal({ daemon, onClose }: { daemon: DaemonRow
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-subtle) bg-(--surface-sunken)">
           <Icon name="server" size={17} color="var(--brand)" />
         </span>
-        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Edit daemon</span>
+        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('editDaemon')}</span>
         <button className="iconbtn" onClick={onClose}>
           <Icon name="x" size={16} />
         </button>
       </div>
       <div className="modalbody">
         <div className="fld">
-          <span className="fldlbl">Name</span>
+          <span className="fldlbl">{t('name')}</span>
           <input
             className="inp"
             value={name}
             maxLength={64}
             spellCheck={false}
             autoFocus
-            placeholder="edge-1"
+            placeholder={t('daemonPlaceholder')}
             disabled={!daemon.canEdit}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {
@@ -78,11 +80,11 @@ export default function EditDaemonModal({ daemon, onClose }: { daemon: DaemonRow
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button onClick={() => void save()} className={!saving ? undefined : 'cursor-default opacity-50'}>
           <Icon name="check" size={15} />
-          {saving ? 'Saving…' : 'Save changes'}
+          {saving ? t('saving') : t('saveChanges')}
         </Button>
       </div>
     </>

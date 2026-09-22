@@ -5,6 +5,7 @@
 // it gave up. Shared by the agent page's file browser, the dock's Files panel and the Memory tab so they never drift.
 
 import type { ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { Spinner } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import type { SandboxWake } from '@/components/console/sandbox-wake'
@@ -23,6 +24,7 @@ export const DREAM_SANDBOX_ASLEEP_NOTICE =
 
 /** What is drawn while the sandbox is being started. Not an error: nothing is wrong, and the read is being polled. */
 export function SandboxStartingNotice({ compact = false }: { compact?: boolean }) {
+  const t = useTranslations('Common.sandboxWake')
   return (
     <div
       className={
@@ -32,7 +34,7 @@ export function SandboxStartingNotice({ compact = false }: { compact?: boolean }
       }
     >
       <Spinner size={compact ? 13 : 15} />
-      <span>Starting the agent’s sandbox…</span>
+      <span>{t('starting')}</span>
     </div>
   )
 }
@@ -49,6 +51,7 @@ export function SandboxAsleepNotice({
   startable: boolean
   compact?: boolean
 }) {
+  const t = useTranslations('Common.sandboxWake')
   return (
     <div className="flex flex-col items-start">
       {notice}
@@ -56,7 +59,7 @@ export function SandboxAsleepNotice({
         <div className={compact ? 'px-3 pb-[10px]' : 'px-[18px] pb-4'}>
           <Button variant="secondary" size="xs" onClick={wake.start}>
             <Icon name="play" size={13} />
-            Start
+            {t('start')}
           </Button>
         </div>
       ) : null}

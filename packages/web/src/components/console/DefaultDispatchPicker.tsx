@@ -12,6 +12,7 @@ import { Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { AgentIconView } from '@/components/marks'
 import type { AgentIcon } from '@/lib/agent-icon'
+import { useTranslations } from 'next-intl'
 
 /** One candidate owner — an agent the bot is installed on. */
 export interface DefaultDispatchOption {
@@ -37,6 +38,7 @@ export function DefaultDispatchPicker({
   disabled: boolean
   onPick: (agentId: string) => Promise<void>
 }) {
+  const t = useTranslations('Common.defaultDispatch')
   const [saving, setSaving] = useState(false)
   const active = options.find((o) => o.id === activeId) ?? options[0]
   const pick = (id: string) => {
@@ -47,7 +49,7 @@ export function DefaultDispatchPicker({
   return (
     <span className="justify-self-end" onClick={(e) => e.stopPropagation()}>
       <AnchoredFlyout
-        ariaLabel="Default dispatch"
+        ariaLabel={t('label')}
         align="end"
         width={MENU_WIDTH}
         estimatedHeight={MENU_HEADER_HEIGHT + options.length * MENU_ROW_HEIGHT}
@@ -58,7 +60,7 @@ export function DefaultDispatchPicker({
             aria-haspopup="menu"
             aria-expanded={open}
             aria-controls={open ? menuId : undefined}
-            title={`Default dispatch — ${active?.name ?? 'none'}`}
+            title={t('title', { name: active?.name ?? t('none') })}
             className={`flex items-center gap-2 rounded-[7px] border-0 bg-transparent px-[5px] py-1 hover:bg-(--surface-hover) ${
               disabled ? 'cursor-default' : 'cursor-pointer'
             } ${saving ? 'opacity-60' : ''}`}
@@ -67,7 +69,7 @@ export function DefaultDispatchPicker({
               <AgentIconView icon={active?.icon} runtime={active?.runtime ?? ''} size={20} />
             </span>
             <span className="mono max-w-[180px] truncate text-[12.5px] text-(--text-primary)">
-              {active?.name ?? '—'}
+              {active?.name ?? t('unknown')}
             </span>
             <Icon name="chevron-down" size={13} color="var(--text-tertiary)" />
           </button>
@@ -76,7 +78,7 @@ export function DefaultDispatchPicker({
         {({ close }) => (
           <>
             <div className="px-[9px] pb-[5px] pt-[6px] font-sans text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
-              Default dispatch
+              {t('label')}
             </div>
             {options.map((o) => (
               <button

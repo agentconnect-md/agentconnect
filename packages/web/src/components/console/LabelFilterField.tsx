@@ -1,6 +1,7 @@
 'use client'
 
 import { useId, useState, type ClipboardEvent, type KeyboardEvent } from 'react'
+import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 
 /** The Control Plane's cap on one row's label filter. */
@@ -33,6 +34,7 @@ export function LabelFilterField({
   onChange: (labels: string[]) => void
   collapsible?: boolean
 }) {
+  const t = useTranslations('Common.labelFilter')
   const inputId = useId()
   const [draft, setDraft] = useState('')
   const [opened, setOpened] = useState(false)
@@ -64,7 +66,7 @@ export function LabelFilterField({
       <div className="flex h-8 items-center" data-label-filter="collapsed">
         <button type="button" className="lnk text-[11.5px]" onClick={() => setOpened(true)}>
           <Icon name="tag" size={12} />
-          Filter by labels
+          {t('filterByLabels')}
         </button>
       </div>
     )
@@ -73,7 +75,7 @@ export function LabelFilterField({
     <div data-label-filter="open">
       <div className="mb-[6px] flex items-center">
         <label htmlFor={inputId} className="fldlbl">
-          Only with labels
+          {t('onlyWithLabels')}
         </label>
         <span
           className={`ml-auto font-mono text-[11px] font-medium leading-normal ${
@@ -92,7 +94,7 @@ export function LabelFilterField({
             {label}
             <button
               type="button"
-              aria-label={`Remove label ${label}`}
+              aria-label={t('removeLabel', { label })}
               className="flex text-(--text-tertiary) hover:text-(--text-primary)"
               onClick={() => onChange(value.filter((other) => other !== label))}
             >
@@ -103,10 +105,10 @@ export function LabelFilterField({
         {!atCap && (
           <input
             id={inputId}
-            aria-label="Add a label"
+            aria-label={t('addLabel')}
             autoFocus={collapsible}
             value={draft}
-            placeholder={value.length > 0 ? 'add another…' : 'type a label, Enter adds it'}
+            placeholder={value.length > 0 ? t('addAnother') : t('typeLabel')}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={onKeyDown}
             onPaste={onPaste}
@@ -120,7 +122,7 @@ export function LabelFilterField({
       {atCap && (
         <div className="mt-[7px] flex items-center gap-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--amber-500)">
           <Icon name="triangle-alert" size={12} className="flex-none" />
-          Label limit reached — remove one to add another.
+          {t('limitReached')}
         </div>
       )}
     </div>

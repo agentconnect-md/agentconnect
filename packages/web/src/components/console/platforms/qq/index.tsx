@@ -1,7 +1,7 @@
 import { QQSettingsFragments } from './settings'
 import { QQMark } from './mark'
 import type { WebPlatformModule } from '../contract'
-import { inviteBotHint } from '../wizard-chrome'
+import { identityCards, inviteBotHint } from '../wizard-chrome'
 import { QQWizardBody } from './Body'
 
 export const QQModule: WebPlatformModule = {
@@ -14,8 +14,8 @@ export const QQModule: WebPlatformModule = {
     freeBotFilter: () => true,
     buildReuseInput: (bot, ctx) => ({ platform: 'qq', agentId: ctx.agentId, botId: bot.id }),
     affordances: {},
-    identityCards: () => ({ create: 'Create a bot in the QQ portal', existing: 'An unused QQ bot' }),
-    inviteHint: () => inviteBotHint('group', 'QQ', '@-mention it to start')
+    identityCards: () => identityCards('qq'),
+    inviteHint: () => inviteBotHint('group', 'QQ', true)
   },
   apiBindings: {},
   settingsFragments: QQSettingsFragments,

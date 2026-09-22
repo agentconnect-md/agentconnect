@@ -6,6 +6,7 @@
 // control, all under the reader's own Console JWT.
 
 import { useCallback, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { AGENT_TOOLS_URI, nativeUiTitle, type NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import { Button } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
@@ -29,6 +30,7 @@ export default function AgentToolsDialog({
   onCompleted: NativeDialogReport
 }) {
   const { activeOrg } = useOrgs()
+  const t = useTranslations('Agents.detail.toolsDialog')
   const { agents, daemons, loading } = useConsoleData()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -41,9 +43,9 @@ export default function AgentToolsDialog({
   const heading = nativeUiTitle(ui)
   const notice = (text: string) => <NativeDialogNotice heading={heading} text={text} onClose={onClose} />
   const agent = agents.find((item) => item.id === ui.intent.agentId)
-  if (activeOrg?.id !== ui.orgId) return notice('This agent belongs to another organization.')
-  if (loading) return notice('Loading configuration…')
-  if (!agent) return notice('This agent is unavailable.')
+  if (activeOrg?.id !== ui.orgId) return notice(t('wrongOrganization'))
+  if (loading) return notice(t('loading'))
+  if (!agent) return notice(t('unavailable'))
   const focus = ui.intent.focus
   // Completion reads the roster back, so the rows close for the duration: an edit accepted during
   // that read would be reported as part of a state it was not in.
@@ -61,7 +63,7 @@ export default function AgentToolsDialog({
       if (focus !== 'skills') parts.push(`${current.mcpServers.length} MCP server(s) attached`)
       if (focus !== 'mcp')
         parts.push(`${current.skills.length + (current.managedSkills?.length ?? 0)} skill(s) enabled`)
-      onCompleted(`Reviewed ${agentLabel(agent)}’s tools and skills — ${parts.join(' · ')}.`)
+      onCompleted(t('reviewed', { agent: agentLabel(agent), summary: parts.join(' · ') }))
       onClose()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -75,8 +77,7 @@ export default function AgentToolsDialog({
       <div className="modalhead">{heading}</div>
       <div className="modalbody flex flex-col gap-4">
         <p className="text-[13px] text-(--text-secondary)">
-          Add or remove what <span className="mono text-[12.5px]">{agent.name}</span> can use. Each change saves as you
-          make it.
+          {t.rich('description', { agent: () => <span className="mono text-[12.5px]">{agent.name}</span> })}
         </p>
         {focus !== 'skills' && (
           <AgentToolsCard
@@ -90,7 +91,7 @@ export default function AgentToolsDialog({
         {focus !== 'mcp' && <AgentSkillsCard agentId={agent.id} canEdit={canEdit} onBusyChange={skillsBusy} />}
         {!agent.canEdit && (
           <p role="status" className="text-[13px] text-(--text-secondary)">
-            You can review this agent’s tools and skills, but not change them.
+            {t('readOnly')}
           </p>
         )}
         {error && (
@@ -102,14 +103,14 @@ export default function AgentToolsDialog({
       <div className="modalfoot">
         {rowSaving && (
           <span role="status" className="flex-1 text-[13px] text-(--text-secondary)">
-            Saving…
+            {t('saving')}
           </span>
         )}
         <Button variant="secondary" disabled={busy} onClick={onClose}>
-          Close
+          {t('close')}
         </Button>
         <Button disabled={busy || rowSaving} onClick={done}>
-          Done
+          {t('done')}
         </Button>
       </div>
     </>

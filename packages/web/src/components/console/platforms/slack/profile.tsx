@@ -179,7 +179,7 @@ export function SlackConfigCard() {
                 <div className="mb-3 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-tertiary)">
                   {t('hintBefore')}{' '}
                   <a href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer" className="lnk">
-                    api.slack.com/apps
+                    {t('appsUrl')}
                   </a>{' '}
                   {t('hintAfter')}
                 </div>
@@ -188,7 +188,7 @@ export function SlackConfigCard() {
                     <span className="fldlbl">{t('configToken')}</span>
                     <input
                       className="inp mn"
-                      placeholder="xoxe.xoxp-…"
+                      placeholder={t('accessPlaceholder')}
                       value={access}
                       onChange={(e) => setAccess(e.target.value)}
                     />
@@ -199,7 +199,7 @@ export function SlackConfigCard() {
                     </span>
                     <input
                       className="inp mn"
-                      placeholder="xoxe-…"
+                      placeholder={t('refreshPlaceholder')}
                       value={refresh}
                       onChange={(e) => setRefresh(e.target.value)}
                     />

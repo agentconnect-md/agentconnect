@@ -9,6 +9,7 @@
 // this, so the two cannot warn differently about the same write.
 
 import { useCallback, useState, type ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { ConfirmationDialog } from './ConfirmationDialog'
 import { channelListSemantics } from './platforms/registry'
 
@@ -47,6 +48,7 @@ export function useOwnerChangeGuard(): {
   guard(move: OwnerChangeMove, apply: () => Promise<void>): Promise<void>
   dialog: ReactNode
 } {
+  const t = useTranslations('Integrations.channelList')
   const [pending, setPending] = useState<Pending | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -84,15 +86,15 @@ export function useOwnerChangeGuard(): {
     guard,
     dialog: pending ? (
       <ConfirmationDialog
-        title={pending.copy.title}
-        confirmLabel={pending.copy.confirmLabel}
+        title={t(pending.copy.title.key, pending.copy.title.values)}
+        confirmLabel={t(pending.copy.confirmLabel.key, pending.copy.confirmLabel.values)}
         busy={busy}
-        busyLabel="Moving…"
+        busyLabel={t('ownerChange.busy')}
         error={error}
         onConfirm={confirm}
         onClose={close}
       >
-        {pending.copy.body({ owner: pending.owner, room: pending.room })}
+        {t(pending.copy.body.key, { ...pending.copy.body.values, owner: pending.owner, room: pending.room })}
       </ConfirmationDialog>
     ) : null
   }

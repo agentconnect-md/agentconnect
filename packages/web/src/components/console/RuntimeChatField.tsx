@@ -1,16 +1,14 @@
 import { CompactToggleField } from '@/components/console/CompactToggleField'
+import { useTranslations } from 'next-intl'
 
 export function RuntimeChatField({ checked, onChange }: { checked: boolean; onChange: (checked: boolean) => void }) {
+  const t = useTranslations('Common.runtimeChat')
   return (
     <CompactToggleField
-      label="Allow change in chat"
+      label={t('label')}
       checked={checked}
       onChange={onChange}
-      detail={
-        checked
-          ? 'Chat users can change runtime settings and answer approval requests.'
-          : 'Only agent editors can manage runtime settings. Chat users cannot change them or answer approval requests.'
-      }
+      detail={checked ? t('enabled') : t('disabled')}
     />
   )
 }

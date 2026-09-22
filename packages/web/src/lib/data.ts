@@ -2544,13 +2544,13 @@ export function pgPrompts(agentId: string): string[] {
 
 export interface ApiEvent {
   name: string
-  desc: string
+  descKey: 'ready' | 'ack' | 'output' | 'done' | 'error'
 }
 
 export const API_EVENTS: ApiEvent[] = [
-  { name: 'ready', desc: 'Socket accepted — carries the conversationId the CP allocated.' },
-  { name: 'ack', desc: 'Your message was delivered to the agent — carries a turnId.' },
-  { name: 'output', desc: 'A reply chunk: output.event is message / thinking / tool_call / tool_update.' },
-  { name: 'done', desc: 'Turn finished — done.stopReason and done.usage (tokens / cost).' },
-  { name: 'error', desc: 'Delivery failed — e.g. the agent has no live daemon.' }
+  { name: 'ready', descKey: 'ready' },
+  { name: 'ack', descKey: 'ack' },
+  { name: 'output', descKey: 'output' },
+  { name: 'done', descKey: 'done' },
+  { name: 'error', descKey: 'error' }
 ]

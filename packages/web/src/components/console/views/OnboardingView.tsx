@@ -714,7 +714,7 @@ function DaemonStep({
           <div className="flex items-center gap-2 border-b border-(--gray-800) py-[9px] pr-[10px] pl-[13px]">
             <Icon name="terminal" size={13} color="var(--text-inverse-dim)" />
             <span className="font-mono text-[11px] font-medium leading-normal tracking-[.02em] text-(--text-inverse-dim)">
-              {t('yourMachine')} · macOS, Linux, WSL
+              {t('platforms', { machine: t('yourMachine') })}
             </span>
             <button
               type="button"

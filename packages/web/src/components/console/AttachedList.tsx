@@ -11,6 +11,7 @@
 // tweakable.
 
 import type { ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { Button, Icon } from '@/components/ui'
 
@@ -113,6 +114,7 @@ export function AttachMenu({
   actions: AttachAction[]
   disabled?: boolean
 }) {
+  const t = useTranslations('Common.attachedList')
   const rows = groups.reduce((n, g) => n + Math.max(1, Math.min(g.options.length, 6)), 0)
   return (
     <AnchoredFlyout
@@ -130,7 +132,7 @@ export function AttachMenu({
           ariaControls={open ? menuId : undefined}
         >
           <Icon name="plus" size={14} />
-          Add
+          {t('add')}
           <Icon name="chevron-down" size={13} color="var(--text-tertiary)" />
         </Button>
       )}

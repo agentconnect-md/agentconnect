@@ -4,6 +4,7 @@
 // Both halves are read live from the owning daemon through the CP (body-locality), so an offline daemon, a path this checkout does not have, a binary file, a file too large for one slice, a workspace that is not a git checkout and a path with no changes in the scope asked for are all expected answers — each is drawn as data, never as a failure of the pane.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { Spinner } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { formatFileSize } from '@/components/console/FileBrowser'
@@ -133,6 +134,7 @@ export function SessionViewer({
   onIndexChanged?: () => void
   onClose: () => void
 }) {
+  const t = useTranslations('Sessions.viewer')
   const [read, setRead] = useState<Read>(PENDING)
   // Re-reads the same path from byte 0, for a file that changed while it was being read.
   const [reloadTick, setReloadTick] = useState(0)
@@ -385,7 +387,7 @@ export function SessionViewer({
           <span>
             {readNoticeText(diffRead.errStatus, diffRead.errCode, Boolean(sessionId))}{' '}
             <button className="lnk text-[12.5px]" onClick={retryDiff}>
-              Retry
+              {t('retry')}
             </button>
           </span>
         </div>
@@ -433,10 +435,7 @@ export function SessionViewer({
       return (
         <div className="flex items-start gap-[10px] p-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
           <Icon name="file-question-mark" size={15} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
-          <span>
-            Not found — this checkout has no file at that path. It may have been removed since the link was made, or the
-            link may name another agent&apos;s workspace.
-          </span>
+          <span>{t('notFound')}</span>
         </div>
       )
     }
@@ -445,7 +444,7 @@ export function SessionViewer({
       return (
         <div className="flex items-start gap-[10px] p-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
           <Icon name="folder-open" size={15} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
-          <span>That path is a folder, not a file. Open it in the Files tab to see what is inside it.</span>
+          <span>{t('folderPath')}</span>
         </div>
       )
     }
@@ -453,14 +452,14 @@ export function SessionViewer({
       return (
         <div className="flex items-center gap-2 p-4 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
           <Icon name="file-question-mark" size={15} />
-          Binary file — not displayed ({formatFileSize(file.size)})
+          {t('binaryFile', { size: formatFileSize(file.size) })}
         </div>
       )
     }
     if (lines.length === 0) {
       return (
         <div className="p-4 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          This file is empty.
+          {t('emptyFile')}
         </div>
       )
     }
@@ -503,27 +502,27 @@ export function SessionViewer({
             data-viewer-modes=""
             className="flex flex-none items-center gap-px rounded-sm bg-(--surface-sunken) p-px"
             role="group"
-            aria-label="Viewer mode"
+            aria-label={t('viewerMode')}
           >
             <button
               type="button"
               className={mode === 'file' ? PILL_OFF : PILL_ON}
               data-viewer-mode="diff"
               aria-pressed={mode !== 'file'}
-              title={lastDiffMode === 'staged' ? 'Staged changes to this file' : 'Unstaged changes to this file'}
+              title={lastDiffMode === 'staged' ? t('stagedChanges') : t('unstagedChanges')}
               onClick={() => onModeChange(lastDiffMode)}
             >
-              Diff
+              {t('diff')}
             </button>
             <button
               type="button"
               className={mode === 'file' ? PILL_ON : PILL_OFF}
               data-viewer-mode="file"
               aria-pressed={mode === 'file'}
-              title="The file as it is on disk"
+              title={t('fileOnDisk')}
               onClick={() => onModeChange('file')}
             >
-              File
+              {t('file')}
             </button>
           </div>
         ) : null}
@@ -534,15 +533,11 @@ export function SessionViewer({
             data-viewer-stage={mode === 'staged' ? 'unstage' : 'stage'}
             className="dsbtn dsbtn-secondary xs flex-none disabled:pointer-events-none disabled:opacity-50"
             disabled={moving}
-            title={
-              mode === 'staged'
-                ? 'Take this file out of the index; the working tree is untouched'
-                : 'Add this file’s changes to the index'
-            }
+            title={mode === 'staged' ? t('unstageTitle') : t('stageTitle')}
             onClick={() => void moveIndex()}
           >
             {moving ? <Spinner size={12} /> : <Icon name={mode === 'staged' ? 'minus' : 'plus'} size={13} />}
-            <span className="max-desktop:hidden">{mode === 'staged' ? 'Unstage file' : 'Stage file'}</span>
+            <span className="max-desktop:hidden">{mode === 'staged' ? t('unstageFile') : t('stageFile')}</span>
           </button>
         ) : null}
         {meta ? (
@@ -554,8 +549,8 @@ export function SessionViewer({
           type="button"
           className="iconbtn flex-none"
           data-viewer-close=""
-          aria-label="Back to the conversation"
-          title="Back to the conversation"
+          aria-label={t('backToConversation')}
+          title={t('backToConversation')}
           onClick={onClose}
         >
           <Icon name="x" size={15} />
@@ -591,11 +586,11 @@ export function SessionViewer({
           </span>
           {read.stale ? (
             <button className="lnk text-[12px]" onClick={() => setReloadTick((tick) => tick + 1)}>
-              Reload
+              {t('reload')}
             </button>
           ) : nextOffset !== null ? (
             <button className="lnk text-[12px]" onClick={loadMore} disabled={read.loadingMore}>
-              {read.loadingMore ? 'Loading…' : read.moreNote ? 'Retry' : 'Load more'}
+              {read.loadingMore ? t('loading') : read.moreNote ? t('retry') : t('loadMore')}
             </button>
           ) : null}
           {read.moreNote ? <span>{read.moreNote}</span> : null}
@@ -608,8 +603,7 @@ export function SessionViewer({
           data-viewer-diff-unsided=""
           className="flex-none border-t border-(--border-subtle) bg-(--status-paused-soft) px-4 py-[9px] font-sans text-[12px] font-normal leading-normal text-(--text-secondary)"
         >
-          Part of this diff is shown raw — its hunks are not two-way (a merge conflict, usually). Counts cover only the
-          readable parts.
+          {t('malformedDiff')}
         </div>
       ) : null}
 
@@ -619,9 +613,7 @@ export function SessionViewer({
           data-viewer-diff-truncated=""
           className="flex-none border-t border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)"
         >
-          {diff?.truncated
-            ? 'This diff is too large to send whole — only its first part is shown. Open the file to read the rest.'
-            : 'This diff has more lines than the viewer draws — only its first part is shown.'}
+          {diff?.truncated ? t('diffTooLarge') : t('diffTruncated')}
         </div>
       ) : null}
     </section>

@@ -300,7 +300,7 @@ describe('the connect hand-off', () => {
     mocks.loading = true
     await render()
 
-    expect(text()).toContain('Pick the Linear workspace')
+    expect(text()).toContain(`Pick the Linear workspace ${agent.name} works in.`)
     expect(buttonWith('Connect Linear')).toBeUndefined()
   })
 
@@ -397,8 +397,7 @@ describe('the connect hand-off', () => {
     await settle()
 
     expect(state.invalidate).toHaveBeenCalled()
-    expect(text()).toContain('Workspace connected')
-    expect(text()).toContain('is its default agent')
+    expect(text()).toContain(`Workspace connected — ${agent.name} is its default agent.`)
     expect(text()).not.toContain('bare delegation')
     await act(async () => buttonWith('Done')!.click())
     expect(state.close).toHaveBeenCalled()

@@ -1,6 +1,7 @@
 // No 'use client' here: rendered only inside ModalProvider's tree (the client boundary).
 
 import { useState, type ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import type { Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
@@ -37,6 +38,7 @@ const SECONDARY =
  * fill, not no button to press.
  */
 export function LinearWizardBody({ agent, host }: { agent: Agent; host: WizardHost }) {
+  const t = useTranslations('Platforms.linear')
   // The chassis reads this same probe for its relay capability; one SWR key ⇒ one
   // request. Only the "has it answered yet" bit is read here — the VALUE comes off
   // the host, so the two can never disagree about the deployment.
@@ -77,7 +79,7 @@ export function LinearWizardBody({ agent, host }: { agent: Agent; host: WizardHo
   // The whole identity chassis is this pane's to replace: mode cards, free-bot list,
   // the share toggle and the footer primary all describe a model Linear does not have.
   usePublishedIdentityChrome(host, { hidden: true })
-  usePublishedFooter(host, { label: 'Connect', enabled: false, onSubmit: () => {}, hidden: true })
+  usePublishedFooter(host, { label: t('footer.connect'), enabled: false, onSubmit: () => {}, hidden: true })
 
   const link = (botId: string) => {
     if (linkingBotId) return
@@ -107,7 +109,7 @@ export function LinearWizardBody({ agent, host }: { agent: Agent; host: WizardHo
       <Frame>
         <div className="flex items-center gap-[10px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
           <Icon name="loader" size={15} className="flex-none animate-spin" />
-          Checking your Linear setup…
+          {t('setup.checking')}
         </div>
       </Frame>
     )
@@ -116,10 +118,7 @@ export function LinearWizardBody({ agent, host }: { agent: Agent; host: WizardHo
   if (availability === 'app_required') {
     return (
       <Frame>
-        <Note>
-          Linear isn&rsquo;t set up on this deployment yet. An administrator registers one Linear OAuth application for
-          the whole deployment before workspaces can be connected.
-        </Note>
+        <Note>{t('setup.appRequired')}</Note>
       </Frame>
     )
   }
@@ -127,10 +126,7 @@ export function LinearWizardBody({ agent, host }: { agent: Agent; host: WizardHo
   if (availability === 'relay_required') {
     return (
       <Frame>
-        <Note>
-          Linear delivers over HTTP callbacks only, so it needs a public callback endpoint. Ask an administrator to
-          configure one, then connect a workspace here.
-        </Note>
+        <Note>{t('setup.relayRequired')}</Note>
       </Frame>
     )
   }
@@ -143,11 +139,11 @@ export function LinearWizardBody({ agent, host }: { agent: Agent; host: WizardHo
             <div className="flex items-start gap-[10px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
               <Icon name="check" size={15} color="var(--status-online)" className="mt-[1px] flex-none" />
               <span>
-                Workspace connected —&#32;<span className="mono">{agent.name}</span>&#32;is its default agent.
+                {t.rich('connect.connectedTitle', { agent: () => <span className="mono">{agent.name}</span> })}
               </span>
             </div>
             <button type="button" onClick={close} className={`${PRIMARY} mt-[12px] cursor-pointer`}>
-              Done
+              {t('connect.done')}
             </button>
           </>
         ) : flow.err ? (
@@ -158,11 +154,11 @@ export function LinearWizardBody({ agent, host }: { agent: Agent; host: WizardHo
             </div>
             <div className="mt-[12px] flex items-center gap-2">
               <button type="button" onClick={start} className={`${PRIMARY} cursor-pointer`}>
-                Try again
+                {t('connect.tryAgain')}
               </button>
               {!forcedConnect && (
                 <button type="button" onClick={leaveConnect} className={SECONDARY}>
-                  Back
+                  {t('connect.back')}
                 </button>
               )}
             </div>
@@ -171,15 +167,15 @@ export function LinearWizardBody({ agent, host }: { agent: Agent; host: WizardHo
           <>
             <div className={`${PRIMARY} opacity-85`}>
               <Icon name="loader" size={16} className="flex-none animate-spin" />
-              Waiting for Linear…
+              {t('connect.waiting')}
             </div>
             <div className="mt-[10px] flex items-center justify-between gap-2">
               <span className="font-sans text-[12px] font-normal leading-[1.4] text-(--text-tertiary)">
-                Approve the workspace in the Linear tab.
+                {t('connect.approveTab')}
               </span>
               {!forcedConnect && (
                 <button type="button" onClick={leaveConnect} className={SECONDARY}>
-                  Back
+                  {t('connect.back')}
                 </button>
               )}
             </div>
@@ -187,20 +183,19 @@ export function LinearWizardBody({ agent, host }: { agent: Agent; host: WizardHo
         ) : (
           <>
             <div className="mb-[12px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-              <span className="mono">{agent.name}</span>&#32;becomes the workspace&rsquo;s default agent. You approve
-              the workspace in a Linear popup.
+              {t.rich('connect.becomesDefault', { agent: () => <span className="mono">{agent.name}</span> })}
             </div>
             {/* The popup opens from THIS click. Fired from an effect it is blocked. */}
             <button type="button" onClick={start} className={`${PRIMARY} cursor-pointer`}>
               <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
                 <LinearMark fillPct={100} />
               </span>
-              Connect Linear
+              {t('connect.cta')}
             </button>
             {!forcedConnect && (
               <div className="mt-[10px] flex justify-end">
                 <button type="button" onClick={leaveConnect} className={SECONDARY}>
-                  Back
+                  {t('connect.back')}
                 </button>
               </div>
             )}
@@ -213,7 +208,7 @@ export function LinearWizardBody({ agent, host }: { agent: Agent; host: WizardHo
   return (
     <div className="mb-4 overflow-hidden rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[6px]">
       <div className="px-2 pb-[6px] pt-[5px] font-sans text-[12.5px] font-medium leading-[1.45] text-(--text-secondary)">
-        Pick the Linear workspace <span className="mono">{agent.name}</span> works in.
+        {t.rich('picker.title', { agent: () => <span className="mono">{agent.name}</span> })}
       </div>
       {workspaces.map((b) => {
         const linked = b.agentIds.includes(agent.id)
@@ -222,7 +217,7 @@ export function LinearWizardBody({ agent, host }: { agent: Agent; host: WizardHo
             key={b.id}
             type="button"
             disabled={linked || linkingBotId !== null}
-            title={linked ? 'Already linked to this agent' : b.workspaceName || b.name}
+            title={linked ? t('picker.alreadyLinked') : b.workspaceName || b.name}
             onClick={() => link(b.id)}
             className={`fopt min-h-[42px] items-center gap-[10px] px-2 py-2 ${
               linked || linkingBotId !== null ? 'cursor-default' : 'cursor-pointer'
@@ -234,7 +229,9 @@ export function LinearWizardBody({ agent, host }: { agent: Agent; host: WizardHo
             <span className="mono min-w-0 flex-1 truncate text-left text-[12.5px] font-semibold text-(--text-primary)">
               {b.workspaceName || b.name}
             </span>
-            {linked && <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">linked</span>}
+            {linked && (
+              <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">{t('picker.linked')}</span>
+            )}
             {linkingBotId === b.id && <Icon name="loader" size={14} className="flex-none animate-spin" />}
           </button>
         )
@@ -249,7 +246,7 @@ export function LinearWizardBody({ agent, host }: { agent: Agent; host: WizardHo
       >
         <Icon name="plus" size={15} color="var(--text-tertiary)" className="flex-none" />
         <span className="min-w-0 flex-1 truncate text-left font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-          Connect another workspace…
+          {t('picker.another')}
         </span>
       </button>
       {linkErr && (

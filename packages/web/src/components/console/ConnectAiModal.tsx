@@ -10,6 +10,7 @@
 // shell) rather than the design's hard-coded modelcontextprotocol.io URL.
 
 import { useEffect, useState, type ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { LogoMark } from '@/components/marks'
 import { cpRestBase } from '@/lib/api'
@@ -21,8 +22,6 @@ function mcpEndpointUrl(): string {
   const dedicated = typeof window !== 'undefined' ? window.__AC_ENV?.MCP_URL : process.env.MCP_URL
   return (dedicated || `${cpRestBase()}/mcp`).replace(/\/+$/, '')
 }
-
-const TAGLINE = 'Connects as you — your role, your permissions'
 
 // The design fills this column with a screenshot of the claude.ai connector
 // pane. It is drawn from our own tokens rather than shipped as a raster: a
@@ -36,6 +35,13 @@ const FILM_MS = 2600
 const DIALOG_FRAME = 1
 
 function ConnectorFilm({ url }: { url: string }) {
+  const t = useTranslations('Shell.connectAi')
+  const nav = [
+    { label: t('skills'), icon: 'scroll-text', on: false },
+    { label: t('connectors'), icon: 'blocks', on: true },
+    { label: t('plugins'), icon: 'unplug', on: false },
+    { label: t('memory'), icon: 'rotate-ccw-clock', on: false }
+  ]
   const [frame, setFrame] = useState(0)
 
   useEffect(() => {
@@ -58,9 +64,9 @@ function ConnectorFilm({ url }: { url: string }) {
       <Frame on={frame === 0}>
         <div className="w-[168px] rounded-sm border border-(--border-subtle) bg-(--surface-card) p-[7px] shadow-(--shadow-xs)">
           <span className="block px-[7px] pb-[3px] font-sans text-[9px] font-medium leading-normal text-(--text-tertiary)">
-            Customize
+            {t('customize')}
           </span>
-          {NAV.map((item) => (
+          {nav.map((item) => (
             <span
               key={item.label}
               className={
@@ -79,16 +85,16 @@ function ConnectorFilm({ url }: { url: string }) {
       <Frame on={frame === 1}>
         <div className="w-full rounded-sm border border-(--border-subtle) bg-(--surface-card) p-[10px] shadow-(--shadow-xs)">
           <span className="block pb-[7px] font-sans text-[11px] font-semibold leading-normal text-(--text-primary)">
-            Add custom connector
+            {t('addCustomConnector')}
           </span>
           <span className="mb-[5px] block rounded-xs border border-(--border-default) px-[7px] py-[5px] font-sans text-[9.5px] leading-normal text-(--text-secondary)">
-            AgentConnect
+            {t('appName')}
           </span>
           <span className="block truncate rounded-xs border border-(--brand) px-[7px] py-[5px] font-mono text-[9.5px] leading-normal text-(--text-primary)">
             {url}
           </span>
           <span className="mt-[8px] ml-auto block w-fit rounded-xs bg-(--surface-active) px-[11px] py-[4px] font-sans text-[9.5px] font-semibold leading-normal text-(--text-secondary)">
-            Add
+            {t('add')}
           </span>
         </div>
       </Frame>
@@ -97,23 +103,16 @@ function ConnectorFilm({ url }: { url: string }) {
         <div className="flex flex-col items-center gap-[7px]">
           <LogoMark size={24} />
           <span className="font-sans text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
-            You are not connected yet
+            {t('notConnected')}
           </span>
           <span className="rounded-sm bg-(--brand) px-[13px] py-[5px] font-sans text-[10.5px] font-semibold leading-normal text-white">
-            Connect
+            {t('connect')}
           </span>
         </div>
       </Frame>
     </div>
   )
 }
-
-const NAV = [
-  { label: 'Skills', icon: 'scroll-text', on: false },
-  { label: 'Connectors', icon: 'blocks', on: true },
-  { label: 'Plugins', icon: 'unplug', on: false },
-  { label: 'Memory', icon: 'rotate-ccw-clock', on: false }
-]
 
 function Frame({ on, children }: { on: boolean; children: ReactNode }) {
   return (
@@ -132,6 +131,7 @@ function Frame({ on, children }: { on: boolean; children: ReactNode }) {
 type CopyTarget = 'url' | 'cli'
 
 export default function ConnectAiModal({ onClose, moreUrl }: { onClose: () => void; moreUrl: string }) {
+  const t = useTranslations('Shell.connectAi')
   const [copied, setCopied] = useState<CopyTarget | null>(null)
   const [keyOpen, setKeyOpen] = useState(false)
   const url = mcpEndpointUrl()
@@ -160,10 +160,8 @@ export default function ConnectAiModal({ onClose, moreUrl }: { onClose: () => vo
       <div className="modal max-w-[520px]" onClick={(e) => e.stopPropagation()}>
         <div className="modalhead">
           <Icon name="plug" size={20} color="var(--text-secondary)" />
-          <span className="font-sans text-[17px] font-semibold tracking-[-0.012em] leading-normal">
-            Connect your AI
-          </span>
-          <button type="button" className="iconbtn ml-auto" aria-label="Close" onClick={onClose}>
+          <span className="font-sans text-[17px] font-semibold tracking-[-0.012em] leading-normal">{t('title')}</span>
+          <button type="button" className="iconbtn ml-auto" aria-label={t('close')} onClick={onClose}>
             <Icon name="x" size={16} />
           </button>
         </div>
@@ -172,12 +170,12 @@ export default function ConnectAiModal({ onClose, moreUrl }: { onClose: () => vo
           {/* The design sits this beside the title; at this width that wraps the
               header onto two lines, so it leads the body instead. */}
           <p className="m-0 pb-[14px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-            {TAGLINE}
+            {t('tagline')}
           </p>
 
           <div className="flex flex-col gap-[7px] pb-[18px]">
             <span className="font-mono text-[11px] font-semibold tracking-[0.08em] uppercase leading-normal text-(--text-tertiary)">
-              MCP server URL
+              {t('serverUrl')}
             </span>
             <div className="flex items-center gap-3 rounded-md border border-(--border-default) bg-(--surface-sunken) py-3 pr-3 pl-[14px]">
               <span className="mono min-w-0 flex-1 truncate text-[13px] tracking-[-0.01em] text-(--text-primary) desktop:text-[14px]">
@@ -189,20 +187,18 @@ export default function ConnectAiModal({ onClose, moreUrl }: { onClose: () => vo
                 onClick={() => void copy('url', url)}
               >
                 <Icon name={copied === 'url' ? 'check' : 'copy'} size={14} />
-                {copied === 'url' ? 'Copied' : 'Copy'}
+                {copied === 'url' ? t('copied') : t('copy')}
               </button>
             </div>
           </div>
 
           <div className="grid grid-cols-1 items-start gap-y-[7px] border-t border-(--border-subtle) py-4 desktop:grid-cols-[128px_1fr] desktop:gap-x-4">
             <span className="font-sans text-[13px] font-semibold leading-[1.4] text-(--text-primary)">
-              Claude Desktop &amp; claude.ai
+              {t('desktopLabel')}
             </span>
             <div className="flex flex-col gap-[7px]">
               <span className="font-sans text-[13.5px] font-normal leading-normal text-(--text-secondary)">
-                Settings → Connectors →&#32;
-                <strong className="font-semibold text-(--text-primary)">Add custom connector</strong>, then&#32;
-                <strong className="font-semibold text-(--text-primary)">Connect</strong>
+                {t('desktopInstructions')}
               </span>
               <ConnectorFilm url={url} />
             </div>
@@ -210,7 +206,7 @@ export default function ConnectAiModal({ onClose, moreUrl }: { onClose: () => vo
 
           <div className="grid grid-cols-1 items-start gap-y-[7px] border-t border-(--border-subtle) py-4 desktop:grid-cols-[128px_1fr] desktop:gap-x-4">
             <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary) desktop:pt-[7px]">
-              Claude Code
+              {t('codeLabel')}
             </span>
             <div className="flex flex-col gap-[7px]">
               <div className="relative">
@@ -218,15 +214,15 @@ export default function ConnectAiModal({ onClose, moreUrl }: { onClose: () => vo
                 <button
                   type="button"
                   className="absolute top-2 right-2 flex h-[26px] w-[26px] cursor-pointer items-center justify-center rounded-[5px] border border-white/15 bg-white/5 text-[#c9cfd8] transition-colors hover:bg-white/10"
-                  title={copied === 'cli' ? 'Copied' : 'Copy command'}
-                  aria-label={copied === 'cli' ? 'Command copied' : 'Copy command'}
+                  title={copied === 'cli' ? t('copied') : t('copyCommand')}
+                  aria-label={copied === 'cli' ? t('commandCopied') : t('copyCommand')}
                   onClick={() => void copy('cli', cli)}
                 >
                   <Icon name={copied === 'cli' ? 'check' : 'copy'} size={13} />
                 </button>
               </div>
               <span className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-                Then <span className="mono text-[12px] text-(--text-secondary)">/mcp</span> to sign in
+                {t('signInHint')}
               </span>
             </div>
           </div>
@@ -244,18 +240,16 @@ export default function ConnectAiModal({ onClose, moreUrl }: { onClose: () => vo
                 strokeWidth={2}
                 className={keyOpen ? 'flex-none rotate-90 transition-transform' : 'flex-none transition-transform'}
               />
-              Headless client? Use an API key
+              {t('apiKeyToggle')}
             </button>
             <a className="lnk ml-auto text-[13px]" href={moreUrl} target="_blank" rel="noopener noreferrer">
-              MCP docs
+              {t('docs')}
               <Icon name="arrow-up-right" size={13} />
             </a>
           </div>
           {keyOpen ? (
             <p className="m-0 mt-[10px] ml-5 font-sans text-[12.5px] font-normal leading-[1.6] text-pretty text-(--text-tertiary)">
-              Skip OAuth: send a key from Profile → API keys as&#32;
-              <span className="mono text-[12px] text-(--text-secondary)">Authorization: Bearer &lt;key&gt;</span>. It
-              carries your full permissions.
+              {t('apiKeyHint')}
             </p>
           ) : null}
         </div>

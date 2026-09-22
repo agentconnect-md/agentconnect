@@ -14,6 +14,7 @@ import {
   type ReactNode
 } from 'react'
 import { Icon } from '@/components/ui'
+import { useTranslations } from 'next-intl'
 import { useOrgs } from '@/lib/org-context'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { useMobileActionSlot } from '@/components/console/Shell'
@@ -194,6 +195,7 @@ export function SessionDock({
   /** The active panel. A function receives the live rendered width, for a body that lays out differently at 380px than at 760px. */
   children: ReactNode | ((width: number) => ReactNode)
 }) {
+  const t = useTranslations('Sessions.detail.sessionDock')
   const { activeOrg } = useOrgs()
   const orgId = activeOrg?.id ?? ''
   const uid = useId()
@@ -405,7 +407,7 @@ export function SessionDock({
     <div
       role="separator"
       aria-orientation="vertical"
-      aria-label="Resize panel"
+      aria-label={t('resizePanel')}
       aria-valuenow={width}
       aria-valuemin={DOCK_WIDTH_MIN}
       // The widest the drag can actually land, asked of the very function that clamps it so the two cannot drift: the geometric ceiling alone under-reports at 1440px (504) and OVER-reports at 1920px (984 against a 760 cap).
@@ -496,8 +498,8 @@ export function SessionDock({
                 {onOverflow ? (
                   <button
                     type="button"
-                    aria-label="More"
-                    title="More"
+                    aria-label={t('more')}
+                    title={t('more')}
                     aria-haspopup="true"
                     data-dock-overflow=""
                     onClick={onOverflow}
@@ -509,8 +511,8 @@ export function SessionDock({
                 {/* The overlay covers its own trigger, so the close control rides here; above `wide:` the dock is the column and closes nothing. */}
                 <button
                   type="button"
-                  aria-label="Close panels"
-                  title="Close panels"
+                  aria-label={t('closePanels')}
+                  title={t('closePanels')}
                   data-dock-close=""
                   onClick={closeOverlay}
                   className={`${ACTION_BTN} wide:hidden`}
@@ -529,19 +531,24 @@ export function SessionDock({
             {/* Which of the two it is, is the whole difference between "wait" and "there is nothing here". */}
             {!vacant && activeStatus === 'loading' ? (
               active?.loadingPlaceholder ? (
-                <div role="status" aria-label="Loading" data-dock-loading="" className="flex min-h-0 flex-1 flex-col">
+                <div
+                  role="status"
+                  aria-label={t('loading')}
+                  data-dock-loading=""
+                  className="flex min-h-0 flex-1 flex-col"
+                >
                   {active.loadingPlaceholder}
                 </div>
               ) : (
                 <div role="status" data-dock-loading="" className={PLACEHOLDER}>
                   <Icon name="loader" size={15} className="animate-spin" />
-                  Loading…
+                  {t('loadingDots')}
                 </div>
               )
             ) : null}
             {!vacant && activeStatus === 'empty' ? (
               <div data-dock-empty="" className={PLACEHOLDER}>
-                Nothing to show
+                {t('nothingToShow')}
               </div>
             ) : null}
             {body}

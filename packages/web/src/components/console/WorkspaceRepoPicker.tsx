@@ -13,6 +13,7 @@
 // in clips its overflow to truncate long paths, which would cut a menu drawn inside it.
 
 import { GithubMark } from '@/components/marks'
+import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { REPOSITORY_ACCESS_BADGE } from '@/components/console/WorkspaceFormFields'
@@ -73,6 +74,7 @@ export function WorkspaceRepoPicker({
   selectedRepo: string | null
   onChange: (repo: string | null) => void
 }) {
+  const t = useTranslations('Agents.detail.workspace')
   const selected = selectedRepo ?? primaryLabel
 
   return (
@@ -127,13 +129,13 @@ export function WorkspaceRepoPicker({
             <span className="mono min-w-0 flex-1 truncate text-[11.5px] font-semibold" title={primaryLabel}>
               {primaryLabel}
             </span>
-            <span className="eyebrow flex-none text-[10px]">workspace</span>
+            <span className="eyebrow flex-none text-[10px]">{t('workspace')}</span>
           </button>
 
           {repos.length > 0 ? (
             <>
               <div className="eyebrow mt-[3px] flex h-7 items-center gap-2 border-t border-(--border-subtle) px-[9px] text-[10.5px]">
-                <span>Additional repositories</span>
+                <span>{t('additionalRepositories')}</span>
                 <span aria-hidden>·</span>
                 <span>{repos.length}</span>
               </div>

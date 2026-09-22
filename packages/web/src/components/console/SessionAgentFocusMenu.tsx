@@ -3,6 +3,7 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import Link from 'next/link'
 import { Icon } from '@/components/ui'
+import { useTranslations } from 'next-intl'
 
 export interface SessionAgentFocusOption {
   agentId: string
@@ -21,6 +22,7 @@ export function SessionAgentFocusMenu({
   onChange: (agentId: string) => void
 }) {
   const [open, setOpen] = useState(false)
+  const t = useTranslations('Sessions.focusMenu')
   const wrapRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const menuId = useId()
@@ -115,7 +117,7 @@ export function SessionAgentFocusMenu({
             id={headingId}
             className="px-2 pt-[5px] pb-1 font-sans text-[10.5px] font-semibold leading-normal tracking-[0.06em] text-(--text-tertiary) uppercase"
           >
-            Focus
+            {t('focus')}
           </div>
           <div className="max-h-[300px] overflow-y-auto overflow-x-hidden">
             {options.map((option) => {

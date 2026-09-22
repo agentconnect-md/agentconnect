@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { PlatformMark } from '@/components/marks'
 import type { Agent } from '@/lib/data'
 import type { WizardHost } from '../contract'
@@ -6,6 +7,7 @@ import { usePublishedFooter } from '../publish'
 import { TokenGuidePane } from '../wizard-chrome'
 
 export function QQWizardBody({ agent, host }: { agent: Agent; host: WizardHost }) {
+  const t = useTranslations('Platforms.qq')
   const [appId, setAppId] = useState('')
   const [appSecret, setAppSecret] = useState('')
   const [saving, setSaving] = useState(false)
@@ -32,7 +34,7 @@ export function QQWizardBody({ agent, host }: { agent: Agent; host: WizardHost }
     }
   }
   usePublishedFooter(host, {
-    label: saving ? 'Checking credentials…' : 'Connect',
+    label: saving ? t('checking') : t('connect'),
     enabled: valid && !saving,
     onSubmit: () => void submit()
   })
@@ -40,11 +42,11 @@ export function QQWizardBody({ agent, host }: { agent: Agent; host: WizardHost }
   return (
     <TokenGuidePane
       mark={<PlatformMark platform="qq" />}
-      step1="Create a bot in the QQ developer portal, turn on private and group messages, then copy its AppID and AppSecret."
-      step1Warning="Before publishing the bot, add your daemon's public IP to its IP allowlist — QQ rejects calls from other addresses."
+      step1={t('step1')}
+      step1Warning={t('step1Warning')}
       linkHref="https://q.qq.com/"
-      linkLabel="Create QQ bot"
-      step2="Paste the AppID & AppSecret — required to connect"
+      linkLabel={t('createBot')}
+      step2={t('step2')}
       fields={[
         {
           label: 'AppID',

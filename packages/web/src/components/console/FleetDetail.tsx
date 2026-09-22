@@ -12,6 +12,7 @@
 // what they ALL offer is something the group can promise. Hence a pair of each.
 
 import { useState, type ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
 import {
@@ -278,6 +279,7 @@ export function ResourceDials({ children }: { children: ReactNode }) {
 const USAGE_RANGE: UsageRange = 'd30'
 
 export function FleetUsageCard({ agentIds, note }: { agentIds: readonly string[]; note: string }) {
+  const t = useTranslations('Common.fleetDetail')
   const { activeOrg } = useOrgs()
   const orgId = activeOrg?.id ?? null
   // The SAME key the Analytics page uses for this window, so the two reads share one entry
@@ -313,11 +315,11 @@ export function FleetUsageCard({ agentIds, note }: { agentIds: readonly string[]
 
   const message =
     usage.error && !usage.data
-      ? { icon: true, text: 'unavailable', title: (usage.error as Error).message }
+      ? { icon: true, text: t('unavailable'), title: (usage.error as Error).message }
       : points.length > 0 && !hasSplit
-        ? { icon: true, text: 'This control plane reports no per-agent split.', title: undefined }
+        ? { icon: true, text: t('noAgentSplit'), title: undefined }
         : total === 0
-          ? { icon: false, text: 'No usage in this window.', title: undefined }
+          ? { icon: false, text: t('noUsage'), title: undefined }
           : null
 
   return (
@@ -325,7 +327,7 @@ export function FleetUsageCard({ agentIds, note }: { agentIds: readonly string[]
     // let the plot widen its own column.
     <div className="card flex min-w-0 flex-col">
       <div className="cardhead">
-        <span className="cardtitle">Usage</span>
+        <span className="cardtitle">{t('usage')}</span>
         <span className="mono ml-auto text-[11px] text-(--text-tertiary)">{note}</span>
       </div>
       {usage.isLoading ? (
@@ -420,6 +422,7 @@ export function FleetRuntimesCard({
    *  belongs on a named host, and a set of them has no single one to name. */
   daemonName?: string
 }) {
+  const t = useTranslations('Common.fleetDetail')
   const acpRegistry = useAcpRegistry()
   const { openModal } = useModal()
   // Independent disclosures — more than one runtime's models can be open at once.
@@ -477,7 +480,7 @@ export function FleetRuntimesCard({
                     </span>
                   </span>
                   <span className="badge flex-none bg-(--surface-active) text-(--text-secondary)">
-                    {rt.models.length} model{rt.models.length === 1 ? '' : 's'}
+                    {t('modelsCount', { count: rt.models.length })}
                   </span>
                   <Icon
                     name={shown ? 'chevron-up' : 'chevron-down'}
@@ -495,7 +498,7 @@ export function FleetRuntimesCard({
                 {warning === 'auth-required' && (
                   <button
                     type="button"
-                    title="Show the command to sign in on the daemon host."
+                    title={t('showLoginCommand')}
                     onClick={() =>
                       openModal('runtimeLogin', {
                         runtimeId: rt.runtime,
@@ -506,9 +509,9 @@ export function FleetRuntimesCard({
                     className="flex w-full cursor-pointer items-center gap-[6px] border-0 bg-(--status-paused-soft) px-[13px] py-[6px] text-left font-sans text-[11.5px] font-medium leading-normal text-(--amber-500) transition-opacity hover:opacity-80"
                   >
                     <Icon name="triangle-alert" size={12} className="flex-none" />
-                    <span className="min-w-0 truncate">Login required</span>
+                    <span className="min-w-0 truncate">{t('loginRequired')}</span>
                     <span className="ml-auto flex flex-none items-center gap-[3px] underline underline-offset-2">
-                      Show command
+                      {t('showCommand')}
                       <Icon name="chevron-right" size={12} className="flex-none" />
                     </span>
                   </button>
@@ -516,7 +519,7 @@ export function FleetRuntimesCard({
                 {shown && (
                   <div className="border-t border-(--border-subtle) bg-(--surface-sunken) px-[13px] py-[10px]">
                     <div className="pb-1 font-sans text-[10px] font-semibold leading-normal tracking-[.05em] uppercase text-(--text-tertiary)">
-                      Models
+                      {t('models')}
                     </div>
                     {rt.models.map((m) => {
                       const info = rt.modelInfo?.[m]

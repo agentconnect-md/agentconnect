@@ -19,6 +19,7 @@ export function OutputModeField({
   onShowStatusBarChange: (show: boolean) => void
   className?: string
 }) {
+  const t = useTranslations('Agents.outputMode')
   return (
     <div
       className={
@@ -29,7 +30,7 @@ export function OutputModeField({
     >
       <div className="fld min-w-0">
         <div className="flex items-center gap-[6px]">
-          <span className="fldlbl">Output mode</span>
+          <span className="fldlbl">{t('outputMode')}</span>
           <OutputModeHelp activeMode={value} />
         </div>
         <div className="pillbar self-start">
@@ -48,7 +49,7 @@ export function OutputModeField({
       </div>
       <div className="fld min-w-0 desktop:items-end">
         <CompactFieldLabel
-          label="Show footer"
+          label={t('showFooter')}
           tooltipAlign="right"
           detail={showFooter ? OUTPUT_CHROME_COPY.footer.on : OUTPUT_CHROME_COPY.footer.off}
         />
@@ -59,7 +60,7 @@ export function OutputModeField({
             onClick={() => onShowFooterChange(true)}
             aria-pressed={showFooter}
           >
-            On
+            {t('on')}
           </button>
           <button
             type="button"
@@ -67,13 +68,13 @@ export function OutputModeField({
             onClick={() => onShowFooterChange(false)}
             aria-pressed={!showFooter}
           >
-            Off
+            {t('off')}
           </button>
         </div>
       </div>
       <div className="fld min-w-0 desktop:items-end">
         <CompactFieldLabel
-          label="Show status bar"
+          label={t('showStatusBar')}
           tooltipAlign="right"
           detail={showStatusBar ? OUTPUT_CHROME_COPY.statusBar.on : OUTPUT_CHROME_COPY.statusBar.off}
         />
@@ -84,7 +85,7 @@ export function OutputModeField({
             onClick={() => onShowStatusBarChange(true)}
             aria-pressed={showStatusBar}
           >
-            On
+            {t('on')}
           </button>
           <button
             type="button"
@@ -92,10 +93,11 @@ export function OutputModeField({
             onClick={() => onShowStatusBarChange(false)}
             aria-pressed={!showStatusBar}
           >
-            Off
+            {t('off')}
           </button>
         </div>
       </div>
     </div>
   )
 }
+import { useTranslations } from 'next-intl'

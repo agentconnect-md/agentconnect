@@ -76,16 +76,17 @@ function ConnectFields({
   onSubmit: () => void
   onCancel?: () => void
 }) {
+  const t = useTranslations('Integrations.codeHostCards')
   return (
     <div className="border-b border-(--border-subtle) px-4 py-[13px]">
       <div className="fld">
-        <span className="fldlbl">{replacing ? 'New bot token' : 'Bot token'}</span>
+        <span className="fldlbl">{replacing ? t('newBotToken') : t('botToken')}</span>
         <input
           className="inp mn font-mono text-[12.5px]"
           type="password"
           autoComplete="new-password"
-          aria-label={replacing ? 'New Gitea bot token' : 'Gitea bot token'}
-          placeholder="personal access token of the bot user"
+          aria-label={replacing ? t('newGiteaBotToken') : t('giteaBotToken')}
+          placeholder={t('botTokenPlaceholder')}
           value={token}
           onChange={(event) => onTokenChange(event.target.value)}
         />
@@ -94,7 +95,7 @@ function ConnectFields({
         <span className="flex items-start gap-[6px]">
           <Icon name="key-round" size={13} className="mt-[2px] flex-none" />
           <span>
-            Bot user&rsquo;s Settings &rarr; Applications, scopes{' '}
+            {t('settingsScopes')}{' '}
             {scopes.map((scope, index) => (
               <span key={scope}>
                 {index > 0 ? ', ' : ''}
@@ -106,20 +107,17 @@ function ConnectFields({
         </span>
         <span className="flex items-start gap-[6px]">
           <Icon name="users" size={13} className="mt-[2px] flex-none" />
-          <span>
-            Use a dedicated bot user with <span className="text-(--text-secondary)">Admin</span>&#32;on each repository
-            agents will use. Everything an agent writes is attributed to it, and an agent can do anything the bot can.
-          </span>
+          <span>{t('dedicatedBot')}</span>
         </span>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-[10px]">
         <Button size="sm" disabled={busy || token.trim() === ''} onClick={onSubmit}>
           <Icon name="plug" size={13} />
-          {busy ? 'Checking…' : replacing ? 'Replace token' : 'Connect Gitea'}
+          {busy ? t('checking') : replacing ? t('replaceToken') : t('connectGitea')}
         </Button>
         {onCancel && (
           <Button variant="ghost" size="sm" onClick={onCancel}>
-            Cancel
+            {t('cancel')}
           </Button>
         )}
       </div>
@@ -145,6 +143,7 @@ function RepositoryRow({
   onRotate: () => void
   onRemove: () => void
 }) {
+  const t = useTranslations('Integrations.codeHostCards')
   const reason = giteaStateReasonText(binding.stateReason)
   const webhook = giteaWebhookBadge(binding.webhookState)
   return (
@@ -155,7 +154,7 @@ function RepositoryRow({
             href={giteaRepositoryUrl(instanceUrl, binding.repoPath)}
             target="_blank"
             rel="noopener noreferrer"
-            title={`Open ${binding.repoPath} on Gitea`}
+            title={t('openRepository', { repo: binding.repoPath })}
             className="mono min-w-0 truncate text-[12.5px] text-(--text-primary) no-underline hover:underline"
           >
             {binding.repoPath}
@@ -176,7 +175,7 @@ function RepositoryRow({
         {canWrite && (
           <button
             className="iconbtn h-7 w-7 flex-none"
-            title={busy ? 'Working…' : 'Repair this repository'}
+            title={busy ? t('working') : t('repairRepository')}
             disabled={busy}
             onClick={onRepair}
           >
@@ -186,7 +185,7 @@ function RepositoryRow({
         {canWrite && binding.webhookState === 'installed' && (
           <button
             className="iconbtn h-7 w-7 flex-none"
-            title={busy ? 'Working…' : 'Rotate the webhook signing secret'}
+            title={busy ? t('working') : t('rotateSecret')}
             disabled={busy}
             onClick={onRotate}
           >
@@ -194,7 +193,7 @@ function RepositoryRow({
           </button>
         )}
         {canWrite && (
-          <button className="iconbtn h-7 w-7 flex-none" title="Remove this repository" onClick={onRemove}>
+          <button className="iconbtn h-7 w-7 flex-none" title={t('removeRepository')} onClick={onRemove}>
             <Icon name="trash" size={14} />
           </button>
         )}
@@ -205,6 +204,7 @@ function RepositoryRow({
 
 export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
   const t = useTranslations('Integrations')
+  const ct = useTranslations('Integrations.codeHostCards')
   // Gate on the active org like the other code-host cards: before it resolves `orgBase()` throws
   // and the card would read "not enabled".
   const { activeOrg } = useOrgs()
@@ -436,7 +436,7 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
           <span className="flex h-[14px] w-[14px] flex-none items-center justify-center">
             <GiteaMark fillPct={SQUARE_MARK_FILL_PCT} />
           </span>
-          Gitea
+          {ct('gitea')}
           {/* Which instance, and what it runs — one line of hover on the card. */}
           {enabled === true && connection !== null && (
             <span className="flex items-center text-(--text-tertiary)" data-gitea-instance="" title={instanceHint}>
@@ -447,7 +447,7 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
         {enabled === true && canWrite && connection === null && tokenPanel === null && (
           <Button onClick={() => setTokenPanel('connect')}>
             <Icon name="plug" size={13} />
-            Connect Gitea
+            {ct('connectGitea')}
           </Button>
         )}
         {enabled === true && canWrite && connection !== null && (
@@ -461,31 +461,26 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
       {/* Below the floor nothing on the instance can be set up, so the card says it once. */}
       {enabled === true && connection?.instanceVersionSupported === false && (
         <div className="flex flex-wrap items-center gap-2 border-b border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-          <span>Gitea {connection.instanceVersion}</span>
+          <span>{ct('version', { name: 'Gitea', version: connection.instanceVersion ?? '' })}</span>
           <span className="badge bg-(--status-paused-soft) text-(--amber-500)">
-            below {connection.instanceVersionFloor}
+            {ct('belowVersion', { version: connection.instanceVersionFloor })}
           </span>
-          <span>
-            Adding repositories and replacing the token need {connection.instanceVersionFloor} or later. Repositories
-            already set up keep working.
-          </span>
+          <span>{ct('versionRequirement', { version: connection.instanceVersionFloor })}</span>
         </div>
       )}
 
       {enabled === null && <LoadingState size={22} padding={20} />}
       {enabled === false && (
         <div className="px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          Not enabled on this deployment — its control plane predates Gitea support.
+          {ct('giteaNotEnabled')}
         </div>
       )}
 
       {enabled === true && connection === null && tokenPanel === null && (
         <div className="px-4 py-7 text-center">
-          <div className="font-sans text-[13px] font-semibold leading-normal">Not connected</div>
+          <div className="font-sans text-[13px] font-semibold leading-normal">{ct('notConnected')}</div>
           <div className="mt-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-            Create a bot user on <span className="mono text-[11.5px]">{giteaInstanceHost(instanceUrl)}</span>, give it
-            Admin on the repositories you want agents to work in, and paste its personal access token here. Every
-            comment, review and commit status an agent writes comes from that user.
+            {ct('notConnectedHint', { host: giteaInstanceHost(instanceUrl) })}
           </div>
         </div>
       )}
@@ -521,7 +516,7 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
                 href={giteaProfileUrl(instanceUrl, connection.botUsername)}
                 target="_blank"
                 rel="noopener noreferrer"
-                title={`Open @${connection.botUsername} on Gitea`}
+                title={ct('openProfile', { username: connection.botUsername })}
                 className="mono min-w-0 truncate text-[12.5px] text-(--text-primary) no-underline hover:underline"
               >
                 {connection.botUsername}
@@ -532,10 +527,10 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
                 </span>
               )}
               {connection.state === 'token_rejected' && (
-                <span className="badge bg-(--status-paused-soft) text-(--amber-500)">token rejected</span>
+                <span className="badge bg-(--status-paused-soft) text-(--amber-500)">{ct('tokenRejected')}</span>
               )}
               {connection.state === 'disconnecting' && (
-                <span className="badge bg-(--status-error-soft) text-(--status-error)">disconnecting</span>
+                <span className="badge bg-(--status-error-soft) text-(--status-error)">{ct('disconnecting')}</span>
               )}
             </div>
             {canWrite && (
@@ -566,10 +561,7 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
             >
               <span className="flex min-w-0 items-start gap-2">
                 <Icon name="triangle-alert" size={14} color="var(--amber-500)" className="mt-[2px] flex-none" />
-                <span>
-                  Gitea no longer accepts this token. Gitea tokens do not expire on their own, so it was most likely
-                  revoked — generate a new one for @{connection.botUsername} and replace it here.
-                </span>
+                <span>{ct('tokenRejectedWarning', { username: connection.botUsername })}</span>
               </span>
             </div>
           )}
@@ -578,8 +570,7 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
 
       {enabled === true && connection !== null && bindings.length === 0 && (
         <div className="px-4 py-5 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          No repositories in use yet. Point a trigger or an agent workspace at one the bot administers and it appears
-          here — or add one ahead of time.
+          {ct('noRepositories')}
         </div>
       )}
 
@@ -622,20 +613,20 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
                   <GiteaMark />
                 </span>
               </span>
-              <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Add repository</span>
-              <button className="iconbtn" onClick={() => setPicking(false)} aria-label="Close">
+              <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{ct('addRepository')}</span>
+              <button className="iconbtn" onClick={() => setPicking(false)} aria-label={ct('close')}>
                 <Icon name="x" size={16} />
               </button>
             </div>
             <div className="modalbody">
               <div className="fld">
-                <span className="fldlbl">Repository</span>
+                <span className="fldlbl">{ct('repository')}</span>
                 <input
                   className="fsearch h-10 rounded-md px-3 font-sans text-[13px] font-medium leading-normal"
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Search repositories the bot administers…"
-                  aria-label="Search Gitea repositories"
+                  placeholder={ct('searchRepositories')}
+                  aria-label={ct('searchRepositoriesAria')}
                   autoFocus
                 />
               </div>
@@ -645,8 +636,8 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
                 ) : offers.length === 0 ? (
                   <div className="fnohit">
                     {query.trim()
-                      ? `No repositories match “${query}”`
-                      : `@${connection.botUsername} administers no repository that is not already added. Give it Admin on one in Gitea, then try again.`}
+                      ? ct('noRepositoryMatch', { query })
+                      : ct('noAdminRepository', { username: connection.botUsername })}
                   </div>
                 ) : (
                   offers.map((choice) => (
@@ -673,10 +664,10 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
                         </span>
                         <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                           {busyId === choice.repoId
-                            ? 'Installing the webhook…'
+                            ? ct('installing')
                             : choice.defaultBranch
-                              ? `default branch ${choice.defaultBranch}`
-                              : 'no default branch reported'}
+                              ? ct('defaultBranch', { branch: choice.defaultBranch })
+                              : ct('noDefaultBranch')}
                         </span>
                       </span>
                     </button>
@@ -695,15 +686,9 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
         <div className="scrim" onClick={() => setDisconnecting(null)}>
           <div className="modal" onClick={(event) => event.stopPropagation()}>
             <ConfirmGitea
-              title="Disconnect Gitea"
-              body={
-                <>
-                  Disconnect <span className="mono text-(--text-primary)">{disconnecting.botUsername}</span>? Every
-                  managed webhook is removed from Gitea first, and agents stop answering there. Revoke the token in
-                  Gitea afterwards — AgentConnect cannot.
-                </>
-              }
-              verb="Disconnect"
+              title={ct('disconnectGitea')}
+              body={ct('disconnectBody', { username: disconnecting.botUsername })}
+              verb={ct('disconnect')}
               icon="unplug"
               busy={busyId === 'connection'}
               onClose={() => setDisconnecting(null)}
@@ -717,15 +702,9 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
         <div className="scrim" onClick={() => setPending(null)}>
           <div className="modal" onClick={(event) => event.stopPropagation()}>
             <ConfirmGitea
-              title="Remove repository"
-              body={
-                <>
-                  Remove <span className="mono text-(--text-primary)">{pending.repoPath}</span> from this organization?
-                  Its managed webhook is deleted on Gitea and agents stop answering there. Nothing in the
-                  repository&rsquo;s code or history changes.
-                </>
-              }
-              verb="Remove"
+              title={ct('removeRepositoryTitle')}
+              body={ct('removeRepositoryBody', { repo: pending.repoPath })}
+              verb={ct('remove')}
               icon="trash"
               busy={busyId === pending.id}
               onClose={() => setPending(null)}
@@ -756,6 +735,7 @@ function ConfirmGitea({
   onClose: () => void
   onConfirm: () => void
 }) {
+  const t = useTranslations('Integrations.codeHostCards')
   return (
     <>
       <div className="modalhead">
@@ -765,7 +745,7 @@ function ConfirmGitea({
           </span>
         </span>
         <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{title}</span>
-        <button className="iconbtn" onClick={onClose} aria-label="Close">
+        <button className="iconbtn" onClick={onClose} aria-label={t('close')}>
           <Icon name="x" size={16} />
         </button>
       </div>
@@ -775,11 +755,11 @@ function ConfirmGitea({
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button variant="danger" onClick={onConfirm} className={busy ? 'pointer-events-none opacity-50' : undefined}>
           <Icon name={icon} size={15} />
-          {busy ? 'Working…' : verb}
+          {busy ? t('working') : verb}
         </Button>
       </div>
     </>

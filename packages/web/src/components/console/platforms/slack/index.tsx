@@ -1,7 +1,7 @@
 // No 'use client' here: reached only from ModalProvider's tree (the client boundary).
 
 import type { WebPlatformModule } from '../contract'
-import { inviteBotHint } from '../wizard-chrome'
+import { identityCards, inviteBotHint } from '../wizard-chrome'
 import { slackApi, type SlackApi } from './api'
 import { SlackWizardBody, SLACK_TRANSPORT_LABEL } from './Body'
 import { SlackMark } from './mark'
@@ -40,7 +40,7 @@ export const slackModule: WebPlatformModule<SlackApi> = {
       transport: { labels: SLACK_TRANSPORT_LABEL, httpByDefaultWhenRelayAvailable: true },
       share: true
     },
-    identityCards: () => ({ create: 'Create with a Slack manifest', existing: 'An unused Slack app' }),
+    identityCards: () => identityCards('slack'),
     inviteHint: () => inviteBotHint('channel', 'Slack')
   },
   settingsFragments: slackSettingsFragments,

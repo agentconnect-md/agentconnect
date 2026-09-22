@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import type { Agent, DaemonRow } from '@/lib/data'
 import { agentLabel, effectiveAgentStatus, status } from '@/lib/data'
 import {
@@ -164,6 +165,7 @@ export function AgentReachabilityOverview({
   loading: boolean
   compact?: boolean
 }) {
+  const t = useTranslations('Agents.reachability')
   const { orgPath } = useOrgs()
   const [focusAgentId, setFocusAgentId] = useState('')
   const [focusCycleComponentId, setFocusCycleComponentId] = useState<number | null>(null)
@@ -218,10 +220,10 @@ export function AgentReachabilityOverview({
       <div className={compact ? 'mx-4' : ''}>
         <div className="card px-4 py-10 text-center">
           <div className="font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
-            No agents to map yet
+            {t('noAgents')}
           </div>
           <div className="mt-1 font-sans text-[13px] font-normal leading-[1.5] text-(--text-tertiary)">
-            Add an agent to start building the topology.
+            {t('addAgentHint')}
           </div>
         </div>
       </div>
@@ -232,10 +234,10 @@ export function AgentReachabilityOverview({
     <div className={compact ? 'mx-4 pb-6' : ''}>
       <div className="mb-[14px] grid grid-cols-2 gap-3 desktop:grid-cols-4 desktop:gap-[14px]">
         {[
-          { label: 'Visible agents', value: agents.length },
-          { label: 'Direct paths', value: graph.edges.length },
-          { label: 'Root agents', value: rootCount },
-          { label: 'Cycle groups', value: cycleCount }
+          { label: t('visibleAgents'), value: agents.length },
+          { label: t('directPaths'), value: graph.edges.length },
+          { label: t('rootAgents'), value: rootCount },
+          { label: t('cycleGroups'), value: cycleCount }
         ].map((metric) => (
           <div key={metric.label} className="card stat">
             <div className="statlbl">{metric.label}</div>
@@ -248,14 +250,16 @@ export function AgentReachabilityOverview({
         <div className="flex flex-col gap-3 border-b border-(--border-subtle) px-4 py-3 desktop:flex-row desktop:items-center desktop:justify-between">
           <div className="min-w-0">
             <div className="font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
-              Configured topology
+              {t('configuredTopology')}
             </div>
             <div className="mt-1 font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary)">
-              Arrows are direct call paths.
+              {t('directCallPaths')}
             </div>
           </div>
           <label className="flex flex-none items-center gap-2">
-            <span className="font-sans text-[12px] font-medium leading-normal text-(--text-secondary)">Focus</span>
+            <span className="font-sans text-[12px] font-medium leading-normal text-(--text-secondary)">
+              {t('focus')}
+            </span>
             <select
               value={focusAgentId}
               onChange={(event) => {
@@ -264,7 +268,7 @@ export function AgentReachabilityOverview({
               }}
               className="h-8 min-w-[180px] rounded-md border border-(--border-subtle) bg-(--surface-card) px-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) outline-none focus:border-(--brand)"
             >
-              <option value="">All agents</option>
+              <option value="">{t('allAgents')}</option>
               {orderedAgents.map((agent) => (
                 <option key={agent.id} value={agent.id}>
                   {agentLabel(agent)}
@@ -277,7 +281,7 @@ export function AgentReachabilityOverview({
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-(--border-subtle) bg-(--surface-sunken) px-4 py-2 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
           <span className="flex items-center gap-[6px]">
             <span className="h-px w-7 bg-(--text-tertiary)" />
-            direct call path
+            {t('directCallPath')}
           </span>
         </div>
 
@@ -347,8 +351,8 @@ export function AgentReachabilityOverview({
                 <Link
                   key={agentId}
                   href={orgPath(`/agents/${agentId}`)}
-                  aria-label={`Open ${agentLabel(agent)}. ${incoming} incoming and ${outgoing} outgoing direct paths.`}
-                  title="Open agent details"
+                  aria-label={t('openAgentAria', { agent: agentLabel(agent), incoming, outgoing })}
+                  title={t('openAgentDetails')}
                   className={`${
                     isFocus || isFocusedCycleMember
                       ? 'absolute flex items-center gap-[10px] rounded-md border-2 border-(--brand) bg-(--brand-soft) px-[11px] py-2 no-underline shadow-(--shadow-md)'
@@ -373,7 +377,7 @@ export function AgentReachabilityOverview({
                       {agentLabel(agent)}
                     </span>
                     <span className="font-mono text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
-                      {incoming} in · {outgoing} out
+                      {t('pathsSummary', { incoming, outgoing })}
                     </span>
                   </span>
                 </Link>
@@ -387,13 +391,13 @@ export function AgentReachabilityOverview({
             <>
               <div className="min-w-0">
                 <div className="font-sans text-[12px] font-semibold leading-normal text-(--text-secondary)">
-                  Mutual-reachability {cycleCount === 1 ? 'group' : 'groups'}
+                  {t('mutualReachability', { count: cycleCount })}
                 </div>
                 <div className="mt-1 font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
-                  Select a group to highlight its members and internal paths.
+                  {t('selectGroupHint')}
                 </div>
               </div>
-              <div className="flex flex-wrap gap-2" role="group" aria-label="Mutual-reachability groups">
+              <div className="flex flex-wrap gap-2" role="group" aria-label={t('mutualReachabilityGroups')}>
                 {cycleComponents.map((component, index) => {
                   const selected = focusCycleComponentId === component.id
                   const names = component.agentIds.map((agentId) => agentLabel(agentById.get(agentId)!)).join(' · ')
@@ -414,7 +418,7 @@ export function AgentReachabilityOverview({
                       }
                     >
                       <span className="flex-none font-mono text-[10px] font-semibold leading-normal">
-                        Group {index + 1}
+                        {t('groupNumber', { number: index + 1 })}
                       </span>
                       <span className="truncate font-sans text-[11px] font-normal leading-normal">{names}</span>
                     </button>
@@ -424,7 +428,7 @@ export function AgentReachabilityOverview({
             </>
           ) : (
             <div className="font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary)">
-              No mutual-reachability groups detected in the current graph.
+              {t('noMutualGroups')}
             </div>
           )}
         </div>

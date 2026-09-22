@@ -1,6 +1,7 @@
 // No 'use client' here: rendered only inside ModalProvider's tree (the client boundary).
 
 import { useEffect, useId, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import type { WebWizardTransport } from './contract'
@@ -10,15 +11,62 @@ import type { WebWizardTransport } from './contract'
 // portal copy, walkthrough steps), which is exactly what keeps these pieces
 // reusable without the chassis growing a platform branch.
 
-/** The one-line "invite the bot" hint under a chat platform's pane
- *  ({@link WebWizardFacet.inviteHint}); the phrasing is shared so four modules
- *  cannot drift into four different sentences. */
-export function inviteBotHint(
-  target: 'channel' | 'group',
-  platform: string,
-  nextStep = 'it starts listening there'
-): string {
-  return `invite the bot to any ${target} in ${platform} and ${nextStep}.`
+/** The host messages a mode card can name. `region` is for Feishu's two clouds,
+ *  which are one platform id; every other module has a single pair. */
+export type IdentityCards = {
+  create: string
+  existing: string
+}
+export type IdentityCardKey =
+  | 'Integrations.dialog.identityCards.slack.create'
+  | 'Integrations.dialog.identityCards.slack.existing'
+  | 'Integrations.dialog.identityCards.telegram.create'
+  | 'Integrations.dialog.identityCards.telegram.existing'
+  | 'Integrations.dialog.identityCards.discord.create'
+  | 'Integrations.dialog.identityCards.discord.existing'
+  | 'Integrations.dialog.identityCards.qq.create'
+  | 'Integrations.dialog.identityCards.qq.existing'
+  | 'Integrations.dialog.identityCards.linear.create'
+  | 'Integrations.dialog.identityCards.linear.existing'
+  | 'Integrations.dialog.identityCards.feishuLark.create'
+  | 'Integrations.dialog.identityCards.feishuLark.existing'
+  | 'Integrations.dialog.identityCards.feishuFeishu.create'
+  | 'Integrations.dialog.identityCards.feishuFeishu.existing'
+
+/** The mode-card pair for a module with one brand. */
+export function identityCards(platform: 'slack' | 'telegram' | 'discord' | 'linear' | 'lark' | 'feishu' | 'qq'): {
+  create: IdentityCardKey
+  existing: IdentityCardKey
+} {
+  // Lark and Feishu are one platform id with two clouds; the pair is the only
+  // thing that differs, so the key segment is the only thing this maps.
+  const segment =
+    platform === 'lark' || platform === 'feishu' ? `feishu${platform === 'lark' ? 'Lark' : 'Feishu'}` : platform
+  return {
+    create: `Integrations.dialog.identityCards.${segment}.create` as IdentityCardKey,
+    existing: `Integrations.dialog.identityCards.${segment}.existing` as IdentityCardKey
+  }
+}
+
+/** The one-line "invite the bot" hint a chat module hands the host
+ *  ({@link WebWizardFacet.inviteHint}); the phrasing is shared so several modules
+ *  cannot drift into several different sentences. Returns the message and the
+ *  values, never a sentence — the host resolves it for the active locale. */
+/** A room noun for the hint. Linear's arm names an ISSUE it delegates to the app,
+ *  which is why this is not just the two chat rooms. */
+export type InviteHintTarget = 'channel' | 'group' | 'issue'
+
+/** The host messages an invite hint can name — the two arms of its hint row. */
+export type InviteHint = {
+  key: 'Integrations.dialog.platformHints.listen' | 'Integrations.dialog.platformHints.mention'
+  values: { target: InviteHintTarget; platform: string }
+}
+
+export function inviteBotHint(target: InviteHintTarget, platform: string, mention = false): InviteHint {
+  return {
+    key: mention ? 'Integrations.dialog.platformHints.mention' : 'Integrations.dialog.platformHints.listen',
+    values: { target, platform }
+  }
 }
 
 /**
@@ -27,8 +75,10 @@ export function inviteBotHint(
  * the deployment has public callback delivery; `locked` pins a flow that has
  * already created an app for one transport.
  *
- * `labels` is the module's {@link WebTransportAffordance.labels} — the host
- * never spells a platform's transport vocabulary.
+ * `labels` is resolved copy. A module keeps its transport vocabulary as message
+ * keys in {@link WebTransportAffordance.labels} — the declaration the registry
+ * and its tests read — and its Body resolves them, so the host never spells a
+ * platform's transport vocabulary.
  */
 export function DeliveryLine({
   labels,
@@ -43,12 +93,13 @@ export function DeliveryLine({
   locked: boolean
   onSwitch: (next: WebWizardTransport) => void
 }) {
+  const t = useTranslations('Platforms.chrome')
   const next = transport === 'http' ? 'socket' : 'http'
   // Switching TO http needs a connected relay; switching back to socket is always fine.
   const canSwitch = !locked && (next === 'socket' || relayAvailable)
   return (
     <div className="mt-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-      Delivery: <span className="text-(--text-secondary)">{labels[transport]}</span>.
+      {t('delivery.label')} <span className="text-(--text-secondary)">{labels[transport]}</span>.
       {canSwitch && (
         <>
           {' '}
@@ -57,7 +108,7 @@ export function DeliveryLine({
             className="cursor-pointer border-0 bg-transparent p-0 font-sans text-[11.5px] leading-normal text-(--text-tertiary) underline underline-offset-2 hover:text-(--text-secondary)"
             onClick={() => onSwitch(next)}
           >
-            Switch to {labels[next]}
+            {t('delivery.switchTo', { transport: labels[next] })}
           </button>
         </>
       )}
@@ -129,6 +180,7 @@ function WalkthroughPanel({ steps }: { steps: WalkthroughStep[] }) {
 // Mobile: hover doesn't exist and the modal body would clip a popover, so it becomes an
 // explicit toggle with the panel expanding inline underneath.
 export function BotSetupWalkthrough({ steps, label }: { steps: WalkthroughStep[]; label: string }) {
+  const t = useTranslations('Platforms.chrome')
   const isMobile = useIsMobile()
   const [open, setOpen] = useState(false)
   const panelId = useId()
@@ -144,7 +196,7 @@ export function BotSetupWalkthrough({ steps, label }: { steps: WalkthroughStep[]
           className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md border border-(--border-default) bg-(--surface-card) py-[7px] font-sans text-[12px] font-semibold leading-normal text-(--text-secondary) transition-colors hover:border-(--border-strong) hover:bg-(--surface-hover)"
         >
           <Icon name="list-checks" size={13} />
-          {open ? 'Hide' : 'Show'} the {steps.length} setup steps
+          {open ? t('walkthrough.hide', { count: steps.length }) : t('walkthrough.show', { count: steps.length })}
           <Icon name={open ? 'chevron-up' : 'chevron-down'} size={13} />
         </button>
         {open && (

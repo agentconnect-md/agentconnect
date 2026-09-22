@@ -416,7 +416,7 @@ function ConnectionForm({
         <input
           className="inp"
           value={connectionName}
-          placeholder="e.g. prod-gmail"
+          placeholder={t('connectionNamePlaceholder')}
           maxLength={32}
           onChange={(e) => setConnectionName(e.target.value)}
         />

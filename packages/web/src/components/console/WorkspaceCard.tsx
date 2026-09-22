@@ -167,7 +167,7 @@ export function WorkspaceCard({
         {workspaceAccess && <span className={REPOSITORY_ACCESS_BADGE[workspaceAccess]}>{workspaceAccess}</span>}
         {isGit && ws.provider === undefined && source !== 'giturl' && (
           <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)" title={t('publicRepository')}>
-            public
+            {t('public')}
           </span>
         )}
         {header?.status && (
@@ -190,7 +190,7 @@ export function WorkspaceCard({
         {isGit && header?.onPull && (
           <button
             className={`iconbtn h-6 w-6 flex-none ${header.pulling ? 'pointer-events-none opacity-50' : ''}`}
-            title="Fast-forward pull from the remote"
+            title={t('pull')}
             onClick={header.onPull}
           >
             <Icon name="refresh-cw" size={13} />
@@ -199,7 +199,7 @@ export function WorkspaceCard({
         {isGit && header?.repoUrl && (
           <a
             className="iconbtn flex h-6 w-6 flex-none items-center justify-center no-underline"
-            title={`View on ${remoteLabel}`}
+            title={t('viewRemote', { provider: remoteLabel })}
             href={header.repoUrl}
             target="_blank"
             rel="noopener noreferrer"
@@ -235,7 +235,7 @@ export function WorkspaceCard({
         {isGithubApp && (
           <span
             className="inline-flex h-6 flex-none items-center gap-[6px] rounded-[5px] border border-(--border-default) bg-(--surface-card) px-2"
-            title="The workspace repository — authorized implicitly by the GitHub App installation"
+            title={t('implicitAuthorization')}
           >
             <span className="imark h-[14px] w-[14px] border-0 bg-transparent">
               <GithubMark />

@@ -3,6 +3,7 @@
 // The dock's Sessions tab, hosted at 380–760px: the open session's family, then global pins, then the agent's other sessions by recency.
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import useSWR from 'swr'
@@ -156,6 +157,7 @@ export function SessionsPanel({
   /** Whether the panel would draw nothing. The caller owns the fetches, so it re-asks a collapsed SEED and derives the tab `status`. */
   onWouldHideChange?: (wouldHide: boolean) => void
 }) {
+  const t = useTranslations('Sessions.panel')
   const { orgPath, activeOrg } = useOrgs()
   const flatSearch = flatView ? '?view=flat' : ''
   // Schedule-triggered rows show the schedule's name; `agents` backs the chips.
@@ -401,7 +403,7 @@ export function SessionsPanel({
           type="button"
           onClick={() => togglePin(item.pinId)}
           aria-pressed={pinnedRow}
-          title={pinnedRow ? 'Unpin session' : 'Pin session'}
+          title={pinnedRow ? t('unpinSession') : t('pinSession')}
           className={`absolute top-1/2 right-[7px] z-10 flex h-[19px] w-[19px] -translate-y-1/2 items-center justify-center rounded-[5px] border-0 bg-none p-0 hover:bg-(--surface-active) hover:text-(--brand) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none ${
             pinnedRow
               ? 'text-(--brand)'
@@ -429,13 +431,13 @@ export function SessionsPanel({
       {/* The tab names the panel, so the header holds the one forward action plus the escape to /sessions, carrying the filter unless that page cannot ask it. */}
       <div className="mb-[9px] flex flex-none items-center gap-2 px-[9px]">
         {currentAgent ? (
-          <Button size="sm" onClick={onNewSession} ariaLabel={`New session with ${agentLabel(currentAgent)}`}>
+          <Button size="sm" onClick={onNewSession} ariaLabel={t('newSessionWith', { agent: agentLabel(currentAgent) })}>
             <Icon name="plus" size={14} />
-            New session
+            {t('newSession')}
           </Button>
         ) : null}
         <Link className="lnk ml-auto font-sans text-[12px] font-medium leading-normal" href={allSessionsHref}>
-          All sessions
+          {t('allSessions')}
           <Icon name="arrow-right" size={12} />
         </Link>
       </div>
@@ -444,12 +446,12 @@ export function SessionsPanel({
         {hasFamily && (
           <>
             <div className="flex-none px-[9px] pb-[3px] font-mono text-[10px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
-              Related
+              {t('related')}
             </div>
             {/* Level 0, all of it: the lift unions parents without recording which member each woke, so nesting them would invent a chain. */}
-            {parents.map((parent) => row(relationRow(parent, 'Delegated by'), isPinned(parent.id)))}
+            {parents.map((parent) => row(relationRow(parent, t('delegatedBy')), isPinned(parent.id)))}
             {/* Attribution, not navigation: a parent's edge, but living in THIS conversation, so a link would come right back. */}
-            {wokenBy && attributionRow(wokenBy, 0, 'Delegated by')}
+            {wokenBy && attributionRow(wokenBy, 0, t('delegatedBy'))}
             {row(sessionRow(current), rowPin(current).pinned, currentDepth, true)}
             {woke.map((target) => attributionRow(target, delegatedDepth, 'Delegated to'))}
             {children.map((child, index) => {
@@ -460,10 +462,10 @@ export function SessionsPanel({
                 <Fragment key={child.id}>
                   {origin !== undefined && origin !== previousOrigin && (
                     <div className="flex-none px-[9px] pt-[4px] pb-[1px] font-mono text-[9.5px] font-medium tracking-[0.06em] text-(--text-tertiary)">
-                      via {originAgent ? agentLabel(originAgent) : origin}
+                      {t('via', { agent: originAgent ? agentLabel(originAgent) : origin })}
                     </div>
                   )}
-                  {row(relationRow(child, 'Delegated to'), isPinned(child.id), delegatedDepth)}
+                  {row(relationRow(child, t('delegatedTo')), isPinned(child.id), delegatedDepth)}
                 </Fragment>
               )
             })}
@@ -503,6 +505,7 @@ function PanelAgentFilter({
   selected: string[]
   onChange: (agentIds: string[]) => void
 }) {
+  const t = useTranslations('Sessions.panel')
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   // A restricted agent can own the open session while staying out of this roster: show its id rather than misdescribe the list as unfiltered.
@@ -538,7 +541,7 @@ function PanelAgentFilter({
     <div className="relative mb-[7px] flex flex-none flex-wrap items-center gap-[5px] px-[9px]">
       {chips.length === 0 && (
         <span className="py-[3px] font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)">
-          All agents
+          {t('allAgents')}
         </span>
       )}
       {chips.map((chip) => (
@@ -556,8 +559,8 @@ function PanelAgentFilter({
           <button
             type="button"
             onClick={() => onChange(selected.filter((id) => id !== chip.id))}
-            title="Remove from filter"
-            aria-label={`Remove ${chip.label} from the agent filter`}
+            title={t('removeFromFilter')}
+            aria-label={t('removeFromAgentFilter', { agent: chip.label })}
             className="flex h-[18px] w-[18px] flex-none items-center justify-center rounded-xs border-0 bg-none p-0 text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none"
           >
             <Icon name="x" size={11} />
@@ -567,8 +570,8 @@ function PanelAgentFilter({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        title="Filter by agent"
-        aria-label="Filter by agent"
+        title={t('filterByAgent')}
+        aria-label={t('filterByAgent')}
         aria-expanded={open}
         className={`flex h-[22px] w-[22px] flex-none items-center justify-center rounded-sm border p-0 focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none ${
           open
@@ -587,9 +590,9 @@ function PanelAgentFilter({
               className="fsearch"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Filter agents…"
+              placeholder={t('filterAgentsPlaceholder')}
               autoFocus
-              aria-label="Filter agents"
+              aria-label={t('filterAgents')}
             />
             {shown.map((agent) => {
               const on = selected.includes(agent.id)
@@ -611,7 +614,7 @@ function PanelAgentFilter({
                 </button>
               )
             })}
-            {shown.length === 0 && <div className="fnohit">No matches</div>}
+            {shown.length === 0 && <div className="fnohit">{t('noMatches')}</div>}
           </div>
         </>
       )}

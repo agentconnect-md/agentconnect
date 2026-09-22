@@ -92,10 +92,8 @@ describe('the linear transcript and card semantics', () => {
     const warning = channelListSemantics('linear').ownerChangeWarning
     expect(warning).toBeDefined()
     // A bare verb, per the console's modal convention — never "Yes, move it".
-    expect(warning?.confirmLabel).toBe('Move')
-    const body = warning!.body({ owner: 'triage-bot', room: 'Acme / Engineering' })
-    expect(body).toContain('triage-bot is a private agent')
-    expect(body).toContain('can still be stopped, but it will not answer in them again')
+    expect(warning?.confirmLabel).toEqual({ key: 'ownerChange.confirmLabel' })
+    expect(warning?.body).toEqual({ key: 'ownerChange.body' })
   })
 
   it('formats the facts behind a delegation bubble, and is resolvable from the row’s platform', () => {
@@ -126,7 +124,7 @@ describe('the linear transcript and card semantics', () => {
     // §4.3: a gated member acts in a team only as its default; the host's generic banner
     // would promise a per-member enable the model does not have.
     const note = channelListSemantics('linear').gatedNote
-    expect(note).toBe('Private agent — answers only in teams where it is the default.')
+    expect(note).toEqual({ key: 'linearGatedNote' })
   })
 
   it('is the only module whose roster is derived, or whose triggers are narrowed', () => {

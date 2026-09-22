@@ -332,23 +332,25 @@ export function LineDiffTable({ rows, label = 'Line changes' }: { rows: LineDiff
 }
 
 export function LineDiff({ before, after }: { before: string; after: string }) {
+  const t = useTranslations('Common.lineDiff')
   const rows = diffLines(before, after)
   const changed = rows.some((row) => row.kind !== 'context')
 
   return (
     <div className="min-w-0 overflow-hidden rounded-md border border-(--border-subtle)">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-(--border-subtle) bg-(--surface-sunken) px-3 py-2 font-sans text-[10.5px] font-semibold leading-normal text-(--text-secondary)">
-        <span>Line changes</span>
-        <span className="font-normal text-(--red-600)">− removed</span>
-        <span className="font-normal text-(--green-500)">+ added</span>
+        <span>{t('lineChanges')}</span>
+        <span className="font-normal text-(--red-600)">− {t('removed')}</span>
+        <span className="font-normal text-(--green-500)">+ {t('added')}</span>
       </div>
       {changed ? (
         <div className="max-h-80 overflow-auto">
           <LineDiffTable rows={rows} />
         </div>
       ) : (
-        <div className="bg-(--surface-card) px-3 py-4 text-[11px] text-(--text-tertiary)">No line changes.</div>
+        <div className="bg-(--surface-card) px-3 py-4 text-[11px] text-(--text-tertiary)">{t('noChanges')}</div>
       )}
     </div>
   )
 }
+import { useTranslations } from 'next-intl'

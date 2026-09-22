@@ -51,9 +51,6 @@ import { DreamPanel } from '@/components/console/DreamPanel'
 import { DreamScheduleFields } from '@/components/console/DreamScheduleFields'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
 
-const SCOPE_HELP =
-  'Agent scope shares one memory across everyone who talks to this agent. Channel scope gives each channel (DMs and webchat included) its own memory folder, so different channels never mix. Dreaming is turned off under channel scope.'
-
 function MemoryScopeField({
   scope,
   canEdit,
@@ -63,15 +60,16 @@ function MemoryScopeField({
   canEdit: boolean
   onChange: (next: ManagedMemoryScope) => void
 }) {
+  const t = useTranslations('Agents.detail.memory')
   const tooltipId = useId()
   const options: Array<{ value: ManagedMemoryScope; label: string }> = [
-    { value: 'agent', label: 'Agent' },
-    { value: 'channel', label: 'Channel' }
+    { value: 'agent', label: t('agent') },
+    { value: 'channel', label: t('channel') }
   ]
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-      <span className="font-sans text-[13px] font-semibold leading-normal">Scope</span>
+      <span className="font-sans text-[13px] font-semibold leading-normal">{t('scope')}</span>
       <span className="group relative inline-flex items-center gap-1">
         <span className="pillbar">
           {options.map((option) => (
@@ -94,7 +92,7 @@ function MemoryScopeField({
         <button
           type="button"
           className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
-          aria-label="About memory scope"
+          aria-label={t('aboutScope')}
           aria-describedby={tooltipId}
           onKeyDown={(event) => {
             if (event.key === 'Escape') {
@@ -111,7 +109,7 @@ function MemoryScopeField({
           role="tooltip"
           className="pointer-events-none invisible absolute top-full left-0 z-30 mt-2 w-[280px] max-w-[calc(100vw-72px)] -translate-y-1 rounded-md border border-(--border-default) bg-(--surface-card) p-3 font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-secondary) opacity-0 shadow-(--shadow-lg) transition-[opacity,transform,visibility] duration-150 group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100"
         >
-          {SCOPE_HELP}
+          {t('scopeHelp')}
         </span>
       </span>
     </div>
@@ -139,6 +137,7 @@ function MemoryHomeField({
   pending: boolean
   onChange: (next: ManagedMemoryHome) => void
 }) {
+  const t = useTranslations('Agents.detail.memory')
   const options = MEMORY_HOME_OPTIONS.filter(
     (option) => option.value !== 'daemon' || (persistedHome === 'daemon' && !memberSetPlaced)
   )
@@ -153,7 +152,7 @@ function MemoryHomeField({
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <span className="font-sans text-[13px] font-semibold leading-normal">Memory home</span>
+        <span className="font-sans text-[13px] font-semibold leading-normal">{t('memoryHome')}</span>
         <span className="pillbar">
           {options.map((option) => (
             <button
@@ -167,13 +166,13 @@ function MemoryHomeField({
                 if (editable) onChange(option.value)
               }}
             >
-              {option.label}
+              {option.value === 'daemon' ? t('onDaemon') : t('inControlPlane')}
             </button>
           ))}
         </span>
       </div>
       <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-        {MEMORY_HOME_OPTIONS.find((option) => option.value === home)?.help}
+        {home === 'daemon' ? t('onDaemonHelp') : t('inControlPlaneHelp')}
       </span>
       {reason ? (
         <span
@@ -517,7 +516,7 @@ export function MemoryPanel({
                   aria-live="polite"
                 >
                   <Spinner size={11} />
-                  {HOME_PENDING_STATUS}
+                  {t('movingToControlPlane')}
                 </span>
               ) : null}
             </div>
@@ -551,16 +550,16 @@ export function MemoryPanel({
         {settingsOpen ? (
           <div className="flex flex-col gap-4 border-t border-(--border-subtle) px-4 py-4">
             <div className="flex flex-col gap-2">
-              <span className="font-sans text-[13px] font-semibold leading-normal">Backend</span>
+              <span className="font-sans text-[13px] font-semibold leading-normal">{t('backend')}</span>
               <MemoryProviderPicker value={provider} onChange={selectProvider} disabled={!canEdit || savingProvider} />
               <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                 {provider === 'external'
-                  ? 'An owner-reviewed external plugin; configure exactly what may be recalled and captured below.'
+                  ? t('externalDescription')
                   : provider === 'native'
-                    ? "The runtime's own memory (Claude / Codex), isolated under the agent root."
+                    ? t('nativeDescription')
                     : provider === 'none'
-                      ? 'No persistent memory is loaded or saved.'
-                      : 'A memory directory we keep for the agent.'}
+                      ? t('noneDescription')
+                      : t('managedDescription')}
               </span>
             </div>
 
@@ -600,13 +599,13 @@ export function MemoryPanel({
                     setProviderError(null)
                   }}
                 />
-                Automatically distill durable facts after each turn (uses an additional model call).
+                {t('autoDistillLabel')}
               </label>
             ) : null}
 
             {provider === 'managed' && settings.scope === 'channel' ? (
               <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                One memory folder per channel. Dreaming is unavailable.
+                {t('channelScopeHint')}
               </span>
             ) : null}
 
@@ -625,8 +624,7 @@ export function MemoryPanel({
                       setProviderError(null)
                     }}
                   />
-                  Enable dreaming — consolidate the store from recent sessions. Runs on demand and on the schedule
-                  below.
+                  {t('enableDreaming')}
                 </label>
                 {settings.dreaming.enabled ? (
                   <div className="ml-6 flex flex-col gap-2">
@@ -656,11 +654,11 @@ export function MemoryPanel({
                             setProviderError(null)
                           }}
                         />
-                        Automatically adopt completed memory results without review (opt in).
+                        {t('autoAdopt')}
                       </label>
                       {settings.dreaming.autoAdopt ? (
                         <div className="ml-6 font-sans text-[11px] font-normal leading-[1.5] text-(--amber-500)">
-                          Results can be inaccurate; conflicts still pause for review.
+                          {t('autoAdoptWarning')}
                         </div>
                       ) : null}
                     </div>
@@ -678,21 +676,21 @@ export function MemoryPanel({
                             setProviderError(null)
                           }}
                         />
-                        Also mine reusable skills from repeated procedures.
+                        {t('mineSkills')}
                       </label>
                       {settings.dreaming.mineSkills === true ? (
                         <div className="ml-6 font-sans text-[11px] font-normal leading-[1.5] text-(--text-tertiary)">
-                          Suggested skills always need your review.
+                          {t('mineSkillsHint')}
                         </div>
                       ) : null}
                     </div>
                     <label className="flex flex-col gap-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                      Instructions (optional — steer what the dream focuses on)
+                      {t('instructions')}
                       <textarea
                         value={settings.dreaming.instructions}
                         rows={2}
                         maxLength={4096}
-                        placeholder="Focus on coding-style preferences; ignore one-off debugging notes."
+                        placeholder={t('instructionsPlaceholder')}
                         disabled={!canEdit || savingProvider}
                         onChange={(e) => {
                           const instructions = e.target.value
@@ -722,7 +720,7 @@ export function MemoryPanel({
                 />
                 {settingsBlocker ? (
                   <div className="font-sans text-[12px] font-normal leading-normal text-(--red-600)" role="alert">
-                    {settingsBlocker} The agent is still using {persistedProviderLabel}.
+                    {t('settingsBlocker', { reason: settingsBlocker, provider: persistedProviderLabel })}
                   </div>
                 ) : null}
               </div>
@@ -741,17 +739,17 @@ export function MemoryPanel({
                   disabled={savingProvider || !settingsChanged || Boolean(settingsBlocker)}
                   onClick={() => void saveMemorySettings()}
                 >
-                  {savingProvider ? 'Saving…' : 'Save memory settings'}
+                  {savingProvider ? t('saving') : t('saveSettings')}
                 </Button>
                 <Button variant="ghost" size="sm" disabled={savingProvider} onClick={closeSettings}>
-                  Cancel
+                  {t('cancel')}
                 </Button>
                 {settingsChanged ? (
                   <span
                     className="font-sans text-[11.5px] font-normal leading-normal text-(--amber-500)"
                     aria-live="polite"
                   >
-                    {persistedProviderLabel} stays active until you save.
+                    {t('staysActiveUntilSave', { provider: persistedProviderLabel })}
                   </span>
                 ) : null}
               </div>
@@ -764,11 +762,9 @@ export function MemoryPanel({
             !homeMigrationPending ? (
               <div className="flex flex-col gap-2 rounded-md border border-(--status-error-soft) px-3 py-3 desktop:flex-row desktop:items-center desktop:justify-between">
                 <div className="flex min-w-0 flex-col gap-[3px]">
-                  <span className="font-sans text-[12.5px] font-semibold leading-normal">
-                    Move memory back to the daemon
-                  </span>
+                  <span className="font-sans text-[12.5px] font-semibold leading-normal">{t('moveBackToDaemon')}</span>
                   <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                    Deletes all memory and its history.
+                    {t('moveBackWarning')}
                   </span>
                 </div>
                 <Button
@@ -780,7 +776,7 @@ export function MemoryPanel({
                     setConfirmingHomeReturn(true)
                   }}
                 >
-                  Move memory back to the daemon
+                  {t('moveBackToDaemon')}
                 </Button>
               </div>
             ) : null}
@@ -793,14 +789,16 @@ export function MemoryPanel({
           className="rounded-(--radius-lg) border border-(--border-subtle) bg-(--surface-sunken) p-5 font-sans"
           role="status"
         >
-          <div className="text-[13px] font-semibold text-(--text-primary)">{providerLabel} selected</div>
+          <div className="text-[13px] font-semibold text-(--text-primary)">
+            {t('providerSelected', { provider: providerLabel })}
+          </div>
           <div className="mt-1 text-[12px] leading-[1.5] text-(--text-secondary)">
             {provider === 'none'
-              ? 'Save memory settings to turn persistent memory off.'
+              ? t('saveToDisable')
               : provider === persistedProvider
-                ? 'Save memory settings to switch External connections and view the selected connection’s memory.'
-                : `Save memory settings to switch to ${providerLabel} and view its memory.`}{' '}
-            {persistedProviderLabel} remains active until you save.
+                ? t('saveToViewExternal')
+                : t('saveToSwitch', { provider: providerLabel })}{' '}
+            {t('staysActiveUntilSave', { provider: persistedProviderLabel })}
           </div>
         </div>
       ) : persistedProvider === 'external' ? (
@@ -813,29 +811,27 @@ export function MemoryPanel({
         <NativeMemoryFiles key={agentId} agentId={agentId} canEdit={canEdit} />
       ) : persistedProvider === 'none' ? (
         <div className="rounded-(--radius-lg) border border-(--border-subtle) p-5 text-[13px] text-(--text-secondary)">
-          Persistent memory is disabled for this agent. Existing memory remains stored but is not loaded.
+          {t('persistentDisabled')}
         </div>
       ) : (
         <>
           {persistedProvider === 'managed' && persistedSettings.scope === 'channel' ? (
             <div className="flex flex-wrap items-center gap-2 px-4 pt-3 font-sans text-[12px] leading-normal text-(--text-secondary)">
-              <span className="font-semibold">Channel</span>
+              <span className="font-semibold">{t('channel')}</span>
               <select
                 value={selectedChannel ?? ''}
                 onChange={(event) => setSelectedChannel(event.target.value || undefined)}
-                aria-label="Channel memory folder"
+                aria-label={t('channelMemoryFolder')}
                 className="rounded-sm border border-(--border-subtle) bg-(--surface-card) px-2 py-1 font-sans text-[12px] text-(--text-primary)"
               >
-                <option value="">Agent (shared)</option>
+                <option value="">{t('agentShared')}</option>
                 {channels.map((entry) => (
                   <option key={entry.channelKey} value={entry.channelKey}>
                     {entry.channel ?? entry.channelKey}
                   </option>
                 ))}
               </select>
-              {channels.length === 0 ? (
-                <span className="text-(--text-tertiary)">No channel has memory yet — showing the shared base.</span>
-              ) : null}
+              {channels.length === 0 ? <span className="text-(--text-tertiary)">{t('noChannelMemory')}</span> : null}
             </div>
           ) : null}
           <UnifiedMemoryPanel
@@ -867,8 +863,8 @@ export function MemoryPanel({
       )}
       {confirmingBackendChange ? (
         <ConfirmationDialog
-          title="Switch memory backend?"
-          confirmLabel="Switch backend"
+          title={t('switchBackendTitle')}
+          confirmLabel={t('switchBackend')}
           busy={savingProvider}
           error={providerError}
           onClose={() => {
@@ -877,16 +873,14 @@ export function MemoryPanel({
           onConfirm={() => void persistMemorySettings()}
         >
           <p className="m-0">
-            This switches the agent from <strong className="font-semibold">{persistedProviderLabel}</strong> to{' '}
-            <strong className="font-semibold">{memoryProviderLabel(provider)}</strong>. Existing memory is not migrated,
-            and any pending capture stays with its original connection.
+            {t('switchBackendBody', { from: persistedProviderLabel, to: memoryProviderLabel(provider) })}
           </p>
         </ConfirmationDialog>
       ) : null}
       {confirmingHomeMove ? (
         <ConfirmationDialog
-          title="Move memory to the Control Plane?"
-          confirmLabel="Move"
+          title={t('moveToControlPlaneTitle')}
+          confirmLabel={t('move')}
           busy={savingProvider}
           error={providerError}
           onClose={() => {
@@ -894,17 +888,14 @@ export function MemoryPanel({
           }}
           onConfirm={() => void persistMemorySettings()}
         >
-          <p className="m-0">
-            The owning daemon copies this agent&apos;s memory into the Control Plane. Memory is unavailable until the
-            copy completes, and it cannot be moved back without deleting it.
-          </p>
+          <p className="m-0">{t('moveToControlPlaneBody')}</p>
         </ConfirmationDialog>
       ) : null}
       {confirmingHomeReturn ? (
         <ConfirmationDialog
-          title="Move memory back to the daemon?"
-          confirmLabel="Move"
-          busyLabel="Moving…"
+          title={t('moveBackTitle')}
+          confirmLabel={t('move')}
+          busyLabel={t('moving')}
           destructive
           busy={returningHome}
           error={homeReturnError}
@@ -913,10 +904,7 @@ export function MemoryPanel({
           }}
           onConfirm={() => void returnHomeToDaemon()}
         >
-          <p className="m-0">
-            Nothing is kept. Every memory file and its history in the Control Plane is deleted, and the agent starts
-            with empty memory on its daemon.
-          </p>
+          <p className="m-0">{t('moveBackBody')}</p>
         </ConfirmationDialog>
       ) : null}
     </div>

@@ -93,6 +93,7 @@
  * packages/web/STYLE.md).
  */
 import type { UserTurnBody } from '@agentconnect.md/protocol'
+import type { IdentityCardKey, InviteHint } from './wizard-chrome'
 import type { ComponentType, ReactNode } from 'react'
 import type { BotDto, CreateIntegrationInput, SessionMessageDto } from '@/lib/api'
 import type { Agent, IntegrationRow } from '@/lib/data'
@@ -271,7 +272,9 @@ export interface WizardHost {
 export interface WebTransportAffordance {
   /** Platform vocabulary for the delivery-mode line (:328-331 —
    *  Slack "Socket Mode"/"HTTP (Events API)", Feishu "Long connection"/"HTTP
-   *  callbacks"), rendered by the Body's own delivery line (:337-371). */
+   *  callbacks"), rendered by the Body's own delivery line (:337-371). Feishu
+   *  stores message keys here and its Body resolves them; Slack still stores copy
+   *  until its module is migrated (docs/i18n.md, platform wizard modules). */
   labels: Record<WebWizardTransport, string>
   /** Default transport rule (:1310-1311): true ⇒ default to `http` whenever
    *  the deployment has relay delivery (Slack); false ⇒ always start on
@@ -364,15 +367,19 @@ export interface WebWizardFacet {
    * because regional brands rewrite it ("Create with one-click Lark setup"
    * vs "…Feishu setup").
    */
-  identityCards(region: string | undefined): { create: string; existing: string }
+  identityCards(region: string | undefined): { create: IdentityCardKey; existing: IdentityCardKey }
   /**
    * The one-line "invite the bot" hint under the pane — the chat arms of the
    * host's footer hint row (`IM_INVITE_HINT` :154-166, rendered :3722-3735;
    * the webhook/github arms of that row are core copy and stay host-owned).
-   * Region-parameterized for the same reason as {@link identityCards}
-   * (:3732).
+   * Region-parameterized for the same reason as {@link identityCards} (:3732).
+   *
+   * "Key, not copy" like {@link WebTransportAffordance.labels}: the module names
+   * the host's `Integrations.dialog.platformHints.*` message and the values only it knows (its own
+   * brand, its own room noun), and the host resolves it. Returning a sentence
+   * would put English in the row for every locale.
    */
-  inviteHint(region: string | undefined): string
+  inviteHint(region: string | undefined): InviteHint
 }
 
 /**
@@ -555,11 +562,9 @@ export interface WebChannelListSemantics {
    *  heading's action, :665-668), `'none'` (Slack — scope cost, :195-201 —
    *  and Feishu). */
   leave: 'conversation' | 'space' | 'none'
-  /** The sentence explaining a non-leavable room row's "Remove from this
-   *  list" (:284-288) — Discord points at the band action, others at the
-   *  platform's own UI. Absent ⇒ the host's generic wording with its
-   *  "the chat app" fallback (:232-241). */
-  cannotLeaveRowHint?: string
+  /** The localized sentence explaining a non-leavable room row's "Remove from
+   *  this list" (:284-288). Absent ⇒ the host's generic wording. */
+  cannotLeaveRowHint?: WebChannelListMessage
   /** `'observed'` (default): rows record rooms the bot was seen in and can be dropped; `'derived'`: the platform's own roster, nothing added or removed here. */
   roster?: 'observed' | 'derived'
   /**
@@ -580,14 +585,14 @@ export interface WebChannelListSemantics {
    * platform whose owner compiles to a route.
    */
   ownerChangeWarning?: {
-    title: string
-    body(ctx: { owner: string; room: string }): string
+    title: WebChannelListMessage
+    body: WebChannelListMessage
     /** Bare verb — the console's modal convention. */
-    confirmLabel: string
+    confirmLabel: WebChannelListMessage
   }
   /** The private-agent banner's sentence, where enabling a row is not the whole gate —
    *  Linear's gated member acts in a team only as its default (§4.3). Absent ⇒ the host's. */
-  gatedNote?: string
+  gatedNote?: WebChannelListMessage
   /**
    * Splits a stored row label into the name the row leads with and an optional dim tail after
    * it. Linear stores a team as `<Workspace name> / <Team name>` — a session list spanning every
@@ -604,6 +609,20 @@ export interface WebChannelListSemantics {
    * kind-driven `@` markers already lead them.
    */
   RowName?: ComponentType<{ name: string; channelKey?: string; url?: string }>
+}
+
+/** Message keys platform modules may hand back to the channel-list host. The
+ * module describes semantics; the host owns locale resolution. */
+export type WebChannelListMessageKey =
+  | 'discordCannotLeaveRowHint'
+  | 'linearGatedNote'
+  | 'ownerChange.title'
+  | 'ownerChange.body'
+  | 'ownerChange.confirmLabel'
+
+export interface WebChannelListMessage {
+  key: WebChannelListMessageKey
+  values?: Record<string, string>
 }
 
 /**

@@ -2,6 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { useTranslations } from 'next-intl'
 import { agentLabel, isDirectConversation, type IntegrationChannelRow, type IntegrationRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
@@ -14,6 +15,31 @@ import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { chatPlatformName } from '@/lib/platform-labels'
+import type { WebChannelListMessage } from '@/components/console/platforms/contract'
+
+type ChannelListTranslator = (key: string, values?: Record<string, string | number>) => string
+
+type NounKey = 'channel' | 'conversation' | 'group' | 'groupChat' | 'team'
+
+function nounKey(noun: string): NounKey {
+  if (noun === 'conversation') return 'conversation'
+  if (noun === 'group chat') return 'groupChat'
+  if (noun === 'group') return 'group'
+  if (noun === 'team') return 'team'
+  return 'channel'
+}
+
+function localNoun(t: ChannelListTranslator, noun: string, plural = false): string {
+  return t(`nouns.${nounKey(noun)}${plural ? 'Plural' : ''}`)
+}
+
+function resolveMessage(
+  t: ChannelListTranslator,
+  message: WebChannelListMessage,
+  values?: Record<string, string | number>
+): string {
+  return t(message.key, { ...message.values, ...values })
+}
 
 /** The row's trigger choice. `by decision` is prototype-only: the CP's conversation DTO has
  *  no such value yet, so picking it writes a prototype gate instead of a channel PATCH. */
@@ -41,6 +67,8 @@ function TriggerToggle({
   allowDecision: boolean
   onChange: (trigger: RowTrigger) => void
 }) {
+  const t = useTranslations('Integrations.channelList')
+  const translate: ChannelListTranslator = (key, values) => t(key as never, values as never)
   const [saving, setSaving] = useState(false)
   const pick = (trigger: RowTrigger) => {
     if (disabled || saving || trigger === value) return
@@ -52,28 +80,29 @@ function TriggerToggle({
   // who wants the bot silent here but still in the channel on the platform has nowhere
   // else to say so. A GROUP DM takes the channel's choice, not the DM's: several people
   // share it, so "every message" must stay opt-in.
-  const here = `this ${rowNoun(channel.kind, platform)}`
+  const noun = localNoun(translate, rowNoun(channel.kind, platform))
+  const here = translate('thisRoom', { noun })
   // The room's vocabulary is the platform's: nothing matches "any message" where no unaddressed traffic exists.
   const allowed = channelListSemantics(platform).triggers
   const roomOptions: TriggerOption<RowTrigger>[] = [
-    { value: 'off', label: 'off', hint: `The agent doesn't respond in ${here}, even when @-mentioned.` },
-    { value: 'any', label: 'any message', hint: `The agent responds to every message in ${here}.` },
+    { value: 'off', label: translate('trigger.off'), hint: translate('trigger.offHint', { room: here }) },
+    { value: 'any', label: translate('trigger.anyMessage'), hint: translate('trigger.anyMessageHint', { room: here }) },
     {
       value: 'mention',
-      label: '@-mention',
-      hint: "The agent responds when @-mentioned. Follow-ups in a thread it has joined don't need another mention."
+      label: translate('trigger.mention'),
+      hint: translate('trigger.mentionHint')
     },
     {
       value: 'decision',
-      label: 'by decision',
-      hint: `A saved decision judges each message in ${here}; the agent answers only for the answers you pick.`
+      label: translate('trigger.decision'),
+      hint: translate('trigger.decisionHint', { room: here })
     }
   ]
   const options: TriggerOption<RowTrigger>[] =
     channel.kind === 'im'
       ? [
-          { value: 'off', label: 'off', hint: "The agent doesn't respond in this conversation." },
-          { value: 'any', label: 'on', hint: 'The agent responds to messages in this conversation.' }
+          { value: 'off', label: translate('trigger.off'), hint: translate('trigger.dmOffHint') },
+          { value: 'any', label: translate('trigger.on'), hint: translate('trigger.dmOnHint') }
         ]
       : roomOptions.filter((o) => (o.value === 'decision' ? allowDecision : !allowed || allowed.includes(o.value)))
   return (
@@ -81,8 +110,8 @@ function TriggerToggle({
       options={options}
       value={value}
       onChange={pick}
-      ariaLabel={`Trigger for ${rowLabel(channel)}`}
-      hint="Trigger — when the agent responds here"
+      ariaLabel={translate('trigger.ariaLabel', { name: rowLabel(channel) })}
+      hint={translate('trigger.hint')}
       disabled={disabled}
       busy={saving}
       className="max-desktop:w-full"
@@ -108,20 +137,22 @@ function SessionModeToggle({
   disabled: boolean
   onChange: (mode: NonNullable<IntegrationChannelRow['sessionMode']>) => void
 }) {
+  const t = useTranslations('Integrations.channelList')
+  const translate: ChannelListTranslator = (key, values) => t(key as never, values as never)
   const [saving, setSaving] = useState(false)
   const current = channel.sessionMode ?? 'createNew'
   const allowed = channelListSemantics(platform).sessionModes
-  const here = `this ${rowNoun(channel.kind, platform)}`
+  const here = translate('thisRoom', { noun: localNoun(translate, rowNoun(channel.kind, platform)) })
   const options: TriggerOption<NonNullable<IntegrationChannelRow['sessionMode']>>[] = [
     {
       value: 'createNew',
-      label: 'new session',
-      hint: `Each new message in ${here} starts a fresh session. Replies inside a thread continue that thread's session.`
+      label: t('sessionMode.createNew'),
+      hint: t('sessionMode.createNewHint', { room: here })
     },
     {
       value: 'append',
-      label: 'one session',
-      hint: `Every message in ${here} is added to one ongoing session. Send \`!new\` there to start a fresh one.`
+      label: t('sessionMode.append'),
+      hint: t('sessionMode.appendHint', { room: here })
     }
   ]
   const offered = allowed ? options.filter((o) => allowed.includes(o.value)) : options
@@ -136,8 +167,8 @@ function SessionModeToggle({
       options={offered}
       value={current}
       onChange={pick}
-      ariaLabel={`Session mode for ${rowLabel(channel)}`}
-      hint="Session — which session a message here joins"
+      ariaLabel={t('sessionMode.ariaLabel', { name: rowLabel(channel) })}
+      hint={t('sessionMode.hint')}
       disabled={disabled}
       busy={saving}
       className="max-desktop:w-full"
@@ -344,31 +375,46 @@ export const canLeaveRow = (kind: IntegrationChannelRow['kind'], platform?: stri
  */
 export function rowMenuAction(
   row: Pick<IntegrationChannelRow, 'kind' | 'name'>,
-  platform?: string
+  platform?: string,
+  translate?: ChannelListTranslator
 ): { leave: boolean; name: string; label: string; icon: string; hint: string; confirm: string } {
   const noun = rowNoun(row.kind, platform)
+  const displayNoun = translate ? localNoun(translate, noun) : noun
+  const displayNounPlural = translate ? localNoun(translate, noun, true) : roomPlural(noun)
   const name = rowLabel(row)
   if (canLeaveRow(row.kind, platform)) {
     return {
       leave: true,
       name,
-      label: `Leave ${noun}`,
+      label: translate ? translate('action.leaveLabel', { noun: displayNoun }) : `Leave ${noun}`,
       icon: 'log-out',
-      hint: `The bot leaves this ${noun} in ${platformName(platform)} and the row goes with it. Add it back to undo.`,
-      confirm: `Have the bot leave ${name}? It leaves the ${noun} in ${platformName(platform)} and stops receiving anything there. Add it back to undo.`
+      hint: translate
+        ? translate('action.leaveHint', { noun: displayNoun, platform: platformName(platform) })
+        : `The bot leaves this ${noun} in ${platformName(platform)} and the row goes with it. Add it back to undo.`,
+      confirm: translate
+        ? translate('action.leaveConfirm', { name, noun: displayNoun, platform: platformName(platform) })
+        : `Have the bot leave ${name}? It leaves the ${noun} in ${platformName(platform)} and stops receiving anything there. Add it back to undo.`
     }
   }
-  const rest = isDirectConversation(row.kind)
-    ? `Nobody adds or removes a bot in a ${noun} — the row comes back on the next message.`
-    : (channelListSemantics(platform).cannotLeaveRowHint ??
-      `The bot stays in the ${noun} — remove it in ${platformName(platform)} for that. If it is still in there, the row will come back.`)
+  const custom = channelListSemantics(platform).cannotLeaveRowHint
+  const rest = translate
+    ? isDirectConversation(row.kind)
+      ? translate('action.directListing', { noun: displayNoun })
+      : custom
+        ? resolveMessage(translate, custom, { noun: displayNoun, nounPlural: displayNounPlural })
+        : translate('action.genericCannotLeave', { noun: displayNoun, platform: platformName(platform) })
+    : isDirectConversation(row.kind)
+      ? `Nobody adds or removes a bot in a ${noun} — the row comes back on the next message.`
+      : custom?.key === 'discordCannotLeaveRowHint'
+        ? 'A Discord bot belongs to a server, not one channel — use Leave on the server heading above to take it out. If it is still in there, the row will come back.'
+        : `The bot stays in the ${noun} — remove it in ${platformName(platform)} for that. If it is still in there, the row will come back.`
   return {
     leave: false,
     name,
-    label: 'Remove from this list',
+    label: translate ? translate('action.removeLabel') : 'Remove from this list',
     icon: 'x',
-    hint: `Only stops showing it here. ${rest}`,
-    confirm: `Remove ${name} from this list? ${rest}`
+    hint: translate ? translate('action.onlyStopsShowing', { rest }) : `Only stops showing it here. ${rest}`,
+    confirm: translate ? translate('action.removeConfirm', { name, rest }) : `Remove ${name} from this list? ${rest}`
   }
 }
 
@@ -424,7 +470,9 @@ function RowAction({
   onLeave: () => Promise<void>
 }) {
   const [busy, setBusy] = useState(false)
-  const action = rowMenuAction(channel, platform)
+  const t = useTranslations('Integrations.channelList')
+  const translate: ChannelListTranslator = (key, values) => t(key as never, values as never)
+  const action = rowMenuAction(channel, platform, translate)
   const run = () => {
     if (busy || !window.confirm(action.confirm)) return
     setBusy(true)
@@ -493,6 +541,8 @@ function DefaultAgentPicker({
   disabled: boolean
   onClaim: (agentId: string) => void | Promise<void>
 }) {
+  const t = useTranslations('Integrations.channelList')
+  const translate: ChannelListTranslator = (key, values) => t(key as never, values as never)
   const [box, setBox] = useState<PopoverBox | null>(null)
   const [saving, setSaving] = useState(false)
   const btnRef = useRef<HTMLButtonElement>(null)
@@ -531,8 +581,8 @@ function DefaultAgentPicker({
       <button
         ref={btnRef}
         onClick={toggle}
-        title={`Default dispatch — ${current.label}`}
-        aria-label={`Default dispatch — ${current.label}`}
+        title={translate('defaultDispatch.button', { agent: current.label })}
+        aria-label={translate('defaultDispatch.button', { agent: current.label })}
         aria-expanded={open}
         className={`flex cursor-pointer items-center gap-[3px] rounded-[7px] border-0 bg-transparent p-[3px] hover:bg-(--surface-hover) ${
           saving ? 'opacity-60' : ''
@@ -556,7 +606,7 @@ function DefaultAgentPicker({
               style={box.style}
             >
               <div className="px-[9px] pb-[5px] pt-[6px] font-sans text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
-                Default dispatch
+                {translate('defaultDispatch.label')}
               </div>
               <div className="flex items-center gap-[9px] px-[9px] py-[6px]">
                 <span className="av h-[22px] w-[22px] flex-none rounded-[6px]">
@@ -566,7 +616,9 @@ function DefaultAgentPicker({
                   {current.label}
                 </span>
                 {isViewer && (
-                  <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">this agent</span>
+                  <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
+                    {translate('defaultDispatch.thisAgent')}
+                  </span>
                 )}
               </div>
               {viewer && !isViewer && (
@@ -581,7 +633,7 @@ function DefaultAgentPicker({
                   >
                     <Icon name="corner-down-left" size={13} color="var(--text-tertiary)" className="flex-none" />
                     <span className="min-w-0 truncate font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
-                      Make <span className="mono">{viewer.label}</span> default
+                      {translate('defaultDispatch.makeDefault', { agent: viewer.label })}
                     </span>
                   </button>
                 </>
@@ -629,6 +681,8 @@ export function IntegrationChannelList({
   /** Horizontal row padding, to line up with the host card (18 list / 14 detail). */
   padX?: number
 }) {
+  const t = useTranslations('Integrations.channelList')
+  const translate: ChannelListTranslator = (key, values) => t(key as never, values as never)
   const {
     setChannelTrigger,
     setChannelSessionMode,
@@ -647,7 +701,8 @@ export function IntegrationChannelList({
   // Dispatch is a decision only where there are two agents to decide between.
   const dispatchable = memberIds.length > 1
   // Why a private agent's rows start off. A platform whose gate is more than the row's own says so itself.
-  const gatedNote = channelListSemantics(platform).gatedNote ?? 'Private agent — answers only where enabled below.'
+  const gatedMessage = channelListSemantics(platform).gatedNote
+  const gatedNote = gatedMessage ? resolveMessage(translate, gatedMessage) : translate('gatedNote')
   // A platform refusal is the useful half of a failed Leave — a missing scope or a
   // last-member channel tells the operator what to do — so it is shown verbatim
   // rather than collapsed into "something went wrong".
@@ -718,16 +773,24 @@ export function IntegrationChannelList({
   const spaceAction = (g: SpaceGroup): ReactNode => {
     if (!integrationId || channelListSemantics(platform).leave !== 'space' || !g.key) return undefined
     const noun = roomNoun(platform)
+    const displayNoun = localNoun(translate, noun)
+    const displayNounPlural = localNoun(translate, noun, true)
+    const server = g.label ?? translate('space.thisServer')
     return (
       <button
         className="iconbtn h-6 w-6 flex-none"
-        title={`Leave ${g.label ?? 'this server'} — the bot leaves the whole server, with every ${noun} in it`}
-        aria-label={`Leave the server ${g.label ?? g.key}`}
+        title={translate('space.leaveTitle', { space: server, noun: displayNounPlural })}
+        aria-label={translate('space.leaveAria', { space: g.label ?? g.key })}
         onClick={() =>
           void act(async () => {
             if (
               !window.confirm(
-                `Leave ${g.label ?? 'this server'}? A ${platformName(platform)} bot cannot leave one ${noun} — it leaves the whole server, and every ${noun} of it disappears from this list. Re-invite it to undo.`
+                translate('space.leaveConfirm', {
+                  space: server,
+                  platform: platformName(platform),
+                  noun: displayNoun,
+                  nounPlural: displayNounPlural
+                })
               )
             ) {
               return
@@ -868,7 +931,7 @@ export function IntegrationChannelList({
           {g.rows.map(row)}
         </Fragment>
       ))}
-      {dmRows.length > 0 && groupHeader('Direct messages', padX)}
+      {dmRows.length > 0 && groupHeader(translate('directMessages'), padX)}
       {dmRows.map(row)}
       {ownerGuard.dialog}
     </>

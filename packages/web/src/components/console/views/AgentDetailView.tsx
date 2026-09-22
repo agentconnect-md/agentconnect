@@ -794,13 +794,13 @@ export default function AgentDetailView() {
           <NotFound
             icon="bot-off"
             kind="AGENT"
-            title="Agent not found"
-            pre="No agent "
+            title={t('notFound.title')}
+            pre={`${t('notFound.pre')} `}
             chip={id}
-            post=" in this organization. It may have been deleted or renamed."
-            actionLabel="Back to agents"
+            post={t('notFound.post')}
+            actionLabel={t('notFound.back')}
             actionHref={orgPath('/agents')}
-            searchLabel="Search agents"
+            searchLabel={t('notFound.search')}
           />
         )}
       </div>
@@ -1509,7 +1509,7 @@ export default function AgentDetailView() {
               </div>
               <div className="px-4 py-[14px]">
                 <div className="font-mono text-[10.5px] font-semibold uppercase tracking-[.08em] text-(--text-tertiary)">
-                  Team visibility
+                  {t('teamVisibility')}
                 </div>
                 <div className="mt-[10px]">
                   <VisibilityValue visibility={da.visibility} sharedWith={da.sharedWith} />
@@ -1517,7 +1517,7 @@ export default function AgentDetailView() {
               </div>
               <div className="border-t border-(--border-subtle) px-4 py-[14px]">
                 <div className="font-mono text-[10.5px] font-semibold uppercase tracking-[.08em] text-(--text-tertiary)">
-                  Agent visibility
+                  {t('agentVisibility')}
                 </div>
                 {/* The SAME cards the Add/Edit modals render, in read-only mode —
                     one component, so the two surfaces can't drift apart. Only the
@@ -1640,8 +1640,8 @@ export default function AgentDetailView() {
                                   href={discordBotInviteUrl(g.discordAppId)}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  title="Invite this bot to a Discord server — preset scopes &amp; permissions"
-                                  aria-label="Add this bot to a Discord server"
+                                  title={t('integrations.inviteDiscord')}
+                                  aria-label={t('integrations.addToDiscord')}
                                   className="iconbtn h-7 w-7 flex-none"
                                   onClick={(e) => e.stopPropagation()}
                                 >
@@ -1651,8 +1651,8 @@ export default function AgentDetailView() {
                               {HeaderActions && <HeaderActions integration={g} />}
                               <button
                                 className="iconbtn h-7 w-7 flex-none"
-                                title="Delete integration"
-                                aria-label={`Delete the ${g.name} integration`}
+                                title={t('integrations.delete')}
+                                aria-label={t('integrations.deleteNamed', { name: g.name })}
                                 onClick={() => openModal('deleteIntegration', g)}
                               >
                                 <Icon name="unplug" size={14} />
@@ -1694,7 +1694,7 @@ export default function AgentDetailView() {
                         </span>
                       </span>
                       <span className="inline-flex flex-none items-center gap-[5px] rounded-full bg-(--surface-active) px-[10px] py-[3px] font-sans text-[12px] font-semibold leading-normal text-(--text-tertiary)">
-                        webhook
+                        {t('integrations.webhook')}
                       </span>
                     </div>
                   ))}
@@ -1724,7 +1724,7 @@ export default function AgentDetailView() {
                               <RowMoreMenu
                                 ariaLabel={`Watch more on ${h.repoFullName ?? h.name}`}
                                 icon="plus"
-                                title="Watch another subject"
+                                title={t('integrations.watchAnotherSubject')}
                                 triggerClassName={ADD_SUBJECT_BTN}
                                 align="start"
                                 items={addFamilies.map((fam) => ({
@@ -1748,8 +1748,8 @@ export default function AgentDetailView() {
                         </span>
                         {(h.reviewPolicy !== 'off' || h.reportingMode === 'check') && (
                           <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                            {reviewPolicyLabel(h.reviewPolicy)} review
-                            {h.reportingMode === 'check' ? ' · informational Check' : ''}
+                            {reviewPolicyLabel(h.reviewPolicy)} {t('integrations.review')}
+                            {h.reportingMode === 'check' ? ` · ${t('integrations.informationalCheck')}` : ''}
                           </span>
                         )}
                         <LabelFilterLine labels={h.labelFilter} />
@@ -1760,7 +1760,11 @@ export default function AgentDetailView() {
                         )}
                       </span>
                       {rowHasSettings(h) && (
-                        <button className="iconbtn flex-none" title="Settings" onClick={() => openReviewSettings(h)}>
+                        <button
+                          className="iconbtn flex-none"
+                          title={t('integrations.settings')}
+                          onClick={() => openReviewSettings(h)}
+                        >
                           <Icon name="settings-2" size={15} />
                         </button>
                       )}
@@ -1791,7 +1795,7 @@ export default function AgentDetailView() {
                               <RowMoreMenu
                                 ariaLabel={`Watch more on ${h.repoFullName ?? h.name}`}
                                 icon="plus"
-                                title="Watch another subject"
+                                title={t('integrations.watchAnotherSubject')}
                                 triggerClassName={ADD_SUBJECT_BTN}
                                 align="start"
                                 items={addFamilies.map((fam) => ({
@@ -1814,8 +1818,8 @@ export default function AgentDetailView() {
                         </span>
                         {(h.reviewPolicy !== 'off' || h.reportingMode === 'check') && (
                           <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                            {reviewPolicyLabel(h.reviewPolicy)} review
-                            {h.reportingMode === 'check' ? ' · run note' : ''}
+                            {reviewPolicyLabel(h.reviewPolicy)} {t('integrations.review')}
+                            {h.reportingMode === 'check' ? ` · ${t('integrations.runNote')}` : ''}
                           </span>
                         )}
                         <LabelFilterLine labels={h.labelFilter} />
@@ -1826,7 +1830,11 @@ export default function AgentDetailView() {
                         )}
                       </span>
                       {rowHasSettings(h) && (
-                        <button className="iconbtn flex-none" title="Settings" onClick={() => openReviewSettings(h)}>
+                        <button
+                          className="iconbtn flex-none"
+                          title={t('integrations.settings')}
+                          onClick={() => openReviewSettings(h)}
+                        >
                           <Icon name="settings-2" size={15} />
                         </button>
                       )}
@@ -1859,7 +1867,7 @@ export default function AgentDetailView() {
                               <RowMoreMenu
                                 ariaLabel={`Watch more on ${h.repoFullName ?? h.name}`}
                                 icon="plus"
-                                title="Watch another subject"
+                                title={t('integrations.watchAnotherSubject')}
                                 triggerClassName={ADD_SUBJECT_BTN}
                                 align="start"
                                 items={addFamilies.map((fam) => ({
@@ -1882,8 +1890,8 @@ export default function AgentDetailView() {
                         </span>
                         {(h.reviewPolicy !== 'off' || h.reportingMode !== 'off') && (
                           <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                            {reviewPolicyLabel(h.reviewPolicy)} review
-                            {h.reportingMode === 'status' ? ' · commit status' : ''}
+                            {reviewPolicyLabel(h.reviewPolicy)} {t('integrations.review')}
+                            {h.reportingMode === 'status' ? ` · ${t('integrations.commitStatus')}` : ''}
                           </span>
                         )}
                         <LabelFilterLine labels={h.labelFilter} />
@@ -1894,7 +1902,11 @@ export default function AgentDetailView() {
                         )}
                       </span>
                       {rowHasSettings(h) && (
-                        <button className="iconbtn flex-none" title="Settings" onClick={() => openReviewSettings(h)}>
+                        <button
+                          className="iconbtn flex-none"
+                          title={t('integrations.settings')}
+                          onClick={() => openReviewSettings(h)}
+                        >
                           <Icon name="settings-2" size={15} />
                         </button>
                       )}
@@ -1936,8 +1948,8 @@ export default function AgentDetailView() {
                                 href={discordBotInviteUrl(g.discordAppId)}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                title="Invite this bot to a Discord server — preset scopes &amp; permissions"
-                                aria-label="Add this bot to a Discord server"
+                                title={t('integrations.inviteDiscord')}
+                                aria-label={t('integrations.addToDiscord')}
                                 className="iconbtn flex-none"
                                 onClick={(e) => e.stopPropagation()}
                               >
@@ -1947,8 +1959,8 @@ export default function AgentDetailView() {
                             {HeaderActions && <HeaderActions integration={g} />}
                             <button
                               className="iconbtn"
-                              title="Delete integration"
-                              aria-label={`Delete the ${g.name} integration`}
+                              title={t('integrations.delete')}
+                              aria-label={t('integrations.deleteNamed', { name: g.name })}
                               onClick={() => openModal('deleteIntegration', g)}
                             >
                               <Icon name="unplug" size={15} />
@@ -1981,7 +1993,9 @@ export default function AgentDetailView() {
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
                             <span className="font-sans text-[13.5px] font-semibold leading-normal">{h.name}</span>
-                            <span className="badge bg-(--surface-active) text-(--text-tertiary)">webhook</span>
+                            <span className="badge bg-(--surface-active) text-(--text-tertiary)">
+                              {t('integrations.webhook')}
+                            </span>
                           </div>
                           {h.url && (
                             <div className="mono mt-[2px] truncate text-[11.5px] font-normal text-(--text-tertiary)">
@@ -1994,12 +2008,16 @@ export default function AgentDetailView() {
                         </span>
                         <button
                           className="iconbtn"
-                          title="Recent deliveries"
+                          title={t('integrations.recentDeliveries')}
                           onClick={() => setHookRunsFor(hookRunsFor === h.id ? null : h.id)}
                         >
                           <Icon name={hookRunsFor === h.id ? 'chevron-up' : 'rotate-ccw-clock'} size={15} />
                         </button>
-                        <button className="iconbtn" title="Delete webhook" onClick={() => openModal('deleteHook', h)}>
+                        <button
+                          className="iconbtn"
+                          title={t('integrations.deleteWebhook')}
+                          onClick={() => openModal('deleteHook', h)}
+                        >
                           <Icon name="trash" size={15} />
                         </button>
                       </div>
@@ -2028,7 +2046,7 @@ export default function AgentDetailView() {
                         </div>
                         <button
                           className="iconbtn"
-                          title="Disconnect GitHub"
+                          title={t('integrations.disconnectGithub')}
                           onClick={() => openModal('deleteHook', githubHooks)}
                         >
                           <Icon name="unplug" size={15} />
@@ -2058,7 +2076,7 @@ export default function AgentDetailView() {
                                 <RowMoreMenu
                                   ariaLabel={`Watch more on ${h.repoFullName ?? h.name}`}
                                   icon="plus"
-                                  title="Watch another subject"
+                                  title={t('integrations.watchAnotherSubject')}
                                   triggerClassName={ADD_SUBJECT_BTN}
                                   align="start"
                                   items={addFamilies.map((fam) => ({
@@ -2137,7 +2155,7 @@ export default function AgentDetailView() {
                             onClick={() => openModal('integration', da, { platform: 'github' })}
                           >
                             <Icon name="plus" size={13} />
-                            Add repository
+                            {t('integrations.addRepository')}
                           </button>
                         </div>
                       </div>
@@ -2154,7 +2172,9 @@ export default function AgentDetailView() {
                         </span>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
-                            <span className="font-sans text-[13.5px] font-semibold leading-normal">GitLab</span>
+                            <span className="font-sans text-[13.5px] font-semibold leading-normal">
+                              {t('integrations.gitlab')}
+                            </span>
                             <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
                               <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
                               {t('integrations.connected')}
@@ -2191,7 +2211,7 @@ export default function AgentDetailView() {
                                 <RowMoreMenu
                                   ariaLabel={`Watch more on ${h.repoFullName ?? h.name}`}
                                   icon="plus"
-                                  title="Watch another subject"
+                                  title={t('integrations.watchAnotherSubject')}
                                   triggerClassName={ADD_SUBJECT_BTN}
                                   align="start"
                                   items={addFamilies.map((fam) => ({
@@ -2204,9 +2224,9 @@ export default function AgentDetailView() {
                               {gitlabHookNeedsNormalization(h) && (
                                 <span
                                   className="badge flex-none bg-(--surface-active) text-(--text-tertiary)"
-                                  title="The stored subscription matches no trigger exactly — the nearest one is shown. Picking a trigger replaces it."
+                                  title={t('integrations.customRuleHint')}
                                 >
-                                  custom rule
+                                  {t('integrations.customRule')}
                                 </span>
                               )}
                               <LabelFilterHint labels={h.labelFilter} onClick={() => openReviewSettings(h)} />
@@ -2275,7 +2295,7 @@ export default function AgentDetailView() {
                             onClick={() => openModal('integration', da, { platform: 'gitlab' })}
                           >
                             <Icon name="plus" size={13} />
-                            Add project
+                            {t('integrations.addProject')}
                           </button>
                         </div>
                       </div>
@@ -2292,7 +2312,9 @@ export default function AgentDetailView() {
                         </span>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
-                            <span className="font-sans text-[13.5px] font-semibold leading-normal">Gitea</span>
+                            <span className="font-sans text-[13.5px] font-semibold leading-normal">
+                              {t('integrations.gitea')}
+                            </span>
                             <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
                               <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
                               {t('integrations.connected')}
@@ -2329,7 +2351,7 @@ export default function AgentDetailView() {
                                 <RowMoreMenu
                                   ariaLabel={`Watch more on ${h.repoFullName ?? h.name}`}
                                   icon="plus"
-                                  title="Watch another subject"
+                                  title={t('integrations.watchAnotherSubject')}
                                   triggerClassName={ADD_SUBJECT_BTN}
                                   align="start"
                                   items={addFamilies.map((fam) => ({
@@ -2342,9 +2364,9 @@ export default function AgentDetailView() {
                               {giteaHookNeedsNormalization(h) && (
                                 <span
                                   className="badge flex-none bg-(--surface-active) text-(--text-tertiary)"
-                                  title="The stored subscription matches no trigger exactly — the nearest one is shown. Picking a trigger replaces it."
+                                  title={t('integrations.customRuleHint')}
                                 >
-                                  custom rule
+                                  {t('integrations.customRule')}
                                 </span>
                               )}
                               <LabelFilterHint labels={h.labelFilter} onClick={() => openReviewSettings(h)} />
@@ -2412,7 +2434,7 @@ export default function AgentDetailView() {
                             onClick={() => openModal('integration', da, { platform: 'gitea' })}
                           >
                             <Icon name="plus" size={13} />
-                            Add repository
+                            {t('integrations.addRepository')}
                           </button>
                         </div>
                       </div>
@@ -2422,7 +2444,7 @@ export default function AgentDetailView() {
               </>
             ) : hooksLoadError ? (
               <div className="px-5 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
-                Couldn’t load webhooks.
+                {t('integrations.loadError')}
               </div>
             ) : hooksLoading ? (
               <LoadingState padding={42} />
@@ -2431,11 +2453,10 @@ export default function AgentDetailView() {
               <div className="px-4 py-5 desktop:px-5 desktop:py-6">
                 <div className="text-center">
                   <div className="font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
-                    No integration yet
+                    {t('integrations.noneTitle')}
                   </div>
                   <div className="mx-auto mt-1 max-w-[380px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                    Connect <span className="mono text-[11.5px]">{da.name}</span>&#32;to a channel so it can read and
-                    post. It can&apos;t receive messages until you do.
+                    {t('integrations.noneDescription', { agent: da.name })}
                   </div>
                 </div>
                 <div className="mt-4">
@@ -2627,21 +2648,21 @@ export default function AgentDetailView() {
                 <>
                   <div className="flex items-center gap-[11px] px-4 py-[11px] desktop:py-3">
                     <Icon name="file-text" size={16} color="var(--text-tertiary)" />
-                    <span className="mono flex-1 text-[12.5px]">CLAUDE.md</span>
+                    <span className="mono flex-1 text-[12.5px]">{t('integrations.claudeFile')}</span>
                     <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                       {t('integrations.projectGuide', { size: '2.1 KB' })}
                     </span>
                   </div>
                   <div className="flex items-center gap-[11px] border-t border-(--border-subtle) px-4 py-[11px] desktop:py-3">
                     <Icon name="folder" size={16} color="var(--text-tertiary)" />
-                    <span className="mono flex-1 text-[12.5px]">.agent/skills/</span>
+                    <span className="mono flex-1 text-[12.5px]">{t('integrations.skillsDirectory')}</span>
                     <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                       {t('integrations.skillsCount', { count: 4 })}
                     </span>
                   </div>
                   <div className="flex items-center gap-[11px] border-t border-(--border-subtle) px-4 py-[11px] desktop:py-3">
                     <Icon name="book-open" size={16} color="var(--text-tertiary)" />
-                    <span className="mono flex-1 text-[12.5px]">docs/runbooks/</span>
+                    <span className="mono flex-1 text-[12.5px]">{t('integrations.runbooksDirectory')}</span>
                     <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                       {t('integrations.filesIndexed', { count: 12 })}
                     </span>
@@ -2653,11 +2674,11 @@ export default function AgentDetailView() {
             </div>
             <div className="flex items-center gap-2 border-t border-(--border-subtle) px-4 py-[13px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
               <Icon name="info" size={14} />
-              Plus everything in{' '}
+              {t('integrations.plusEverythingIn')}{' '}
               <Link className="lnk text-[12px]" href={orgPath('/tools')}>
-                workspace knowledge &amp; skills
+                {t('integrations.workspaceKnowledge')}
               </Link>
-              , shared across all agents.
+              {t('integrations.sharedAcrossAgents')}
             </div>
           </div>
         </div>
@@ -2695,7 +2716,7 @@ export default function AgentDetailView() {
                   {reviewSettingsHook.repoFullName ?? reviewSettingsHook.name}
                 </div>
               </div>
-              <button className="iconbtn" title="Close" onClick={closeReviewSettings}>
+              <button className="iconbtn" title={t('reviewDialog.close')} onClick={closeReviewSettings}>
                 <Icon name="x" size={16} />
               </button>
             </div>
@@ -2722,7 +2743,7 @@ export default function AgentDetailView() {
             </div>
             <div className="flex items-center justify-end gap-2 border-t border-(--border-subtle) px-4 pt-3 pb-[calc(12px+env(safe-area-inset-bottom))] desktop:px-5 desktop:py-3">
               <Button variant="ghost" onClick={closeReviewSettings}>
-                Cancel
+                {t('reviewDialog.cancel')}
               </Button>
               <button
                 type="button"
@@ -2733,7 +2754,7 @@ export default function AgentDetailView() {
                 }`}
               >
                 <Icon name="check" size={15} />
-                {reviewSettingsSaving ? 'Saving…' : 'Save'}
+                {reviewSettingsSaving ? t('reviewDialog.saving') : t('reviewDialog.save')}
               </button>
             </div>
           </div>
@@ -2775,7 +2796,7 @@ export default function AgentDetailView() {
                 className="flex w-full cursor-pointer items-center gap-3 border-0 bg-transparent px-3 py-[13px] text-left font-sans text-[15px] font-medium leading-normal text-(--red-600)"
               >
                 <Icon name="trash" size={18} />
-                Delete
+                {t('actions.delete')}
               </button>
             )}
           </div>
@@ -2789,13 +2810,14 @@ export default function AgentDetailView() {
 // the agent's authorized set (workspace ∪ authorized-repo grants). Events still
 // fire; only the agent's GitHub write-back on that repo is credential-less.
 function UnauthorizedWatchBadge() {
+  const t = useTranslations('Agents.detail')
   return (
     <span
       className="badge flex-none bg-(--status-paused-soft) text-(--amber-500)"
-      title="This repo isn't authorized for the agent — events still trigger it, but replies and pushes back to GitHub have no credentials. Open Edit workspace to authorize it."
+      title={t('integrations.unauthorizedRepoHint')}
     >
       <Icon name="triangle-alert" size={11} />
-      write-back unauthorized
+      {t('integrations.unauthorizedRepo')}
     </span>
   )
 }
@@ -2929,6 +2951,7 @@ const HOOK_RUN_DOT: Record<HookRunDto['status'], string> = {
 // Recent deliveries for one webhook (GET /hooks/:id/runs), fetched on expand.
 // Each row: delivery outcome + the session it opened (deep-link when reported).
 function HookRunsPanel({ hookId, sessionHref }: { hookId: string; sessionHref: (sessionId: string) => string }) {
+  const t = useTranslations('Agents.detail')
   const { activeOrg } = useOrgs()
   const runsKey = consoleKeys.hookRuns(activeOrg?.id, hookId)
   const { data: runsData, error } = useSWR(
@@ -2947,11 +2970,11 @@ function HookRunsPanel({ hookId, sessionHref }: { hookId: string; sessionHref: (
         </div>
       ) : runs === null ? (
         <div className="px-[14px] py-3 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-          Loading deliveries…
+          {t('integrations.loadingDeliveries')}
         </div>
       ) : runs.length === 0 ? (
         <div className="px-[14px] py-3 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-          No deliveries yet — POST the endpoint URL to fire this agent.
+          {t('integrations.noDeliveries')}
         </div>
       ) : (
         runs.map((r) => (
@@ -2970,7 +2993,7 @@ function HookRunsPanel({ hookId, sessionHref }: { hookId: string; sessionHref: (
             )}
             {r.durationMs !== null && (
               <span className="flex-none font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                {(r.durationMs / 1000).toFixed(1)}s
+                {t('integrations.seconds', { value: (r.durationMs / 1000).toFixed(1) })}
               </span>
             )}
             <span className="flex-none font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
@@ -2978,7 +3001,7 @@ function HookRunsPanel({ hookId, sessionHref }: { hookId: string; sessionHref: (
             </span>
             {r.sessionId && (
               <Link href={sessionHref(r.sessionId)} className="lnk flex-none text-[11.5px]">
-                Open session
+                {t('integrations.openSession')}
               </Link>
             )}
           </div>

@@ -305,10 +305,7 @@ function MobileCronRow({ c, i }: { c: CronDto; i: number }) {
           >
             {c.name ?? '—'}
           </span>
-          <RestrictedLock
-            show={c.visibility === 'restricted'}
-            title="Selected — only shared members can see this schedule"
-          />
+          <RestrictedLock show={c.visibility === 'restricted'} title={t('restrictedHint')} />
         </span>
         <span className="truncate font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">{meta}</span>
       </span>

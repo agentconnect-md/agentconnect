@@ -6,12 +6,14 @@
 // Without a CP /me record (mock mode / CP down) the dialog stays display-only.
 
 import { useEffect, useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { deleteMyProfilePicture, updateMe, uploadMyProfilePicture } from '@/lib/api'
 import { resizeImageToIconBlob } from '@/lib/icon-upload'
 import { applyMe, useProfile } from '@/lib/profile'
 
 export default function EditProfileModal({ onClose }: { onClose: () => void }) {
+  const t = useTranslations('Profile')
   const { user, me } = useProfile()
   const [name, setName] = useState(me?.name ?? user.name)
   // The identity resolves async (token claims + /me fetch) — keep the prefill
@@ -52,7 +54,7 @@ export default function EditProfileModal({ onClose }: { onClose: () => void }) {
     if (!me) return onClose()
     const nextName = name.trim()
     if (nextName === '') {
-      setErr('Full name is required.')
+      setErr(t('editProfileForm.fullNameRequired'))
       return
     }
     const changedName = nextName !== (me.name ?? user.name)
@@ -73,7 +75,7 @@ export default function EditProfileModal({ onClose }: { onClose: () => void }) {
   return (
     <>
       <div className="modalhead">
-        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Edit profile</span>
+        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('editProfile')}</span>
         <button className="iconbtn" onClick={onClose}>
           <Icon name="x" size={16} />
         </button>
@@ -84,7 +86,7 @@ export default function EditProfileModal({ onClose }: { onClose: () => void }) {
             <button
               type="button"
               onClick={() => pictureInput.current?.click()}
-              title="Change profile photo"
+              title={t('editProfileForm.changePhoto')}
               className="group relative flex-none rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-(--brand)"
             >
               <Avatar
@@ -101,27 +103,27 @@ export default function EditProfileModal({ onClose }: { onClose: () => void }) {
             <Avatar src={user.picture} initials={user.initials} size={56} fontSize={20} />
           )}
           <div className="min-w-0 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-            <div className="text-(--text-secondary)">Profile photo</div>
+            <div className="text-(--text-secondary)">{t('editProfileForm.profilePhoto')}</div>
             {canEditPicture ? (
               removePicture ? (
                 <div>
-                  Your sign-in photo will be restored when you save.{' '}
+                  {t('editProfileForm.restoreOnSave')}{' '}
                   <button type="button" onClick={() => setRemovePicture(false)} className="text-(--brand)">
-                    Undo
+                    {t('editProfileForm.undo')}
                   </button>
                 </div>
               ) : (
                 <div>
-                  Click the photo to upload a PNG, JPEG, or WebP image.
+                  {t('editProfileForm.uploadHint')}
                   {me?.pictureCustom && !pictureFile && (
                     <button type="button" onClick={() => setRemovePicture(true)} className="ml-2 text-(--brand)">
-                      Use sign-in photo
+                      {t('editProfileForm.useSignInPhoto')}
                     </button>
                   )}
                 </div>
               )
             ) : (
-              <div>Photo uploads are not enabled in this deployment.</div>
+              <div>{t('editProfileForm.uploadsDisabled')}</div>
             )}
           </div>
           {canEditPicture && (
@@ -139,7 +141,7 @@ export default function EditProfileModal({ onClose }: { onClose: () => void }) {
         </div>
         <div className="grid grid-cols-1 gap-[14px] min-[440px]:grid-cols-2">
           <div className="fld">
-            <span className="fldlbl">Full name</span>
+            <span className="fldlbl">{t('fullName')}</span>
             <div className="inp">
               <input
                 value={name}
@@ -152,7 +154,7 @@ export default function EditProfileModal({ onClose }: { onClose: () => void }) {
             </div>
           </div>
           <div className="fld">
-            <span className="fldlbl">Email</span>
+            <span className="fldlbl">{t('email')}</span>
             {/* Read-only by design — the sign-in provider owns it (CP rejects edits too). */}
             <div className="inp cursor-default bg-(--surface-sunken) text-(--text-tertiary)">
               <span className="mono min-w-0 flex-1 overflow-hidden text-ellipsis text-[12.5px]">
@@ -164,7 +166,7 @@ export default function EditProfileModal({ onClose }: { onClose: () => void }) {
         </div>
         <div className="mt-[14px] flex items-center gap-2 rounded-md bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
           <Icon name="info" size={14} />
-          Email comes from your sign-in provider.
+          {t('editProfileForm.emailProvider')}
         </div>
         {err && (
           <div className="mt-3 font-sans text-[12px] font-normal leading-normal text-(--status-error)">{err}</div>
@@ -173,9 +175,9 @@ export default function EditProfileModal({ onClose }: { onClose: () => void }) {
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('editProfileForm.cancel')}
         </Button>
-        <Button onClick={() => void submit()}>{busy ? 'Saving…' : 'Save'}</Button>
+        <Button onClick={() => void submit()}>{busy ? t('editProfileForm.saving') : t('editProfileForm.save')}</Button>
       </div>
     </>
   )

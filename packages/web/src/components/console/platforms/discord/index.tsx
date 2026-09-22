@@ -1,7 +1,7 @@
 // No 'use client' here: reached only from ModalProvider's tree (the client boundary).
 
 import type { WebPlatformModule } from '../contract'
-import { inviteBotHint } from '../wizard-chrome'
+import { identityCards, inviteBotHint } from '../wizard-chrome'
 import { DiscordWizardBody } from './Body'
 import { DiscordMark } from './mark'
 import { discordSettingsFragments } from './settings'
@@ -25,7 +25,7 @@ export const discordModule: WebPlatformModule<typeof discordApi> = {
     // No transport concept — the create DTO carries none either.
     buildReuseInput: (bot, ctx) => ({ platform: 'discord', agentId: ctx.agentId, botId: bot.id }),
     affordances: {},
-    identityCards: () => ({ create: 'Create a bot in Discord', existing: 'An unused Discord bot' }),
+    identityCards: () => identityCards('discord'),
     inviteHint: () => inviteBotHint('channel', 'Discord')
   },
   settingsFragments: discordSettingsFragments,
@@ -36,8 +36,7 @@ export const discordModule: WebPlatformModule<typeof discordApi> = {
     // A Discord bot joins a SERVER, not a channel, so the only leave the console
     // can offer is the whole server — the band heading's action, not the row's.
     leave: 'space',
-    cannotLeaveRowHint:
-      'A Discord bot belongs to a server, not one channel — use Leave on the server heading above to take it out. If it is still in there, the row will come back.'
+    cannotLeaveRowHint: { key: 'discordCannotLeaveRowHint' }
   },
   messageIdentity: (row) => (DISCORD_SNOWFLAKE.test(row.ts) ? `ts:${row.ts}` : null)
 }

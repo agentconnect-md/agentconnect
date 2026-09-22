@@ -10,6 +10,7 @@
 // effects and a context of their own.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { Icon, Toggle } from '@/components/ui'
 import { ApiError, type BotDto, type SlackBotRefreshDto } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
@@ -191,14 +192,15 @@ function SlackRowBadges({ bot }: { bot: BotDto }) {
 }
 
 function SlackRowLinks({ bot }: { bot: BotDto }) {
+  const t = useTranslations('Platforms.slack.settings')
   if (!bot.slackAppId) return null
   return (
     <a
       href={slackAppSettingsUrl(bot.slackAppId)}
       target="_blank"
       rel="noopener noreferrer"
-      title="Configure on Slack"
-      aria-label="Configure on Slack"
+      title={t('configure')}
+      aria-label={t('configure')}
       className="iconbtn h-7 w-7 flex-none"
       onClick={(e) => e.stopPropagation()}
     >
@@ -208,6 +210,7 @@ function SlackRowLinks({ bot }: { bot: BotDto }) {
 }
 
 function SlackRowActions({ bot, canWrite }: { bot: BotDto; canWrite: boolean }) {
+  const t = useTranslations('Platforms.slack.settings')
   const card = useSlackBotCard()
   if (!bot.slackAppId || !canWrite) return null
   const entry = card.entryFor(bot.id)
@@ -220,8 +223,8 @@ function SlackRowActions({ bot, canWrite }: { bot: BotDto; canWrite: boolean }) 
       className={`iconbtn h-7 w-7 flex-none ${
         needsAttention ? 'border-(--amber-500) bg-(--status-paused-soft) text-(--amber-500)' : ''
       } ${refreshing ? 'cursor-default opacity-60' : ''}`}
-      title={needsAttention ? 'Slack app needs attention' : 'Refresh Slack app'}
-      aria-label="Refresh Slack app"
+      title={needsAttention ? t('needsAttention') : t('refresh')}
+      aria-label={t('refresh')}
       disabled={refreshing}
       onClick={() => card.refreshApp(bot)}
     >
@@ -233,6 +236,7 @@ function SlackRowActions({ bot, canWrite }: { bot: BotDto; canWrite: boolean }) 
 /** The refresh outcome — the failure banner and the manifest/authorization
  *  notice, in the order they render under the row today. */
 function SlackCardNotice({ bot }: { bot: BotDto }) {
+  const t = useTranslations('Platforms.slack.settings')
   const card = useSlackBotCard()
   const entry = card.entryFor(bot.id)
   if (!entry) return null
@@ -243,7 +247,7 @@ function SlackCardNotice({ bot }: { bot: BotDto }) {
           role="alert"
           className="border-b border-(--border-subtle) bg-(--status-error-soft) px-4 py-2 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)"
         >
-          Couldn&apos;t refresh this Slack app — {entry.error}
+          {t('refreshFailed', { error: entry.error })}
         </div>
       )}
       {entry.result && (
@@ -275,11 +279,9 @@ function SlackRefreshNotice({
     action,
     scopeFragment
   } = slackRefreshNoticeState(result, { builtin })
+  const t = useTranslations('Platforms.slack.settings')
   const [copied, setCopied] = useState(false)
-  const message =
-    builtin && result.authorization === 'invalid'
-      ? 'Slack rejected this workspace authorization. Reinstall the app to reconnect it.'
-      : defaultMessage
+  const message = builtin && result.authorization === 'invalid' ? t('builtinRejected') : defaultMessage
   const copyScopes = async () => {
     if (!scopeFragment) return
     try {
@@ -302,17 +304,19 @@ function SlackRefreshNotice({
       <span className="min-w-0">
         <span>{message}</span>
         {result.manifestMissingScopes.length > 0 && (
-          <span className="mono ml-1 text-[11px]">Manifest missing: {result.manifestMissingScopes.join(', ')}</span>
+          <span className="mono ml-1 text-[11px]">
+            {t('manifestMissing', { scopes: result.manifestMissingScopes.join(', ') })}
+          </span>
         )}
         {result.missingScopes.length > 0 && (
-          <span className="mono ml-1 text-[11px]">Missing: {result.missingScopes.join(', ')}</span>
+          <span className="mono ml-1 text-[11px]">{t('missing', { scopes: result.missingScopes.join(', ') })}</span>
         )}
       </span>
       {(scopeFragment || action) && (
         <span className="flex flex-none items-center gap-3">
           {scopeFragment && (
             <button type="button" className="lnk border-0 bg-transparent p-0" onClick={() => void copyScopes()}>
-              {copied ? 'Copied' : 'Copy scopes'}
+              {copied ? t('copied') : t('copyScopes')}
             </button>
           )}
           {action?.label === 'Reinstall workspace' && onReinstall ? (
@@ -322,7 +326,7 @@ function SlackRefreshNotice({
               disabled={reinstalling}
               onClick={onReinstall}
             >
-              {reinstalling ? 'Reinstalling…' : action.label}
+              {reinstalling ? t('reinstalling') : action.label}
             </button>
           ) : action ? (
             <a href={action.href} target="_blank" rel="noopener noreferrer" className="lnk">
@@ -338,12 +342,13 @@ function SlackRefreshNotice({
 /** What deleting the bot here does NOT do — AgentConnect forgets the credentials,
  *  the Slack app itself keeps existing in the workspace. */
 function SlackDeleteNotice({ bot }: { bot: BotDto }) {
+  const t = useTranslations('Platforms.slack.settings')
   return (
     <>
       <div className="flex items-start gap-[9px]">
         <Icon name="info" size={15} color="var(--text-tertiary)" className="mt-[1px] flex-none" />
         <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-          The Slack app itself is not deleted.
+          {t('deleteNotice')}
         </span>
       </div>
       <a
@@ -355,7 +360,7 @@ function SlackDeleteNotice({ bot }: { bot: BotDto }) {
         <span className="inline-flex h-[13px] w-[13px] items-center justify-center">
           <SlackMark />
         </span>
-        Open on Slack
+        {t('openOn')}
         <Icon name="arrow-up-right" size={13} />
       </a>
     </>
@@ -370,6 +375,7 @@ function SlackDeleteNotice({ bot }: { bot: BotDto }) {
  * way. Slack alone declares `publicChannelJoin`, so only its rows render this.
  */
 function SlackRowSettings({ bot, canWrite }: { bot: BotDto; canWrite: boolean }) {
+  const t = useTranslations('Platforms.slack.settings')
   const { setBotJoinPublicChannels } = useConsoleData()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -390,14 +396,12 @@ function SlackRowSettings({ bot, canWrite }: { bot: BotDto; canWrite: boolean })
     <div className="mb-3 flex items-start justify-between gap-3 rounded-lg border border-(--border-subtle) bg-(--surface-card) px-3 py-2">
       <div className="min-w-0">
         <div className="font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)">
-          Automatically join public channels
+          {t('joinPublicChannels')}
         </div>
         {/* The scope is the point of this copy: a join is persistent, bot-wide membership, not a
             one-time read for the agent that asked (review on #2180). */}
         <div className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-          {enabled
-            ? 'When an agent reads or posts in a public channel this bot has not joined, the bot joins automatically and remains a member. Slack announces the join, and the membership applies to every agent using this bot. Private channels still require an invitation.'
-            : 'Agents can only read and post in channels this bot has already joined.'}
+          {enabled ? t('joinPublicChannelsEnabled') : t('joinPublicChannelsDisabled')}
         </div>
         {error && (
           <div className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--status-error)">{error}</div>
@@ -407,7 +411,7 @@ function SlackRowSettings({ bot, canWrite }: { bot: BotDto; canWrite: boolean })
         checked={enabled}
         disabled={!canWrite || busy}
         onChange={(next) => void flip(next)}
-        ariaLabel="Automatically join public channels"
+        ariaLabel={t('joinPublicChannels')}
       />
     </div>
   )

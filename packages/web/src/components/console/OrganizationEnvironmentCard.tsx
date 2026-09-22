@@ -394,7 +394,7 @@ function EntrySheet({
             <span className={LABEL}>{t('name')}</span>
             <input
               className={INPUT}
-              placeholder="API_KEY"
+              placeholder={t('namePlaceholder')}
               value={key}
               // Immutable after creation: renaming is an explicit delete-and-create,
               // so an edit can never silently change which credential this is.

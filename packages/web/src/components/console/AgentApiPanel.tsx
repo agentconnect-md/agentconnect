@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { useTranslations } from 'next-intl'
 import ApiKeysCard from '@/components/console/ApiKeysCard'
 import { Button, Icon } from '@/components/ui'
 import { API_EVENTS, MOCK_MODE, pgPrompts } from '@/lib/data'
@@ -24,6 +25,7 @@ const MOCK_ORG: OrgDto = {
 const MOCK_RELAY_URL = 'https://relay.example.test'
 
 export function AgentApiPanel({ agentId, agentName }: { agentId: string; agentName: string }) {
+  const t = useTranslations('Agents.apiPanel')
   const { activeOrg, error: orgError } = useOrgs()
   const [copied, setCopied] = useState<CopyTarget | null>(null)
   const apiOrg = activeOrg ?? (MOCK_MODE ? MOCK_ORG : null)
@@ -35,14 +37,14 @@ export function AgentApiPanel({ agentId, agentName }: { agentId: string; agentNa
           orgError ? 'text-(--status-error)' : 'text-(--text-tertiary)'
         }`}
       >
-        {orgError ? 'Couldn’t load the organization required for API access.' : 'Loading API configuration…'}
+        {orgError ? t('organizationLoadError') : t('loading')}
       </div>
     )
   }
 
   const relayUrl = MOCK_MODE ? MOCK_RELAY_URL : agentApiRelayUrl()
   const { mintUrl, socketTemplate } = agentApiUrls(cpRestBase(), apiOrg.id, agentId, relayUrl)
-  const socketDisplay = socketTemplate ?? 'Relay endpoint not configured'
+  const socketDisplay = socketTemplate ?? t('relayNotConfigured')
   const snippet = agentApiSnippet(mintUrl, pgPrompts(agentId)[0]!)
   const copy = async (target: CopyTarget, value: string) => {
     try {
@@ -57,8 +59,9 @@ export function AgentApiPanel({ agentId, agentName }: { agentId: string; agentNa
   return (
     <div className="flex flex-col gap-4 p-4 desktop:max-w-[820px] desktop:p-0">
       <p className="m-0 font-sans text-[13px] font-normal leading-[1.6] text-(--text-secondary)">
-        Build on <span className="font-semibold text-(--text-primary)">{agentName}</span>: mint short-lived credentials,
-        then stream a run through the relay.
+        {t.rich('buildDescription', {
+          agent: () => <span className="font-semibold text-(--text-primary)">{agentName}</span>
+        })}
       </p>
 
       <ApiKeysCard
@@ -67,35 +70,35 @@ export function AgentApiPanel({ agentId, agentName }: { agentId: string; agentNa
         scopeOrgId={apiOrg.id}
         defaultName={`${agentName} API`}
         embedded
-        title="Authentication"
-        description={`Use a personal API key for ${apiOrg.name ?? apiOrg.slug}. It acts as you in this organization and is shown only once when created.`}
+        title={t('authentication')}
+        description={t('apiKeyDescription', { organization: apiOrg.name ?? apiOrg.slug })}
       />
 
       <div className="card overflow-hidden max-desktop:rounded-lg">
         <div className="flex items-center justify-between gap-2 border-b border-(--border-subtle) px-4 py-3 desktop:py-[13px]">
           <span className="inline-flex items-center gap-2 desktop:gap-[9px]">
             <Icon name="webhook" size={16} color="var(--text-tertiary)" />
-            <span className="font-sans text-[14px] font-semibold leading-normal">Connection endpoints</span>
+            <span className="font-sans text-[14px] font-semibold leading-normal">{t('connectionEndpoints')}</span>
           </span>
-          <span className="mono text-[11px] text-(--text-tertiary)">streaming</span>
+          <span className="mono text-[11px] text-(--text-tertiary)">{t('streaming')}</span>
         </div>
         <div className="flex flex-col gap-[10px] px-4 py-[14px]">
           <div className="endpoint">
-            <span className="tagpill bg-(--brand-soft) text-(--brand-soft-text)">POST</span>
+            <span className="tagpill bg-(--brand-soft) text-(--brand-soft-text)">{t('post')}</span>
             <span className="mono flex-1 truncate text-[12px] text-(--text-primary) desktop:text-[12.5px]">
               {mintUrl}
             </span>
             <button
               className="iconbtn h-7 w-7"
-              title={copied === 'mint' ? 'Copied' : 'Copy mint endpoint'}
-              aria-label={copied === 'mint' ? 'Mint endpoint copied' : 'Copy mint endpoint'}
+              title={copied === 'mint' ? t('copied') : t('copyMintEndpoint')}
+              aria-label={copied === 'mint' ? t('mintEndpointCopied') : t('copyMintEndpoint')}
               onClick={() => void copy('mint', mintUrl)}
             >
               <Icon name={copied === 'mint' ? 'check' : 'copy'} size={14} />
             </button>
           </div>
           <div className="endpoint">
-            <span className="tagpill">WSS</span>
+            <span className="tagpill">{t('webSocketMethod')}</span>
             <span
               className={`mono flex-1 truncate text-[12px] desktop:text-[12.5px] ${
                 socketTemplate ? 'text-(--text-primary)' : 'text-(--text-tertiary)'
@@ -107,8 +110,8 @@ export function AgentApiPanel({ agentId, agentName }: { agentId: string; agentNa
             {socketTemplate && (
               <button
                 className="iconbtn h-7 w-7"
-                title={copied === 'socket' ? 'Copied' : 'Copy WebSocket endpoint'}
-                aria-label={copied === 'socket' ? 'WebSocket endpoint copied' : 'Copy WebSocket endpoint'}
+                title={copied === 'socket' ? t('copied') : t('copyWebSocketEndpoint')}
+                aria-label={copied === 'socket' ? t('webSocketEndpointCopied') : t('copyWebSocketEndpoint')}
                 onClick={() => void copy('socket', socketTemplate)}
               >
                 <Icon name={copied === 'socket' ? 'check' : 'copy'} size={14} />
@@ -122,11 +125,11 @@ export function AgentApiPanel({ agentId, agentName }: { agentId: string; agentNa
         <div className="flex items-center justify-between gap-2 border-b border-(--border-subtle) px-4 py-3 desktop:py-[13px]">
           <span className="inline-flex items-center gap-2 desktop:gap-[9px]">
             <Icon name="code-xml" size={16} color="var(--text-tertiary)" />
-            <span className="font-sans text-[14px] font-semibold leading-normal">Connect</span>
+            <span className="font-sans text-[14px] font-semibold leading-normal">{t('connect')}</span>
           </span>
           <Button variant="ghost" size="xs" onClick={() => void copy('snippet', snippet)}>
             <Icon name={copied === 'snippet' ? 'check' : 'copy'} size={13} />
-            {copied === 'snippet' ? 'Copied' : 'Copy'}
+            {copied === 'snippet' ? t('copied') : t('copy')}
           </Button>
         </div>
         <div className="px-4 py-[14px]">
@@ -138,9 +141,9 @@ export function AgentApiPanel({ agentId, agentName }: { agentId: string; agentNa
         <div className="flex items-center justify-between gap-2 border-b border-(--border-subtle) px-4 py-3 desktop:py-[13px]">
           <span className="inline-flex items-center gap-2 desktop:gap-[9px]">
             <Icon name="radio" size={16} color="var(--text-tertiary)" />
-            <span className="font-sans text-[14px] font-semibold leading-normal">Stream events</span>
+            <span className="font-sans text-[14px] font-semibold leading-normal">{t('streamEvents')}</span>
           </span>
-          <span className="mono text-[11px] text-(--text-tertiary)">server → client</span>
+          <span className="mono text-[11px] text-(--text-tertiary)">{t('serverToClient')}</span>
         </div>
         {API_EVENTS.map((event) => (
           <div
@@ -149,7 +152,7 @@ export function AgentApiPanel({ agentId, agentName }: { agentId: string; agentNa
           >
             <span className="mono text-[12px] text-(--brand-soft-text)">{event.name}</span>
             <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-              {event.desc}
+              {t(`events.${event.descKey}`)}
             </span>
           </div>
         ))}

@@ -519,7 +519,7 @@ export function CreateMcpProviderModal({
             <span className="fldlbl">{t('name')}</span>
             <input
               className="inp mn"
-              placeholder="linear"
+              placeholder={t('namePlaceholder')}
               value={name}
               maxLength={64}
               onChange={(e) => setName(e.target.value)}
@@ -530,7 +530,7 @@ export function CreateMcpProviderModal({
             <span className="fldlbl">{t('url')}</span>
             <input
               className="inp mn"
-              placeholder="https://mcp.example.com/sse"
+              placeholder={t('urlPlaceholder')}
               value={url}
               onChange={(e) => setUrl(e.target.value)}
             />
@@ -566,13 +566,13 @@ export function CreateMcpProviderModal({
               <div className="mt-2 flex flex-col gap-2">
                 <input
                   className="inp mn"
-                  placeholder="client_id"
+                  placeholder={t('clientIdPlaceholder')}
                   value={clientId}
                   onChange={(e) => setClientId(e.target.value)}
                 />
                 <input
                   className="inp mn"
-                  placeholder="client_secret"
+                  placeholder={t('clientSecretPlaceholder')}
                   type="password"
                   value={clientSecret}
                   onChange={(e) => setClientSecret(e.target.value)}

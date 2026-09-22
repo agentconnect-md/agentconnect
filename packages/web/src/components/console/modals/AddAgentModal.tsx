@@ -1000,7 +1000,7 @@ export default function AddAgentModal({
                 <span className="fldlbl">{t('name')}</span>
                 <input
                   className="inp mn"
-                  placeholder="deploy-bot"
+                  placeholder={t('namePlaceholder')}
                   value={name}
                   onChange={(e) => setName(agentSlugSanitize(e.target.value))}
                   autoFocus
@@ -1304,7 +1304,7 @@ export default function AddAgentModal({
                         </span>
                         <input
                           className="mn min-w-0 flex-1 border-0 bg-transparent font-mono text-[12.5px] font-medium leading-normal text-(--text-primary) outline-none"
-                          placeholder="acme/infra"
+                          placeholder={t('repositoryPlaceholder')}
                           value={repo}
                           onChange={(e) => setRepo(e.target.value)}
                         />

@@ -1,6 +1,7 @@
 // No 'use client' here: rendered only inside ModalProvider's tree (the client boundary).
 
 import { useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { PlatformMark } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import type { Agent } from '@/lib/data'
@@ -8,7 +9,7 @@ import { discordApplicationIdFromToken, discordBotInviteUrl } from './invite'
 import type { WizardHost } from '../contract'
 import { usePublishedFooter } from '../publish'
 import { TokenGuidePane } from '../wizard-chrome'
-import { DISCORD_STEPS } from './steps'
+import { discordWalkthroughSteps } from './steps'
 
 /**
  * Discord's create-mode pane: the Developer Portal walkthrough and one bot
@@ -17,6 +18,8 @@ import { DISCORD_STEPS } from './steps'
  * invite link instead of asking anyone to build the URL by hand.
  */
 export function DiscordWizardBody({ agent, host }: { agent: Agent; host: WizardHost }) {
+  const t = useTranslations('Platforms.discord')
+  const tokenT = useTranslations('Platforms.chrome.token')
   const [botToken, setBotToken] = useState('')
   const [showErrors, setShowErrors] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -45,7 +48,7 @@ export function DiscordWizardBody({ agent, host }: { agent: Agent; host: WizardH
   }
 
   usePublishedFooter(host, {
-    label: saving ? 'Connecting…' : 'Connect & authorize',
+    label: saving ? t('footer.connecting') : t('footer.connect'),
     enabled: valid && !saving,
     onSubmit: () => void submit()
   })
@@ -55,16 +58,16 @@ export function DiscordWizardBody({ agent, host }: { agent: Agent; host: WizardH
   return (
     <TokenGuidePane
       mark={<PlatformMark platform="discord" />}
-      step1="Name and create the application. In Bot, reset and copy the token."
+      step1={t('guide.step1')}
       linkHref="https://discord.com/developers/applications?new_application=true"
-      linkLabel="Create Discord app"
-      steps={DISCORD_STEPS}
-      walkthroughLabel="Discord bot setup steps"
-      step2="Paste the bot token — required to connect"
+      linkLabel={t('guide.link')}
+      steps={discordWalkthroughSteps(t)}
+      walkthroughLabel={t('guide.walkthroughLabel')}
+      step2={tokenT('prompt')}
       fields={[
         {
-          label: 'Bot token',
-          placeholder: 'Bot token from the Developer Portal',
+          label: tokenT('label'),
+          placeholder: t('guide.tokenPlaceholder'),
           value: botToken,
           invalid: showErrors && !valid,
           onChange: setBotToken
@@ -82,18 +85,18 @@ export function DiscordWizardBody({ agent, host }: { agent: Agent; host: WizardH
             <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
               <PlatformMark platform="discord" />
             </span>
-            Add to Discord
+            {t('invite.add')}
             <Icon name="external-link" size={14} />
           </a>
           <div className="mt-[8px] flex flex-wrap items-center gap-x-[6px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
             <Icon name="corner-down-right" size={12} className="flex-none" />
-            App&nbsp;<span className="mono">{appId}</span>
-            <span>— invites with the bot &amp; applications.commands scopes and the right permissions.</span>
+            {t('invite.appLabel')} <span className="mono">{appId}</span>
+            <span>{t('invite.scopes')}</span>
           </div>
         </>
       ) : (
         <div className="mt-[8px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-          Paste the bot token and an “Add to Discord” button appears — no need to build the invite URL by hand.
+          {t('invite.pasteFirst')}
         </div>
       )}
     </TokenGuidePane>

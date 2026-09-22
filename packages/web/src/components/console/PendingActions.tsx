@@ -7,6 +7,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Icon } from '@/components/ui'
+import { useTranslations } from 'next-intl'
 
 interface Pending {
   key: string
@@ -127,6 +128,7 @@ export function usePendingAction(
  * the kind of chrome people learn to ignore.
  */
 export function PendingActionsBanner({ className = '' }: { className?: string }) {
+  const t = useTranslations('Common.pendingActions')
   const entries = useContext(Waiting)
   const [hidden, setHidden] = useState<Pending[]>([])
   useEffect(() => {
@@ -160,10 +162,12 @@ export function PendingActionsBanner({ className = '' }: { className?: string })
       >
         <Icon name="clock" size={13} className="flex-none text-(--amber-500)" />
         <span className="min-w-0 flex-1 truncate font-sans text-[13px] font-medium leading-normal text-(--amber-500)">
-          {item.label} is waiting for your action
+          {t('waiting', { label: item.label })}
           {more > 0 ? ` (+${more} more)` : ''}
         </span>
-        <span className="flex-none font-sans text-[12px] font-semibold leading-normal text-(--amber-500)">Show</span>
+        <span className="flex-none font-sans text-[12px] font-semibold leading-normal text-(--amber-500)">
+          {t('show')}
+        </span>
       </button>
     </div>
   )

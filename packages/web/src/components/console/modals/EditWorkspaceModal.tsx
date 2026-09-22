@@ -6,6 +6,7 @@
 // rejects edits that conflict with enabled GitHub review or Check actions.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { GithubMark, LoadingState } from '@/components/marks'
 import { CodeHostMark } from '@/components/console/CodeHostMark'
 import { Button, Icon } from '@/components/ui'
@@ -97,6 +98,7 @@ export default function EditWorkspaceModal({
   onClose: () => void
   onChanged: () => void
 }) {
+  const t = useTranslations('Agents.workspaceEdit')
   const { orgPath } = useOrgs()
   const { orgSetIds } = useConsoleData()
   // Pool placements do not materialize secondary roots yet, so they keep the authorization-only wording.
@@ -639,9 +641,9 @@ export default function EditWorkspaceModal({
             </span>
           </span>
           <div className="min-w-0 flex-1">
-            <div className="font-sans text-[16px] font-semibold leading-normal">Edit workspace</div>
+            <div className="font-sans text-[16px] font-semibold leading-normal">{t('title')}</div>
             <div className="mt-[1px] truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-              workspace and repository access for <span className="mono">{agentLabel(agent)}</span>
+              {t('subtitle', { agent: agentLabel(agent) })}
             </div>
           </div>
           <button className="iconbtn" onClick={onClose} disabled={saving}>
@@ -667,7 +669,7 @@ export default function EditWorkspaceModal({
           {destructiveChange && (
             <div className="mb-4 flex items-start gap-[10px] rounded-[9px] border border-(--status-error) bg-(--surface-sunken) p-[13px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
               <Icon name="shield-alert" size={14} className="mt-[2px] flex-none" />
-              <span>Replaces all files in the current workspace — commit anything you need first.</span>
+              <span>{t('destructiveWarning')}</span>
             </div>
           )}
 
@@ -675,7 +677,7 @@ export default function EditWorkspaceModal({
             <div className="mb-4 grid grid-cols-1 gap-[14px] desktop:grid-cols-2 desktop:gap-x-7">
               {gl.error ? (
                 <div className="font-sans text-[12px] font-normal leading-[1.5] text-(--status-error) desktop:col-span-2">
-                  Couldn&rsquo;t load your GitLab projects — {gl.error}
+                  {t('gitlabLoadError', { error: gl.error })}
                 </div>
               ) : gl.loading ? (
                 <div className="desktop:col-span-2">
@@ -731,22 +733,22 @@ export default function EditWorkspaceModal({
                       }}
                     />
                     {glMatches.length === 0 && !glQ.trim().includes('/') && (
-                      <div className="fnohit">No projects match &ldquo;{glQ}&rdquo;</div>
+                      <div className="fnohit">{t('noProjectsMatch', { query: glQ })}</div>
                     )}
                   </GitlabProjectField>
 
                   <RepositoryAccessField
                     repositorySelected={!!glPick || !!glPublic}
-                    label="Project access"
-                    unselectedLabel="Select project first"
-                    writeDescription="Push, open merge requests & run pipelines"
+                    label={t('projectAccess')}
+                    unselectedLabel={t('selectProjectFirst')}
+                    writeDescription={t('gitlabWriteAccess')}
                     value={glPublic !== null ? 'read' : write ? 'write' : 'read'}
                     readOnly={glPublic !== null}
                     readOnlyNote={
                       glPublic !== null ? (
                         <span className="mt-[6px] inline-flex items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
                           <Icon name="info" size={13} className="mt-[1px] flex-none" />
-                          Public project — read-only clone.
+                          {t('publicProjectReadOnly')}
                         </span>
                       ) : undefined
                     }
@@ -799,7 +801,7 @@ export default function EditWorkspaceModal({
             <div className="mb-4 grid grid-cols-1 gap-[14px] desktop:grid-cols-2 desktop:gap-x-7">
               {gt.error ? (
                 <div className="font-sans text-[12px] font-normal leading-[1.5] text-(--status-error) desktop:col-span-2">
-                  Couldn&rsquo;t load your Gitea repositories — {gt.error}
+                  {t('giteaLoadError', { error: gt.error })}
                 </div>
               ) : gt.loading ? (
                 <div className="desktop:col-span-2">
@@ -837,12 +839,12 @@ export default function EditWorkspaceModal({
                         onSelect={() => selectRepository(choice)}
                       />
                     ))}
-                    {gtMatches.length === 0 && <div className="fnohit">No repositories match &ldquo;{gtQ}&rdquo;</div>}
+                    {gtMatches.length === 0 && <div className="fnohit">{t('noRepositoriesMatch', { query: gtQ })}</div>}
                   </GiteaRepositoryField>
 
                   <RepositoryAccessField
                     repositorySelected={!!gtPick}
-                    writeDescription="Push, open pull requests & request reviews"
+                    writeDescription={t('giteaWriteAccess')}
                     value={write ? 'write' : 'read'}
                     open={accessOpen}
                     onToggle={() => {
@@ -892,7 +894,7 @@ export default function EditWorkspaceModal({
             (gh === null ? (
               <div className="mb-4 flex items-center gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
                 <Icon name="loader" size={15} className="flex-none animate-spin" />
-                Checking your GitHub setup…
+                {t('checkingGithub')}
               </div>
             ) : (
               // The fields render whatever the App state is: a public repository needs
@@ -902,10 +904,7 @@ export default function EditWorkspaceModal({
                 {!gh.enabled ? (
                   <div className="flex items-start gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary) desktop:col-span-2">
                     <Icon name="info" size={15} className="mt-[1px] flex-none" />
-                    <span>
-                      The GitHub App isn&rsquo;t configured for this deployment — only public repositories are
-                      available, cloned read-only.
-                    </span>
+                    <span>{t('githubNotConfigured')}</span>
                   </div>
                 ) : gh.installations.length === 0 ? (
                   <div className="desktop:col-span-2">
@@ -939,11 +938,7 @@ export default function EditWorkspaceModal({
                     if (lookup.exactChoice.kind === 'installed') selectInstalledRepo(lookup.exactChoice.repo)
                     else selectPublicRepo(lookup.exactChoice.repo)
                   }}
-                  error={
-                    reposError === 'failed'
-                      ? 'Couldn’t load repositories from GitHub — the list may be incomplete.'
-                      : undefined
-                  }
+                  error={reposError === 'failed' ? t('githubLoadError') : undefined}
                   onRetry={() => {
                     invalidateGithubRepoRosterCache()
                     setReposError(null)
@@ -966,9 +961,7 @@ export default function EditWorkspaceModal({
                     describeRosterRow={(repo) => {
                       const grant = grantOf(repo.fullName)
                       return {
-                        description: grant
-                          ? 'Already authorized for this agent'
-                          : (repo.description ?? 'No description'),
+                        description: grant ? t('alreadyAuthorized') : (repo.description ?? t('noDescription')),
                         ...(grant ? { badge: 'authorized' } : {})
                       }
                     }}
@@ -986,7 +979,7 @@ export default function EditWorkspaceModal({
                     publicSelected ? (
                       <span className="mt-[6px] inline-flex items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
                         <Icon name="info" size={13} className="mt-[1px] flex-none" />
-                        Public repository — read-only clone.
+                        {t('publicRepositoryReadOnly')}
                       </span>
                     ) : undefined
                   }
@@ -1040,10 +1033,7 @@ export default function EditWorkspaceModal({
                 {uncovered && (
                   <div className="flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary) desktop:col-span-2">
                     <Icon name="info" size={14} className="mt-[1px] flex-none" />
-                    <span>
-                      No GitHub App installation covers <span className="mono">{pickOwner}</span>&#32;— install (or
-                      extend) the app on that account first.
-                    </span>
+                    <span>{t('installationMissing', { owner: pickOwner })}</span>
                   </div>
                 )}
                 {!uncovered && probeNote && (
@@ -1084,7 +1074,7 @@ export default function EditWorkspaceModal({
             <div className="flex flex-wrap items-start gap-3">
               <div className="min-w-0 flex-1">
                 <div className="font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)">
-                  Additional repositories
+                  {t('additionalRepositories')}
                 </div>
               </div>
               {!manualWorkspaceAuthorization && (
@@ -1096,7 +1086,7 @@ export default function EditWorkspaceModal({
                   }}
                 >
                   <Icon name="plus" size={13} />
-                  Authorize repository
+                  {t('authorizeRepository')}
                 </Button>
               )}
             </div>
@@ -1111,7 +1101,7 @@ export default function EditWorkspaceModal({
               {authorizations.length === 0 ? (
                 <div className="flex items-center gap-2 rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[10px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                   <Icon name="info" size={14} className="flex-none" />
-                  No additional repositories authorized.
+                  {t('noAdditionalRepositories')}
                 </div>
               ) : (
                 authorizations.map((authorization) => (
@@ -1134,7 +1124,7 @@ export default function EditWorkspaceModal({
                       className={`iconbtn h-6 w-6 flex-none ${
                         removingAuthorization === authorization.id ? 'pointer-events-none opacity-50' : ''
                       }`}
-                      title="Revoke repository access"
+                      title={t('revokeRepositoryAccess')}
                       disabled={removingAuthorization !== null}
                       onClick={() => void removeAuthorization(authorization)}
                     >
@@ -1164,14 +1154,14 @@ export default function EditWorkspaceModal({
             disabled={saving}
             className={saving ? 'pointer-events-none opacity-50' : undefined}
           >
-            Cancel
+            {t('cancel')}
           </Button>
           <Button
             onClick={() => void submit()}
             disabled={!canSubmit || saving || noProjects}
             className={!canSubmit || saving || noProjects ? 'pointer-events-none opacity-50' : undefined}
           >
-            {saving ? 'Saving…' : destructiveChange ? 'Replace workspace' : 'Save'}
+            {saving ? t('saving') : destructiveChange ? t('replaceWorkspace') : t('save')}
           </Button>
         </div>
       </div>

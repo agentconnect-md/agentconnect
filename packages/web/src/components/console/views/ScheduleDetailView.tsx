@@ -224,7 +224,9 @@ export default function ScheduleDetailView() {
                 c.agentId ? 'cursor-pointer' : 'cursor-default'
               }`}
             >
-              <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">Agent</span>
+              <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
+                {t('agent')}
+              </span>
               <span className="inline-flex items-center gap-2">
                 <span className="av h-5 w-5 rounded-[5px]">
                   <AgentIconView icon={owner?.icon} runtime={agentRuntime} size={20} />
@@ -448,12 +450,12 @@ export default function ScheduleDetailView() {
                     }}
                   >
                     <Icon name="pencil" size={14} />
-                    Edit
+                    {t('edit')}
                   </button>
                   <div className="dmsep" />
                   <button className="dmi danger" onClick={() => void remove()}>
                     <Icon name="trash" size={14} />
-                    Delete
+                    {t('delete')}
                   </button>
                 </div>
               </>
@@ -522,10 +524,10 @@ export default function ScheduleDetailView() {
             </span>
           ))}
         <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-          Created by {creatorLabel(c.createdBy, me)} · {fmtDate(c.createdAt)}
+          {t('createdBy', { creator: creatorLabel(c.createdBy, me) })} · {fmtDate(c.createdAt)}
         </span>
         <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-          Modified by {creatorLabel(c.lastModifiedBy, me)} · {fmtDate(c.lastModifiedAt)}
+          {t('modifiedBy', { creator: creatorLabel(c.lastModifiedBy, me) })} · {fmtDate(c.lastModifiedAt)}
         </span>
         <VisibilityValue visibility={c.visibility} sharedWith={c.sharedWith} />
       </div>

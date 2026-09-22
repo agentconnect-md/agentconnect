@@ -21,6 +21,7 @@
 // indistinguishable from real telemetry (same call the daemon detail page made).
 
 import { useMemo } from 'react'
+import { useTranslations } from 'next-intl'
 import { useRouter } from 'next/navigation'
 import useSWR from 'swr'
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
@@ -54,6 +55,7 @@ import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 
 export default function ClusterDetailView() {
+  const t = useTranslations('Daemons.clusterDetail')
   const { orgPath } = useOrgs()
   const router = useRouter()
   const { daemons, agents, orgSetIds, daemonsLoading } = useConsoleData()
@@ -90,15 +92,11 @@ export default function ClusterDetailView() {
         <NotFound
           icon="server-off"
           kind={managed ? 'CLOUD' : 'CLUSTER'}
-          title={managed ? 'Cloud is not available here' : 'No cluster connected'}
-          pre={
-            managed
-              ? 'No Cloud capacity has registered with this control plane yet. Place your agents on a daemon you connected in the meantime.'
-              : 'No pool member has registered with this control plane. Install the daemon runtime on a cluster and it appears here.'
-          }
-          actionLabel="Back to daemons"
+          title={managed ? t('cloudUnavailable') : t('noCluster')}
+          pre={managed ? t('cloudEmpty') : t('clusterEmpty')}
+          actionLabel={t('backToDaemons')}
           actionHref={orgPath('/daemons')}
-          searchLabel="Search daemons"
+          searchLabel={t('searchDaemons')}
         />
       </div>
     )
@@ -133,11 +131,11 @@ export default function ClusterDetailView() {
   // deployment offers no billing and there is no card to stand beside.
   const cloudTiles = (
     <>
-      <FleetStat icon="bot" label="Agents" value={String(hosted.length)} />
-      <FleetStat icon="activity" label="Active sessions" value={String(sessions)} />
+      <FleetStat icon="bot" label={t('agents')} value={String(hosted.length)} />
+      <FleetStat icon="activity" label={t('activeSessions')} value={String(sessions)} />
       <FleetStat
         icon="cpu"
-        label="Runtimes available"
+        label={t('runtimesAvailable')}
         value={String(runtimes.length)}
         note={`${models} model${models === 1 ? '' : 's'}`}
       />
@@ -177,14 +175,12 @@ export default function ClusterDetailView() {
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
             {managed ? (
-              <MetaItem icon="cloud" text="Managed by AgentConnect" />
+              <MetaItem icon="cloud" text={t('managedBy')} />
             ) : (
               <>
                 <MetaItem
                   icon="server"
-                  text={
-                    online ? `${serving.length} node${serving.length === 1 ? '' : 's'} serving` : 'no nodes serving'
-                  }
+                  text={online ? t('nodesServing', { count: serving.length }) : t('noNodesServing')}
                 />
                 <MetaItem icon="tag" mono text={version} />
               </>
@@ -193,7 +189,7 @@ export default function ClusterDetailView() {
         </div>
         {billingOffered && (
           <Button variant="secondary" size="sm" onClick={() => router.push(orgPath('/billing'))}>
-            Manage billing
+            {t('manageBilling')}
           </Button>
         )}
       </div>
@@ -221,46 +217,47 @@ export default function ClusterDetailView() {
                 on one axis. This is the pair the CP's placement check compares. */}
             <FleetStat
               icon="bot"
-              label="Agents"
+              label={t('agents')}
               value={online ? capacityLabel : String(used)}
-              note={online ? 'running' : undefined}
+              note={online ? t('running') : undefined}
             />
-            <FleetStat icon="activity" label="Active sessions" value={String(sessions)} />
-            <FleetStat icon="server" label="Nodes" value={`${serving.length} / ${members.length}`} note="serving" />
+            <FleetStat icon="activity" label={t('activeSessions')} value={String(sessions)} />
+            <FleetStat
+              icon="server"
+              label={t('nodes')}
+              value={`${serving.length} / ${members.length}`}
+              note={t('serving')}
+            />
           </FleetStatColumn>
           <ClusterResourcesCard {...{ online, cpu, mem }} />
           {/* The agents placed here, exactly as the daemon page reads it. A metering ingress
               cannot stand in for a fleet: a daemon reports its own usage by default, pool
               members included, so `gateway` is empty on an ordinary cluster and `daemon` sweeps
               in every other machine the org connected. */}
-          <FleetUsageCard agentIds={hosted.map((a) => a.id)} note="agents placed here · 30d" />
+          <FleetUsageCard agentIds={hosted.map((a) => a.id)} note={t('agentsPlaced')} />
         </div>
       )}
 
       {/* Band two — what the set can run, and what runs on it. */}
       <FleetRuntimesCard
-        title="Runtimes"
+        title={t('runtimes')}
         runtimes={runtimes}
         agents={hosted}
-        empty={
-          managed
-            ? 'No runtimes reported — Cloud has not advertised its runtime profiles yet.'
-            : 'No runtimes reported — no node has advertised its runtime profiles yet.'
-        }
+        empty={managed ? t('noCloudRuntimes') : t('noClusterRuntimes')}
       />
 
       <FleetAgentsCard
-        title={managed ? 'Agents on Cloud' : 'Agents on this cluster'}
+        title={managed ? t('agentsOnCloud') : t('agentsOnCluster')}
         agents={hosted}
         capabilitySource={capabilitySource}
         onOpen={(id) => router.push(orgPath(`/agents/${id}`))}
-        emptyTitle="No agents run here yet"
-        emptyHint={`Place an agent on ${poolLabel()} to start handling messages.`}
+        emptyTitle={t('noAgentsHere')}
+        emptyHint={t('placeAgent', { pool: poolLabel() })}
       />
 
       {managed && (
         <p className="mt-[14px] max-w-[780px] font-sans text-[12px] font-normal leading-[1.6] text-(--text-tertiary) text-pretty">
-          Cloud usage is billed to this organization&rsquo;s balance.
+          {t('cloudBilled')}
         </p>
       )}
     </div>
@@ -303,6 +300,7 @@ const fetchTopUps = async (orgId: string, sinceMs: number): Promise<BillingCredi
   (await fetchBillingTransactionsSince(orgId, sinceMs)).filter((t): t is BillingCredit => t.type === 'credit')
 
 function CloudCreditsCard() {
+  const t = useTranslations('Daemons.clusterDetail')
   const { activeOrg } = useOrgs()
   const orgId = activeOrg?.id ?? null
   // Same `billingAccount` key the Billing page reads, so the two pages cannot disagree.
@@ -371,12 +369,13 @@ function CloudCreditsCard() {
         <div className="mono text-[11px] font-semibold text-(--text-primary)">{row.label}</div>
         <div className="mt-1 flex items-center gap-[6px] font-sans text-[11px] leading-normal text-(--text-secondary)">
           <span className="h-[9px] w-[9px] flex-none rounded-[2px] bg-(--brand)" />
-          spent <span className="mono text-(--text-primary)">{fmtMicroUsd(Math.round(row.spend * 1_000_000))}</span>
+          {t('spent')}{' '}
+          <span className="mono text-(--text-primary)">{fmtMicroUsd(Math.round(row.spend * 1_000_000))}</span>
         </div>
         {row.topUp > 0 && (
           <div className="mt-1 flex items-center gap-[6px] font-sans text-[11px] leading-normal text-(--text-secondary)">
             <span className="h-[9px] w-[9px] flex-none rounded-[2px] bg-(--green-500)" />
-            topped up{' '}
+            {t('toppedUp')}{' '}
             <span className="mono text-(--text-primary)">{fmtMicroUsd(Math.round(row.topUp * 1_000_000))}</span>
           </div>
         )}
@@ -389,13 +388,15 @@ function CloudCreditsCard() {
     // let the plot widen its own column.
     <div className="card flex min-w-0 flex-col">
       <div className="cardhead">
-        <span className="cardtitle">Credits</span>
-        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">last {CREDITS_WINDOW_DAYS} days</span>
+        <span className="cardtitle">{t('credits')}</span>
+        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">
+          {t('lastDays', { count: CREDITS_WINDOW_DAYS })}
+        </span>
       </div>
 
       <div className="flex flex-wrap items-start gap-x-4 gap-y-3 px-4 pt-[15px] pb-[13px] desktop:gap-x-5">
         <Figure
-          label={`Topped up · ${CREDITS_WINDOW_DAYS}d`}
+          label={t('toppedUpWindow', { days: CREDITS_WINDOW_DAYS })}
           value={topUps.data ? fmtMicroUsd(toppedUpMicro) : '—'}
           note={topUps.data ? `${topUpCount} top-up${topUpCount === 1 ? '' : 's'}` : ' '}
           error={topUps.error && !topUps.data ? (topUps.error as Error).message : undefined}
@@ -403,14 +404,16 @@ function CloudCreditsCard() {
         />
         <span className="w-px flex-none self-stretch bg-(--border-subtle)" />
         <Figure
-          label={`Spent · ${CREDITS_WINDOW_DAYS}d`}
+          label={t('spentWindow', { days: CREDITS_WINDOW_DAYS })}
           value={usage.data ? fmtDecimalUsd(spent) : '—'}
           // Divided by the labelled window, not `daily.length`: the CP floors the window's
           // start to a local day boundary, so a 30-day span is 31 buckets whenever "now" is
           // not midnight, and the edge two are partial days.
           note={
             usage.data
-              ? `avg ${fmtMicroUsd(Math.round((amountToNumber(spent) / CREDITS_WINDOW_DAYS) * 1_000_000))} / day`
+              ? t('averagePerDay', {
+                  amount: fmtMicroUsd(Math.round((amountToNumber(spent) / CREDITS_WINDOW_DAYS) * 1_000_000))
+                })
               : ' '
           }
           error={spendError}
@@ -419,7 +422,7 @@ function CloudCreditsCard() {
         />
         <Figure
           className="ml-auto flex-none text-right"
-          label="Balance"
+          label={t('balance')}
           value={account.data ? fmtMicroUsd(account.data.balanceMicro) : '—'}
           // Not only unreachability: `assertAccount` throws BillingShapeError on an unexpected
           // shape and lands here too — likely, since this console deploys ahead of the pinned
@@ -483,11 +486,11 @@ function CloudCreditsCard() {
           <div className="flex items-center justify-center gap-3 px-4 pb-[13px]">
             <span className="inline-flex items-center gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
               <span className="h-[9px] w-[9px] rounded-[2px] bg-(--brand)" />
-              daily spend
+              {t('dailySpend')}
             </span>
             <span className="inline-flex items-center gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
               <span className="h-[9px] w-[9px] rounded-[2px] bg-(--green-500)" />
-              top-up
+              {t('topUp')}
             </span>
           </div>
         </>
@@ -531,6 +534,7 @@ function Figure({
   valueClass?: string
   className?: string
 }) {
+  const t = useTranslations('Daemons.clusterDetail')
   return (
     <div className={`min-w-0 ${className}`}>
       <div className="eyebrow">{label}</div>
@@ -547,7 +551,7 @@ function Figure({
           title={error}
         >
           <Icon name="triangle-alert" size={14} color="var(--status-error)" />
-          unavailable
+          {t('unavailable')}
         </div>
       ) : (
         <>
@@ -565,16 +569,17 @@ function Figure({
 
 /** What a self-hoster's own members are spending — the daemon page's pair, averaged. */
 function ClusterResourcesCard({ online, cpu, mem }: { online: boolean; cpu: number; mem: number }) {
+  const t = useTranslations('Daemons.clusterDetail')
   return (
     <div className="card flex flex-col">
       <div className="cardhead">
-        <span className="cardtitle">Resources</span>
+        <span className="cardtitle">{t('resources')}</span>
       </div>
       {/* An idle cluster has nothing to average: the dials read '—' rather than 0%, which would
           be a measurement it cannot make. */}
       <ResourceDials>
-        <ResourceDial label="CPU" pct={cpu} muted={!online} />
-        <ResourceDial label="Memory" pct={mem} muted={!online} />
+        <ResourceDial label={t('cpu')} pct={cpu} muted={!online} />
+        <ResourceDial label={t('memory')} pct={mem} muted={!online} />
       </ResourceDials>
     </div>
   )

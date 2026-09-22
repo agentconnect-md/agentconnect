@@ -1,13 +1,12 @@
-// The lowercase "builtin" chip a built-in preset agent carries next to its name
-// (preset-agents.md §3; deliberately all-lowercase). Neutral `.badge` chip shown
-// wherever the agent's identity renders; `show` keeps the call sites terse, like
-// <RestrictedLock>. Built-in agents are permanent — the console also hides their
-// Delete action (the CP refuses the delete regardless).
+import { useTranslations } from 'next-intl'
+
+// Built-in preset agents carry this identity badge and cannot be deleted.
 export function BuiltinBadge({ show }: { show: boolean }) {
+  const t = useTranslations('Common.builtinBadge')
   if (!show) return null
   return (
-    <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)" title="Built-in agent">
-      builtin
+    <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)" title={t('title')}>
+      {t('label')}
     </span>
   )
 }

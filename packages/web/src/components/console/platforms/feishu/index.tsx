@@ -1,7 +1,7 @@
 // No 'use client' here: reached only from ModalProvider's tree (the client boundary).
 
 import type { WebPlatformModule } from '../contract'
-import { inviteBotHint } from '../wizard-chrome'
+import { identityCards as identityCardsFor, inviteBotHint } from '../wizard-chrome'
 import { feishuApi, type FeishuApi } from './api'
 import { FeishuWizardBody, FEISHU_TRANSPORT_LABEL } from './Body'
 import { FeishuMark } from './mark'
@@ -32,11 +32,8 @@ export const feishuModule: WebPlatformModule<FeishuApi> = {
       // available as an explicit choice, never as the default.
       transport: { labels: FEISHU_TRANSPORT_LABEL, httpByDefaultWhenRelayAvailable: false }
     },
-    identityCards: (region) => ({
-      create: `Create with one-click ${feishuBrand(region)} setup`,
-      existing: `An unused ${feishuBrand(region)} bot`
-    }),
-    inviteHint: (region) => inviteBotHint('group', feishuBrand(region), '@-mention it to start')
+    identityCards: (region) => (feishuBrand(region) === 'Lark' ? identityCardsFor('lark') : identityCardsFor('feishu')),
+    inviteHint: (region) => inviteBotHint('group', feishuBrand(region), true)
   },
   settingsFragments: feishuSettingsFragments,
   apiBindings: feishuApi,

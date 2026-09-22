@@ -82,7 +82,7 @@ export default function InviteMembersModal({ onClose, onAdded }: { onClose: () =
               className="mono min-w-0 flex-1 border-0 bg-transparent font-[inherit] normal-nums text-[12.5px] outline-none"
               value={raw}
               onChange={(e) => setRaw(e.target.value)}
-              placeholder="dev@acme.dev, ops@acme.dev"
+              placeholder={t('emailPlaceholder')}
             />
           </div>
           <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
