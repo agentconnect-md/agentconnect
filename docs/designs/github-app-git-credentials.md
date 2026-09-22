@@ -170,8 +170,9 @@ stale until a network fetch succeeds.
    visibility closes the content plane: list/get returns 404 for restricted
    agents; session fan-out is filtered; workspace files/gitstatus/gitpull are
    gated by organization + `canView`; webchat token minting returns 404; and
-   unauthorized SSE items are discarded. Organization role never widens
-   restricted-resource visibility. The repository picker filters unauthorized private
+   unauthorized SSE items are discarded. Only the organization-owner role widens
+   restricted-resource visibility (resource-visibility.md §1, owner exception); no
+   role widens repository access. The repository picker filters unauthorized private
    repositories, and branch lookup plus agent create/edit fail closed against
    the requesting user's effective GitHub permission. If identity attestation
    is not configured, repository selection uses the organization-level

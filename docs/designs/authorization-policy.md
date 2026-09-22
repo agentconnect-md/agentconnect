@@ -73,30 +73,29 @@ the owner role.
 The vocabulary can gain finer-grained OSS actions when the product adds a new
 role or capability. The principal and resource shapes do not need to change.
 
-## 4. Role never widens visibility
+## 4. Role and visibility
 
-Organization ownership is an administrative role, not a resource-discovery
-capability.
+Organization ownership is an administrative role that governs the whole
+organization, so an owner sees every shareable resource in it (the owner
+exception). No other role widens visibility.
 
 For shareable resources:
 
 ```text
 visible =
-  resource is organization-visible
+  principal role is owner
+  OR resource is organization-visible
   OR principal is explicitly shared
 
 editable = visible AND principal role is not viewer
 ```
 
-An organization owner therefore:
+An organization owner therefore can discover, read, edit and re-share every
+resource of the organization, selected or not. A collaborator still needs to be
+selected on a restricted resource; a viewer stays read-only.
 
-- can edit any organization-visible resource;
-- can edit a restricted resource only when they are selected;
-- cannot discover, read, edit, or re-share another member's unshared restricted
-  resource.
-
-This matches session visibility: organization-visible content follows normal
-role capabilities, while private content is not widened by role.
+Session visibility is NOT widened: private sessions follow identity ownership
+only, and the owner role grants nothing there (session-visibility.md §5).
 
 Invisible point reads and referenced writes preserve their existing
 not-found-shaped responses so the policy does not create a resource-existence

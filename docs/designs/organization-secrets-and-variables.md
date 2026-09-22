@@ -179,10 +179,11 @@ with role `owner` and the `organization.manage` action.
 | See assigned organization rows on an agent                 | normal `resource.view` for that agent                        |
 | Edit an agent-local variable or secret                     | existing `resource.edit`; organization rows remain immutable |
 
-Organization ownership must not become a restricted-agent governance or
-discovery bypass. Both the `all` enrollment query and selected-agent picker use
-the normal `resource.edit` policy; merely being an owner never creates the first
-binding to another member's unshared restricted agent. Point assignment requests
+Both the `all` enrollment query and selected-agent picker use the normal
+`resource.edit` policy. Under the owner exception (resource-visibility.md §1)
+that policy admits an owner to every agent, so an
+owner's `all` enrollment binds every agent of the organization, restricted ones
+included; a collaborator's still binds only what they can see. Point assignment requests
 for an invisible, non-editable, or foreign agent return the existing
 not-found-shaped response.
 
