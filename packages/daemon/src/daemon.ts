@@ -18346,6 +18346,15 @@ export class Daemon {
     return this.servesAgent(agentId) || !this.sharedStore
   }
 
+  /** Whether a drain still guards this agent's sessions: only while something of it is here — a moved-away agent's fence is a tombstone that never lifts. */
+  private drainGuardsSessions(agentId: string): boolean {
+    if (!this.drainingAgents.has(agentId)) return false
+    if (this.agents.has(agentId)) return true
+    return [...this.hosts.keys(), ...this.hostStarts.keys(), ...this.hostStopping.keys()].some(
+      (key) => hostKeyAgentId(key) === agentId
+    )
+  }
+
   /** The retention sweep's active-turn exclusion: a claimed gate, a live turn, pending inbox work or background tasks — all member-local, so on a shared store only the holder judges (#1032). */
   private async sessionRetentionActive(rec: {
     key: string
@@ -18354,7 +18363,7 @@ export class Daemon {
   }): Promise<boolean> {
     return (
       !this.judgesStoredSessions(rec.agentId) ||
-      this.drainingAgents.has(rec.agentId) ||
+      this.drainGuardsSessions(rec.agentId) ||
       this.turnRunsHere(rec.key) ||
       (await this.store.sessionHasPendingInboxRows(rec.key)) ||
       !this.sessionSdkQuiescent(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId)

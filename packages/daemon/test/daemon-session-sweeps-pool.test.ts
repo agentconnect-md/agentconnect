@@ -377,6 +377,27 @@ describe('on a private store, a daemon judges every agent it keeps rows for (#22
     await a.daemon.stop()
   })
 
+  it("ages out a moved-away agent's sessions, whose staging fence never lifts, but not a draining agent that is still here", async () => {
+    const a = await bootAlone()
+    const store: LocalStore = a.inner.store
+    // An agent moved off this daemon: archived, not loaded, its fail-closed stage left in place for good.
+    a.inner.moveStagedAgents.add('bot-moved')
+    a.inner.drainingAgents.add('bot-moved')
+    await seedSession(store, 'moved-old', 'bot-moved', 'closed', 0)
+    // An agent draining while it is still loaded here keeps its rows until the drain ends.
+    a.inner.drainingAgents.add(AGENT_B)
+    await seedSession(store, 'b-old', AGENT_B, 'closed', 0)
+    await advance(a, 8 * DAY_MS)
+
+    await a.inner.sweepSessionRetention()
+    expect(await store.getSession('moved-old')).toBeUndefined()
+    expect(await store.getSession('b-old')).toBeDefined()
+    a.inner.drainingAgents.delete(AGENT_B)
+    await a.inner.sweepSessionRetention()
+    expect(await store.getSession('b-old')).toBeUndefined()
+    await a.daemon.stop()
+  })
+
   it('still leaves the TTL close of that agent to its holder', async () => {
     const a = await bootAlone()
     const store: LocalStore = a.inner.store
