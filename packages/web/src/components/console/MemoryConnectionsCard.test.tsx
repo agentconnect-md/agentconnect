@@ -37,6 +37,14 @@ const INSTALLATION: MemoryPluginInstallationDto = {
   updatedAt: '2026-09-01T00:00:00.000Z'
 }
 
+const SPARE_INSTALLATION: MemoryPluginInstallationDto = {
+  ...INSTALLATION,
+  id: 'inst-2',
+  pluginId: 'ai.other.memory',
+  endpoint: 'https://other.example.test/mcp',
+  secretHeaders: [{ name: 'apiKey', header: 'Authorization', required: true }]
+}
+
 function connection(id: string): ExternalMemoryConnectionDto {
   return {
     id,
@@ -50,7 +58,7 @@ function connection(id: string): ExternalMemoryConnectionDto {
     profile: null,
     manifestDigest: null,
     capabilities: null,
-    declaredEgressHosts: [],
+    declaredEgressHosts: ['api.memory.example.test'],
     reasonCode: null,
     createdBy: null,
     createdAt: '2026-09-01T00:00:00.000Z',
@@ -67,38 +75,55 @@ const CONNECTION_B = connection('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
 
 let host: HTMLDivElement
 let root: Root
+let fetchMock: ReturnType<typeof vi.fn>
 
-function card(connectionId: string): HTMLElement {
+function row(connectionId: string): HTMLElement {
   const found = host.querySelector<HTMLElement>(`[data-connection="${connectionId}"]`)
-  if (!found) throw new Error(`no card for connection ${connectionId}`)
+  if (!found) throw new Error(`no row for connection ${connectionId}`)
   return found
 }
 
-async function render(): Promise<void> {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input)
-      const body = url.includes('/memory-plugin-installations')
-        ? [INSTALLATION]
-        : url.includes('/external-memory-connections')
-          ? [CONNECTION_A, CONNECTION_B]
-          : []
-      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
-    })
+function button(scope: ParentNode, label: string): HTMLButtonElement {
+  const found = [...scope.querySelectorAll('button')].find(
+    (candidate) => candidate.textContent?.includes(label) || candidate.getAttribute('aria-label') === label
   )
-  await act(async () => {
-    root.render(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <MemoryConnectionsCard canManage={false} />
-      </SWRConfig>
-    )
-  })
-  for (let attempt = 0; attempt < 20 && !host.querySelector('[data-connection]'); attempt += 1) {
+  if (!found) throw new Error(`button not found: ${label}`)
+  return found
+}
+
+async function settle(done: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 20 && !done(); attempt += 1) {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0))
     })
   }
+}
+
+async function render(canManage = false, installations = [INSTALLATION]): Promise<void> {
+  fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    if (init?.method === 'POST' && url.includes('/external-memory-connections')) {
+      return new Response(JSON.stringify({ ...connection('new-connection'), installationId: SPARE_INSTALLATION.id }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' }
+      })
+    }
+    const body = url.includes('/memory-plugin-installations')
+      ? installations
+      : url.includes('/external-memory-connections')
+        ? [CONNECTION_A, CONNECTION_B]
+        : []
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  await act(async () => {
+    root.render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <MemoryConnectionsCard canManage={canManage} />
+      </SWRConfig>
+    )
+  })
+  await settle(() => host.querySelector('[data-connection]') !== null)
 }
 
 beforeEach(() => {
@@ -116,8 +141,30 @@ afterEach(async () => {
   vi.unstubAllGlobals()
 })
 
-describe('external-memory connection usage', () => {
-  it('lists the agents bound to each connection and links each to its Memory tab', async () => {
+describe('external-memory connection rows', () => {
+  it('keeps each connection to one row until its details are opened', async () => {
+    mocks.agents = []
+    await render()
+
+    const first = row(CONNECTION_A.id)
+    expect(first.textContent).toContain('mem0-cloud')
+    expect(first.textContent).toContain('Ready')
+    expect(first.textContent).toContain('Remote · memory.example.test')
+    expect(first.textContent).toContain('Not used by any agent yet')
+    // Details, and the internal bookkeeping the old card printed, stay off the row.
+    expect(first.textContent).not.toContain('Network access')
+    expect(first.textContent).not.toContain(CONNECTION_A.id)
+    expect(first.textContent).not.toContain('Revision')
+
+    await act(async () => button(first, 'Show details').click())
+    expect(first.textContent).toContain('https://memory.example.test/mcp')
+    expect(first.textContent).toContain('None required')
+    expect(first.textContent).toContain('api.memory.example.test')
+    expect(first.textContent).not.toContain(CONNECTION_A.id)
+    expect(row(CONNECTION_B.id).textContent).not.toContain('Network access')
+  })
+
+  it('lists the agents bound to a connection in its details and links each to its Memory tab', async () => {
     mocks.agents = [
       agent('a2', 'zeta-bot', { memoryProvider: 'external', memoryConnectionId: CONNECTION_A.id }),
       agent('a1', 'alpha-bot', {
@@ -130,7 +177,10 @@ describe('external-memory connection usage', () => {
     ]
     await render()
 
-    const links = [...card(CONNECTION_A.id).querySelectorAll<HTMLAnchorElement>('a[href*="tab=memory"]')]
+    const first = row(CONNECTION_A.id)
+    expect(first.textContent).toContain('Used by 2 agents')
+    await act(async () => button(first, 'Show details').click())
+    const links = [...first.querySelectorAll<HTMLAnchorElement>('a[href*="tab=memory"]')]
     expect(links.map((link) => link.getAttribute('href'))).toEqual([
       '/acme/agents/a1?tab=memory',
       '/acme/agents/a2?tab=memory'
@@ -139,18 +189,33 @@ describe('external-memory connection usage', () => {
       'Open the memory of Alpha',
       'Open the memory of zeta-bot'
     ])
-    expect(card(CONNECTION_A.id).textContent).toContain('Used by 2 agents')
-    expect(card(CONNECTION_A.id).textContent).not.toContain('managed-bot')
-    expect(card(CONNECTION_A.id).textContent).not.toContain('unbound-external')
+    expect(first.textContent).not.toContain('managed-bot')
+    expect(first.textContent).not.toContain('unbound-external')
+    expect(row(CONNECTION_B.id).textContent).toContain('Not used by any agent yet')
   })
 
-  it('states when no agent is bound to a connection', async () => {
-    mocks.agents = [agent('a1', 'alpha-bot', { memoryProvider: 'external', memoryConnectionId: CONNECTION_A.id })]
-    await render()
+  it('offers an installed plugin without a connection as one line, and connects it in two steps', async () => {
+    mocks.agents = []
+    await render(true, [INSTALLATION, SPARE_INSTALLATION])
 
-    const idle = card(CONNECTION_B.id)
-    expect(idle.querySelectorAll('a[href*="tab=memory"]')).toHaveLength(0)
-    expect(idle.textContent).toContain('No agent uses this connection yet')
-    expect(idle.textContent).not.toContain('Used by 1 agent')
+    expect(host.textContent).toContain('ai.other.memory')
+    expect(host.textContent).toContain('Ready to connect')
+    await act(async () => button(host, 'Connect').click())
+
+    // Step one carries the chosen plugin; nothing is posted yet.
+    const dialog = host.querySelector('.modal')!
+    expect(dialog.textContent).toContain('Step 1 · Plugin')
+    expect((dialog.querySelector('select') as HTMLSelectElement).value).toBe(SPARE_INSTALLATION.id)
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+
+    await act(async () => button(dialog, 'Next').click())
+    expect(dialog.textContent).toContain('Step 2 · Account')
+    expect(dialog.textContent).toContain('apiKey')
+    expect(dialog.textContent).not.toContain('Streamable HTTP')
+
+    // The required credential gates creation with one line, not a request.
+    await act(async () => button(dialog, 'Create connection').click())
+    expect(dialog.textContent).toContain('Enter the required credential(s): apiKey.')
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
   })
 })
