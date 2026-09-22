@@ -2288,6 +2288,13 @@ export class Daemon {
         }
         return undefined
       },
+      // The same allowlist's GitHub rows, which `qualifiedRepoOf` skips: GitHub whatever the workspace provider is.
+      githubAdditionalRepoOf: (agentId: string, repoFullName: string) => {
+        const wanted = repoFullName.toLowerCase()
+        return (this.agents.get(agentId)?.workspace.additionalRepos ?? []).some(
+          (row) => row.provider === IMPLICIT_CREDENTIAL_PROVIDER && row.repoFullName.toLowerCase() === wanted
+        )
+      },
       // A PRIVATE GitHub skill source the spec enables (shared-skills.md §3): the daemon's own
       // acquisition asks for exactly that owner/repo, and it is GitHub whatever the workspace is.
       privateGithubSkillRepoOf: (agentId: string, repoFullName: string) => {
