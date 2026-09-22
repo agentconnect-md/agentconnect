@@ -18283,6 +18283,27 @@ export class Daemon {
     }
   }
 
+  /** Whether this process holds a turn of `key`: admitted, dispatching, or waiting in the gate. */
+  private turnRunsHere(key: string): boolean {
+    return (
+      this.inflight.has(key) ||
+      this.activeDispatchDoneByKey.has(key) ||
+      [...this.pending.values()].some((p) => p.plan.sessionKey === key)
+    )
+  }
+
+  /** #2245: a row a dead process left mid-turn goes back to `idle` here, never at boot — on a shared store a peer may be running it. */
+  private async releaseAbandonedTurns(now: number): Promise<void> {
+    const rows = await this.store.listAbandonedTurnSessions(now - this.cfg.limits.agentMaxLifetimeMs)
+    let released = 0
+    for (const row of rows) {
+      // A Dream runs off the chat-turn queue, and its runner owns its row and its crash recovery.
+      if (row.platform === 'dream' || !this.servesAgent(row.agentId) || this.turnRunsHere(row.key)) continue
+      if (await this.store.releaseAbandonedTurnSession(row.key, row.state, row.updatedAt)) released += 1
+    }
+    if (released) this.log.warn(`idle: released ${released} session(s) an earlier process left mid-turn`)
+  }
+
   /** Session-retention GC (#485): delete sessions untouched (sessions.updatedAt)
    *  for longer than `cfg.sessions.retention`, removing each one's per-session
    *  worktree first. Runs at startup and hourly on the idle sweep. Auto-deletion
@@ -18305,9 +18326,7 @@ export class Daemon {
     return (
       !this.servesAgent(rec.agentId) ||
       this.drainingAgents.has(rec.agentId) ||
-      this.inflight.has(rec.key) ||
-      this.activeDispatchDoneByKey.has(rec.key) ||
-      [...this.pending.values()].some((p) => p.plan.sessionKey === rec.key) ||
+      this.turnRunsHere(rec.key) ||
       (await this.store.sessionHasPendingInboxRows(rec.key)) ||
       !this.sessionSdkQuiescent(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId)
     )
@@ -18785,6 +18804,10 @@ export class Daemon {
       // Backstop for receipts this member came to own without a sweep of its own (a lapsed peer's).
       void this.drainSessionPurges()
     }
+    // Before the TTL close, so a released row closes in this same pass.
+    await this.releaseAbandonedTurns(now).catch((err) =>
+      this.log.warn(`idle: releasing sessions left mid-turn failed (${formatErr(err)})`)
+    )
     const ttl = this.cfg.limits.agentIdleTimeoutMs
     const maxLifetime = this.cfg.limits.agentMaxLifetimeMs
     // §7.3 idle→closed: a thread untouched past the TTL stops catching up — UNLESS it
