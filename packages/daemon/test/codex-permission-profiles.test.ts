@@ -218,7 +218,26 @@ describe.skipIf(process.platform === 'win32')('Codex permission profile launch c
     )
   })
 
-  // agent-full-access is deliberately unconfined; the paired deny belongs only where the write was granted.
+  // bwrap's `--bind` is nodev, and the restricted path rebinds a writable `/` over its minimal `/dev`: `/dev/null` would refuse every open.
+  it('never pairs a writable root with a deny in the full-access profile', () => {
+    const config = codexPermissionProfileConfig({
+      protectedRoots: ['/agent/home/.codex'],
+      sessionGitMetadataRoots: ['/agent/sessions/s1/workspace/.git'],
+      sessionHomeRoot: '/agent/sessions/s1/home'
+    })!
+    const full = config.configOverrides.filter((value) =>
+      value.startsWith('permissions.agentconnect-protected-full-access.')
+    )
+    expect(full).toContain('permissions.agentconnect-protected-full-access.extends=":workspace"')
+    const filesystem = full.find((value) => value.includes('.filesystem='))!
+    expect(filesystem).not.toContain(':root')
+    expect(filesystem).toContain('"/agent/home/.codex" = "deny"')
+    expect(filesystem).toContain('"/agent/sessions/s1/workspace/.git" = "write"')
+    expect(filesystem).toContain('"/agent/sessions/s1/home" = "write"')
+    expect(full).toContain('permissions.agentconnect-protected-full-access.network.enabled=true')
+  })
+
+  // With nothing to deny, a writable root is Codex's full-disk policy, which mounts `/dev` after it.
   it('leaves the full-access profile untouched by the Git metadata grant', () => {
     const config = codexPermissionProfileConfig({
       protectedRoots: [],
