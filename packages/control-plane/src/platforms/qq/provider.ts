@@ -25,7 +25,7 @@ export async function verifyQQBot(
         code: 'QQ_CREDENTIALS_INVALID',
         message: 'QQ rejected the AppID or AppSecret — copy them again from the QQ developer portal.'
       }
-    return { ok: true, identity: { externalAppId: credentials.appId } }
+    return { ok: true, identity: { name: `QQ · ${credentials.appId}`, externalAppId: credentials.appId } }
   } catch {
     return unavailable()
   }

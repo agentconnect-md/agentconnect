@@ -363,9 +363,8 @@ describe('QQ stream selection', () => {
     expect(converger.onFinal()[0]?.text).toBe(resolved)
   })
 
-  it('streams standard ACP text without phase metadata and excludes thought and commentary', () => {
+  it('streams standard ACP text without phase metadata and excludes thoughts', () => {
     const converger = new QQConverger('high')
-    expect(converger.onUpdate(update('thinking', 'commentary', 'commentary'))).toEqual([])
     expect(
       converger.onUpdate({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'secret' } })
     ).toEqual([])
@@ -415,14 +414,56 @@ describe('QQ stream selection', () => {
     expect(converger.onFinal()[0]?.text).toBe('See [source](<https://console.example/file>)\n\nNext answer')
   })
 
-  it('does not stream the no-response sentinel or emit explicit commentary at completion', () => {
+  it('does not stream or publish the no-response sentinel', () => {
     const converger = new QQConverger('high')
     expect(converger.onUpdate(update('AC_NO_'))).toEqual([])
     expect(converger.onUpdate(update('RESPONSE'))).toEqual([])
     expect(converger.onUpdate({ sessionUpdate: 'tool_call', toolCallId: 't', title: 'tool' })).toEqual([])
-    expect(converger.onUpdate(update('working', 'commentary'))).toEqual([])
     expect(converger.onFinal()).toEqual([])
   })
+
+  it.each([true, false])(
+    'uses message ids, not runtime phase changes, to delimit blocks (message ids: %s)',
+    (withIds) => {
+      const converger = new QQConverger('high')
+      expect(converger.onUpdate(update('Checking', 'commentary', withIds ? 'progress' : undefined))[0]?.text).toBe(
+        'Checking'
+      )
+      expect(converger.onUpdate(update(' now.', 'commentary', withIds ? 'progress' : undefined))[0]?.text).toBe(
+        'Checking now.'
+      )
+      const expected = withIds ? 'Checking now.\n\nResult.' : 'Checking now.Result.'
+      expect(converger.onUpdate(update('Result.', 'final_answer', withIds ? 'answer' : undefined))[0]?.text).toBe(
+        expected
+      )
+      expect(converger.onFinal()[0]?.text).toBe(expected)
+    }
+  )
+
+  it.each([undefined, { codex: { phase: 'commentary' } }, { anotherRuntime: { phase: 'custom' } }])(
+    'delivers identical ACP text regardless of runtime metadata: %j',
+    (meta) => {
+      const live = new QQConverger('high')
+      const silent = new QQConverger('none')
+      for (const converger of [live, silent]) {
+        const first = converger.onUpdate({ ...update('Checking now.', undefined, 'progress'), _meta: meta })
+        expect(first).toEqual(
+          converger === live ? [{ kind: 'qq-stream', text: 'Checking now.', attributed: false }] : []
+        )
+        converger.onUpdate({ sessionUpdate: 'tool_call', toolCallId: 't', title: 'Private tool' })
+        converger.onUpdate({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Private thought' } })
+        converger.onUpdate({ ...update('Result.', undefined, 'answer'), _meta: meta })
+        expect(converger.onFinal()).toEqual([
+          {
+            kind: 'post',
+            text: 'Checking now.\n\nResult.',
+            attributed: false,
+            ...(converger === silent ? { recordOnly: true } : {})
+          }
+        ])
+      }
+    }
+  )
 
   it('preserves late phase classification and multiple final message ids', () => {
     const converger = new QQConverger('high')
