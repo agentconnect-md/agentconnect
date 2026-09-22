@@ -63,9 +63,9 @@ deployment that installs both. This document stops at the header.
 
 `provider` names the API dialect the credential must speak (`anthropic` /
 `openai` / `deepseek` / `typesafe`) and selects which key comes back. A dialect
-is listed here once an issuer can mint for it, which is not the same as a runtime
-being able to ask: `modelProviderTarget` selects none for `typesafe`, so today it
-is reachable only by a caller that speaks this contract directly. There is
+is listed here once an issuer can mint for it. `typesafe` is consumed by the
+daemon Decision evaluator (§2.2); `modelProviderTarget` does not map an ACP runtime
+to that dialect. There is
 deliberately **no `model` parameter**: per-model usage attribution belongs to
 whatever observes actual requests (a gateway data path, or the runtime's own usage
 reports), and a spawn-time hint would invite implementations to treat it as truth
@@ -91,6 +91,35 @@ install's gateway, and that pair is cloud-mode configuration.
 The bearer file is read for every IssueKey and RevokeKey request. The kubelet or
 another credential agent can therefore rotate the file without restarting the daemon.
 The token is never copied into an agent environment.
+
+### 2.2 Decision evaluations
+
+The daemon's TypeSafe/Jev evaluator reuses this client and these two operations.
+Organization Provider keys take precedence. Only confirmed absence allows a Cloud
+daemon with both a Key Server and `TYPESAFE_MODEL_BASE_URL` to request AC-credits
+credentials. A failed BYOK read or rejected BYOK key never starts Cloud billing.
+See [Decisions credential resolution](decisions.md#provider-keys-and-credential-resolution)
+for the CP credential delivery and cache lifecycle.
+
+The request retains the existing fields: the real `orgId` and `agentId`,
+`sessionId: "decision:<evaluationId>"`, `provider: "typesafe"`, and `ttlSeconds: 60`.
+Here `sessionId` is an attribution key for a short operation, not an instruction
+to create an ACP session or persist a `session_meta` row. The caller supplies a
+stable evaluation ID. The issuer must authorize that organization/agent and
+support this attribution form; it remains responsible for credit policy. The
+gateway can attribute actual model usage from the request using the same token.
+
+Unlike a long-running ACP host (§3), an evaluation fits inside a five-second
+deadline, so it asks for a finite 60-second grant and never refreshes it. The
+daemon checks the grant's validity before use and revokes it best-effort afterward,
+including on failure or cancellation. A lost issuance response or failed revocation
+is bounded by the requested lifetime. Caller cancellation also aborts IssueKey.
+
+`TYPESAFE_MODEL_BASE_URL` supplies the gateway API root/provider prefix; the
+adapter appends `v1/systemone` and sends the returned key as a Bearer credential.
+No provider request, answer, or credential enters an ACP process or the CP's
+message path. The live evaluator is callable independently; chat admission and
+Console preview remain separate consumers to connect.
 
 ## 3. Validity: durations, and the narrowing rule
 
@@ -124,7 +153,7 @@ overstating the degradation window by the same amount.
   `expiresInSeconds` and strictly less than it. Daemons renew inside that window
   instead of inventing their own margin.
 
-**What this daemon asks for, and why it is effectively permanent.** `refreshInSeconds` is worth only
+**What an ACP session asks for, and why it is effectively permanent.** `refreshInSeconds` is worth only
 as much as the daemon's opportunity to act on it, and that opportunity is narrower than the hint
 suggests: the window is checked when a turn asks for a host, and the refresh is _skipped_ while the
 session's SDK work is still live — a started host is authoritative for its whole working life, and

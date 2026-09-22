@@ -66,9 +66,9 @@ export class KeyServerClient {
     if (this.baseUrl.username || this.baseUrl.password) throw new Error('key-server URL must not contain credentials')
   }
 
-  async issue(request: IssueKeyRequest): Promise<KeyGrant> {
+  async issue(request: IssueKeyRequest, signal?: AbortSignal): Promise<KeyGrant> {
     const requestedAtMs = (this.opts.now ?? (() => performance.timeOrigin + performance.now()))()
-    const response = await this.post(KEY_SERVER_ISSUE_KEY_PATH, request)
+    const response = await this.post(KEY_SERVER_ISSUE_KEY_PATH, request, signal)
     const parsed = IssueKeyResponseSchema.safeParse(response.body)
     if (!parsed.success)
       throw new KeyServerError('key server returned an invalid IssueKey response', 'unavailable', response.status)
@@ -101,7 +101,7 @@ export class KeyServerClient {
     return token
   }
 
-  private async post(path: string, body: unknown): Promise<{ status: number; body: unknown }> {
+  private async post(path: string, body: unknown, signal?: AbortSignal): Promise<{ status: number; body: unknown }> {
     let token: string | undefined
     try {
       token = this.token()
@@ -121,7 +121,10 @@ export class KeyServerClient {
           ...(token ? { [KEY_SERVER_AUTH_HEADER]: `Bearer ${token}` } : {})
         },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(this.opts.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS)
+        signal: AbortSignal.any([
+          AbortSignal.timeout(this.opts.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS),
+          ...(signal ? [signal] : [])
+        ])
       })
     } catch (error) {
       if (error instanceof KeyServerError) throw error

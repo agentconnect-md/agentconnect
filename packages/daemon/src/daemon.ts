@@ -1,6 +1,7 @@
 import { memorySourceTurnId } from './memory/source-turn.js'
 import {
   MEMORY_ENTRIES_V1_FEATURE,
+  PROVIDER_CREDENTIALS_V1_FEATURE,
   MEMORY_ENTRIES_SEARCH_V1_FEATURE,
   MEMORY_ENTRIES_HISTORY_V1_FEATURE,
   MEMORY_ENTRIES_WRITE_V1_FEATURE,
@@ -454,6 +455,7 @@ import {
   type ModelProviderTarget
 } from './runtimes/model-provider-config.js'
 import { KeyServerClient, type KeyGrant } from './key-server/client.js'
+import { DecisionEvaluator, type DecisionEvaluationInput } from './decisions/evaluator.js'
 import { internalSessionKey, ModelSessionHostPool, type ModelSessionHostPoolHost } from './key-server/session-hosts.js'
 import { CuratedRuntimeAdmission } from './runtimes/curated-admission.js'
 import { RuntimeFactsRegistry, PROBE_TTL_MS, type RuntimeFactsHost } from './runtimes/facts-registry.js'
@@ -1294,6 +1296,7 @@ export class Daemon {
   private readonly k8s: boolean
   /** Owns the per-session model-credential lifecycle: key-server handle, grants, confined hosts. */
   private readonly modelSessions: ModelSessionHostPool
+  private readonly decisionEvaluator: DecisionEvaluator
   /** Deployment codex session-config floor, daemon-applied at spawn so it also reaches agents
    *  whose sandbox pod spec predates the value (the pod-env copy is a frozen snapshot). */
   private readonly codexSessionFloor?: string
@@ -1595,6 +1598,17 @@ export class Daemon {
     // Base URLs are deployment topology and always come from here, key server or not; an issuer
     // supplies the key alone.
     this.modelSessions.staticModelCredentials = this.k8s ? configuredModelCredentials(process.env) : undefined
+    this.decisionEvaluator = new DecisionEvaluator({
+      orgForAgent: (agentId) => this.orgForAgent(agentId),
+      credentials: (request, signal) => {
+        if (!this.cpClient) throw new Error('control plane unavailable')
+        return this.cpClient.requestProviderCredentials(request, signal)
+      },
+      keyServer: () => (this.k8s ? this.modelSessions.keyServer : undefined),
+      cloudBaseUrl: this.k8s ? process.env.TYPESAFE_MODEL_BASE_URL?.trim() : undefined,
+      now: modelKeyNow,
+      warn: (message) => this.log.warn(message)
+    })
     this.codexSessionFloor = this.k8s ? configuredCodexSessionFloor(process.env) : undefined
     // Self-hosted launches inherit the host environment already; only a pod launch needs these carried.
     this.claudeModelAliases = this.k8s ? configuredClaudeModelAliases(process.env) : undefined
@@ -1984,6 +1998,11 @@ export class Daemon {
   /** Drive a real daemon turn through the same path as relay webchat (the Promptfoo adapter's only surface). */
   async runEvaluationTurn(input: DaemonEvaluationTurnInput): Promise<DaemonEvaluationTurnResult> {
     return this.evalHooks.runTurn(input)
+  }
+
+  // Evaluate without starting an ACP turn; consumers supply their own admission and replay fences.
+  evaluateDecision(input: DecisionEvaluationInput, signal?: AbortSignal) {
+    return this.decisionEvaluator.evaluate(input, signal)
   }
 
   /** Wait until collaboration-spawned turns and all post-turn memory chains have settled. */
@@ -5859,6 +5878,7 @@ export class Daemon {
 
   private registrationFeatures(): string[] {
     return [
+      PROVIDER_CREDENTIALS_V1_FEATURE,
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
       'workspace-file-edit-v1',
       'workspace-file-delete-v1',
@@ -21013,6 +21033,7 @@ export class Daemon {
   }
 
   async stop(): Promise<void> {
+    this.decisionEvaluator.close()
     // Set the drain gate FIRST: it both blocks new turns and stops the idle sweep
     // from re-arming itself (its callback re-arms only `if (!this.draining)`), so a
     // sweep firing during the awaits below can't leave a dangling timer behind.

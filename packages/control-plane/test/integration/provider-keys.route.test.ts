@@ -89,6 +89,8 @@ describe('organization provider keys', () => {
 
   it('saves, replaces and removes one write-only default using the org-scoped cipher', async () => {
     const { app, deps } = makeApp()
+    const changed = vi.fn()
+    deps.providerCredentialsChanged = changed
     const cipher = {
       seal: vi.fn(async (value: string) => `sealed:${value}`),
       open: vi.fn(async (value: string) => value.slice('sealed:'.length))
@@ -117,6 +119,7 @@ describe('organization provider keys', () => {
       expect(cipher.seal).toHaveBeenLastCalledWith(apiKey, { kind: 'org', orgId: DEFAULT_ORG_ID })
       expect(await prisma.providerKey.count()).toBe(1)
       expect((await prisma.providerKey.findFirstOrThrow()).value).toBe(`sealed:${apiKey}`)
+      expect(changed).toHaveBeenLastCalledWith(DEFAULT_ORG_ID, 'typesafe')
     }
 
     expect(await store.get(OrgId(DEFAULT_ORG_ID), 'typesafe')).toEqual({
@@ -127,6 +130,7 @@ describe('organization provider keys', () => {
     expect(await store.get(OrgId('another-org'), 'typesafe')).toBeNull()
     for (let n = 0; n < 2; n++)
       expect((await app.inject({ method: 'DELETE', url: `${BASE}/typesafe` })).statusCode).toBe(204)
+    expect(changed).toHaveBeenCalledTimes(4)
     expect((await app.inject({ method: 'GET', url: BASE })).json()[0]).toEqual(empty)
     expect(await store.get(OrgId(DEFAULT_ORG_ID), 'typesafe')).toBeNull()
   })

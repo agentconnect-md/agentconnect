@@ -82,10 +82,17 @@ export class PgProviderKeyStore implements ProviderKeyStore {
 
   // Internal credential delivery only: absence is null; decryption failure must never enable credit fallback.
   async get(orgId: OrgId, provider: ProviderKeyProvider): Promise<ProviderCredentials | null> {
-    const row = await this.db.providerKey.findUnique({
-      where: { orgId_provider: { orgId, provider } },
-      select: { value: true, endpoint: true, headers: { select: { name: true, value: true } } }
-    })
+    // Read the complete connection in one snapshot so a concurrent save cannot mix credential generations.
+    const [row] = await this.db.$queryRaw<
+      Array<{ value: string; endpoint: string | null; headers: Array<{ name: string; value: string }> }>
+    >`
+      SELECT p."value", p."endpoint", COALESCE(
+        (SELECT json_agg(json_build_object('name', h."name", 'value', h."value"))
+         FROM "provider_key_header" h WHERE h."orgId" = p."orgId" AND h."provider" = p."provider"),
+        '[]'::json
+      ) AS headers
+      FROM "provider_key" p WHERE p."orgId" = ${orgId} AND p."provider" = ${provider}
+    `
     if (!row) return null
     const scope = orgScope(orgId)
     return {

@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
-import { buildEnvelope, decodeEnvelope, MAX_FRAME_BYTES, SESSION_LIVE_TAIL_FEATURE } from '@agentconnect.md/protocol'
+import {
+  buildEnvelope,
+  decodeEnvelope,
+  MAX_FRAME_BYTES,
+  SESSION_LIVE_TAIL_FEATURE,
+  PROVIDER_CREDENTIALS_V1_FEATURE
+} from '@agentconnect.md/protocol'
 import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
 import { WorkspaceConflictError, WorkspaceViolationError } from '../../src/cp/workspace-reader.js'
 import {
@@ -120,6 +126,7 @@ async function readyClient(
     workspaceGit,
     taskReader,
     clock,
+    monotonicNow: () => clock.now(),
     connect: async () => t,
     log: silent,
     jitter: () => 0,
@@ -169,6 +176,76 @@ async function readyClient(
 }
 
 describe('CpClient dispatch', () => {
+  it('leases organization-scoped provider credentials, invalidates updates, and cancels pending requests', async () => {
+    const unsupported = await readyClient()
+    await expect(
+      unsupported.client.requestProviderCredentials({ agentId: CRON_AGENT_ID, provider: 'typesafe' })
+    ).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
+    expect(unsupported.t.sent).toHaveLength(0)
+    const { client, t } = await readyClient(
+      { orgForAgent: () => 'example-org' },
+      [PROVIDER_CREDENTIALS_V1_FEATURE],
+      'frame'
+    )
+    const pending = client.requestProviderCredentials({ agentId: CRON_AGENT_ID, provider: 'typesafe' })
+    const request = t.lastSent()
+    expect(request).toMatchObject({
+      type: 'provider-credentials/request',
+      orgId: 'example-org',
+      payload: { agentId: CRON_AGENT_ID, provider: 'typesafe' }
+    })
+    const credentials = { apiKey: 'example-provider-key', endpoint: null, headers: { 'x-extra': 'example-header' } }
+    t.pushInbound(
+      JSON.stringify(
+        buildEnvelope('provider-credentials/reply', { credentials }, { corr: request.id, orgId: 'example-org' })
+      )
+    )
+    await expect(pending).resolves.toEqual({ credentials })
+    const sent = t.sent.length
+    await expect(client.requestProviderCredentials({ agentId: CRON_AGENT_ID, provider: 'typesafe' })).resolves.toEqual({
+      credentials
+    })
+    expect(t.sent).toHaveLength(sent)
+    t.pushInbound(frame('provider-credentials/changed', { provider: 'typesafe' }, { orgId: 'example-org' }))
+    const abort = new AbortController()
+    const cancelled = client.requestProviderCredentials({ agentId: CRON_AGENT_ID, provider: 'typesafe' }, abort.signal)
+    abort.abort()
+    await expect(cancelled).rejects.toMatchObject({ name: 'AbortError' })
+    await client.stop()
+    await unsupported.client.stop()
+  })
+
+  it('expires cached absence and rejects reads raced by invalidation or changed agent scope', async () => {
+    let orgId = 'example-org'
+    const { client, t, clock } = await readyClient(
+      { orgForAgent: () => orgId },
+      [PROVIDER_CREDENTIALS_V1_FEATURE],
+      'frame'
+    )
+    const payload = { agentId: CRON_AGENT_ID, provider: 'typesafe' as const }
+    const read = client.requestProviderCredentials(payload)
+    t.pushInbound(frame('provider-credentials/reply', { credentials: null }, { corr: t.lastSent().id, orgId }))
+    await expect(read).resolves.toEqual({ credentials: null })
+    const sent = t.sent.length
+    await expect(client.requestProviderCredentials(payload)).resolves.toEqual({ credentials: null })
+    expect(t.sent).toHaveLength(sent)
+    clock.advance(60_000)
+    const expired = client.requestProviderCredentials(payload)
+    const request = t.lastSent()
+    expect(request.type).toBe('provider-credentials/request')
+    t.pushInbound(frame('provider-credentials/changed', { provider: 'typesafe' }, { orgId }))
+    t.pushInbound(frame('provider-credentials/reply', { credentials: null }, { corr: request.id, orgId }))
+    await expect(expired).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
+    const changed = client.requestProviderCredentials(payload)
+    const changedRequest = t.lastSent()
+    orgId = 'another-org'
+    t.pushInbound(
+      frame('provider-credentials/reply', { credentials: null }, { corr: changedRequest.id, orgId: 'example-org' })
+    )
+    await expect(changed).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
+    await client.stop()
+  })
+
   it('tracks additive CP features negotiated through register/ok', async () => {
     const { client } = await readyClient({}, ['hook-report-ack-v1', 'gitcred-actions-v1'])
     expect(client.supportsServerFeature('gitcred-actions-v1')).toBe(true)

@@ -20,7 +20,8 @@ import {
   DUTY_GRANT_MEMBERS_MAX,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   codeHostHookMetadataOf,
-  WORKSPACE_SESSION_READ_FEATURE
+  WORKSPACE_SESSION_READ_FEATURE,
+  PROVIDER_CREDENTIALS_V1_FEATURE
 } from '@agentconnect.md/protocol'
 
 import { type AppConfig, resolveWebAppUrl } from './config/env.js'
@@ -1646,6 +1647,17 @@ export function buildContainer(
     }
   })
   const httpDeps: HttpDeps = {
+    providerCredentialsChanged: (orgId, provider) => {
+      for (const peer of connReg.reachableDaemons()) {
+        if (!peer.capabilities?.features?.includes(PROVIDER_CREDENTIALS_V1_FEATURE)) continue
+        if (peer.orgId !== orgId && ![...(peer.orgByAgent?.values() ?? [])].includes(orgId)) continue
+        try {
+          peer.conn.send('provider-credentials/changed', { provider }, undefined, orgId)
+        } catch {
+          http.log.warn('Provider credential invalidation could not be delivered; the cache lease will expire')
+        }
+      }
+    },
     runtimeConfig:
       opts.deploymentConfig || gitlab
         ? {
@@ -2265,6 +2277,7 @@ export function buildContainer(
     // The SAME token service the funnel, the disconnect edge and the sweep hold — the `linearcred`
     // broker must not become a second opinion on when a grant is stale (linear-integration.md §4.4).
     linearTokens: linearTokenService,
+    providerKey: repos.providerKey,
     ...(githubReviewBroker ? { githubReviewBroker } : {}),
     codeHostReviewBroker,
     ...(githubRunCoordinator ? { githubRunCoordinator } : {}),

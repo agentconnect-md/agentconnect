@@ -1,6 +1,6 @@
 # Decisions
 
-> Status: Proposed — shared contracts and an opt-in mock service exist; live evaluation and routing remain unimplemented.
+> Status: Partially implemented — shared contracts, an opt-in mock service, Provider keys, and a callable daemon Jev evaluator exist. Decision persistence, live message admission, and routing remain follow-up work.
 > Storage, ordering, and the evaluation-host rule are superseded by [message-intake.md](message-intake.md); the sections it replaces say so inline.
 > Scope: reusable typed judgments, initially using TypeSafe Jev.
 > Delivery: Stage 1 adds the Decision resource and fixed-target activation; Stage 2 adds shared-bot routing.
@@ -486,7 +486,7 @@ Provider references: [TypeSafe API](https://api.typesafe.ai/docs),
 [OpenRouter connection and headers](https://openrouter.ai/docs/quickstart), and
 [Cloudflare gateway endpoints](https://developers.cloudflare.com/ai-gateway/usage/chat-completion/).
 
-**Runtime integration to follow:** the daemon resolves credentials for the
+**Implemented runtime foundation:** the daemon resolves credentials for the
 organization of the evaluation using this precedence:
 
 | Available configuration                                      | Credential source and egress                                                                                               |
@@ -498,20 +498,57 @@ organization of the evaluation using this precedence:
 An invalid, exhausted, or temporarily unreadable organization key is still a
 configured key. Its failure must not silently start charging AC credits. The
 internal key store returns `null` only for an absent row and propagates decryption
-failures. Once live delivery is added, replacing or removing a key must invalidate
-that organization's cached credential for subsequent evaluations; an in-flight
-request may already hold the previous value. No raw-key read route is exposed to
-Console users.
+failures. No raw-key read route is exposed to Console users.
 
-For the AC-credits fallback, the deployment owns the gateway address, issuer address, and daemon caller
-credentials. Cloud eligibility requires the authorized deployment configuration;
-Kubernetes placement or a Console feature flag alone does not grant credits. The
-daemon obtains tokens from the issuer, not from a fabricated agent session or a
-CP-signed substitute. The current Key Server contract is session-scoped and needs
-an evaluation identity before this path can be enabled.
+Credential delivery uses the negotiated `provider-credentials-v1` capability:
 
-Daemon credential delivery, the live Jev adapter, Cloud issuance, credit checks,
-and evaluation-scoped metering are subsequent runtime work. A saved key reports
+- The daemon sends `provider-credentials/request { agentId, provider }` over its
+  authenticated CP connection, with the evaluation organization's frame scope.
+  CP reads the agent in that organization and verifies the requesting daemon's
+  current placement or duty before reading credentials and again before replying.
+- `provider-credentials/reply { credentials }` contains the key, endpoint, and
+  headers; `credentials: null` means confirmed absence only. Permission failures,
+  unavailable storage, decryption failures, and unsupported CP versions are errors.
+  Key, endpoint, and headers are read from one database snapshot.
+- The daemon keeps at most 256 in-memory entries keyed by organization, agent,
+  and provider. Both credentials and confirmed absence have a **60-second lease**
+  anchored at request start on a monotonic clock. Errors are never cached as absence. A cache hit needs
+  no CP round trip; a miss or expired entry requires a reachable CP. A still-valid
+  entry can serve during a temporary disconnect; it never becomes an indefinite
+  offline authorization.
+- A successful owner save/delete emits the secret-free, organization-scoped
+  `provider-credentials/changed { provider }` event to connected, capable daemons
+  serving that organization. Receipt clears the credential cache and rejects
+  stale in-flight reads. Registration, shutdown, and fatal authentication failure
+  also clear it. The lease bounds stale use if a notification is missed; an
+  already-started provider request may hold the previous credential.
+
+For the AC-credits fallback, a Cloud daemon requires both the existing Key Server
+configuration (`KEY_SERVER`, optionally `KEY_SERVER_TOKEN_PATH`) and the deployment's
+`TYPESAFE_MODEL_BASE_URL`. The latter is the HTTP(S) API root or gateway provider
+prefix; the adapter appends `v1/systemone`. Kubernetes placement alone is insufficient.
+
+The evaluator reuses the same `KeyServerClient`, `IssueKey`, `RevokeKey`, and caller
+authentication as Claude and other model clients. It requests
+`{ orgId, agentId, sessionId: "decision:<evaluationId>", provider: "typesafe", ttlSeconds: 60 }`.
+The caller supplies a stable evaluation identity; the real agent and organization
+provide attribution. This creates no ACP runtime or session row. The existing
+`sessionId` field also serves as an operation attribution key; no second token
+issuer or wire contract is introduced. The returned key stays inside the daemon,
+is sent only to the configured gateway, and is revoked best-effort after evaluation.
+The short requested lifetime bounds a lost response or failed revocation. Issuer
+authorization, credit checks, and gateway metering remain deployment-side duties;
+support for the `typesafe` dialect and this attribution key must be configured there.
+
+`Daemon.evaluateDecision({ agentId, evaluationId, decision, state }, signal?)` is
+the callable runtime boundary. `decision` supplies `providerId`, `model`, and
+`question`; callers supply bounded context and receive the normalized answer or
+an unavailable reason. This slice does not yet connect Decision CRUD, live channel
+bindings, observation history, durable admission, or the Console preview to that
+method. Those consumers must apply their own authorization, ordering, replay, and
+post-evaluation ownership fences before acting on an answer.
+
+A saved key reports
 **Configured**, not Ready or Validated. Neither saving a key nor this metadata API
 makes a provider call. Binding a Decision explicitly enables evaluation once the
 live evaluator is connected. Provider credentials belong to the evaluator and are
@@ -864,6 +901,14 @@ agent execution. These are starting defaults for
 measurement, not provider guarantees; enforce a small per-provider queue share so
 one busy provider cannot consume the entire queue. Do not hold a database transaction
 or conversation lock while awaiting a slot or response.
+
+The implemented standalone evaluator starts with the single TypeSafe provider:
+**4 active evaluations per daemon**, an immediate `capacity` outcome when full,
+and no queue or retry. Its 5-second deadline includes credential lookup, issuance,
+and HTTP I/O. It bounds serialized input to **32 KiB** and response bodies to
+**128 KiB**, rejects redirects, and validates the complete typed answer. The
+multi-provider and durable admission queue limits above apply when those consumers
+are connected; they are not claims about the standalone primitive.
 
 The gate also respects the existing ingress/admission backlog caps. Once those are
 full, reject or backpressure new deliveries; fail-open is not permission to grow an
@@ -1408,6 +1453,11 @@ one provider. Implement only the stage being delivered.
 | Console               | Decision management, daemon provider catalog, binding conditions, answer/gate previews and evaluation details    | Shared Bot Configuration → Routing, scoped channel links and routing previews/details |
 
 ### 10.2 Delivery stages
+
+The shared schemas, mock API, Provider keys configuration/delivery, and callable
+TypeSafe evaluator are implemented foundations. The evaluator can consume BYOK
+or the existing Cloud issuance contract without starting an agent. Stage 1 is not
+complete until its resource, projection, history, and admission paths are connected.
 
 **Stage 1 — reusable Decisions and the first consumer**
 

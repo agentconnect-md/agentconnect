@@ -49,6 +49,7 @@ import { handleAgentActivity } from './agent-activity.js'
 import { handleSessionPurged } from './event-session-purged.js'
 import { handleGitCredRequest } from './gitcred.js'
 import { handleLinearCredRequest } from './linearcred.js'
+import { handleProviderCredentials } from './provider-credentials.js'
 import { handleHookStart } from './hook-start.js'
 import { handleApprovalRoute } from './approval-route.js'
 import { handleGithubReviewAuthorize } from './github-review-authorize.js'
@@ -118,6 +119,7 @@ export class FrameRouter {
       'event/session-purged': handleSessionPurged,
       'gitcred/request': handleGitCredRequest,
       'linearcred/request': handleLinearCredRequest,
+      'provider-credentials/request': handleProviderCredentials,
       'webchat/mcp-grant/issue': handleWebchatMcpGrantIssue,
       'webchat/mcp-grant/accept': handleWebchatMcpGrantAccept,
       'webchat/mcp-grant/revoke': handleWebchatMcpGrantRevoke,

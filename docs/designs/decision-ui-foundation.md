@@ -107,7 +107,8 @@ projection: one logical provider ID, supported models/question types, the resolv
 BYOK or AC-credits source (or `null` when unconfigured), and readiness. Each Decision
 keeps its own model selection. The Decision editor does not own key mutation or an
 endpoint editor. See [credential resolution](./decisions.md#provider-keys-and-credential-resolution)
-for the real configuration surface and the remaining daemon/Cloud integration.
+for the real configuration surface and the callable daemon evaluator. The latter
+reuses existing Cloud token issuance; it is not connected to this mock API.
 
 `createDecisionMockApi({ scenario })` supports `ready`, `ac_credits`,
 `missing_credentials`, `needs_review`, `provider_unavailable`, `pending_sync`,
@@ -131,7 +132,8 @@ The service has no network access, durable storage, real authorization, history
 collection, Jev calls, admission/steering, relay forwarding, or credit charging.
 Its seed represents an already-authorized organization view; the live API must
 enforce visibility and membership. Mock previews do not write evaluation history.
-Cloud entitlement and charging contracts remain separate implementation work.
+The live daemon evaluator delegates Cloud authorization and charging to the
+existing Key Server/gateway contract; these fixtures exercise neither service.
 
 Production HTTP handlers and trigger/capability frames are unchanged. UI components
 can depend on `DecisionApi` and later use a real implementation; never install this
