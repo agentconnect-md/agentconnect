@@ -1,12 +1,13 @@
 import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, readdir, readlink, rename, rm, writeFile } from 'node:fs/promises'
+import { link, mkdir, readFile, readdir, readlink, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, posix } from 'node:path'
 import { promisify } from 'node:util'
-import type { Sandbox, SandboxBuilder, SandboxHandle } from 'microsandbox'
+import type { ImageHandle, Sandbox, SandboxBuilder, SandboxHandle } from 'microsandbox'
 import { z } from 'zod'
 import type { SpawnDriver, SpawnedRuntime, SpawnRequest } from '../acp/spawn-driver.js'
 import type { SandboxMount } from '../config/config-schema.js'
+import { pidAlive } from '../lock.js'
 import type { Logger } from '../log.js'
 import { formatErr } from '../daemon/text.js'
 import { shareStartup, awaitStartup, withStartupPhase } from '../session/startup-progress.js'
@@ -30,6 +31,11 @@ import {
 
 const runFile = promisify(execFile)
 const STOP_TIMEOUT_MS = 10_000
+const IMAGE_LOCK_POLL_MS = 250
+// Twice the pull timeout: a holder still alive past it is a reused pid, not a pull.
+const IMAGE_LOCK_WAIT_MS = 10 * 60_000
+// Image-cache lock files this process holds, whichever manager took them.
+const heldImageLocks = new Set<string>()
 const REPLACEMENT_LABEL = 'io.agentconnect.vm-replacement'
 const RUNTIME_TABLE_PATH = '/opt/agentconnect/runtime/k8s-runtimes.json'
 const IMAGE_PROBE_SCRIPT = `
@@ -138,6 +144,7 @@ export interface LockHolder {
 }
 
 const SpecImageSchema = z.object({ config: z.object({ image: z.string().min(1) }) })
+const FlatRefSchema = z.object({ manifest_digest: z.string(), artifact_digest: z.string() })
 
 /** Owns VM lifecycle while exposing the existing ACP process-stream contract. */
 export class MicrosandboxManager {
@@ -150,6 +157,8 @@ export class MicrosandboxManager {
   private closed = false
   private startGate: Promise<void> = Promise.resolve()
   private readonly imageIdentities = new Map<string, Promise<string | undefined>>()
+  // When this manager's own pull finished; a tag created later was pulled by another process.
+  private preparedAt?: number
 
   constructor(private readonly options: MicrosandboxManagerOptions) {}
 
@@ -158,6 +167,24 @@ export class MicrosandboxManager {
   }
 
   async prepareImage(): Promise<void> {
+    await this.withImageCache(true, () => this.pullImage())
+  }
+
+  /** Collect what a retention pass unpinned; skips the round while another live process holds the image cache. */
+  async collectImages(): Promise<void> {
+    const preparedAt = this.preparedAt
+    if (preparedAt === undefined || this.closed) return
+    const collected = await this.withImageCache(false, async () => {
+      const keep = await this.boundImages()
+      // An upgrade's pre-pull fetches the next release's tag while this daemon still runs.
+      await this.collect(
+        (image) => keep.has(image.reference) || image.createdAt === null || image.createdAt.getTime() >= preparedAt
+      )
+    })
+    if (!collected) this.options.log?.info('microsandbox: image collection skipped, another process holds the cache')
+  }
+
+  private async pullImage(): Promise<void> {
     const started = performance.now()
     const { command, args } = this.options.msbCommand
     this.options.log?.info(`microsandbox: preparing image ${this.options.config.image}`)
@@ -437,11 +464,9 @@ export class MicrosandboxManager {
     ;(this.options.kvmPreflight ?? assertKvmAvailable)()
     const bindings = join(this.options.root, 'microsandbox', 'bindings')
     await mkdir(bindings, { recursive: true, mode: 0o700 })
-    const keep = new Set([this.options.config.image])
     for (const id of await this.persistedIds()) {
       try {
         const binding = await this.readBinding(id)
-        if (binding) keep.add(SpecImageSchema.parse(JSON.parse(binding.spec)).config.image)
         const handle = await this.find(this.sandboxName(id, binding))
         if (handle) {
           if (handle.id !== binding?.sandboxId) throw new Error('microsandbox persisted environment identity changed')
@@ -462,9 +487,13 @@ export class MicrosandboxManager {
     }
     const name = this.name('probe')
     await this.reclaimPreparation(name)
-    // Free the retired releases before the pull, so a tight disk is not asked to hold both.
-    await this.collectImages(keep)
-    await this.prepareImage()
+    await this.withImageCache(true, async () => {
+      // Free the retired releases before the pull, so a tight disk is not asked to hold both.
+      const keep = await this.boundImages()
+      await this.collect((image) => keep.has(image.reference))
+      await this.pullImage()
+      this.preparedAt = Date.now()
+    })
     this.imageIdentities.delete(this.options.config.image)
     let sandbox = await this.serializeStart(() => this.createReclaiming(name, () => this.builder(name, [])))
     try {
@@ -501,26 +530,98 @@ export class MicrosandboxManager {
     await this.removeVolume(`${name}-docker`)
   }
 
+  /** The configured image and every image a persisted binding records. */
+  private async boundImages(): Promise<Set<string>> {
+    const keep = new Set([this.options.config.image])
+    for (const id of await this.persistedIds()) {
+      const binding = await this.readBinding(id).catch(() => undefined)
+      const image = binding && SpecImageSchema.safeParse(parseJson(binding.spec)).data?.config.image
+      if (image) keep.add(image)
+    }
+    return keep
+  }
+
   /** Release the images of retired releases; msb refuses one a sandbox still boots from, which is the last word. */
-  private async collectImages(keep: ReadonlySet<string>): Promise<void> {
+  private async collect(keep: (image: ImageHandle) => boolean): Promise<void> {
     const images = await this.options.sdk.Image.list().catch((error: unknown) => {
       this.options.log?.warn(`microsandbox: could not read the image cache — ${formatErr(error)}`)
       return []
     })
     for (const image of images) {
-      if (keep.has(image.reference)) continue
+      if (keep(image)) continue
       try {
         await this.options.sdk.Image.remove(image.reference)
         const size = image.sizeBytes === null ? '' : ` (${(image.sizeBytes / 1024 ** 2).toFixed(0)} MiB)`
         this.options.log?.info(`microsandbox: removed the unused image ${image.reference}${size}`)
       } catch (error) {
         if (error instanceof this.options.sdk.ImageInUseError) {
-          this.options.log?.warn(`microsandbox: kept image ${image.reference}, a sandbox outside this daemon uses it`)
+          this.options.log?.warn(`microsandbox: kept image ${image.reference}, a sandbox still boots from its digest`)
           continue
         }
         this.options.log?.warn(`microsandbox: could not remove image ${image.reference} — ${formatErr(error)}`)
       }
     }
+    await this.sweepFlat().catch((error: unknown) =>
+      this.options.log?.warn(`microsandbox: could not sweep flat rootfs artifacts — ${formatErr(error)}`)
+    )
+  }
+
+  /** msb's image removal never touches the flat rootfs store v1.55 filled, and nothing has read it since v1.56. */
+  private async sweepFlat(): Promise<void> {
+    const flat = join(this.options.root, 'microsandbox', 'cache', 'flat')
+    const refs = (await listDirectory(join(flat, 'refs'))).filter((file) => file.endsWith('.json'))
+    const blobs = (await listDirectory(join(flat, 'blobs'))).filter((file) => file.endsWith('.raw'))
+    if (!refs.length && !blobs.length) return
+    const manifests = new Set((await this.options.sdk.Image.list()).flatMap((image) => image.manifestDigest ?? []))
+    const named = new Set<string>()
+    let removed = 0
+    let bytes = 0
+    const drop = async (path: string) => {
+      // Blobs are sparse, so what they hold on disk is their allocated blocks, not their length.
+      bytes += (await stat(path)).blocks * 512
+      await rm(path, { force: true })
+      removed++
+    }
+    for (const file of refs) {
+      const ref = FlatRefSchema.safeParse(parseJson(await readFile(join(flat, 'refs', file), 'utf8')))
+      if (!ref.success) continue
+      if (manifests.has(ref.data.manifest_digest)) named.add(`${ref.data.artifact_digest.replace(':', '_')}.raw`)
+      else await drop(join(flat, 'refs', file))
+    }
+    for (const file of blobs) if (!named.has(file)) await drop(join(flat, 'blobs', file))
+    if (removed)
+      this.options.log?.info(
+        `microsandbox: removed ${removed} flat rootfs file(s) no cached image names (${(bytes / 1024 ** 2).toFixed(0)} MiB)`
+      )
+  }
+
+  /** Hold the lock every process sharing this cache takes: a removal deletes layer files a concurrent pull has chosen to reuse. */
+  private async withImageCache(wait: boolean, work: () => Promise<void>): Promise<boolean> {
+    const path = join(this.options.root, 'microsandbox', 'image-cache.lock')
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+    const deadline = Date.now() + IMAGE_LOCK_WAIT_MS
+    for (;;) {
+      if (!heldImageLocks.has(path)) {
+        if (await createLock(path)) break
+        const holder = await lockHolderPid(path)
+        // This pid in the file without the in-process mark is an earlier incarnation's, as a container restart reuses it.
+        if (holder === undefined || holder === process.pid || !pidAlive(holder) || (wait && Date.now() >= deadline)) {
+          await rm(path, { force: true })
+          continue
+        }
+      }
+      if (!wait) return false
+      await new Promise((resolve) => setTimeout(resolve, IMAGE_LOCK_POLL_MS))
+    }
+    heldImageLocks.add(path)
+    try {
+      await work()
+    } finally {
+      // The file goes first: another manager here that saw it unmarked would take this pid for a stale holder.
+      if ((await lockHolderPid(path)) === process.pid) await rm(path, { force: true })
+      heldImageLocks.delete(path)
+    }
+    return true
   }
 
   private async persistedIds(): Promise<string[]> {
@@ -1364,6 +1465,43 @@ function stableJson(value: unknown): string {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry
     return Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a.localeCompare(b)))
   })
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return undefined
+  }
+}
+
+async function listDirectory(path: string): Promise<string[]> {
+  try {
+    return await readdir(path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
+  }
+}
+
+/** Exclusive create with the pid already inside, so a reader never sees an empty lock. */
+async function createLock(path: string): Promise<boolean> {
+  const temporary = `${path}.${randomUUID()}.tmp`
+  await writeFile(temporary, `${process.pid}\n`, { mode: 0o600, flag: 'wx' })
+  try {
+    await link(temporary, path)
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false
+    throw error
+  } finally {
+    await rm(temporary, { force: true })
+  }
+}
+
+async function lockHolderPid(path: string): Promise<number | undefined> {
+  const pid = Number.parseInt(await readFile(path, 'utf8').catch(() => ''), 10)
+  return Number.isInteger(pid) && pid > 0 ? pid : undefined
 }
 
 function hash(value: string): string {

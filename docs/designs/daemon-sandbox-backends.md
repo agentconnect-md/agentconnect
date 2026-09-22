@@ -272,8 +272,19 @@ binding still records, which a retained VM validates when it starts, and removin
 the rest one reference at a time. Whole-cache pruning is not used: it removes any
 image no sandbox has booted, which includes the image a daemon just pulled and
 has not started a session on. A removal the backend refuses because a sandbox
-still boots from that image is kept and logged, and a cache that cannot be read
-is logged without failing startup, so collection never costs availability. The
+still boots from that image's digest is kept and logged, and a cache that cannot
+be read is logged without failing startup, so collection never costs
+availability. A retained VM usually pins the previous release past startup, so a
+retention pass that discards at least one session VM runs the same collection
+again. That runtime pass also keeps every tag created after the daemon's own
+pull, because an upgrade pre-pulls the next release's image from a separate
+process while the old daemon still runs. Pulls and collections share one lock
+file under the microsandbox state directory, holding the owner's pid: a removal
+deletes layer files that a concurrent pull may already have chosen to reuse. A
+pull waits for the lock; a runtime collection skips its round; a lock whose pid
+is gone is reclaimed. Each collection also sweeps the flat rootfs store that
+v1.55 filled and the backend's own removal never touches: refs whose manifest is
+no longer cached, then blobs that no remaining ref names. The
 temporary preparation VM has a stable name and is reclaimed before it is
 recreated; a start interrupted before its teardown would otherwise leave a VM
 behind that pins a retired image. A create can also fail after microsandbox

@@ -28,7 +28,7 @@ export interface DaemonLock {
 }
 
 /** True if a process with `pid` exists. EPERM ⇒ it exists but is owned by another user. */
-function pidAlive(pid: number): boolean {
+export function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
     return true
