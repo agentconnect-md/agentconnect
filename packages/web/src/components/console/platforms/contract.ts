@@ -646,6 +646,8 @@ export interface WebAgentIntegrationCardFacet {
 export interface WebPlatformModule<TApi = unknown> {
   /** Platform id (§6.1 vocabulary). Never parsed. */
   readonly platformId: string
+  /** The integration picker's display group; chat is the default for platform modules. */
+  readonly integrationGroup?: 'chat' | 'workflow'
   /** Feature flag a deployment must turn on before the console offers installing this platform. Absent ⇒ always offered. */
   readonly requires?: FeatureFlagId
   /** Display-only label for an unresolved human sender; stored identities and known names take precedence. */

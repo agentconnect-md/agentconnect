@@ -876,6 +876,8 @@
       "agent": "Agent",
       "agentHandles": "{agent} handles messages from this integration.",
       "platform": "Platform",
+      "chat": "Chat",
+      "workflow": "Workflow",
       "notSupportedByDaemon": "Not supported by this daemon",
       "name": "Name",
       "sessionContinuity": "Session continuity",

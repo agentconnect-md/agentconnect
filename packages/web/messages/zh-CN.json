@@ -876,6 +876,8 @@
       "agent": "Agent",
       "agentHandles": "{agent} 处理来自此集成的消息。",
       "platform": "平台",
+      "chat": "聊天",
+      "workflow": "工作流",
       "notSupportedByDaemon": "此 Daemon 不支持",
       "name": "名称",
       "sessionContinuity": "会话连续性",

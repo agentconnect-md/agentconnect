@@ -81,16 +81,12 @@ import { GiteaReviewSettings } from '@/components/console/GiteaReviewSettings'
 import { GitlabReviewSettings } from '@/components/console/GitlabReviewSettings'
 import { LabelFilterField } from '@/components/console/LabelFilterField'
 import { VisibilityValue } from '@/components/console/VisibilityField'
+import { IntegrationPlatformGroups } from '@/components/console/IntegrationPlatformGroups'
 import LarkFeishuSwitcher from '@/components/LarkFeishuSwitcher'
 import { AgentMark, GiteaMark, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import type { Platform } from '@/components/console/modals/AddIntegrationModal'
-import {
-  INTEGRATION_BLURB,
-  PLATFORMS,
-  isCoreTriggerKind,
-  platformOffered
-} from '@/components/console/platforms/host-projections'
+import { INTEGRATION_BLURB, isCoreTriggerKind } from '@/components/console/platforms/host-projections'
 import { platformAgentCard } from '@/components/console/platforms/registry'
 import {
   GT_TRIGGER_MODES,
@@ -2431,8 +2427,7 @@ export default function AgentDetailView() {
             ) : hooksLoading ? (
               <LoadingState padding={42} />
             ) : (
-              /* Empty: instead of a dead end, offer what this agent COULD connect
-                 to — each tile opens the Add-integration modal on that platform. */
+              // Each tile opens the integration dialog on that platform.
               <div className="px-4 py-5 desktop:px-5 desktop:py-6">
                 <div className="text-center">
                   <div className="font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
@@ -2443,43 +2438,42 @@ export default function AgentDetailView() {
                     post. It can&apos;t receive messages until you do.
                   </div>
                 </div>
-                {/* Identical grid to the Add-integration modal's picker: same list, order, tiles and disabled look. */}
-                <div className="mt-4 grid grid-cols-2 gap-[10px] desktop:flex desktop:flex-wrap desktop:justify-center">
-                  {PLATFORMS.filter((p) => platformOffered(p.key)).map((p) => {
-                    const available = integrationPlatformAvailable(p.key)
-                    return (
-                      <div
-                        key={p.key}
-                        className={`ptile desktop:w-[132px] desktop:flex-none desktop:flex-col desktop:justify-center desktop:gap-[6px] desktop:px-2 desktop:text-center ${
-                          available ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
-                        }`}
-                        aria-disabled={!available}
-                        title={available ? INTEGRATION_BLURB[p.key] : 'Not supported by this daemon'}
-                        onClick={available ? () => openModal('integration', da, { platform: p.key }) : undefined}
-                      >
-                        {p.key === 'github' ? (
-                          <span className="flex h-[26px] w-[26px] flex-none items-center justify-center [&>svg]:h-full [&>svg]:w-full">
-                            <GithubMark />
-                          </span>
-                        ) : (
-                          <span className="flex h-[26px] w-[26px] flex-none items-center justify-center">
-                            <PlatformMark platform={p.key} fillPct={100} />
-                          </span>
-                        )}
-                        {p.key === 'feishu' ? (
-                          <LarkFeishuSwitcher
-                            value="lark"
-                            disabled={!available}
-                            onSwitch={(feishuRegion) =>
-                              openModal('integration', da, { platform: 'feishu', feishuRegion })
-                            }
-                          />
-                        ) : (
-                          <span className="font-sans text-[13px] font-semibold leading-normal">{p.label}</span>
-                        )}
-                      </div>
-                    )
-                  })}
+                <div className="mt-4">
+                  <IntegrationPlatformGroups
+                    renderTile={(p) => {
+                      const available = integrationPlatformAvailable(p.key)
+                      return (
+                        <div
+                          key={p.key}
+                          className={`ptile ${available ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}
+                          aria-disabled={!available}
+                          title={available ? INTEGRATION_BLURB[p.key] : 'Not supported by this daemon'}
+                          onClick={available ? () => openModal('integration', da, { platform: p.key }) : undefined}
+                        >
+                          {p.key === 'github' ? (
+                            <span className="flex h-[26px] w-[26px] flex-none items-center justify-center [&>svg]:h-full [&>svg]:w-full">
+                              <GithubMark />
+                            </span>
+                          ) : (
+                            <span className="flex h-[26px] w-[26px] flex-none items-center justify-center">
+                              <PlatformMark platform={p.key} fillPct={100} />
+                            </span>
+                          )}
+                          {p.key === 'feishu' ? (
+                            <LarkFeishuSwitcher
+                              value="lark"
+                              disabled={!available}
+                              onSwitch={(feishuRegion) =>
+                                openModal('integration', da, { platform: 'feishu', feishuRegion })
+                              }
+                            />
+                          ) : (
+                            <span className="font-sans text-[13px] font-semibold leading-normal">{p.label}</span>
+                          )}
+                        </div>
+                      )
+                    }}
+                  />
                 </div>
               </div>
             )}
