@@ -44,12 +44,7 @@ export function AgentMark({ model, fillPct = 60 }: { model: string; fillPct?: nu
   )
 }
 
-// Map a model id to an AI-provider brand slug in the lobehub icon set. Handles the
-// `provider/model` form (opencode / openrouter, e.g. `deepseek/deepseek-v4-flash`)
-// first, then falls back to inferring the family from a bare model id. Returns null
-// when it can't tell (⇒ caller shows the runtime mark instead).
-// ponytail: substring/prefix heuristic; a wrong guess degrades gracefully because
-// <ModelMark> falls back on the icon's onError. Add a mapping when a provider recurs.
+// Resolve a provider/model prefix or bare model family; unknown models fall back to the runtime mark.
 const MODEL_PROVIDER_PREFIX: Record<string, string> = {
   deepseek: 'deepseek',
   openai: 'openai',
@@ -70,13 +65,19 @@ const MODEL_PROVIDER_PREFIX: Record<string, string> = {
   groq: 'groq',
   perplexity: 'perplexity',
   ollama: 'ollama',
-  openrouter: 'openrouter'
+  openrouter: 'openrouter',
+  typesafe: 'typesafe',
+  'typesafe-ai': 'typesafe'
 }
+
+const MODEL_PROVIDER_ICON_SRC: Record<string, string> = { typesafe: '/brands/typesafe.svg' }
+
 export function modelProviderSlug(model: string): string | null {
   const m = model.toLowerCase().trim()
   if (!m) return null
   const prefix = m.includes('/') ? m.slice(0, m.indexOf('/')) : ''
   if (prefix && MODEL_PROVIDER_PREFIX[prefix]) return MODEL_PROVIDER_PREFIX[prefix]
+  if (/^jev(?:-|$)/.test(m)) return 'typesafe'
   if (/deepseek/.test(m)) return 'deepseek'
   if (/claude|sonnet|opus|haiku/.test(m)) return 'claude'
   if (/gpt|codex|(?:^|[^a-z])o[134]\b/.test(m)) return 'openai'
@@ -90,9 +91,7 @@ export function modelProviderSlug(model: string): string | null {
   return prefix || null
 }
 
-// A model's provider brand mark (lobehub icon set — same CDN the ACP registry's
-// curated runtimes use). Distinct from <AgentMark>, which is the runtime brand:
-// an `opencode` agent running `deepseek/…` shows the deepseek mark here, opencode there.
+// Show the model provider's brand, using a local asset when the shared icon set has none.
 export function ModelMark({
   model,
   fallbackRuntime,
@@ -103,15 +102,16 @@ export function ModelMark({
   fillPct?: number
 }) {
   const slug = modelProviderSlug(model)
-  // Latch the slug whose icon 404s so we fall back to the runtime mark. Keyed by
-  // slug (not a boolean) so switching model re-attempts the new provider's icon —
-  // no reset effect needed; `key` gives the img a fresh load per slug.
+  // A failed provider icon falls back to the runtime; changing provider attempts the new icon.
   const [failedSlug, setFailedSlug] = useState<string | null>(null)
   if (!slug || failedSlug === slug) return <AgentMark model={fallbackRuntime} fillPct={fillPct} />
   return (
     <img
       key={slug}
-      src={`https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/${slug}.svg`}
+      src={
+        MODEL_PROVIDER_ICON_SRC[slug] ??
+        `https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/${slug}.svg`
+      }
       alt=""
       onError={() => setFailedSlug(slug)}
       style={{ width: `${fillPct}%`, height: `${fillPct}%` }}
