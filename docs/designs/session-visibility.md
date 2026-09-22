@@ -22,8 +22,8 @@ member's platform DM or Playground conversation.
 This design gives every session its own visibility:
 
 - **`private`** — visible only to the session owner (identity match).
-  Like restricted-resource visibility, there is **no org-owner governance
-  override**: a private session is a DM-grade transcript, and role grants no
+  There is **no org-owner governance override**: a private session is a
+  DM-grade transcript, and role grants no
   access to it. Default for platform **DM** sessions, **Playground /
   webchat** sessions, and sessions launched through the **Web API**. A
   Feishu/Lark custom-Bot p2p ownership matches through the user's cross-App

@@ -72,19 +72,8 @@ export function usageRoutes(deps: HttpDeps) {
             series: agg.series
           }
         }
-        // Viewer-scoped ATTRIBUTION: agent visibility and the request-time Session
-        // predicate decide which rows this caller may see attributed to an agent, and the
-        // spend series is scoped to those. They do NOT narrow `totals` — an org's spend is
-        // a fact about the org — so what they withhold lands in `unattributed` instead.
-        // Roles still never widen either resource boundary.
-        //
-        // `from`/`to` are this caller's, checked only for order and maximum span, so the
-        // residual is disclosed at whatever time resolution the caller asks for: narrow
-        // consecutive windows (optionally split by `source`) difference the withheld
-        // timeline back out. The scoped series does not prevent that and is not claimed
-        // to — an accurate total over a caller-chosen window IS a timeline. Accepted
-        // knowingly; the reasoning and the alternatives are in
-        // docs/designs/session-visibility.md under the derived-visibility invariants.
+        // Attribution follows agent and session access; owners bypass only the agent gate, and totals stay org-wide.
+        // Caller-chosen windows can reveal the unattributed timeline; see session-visibility.md for this accepted trade.
         const ctx = ctxOf(req)
         const visibleAgentIds = (await deps.repos.agent.list(orgOf(req), ctx)).map((agent) => agent.id)
         const access = await sessionAccess.forQuery(req, { agentIds: visibleAgentIds })

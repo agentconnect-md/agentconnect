@@ -616,9 +616,9 @@ export interface Agent {
   /** Last editor's userId — resolved to a name / "You" at render via creatorLabel; '' when CLI/self-created. */
   lastModifiedBy: string
   lastModifiedAt: string
-  /** 'org' = visible to all members; 'restricted' = the complete sharedWith audience. */
+  /** 'org' = all members; 'restricted' = sharedWith plus organization owners. */
   visibility: ResourceVisibility
-  /** Complete app_user.id audience when restricted. */
+  /** Explicit app_user.id audience when restricted. */
   sharedWith: string[]
   /** Whether the caller may change non-sharing agent settings. */
   canEdit: boolean
@@ -2352,9 +2352,9 @@ export interface DaemonRow {
   /** How long the daemon keeps finished sessions before deleting them ("Expire
    *  sessions"); 'never' disables the retention sweep. */
   sessionRetention: DaemonSessionRetention
-  /** 'org' = visible to all members; 'restricted' = the complete sharedWith audience. */
+  /** 'org' = all members; 'restricted' = sharedWith plus organization owners. */
   visibility: ResourceVisibility
-  /** Complete app_user.id audience when restricted. */
+  /** Explicit app_user.id audience when restricted. */
   sharedWith: string[]
   /** Whether the caller may change non-sharing daemon settings. */
   canEdit: boolean

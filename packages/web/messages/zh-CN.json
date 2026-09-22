@@ -60,18 +60,18 @@
       "everyone": "所有人",
       "everyoneDescription": "所有成员都可以查看。",
       "selected": "指定成员",
-      "selectedDescription": "仅你选择的成员可以查看。",
+      "selectedDescription": "指定成员及组织所有者可以查看。",
       "shareWith": "共享给",
       "removeLastMember": "请先选择其他成员，再移除最后一名成员",
-      "removeAccess": "移除访问权限",
+      "removeAccess": "从已选成员中移除",
       "searchMembers": "搜索成员…",
-      "selectAtLeastOne": "请至少选择一名组织成员。",
-      "atLeastOneMustRemain": "必须至少保留一名已选组织成员。",
+      "selectAtLeastOne": "请至少选择一名成员。组织所有者始终拥有访问权限。",
+      "atLeastOneMustRemain": "请至少保留一名已选成员。组织所有者始终拥有访问权限。",
       "noOtherMembers": "暂无其他可共享成员",
       "everyoneSelected": "已选择所有成员",
       "noMembersMatch": "没有成员匹配“{query}”",
       "canAccess": "{members} 可以访问此受限资源。",
-      "restrictedResource": "指定成员可以访问此资源。"
+      "restrictedResource": "指定成员及组织所有者可以访问此资源。"
     },
     "actions": {
       "save": "保存",

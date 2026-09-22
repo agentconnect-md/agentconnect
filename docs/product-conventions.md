@@ -21,8 +21,15 @@ actually about organization management, membership, or ownership.
 
 Every Agent, Daemon, scheduled task, MCP provider, and skill source set to
 **Selected** has at least one current organization member who can see it. The
-selected-member list is the complete audience: creation attribution and the
-organization Owner role do not add hidden access.
+selected-member list records explicit sharing. Organization Owners can also view,
+edit, and re-share every resource in their organization; creation attribution
+grants no access. Sharing controls must state the Owner exception on desktop and
+mobile, and read-only access summaries include Owners alongside selected members.
+Removing an Owner from the selection does not revoke their role-based access.
+
+The Console must not add Owners to `sharedWith` merely to display this access:
+explicit sharing also supplies the audience for gated DM defaults and approval
+notification routing. Session audiences remain independent of the Owner exception.
 
 The server intersects selected IDs with current organization membership and must
 reject a change to **Selected** when no current member remains. This is a
