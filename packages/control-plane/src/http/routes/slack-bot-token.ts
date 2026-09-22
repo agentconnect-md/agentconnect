@@ -68,7 +68,7 @@ export function slackBotTokenRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
             message: 'Couldn’t reach Slack to check this token. Try again.'
           })
         }
-        // The refresh route's app_mismatch criterion, extended to the workspace the bot was installed in.
+        // Each identity the bot stored must come back equal; one it never stored has nothing to compare.
         const appMismatch = !!bot.slackAppId && !!checked.appId && checked.appId !== bot.slackAppId
         const workspaceMismatch = !!bot.workspaceId && !!checked.teamId && checked.teamId !== bot.workspaceId
         if (appMismatch || workspaceMismatch) {
@@ -76,6 +76,14 @@ export function slackBotTokenRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
             error: 'Conflict',
             statusCode: 409,
             message: 'this token belongs to a different Slack app or workspace than this bot'
+          })
+        }
+        // Slack answered without the app or workspace to compare, so the identity is as unconfirmed as an unreachable Slack.
+        if ((bot.slackAppId && !checked.appId) || (bot.workspaceId && !checked.teamId)) {
+          return reply.code(502).send({
+            error: 'Bad Gateway',
+            statusCode: 502,
+            message: 'Couldn’t confirm which Slack app and workspace this token belongs to. Try again.'
           })
         }
 

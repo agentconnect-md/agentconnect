@@ -225,6 +225,36 @@ describe('POST /bots/:id/slack/token', () => {
     expect(spy.upserts).toHaveLength(0)
   })
 
+  it.each([
+    ['app', identity({ appId: null })],
+    ['workspace', identity({ teamId: null })]
+  ])(
+    'refuses as unconfirmed when Slack omits the stored %s, leaving the revoked bot untouched',
+    async (_label, checked) => {
+      const agentId = await placedAgent()
+      const { app, spy } = withSpy()
+      app.relayReg.add({ relayId: 'r1', send() {}, close() {} } as RelayChannel)
+      const created = await installHttpBot(app, agentId)
+      await app.deps.httpBot.revokeBot(created.botId, 'app_uninstalled')
+      const before = await prisma.bot.findUniqueOrThrow({ where: { id: created.botId } })
+      expect(before).toMatchObject({ slackAppId: APP_ID, workspaceId: TEAM_ID })
+      spy.upserts.length = 0
+      app.platformStubs.verifySlackBot = async () => checked
+
+      const res = await replaceToken(app, created.botId, 'xoxb-unconfirmed')
+
+      expect(res.statusCode).toBe(502)
+      const after = await prisma.bot.findUniqueOrThrow({ where: { id: created.botId }, include: { secret: true } })
+      expect(after.credentialRevision).toBe(before.credentialRevision)
+      expect(after.revokedAt).toEqual(before.revokedAt)
+      expect(after.secret?.botToken).toBe('xoxb-original')
+      expect(await prisma.integration.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({
+        status: 'revoked'
+      })
+      expect(spy.upserts).toHaveLength(0)
+    }
+  )
+
   it('carries Slack’s own code when Slack rejects the token, and refuses when Slack cannot be reached', async () => {
     const agentId = await placedAgent()
     const { app } = withSpy()
