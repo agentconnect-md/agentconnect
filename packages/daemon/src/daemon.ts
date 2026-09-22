@@ -3598,15 +3598,24 @@ export class Daemon {
     return this.executorFacet?.hostedSessions() ?? this.ownIsolatedSessionCount
   }
 
-  /** Counted from the session rows, not the hosts: worktree sessions share one agent host, and a placed session's host here is its executor's load. */
+  /** Live runtimes, as the facet counts its shims: an open isolated row whose own host runs or whose agent's shared host has it loaded — a placed session's pipe, a stuck row and a reclaimed runtime hold nothing. */
   private async refreshOwnIsolatedSessions(exceptKey?: string): Promise<void> {
     try {
       // A revoked duty keeps its replica and rows here, so only the agents this member serves are its load.
       const served = [...this.agents.keys()].filter((agentId) => this.servesAgent(agentId))
-      this.ownIsolatedSessionCount = await this.store.countOwnIsolatedSessions(served, exceptKey)
+      const rows = await this.store.listOwnIsolatedSessions(served, exceptKey)
+      this.ownIsolatedSessionCount = rows.filter((row) => this.sessionRuntimeLive(row)).length
     } catch (err) {
       this.log.warn(`executor: counting this machine's isolated sessions failed: ${formatErr(err)}`)
     }
+  }
+
+  /** Its own host is running, or its agent's shared host has loaded it (a worktree session keeps no host of its own). */
+  private sessionRuntimeLive(row: { key: string; agentId: string; acpSessionId: string | null }): boolean {
+    if (this.hosts.has(sessionHostKey(row.agentId, row.key))) return true
+    return (
+      row.acpSessionId !== null && (this.hosts.get(agentHostKey(row.agentId))?.hasSession(row.acpSessionId) ?? false)
+    )
   }
 
   /** Between placements only a hosting facet reports the count, so only it keeps the count current. */

@@ -567,10 +567,12 @@ not chosen; it buys NAT traversal, which v1 does not need.
 `hostedSessions` counts a machine's own isolated sessions as well as the ones it
 hosts for others, so the number means the same thing for every candidate, the
 holder included; counting only what a machine hosts for others would make every
-holder read its own load as zero and keep everything. An own session counts from
-its row while it is open, not from its host: worktree sessions share one agent
-host, and a placed session's host on its holder is only a pipe, counted by its
-executor. The counts are **advisory**
+holder read its own load as zero and keep everything. An own session counts while
+its runtime lives here, as the executor counts its shims: its own host, or its
+agent's shared host with the session loaded, since worktree sessions share one.
+An open row with nothing running (a reclaimed runtime, a stuck turn) holds
+nothing, and a placed session's host on its holder is only a pipe, counted by
+its executor. The counts are **advisory**
 all the same. They are as fresh as the last heartbeat, and a burst of births — a
 webhook storm — can still aim several holders at one machine. Admission is
 therefore the executor's, and atomic: at `prepare` it reserves a slot against its

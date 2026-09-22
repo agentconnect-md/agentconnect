@@ -2871,16 +2871,18 @@ export class LocalStore {
   }
 
   /** Open `session`-isolated sessions of `agentIds` that execute here (session-executors.md §6): a placed one is its executor's to count. */
-  async countOwnIsolatedSessions(agentIds: string[], exceptKey?: string): Promise<number> {
+  async listOwnIsolatedSessions(
+    agentIds: string[],
+    exceptKey?: string
+  ): Promise<Array<{ key: string; agentId: string; acpSessionId: string | null }>> {
     const unique = [...new Set(agentIds)]
-    if (unique.length === 0) return 0
-    const row = (await this.db
+    if (unique.length === 0) return []
+    return (await this.db
       .prepare(
-        `SELECT COUNT(*) AS n FROM sessions WHERE state != 'closed' AND workspaceIsolation = 'session'
+        `SELECT key, agentId, acpSessionId FROM sessions WHERE state != 'closed' AND workspaceIsolation = 'session'
          AND executorDaemonId IS NULL AND key != ? AND agentId IN (${unique.map(() => '?').join(',')})`
       )
-      .get(exceptKey ?? '', ...unique)) as { n: number | string } | undefined
-    return Number(row?.n ?? 0)
+      .all(exceptKey ?? '', ...unique)) as Array<{ key: string; agentId: string; acpSessionId: string | null }>
   }
 
   /** Targeted state transition for an existing session (§7.3), stamping `updatedAt`

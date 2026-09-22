@@ -69,7 +69,7 @@ describe('LocalStore session executor', () => {
     await store.close()
   })
 
-  it('counts the open isolated sessions of the agents held here, and none that execute elsewhere', async () => {
+  it('lists the open isolated sessions of the given agents, and none that execute elsewhere', async () => {
     const store = await openTestStore()
     const held = `bot-${crypto.randomUUID()}`
     const other = `bot-${crypto.randomUUID()}`
@@ -77,15 +77,15 @@ describe('LocalStore session executor', () => {
       const rec: SessionRecord = {
         ...session(`t-${crypto.randomUUID()}`),
         agentId: held,
+        acpSessionId: `acp-${crypto.randomUUID()}`,
         workspaceIsolation: 'session',
         ...over
       }
       await store.upsertSession(rec)
       return rec
     }
-    // A worktree session shares its agent's host, so only its row says it is load.
     const worktree = await row()
-    await row({ state: 'prompting' })
+    const prompting = await row({ state: 'prompting' })
     const stayedHome = await row()
     await store.setSessionExecutor(stayedHome.key, { stayedHomeReason: 'holder_least_loaded' })
     await row({ workspaceIsolation: 'shared' })
@@ -93,12 +93,21 @@ describe('LocalStore session executor', () => {
     // Its executor counts it; the holder's host for it is a pipe.
     const placed = await row()
     await store.setSessionExecutor(placed.key, { executorDaemonId: EXECUTOR })
-    await row({ agentId: other })
+    const elsewhere = await row({ agentId: other })
 
-    expect(await store.countOwnIsolatedSessions([held])).toBe(3)
-    expect(await store.countOwnIsolatedSessions([held], worktree.key)).toBe(2)
-    expect(await store.countOwnIsolatedSessions([held, other])).toBe(4)
-    expect(await store.countOwnIsolatedSessions([])).toBe(0)
+    const keys = async (agentIds: string[], exceptKey?: string) =>
+      (await store.listOwnIsolatedSessions(agentIds, exceptKey)).map((r) => r.key).sort()
+    expect(await keys([held])).toEqual([worktree.key, prompting.key, stayedHome.key].sort())
+    expect(await keys([held], worktree.key)).toEqual([prompting.key, stayedHome.key].sort())
+    expect(await keys([held, other])).toEqual([worktree.key, prompting.key, stayedHome.key, elsewhere.key].sort())
+    expect(await keys([])).toEqual([])
+    // The ACP id rides along: it is how a shared agent host says which of these it has loaded.
+    const listed = await store.listOwnIsolatedSessions([held])
+    expect(listed.find((r) => r.key === worktree.key)).toEqual({
+      key: worktree.key,
+      agentId: held,
+      acpSessionId: worktree.acpSessionId
+    })
     await store.close()
   })
 
