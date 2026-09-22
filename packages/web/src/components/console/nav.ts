@@ -87,6 +87,53 @@ export const SECTIONS: { prefix: string; label: string }[] = [
   { prefix: '/profile', label: 'Profile' }
 ]
 
+// ── Localized labels ─────────────────────────────────────────────────────────
+// Which catalog key words each destination, kept HERE beside the tables rather than in a
+// `switch` inside the shell: two switches had already drifted, so the rail fell back to a
+// raw English label while the mobile sheet translated the same route. `nav.test.ts` proves
+// every destination the rail, the tab bar, the sheet, or a crumb can name is covered.
+
+/** The `Shell.navigation` keys, spelled out so a template lookup still type-checks. */
+export type ShellNavKey =
+  | 'home'
+  | 'agents'
+  | 'sessions'
+  | 'decisions'
+  | 'schedules'
+  | 'tools'
+  | 'integrations'
+  | 'knowledge'
+  | 'infra'
+  | 'analytics'
+  | 'billing'
+  | 'settings'
+  | 'profile'
+  | 'organizationSettings'
+
+/** The rail, the mobile tab bar, and the mobile app-bar crumb. */
+export const NAV_LABEL_KEYS: Readonly<Record<string, ShellNavKey>> = {
+  '/home': 'home',
+  '/agents': 'agents',
+  '/sessions': 'sessions',
+  '/conversations': 'sessions',
+  '/decisions': 'decisions',
+  '/crons': 'schedules',
+  '/tools': 'tools',
+  '/integrations': 'integrations',
+  '/knowledge': 'knowledge',
+  '/daemons': 'infra',
+  '/usage': 'analytics',
+  '/billing': 'billing',
+  '/settings': 'settings',
+  '/profile': 'profile'
+}
+
+/** The mobile "More" sheet, which names `/settings` in full. */
+export const SHEET_LABEL_KEYS: Readonly<Record<string, ShellNavKey>> = {
+  ...NAV_LABEL_KEYS,
+  '/settings': 'organizationSettings'
+}
+
 // ── Search page index ────────────────────────────────────────────────────────
 
 export interface ConsolePage extends NavItem {

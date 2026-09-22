@@ -4,7 +4,17 @@
 // easiest to break — one consumer forgetting to filter is a rail without the entry
 // but a search result that navigates to it anyway.
 import { describe, expect, it, afterEach } from 'vitest'
-import { MORE_ROWS, NAV_GROUPS, SEARCH_PAGES, navVisible } from './nav'
+import english from '../../../messages/en.json'
+import {
+  MORE_ROWS,
+  MOBILE_NAV,
+  NAV_GROUPS,
+  NAV_LABEL_KEYS,
+  SEARCH_PAGES,
+  SECTIONS,
+  SHEET_LABEL_KEYS,
+  navVisible
+} from './nav'
 
 const setFlags = (value?: string) => {
   ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV =
@@ -57,5 +67,46 @@ describe('navVisible', () => {
     setFlags()
     expect(offered(NAV_GROUPS.flat())).toContain('/home')
     expect(offered(NAV_GROUPS.flat())).toContain('/daemons')
+  })
+})
+
+// The rail, the bottom tab bar, the More sheet, and the mobile crumb each name a
+// destination through one of these maps. A destination the map misses renders its raw
+// English label — it still shows, so nothing else in the suite notices.
+describe('localized destination labels', () => {
+  const navigation = english.Shell.navigation as Record<string, string>
+  const railHrefs = [
+    ...NAV_GROUPS.flat().map((item) => item.href),
+    ...MOBILE_NAV.map((item) => item.href),
+    ...MORE_ROWS.map((item) => item.href),
+    ...SECTIONS.map((section) => section.prefix)
+  ]
+
+  it('words every destination the rail, the tab bar, or a crumb can name', () => {
+    const missing = railHrefs.filter((href) => !NAV_LABEL_KEYS[href])
+    expect([...new Set(missing)]).toEqual([])
+  })
+
+  it('words every row the More sheet can name', () => {
+    const missing = MORE_ROWS.map((item) => item.href).filter((href) => !SHEET_LABEL_KEYS[href])
+    expect(missing).toEqual([])
+  })
+
+  it('resolves every mapped key to a real catalog entry', () => {
+    const keys = new Set([...Object.values(NAV_LABEL_KEYS), ...Object.values(SHEET_LABEL_KEYS)])
+    const unknown = [...keys].filter((key) => !navigation[key])
+    expect(unknown).toEqual([])
+  })
+
+  // The one route the two surfaces word differently, and the reason they are two maps.
+  it('keeps the sheet naming Organization settings', () => {
+    expect(NAV_LABEL_KEYS['/settings']).toBe('settings')
+    expect(SHEET_LABEL_KEYS['/settings']).toBe('organizationSettings')
+  })
+
+  it('localizes the Decisions entry on both surfaces', () => {
+    expect(NAV_LABEL_KEYS['/decisions']).toBe('decisions')
+    expect(SHEET_LABEL_KEYS['/decisions']).toBe('decisions')
+    expect(navigation.decisions).toBe('Decisions')
   })
 })

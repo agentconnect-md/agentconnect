@@ -43,7 +43,7 @@ import { NotificationBell, NotificationToastContainer } from './NotificationCent
 import { useDaemonNotifier } from '@/lib/daemon-notifications'
 import { useSessionAccessNotifier } from '@/lib/session-access-notifier'
 import { useApprovalNotifier } from '@/lib/approval-notifier'
-import { MOBILE_NAV, MORE_ROWS, NAV_GROUPS, SECTIONS, navVisible } from './nav'
+import { MOBILE_NAV, MORE_ROWS, NAV_GROUPS, NAV_LABEL_KEYS, SECTIONS, SHEET_LABEL_KEYS, navVisible } from './nav'
 
 // Top-level routes own the tab-bar + list app bar (no back button, bottom nav shown);
 // every other route is a "push" screen (back-button app bar, no bottom nav) on mobile.
@@ -345,35 +345,8 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
   const { orgPath, orgs, activeOrg, setActiveOrg, loading: orgsLoading, error: orgsError } = useOrgs()
   const { openModal } = useModal()
   const navLabel = (href: string, fallback: string) => {
-    switch (href) {
-      case '/home':
-        return t('navigation.home')
-      case '/agents':
-        return t('navigation.agents')
-      case '/sessions':
-      case '/conversations':
-        return t('navigation.sessions')
-      case '/crons':
-        return t('navigation.schedules')
-      case '/tools':
-        return t('navigation.tools')
-      case '/integrations':
-        return t('navigation.integrations')
-      case '/knowledge':
-        return t('navigation.knowledge')
-      case '/daemons':
-        return t('navigation.infra')
-      case '/usage':
-        return t('navigation.analytics')
-      case '/billing':
-        return t('navigation.billing')
-      case '/settings':
-        return t('navigation.settings')
-      case '/profile':
-        return t('navigation.profile')
-      default:
-        return fallback
-    }
+    const key = NAV_LABEL_KEYS[href]
+    return key ? t(`navigation.${key}`) : fallback
   }
   const {
     daemons,
@@ -1235,27 +1208,10 @@ function MobileSheets({
 }) {
   const t = useTranslations('Shell')
   const navLabel = (href: string, fallback: string) => {
-    switch (href) {
-      case '/tools':
-        return t('navigation.tools')
-      case '/integrations':
-        return t('navigation.integrations')
-      case '/knowledge':
-        return t('navigation.knowledge')
-      case '/decisions':
-        return t('navigation.decisions')
-      case '/daemons':
-        return t('navigation.infra')
-      case '/usage':
-        return t('navigation.analytics')
-      case '/billing':
-        return t('navigation.billing')
-      case '/settings':
-        return t('navigation.organizationSettings')
-      default:
-        return fallback
-    }
+    const key = SHEET_LABEL_KEYS[href]
+    return key ? t(`navigation.${key}`) : fallback
   }
+
   const square = (o: OrgDto) => (
     <OrgIconView
       icon={o.icon}
