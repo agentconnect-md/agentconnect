@@ -75,6 +75,9 @@ describe('Decision management and standalone preview', () => {
     })
     expect(created.statusCode).toBe(201)
     const id = created.json().id
+    await expect(
+      prisma.$executeRaw`UPDATE "decision" SET "sharedWith" = NULL WHERE "id" = ${id}::uuid`
+    ).rejects.toThrow()
     expect((await appAs().app.inject({ method: 'GET', url: `${BASE}/${id}` })).json()).toMatchObject({
       decision: { name: draft.name, visibility: 'restricted', canEdit: true },
       usages: []

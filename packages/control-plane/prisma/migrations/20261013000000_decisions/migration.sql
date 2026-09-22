@@ -6,7 +6,7 @@ CREATE TABLE "decision" (
     "model" TEXT NOT NULL,
     "question" JSONB NOT NULL,
     "visibility" "ResourceVisibility" NOT NULL DEFAULT 'org',
-    "sharedWith" TEXT[] DEFAULT ARRAY[]::TEXT[],
+    "sharedWith" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
     "createdByUserId" TEXT,
     "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMPTZ(6) NOT NULL,
