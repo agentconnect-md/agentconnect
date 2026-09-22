@@ -31,7 +31,6 @@ import { GlobalSearch } from './GlobalSearch'
 import { TooltipLayer } from './Tooltip'
 import { SearchOpenContext } from './search-open'
 import { LoadingState, LogoMark, OrgIconView } from '@/components/marks'
-import LanguageSwitcher from '@/components/LanguageSwitcher'
 import { Avatar, Icon } from '@/components/ui'
 import { getUser, isAuthConfigured, logout } from '@/lib/auth'
 import { useProfile } from '@/lib/profile'
@@ -828,9 +827,6 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                           <Icon name="book-open" size={15} color="var(--text-tertiary)" />
                           {t('help.documentation')}
                         </a>
-                        <div className="px-3 py-2">
-                          <LanguageSwitcher className="w-full justify-between" />
-                        </div>
                         <div className="dmsep" />
                         <button
                           className="dmi"

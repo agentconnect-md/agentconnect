@@ -11,7 +11,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { useRouter, useSearchParams } from 'next/navigation'
-import LanguageSwitcher from '@/components/LanguageSwitcher'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { useModal } from '@/components/console/ModalProvider'
 import ApiKeysCard from '@/components/console/ApiKeysCard'
@@ -37,7 +36,6 @@ function KvRow({ label, children }: { label: string; children: ReactNode }) {
 
 export default function ProfileView() {
   const t = useTranslations('Profile')
-  const language = useTranslations('Common.language')
   const router = useRouter()
   const isMobile = useIsMobile()
   const { openModal } = useModal()
@@ -152,12 +150,6 @@ export default function ProfileView() {
               </span>
               <span className="font-mono text-[12px] font-medium leading-normal">{memberSince}</span>
             </div>
-            <div className="flex items-center justify-between gap-4 border-t border-(--border-subtle) px-4 py-3">
-              <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
-                {language('label')}
-              </span>
-              <LanguageSwitcher showLabel={false} />
-            </div>
           </div>
 
           {authOn ? (
@@ -226,9 +218,6 @@ export default function ProfileView() {
           </KvRow>
           <KvRow label={t('memberSince')}>
             <span className="mono text-[12.5px]">{memberSince}</span>
-          </KvRow>
-          <KvRow label={language('label')}>
-            <LanguageSwitcher showLabel={false} />
           </KvRow>
         </div>
       </div>
