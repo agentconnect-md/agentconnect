@@ -1923,6 +1923,11 @@ export const SlackBotRefreshDto = z.object({
   reinstallUrl: z.string()
 })
 
+/** `POST /bots/:id/slack/token` — a custom Slack app's new Bot User OAuth Token (write-only). */
+export const ReplaceSlackBotTokenBody = z.object({
+  botToken: z.string().trim().startsWith('xoxb-')
+})
+
 // ── github app (github-app workspaces) ────────────────────────────────────
 /** Deployment GitHub App status + the org-bound install deep link. NEVER key material. */
 /** An agent account's own health: the §8.2 binding vocabulary plus §24.3's

@@ -21,11 +21,10 @@ import { BotDto, BotListDto, UpdateBotBody, ErrorDto, IdParam, type BotDtoT } fr
 import { Tag } from '../plugins/openapi.js'
 import { multiAgentUnsupportedMessage } from '../../platforms/sharing.js'
 import { botJoinsPublicChannels } from '../../platforms/slack/provider.js'
-import { integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js'
-import { NoConnection } from '../../orchestrator/outbound.js'
 import { deleteBotIdentity } from '../uninstall.js'
+import { pushBotConfig } from '../bot-config-push.js'
 
-function toDto(b: BotRecord): BotDtoT {
+export function toBotDto(b: BotRecord): BotDtoT {
   return {
     id: b.id,
     name: b.name,
@@ -71,7 +70,7 @@ export function botRoutes(deps: HttpDeps) {
       },
       async (req) => {
         const rows = await deps.repos.bot.listForOrg(orgOf(req))
-        return rows.map(toDto)
+        return rows.map(toBotDto)
       }
     )
 
@@ -94,7 +93,7 @@ export function botRoutes(deps: HttpDeps) {
         if (!bot) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
         }
-        return toDto(bot)
+        return toBotDto(bot)
       }
     )
 
@@ -139,40 +138,6 @@ export function botRoutes(deps: HttpDeps) {
     // place either way. Enabling needs BOTH a platform whose manifest declares
     // `multiAgentShareable` (the same precondition the shareable install checks)
     // and the http transport; disabling is refused while >1 agent uses the bot.
-    /**
-     * Re-deliver every integration of `bot` with its re-projected config, after a bot-level
-     * setting the daemon reads changed. An HTTP bot's send-only specs ride `syncBot` (the
-     * relay assignment is re-broadcast too, harmlessly); a socket bot's integrations are
-     * re-pushed to their owning daemons one by one, the way the channel PATCH does it.
-     */
-    const pushBotConfig = async (bot: BotRecord): Promise<void> => {
-      if (bot.transport === 'http') {
-        await deps.httpBot.syncBot(bot.id)
-        return
-      }
-      const [secret, integrations] = await Promise.all([
-        deps.repos.botSecret.get(bot.orgId, bot.id),
-        deps.repos.integration.listForBot(bot.id)
-      ])
-      if (!secret) return
-      for (const integration of integrations) {
-        const [channels, owner] = await Promise.all([
-          deps.repos.integrationChannel.listForIntegration(integration.id),
-          deps.repos.agent.get(bot.orgId, integration.agentId)
-        ])
-        if (!owner) continue
-        const spec = await integrationToSpec(deps.platforms, integration, bot, secret, channels, isGatedAgent(owner))
-        if (!spec) continue
-        await deps.agentDelivery.integrationUpsert(owner, spec, (err, target) => {
-          if (!(err instanceof NoConnection)) throw err
-          app.log.debug(
-            { integrationId: integration.id, daemonId: target },
-            'integration/upsert skipped: daemon offline'
-          )
-        })
-      }
-    }
-
     r.patch(
       '/bots/:id',
       {
@@ -207,11 +172,11 @@ export function botRoutes(deps: HttpDeps) {
           if (req.body.joinPublicChannels !== botJoinsPublicChannels(bot)) {
             await deps.repos.bot.update(bot.orgId, bot.id, { joinPublicChannels: req.body.joinPublicChannels })
             bot = (await deps.repos.bot.get(bot.orgId, bot.id)) ?? bot
-            await pushBotConfig(bot)
+            await pushBotConfig(deps, app.log, bot)
           }
-          if (req.body.shareable === undefined) return toDto(bot)
+          if (req.body.shareable === undefined) return toBotDto(bot)
         }
-        if (req.body.shareable === undefined || req.body.shareable === bot.shareable) return toDto(bot) // no-op
+        if (req.body.shareable === undefined || req.body.shareable === bot.shareable) return toBotDto(bot) // no-op
         // Multi-agent bots are a per-PLATFORM capability, and this route used to
         // check only the transport — so any HTTP-transport bot on a platform the
         // install path refuses (`validateShareableInstall`) could be flipped
@@ -292,7 +257,7 @@ export function botRoutes(deps: HttpDeps) {
           // ingest re-open; the transport, hence the ingest, is unchanged).
           await deps.httpBot.syncRoutes(bot.id)
           const updated = await deps.repos.bot.get(bot.orgId, bot.id)
-          return toDto(updated!)
+          return toBotDto(updated!)
         } finally {
           release()
         }

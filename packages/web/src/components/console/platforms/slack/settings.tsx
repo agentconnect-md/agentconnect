@@ -20,6 +20,7 @@ import { SLACK_MISSING_SCOPES_REASON, slackMissingScopesMessage } from './instal
 import { slackAppSettingsUrl } from './manifest'
 import { SlackMark } from './mark'
 import { slackRefreshNoticeState } from './refresh-notice'
+import { SlackReplaceTokenAction } from './replace-token'
 
 /** One bot's last refresh outcome — a result, an error, or (mid-flight) neither. */
 type SlackRefreshEntry = { result?: SlackBotRefreshDto; error?: string }
@@ -201,7 +202,7 @@ function SlackRowLinks({ bot }: { bot: BotDto }) {
       rel="noopener noreferrer"
       title={t('configure')}
       aria-label={t('configure')}
-      className="iconbtn h-7 w-7 flex-none"
+      className="iconbtn h-7 w-7 flex-none max-[479px]:hidden"
       onClick={(e) => e.stopPropagation()}
     >
       <Icon name="external-link" size={12} />
@@ -212,24 +213,42 @@ function SlackRowLinks({ bot }: { bot: BotDto }) {
 function SlackRowActions({ bot, canWrite }: { bot: BotDto; canWrite: boolean }) {
   const t = useTranslations('Platforms.slack.settings')
   const card = useSlackBotCard()
-  if (!bot.slackAppId || !canWrite) return null
+  if (!canWrite) return null
   const entry = card.entryFor(bot.id)
   const needsAttention = entry?.result
     ? slackRefreshNoticeState(entry.result, { builtin: bot.prebuilt }).needsAttention
     : false
   const refreshing = card.refreshingBot(bot.id)
   return (
-    <button
-      className={`iconbtn h-7 w-7 flex-none ${
-        needsAttention ? 'border-(--amber-500) bg-(--status-paused-soft) text-(--amber-500)' : ''
-      } ${refreshing ? 'cursor-default opacity-60' : ''}`}
-      title={needsAttention ? t('needsAttention') : t('refresh')}
-      aria-label={t('refresh')}
-      disabled={refreshing}
-      onClick={() => card.refreshApp(bot)}
-    >
-      <Icon name={refreshing ? 'loader' : 'refresh-cw'} size={14} className={refreshing ? 'animate-spin' : undefined} />
-    </button>
+    <>
+      {/* A built-in app's token comes from its workspace install, so only a custom app takes a pasted one. */}
+      {!bot.prebuilt && (
+        <SlackReplaceTokenAction
+          bot={bot}
+          // A notice from before the replacement describes the old token, so re-read the app.
+          onReplaced={() => {
+            if (card.entryFor(bot.id)) card.refreshApp(bot)
+          }}
+        />
+      )}
+      {bot.slackAppId && (
+        <button
+          className={`iconbtn h-7 w-7 flex-none ${
+            needsAttention ? 'border-(--amber-500) bg-(--status-paused-soft) text-(--amber-500)' : ''
+          } ${refreshing ? 'cursor-default opacity-60' : ''}`}
+          title={needsAttention ? t('needsAttention') : t('refresh')}
+          aria-label={t('refresh')}
+          disabled={refreshing}
+          onClick={() => card.refreshApp(bot)}
+        >
+          <Icon
+            name={refreshing ? 'loader' : 'refresh-cw'}
+            size={14}
+            className={refreshing ? 'animate-spin' : undefined}
+          />
+        </button>
+      )}
+    </>
   )
 }
 

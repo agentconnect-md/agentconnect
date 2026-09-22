@@ -284,6 +284,7 @@ import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from 
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './http/routes/slack-platform-install.js'
 import { feishuRegistrationRoutes } from './http/routes/feishu-registration.js'
 import { slackBotRefreshRoutes } from './http/routes/slack-bot-refresh.js'
+import { slackBotTokenRoutes } from './http/routes/slack-bot-token.js'
 import { telegramCheckRoutes } from './http/routes/telegram-check.js'
 import type {
   FeishuRouteSeams,
@@ -2135,7 +2136,8 @@ export function buildContainer(
           slackInstallRoutes(httpDeps, slackSeams),
           slackPlatformInstallRoutes(httpDeps, slackSeams),
           slackConfigRoutes(httpDeps, slackSeams),
-          slackBotRefreshRoutes(httpDeps, slackSeams)
+          slackBotRefreshRoutes(httpDeps, slackSeams),
+          slackBotTokenRoutes(httpDeps, slackSeams)
         ],
         publicCallback: [
           slackOauthCallbackRoutes(httpDeps, slackSeams),
