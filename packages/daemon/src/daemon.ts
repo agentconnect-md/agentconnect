@@ -3592,10 +3592,17 @@ export class Daemon {
   /** Counted from the session rows, not the hosts: worktree sessions share one agent host, and a placed session's host here is its executor's load. */
   private async refreshOwnIsolatedSessions(exceptKey?: string): Promise<void> {
     try {
-      this.ownIsolatedSessionCount = await this.store.countOwnIsolatedSessions([...this.agents.keys()], exceptKey)
+      // A revoked duty keeps its replica and rows here, so only the agents this member serves are its load.
+      const served = [...this.agents.keys()].filter((agentId) => this.servesAgent(agentId))
+      this.ownIsolatedSessionCount = await this.store.countOwnIsolatedSessions(served, exceptKey)
     } catch (err) {
       this.log.warn(`executor: counting this machine's isolated sessions failed: ${formatErr(err)}`)
     }
+  }
+
+  /** Between placements only a hosting facet reports the count, so only it keeps the count current. */
+  private refreshHostedCountIfHosting(): void {
+    if (this.executorFacet?.hostedSessions() !== undefined) void this.refreshOwnIsolatedSessions()
   }
 
   /** What the holder knows about a session being born, in the vocabulary the birth predicate reads (§7). */
@@ -18732,8 +18739,7 @@ export class Daemon {
         thread: row.thread
       })
     }
-    // Only a facet that is hosting reports the count between placements.
-    if (this.executorFacet?.hostedSessions() !== undefined) await this.refreshOwnIsolatedSessions()
+    this.refreshHostedCountIfHosting()
     // Config-file secrets: delete the materialized files once the agent has gone
     // quiet — same quiescence predicates as host reclaim below (no in-flight turn,
     // no live background work, no recent activity) but a much shorter window. The
@@ -19874,8 +19880,14 @@ export class Daemon {
       servesAgent: (agentId) => this.servesAgent(agentId),
       claimAgentDuty: (agentId, isCurrent) => this.dutyCoordinator.claimDutyForTrigger(agentId, isCurrent),
       closeUnusedPlatformConnections: () => this.connections.closeUnusedPlatformConnections(),
-      applyDutyGrant: (grants) => this.dutyCoordinator.applyDutyGrant(grants),
-      applyDutyRevoke: (revocations) => this.dutyCoordinator.applyDutyRevoke(revocations),
+      applyDutyGrant: (grants) => {
+        this.dutyCoordinator.applyDutyGrant(grants)
+        this.refreshHostedCountIfHosting()
+      },
+      applyDutyRevoke: (revocations) => {
+        this.dutyCoordinator.applyDutyRevoke(revocations)
+        this.refreshHostedCountIfHosting()
+      },
       decideEditorPermission: (req) => this.permissions.decideEditorPermission(req),
       leaveConversation: (leave) => this.connections.leaveConversation(leave),
       retractChannels: (integrationId, channelIds) =>

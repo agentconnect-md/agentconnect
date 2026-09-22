@@ -39,6 +39,7 @@ describe("the holder's hosted-session count", () => {
       store,
       log: quiet,
       ownIsolatedSessionCount: 0,
+      dutyCoordinator: { dutyEnforced: () => false },
       // What the machine really holds: one agent host for both worktree sessions, and a session host that is only the placed session's pipe.
       hosts: new Map<string, unknown>([
         [agentHostKey(agentId), {}],
@@ -52,6 +53,41 @@ describe("the holder's hosted-session count", () => {
     // A hosting facet adds what it runs for others to the same count.
     daemon.executorFacet = { hostedSessions: () => 1 + daemon.ownIsolatedSessionCount }
     expect(await daemon.hostedSessionCount(row('t4').key)).toBe(3)
+    await store.close()
+  })
+
+  it('does not count the sessions of an agent whose duty moved to another member', async () => {
+    const store = await openTestStore()
+    const held = `agent-${crypto.randomUUID()}`
+    const revoked = `agent-${crypto.randomUUID()}`
+    for (const agentId of [held, revoked]) {
+      await store.upsertSession({
+        key: sessionKey('webchat', 'C1', 't1', agentId),
+        agentId,
+        platform: 'webchat',
+        channel: 'C1',
+        thread: 't1',
+        acpSessionId: null,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: 1,
+        workspaceIsolation: 'session'
+      })
+    }
+    // A revoke keeps the replica and its rows; only the ledger says this member no longer serves it.
+    const daemon = Object.assign(Object.create(Daemon.prototype), {
+      agents: new Map([
+        [held, { id: held }],
+        [revoked, { id: revoked }]
+      ]),
+      store,
+      log: quiet,
+      ownIsolatedSessionCount: 0,
+      dutyCoordinator: { dutyEnforced: () => true },
+      duties: { holdsAgent: (agentId: string) => agentId === held }
+    }) as CountingDaemon
+
+    expect(await daemon.hostedSessionCount('placing')).toBe(1)
     await store.close()
   })
 })
