@@ -2,6 +2,8 @@
 
 > Status: Implemented on the daemon and the Control Plane; the console control (§8) and the
 > unbounded transcript read (§10) are still outstanding. `auto` remains reserved (§12).
+> The transcript layout of §6.2 and the retention question of §12.2 are superseded by
+> [message-intake.md](message-intake.md); the sections say so inline.
 > Scope: chat conversations that are channels, on every platform that has them, over
 > both daemon-owned and relay-forwarded ingress.
 > Primary implementation areas: `packages/protocol`, `packages/control-plane`,
@@ -295,6 +297,8 @@ of §3.3 — and puts it on the turn plan. Admission, the inbox lane, the observ
 
 ### 6.2 Transcript
 
+> **Superseded by [message-intake.md](message-intake.md)** — transcript rows are no longer laid out along the session coordinate. One row per message per conversation, keyed by the physical thread; each agent's membership is an admission row naming its session key (message-intake.md §3, §4). The per-agent duplicate rows and the given-up `transcript_recipient` collapse described below no longer apply; the per-agent coordinate and `!new` semantics do.
+
 Transcript rows for an `append` session are recorded under the **append coordinate**, not
 under the message's physical thread. That is what makes the session's context read
 coherent: the prompt path reads `(transcriptChannel, thread)`, and rows scattered across
@@ -557,6 +561,8 @@ organization enables the provider policy, so it is not a prerequisite here.
 
 ## 10. Unbounded reads — corrected
 
+> **Superseded by [message-intake.md](message-intake.md)** — the unbounded growth this section leaves open is closed by retention: admissions live with their session, unadmitted rows keep only the newest 100 per conversation (message-intake.md §8).
+
 An earlier revision of this design called for bounding `threadTranscript()`
 (`packages/daemon/src/store/local-store.ts`), which selects a conversation with no `LIMIT`,
 on the grounds that the console reads it on every open and `append` would make one
@@ -623,7 +629,7 @@ open question about transcript retention in §12, not to a read that does not ex
 
 1. **`auto`.** Deliberately unimplemented. When it arrives it is a third enum value and a
    daemon-side classifier; nothing above changes shape to accommodate it.
-2. **Retention of retired coordinates.** Superseded `append` sessions age out through the
+2. **Retention of retired coordinates.** _Resolved by [message-intake.md](message-intake.md) §8._ Superseded `append` sessions age out through the
    ordinary retention window, and their transcript rows remain on disk indefinitely like
    every other conversation's. Reads are bounded already (§10), so this is a question about
    disk, not latency — and about transcript retention generally rather than this mode.

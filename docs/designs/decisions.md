@@ -1,6 +1,7 @@
 # Decisions
 
 > Status: Proposed — shared contracts and an opt-in mock service exist; live evaluation and routing remain unimplemented.
+> Storage, ordering, and the evaluation-host rule are superseded by [message-intake.md](message-intake.md); the sections it replaces say so inline.
 > Scope: reusable typed judgments, initially using TypeSafe Jev.
 > Delivery: Stage 1 adds the Decision resource and fixed-target activation; Stage 2 adds shared-bot routing.
 > Primary implementation areas: protocol, control-plane, daemon, relay, and web.
@@ -292,6 +293,8 @@ gate path is detailed in §§7–8; shared-bot selection also requires the pre-t
 coordination boundary in §7.4. The UI contracts in §9 cover both consumers fully.
 
 ## 4. Chat context independent of agent activation
+
+> **Superseded by [message-intake.md](message-intake.md)** — the separate observation store below is not built. Every conversation, including `off`, is recorded in the channel record (`transcript`), and a Decision reads its window from there (message-intake.md §3, §8, §9). Replies inside a thread the agent already participates in are admitted without evaluation (§5 step 5), which narrows this document's "every eligible message is evaluated" in §1 and §3.2.
 
 This section defines context assembly for the planned chat consumers. The reusable
 Decision evaluates the state it receives; it does not itself subscribe to channels
@@ -792,6 +795,8 @@ new trigger value; replacing an unknown value with Mention is not a valid fallba
 
 ### 7.2 Relay candidates and observation-only delivery
 
+> **Superseded by [message-intake.md](message-intake.md)** — observation-only destinations are not needed. The evaluation host's channel record is the window; see message-intake.md §6.
+
 Extend `rc/bot-assign` / `rc/routes` with channel-scoped observation destinations
 for enabled Decisions, alongside the candidate routes. Destinations are current
 integration/agent/daemon identities, not question text or credentials.
@@ -873,6 +878,8 @@ network call per message; applying replacement credentials resets it immediately
 
 ### 7.4 Stage 2: shared-bot selection before target admission
 
+> **Superseded by [message-intake.md](message-intake.md)** — the host rule below is kept as the first preference and completed: the CP projects `evaluationDaemonId` as the default agent's daemon, falling back to the earliest-created daemon among the conversation's candidate agents. Forwarding and the frozen target set are as described here; the observation window is the host's channel record (message-intake.md §6).
+
 Routing cannot be implemented by calling every candidate agent's gate: it must
 evaluate once before target admission. The existing routing ladder first resolves
 explicit selection and established thread affinity as target constraints. Every
@@ -952,6 +959,8 @@ This section specifies the Stage 1 gate lifecycle. Stage 2 reuses its observatio
 and evidence rules, with separate pre-target selection receipts as described in §7.4.
 
 ### 8.1 Data-plane records
+
+> **Superseded by [message-intake.md](message-intake.md)** — `decision_conversation`, `decision_observation`, and `decision_lane` are not created; `decision_delivery` becomes `decision_verdict`, keyed by the transcript row's `seq`. See message-intake.md §4.3. The verdict-body retention limits below still apply.
 
 Implement the window through the existing `LocalStore` / `StoreDatabase` abstraction
 and migrations for both SQLite and PostgreSQL. Do not create another SQLite file
@@ -1054,6 +1063,8 @@ cross-channel history, exact violation counter, or retrieval of an ACP memory du
 
 ### 8.3 Ordering, admission, and recovery
 
+> **Superseded by [message-intake.md](message-intake.md)** — the lane's own ingestion sequence is replaced by `transcript.seq` and the cursor by `decision_release` (message-intake.md §5.1). The lifecycle, the event table, and the recovery rules below are unchanged.
+
 For fixed-target consumers, introduce one daemon `DecisionGate` used by direct
 ingress, primary/participant delivery, and relay IM delivery. It reserves a durable slot before starting provider
 I/O. The lane key is **organization + transport scope + platform conversation +
@@ -1150,6 +1161,8 @@ store, while an old owner's late response is discarded. A move without the same
 store begins with partial history and cannot recover rows it does not possess.
 
 ### 8.4 Supplying evidence without duplicating chat history
+
+> **Superseded by [message-intake.md](message-intake.md)** — with one record, "subtract stable message IDs already delivered" is a `NOT EXISTS` on admissions (message-intake.md §5.2). The evidence envelope and prompt layout below are unchanged.
 
 Attach a daemon-local `decisionEvidence` envelope to the admitted delivery. It holds
 the evaluated definition ID, question/criteria and consumer snapshot, typed result or
