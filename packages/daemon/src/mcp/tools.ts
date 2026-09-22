@@ -479,6 +479,7 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
     },
     ...buildThreadHistoryTool(offered('threadHistory'), sameBotSelector),
     ...buildReactionTools(offered('reactions'), sameBotSelector),
+    ...buildMessageDeleteTool(offered('messageDelete'), sameBotSelector),
     ...buildConversationCreateTool(offered('conversationCreate'), sameBotSelector),
     ...buildSearchTool(offered('publicMessageSearch')),
     ...buildBookmarkTools(offered('bookmarks'), sameBotSelector),
@@ -564,6 +565,31 @@ function buildReactionTools(offered: boolean, integrationId: SchemaProp): ToolDe
         'List the emoji reactions already on one message, each with its count and — where the platform reports them ' +
         '— the users who reacted. Use it to read a poll or a lightweight approval someone ran with emoji.',
       inputSchema: obj({ integrationId, channel: targetChannel, messageTs }, ['messageTs'])
+    }
+  ]
+}
+
+/** `deleteMessage` — take one message back off the platform. Deliberately its own port and not
+ *  part of the reactions pair: it destroys something a reader may already have seen. */
+function buildMessageDeleteTool(offered: boolean, integrationId: SchemaProp): ToolDescriptor[] {
+  if (!offered) return []
+  return [
+    {
+      name: 'deleteMessage',
+      description:
+        'Remove one message from the conversation. Normally the bot may only delete its OWN messages, and a ' +
+        'platform bounds how long that stays possible (Telegram: 48 hours; an admin bot in a group may also ' +
+        'delete others’ messages). A refusal is reported as `deleted: false`, not an error, so check the result. ' +
+        'Deletion is not undoable and anyone watching may already have read the message — prefer posting a ' +
+        'correction unless removing it is what was actually asked for.',
+      inputSchema: obj(
+        {
+          integrationId,
+          channel: targetChannel,
+          messageTs: { type: 'string', description: 'Id of the message to delete (Telegram message_id, Slack ts).' }
+        },
+        ['messageTs']
+      )
     }
   ]
 }

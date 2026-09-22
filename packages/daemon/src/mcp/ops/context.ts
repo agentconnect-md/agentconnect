@@ -109,6 +109,8 @@ export interface MessageGateway {
   /** Arbitrary reactions — the agent-callable pair, not the turn-chrome `react` intent. */
   addReaction?(channel: string, messageTs: string, emoji: string): Promise<void>
   getReactions?(channel: string, messageTs: string): Promise<PlatformReactionSummary[]>
+  /** Retire one message — the agent-callable port, not the chrome cleanup core runs itself. */
+  deleteMessage?(channel: string, ts: string): Promise<boolean>
   /** Create a channel, or open the direct conversation with a set of users. */
   createConversation?(spec: PlatformConversationSpec): Promise<PlatformChannelInfo>
   listBookmarks?(channel: string): Promise<PlatformBookmark[]>

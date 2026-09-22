@@ -109,6 +109,8 @@ export interface PlatformReadPorts {
   readonly threadHistory?: boolean
   /** `addReaction` / `getReactions`: arbitrary emoji, not just the turn-chrome intent. */
   readonly reactions?: boolean
+  /** `deleteMessage`: the bot may retire a message, agent-callable rather than chrome cleanup. */
+  readonly messageDelete?: boolean
   /** `searchPublicMessages`: the platform offers a workspace search this bot identity may run. */
   readonly publicMessageSearch?: boolean
   /** `createConversation`: the bot may create a channel or open a group conversation. */
@@ -173,6 +175,7 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
     {
       platform: 'telegram',
       label: 'Telegram',
+      messageDelete: true,
       attachmentReadTool: TELEGRAM_ATTACHMENT_TOOL
     }
   ],
@@ -271,6 +274,7 @@ export type PlatformToolPort =
   | 'channelHistory'
   | 'threadHistory'
   | 'reactions'
+  | 'messageDelete'
   | 'conversationCreate'
   | 'publicMessageSearch'
   | 'scheduledMessages'

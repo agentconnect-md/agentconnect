@@ -1364,6 +1364,35 @@ describe('executeTool: reactions', () => {
   })
 })
 
+describe('executeTool: deleteMessage', () => {
+  it('deletes in the session conversation by default', async () => {
+    const del = vi.fn(async () => true)
+    const { deps: d } = deps(fakeGateway({ deleteMessage: del }))
+
+    const res = await executeTool(ctx, 'deleteMessage', { messageTs: '100.1' }, d)
+
+    expect(del).toHaveBeenCalledWith('C_CURRENT', '100.1')
+    expect(res).toEqual({ platform: 'slack', channel: 'C_CURRENT', messageTs: '100.1', deleted: true })
+  })
+
+  it('reports a platform refusal as deleted:false rather than throwing', async () => {
+    const del = vi.fn(async () => false)
+    const { deps: d } = deps(fakeGateway({ deleteMessage: del }))
+
+    const res = await executeTool(ctx, 'deleteMessage', { channel: 'C_OTHER', messageTs: '100.1' }, d)
+
+    expect(del).toHaveBeenCalledWith('C_OTHER', '100.1')
+    expect(res).toMatchObject({ channel: 'C_OTHER', deleted: false })
+  })
+
+  it('refuses on a connection that does not offer it', async () => {
+    const { deps: d } = deps(fakeGateway())
+    await expect(executeTool(ctx, 'deleteMessage', { messageTs: '1' }, d)).rejects.toThrow(
+      /message deletion is unavailable/
+    )
+  })
+})
+
 describe('executeTool: bookmarks', () => {
   it('defaults to the session conversation and returns what is pinned', async () => {
     const list = vi.fn(async () => [{ id: 'Bk1', title: 'Runbook', link: 'https://x.test/rb' }])

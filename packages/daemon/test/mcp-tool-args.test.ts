@@ -33,10 +33,16 @@ const telegramInt: Integration = {
 
 const ALL_CAPABILITIES = new Set(['recall', 'create', 'get', 'update', 'delete'] as const)
 
+// Port gates open per SESSION platform, so one platform's tool list is not the whole surface:
+// a tool only Telegram declares is advertised only to a Telegram session.
 const advertised: ToolDescriptor[] = [
   ...toolsForIntegrations([slackInt, telegramInt], {
     organizationKnowledge: true,
     currentPlatform: 'slack'
+  }),
+  ...toolsForIntegrations([slackInt, telegramInt], {
+    organizationKnowledge: true,
+    currentPlatform: 'telegram'
   }),
   ...externalMemoryTools(ALL_CAPABILITIES),
   ...RETIRED_ORCHESTRATION_TOOLS,
