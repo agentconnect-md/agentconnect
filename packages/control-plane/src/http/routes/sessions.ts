@@ -31,6 +31,7 @@ import {
   type CodeHostProvider,
   type HookKind
 } from '@agentconnect.md/protocol'
+import type { ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { makeSessionAccessResolver } from '../session-access.js'
 import { resolveContinuationHost } from '../session-continuation.js'
 import { Tag } from '../plugins/openapi.js'
@@ -1267,15 +1268,19 @@ export function sessionRoutes(deps: HttpDeps) {
      */
     const autoMergeOverlay = async (
       req: FastifyRequest,
-      agent: { id: AgentId; daemonId: string | null } | null,
+      agent: (ResolvableAgent & { id: AgentId }) | null,
       repoFullName: string,
       pullNumber: number
     ): Promise<AutoMergeOverlay | null> => {
-      if (!agent?.daemonId) return null
-      const daemon = await deps.registry.getAvailable(orgOf(req), DaemonId(agent.daemonId))
+      // The member SERVING the agent, never its placement column: a set placement names no machine,
+      // and the watcher lives wherever the agent is being served right now (#2199).
+      if (!agent) return null
+      const daemonId = await deps.placementResolver.servingDaemon(agent)
+      if (!daemonId) return null
+      const daemon = await deps.registry.getAvailable(orgOf(req), DaemonId(daemonId))
       if (!daemon?.capabilities.features.includes(AUTO_MERGE_FEATURE)) return null
       try {
-        const state = await deps.control.autoMergeState(agent.daemonId, orgOf(req), {
+        const state = await deps.control.autoMergeState(daemonId, orgOf(req), {
           agentId: agent.id,
           repoFullName,
           prNumber: pullNumber
@@ -1426,12 +1431,15 @@ export function sessionRoutes(deps: HttpDeps) {
             message: 'the owning agent’s repository access is below write tier'
           })
         }
-        if (!agent.daemonId) {
+        // Same resolution as the panel's read (#2199): a set-placed agent is served by its duty
+        // holder, and only an agent nothing serves has no daemon to arm.
+        const servingDaemonId = await deps.placementResolver.servingDaemon(agent)
+        if (!servingDaemonId) {
           return reply
             .code(409)
             .send({ error: 'Conflict', statusCode: 409, message: 'no daemon serves this agent', code: 'NO_DAEMON' })
         }
-        const daemon = await deps.registry.getAvailable(orgOf(req), agent.daemonId)
+        const daemon = await deps.registry.getAvailable(orgOf(req), servingDaemonId)
         if (!daemon?.capabilities.features.includes(AUTO_MERGE_FEATURE)) {
           return reply.code(409).send({
             error: 'Conflict',
@@ -1441,7 +1449,7 @@ export function sessionRoutes(deps: HttpDeps) {
           })
         }
         try {
-          const state = await deps.control.autoMergeSet(agent.daemonId, orgOf(req), {
+          const state = await deps.control.autoMergeSet(servingDaemonId, orgOf(req), {
             agentId: agent.id,
             repoFullName: linked.repoFullName,
             prNumber: linked.pullNumber,
