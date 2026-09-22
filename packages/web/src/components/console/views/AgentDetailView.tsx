@@ -2445,7 +2445,7 @@ export default function AgentDetailView() {
                       return (
                         <div
                           key={p.key}
-                          className={`ptile h-22 w-22 flex-none flex-col justify-center gap-[6px] p-2 text-center ${available ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}
+                          className={`ptile w-33 flex-none flex-col justify-center gap-[6px] px-2 text-center ${available ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}
                           aria-disabled={!available}
                           title={available ? INTEGRATION_BLURB[p.key] : 'Not supported by this daemon'}
                           onClick={available ? () => openModal('integration', da, { platform: p.key }) : undefined}
