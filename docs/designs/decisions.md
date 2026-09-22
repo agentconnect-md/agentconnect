@@ -97,7 +97,7 @@ For example, a moderator's Decision can be:
 ```json
 {
   "name": "Repeated violations",
-  "providerId": "typesafe-byok",
+  "providerId": "typesafe",
   "model": "jev-1.13.0",
   "question": {
     "type": "boolean",
@@ -430,24 +430,91 @@ settles its place without blocking the conversation forever; §8 specifies the b
 Record the evaluated result with its delivery identity so transport retries and
 admission replay reuse a settled decision rather than creating another turn.
 
-Configure BYOK credentials in the daemon's environment or secret-backed host
-configuration. Cloud daemons can expose an AC-credits-backed provider through the
-authorized gateway. The daemon owns credential resolution and provider API egress;
-CP and Console receive only the non-secret provider/model catalog and readiness.
-Configuring a provider alone does
-not start observation or spending; binding a Decision explicitly enables evaluation
-of that conversation's eligible messages, including mentions and thread replies.
-A provider credential does not need to be injected into the agent runtime.
-Endpoint configuration can accommodate a gateway
-without changing Decision semantics.
+### Provider keys and credential resolution
 
-`providerId` is a logical catalog reference, resolved on the selected daemon, not a
-CP-owned credential resource. BYOK and AC credits are separate catalog options, so
-selection is explicit; neither silently falls back to the other. Moving execution
-to a daemon without that option reports Unsupported until configuration is repaired.
-Cloud entitlement, insufficient-credit handling during live evaluation, and
-evaluation-scoped metering still require the Cloud integration work. Their mock
-states do not implement authorization, charging, or provider connectivity.
+Users configure organization-wide credentials under **Infra → Provider keys**.
+The shared configuration catalog includes **TypeSafe (Jev)**, **OpenRouter**, and
+**Cloudflare AI Gateway**, with one default connection per provider per organization.
+This infrastructure resource can serve consumers beyond Decisions. Owners can
+edit or remove connections; members can read non-secret metadata. Credentials
+are not per Decision or per daemon. A Decision keeps its
+logical `providerId` (initially `typesafe`) and selected `model`; BYOK and AC credits
+are resolved credential sources, not separate choices in the Decision editor.
+
+**Implemented configuration surface:**
+
+- `GET /api/v1/orgs/:orgId/provider-keys` returns the supported provider catalog,
+  default endpoint, required-field metadata, configured endpoint, header names,
+  `configured`, and `updatedAt`. It selects no stored secret values and performs
+  no decryption or upstream validation.
+- Owner-only `PUT /api/v1/orgs/:orgId/provider-keys/:provider` accepts
+  `{ apiKey?, endpoint?, headers? }` and saves the connection atomically. The first
+  save requires an API key; subsequent saves may omit it to preserve it. Omitted
+  endpoint/header fields are retained. An explicit `endpoint: null` restores the
+  provider default. Cloudflare requires a nonempty endpoint on every save.
+- `headers` is a per-name patch: a string sets/replaces a value, `null` removes
+  that header, and omission retains it. Header names are normalized to lowercase;
+  case-insensitive duplicates, malformed names, control characters in values, and
+  empty replacement secrets are rejected. At most 32 header changes fit in one
+  request. Responses never contain API-key or header values, prefixes, suffixes,
+  or ciphertext. Secrets are sealed before the transaction; the parent connection
+  write serializes concurrent key/endpoint/header edits without decrypting saved values.
+- Endpoints are HTTP(S) base URLs without embedded credentials, queries, or
+  fragments. Authentication belongs in the API key or secret headers. TypeSafe
+  and OpenRouter work with their provider defaults; Cloudflare needs the user's
+  account/gateway-specific address. The configuration service makes no requests
+  to these addresses. Future adapters own authentication-header placement and
+  request shape; saving an OpenRouter or Cloudflare connection does not claim
+  that a live Decision adapter for it already exists.
+- Owner-only `DELETE /api/v1/orgs/:orgId/provider-keys/:provider` is idempotent. It
+  removes this organization's key, endpoint, and headers, not upstream credentials.
+- `provider_key` is keyed by `(orgId, provider)`, cascades with organization
+  deletion, and stores values through the existing organization-scoped
+  `SecretCipher`. `SECRET_CIPHER=none` stores plaintext; an encrypting cipher must
+  be configured to encrypt at rest. Header names live in `provider_key_header`;
+  each value uses the same cipher and cascades with its connection. The secret
+  rewrap sweep includes both tables without changing the visible last-updated time.
+- The Console stores no credential in its cache or browser storage. Password
+  input starts empty for replacement and is discarded on save, cancel, or an
+  organization/permission change. Saved header names remain visible while their
+  password inputs start empty. Failed writes preserve the complete previous connection.
+
+Provider references: [TypeSafe API](https://api.typesafe.ai/docs),
+[OpenRouter connection and headers](https://openrouter.ai/docs/quickstart), and
+[Cloudflare gateway endpoints](https://developers.cloudflare.com/ai-gateway/usage/chat-completion/).
+
+**Runtime integration to follow:** the daemon resolves credentials for the
+organization of the evaluation using this precedence:
+
+| Available configuration                                      | Credential source and egress                                                                                               |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| Organization key is present                                  | Use that connection's key, endpoint, and headers for provider or user-configured gateway egress                            |
+| No organization key; Cloud explicitly supports this provider | Request an evaluation-scoped token from the deployment Key Server, then call the configured Cloud Gateway using AC credits |
+| No organization key; no supported Cloud configuration        | Missing credentials                                                                                                        |
+
+An invalid, exhausted, or temporarily unreadable organization key is still a
+configured key. Its failure must not silently start charging AC credits. The
+internal key store returns `null` only for an absent row and propagates decryption
+failures. Once live delivery is added, replacing or removing a key must invalidate
+that organization's cached credential for subsequent evaluations; an in-flight
+request may already hold the previous value. No raw-key read route is exposed to
+Console users.
+
+For the AC-credits fallback, the deployment owns the gateway address, issuer address, and daemon caller
+credentials. Cloud eligibility requires the authorized deployment configuration;
+Kubernetes placement or a Console feature flag alone does not grant credits. The
+daemon obtains tokens from the issuer, not from a fabricated agent session or a
+CP-signed substitute. The current Key Server contract is session-scoped and needs
+an evaluation identity before this path can be enabled.
+
+Daemon credential delivery, the live Jev adapter, Cloud issuance, credit checks,
+and evaluation-scoped metering are subsequent runtime work. A saved key reports
+**Configured**, not Ready or Validated. Neither saving a key nor this metadata API
+makes a provider call. Binding a Decision explicitly enables evaluation once the
+live evaluator is connected. Provider credentials belong to the evaluator and are
+not injected into ACP agent environments. Provider request bodies and responses
+remain on the data plane; the CP carries configuration and credential control
+traffic only.
 
 Record requested and actual model IDs, the evaluated rule snapshot, latency, usage,
 match/skip/failure, and a message reference on the daemon. Evaluation inputs, answers,
@@ -570,12 +637,13 @@ automatic model upgrade or separate model resource.
 
 ### 6.2 CP records and atomic changes
 
-| Record                         | Proposed fields / responsibility                                                                                                                           |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Daemon provider catalog        | Non-secret logical provider ID, daemon ID, source (`byok` or `ac_credits`), supported models, readiness; reported metadata, not a credential CRUD resource |
-| `Decision`                     | ID, organization, name, logical provider ID, model, question JSON, normal ownership/visibility/timestamps                                                  |
-| `IntegrationChannel`           | Add `decision` trigger and nullable `decisionBinding` JSON                                                                                                 |
-| `BotDecisionRouting` (Stage 2) | Bot ID as unique owner, organization, enabled, Decision ID, ordered rules, Otherwise, normal timestamps                                                    |
+| Record                         | Proposed fields / responsibility                                                                                                                                             |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Daemon provider catalog        | Non-secret logical provider ID, daemon ID, resolved source (`byok`, `ac_credits`, or `null`), supported models, readiness; reported metadata, not a credential CRUD resource |
+| `ProviderKey` (implemented)    | Organization/provider composite key, sealed API key, optional endpoint, secret-header relation, last-updated timestamp; metadata-only Console reads                          |
+| `Decision`                     | ID, organization, name, logical provider ID, model, question JSON, normal ownership/visibility/timestamps                                                                    |
+| `IntegrationChannel`           | Add `decision` trigger and nullable `decisionBinding` JSON                                                                                                                   |
+| `BotDecisionRouting` (Stage 2) | Bot ID as unique owner, organization, enabled, Decision ID, ordered rules, Otherwise, normal timestamps                                                                      |
 
 The binding invariant is `trigger == decision` exactly when `decisionBinding` is
 present. Off / Mention / Any clears that reference atomically. A shared-bot route
@@ -1243,22 +1311,22 @@ Preview never activates an agent, writes retained history, or performs moderatio
 Normal state is **Ready**, without an error banner. Represent these states with
 specific messages and actions; a prototype-only state menu can demonstrate them.
 
-| State                      | Presentation / recovery                                                                     |
-| -------------------------- | ------------------------------------------------------------------------------------------- |
-| Empty / disabled           | Explain routing and offer configuration; paused rules remain editable                       |
-| Loading / saving           | Preserve layout and draft; prevent duplicate submission                                     |
-| No connected usable agents | Link to connect an agent; target-dependent Save remains invalid                             |
-| Missing credentials        | Identify the evaluation daemon and explain that its provider credentials need configuration |
-| Provider unavailable       | Explain the consumer's eligible continuation, offer Retry preview / Check provider          |
-| Removed target             | Preserve its row as Target removed; require replacement or Do not activate                  |
-| Temporary target outage    | Show Target unavailable; retain selection, offer Refresh; no reroute                        |
-| Criteria/type change       | Needs review on affected consumers; link to invalid rows and the Decision                   |
-| Missing required fields    | Row/field errors; Save disabled until valid                                                 |
-| Save failed                | Keep draft and newly created Decision; Retry the same configuration                         |
-| Pending sync               | Saved configuration remains visible; distinguish saved from applied                         |
-| Read-only / denied         | Explain existing access limits; disabled editing, no hidden resource names                  |
-| Unsupported daemon/relay   | Configuration cannot be activated; explain required support                                 |
-| Details expired            | Preserve summary; do not reconstruct using newer definitions/history                        |
+| State                      | Presentation / recovery                                                                                    |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Empty / disabled           | Explain routing and offer configuration; paused rules remain editable                                      |
+| Loading / saving           | Preserve layout and draft; prevent duplicate submission                                                    |
+| No connected usable agents | Link to connect an agent; target-dependent Save remains invalid                                            |
+| Missing credentials        | Link to Infra → Provider keys; explain which provider lacks an organization key and eligible Cloud support |
+| Provider unavailable       | Explain the consumer's eligible continuation, offer Retry preview / Check provider                         |
+| Removed target             | Preserve its row as Target removed; require replacement or Do not activate                                 |
+| Temporary target outage    | Show Target unavailable; retain selection, offer Refresh; no reroute                                       |
+| Criteria/type change       | Needs review on affected consumers; link to invalid rows and the Decision                                  |
+| Missing required fields    | Row/field errors; Save disabled until valid                                                                |
+| Save failed                | Keep draft and newly created Decision; Retry the same configuration                                        |
+| Pending sync               | Saved configuration remains visible; distinguish saved from applied                                        |
+| Read-only / denied         | Explain existing access limits; disabled editing, no hidden resource names                                 |
+| Unsupported daemon/relay   | Configuration cannot be activated; explain required support                                                |
+| Details expired            | Preserve summary; do not reconstruct using newer definitions/history                                       |
 
 Changing a reused Decision shows visible affected bot/channel usages before saving.
 Invalidated conditions are preserved for repair and disabled operationally. The UI

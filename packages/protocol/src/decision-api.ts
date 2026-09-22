@@ -22,13 +22,13 @@ export interface DecisionReadiness {
   issues?: DecisionValidationIssue[]
 }
 
-// Provider configuration is daemon-owned; this catalog contains no credentials or endpoint editor.
+// Daemons project provider capabilities and the resolved organization-key or Cloud source, never credentials.
 export interface DecisionProviderOption {
   id: string
   daemonId: string
   name: string
   kind: string
-  source: 'byok' | 'ac_credits'
+  source: 'byok' | 'ac_credits' | null
   readiness: DecisionReadiness
   models: Array<{ id: string; label: string; questionTypes: DecisionQuestion['type'][] }>
 }
