@@ -21,10 +21,10 @@ target agent.
 
 The first two consumers are delivered separately:
 
-| Stage   | Scope                                                                                                                                                              | Completion boundary                                                                          |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| Stage 1 | Decision/provider management, selected model, typed evaluation and preview, plus a fixed-target **By decision** activation gate with retained conversation context | A channel decides whether to activate its already-bound agent; no automatic target selection |
-| Stage 2 | Shared Bot → Configuration → Routing, ordered answer-to-agent rules, channel scope, routing previews, and selection/admission coordination                         | A new conversation selects one connected agent; established threads keep their current agent |
+| Stage   | Scope                                                                                                                                                              | Completion boundary                                                                                               |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| Stage 1 | Decision/provider management, selected model, typed evaluation and preview, plus a fixed-target **By decision** activation gate with retained conversation context | A channel decides whether to activate its already-bound agent; no automatic target selection                      |
+| Stage 2 | Shared Bot → Configuration → Routing, answer-to-agent conditions, channel scope, routing previews, and selection/admission coordination                            | Choice can select multiple connected agents for a new conversation; established threads retain their participants |
 
 Stage 1 can ship independently. Shared-bot schemas, APIs, UI, and runtime behavior
 below are the **Stage 2 design**, not Stage 1 release requirements. Completing a
@@ -37,11 +37,19 @@ or target fields to the Decision. Those later consumers have no delivery commitm
 in this document. The chat state and observation window below are the input contract
 for the two planned chat consumers, not a universal restriction on Decision inputs.
 
-An explicit, authorized **@-mention directly activates the addressed agent** without
-calling the decision provider. Off, visibility restrictions, `!stop`, control-command
+In **By decision**, every eligible conversational message is evaluated, including
+explicit **@-mentions** and replies in established threads. Authorized mentions
+fix the addressed targets; thread affinity fixes the continuing recipients. Neither
+guarantees activation: the Decision can reject repeated mentions, spam, or messages
+that need no response. Off, visibility restrictions, `!stop`, control-command
 handling, and existing routing safeguards retain their precedence. Decision matching
-never grants permission. Shared-bot routing selects a primary agent for a new
-conversation; established threads keep their current agent.
+never grants permission. Shared-bot routing selects targets for a new, unaddressed
+conversation; established threads retain their current agent and participants when admitted.
+**Mention** mode retains its existing direct activation behavior.
+
+Skipping spam depends on the saved question and consumer conditions. Configure a
+non-activating outcome or interval for messages that need no response; merely
+enabling By decision with conditions that accept every answer does not filter spam.
 
 The first use cases are a moderator that wakes for suspected abuse and a support
 agent that wakes for selected categories or levels of customer frustration. The
@@ -50,8 +58,8 @@ permissions and available tools. A decision evaluation creates no ACP session or
 turn of its own.
 
 Agent execution continues through the existing runtimes. Tool-approval hooks,
-outbound checks, multi-target broadcast actions, multiple questions per definition,
-expression/script editors, and workflow composition are outside these two stages.
+outbound checks, multiple questions per definition, expression/script editors, and
+workflow composition are outside these two stages.
 AI-assisted configuration can later author the same definition through the
 management API.
 
@@ -104,29 +112,46 @@ in another supported flow without duplicating the Decision.
 
 Consumer editors derive their condition controls from the selected Decision:
 
-| Question  | Condition control                                                         | Matching rule                                          |
-| --------- | ------------------------------------------------------------------------- | ------------------------------------------------------ |
-| `choice`  | One checkbox per criteria key                                             | The returned key belongs to the selected set           |
-| `boolean` | Yes / No checkboxes                                                       | The normalized Boolean belongs to the selected set     |
-| `score`   | Greater than or equal to / Less than, a labeled slider, and decimal input | Compare the returned score directly with the threshold |
+| Question  | Condition control                                                    | Matching rule                                                       |
+| --------- | -------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `choice`  | Enable selected criteria keys and set a minimum probability for each | Match if any enabled key's returned probability meets its threshold |
+| `boolean` | Yes / No checkboxes                                                  | The normalized Boolean belongs to the selected set                  |
+| `score`   | A rubric-labeled range slider and decimal minimum/maximum inputs     | Match the returned score within the selected interval               |
 
-For a fixed-target gate, Choice and Boolean start with all answers selected; Score
-starts at `gte 0`. All answers selected activates the same agent for every successful
-evaluation. An empty selection skips every successful answer; explicit mentions and
-provider-failure continuation retain their separate semantics.
+Choice conditions compare `probabilities[key] >= minProbability`, using the full
+distribution, not only the provider's top-choice key or overall `confidence`.
+Thresholds belong to the consumer and use `[0, 1]`; the UI may display percentages.
+For a fixed-target gate, any passing selected key activates its one bound agent
+once. Boolean starts with both answers selected; Choice starts with all keys enabled
+at `0.5`; Score starts with the full interval `[0, N-1]`. The Choice default may skip
+a diffuse answer whose options all fall below 0.5. Selecting no Choice/Boolean
+conditions skips every successful answer, including mentions. Provider-failure
+continuation remains a separate outcome, never a substitute for a successful skip.
 
 The Jev adapter maps host `boolean` to `noul`: probability `>= 0.5` becomes Yes,
-including the tie. Score values may be fractional. Four levels define `0..3`, so
-`gte 2` includes 2 and `lt 2` excludes it. Retain probability/confidence evidence;
-there is no confidence gate or expression editor in this design.
+including the tie. Score values may be fractional. Score intervals include their
+lower bound and exclude their upper bound, except that an interval ending at the
+rubric maximum includes that maximum. With four levels, `[1, 2.5)` matches 2 but
+not 2.5, and `[2.5, 3]` matches 2.5 through 3. Display those inequalities explicitly.
+Do not round the returned score before matching. Shared-bot Score intervals must
+not overlap; gaps are allowed and use Otherwise. This partitions the score domain
+without relying on rule priority to resolve conflicting targets.
+
+Retain all probabilities and confidence as evaluation evidence. The Choice
+probability threshold and Score interval have distinct controls and semantics;
+there is no overall-confidence threshold or expression editor in these stages.
+The provider still returns one typed answer with a probability distribution. Stage 2
+provisionally uses **all matching Choice conditions** to select target agents; this
+is the consumer's dispatch policy, not independent yes/no answers from the model.
+Stage 1 remains fixed-target and activates its bound agent at most once.
 
 Validate a Decision independently, then validate each consumer's conditions against
 its answer schema. A criteria edit may invalidate consumers: show the affected
 visible bindings before Save and mark incompatible consumers **Needs review** after
 saving. Disable their Decision execution until repaired, distribute that disabled
-state, and never silently remap a key or clamp a threshold. Model/question changes
-save atomically; consumer changes have their own atomic save. A Decision still in
-use cannot be deleted.
+state, and never silently remap a key or clamp a threshold or interval.
+Model/question changes save atomically; consumer changes have their own atomic
+save. A Decision still in use cannot be deleted.
 
 **Try with an example** in the Decision editor returns the typed answer, actual
 model, latency, and input-trimming information. It has no **Would trigger** verdict
@@ -144,84 +169,115 @@ shared-bot router independently to the same primary delivery.
 
 The initial surfaces are group conversations that already expose Off / Mention /
 Any message. Binary 1:1 DM controls, webchat, code-host hooks, cron, and direct agent
-calls retain their existing behavior. A gate evaluates ordinary eligible messages,
-including replies in an existing thread. A negative answer never chooses another
-agent or clears a `!stop` mute.
+calls retain their existing behavior. A gate evaluates all eligible conversational
+messages, including explicit mentions and replies in an existing thread. A negative
+answer never chooses another agent or clears a `!stop` mute.
 
 ### 3.2 Stage 2: shared-bot routing
 
-**Shared Bot → Configuration → Routing** owns the Decision reference, ordered
+**Shared Bot → Configuration → Routing** owns the Decision reference,
 answer-to-agent rules, and an Otherwise action. Channel selection defines where
 that bot-owned configuration applies; the mappings are not owned by an individual
 agent or copied into each agent's settings. Targets must be usable agents already
-connected to the same bot. One matched rule selects one agent, not a fan-out.
+connected to the same bot. Each matched rule contributes at most one target; Choice
+can match several rules and dispatch to their distinct agents.
 
-All rules in Stage 2 share one channel scope and one Decision. The first
-matching rule wins. Choice can group several keys; Boolean selects Yes/No; Score
-uses the same `gte` / `lt` controls as gates. Each action is **Route to agent** or
-**Do not activate**. Otherwise is **Use default agent** or **Do not activate**.
+All rules in Stage 2 share one channel scope and one Decision. Choice can group
+keys with a separate minimum probability for each. **Every rule with at least one
+passing key matches**, including ties and options other than the provider's top
+choice. Each key may appear in only one routing rule. Collect all matched Route to
+agent actions and deduplicate by agent ID; several keys or rules targeting the same
+agent still produce one delivery. Rule order does not suppress another match.
+Boolean selects Yes/No, with each value in at most one rule. Score uses the same
+interval control as gates and rejects overlaps. Each action is **Route to agent**
+or **Do not activate**. Otherwise is **Use default agent** or **Do not activate**.
 The existing scoped default agent, falling back to the bot default under the
 normal routing rules, is shown by name for the selected channel.
 
-For example, one evaluation of Support category can route billing to Billing agent,
-technical to Technical agent, and sales to Sales agent. Score rules `gte 3` followed
-by `gte 2` send 3 to Escalation agent and 2.6 to Support agent. Reordering those
-rules changes which one wins and must be visible in the editor and preview.
+For example, Choice thresholds of 0.3 for billing and technical activate both
+Billing agent and Technical agent when their probabilities are 0.45 and 0.4.
+At 0.4/0.4 both still activate; no highest-probability winner is selected. This
+all-matches policy is the provisional Stage 2 choice, to validate with the routing
+preview and representative traffic before implementation is finalized.
+
+Otherwise applies only when **no rule matches**. A matching Do not activate action
+contributes no target; it is not a global veto over other matched rules. If all
+matches say Do not activate, skip without falling through to Otherwise. If a skip
+rule and an agent rule both match, the agent rule still contributes its target.
+Show this mixed case in preview; a future multi-step spam gate is a separate design.
+
+With a four-level Score, `[0, 1)` can skip, `[1, 2.5)` can route to Support agent,
+and `[2.5, 3]` can route to Escalation agent. Values 1, 2.5, and 3 each have one
+destination. Changing row order never changes a Score result. Choice probabilities
+describe alternative answers, while Score places a message along an ordered rubric.
+The consumer deliberately permits multiple Choice targets; Score and Boolean select
+at most one target under their non-overlapping mappings.
 
 The routing precedence is:
 
 1. Existing authorization, Off, control commands, stops, and loop safeguards.
-2. An explicit authorized agent selection or @-mention uses direct routing.
-3. An established thread continues its current agent and existing participant rules.
-4. A new, unaddressed conversation in a channel using shared-bot routing is evaluated
-   once; its result selects one primary target or no activation.
-5. A channel outside that scope uses its existing routing policy.
+2. A channel outside the By decision scope uses its existing routing policy.
+3. An authorized explicit agent selection or @-mention constrains the target set;
+   otherwise an established thread retains its current agent and participant rules.
+4. Evaluate the eligible message once, with its target constraint and conversation
+   context. Mentions and thread replies use the same Decision as new messages.
+5. Apply the consumer's conditions. No activating actions means skip. An activating
+   result keeps the constrained recipients; only a new, unaddressed conversation
+   uses the matched actions to choose its target set.
 
-The current conversation default is the Otherwise/error fallback, not a reason to
-skip the Decision for a new conversation. Existing thread affinity is checked
-before a new Decision request. Explicit mentions and continuing threads do not
-receive a fabricated Decision answer. In append mode, an established conversation
-session follows this same continuity rule until that affinity is retired normally.
+An activating match or Use default agent Otherwise action means **continue with the
+addressed/current recipients** when targets are constrained, even if the rules name
+different agents for new conversations. Skip still applies; a new category does not
+replace or expand an established thread's participants. Record both matched actions
+and effective targets so previews explain this distinction. Explicit targeting
+retains precedence over existing participant delivery under the current routing
+rules. The target constraint also governs provider-failure continuation; it cannot
+redirect a mention to the default agent.
+In append mode, an established conversation session follows this same continuity
+rule until that affinity is retired normally.
 
 Scope changes are explicit configuration writes. Applying routing to a selected,
 already-enabled group channel sets its effective trigger to **By decision** with a
 shared-bot consumer reference. Off channels remain Off and require their existing
 enable action first. Removing a channel requires selecting its replacement trigger
 and, when applicable, default agent in that save. Existing thread ownership is not
-rewritten by changes to future routing. Pausing the bot's routing stops new implicit
-conversation activations under that consumer; mentions and continuing threads keep
-their existing behavior. The editor explains this before Save.
+rewritten by changes to future routing. Pausing the bot's routing suppresses new
+deliveries under that consumer, including mentions and continuing-thread messages;
+it does not cancel a running turn. Control commands remain available. The editor
+explains this before Save; changing back to Mention requires an explicit setting change.
 
 Shared-bot channel rows show the effective policy and link to the bot configuration.
 They must not offer a competing per-agent mapping editor. Trigger, consumer reference,
 and session mode still converge across sibling membership rows. Routing selects the
-new conversation's agent without changing the channel's configured default owner.
+new conversation's agents without changing the channel's configured default owner.
 
 ### 3.3 Common admission behavior
 
 The two chat consumers preserve existing target authorization, capacity,
 provenance, mute, and delivery deduplication. Decision output never grants permission. Verified
 agent-authored messages retain the collaboration ladder and hop/loop guards; this
-feature adds no automatic bot-to-bot activation rung. Eligible conversational
-replies may contribute context; echoes, tool output, and status cards do not.
+feature adds no automatic bot-to-bot activation rung. Ordinary agent replies visible
+in the conversation may contribute context; deduplicate their authored output and
+transport echoes. Tool output and status cards do not contribute context.
 
 A router's selected target becoming unavailable is **Target unavailable**. Do not
-silently choose another agent. A provider error is different: an otherwise eligible
-delivery follows the existing default route, with failure metadata. Invalid or
-paused configuration, revoked access, and a removed target do not use that fallback.
+silently choose another agent. For Choice fan-out, report that target's failure
+while other selected eligible agents may proceed; do not roll back admitted turns.
+A provider error is different: an otherwise eligible delivery keeps its constrained
+recipients or uses the existing default for a new unaddressed conversation, with
+failure metadata. Invalid or paused configuration, revoked access, and a removed
+target do not use that fallback.
 
 ```mermaid
 flowchart TD
     A[Incoming message] --> B[Existing eligibility and command handling]
-    B --> C{Consumer and routing precedence}
-    C -->|Explicit target or established routed thread| D[Existing direct or thread route]
-    C -->|Fixed-target gate| E[Evaluate Decision and match binding condition]
-    C -->|New conversation using shared bot routing| F[Evaluate Decision once and match ordered rules]
-    E -->|Match or eligible provider failure| G[Normal target admission]
-    F -->|Matched agent or eligible default fallback| G
-    D --> G
-    E -->|No match| H[Observe without starting a turn]
-    F -->|Do not activate| H
+    B --> C{By decision applies}
+    C -->|No| D[Existing trigger and routing policy]
+    C -->|Yes| E[Resolve binding, mention, or thread target constraint]
+    E --> F[Evaluate Decision with message and recent context]
+    F --> G[Match consumer conditions and apply target constraint]
+    G -->|Activate or eligible provider failure| H[Normal target admission]
+    G -->|Skip| I[Observe without starting or steering a turn]
 ```
 
 The daemon data plane owns evaluation and retained content. CP distributes only
@@ -278,6 +334,8 @@ Construct a structured state containing:
 - `currentMessage`: the one message being evaluated, including its sender and ID;
 - `history`: the retained prior conversation observations in chronological order;
 - `conversation`: relevant channel description or topic, when available;
+- `addressing`: normalized mentions and any authorized binding/mention/thread target
+  constraint, so the question can consider whom the message addresses;
 - `context`: whether history is partial and whether older entries were omitted.
 
 History ends before the current observation in the daemon's ingestion order. A
@@ -285,6 +343,13 @@ short serialized append-and-snapshot step per conversation provides a stable cut
 the network request does not hold that append lock. The current message occurs once,
 outside `history`. Out-of-order platform arrivals are reported as observed history,
 not as proof of a complete chronological archive.
+
+Retain repeated authored mentions as separate observations with their sender and
+message IDs. Transport retries of the same event remain deduplicated. The saved
+question can use recent requests and visible replies to recognize repeated demands
+or an already-answered question; an @-mention is context, not an instruction to
+always return an activating answer. Existing ingress deduplication and rate limits
+still run before paid evaluation.
 
 Trim the oldest history entries to fit the budget, preserving the current message
 and the question. Oversized current input or unsupported content yields
@@ -333,15 +398,19 @@ timeout, invalid responses, missing credentials, and unsupported input produce
 `unavailable`.
 
 Failure handling belongs to the consumer. The two planned chat consumers use
-**continue on evaluation failure** for an otherwise eligible ordinary message.
+**continue on evaluation failure** for an otherwise eligible conversational message,
+including a mention or thread reply.
 Include the failure category without inventing an answer or reusing an
-earlier message's answer. A gate keeps its bound target; a router uses the existing
-eligible default route. Ordinary candidates can activate during a provider outage,
+earlier message's answer. A gate keeps its bound target; a router keeps explicit
+or continuing recipients, or uses the existing eligible default for a new unaddressed
+conversation. Candidates can activate during a provider outage,
 subject to existing admission and capacity limits. This tradeoff preserves handling
 at the cost of more agent turns; surface it when enabling the feature. Off, access
 denial, removed bindings, and stale ownership are not provider failures and never
 take this continuation path. The reusable evaluator returns `unavailable`; it does
-not mandate fallback activation for future consumers.
+not mandate fallback activation for future consumers. Consequently this semantic
+filter is not a guaranteed spam block during provider failure; deterministic ingress
+limits remain in force. A successful skip never takes the failure continuation path.
 
 Bind evaluation to the message identity, frozen Decision/consumer configuration,
 and current consumer ownership. Recheck the locally applied configuration and
@@ -359,8 +428,9 @@ admission replay reuse a settled decision rather than creating another turn.
 Keep credentials in the existing encrypted secret infrastructure and distribute
 them only to authorized daemon-side consumers. Configuring a provider alone does
 not start observation or spending; binding a Decision explicitly enables evaluation
-of that conversation's ordinary messages. A provider credential does not need to be
-injected into the agent runtime. Endpoint configuration can accommodate a gateway
+of that conversation's eligible messages, including mentions and thread replies.
+A provider credential does not need to be injected into the agent runtime.
+Endpoint configuration can accommodate a gateway
 without changing Decision semantics.
 
 Record requested and actual model IDs, the evaluated rule snapshot, latency, usage,
@@ -385,9 +455,9 @@ type DecisionQuestion =
   | { type: 'score'; instructions: string; criteria: string[] }
 
 type DecisionCondition =
-  | { type: 'choice'; values: string[] }
+  | { type: 'choice'; thresholds: Record<string, number> }
   | { type: 'boolean'; values: boolean[] }
-  | { type: 'score'; operator: 'gte' | 'lt'; value: number }
+  | { type: 'score'; min: number; max: number }
 
 type DecisionDraft = {
   name: string
@@ -418,7 +488,8 @@ or expose them to ship Stage 1.
 
 The enclosing integration identifies the bot for `shared_bot_routing`; it cannot
 name another bot. The bot owns one routing configuration. Rule IDs identify rows
-in editing and evidence, not resource versions; array order defines priority.
+in editing and evidence, not resource versions. Rule order does not change the
+matched target set; Score matching is determined by non-overlapping intervals.
 Channel bindings define its scope, so there is no second independently editable
 channel list inside each rule. Storage/DTOs also carry standard resource visibility,
 creator, and timestamp fields omitted here.
@@ -426,21 +497,39 @@ creator, and timestamp fields omitted here.
 Validate every condition against the referenced question's type, key set, and
 score range. The Decision itself has no condition field.
 
-| Field                      | Validation                                                                              |
-| -------------------------- | --------------------------------------------------------------------------------------- |
-| Name                       | Nonempty after trimming, at most 120 characters                                         |
-| Instructions / criteria    | Nonempty text; complete question at most 16 KiB of UTF-8 JSON                           |
-| Choice criteria            | 2–32 distinct nonempty keys, each at most 64 characters                                 |
-| Boolean / Choice condition | Unique declared values; a gate may select none, a routing rule must select at least one |
-| Score criteria / condition | 2–10 ordered levels; finite threshold in `0..N-1`, including decimals                   |
-| Provider / model           | Visible same-organization provider and a supported model/question-type combination      |
-| Routing rules              | At most 32 ordered rules with unique row IDs; every action complete                     |
-| Routing target             | Usable member of this shared bot; membership and authorization rechecked at admission   |
-| Routing channels           | Supported group channels belonging to this bot, edited under their existing permissions |
+| Field                      | Validation                                                                                                                |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Name                       | Nonempty after trimming, at most 120 characters                                                                           |
+| Instructions / criteria    | Nonempty text; complete question at most 16 KiB of UTF-8 JSON                                                             |
+| Choice criteria            | 2–32 distinct nonempty keys, each at most 64 characters                                                                   |
+| Choice condition           | Declared keys with finite minimum probabilities in `[0, 1]`; no key repeated across routing rules                         |
+| Boolean condition          | Unique Boolean values; no value repeated across routing rules                                                             |
+| Score criteria / condition | 2–10 ordered levels; finite bounds with `0 <= min < max <= N-1`, including decimals; no overlap between routing intervals |
+| Provider / model           | Visible same-organization provider and a supported model/question-type combination                                        |
+| Routing rules              | At most 32 ordered rules with unique row IDs; every action complete                                                       |
+| Routing target             | Usable member of this shared bot; membership and authorization rechecked at admission                                     |
+| Routing channels           | Supported group channels belonging to this bot, edited under their existing permissions                                   |
 
-Overlap is resolved by first match and surfaced in the editor. Completely shadowed
-rules receive a warning; the preview shows which earlier rule wins. Empty routing
-lists use Otherwise for every successful evaluation and say so explicitly.
+Choice/Boolean gates may select none; a routing rule must contain at least one
+condition. Choice gate matching is OR over configured thresholds. For routing,
+collect every matching rule, apply its action, then deduplicate targets by agent ID.
+The reusable `DecisionAnswer.value` remains the provider's reported Choice; record
+all matched keys/rules separately rather than rewriting that answer. Missing
+probabilities are an invalid response, not zero probability. Do not round values
+before comparison.
+
+Examples of consumer conditions are
+`{ "type": "choice", "thresholds": { "billing": 0.6, "technical": 0.7 } }`
+and `{ "type": "score", "min": 1, "max": 2.5 }`. The latter means `1 <= score < 2.5`
+for a four-level question; `{ "type": "score", "min": 2.5, "max": 3 }` includes 3.
+
+Reject overlapping Score intervals in both API validation and the editor, even if
+they name the same action. Shared endpoints are valid under the boundary convention
+above; a value at the split belongs only to the upper interval. Sort Score rows by
+their lower bound for display; moving rows cannot change matching. Show gaps and
+their Otherwise behavior explicitly. Changing the rubric maximum invalidates saved
+Score conditions for review, because the terminal endpoint's inclusivity may change.
+Empty routing lists use Otherwise for every successful evaluation and say so explicitly.
 
 Criteria edits revalidate all consumers. An invalidated consumer is projected as
 disabled with **Needs review**, preserving its saved condition for repair. It must
@@ -679,8 +768,9 @@ type DecisionEvaluation =
 ```
 
 Normalize the provider's answer into `value`, retaining its distribution for
-evidence. Validate the expected key/type, finite values, exact choice/level domain,
-probabilities in `[0,1]` summing to 1 within `1e-5`, and confidence in `[0,1]` when
+Choice threshold matching and evaluation evidence. Validate the expected key/type,
+finite values, exact choice/level domain, probabilities in `[0,1]` summing to 1
+within `1e-5`, and confidence in `[0,1]` when
 the type carries it. Preserve returned values; do not repair an invalid distribution
 or round a score into a different trigger. Model identity and usage are metadata,
 not part of the trigger expression. A legitimate low-confidence answer is still
@@ -708,10 +798,11 @@ network call per message; applying replacement credentials resets it immediately
 ### 7.4 Stage 2: shared-bot selection before target admission
 
 Routing cannot be implemented by calling every candidate agent's gate: it must
-evaluate once before selecting the primary target. The existing relay routing ladder
-first handles explicit selection and established thread affinity. A By decision
-route for a new conversation instead forwards to one designated daemon-side
-evaluation host, without creating an ACP session. CP and relay remain model-free.
+evaluate once before target admission. The existing routing ladder first resolves
+explicit selection and established thread affinity as target constraints. Every
+eligible By decision delivery then passes through one designated daemon-side
+evaluation host, including mentions and continuing threads, without creating an ACP
+session. CP and relay remain model-free.
 
 Use the bot default agent's placed daemon as the initial evaluation host, with
 ownership and readiness projected through the existing control paths. A default
@@ -720,43 +811,64 @@ the old host's pending results cannot dispatch. This host is an internal executi
 detail, not a new user-facing agent or a configurable model runner. Missing host
 capability/readiness prevents activation of this configuration.
 
-Continue forwarding authorized observation-only traffic to the evaluation host
-when an explicit mention or existing thread bypasses classification, so later new
-conversations can still use recent context. Deduplicate by stable message identity;
-this path neither evaluates nor admits a turn and stops when observation is disabled.
+Forward authorized observation-only traffic to the evaluation host even when
+activation is ineligible, so later judgments can still use recent context. Eligible
+mentions and thread replies carry an evaluation disposition, not observation-only.
+Deduplicate by stable message identity; observation-only delivery neither evaluates
+nor admits a turn and stops when observation is disabled.
 
 The evaluation host owns the bot/conversation observation window and a durable
 selection lane keyed by organization, bot transport scope, platform, and channel.
 Its receipt is keyed by normalized event identity before the target is known.
-Freeze the Decision and routing configuration there, settle one rule/Otherwise
-selection, and persist the selected agent or skip. Retries reuse that selection;
-a changed rule or failed target must not reclassify the same delivery to another agent.
+Freeze the Decision, routing configuration, and target constraints there, settle
+all matched rules or Otherwise, and persist the deduplicated effective target set
+or skip. Each target has its own forwarding/admission disposition under that
+selection receipt. Retries reuse the frozen set; a changed rule or failed target
+must not reclassify the delivery, add recipients, or readmit a successful target.
 
 Release selection slots in ingestion order. Follow-ups to a root awaiting its first
-admission wait for that root's affinity result; they do not independently race to
-select a second agent. Recheck explicit selection, affinity, configuration, and
-access at release. Once the root is admitted, follow-ups use ordinary thread routing.
-Skipped/terminally rejected roots release their slot without pinning an agent.
+admission wait for that root's bounded admission/participant result; they do not
+independently race to choose new recipients. Recheck explicit selection, affinity,
+configuration, and access at release. Once the root has settled, follow-ups retain
+its admitted recipients under existing participant rules, but still need their own
+Decision evaluation. Freeze a waiting follow-up's target constraint only after that
+root result is known, retaining its original conversation-history cut. A root with
+no admitted targets releases its slot without pinning an agent.
 
-If selection chooses an agent on another daemon, send the selected delivery and its
-bounded evidence directly over the relay/data-plane transport. Persist forwarding
-disposition and use the normal delivery identity for target-side deduplication and
-admission acknowledgement. Never send the provider key with that handoff, invoke a
-second Decision at the target, or route message content through CP. The target
-rechecks its current bot membership, ownership, authorization, pause/stop, and capacity.
-Only successful admission establishes thread affinity; skipping creates no session.
+Forward each selected delivery and its bounded evidence directly over the
+relay/data-plane transport to its target daemon. Use the normal target-specific
+delivery identity for deduplication and admission acknowledgement. Never send the
+provider key, invoke another Decision at each target, or route message content
+through CP. Each target rechecks bot membership, ownership, authorization,
+pause/stop, and capacity. One target's refusal does not block the others or trigger
+Otherwise. Bound concurrent forwarding and finish each admission attempt with its
+existing deadline; release the selection lane after all targets are admitted or
+terminally rejected, without waiting for their turns to finish.
+
+Reuse the existing single routing-owner and separate participant records described
+in [shared-bot relay](shared-bot-relay.md#102-durable-thread-affinity-and-participants).
+For a new conversation, choose the first successfully admitted target in frozen
+rule order as routing owner and register every admitted target as a participant.
+This bookkeeping does not remove any matched recipient; response timing must not
+choose the owner. The evaluator coordinates these reports after admission rather
+than letting each target overwrite thread ownership. Explicit selection retains its
+existing ownership semantics. Skipped or rejected targets create no affinity;
+already-admitted participants survive a sibling target's failure.
 
 Keep route-selection receipts separate from the target-specific gate/inbox receipts
-in §8. A cross-daemon crash must recover the recorded selected target and its
-admission receipt before retrying. Preserve the same bounded evidence retention
-and input limits; moving to a host without the observation store marks history partial.
+in §8. A cross-daemon crash must recover the frozen target set and each target's
+admission receipt before retrying unfinished deliveries. Preserve the same bounded
+evidence retention and input limits; moving to a host without the observation store
+marks history partial.
 An unavailable evaluation host uses existing ingress backpressure/recovery; it is
 not permission to run the same classification independently on every member.
 
 Implementation must extend bot assignment, relay/daemon selection-result and
-forwarding contracts, durable selection receipts, and final admission acknowledgements
-together. The finalized configuration/UI does not imply that today's per-target
-gate or existing relay owner selection already provides this behavior.
+forwarding contracts, durable per-target selection receipts, admission
+acknowledgements, and owner/participant reporting together. Record provider usage
+once per evaluation and agent execution separately per admitted target. The proposed
+configuration/UI does not imply that today's per-target gate or relay owner
+selection already provides this behavior.
 
 ## 8. Observation storage and delivery lifecycle
 
@@ -912,10 +1024,10 @@ sequenceDiagram
     G->>S: Advance lane release cursor
 ```
 
-The lifecycle is `reserved → evaluating → settled → skipped | admitted | canceled`;
-an explicit mention goes directly from reserved to settled without a model request.
-It joins the same lane when an earlier delivery is pending, so it can wait for that
-bounded earlier decision, never for another conversation or an entire prior turn.
+The lifecycle is `reserved → evaluating → settled → skipped | admitted | canceled`.
+Explicit mentions and thread replies follow the same evaluation lifecycle and lane
+ordering as other candidates. They can wait for an earlier bounded evaluation,
+never for another conversation or an entire prior turn.
 Control commands remain outside this wait: `!stop` must be able to cancel pending
 candidates immediately, with its existing target/thread scope.
 
@@ -975,8 +1087,8 @@ session through its normal history path, not all messages observed by the daemon
 Include remaining observations once under **Background conversation**, followed by
 the current message and a compact **Decision evidence** block. Persist supplied IDs
 with the admitted input so retries/restart use the same prompt; never advance the
-normal delivery cursor for a skipped message. Explicit mentions also receive missing
-retained background when available, but carry no fabricated Jev answer.
+normal delivery cursor for a skipped message. Admitted mentions and thread replies
+receive the same missing background and actual evaluation evidence as other messages.
 
 A **Yes** to repeated violations requests an agent turn; it does not automatically
 ban anyone. The agent receives the question and relevant conversation, determines
@@ -1005,9 +1117,14 @@ binding form. Saving replaces Decision selection and condition together; Cancel
 restores the saved binding. Keep a successfully created Decision if binding fails,
 and let Retry reuse it. The same consumer may be edited from its visible usage link.
 
-Choice/Boolean use checkboxes, initially all checked; Score uses a comparator,
-rubric-labeled slider, and decimal input for the same value, initially `gte 0`.
-Show **All answers trigger** or **No successful answers trigger** where applicable.
+Choice shows an enabled checkbox and a probability threshold for each criteria key,
+initially all enabled at 50%. Label the field **Minimum probability**, show `>=`,
+and keep its percentage input synchronized with the stored `[0, 1]` value.
+Boolean uses Yes/No checkboxes, initially both checked. Score uses a rubric-labeled
+two-handle interval slider and synchronized decimal From/To inputs, initially the
+full score domain. Show the exact lower/upper inequalities beside the controls.
+Show **All answers trigger** for Boolean all-selected or a full-domain Score,
+and **No successful answers trigger** for an empty Choice/Boolean selection.
 Changing the Decision/type revalidates the current condition; it does not silently
 reselect answers. A shared-bot-routed channel instead shows **Managed by [bot] routing**
 with a link to its configuration, avoiding a second mapping editor on an agent page.
@@ -1022,15 +1139,15 @@ usage link lands at this same page.
 
 Use the existing Console surface, with the following reading and tab order:
 
-| Region     | Content / interaction                                                                                                  |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Header     | Bot identity, Configuration / Routing location, saved readiness, Recent evaluations                                    |
-| Enablement | Enabled switch; pausing explains the effect on new implicit conversations while preserving mentions/continuing threads |
-| Decision   | Picker, type/model summary, View/Edit, inline Create Decision                                                          |
-| Channels   | Searchable multiselect of this bot's eligible group channels; Off rows disabled with an enable-settings link           |
-| Rules      | Numbered When / Then rows, Add rule, Move up / Move down, Remove                                                       |
-| Otherwise  | Fixed final row: Use default agent or Do not activate                                                                  |
-| Footer     | Test routing, Cancel, Save; dirty, saving, success and retry states                                                    |
+| Region     | Content / interaction                                                                                                 |
+| ---------- | --------------------------------------------------------------------------------------------------------------------- |
+| Header     | Bot identity, Configuration / Routing location, saved readiness, Recent evaluations                                   |
+| Enablement | Enabled switch; pausing suppresses new deliveries, including mentions/thread replies, without canceling running turns |
+| Decision   | Picker, type/model summary, View/Edit, inline Create Decision                                                         |
+| Channels   | Searchable multiselect of this bot's eligible group channels; Off rows disabled with an enable-settings link          |
+| Rules      | Numbered When / Then rows, Add rule, Remove; Choice shows all matches, Score rows sort by lower bound                 |
+| Otherwise  | Fixed final row: Use default agent or Do not activate                                                                 |
+| Footer     | Test routing, Cancel, Save; dirty, saving, success and retry states                                                   |
 
 One scope applies to the whole rule list. Selecting channels explicitly applies
 By decision to those enabled conversations on Save. Show the affected channel names
@@ -1045,36 +1162,40 @@ Routing                                Enabled
 Decision      Support category          Choice · Jev 1.13       [Edit]
 Channels      #support  #customer-help   [Manage channels]
 
-Rules — first match wins
-1  When billing     → Route to Billing agent       [Up] [Down] [Remove]
-2  When technical   → Route to Technical agent     [Up] [Down] [Remove]
-3  When sales       → Route to Sales agent         [Up] [Down] [Remove]
+Rules — every option meeting its threshold applies
+1  When P(billing)   >= 30% → Route to Billing agent       [Remove]
+2  When P(technical) >= 30% → Route to Technical agent     [Remove]
+3  When P(sales)     >= 70% → Route to Sales agent         [Remove]
 [Add rule]
 
-Otherwise   Use default agent
-            #support: Support agent · #customer-help: Help agent
+Otherwise   Do not activate
 
-Explicit mentions go directly to the addressed agent.
-Existing threads continue with their current agent.
+Multiple agents can be selected. Each agent receives the message once.
+Mentions and thread replies are also evaluated and may be skipped.
+If activated, mentions keep their targets and threads keep their current participants.
 Recent conversation history is included automatically.
 
 [Test routing]                                      [Cancel] [Save]
 ```
 
-When opens controls derived from the Decision: keyed checkboxes, Yes/No, or the
-score comparator/slider/decimal input. Then selects **Route to agent** plus a
-same-bot target, or **Do not activate**. Show the agent's ordinary identity and
-availability, not a generic model icon. Provide keyboard-operable move controls;
-dragging may be additional convenience, never the only way to set priority.
+When opens controls derived from the Decision: per-key probability thresholds,
+Yes/No, or the Score interval slider and From/To inputs. Then selects **Route to agent**
+plus a same-bot target, or **Do not activate**. Show the agent's ordinary identity and
+availability, not a generic model icon. Choice explains that all passing options
+apply and the same agent is deduplicated across matches. Score rows sort by their
+lower bound. Neither type offers a first-match priority control.
 
-Array order is observable product behavior. Show duplicate/fully shadowed conditions
-beside the affected row and identify the earlier winning row. A routing condition
-cannot be empty. Show a required-target error when Route to agent has no selection.
+Reject a Choice key or Boolean value assigned to more than one row. For Score,
+mark both conflicting intervals and disable Save until overlaps are resolved;
+show uncovered ranges as using Otherwise. The API enforces the same constraints.
+A routing condition cannot be empty. Show a required-target error when Route to
+agent has no selection.
 Otherwise remains last, cannot be removed, and displays the resolved default for
 each affected channel rather than inventing a bot-wide agent when scoped defaults differ.
 
-New configurations start as an unsaved draft. Save validates and commits the
-configuration and scope together, then displays the returned saved state. Reopening
+New configurations start as an unsaved draft with Otherwise set to Do not activate.
+Save validates and commits the configuration and scope together, then displays the
+returned saved state. Reopening
 reads that state; Cancel restores it. A failed Save retains edits and offers Retry.
 The prototype must model those transitions rather than changing only its button text.
 
@@ -1085,23 +1206,27 @@ Conversation history with sender IDs. Routing also chooses a channel and a sampl
 explicit mention, or established thread. These are preview inputs, not runtime
 policy switches. Draft edits make prior results stale until rerun.
 
-| Surface / situation          | Result shown                                                                                                                  |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Decision Try                 | Typed answer, requested/actual model, latency, context-trimming information                                                   |
-| Gate Try                     | Answer → selected condition → Would trigger / Would skip and the existing target                                              |
-| Routing, rule match          | Answer → Matched rule N → Would route to agent or Would not activate                                                          |
-| Routing, no rule match       | Answer → Otherwise → the resolved default agent or Would not activate                                                         |
-| Explicit agent mention       | Bypassed — explicit mention → addressed agent; no Decision answer/usage                                                       |
-| Existing thread (routing)    | Bypassed — continuing thread → current agent; no Decision answer/usage                                                        |
-| Off / outside scope / paused | Not applied with the precise reason; no fabricated evaluation                                                                 |
-| Provider failure             | Evaluation unavailable; separately identify eligible continuation to the gate's bound target or the router's existing default |
-| Selected target unavailable  | Target unavailable; no silent alternative recipient                                                                           |
+| Surface / situation          | Result shown                                                                                                                        |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Decision Try                 | Typed answer, requested/actual model, latency, context-trimming information                                                         |
+| Gate Try                     | Answer → selected condition → Would trigger / Would skip and the existing target                                                    |
+| Routing, rule match          | Choice distribution/thresholds or Boolean/Score match → All matched rules → Deduplicated effective targets or Would not activate    |
+| Routing, no rule match       | Answer → Otherwise → the resolved default agent or Would not activate                                                               |
+| Explicit agent mention       | Evaluated answer/condition → Would activate addressed agent or Would skip; show the fixed target                                    |
+| Existing thread (routing)    | Evaluated answer/condition → Would continue current recipients or Would skip; no automatic participant replacement                  |
+| Off / outside scope / paused | Not applied with the precise reason; no fabricated evaluation                                                                       |
+| Provider failure             | Evaluation unavailable; identify eligible continuation to the constrained target, or the default for a new unaddressed conversation |
+| Selected target unavailable  | Target unavailable; no silent alternative recipient                                                                                 |
 
 Examples must exercise the actual draft condition/action state. A prototype may use
 a clearly identified sample answer source; it must not hardcode a target independently
-of the rules. Include Choice billing/technical/sales, Boolean Yes/No, and Score
-`2.6` / `3` against ordered `gte 3`, `gte 2` rules. Preview never activates a real
-agent, writes retained conversation history, or performs moderation.
+of the rules. Include Choice probabilities with no passing option, several passing
+options, an exact tie, several matches targeting the same agent, and mixed skip/agent
+actions. Show each threshold result, all matched rows, and the deduplicated target set.
+Exercise Boolean Yes/No and Score values `1`, `2.49`, `2.5`, and `3` against
+`[0, 1)`, `[1, 2.5)`, and `[2.5, 3]`, plus a draft gap and rejected overlap.
+Include a repeated-mention sample with prior requests/replies that evaluates to skip.
+Preview never activates an agent, writes retained history, or performs moderation.
 
 ### 9.4 Readiness, errors, and recovery
 
@@ -1133,19 +1258,24 @@ change preserves compatible conditions and invalidates preview results.
 ### 9.5 Recent evaluations and evidence
 
 Open Recent evaluations from a gate binding or Shared Bot Routing. The routing list
-shows Time, Channel, Decision answer, Matched rule / Otherwise, Target, Outcome, and
-Latency. Separate **Routed**, **Skipped**, **Fallback**, **Bypassed**, **Unavailable**,
+shows Time, Channel, Decision answer, Matched keys/intervals and rules / Otherwise,
+Targets, Outcome, and Latency. Separate **Routed**, **Partially routed**, **Skipped**,
+**Fallback**, **Unavailable**,
 and **Canceled**. Gate records use Triggered/Skipped instead of inventing a routing
 step. Provider-failure fallback is not a successful rule match. If the fallback
 target is unavailable, the outcome is Unavailable rather than Routed/Fallback.
+For Choice fan-out, show admission status per target; Partially routed means at least
+one target was admitted and at least one was rejected or unavailable.
 
 Details display the evaluated Decision and consumer snapshots, input/history,
-requested/actual model, and the selected action. Bypass records contain the routing
-reason without model usage. Reads are bounded authorized daemon BFF operations with
+requested/actual model, all matched actions, and effective targets. Mention/thread
+evaluations include their target constraint and real model usage. Ineligible or
+outside-scope preview outcomes say Not applied and have no model usage.
+Reads are bounded authorized daemon BFF operations with
 the conversation's audience checks; CP never persists those bodies. Expired snapshots
 say **Details expired**. Editing a definition cannot relabel a historical result.
 
-Emit separate evaluation/match/skip/failure/bypass/latency/usage counters, without
+Emit separate evaluation/match/skip/failure/latency/usage counters, without
 message IDs or channel names as metric labels. Provider outages surface in the
 Console and rate-limited logs rather than one chat warning per ordinary message.
 Skipped messages cause no typing marker, reaction, runtime startup, or new session.
@@ -1153,13 +1283,14 @@ Skipped messages cause no typing marker, reaction, runtime startup, or new sessi
 ### 9.6 Responsive behavior and UI completion
 
 Use the existing Console design tokens and components. At **≤768px**, render rules
-as ordered cards with When, Then, move, and remove controls; keep all core actions
+as cards with When, Then, and Remove; keep all core actions
 without a horizontally scrolling desktop table. Show preview/evaluation details in
 the existing mobile sheet/page pattern. Preserve keyboard focus and visible labels.
 
 A finished Stage 2 prototype must demonstrate entry from Integrations, Choice mappings to
 three connected agents, Save and reopen, Cancel restoring the saved configuration,
-inline creation plus failed-save retry, rule reorder, fractional Score boundaries,
+inline creation plus failed-save retry, Choice thresholds and all-match fan-out,
+fractional Score intervals and rejected overlap,
 Otherwise, provider failure, removed target, mentions, continuing threads, and
 channel scope. Verify the same core form on mobile. Configuration and preview are
 interactive designs; their completion does not claim that runtime routing is shipped.
@@ -1176,11 +1307,11 @@ one provider. Implement only the stage being delivered.
 | Area                  | Stage 1                                                                                                          | Stage 2 additions                                                                     |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | Shared contract       | `protocol/src/decision.ts`, typed question/result and gate binding, integration/relay frames, trigger capability | Bot routing schema, selection-result/handoff frames, routing capability               |
-| Pure routing          | Explicit Decision candidate in `activation-policy` and daemon routing, preserving bot-author policy              | Pre-target bot selection after explicit selection and thread affinity                 |
+| Pure routing          | Explicit Decision candidate in `activation-policy` and daemon routing, preserving bot-author policy              | Resolve explicit/thread constraints, then evaluate before target admission            |
 | CP persistence        | Decision/provider resources, encrypted secrets, gate references, consumer invalidation                           | `BotDecisionRouting`, atomic routing/scope saves and target authorization             |
 | CP API/projection     | Decision/gate APIs and complete bundles through existing placement/integration convergence                       | Bot routing APIs and one evaluation-host assignment                                   |
-| Daemon ingress        | Direct/relay candidates use a gate before dispatch; existing session observation stays session-scoped            | Evaluate once before selecting the primary target                                     |
-| Data-plane durability | Bounded observations, fixed-target receipts, ordered replay-safe admission in both store backends                | Durable bot selection receipts and cross-daemon admission handoff                     |
+| Daemon ingress        | Direct/relay candidates use a gate before dispatch; existing session observation stays session-scoped            | Evaluate once before selecting and deduplicating targets                              |
+| Data-plane durability | Bounded observations, fixed-target receipts, ordered replay-safe admission in both store backends                | Durable bot selection plus per-target receipts and cross-daemon handoff               |
 | Relay                 | Activation candidates and observation-only destinations                                                          | Selected-target forwarding and root-admission/thread-affinity coordination            |
 | Prompt construction   | Missing background plus Decision evidence, deduplicated by stable message IDs                                    | Carry the same bounded evidence to the selected target                                |
 | Console               | Decision/provider management, binding conditions, answer/gate previews and evaluation details                    | Shared Bot Configuration → Routing, scoped channel links and routing previews/details |
@@ -1203,10 +1334,11 @@ one provider. Implement only the stage being delivered.
 
 **Stage 2 — shared-bot multi-agent routing**
 
-1. Add the bot-owned routing record, ordered conditions/actions, explicit channel
+1. Add the bot-owned routing record, typed conditions/actions, explicit channel
    scope updates, same-bot target checks, and the complete configuration UI in §9.2.
-2. Add one evaluation host per bot, durable selection receipts, cross-daemon handoff,
-   and admission-based thread affinity as one coherent runtime change (§7.4).
+2. Add one evaluation host per bot, durable selection/per-target receipts, bounded
+   cross-daemon fan-out, and admission-based thread ownership/participants as one
+   coherent runtime change (§7.4).
 3. Complete routing previews, diagnostics, failure/recovery states, and the Stage 2
    acceptance cases below. Require `decision-routing-v1` throughout the route
    before exposing live routing; Stage 1 support alone is insufficient.
@@ -1226,35 +1358,38 @@ under test. Prefer these focused scenarios over tests mirroring every helper.
 
 **Stage 1 and shared foundations**
 
-| Scenario                         | Evidence required                                                                                                                                   |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Resource independence            | A Decision saves and previews without a binding or target; consumer conditions/actions never become definition fields                               |
-| Typed controls                   | Choice membership, Boolean `0.5`, fractional Score boundaries, all/none selections, and edited criteria agree between UI, preview, and daemon       |
-| Model selection                  | The saved model reaches preview/live requests; Decisions sharing a provider retain independent selections; unsupported combinations are rejected    |
-| Ordinary resource edits          | Create/edit/bind needs no expected revision; each resource saves atomically; failed binding Save retains an inline-created Decision                 |
-| Context before the first session | Skip A/B, match C; C sees A/B exactly once, correctly attributed, and only C creates an agent session                                               |
-| Top-level arrival ordering       | With `createNew`, reserve top-level A/B before provider I/O; finish B first; B waits until A skips or receives its admission ACK                    |
-| Ordering survives restart        | Restart with A pending and B settled; recover A before releasing B; a different channel remains independent                                         |
-| Explicit mention and commands    | Mention creates zero Jev calls; ordinary fixed-target thread replies remain gated; `!stop` suppresses pending work without waiting for Jev          |
-| Criteria changes                 | Incompatible consumers are preserved for repair but disabled; compatible consumers survive; historical evidence keeps its original criteria         |
-| Direct and relay parity          | Primary, participant, and observation-only paths retain context; fan-out cannot bypass a gate                                                       |
-| Configuration during evaluation  | Locally changed configuration or revoked ownership prevents a late activation/fail-open result; unseen CP edits follow normal convergence           |
-| Durable handoff                  | Crashes after settled evaluation or inbox admission recover one admission with background/evidence preserved                                        |
-| Provider failure and load        | Timeout/auth/invalid output continue only eligible deliveries; cancellation does not; deadlines release lanes and bounded queues apply backpressure |
-| Retention and isolation          | Idle pruning expires content; sibling removal preserves still-used history; other organizations/bots/conversations cannot read the window           |
-| Preview and diagnostics          | Try writes no observation/session; unavailable differs from skip; stale previews and expired details are labeled                                    |
-| Rolling compatibility            | Unsupported routes are visibly rejected; an old consumer cannot interpret By decision as unfiltered Any; Stage 1 does not expose routing            |
+| Scenario                         | Evidence required                                                                                                                                                             |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Resource independence            | A Decision saves and previews without a binding or target; consumer conditions/actions never become definition fields                                                         |
+| Typed controls                   | Choice per-key probability thresholds (including equality and empty selection), Boolean `0.5`, and fractional Score interval boundaries agree between UI, preview, and daemon |
+| Model selection                  | The saved model reaches preview/live requests; Decisions sharing a provider retain independent selections; unsupported combinations are rejected                              |
+| Ordinary resource edits          | Create/edit/bind needs no expected revision; each resource saves atomically; failed binding Save retains an inline-created Decision                                           |
+| Context before the first session | Skip A/B, match C; C sees A/B exactly once, correctly attributed, and only C creates an agent session                                                                         |
+| Top-level arrival ordering       | With `createNew`, reserve top-level A/B before provider I/O; finish B first; B waits until A skips or receives its admission ACK                                              |
+| Ordering survives restart        | Restart with A pending and B settled; recover A before releasing B; a different channel remains independent                                                                   |
+| Explicit mention and commands    | Mentions and thread replies call Jev and may skip; repeated mentions retain contextual evidence; `!stop` suppresses pending work without waiting for Jev                      |
+| Criteria changes                 | Incompatible consumers are preserved for repair but disabled; compatible consumers survive; historical evidence keeps its original criteria                                   |
+| Direct and relay parity          | Primary, participant, and observation-only paths retain context; fan-out cannot bypass a gate                                                                                 |
+| Configuration during evaluation  | Locally changed configuration or revoked ownership prevents a late activation/fail-open result; unseen CP edits follow normal convergence                                     |
+| Durable handoff                  | Crashes after settled evaluation or inbox admission recover one admission with background/evidence preserved                                                                  |
+| Provider failure and load        | Timeout/auth/invalid output continue only eligible deliveries; cancellation does not; deadlines release lanes and bounded queues apply backpressure                           |
+| Retention and isolation          | Idle pruning expires content; sibling removal preserves still-used history; other organizations/bots/conversations cannot read the window                                     |
+| Preview and diagnostics          | Try writes no observation/session; unavailable differs from skip; stale previews and expired details are labeled                                                              |
+| Rolling compatibility            | Unsupported routes are visibly rejected; an old consumer cannot interpret By decision as unfiltered Any; Stage 1 does not expose routing                                      |
 
 **Stage 2 additions**
 
-| Scenario                    | Evidence required                                                                                                                                                         |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Conversation continuity     | Existing threads retain their agent without evaluation; new conversations run the router; early follow-ups wait for root admission/affinity                               |
-| Ordered rules and Otherwise | Choice/Boolean sets and Score 2.6/3 select the first match; reordering changes precedence; uncovered answers use Otherwise; one primary target at most                    |
-| Target boundaries           | Only authorized connected agents are selectable; unavailable/removed targets never silently reroute; provider failure uses only an eligible default                       |
-| Scope and saves             | Routing/scope save together; Off stays Off; scope removal requires replacement settings; Cancel/reopen restore saved values; failed-save Retry preserves drafts           |
-| Cross-daemon selection      | Evaluate once; crash/retry retains the selected target; destination deduplicates and checks admission; provider keys stay on the evaluator and message bodies stay off CP |
-| Completed UI flow           | Integrations entry, Choice/Boolean/Score editing, rule reorder, preview, readiness/recovery, evaluation snapshots, and ≤768px rule cards all work                         |
+| Scenario                      | Evidence required                                                                                                                                                                      |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Conversation continuity       | Existing threads retain their admitted participants but evaluate each eligible reply; mentions also evaluate with constrained targets; early follow-ups wait for root admissions       |
+| Choice thresholds             | Every passing option contributes its action, including ties and non-top options; deduplicate target agents; mixed skip/agent matches and no-match Otherwise agree across UI and daemon |
+| Score intervals and Otherwise | Reject overlapping intervals; a shared endpoint belongs only to the upper interval; include the rubric maximum; row order cannot change the result; gaps use Otherwise                 |
+| Boolean mapping               | Each value belongs to at most one rule; an unmatched value uses Otherwise                                                                                                              |
+| Target boundaries             | Only authorized connected agents are selectable; unavailable/removed targets never silently reroute; matched actions and provider failure preserve explicit/thread constraints         |
+| Scope and saves               | Routing/scope save together; Off stays Off; scope removal requires replacement settings; Cancel/reopen restore saved values; failed-save Retry preserves drafts                        |
+| Cross-daemon selection        | Evaluate once; crash/retry retains every target and its disposition; never readmit successful siblings; a rejected target does not suppress other targets or invoke Otherwise          |
+| Thread ownership and usage    | One owner plus every admitted participant survives restart; network completion order does not select the owner; provider usage is counted once and target turns separately             |
+| Completed UI flow             | Integrations entry, probability thresholds, non-overlapping Score intervals, preview, readiness/recovery, evaluation snapshots, and ≤768px rule cards all work                         |
 
 The shared-foundation checks also apply when Stage 2 reuses or changes those paths;
 Stage 2-specific evidence is not a release gate for Stage 1.
