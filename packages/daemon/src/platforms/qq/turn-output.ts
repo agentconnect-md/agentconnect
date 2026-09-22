@@ -1,8 +1,7 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
-import { GithubReplyCollector } from '../../github/poster.js'
 import { flattenUnsafeLinks, referenceBufferStart } from '../../messages/agent-links.js'
 import { AgentMessageRun } from '../../messages/message-boundary.js'
-import { isNoResponsePrefix } from '../../session/no-response.js'
+import { isNoResponseBody, isNoResponsePrefix } from '../../session/no-response.js'
 import { QQPrivateStream } from './private-stream.js'
 import type { QQReplyPort } from './sender.js'
 import { QQGroupOutput } from './group-output.js'
@@ -43,9 +42,8 @@ export type QQAction = {
   recordOnly?: boolean
 }
 
-// ACP text is user-facing even without Codex phase metadata; completed blocks keep their visible prefix.
+// Stream public ACP message text; message IDs and activity events delimit blocks, never runtime metadata.
 export class QQConverger {
-  private collector = new GithubReplyCollector()
   private sourceText = ''
   private readonly messages = new AgentMessageRun()
   private readonly completed: string[] = []
@@ -61,10 +59,6 @@ export class QQConverger {
   onUpdate(update: SessionUpdate): QQAction[] {
     if (this.finalized) return []
     if (this.group) return this.group.onUpdate(update)
-    if (this.mode === 'none') {
-      this.collector.onUpdate(update)
-      return []
-    }
     if (QQTextBoundaries.has(update.sessionUpdate)) {
       this.completeBlock()
       return this.preview()
@@ -72,17 +66,20 @@ export class QQConverger {
     if (update.sessionUpdate !== 'agent_message_chunk' || update.content.type !== 'text') return []
     if (this.messages.opens(update)) this.completeBlock()
     this.sourceText += update.content.text
-    this.collector.onUpdate(update)
     return this.preview()
   }
+  private currentText(): string {
+    if (!this.sourceText.trim() || isNoResponseBody(this.sourceText.trim())) return ''
+    return flattenUnsafeLinks(this.sourceText, { resolveFileLink: this.resolveFileLink })
+  }
   private completeBlock(): void {
-    const text = this.collector.finalText(true, { resolveFileLink: this.resolveFileLink })
+    const text = this.currentText()
     if (text) this.completed.push(QQStreamText(text, true))
-    this.collector = new GithubReplyCollector()
     this.sourceText = ''
   }
   private preview(): QQAction[] {
-    const snapshot = this.collector.finalText(true, { resolveFileLink: this.resolveFileLink }) ?? ''
+    if (this.mode === 'none') return []
+    const snapshot = this.currentText()
     // Inspect raw references before rewriting; late definitions must not rewrite an already sent prefix.
     const hold = referenceBufferStart(this.sourceText)
     const safe =

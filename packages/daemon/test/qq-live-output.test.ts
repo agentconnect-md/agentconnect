@@ -100,9 +100,8 @@ async function bootQQ(hostFactory: QQHostFactory) {
 }
 
 describe('QQ live delivery with default daemon features', () => {
-  it('streams phase-less output before the prompt completes and closes with the full answer', async () => {
+  it('streams Codex commentary before tool completion and appends its final answer', async () => {
     const blocked = QQGate()
-    const prompt = vi.fn()
     const test = await bootQQ(
       (_agent, update) =>
         ({
@@ -111,29 +110,77 @@ describe('QQ live delivery with default daemon features', () => {
           cancel: async () => blocked.release(),
           newSession: async () => 'acp-1',
           prompt: async (sid: string) => {
-            prompt()
-            update(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'First part' } })
+            update(sid, {
+              ...QQUpdate('Checking now.'),
+              messageId: 'progress',
+              _meta: { codex: { phase: 'commentary' } }
+            })
+            update(sid, { sessionUpdate: 'tool_call', toolCallId: 'tool', title: 'Private tool title' })
             await blocked.promise
-            update(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ' and the ending.' } })
+            update(sid, { ...QQUpdate('Result.'), messageId: 'answer' })
             return { stopReason: 'end_turn' }
           }
         }) as any
     )
-    const turn = test.dispatch('m1', 'reply in several parts')
-    await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce(), WAIT)
+    const turn = test.dispatch('m1', 'check and report')
     await vi.waitFor(
-      () => expect(test.frames()).toEqual([expect.objectContaining({ content_raw: 'First part', input_state: 1 })]),
+      () => expect(test.frames()).toEqual([expect.objectContaining({ content_raw: 'Checking now.', input_state: 1 })]),
       WAIT
     )
     blocked.release()
     await expect(turn).resolves.toBe('acp-1')
     expect(test.frames().map(({ content_raw, input_state }) => [content_raw, input_state])).toEqual([
-      ['First part', 1],
-      ['First part and the ending.', 10]
+      ['Checking now.', 1],
+      ['Checking now.\n\nResult.', 10]
     ])
     expect(test.request).toHaveBeenCalledTimes(2)
-    expect(prompt).toHaveBeenCalledOnce()
   })
+
+  it.each([undefined, 'final_answer'])(
+    'streams output before the prompt completes and closes with the full answer (phase: %s)',
+    async (phase) => {
+      const blocked = QQGate()
+      const prompt = vi.fn()
+      const test = await bootQQ(
+        (_agent, update) =>
+          ({
+            start: async () => {},
+            stop: async () => {},
+            cancel: async () => blocked.release(),
+            newSession: async () => 'acp-1',
+            prompt: async (sid: string) => {
+              prompt()
+              update(sid, {
+                sessionUpdate: 'agent_message_chunk',
+                content: { type: 'text', text: 'First part' },
+                ...(phase ? { messageId: 'answer', _meta: { codex: { phase } } } : {})
+              })
+              await blocked.promise
+              update(sid, {
+                sessionUpdate: 'agent_message_chunk',
+                content: { type: 'text', text: ' and the ending.' },
+                ...(phase ? { messageId: 'answer', _meta: { codex: { phase } } } : {})
+              })
+              return { stopReason: 'end_turn' }
+            }
+          }) as any
+      )
+      const turn = test.dispatch('m1', 'reply in several parts')
+      await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce(), WAIT)
+      await vi.waitFor(
+        () => expect(test.frames()).toEqual([expect.objectContaining({ content_raw: 'First part', input_state: 1 })]),
+        WAIT
+      )
+      blocked.release()
+      await expect(turn).resolves.toBe('acp-1')
+      expect(test.frames().map(({ content_raw, input_state }) => [content_raw, input_state])).toEqual([
+        ['First part', 1],
+        ['First part and the ending.', 10]
+      ])
+      expect(test.request).toHaveBeenCalledTimes(2)
+      expect(prompt).toHaveBeenCalledOnce()
+    }
+  )
 
   it('refreshes and absorbs a clarification that arrives before the first prompt', async () => {
     const ready = QQGate()
