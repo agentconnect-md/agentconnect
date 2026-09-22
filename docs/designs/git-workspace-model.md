@@ -357,7 +357,10 @@ time on shared filesystems.
   every local ref counts, not only HEAD, because the directory is the object
   store and a side branch or a stash is work the checked-out branch cannot speak
   for — and then removes the directory; there is no worktree registry to prune
-  and no branch to delete in the primary.
+  and no branch to delete in the primary. A clone that holds no file at all —
+  only the empty `.git`, `.agents` and `.codex` mountpoints a runtime's sandbox
+  leaves where it protected a clone that is not there — is no work to judge, and
+  goes with the directory (#2246).
 - **Console push and Git reads** resolve the session root as today.
 - **Sandbox grants** are per session and exact: the clone's `.git` writable,
   its `hooks` and `config` read-only, for both the outer sandbox and a runtime's

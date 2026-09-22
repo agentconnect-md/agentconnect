@@ -74,6 +74,7 @@ import {
   confinedSessionDirIn,
   hasSessionsDirIn,
   hasSessionWorktreeIn,
+  holdsNoFiles,
   isRealDir,
   sessionClonesUnder,
   sessionDirIn,
@@ -1447,6 +1448,8 @@ export class WorkspaceManager {
           if (!(await fs.rmdir(clone.path))) return { outcome: 'retained', reason: 'dirty' }
           continue
         }
+        // A sandbox leaves empty mountpoints (`.git`, `.agents`, `.codex`) where it protected a clone that is not there: no file, no work (#2246).
+        if (await holdsNoFiles(fs, clone.path)) continue
         const git = this.runnerFor(agent.id, clone.path).withEnv(workspaceGitLocalEnv())
         // Fetched review refs mark the clone as a daemon-owned review snapshot, reset on every delivery.
         let snapshot: boolean | undefined
