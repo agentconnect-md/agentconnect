@@ -327,9 +327,6 @@ function ProviderKeysForOrg({ orgId, isOwner }: { orgId: string; isOwner: boolea
           ))}
         </div>
       )}
-      <p className="border-t border-(--border-subtle) px-4 py-3 text-[12px] text-(--text-tertiary)">
-        {t('statusNote')}
-      </p>
       {deleting && (
         <ConfirmationDialog
           title={t('deleteTitle', { provider: deleting.name })}

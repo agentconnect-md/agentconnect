@@ -4184,7 +4184,6 @@
     "apiKey": "API key",
     "replacementKey": "New API key",
     "writeOnly": "The saved key is never shown again. Leave it blank to keep it when editing other settings.",
-    "statusNote": "Configured means a key is saved. Saving does not validate it with the provider or run an evaluation.",
     "save": "Save",
     "saving": "Saving…",
     "cancel": "Cancel",
