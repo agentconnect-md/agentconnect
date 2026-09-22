@@ -831,6 +831,13 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                           <Icon name="book-open" size={15} color="var(--text-tertiary)" />
                           {t('help.documentation')}
                         </a>
+                        {/* No identity means no account menu, so a no-auth console keeps
+                            its language control here — the one menu both modes share. */}
+                        {!authOn && (
+                          <div className="px-3 py-2">
+                            <LanguageSwitcher className="w-full justify-between" />
+                          </div>
+                        )}
                         <div className="dmsep" />
                         <button
                           className="dmi"
@@ -1247,6 +1254,11 @@ function MobileSheets({
                 <span>{navLabel(r.href, r.label)}</span>
               </Link>
             ))}
+            {/* The rail (and so the account menu that carries this on desktop) is hidden
+                at mobile widths, so the sheet is the phone/tablet language path. */}
+            <div className="px-3 py-2">
+              <LanguageSwitcher className="w-full justify-between" />
+            </div>
             {/* The rail (and both of its re-entry menus) is hidden at mobile widths, so
                 this is the phone/tablet way back to a skipped checklist — both auth modes.
                 Owner-only, like the checklist itself. */}
