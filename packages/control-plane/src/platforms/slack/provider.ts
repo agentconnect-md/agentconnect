@@ -517,8 +517,12 @@ export function createSlackCpProvider(deps: SlackCpProviderDeps): CpPlatformProv
       httpAssignRequires: ['signingSecret']
     },
 
-    // Socket Mode delivers `app_uninstalled` / `tokens_revoked` to the daemon, which reports them as `integration/revoked`.
-    socketLifecycleRevocation: true,
+    // Socket Mode delivers `app_uninstalled` / `tokens_revoked` to the daemon; its report counts only for the bot user and workspace `auth.test` stored for this bot.
+    socketLifecycleRevocation: (bot, reported) =>
+      !!bot.botUserId &&
+      !!bot.workspaceId &&
+      bot.botUserId === reported.botUserId &&
+      bot.workspaceId === reported.workspaceId,
 
     // The two pending-install funnels (§9): the config-token quick install
     // (`SlackInstall` — holds a client secret + bot token mid-funnel) and the

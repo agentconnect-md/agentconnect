@@ -55,10 +55,16 @@ describe('IntegrationCoreEnvelope sessionModes', () => {
   })
 })
 
-// A daemon socket's explicit lifecycle report: the integration ids it serves, the reason, and the event time as its only fence.
+// A daemon socket's explicit lifecycle report: the integration ids it serves, the reason, the event time as its only fence, and the socket's own identity.
 describe('IntegrationRevoked', () => {
   const INTEGRATION = '0f0e0d0c-0b0a-4908-8706-050403020100'
-  const report = { integrationIds: [INTEGRATION], reason: 'app_uninstalled', eventAtMs: 1_780_000_000_000 }
+  const report = {
+    integrationIds: [INTEGRATION],
+    reason: 'app_uninstalled',
+    eventAtMs: 1_780_000_000_000,
+    botUserId: 'U0FIXTURE',
+    workspaceId: 'T0FIXTURE'
+  }
 
   it('round-trips a report and its verdict through the frame codec', () => {
     const decoded = decodeEnvelope(encode(buildEnvelope('integration/revoked', report, { orgId: 'org-a' })))
@@ -80,6 +86,15 @@ describe('IntegrationRevoked', () => {
     expect(IntegrationRevoked.safeParse({ ...report, integrationIds: ['bot-1'] }).success).toBe(false)
     expect(IntegrationRevoked.safeParse({ ...report, reason: 'invalid_auth' }).success).toBe(false)
     expect(IntegrationRevokedOk.safeParse({}).success).toBe(false)
+  })
+
+  it("refuses a report that does not name the socket's own bot user and workspace", () => {
+    const { botUserId: _botUserId, ...noBot } = report
+    const { workspaceId: _workspaceId, ...noWorkspace } = report
+    expect(IntegrationRevoked.safeParse(noBot).success).toBe(false)
+    expect(IntegrationRevoked.safeParse(noWorkspace).success).toBe(false)
+    expect(IntegrationRevoked.safeParse({ ...report, botUserId: '' }).success).toBe(false)
+    expect(IntegrationRevoked.safeParse({ ...report, workspaceId: '' }).success).toBe(false)
   })
 
   it('is org-scoped on the wire, so an install-wide connection must name the org', () => {

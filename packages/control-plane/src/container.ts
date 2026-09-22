@@ -2229,7 +2229,7 @@ export function buildContainer(
     bot: repos.bot,
     // A daemon socket's lifecycle report takes the same fenced revocation as the relay's, minus a relay release it never had.
     socketBotRevocation: {
-      accepts: (platform) => platforms.get(platform)?.socketLifecycleRevocation === true,
+      matches: (bot, reported) => platforms.get(bot.platform)?.socketLifecycleRevocation?.(bot, reported) === true,
       revoke: (botId, reason, eventAtMs) => httpBot.revokeBot(botId, reason, { eventAtMs })
     },
     githubInstallation: repos.githubInstallation,

@@ -79,10 +79,18 @@ async function openSocket(
   } as unknown as ConnectionReconcilerHost)
   await reconciler.openInitialSlackConnections([agent])
   const bindLate = () => bound.set(LATE_CP_INTEGRATION, reconciler.slackPool.all()[0])
-  return { reconciler, clock, fire, bound, bindLate }
+  // The integration is re-keyed onto another socket, as when its credential moves to another app.
+  const moveAway = () => bound.set(CP_INTEGRATION, { anotherSocket: true })
+  return { reconciler, clock, fire, bound, bindLate, moveAway }
 }
 
-const uninstalled = { integrationIds: [CP_INTEGRATION], reason: 'app_uninstalled', eventAtMs: EVENT_TIME * 1000 }
+const self = { botUserId: 'UBOT', workspaceId: 'T1' }
+const uninstalled = {
+  integrationIds: [CP_INTEGRATION],
+  reason: 'app_uninstalled',
+  eventAtMs: EVENT_TIME * 1000,
+  ...self
+}
 
 describe('socket credential revocation → integration/revoked', () => {
   it('reports an uninstall for the CP-owned integrations the socket serves, never a hand-authored one', async () => {
@@ -106,13 +114,22 @@ describe('socket credential revocation → integration/revoked', () => {
     await vi.waitFor(() => expect(sent).toEqual([uninstalled]))
   })
 
-  it('also reports a CP-owned integration bound onto the open socket later', async () => {
+  it('reports only live bindings once the socket is bound, never its opening roster', async () => {
     const { cp, sent } = fakeCp()
-    const { fire, bindLate } = await openSocket(cp)
+    const { fire, bindLate, moveAway } = await openSocket(cp)
     bindLate()
+    moveAway()
     await fire('app_uninstalled', { type: 'app_uninstalled' })
-    await vi.waitFor(() => expect(sent).toHaveLength(1))
-    expect([...sent[0]!.integrationIds].sort()).toEqual([CP_INTEGRATION, LATE_CP_INTEGRATION].sort())
+    await vi.waitFor(() => expect(sent).toEqual([{ ...uninstalled, integrationIds: [LATE_CP_INTEGRATION] }]))
+  })
+
+  it('does not report an integration re-keyed to another socket after the bind', async () => {
+    const { cp } = fakeCp()
+    const { fire, moveAway } = await openSocket(cp)
+    moveAway()
+    await fire('app_uninstalled', { type: 'app_uninstalled' })
+    await new Promise((r) => setImmediate(r))
+    expect(cp.reportIntegrationRevoked).not.toHaveBeenCalled()
   })
 
   it('ignores a user-token-only revocation and reports one that names the bot token', async () => {
@@ -165,18 +182,18 @@ describe('CredentialRevocationReporter', () => {
     const { cp, sent } = fakeCp()
     cp.up = false
     const r = reporter(cp)
-    r.report([CP_INTEGRATION], { reason: 'tokens_revoked', eventAtMs: 2_000 })
-    r.report([CP_INTEGRATION], { reason: 'app_uninstalled', eventAtMs: 1_000 })
+    r.report([CP_INTEGRATION], { reason: 'tokens_revoked', eventAtMs: 2_000, ...self })
+    r.report([CP_INTEGRATION], { reason: 'app_uninstalled', eventAtMs: 1_000, ...self })
     cp.up = true
     await r.replay()
-    expect(sent).toEqual([{ integrationIds: [CP_INTEGRATION], reason: 'tokens_revoked', eventAtMs: 2_000 }])
+    expect(sent).toEqual([{ integrationIds: [CP_INTEGRATION], reason: 'tokens_revoked', eventAtMs: 2_000, ...self }])
   })
 
   it('drops a report the CP refuses outright instead of retrying it forever', async () => {
     const { cp, sent } = fakeCp()
     cp.answers.push(() => Promise.reject(new WireError('SCOPE_DENIED', 'organization is required', false)))
     const r = reporter(cp)
-    r.report([CP_INTEGRATION], { reason: 'app_uninstalled', eventAtMs: 1_000 })
+    r.report([CP_INTEGRATION], { reason: 'app_uninstalled', eventAtMs: 1_000, ...self })
     await vi.waitFor(() => expect(sent).toHaveLength(1))
     await r.replay()
     expect(sent).toHaveLength(1)

@@ -27,6 +27,7 @@ import type {
   GithubInstallationRepo,
   DaemonLifecycleOpRepo,
   AgentRecord,
+  BotRecord,
   AgentMemoryHistoryRepo,
   ProviderKeyStore
 } from '../persistence/ports.js'
@@ -61,8 +62,8 @@ import type { SessionPullRequestFeedbackService } from '../github/session-pull-r
 
 /** The two CP facts an `integration/revoked` report needs beyond the repositories. */
 export interface SocketBotRevocation {
-  /** The platform provider's declaration that its daemon socket delivers explicit lifecycle events. */
-  accepts(platform: string): boolean
+  /** The platform provider's verdict that the reporting socket's identity is this bot's current one. */
+  matches(bot: BotRecord, reported: Pick<IntegrationRevoked, 'botUserId' | 'workspaceId'>): boolean
   /** The fenced revocation `rc/bot-revoked` applies, fenced here by the event time alone. */
   revoke(botId: BotId, reason: IntegrationRevoked['reason'], eventAtMs: number): Promise<{ applied: boolean }>
 }

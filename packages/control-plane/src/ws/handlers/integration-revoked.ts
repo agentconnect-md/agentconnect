@@ -1,5 +1,5 @@
 // `integration/revoked`: a daemon-held socket saw the platform revoke its bot — the daemon twin of the relay's `rc/bot-revoked`.
-import { isFrame } from '@agentconnect.md/protocol'
+import { isFrame, type IntegrationRevoked } from '@agentconnect.md/protocol'
 import { DaemonId, IntegrationId, type BotId, type OrgId } from '../../domain/ids.js'
 import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import type { BotRecord } from '../../persistence/ports.js'
@@ -12,6 +12,7 @@ async function reportableBot(
   orgId: OrgId,
   integrationId: string,
   reporter: DaemonId,
+  reported: Pick<IntegrationRevoked, 'botUserId' | 'workspaceId'>,
   deps: DaemonWsDeps
 ): Promise<{ bot: BotRecord } | { refused: string }> {
   const integration = await deps.integration.get(orgId, IntegrationId(integrationId))
@@ -21,9 +22,9 @@ async function reportableBot(
     return { refused: 'integration is not served by this daemon' }
   }
   const bot = await deps.bot?.get(orgId, integration.botId)
-  if (!bot || bot.transport !== 'socket' || !deps.socketBotRevocation?.accepts(bot.platform)) {
-    return { refused: 'bot is not a daemon-socket bot of this platform' }
-  }
+  if (!bot || bot.transport !== 'socket') return { refused: 'bot is not a daemon-socket bot' }
+  // The integration may have moved to another bot since the socket opened; only its current bot's own socket speaks for it.
+  if (!deps.socketBotRevocation?.matches(bot, reported)) return { refused: 'reporting socket is not the current bot' }
   return { bot }
 }
 
@@ -41,7 +42,7 @@ export const handleIntegrationRevoked: Handler = async (frame, conn, deps) => {
   try {
     const bots = new Map<BotId, BotRecord>()
     for (const integrationId of new Set(p.integrationIds)) {
-      const verdict = await reportableBot(orgId, integrationId, reporter, deps)
+      const verdict = await reportableBot(orgId, integrationId, reporter, p, deps)
       if ('bot' in verdict) bots.set(verdict.bot.id, verdict.bot)
       else deps.log.warn?.({ integrationId, daemonId: reporter, why: verdict.refused }, 'integration/revoked: refused')
     }

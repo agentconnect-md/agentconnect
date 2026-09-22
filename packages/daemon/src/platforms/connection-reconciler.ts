@@ -260,11 +260,22 @@ export class ConnectionReconciler {
     ]
   }
 
-  /** The CP-owned integrations a socket speaks for: its bindings, plus the roster it opened with, since bindings land only after start() resolves. */
+  // One-way latch: a socket whose integrations were bound speaks only for its live bindings from then on.
+  private readonly publishedSockets = new WeakSet<SlackConnection>()
+
+  /** Bind a started socket's integrations, pool it, and latch it onto its live bindings. */
+  private publishSlackSocket(conn: SlackConnection, integrations: ConsolidatedGroup['integrations']): void {
+    for (const { integrationId } of integrations) this.host.bindSlack(integrationId, conn, conn.botUserId)
+    this.slackPool.add(conn)
+    this.publishedSockets.add(conn)
+  }
+
+  /** The CP-owned integrations a socket speaks for: the roster it opens with until it is bound, then only its live bindings, so a moved integration is never reported from its old socket. */
   private revocableIntegrations(conn: SlackConnection, group: ConsolidatedGroup): string[] {
-    const ids = new Set([...this.host.srcIntegrationIds(conn), ...group.integrations.map((i) => i.integrationId)])
-    // Only a CP-owned integration has a bot the CP can revoke; the CP refuses one this daemon no longer serves.
-    return [...ids].filter((id) => this.host.integrationConfigById(id)?.origin === 'cp')
+    const ids = this.publishedSockets.has(conn)
+      ? this.host.srcIntegrationIds(conn)
+      : group.integrations.map((i) => i.integrationId)
+    return ids.filter((id) => this.host.integrationConfigById(id)?.origin === 'cp')
   }
 
   /** The deps every Slack SOCKET shares; `conn` is a thunk so each callback reads the connection it was built for, and `group` is the roster it opens with. */
@@ -311,8 +322,7 @@ export class ConnectionReconciler {
       try {
         await conn.start()
         this.log.info(`slack: socket connected as bot user ${conn.botUserId}`)
-        for (const { integrationId } of group.integrations) this.host.bindSlack(integrationId, conn, conn.botUserId)
-        this.slackPool.add(conn)
+        this.publishSlackSocket(conn, group.integrations)
         // Initial membership snapshot (fire-and-forget; cached + emitted when CP is up).
         void this.host.refreshChannels(conn)
       } catch (err) {
@@ -536,8 +546,7 @@ export class ConnectionReconciler {
         )
         await conn.start()
         this.log.info(`slack: runtime socket connected as bot user ${conn.botUserId}`)
-        for (const { integrationId } of group.integrations) this.host.bindSlack(integrationId, conn, conn.botUserId)
-        this.slackPool.add(conn)
+        this.publishSlackSocket(conn, group.integrations)
         void this.host.refreshChannels(conn)
         // This reconcile just brought the socket up; cancel any pending startup-retry
         // timer for the same appToken so it doesn't fire and open a duplicate socket.
@@ -1203,9 +1212,7 @@ export class ConnectionReconciler {
       }
       this.log.info(`slack: background retry succeeded — connected as bot user ${conn.botUserId}`)
       this.slackRetryTimers.delete(group.appToken)
-      for (const { integrationId } of currentGroup.integrations)
-        this.host.bindSlack(integrationId, conn, conn.botUserId)
-      this.slackPool.add(conn)
+      this.publishSlackSocket(conn, currentGroup.integrations)
       void this.host.refreshChannels(conn)
     } catch (err) {
       // Release the half-open connection before discarding it so a failure during

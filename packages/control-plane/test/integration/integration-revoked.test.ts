@@ -9,6 +9,7 @@ import { PgAgentRepo, PgBotRepo, PgIntegrationRepo } from '../../src/persistence
 import { handleIntegrationRevoked } from '../../src/ws/handlers/index.js'
 import type { DaemonConnection } from '../../src/ws/connection.js'
 import type { DaemonWsDeps } from '../../src/ws/deps.js'
+import type { BotRecord } from '../../src/persistence/ports.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
@@ -16,6 +17,8 @@ const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const OTHER_DAEMON = 'd2d2d2d2-dddd-4ddd-8ddd-dddddddddddd'
 const SLACK = { botToken: 'xoxb-fixture-123', appToken: 'xapp-1-fixture-456' }
+// The identity `auth.test` stored for the bot at install, which the reporting socket must name.
+const IDENTITY = { botUserId: 'U0FIXTURE', workspaceId: 'T0FIXTURE' }
 
 let running: HttpApp | undefined
 
@@ -51,14 +54,21 @@ async function install(): Promise<{ app: HttpApp; spy: SpyControl; integrationId
   expect(res.statusCode).toBe(201)
   const integrationId = (res.json() as { id: string }).id
   const { botId } = await prisma.integration.findUniqueOrThrow({ where: { id: integrationId } })
-  expect((await prisma.bot.findUniqueOrThrow({ where: { id: botId } })).transport).toBe('socket')
+  const bot = await prisma.bot.update({ where: { id: botId }, data: IDENTITY })
+  expect(bot.transport).toBe('socket')
   return { app, spy, integrationId, botId }
 }
 
 /** Dispatch one `integration/revoked` REQ through the real handler, as `daemonId` of `orgId`. */
 async function report(
   app: HttpApp,
-  opts: { daemonId?: string; orgId?: string; integrationIds: string[]; eventAtMs: number }
+  opts: {
+    daemonId?: string
+    orgId?: string
+    integrationIds: string[]
+    eventAtMs: number
+    identity?: { botUserId: string; workspaceId: string }
+  }
 ): Promise<{ replies: unknown[]; errors: unknown[]; refusals: unknown[] }> {
   const replies: unknown[] = []
   const errors: unknown[] = []
@@ -68,7 +78,12 @@ async function report(
     id: randomUUID(),
     ts: new Date().toISOString(),
     type: 'integration/revoked',
-    payload: { integrationIds: opts.integrationIds, reason: 'app_uninstalled', eventAtMs: opts.eventAtMs }
+    payload: {
+      integrationIds: opts.integrationIds,
+      reason: 'app_uninstalled',
+      eventAtMs: opts.eventAtMs,
+      ...(opts.identity ?? IDENTITY)
+    }
   } as AnyFrame
   const conn = {
     daemonId: opts.daemonId ?? DAEMON,
@@ -83,7 +98,8 @@ async function report(
     agent: new PgAgentRepo(prisma),
     bot: new PgBotRepo(prisma),
     socketBotRevocation: {
-      accepts: (platform: string) => app.deps.platforms.get(platform)?.socketLifecycleRevocation === true,
+      matches: (bot: BotRecord, reported: { botUserId: string; workspaceId: string }) =>
+        app.deps.platforms.get(bot.platform)?.socketLifecycleRevocation?.(bot, reported) === true,
       revoke: (botId: string, reason: 'app_uninstalled' | 'tokens_revoked', eventAtMs: number) =>
         app.deps.httpBot.revokeBot(botId, reason, { eventAtMs })
     }
@@ -160,6 +176,36 @@ describe('integration/revoked → socket bot revocation', () => {
     const { replies } = await report(app, { integrationIds: [integrationId], eventAtMs: Date.now() + 1_000 })
 
     expect(replies).toEqual([{ type: 'integration/revoked/ok', payload: { applied: false } }])
+    expect(await state(integrationId, botId)).toEqual({ integration: 'active', revokedAt: null })
+  })
+
+  it("refuses a socket whose bot user or workspace is not the integration's current bot", async () => {
+    const { app, spy, integrationId, botId } = await install()
+
+    // A socket the integration was re-keyed away from still names the old bot user; one of another workspace names that.
+    for (const identity of [
+      { ...IDENTITY, botUserId: 'U0PREVIOUS' },
+      { ...IDENTITY, workspaceId: 'T0ELSEWHERE' }
+    ]) {
+      const { replies } = await report(app, {
+        integrationIds: [integrationId],
+        eventAtMs: Date.now() + 1_000,
+        identity
+      })
+      expect(replies).toEqual([{ type: 'integration/revoked/ok', payload: { applied: false } }])
+    }
+    expect(await state(integrationId, botId)).toEqual({ integration: 'active', revokedAt: null })
+    expect(spy.removals).toEqual([])
+  })
+
+  it('refuses every report while the stored bot has no bot user or workspace to match', async () => {
+    const { app, integrationId, botId } = await install()
+
+    for (const missing of [{ botUserId: null }, { workspaceId: null }]) {
+      await prisma.bot.update({ where: { id: botId }, data: { ...IDENTITY, ...missing } })
+      const { replies } = await report(app, { integrationIds: [integrationId], eventAtMs: Date.now() + 1_000 })
+      expect(replies).toEqual([{ type: 'integration/revoked/ok', payload: { applied: false } }])
+    }
     expect(await state(integrationId, botId)).toEqual({ integration: 'active', revokedAt: null })
   })
 

@@ -1851,11 +1851,13 @@ describe('SlackConnection credential lifecycle', () => {
   }
   const uninstall = { type: 'app_uninstalled' }
   const botRevoked = (...bot: string[]) => ({ type: 'tokens_revoked', tokens: { oauth: ['U2'], bot } })
+  // The report names the socket's own identity, which the CP matches against the integration's current bot.
+  const self = { eventAtMs: EVENT_TIME * 1000, botUserId: 'UBOT', workspaceId: 'T1' }
 
   it('reports an uninstall of this workspace with the envelope time as the fence', async () => {
     const { revoked, fire } = await started()
     await fire('app_uninstalled', uninstall)
-    expect(revoked).toEqual([{ reason: 'app_uninstalled', eventAtMs: EVENT_TIME * 1000 }])
+    expect(revoked).toEqual([{ reason: 'app_uninstalled', ...self }])
   })
 
   it('reports a token revocation only when it names this bot user', async () => {
@@ -1865,7 +1867,7 @@ describe('SlackConnection credential lifecycle', () => {
     await fire('tokens_revoked', botRevoked('UOTHERBOT'))
     expect(revoked).toEqual([])
     await fire('tokens_revoked', botRevoked('UOTHERBOT', 'UBOT'))
-    expect(revoked).toEqual([{ reason: 'tokens_revoked', eventAtMs: EVENT_TIME * 1000 }])
+    expect(revoked).toEqual([{ reason: 'tokens_revoked', ...self }])
   })
 
   it('ignores an event from another workspace, from no named workspace, or without an event time', async () => {
@@ -1884,8 +1886,9 @@ describe('SlackConnection credential lifecycle', () => {
     expect(revoked).toEqual([])
   })
 
-  it('ignores a token revocation while its own bot user is unknown', async () => {
+  it('ignores every event while its own bot user is unknown', async () => {
     const { revoked, fire } = await started({ team_id: 'T1' })
+    await fire('app_uninstalled', uninstall)
     await fire('tokens_revoked', botRevoked('UBOT'))
     expect(revoked).toEqual([])
   })

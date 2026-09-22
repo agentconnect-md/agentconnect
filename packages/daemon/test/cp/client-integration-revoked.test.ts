@@ -8,7 +8,13 @@ import { FakeClock } from './fake-clock.js'
 const DAEMON_ID = '22222222-2222-4222-8222-222222222222'
 const INTEGRATION = '0f0e0d0c-0b0a-4908-8706-050403020100'
 const ORG = 'org-a'
-const REPORT = { integrationIds: [INTEGRATION], reason: 'app_uninstalled' as const, eventAtMs: 1_780_000_000_000 }
+const REPORT = {
+  integrationIds: [INTEGRATION],
+  reason: 'app_uninstalled' as const,
+  eventAtMs: 1_780_000_000_000,
+  botUserId: 'U0FIXTURE',
+  workspaceId: 'T0FIXTURE'
+}
 
 const tick = () => new Promise((r) => setImmediate(r))
 

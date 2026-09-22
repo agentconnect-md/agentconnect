@@ -80,7 +80,7 @@
  */
 import type { FastifyPluginAsync } from 'fastify'
 import type { ZodRawShape, ZodType } from 'zod'
-import type { IntegrationCoreEnvelope } from '@agentconnect.md/protocol'
+import type { IntegrationCoreEnvelope, IntegrationRevoked } from '@agentconnect.md/protocol'
 import type {
   BotIdentityColumns,
   BotRecord,
@@ -515,8 +515,8 @@ export interface CpPlatformProvider<TCredentials = unknown> {
   /** Normalize the provider realm used to fence bot-agnostic SessionMeta thread fallback. */
   threadFallbackRealm?(bot: BotRecord): string | null
 
-  /** Whether a daemon-held socket here delivers explicit credential-lifecycle events, so the serving daemon's `integration/revoked` may revoke a socket bot; absent ⇒ refused. */
-  socketLifecycleRevocation?: boolean
+  /** Whether a daemon socket's `integration/revoked` is about this bot's CURRENT credential: the socket identity it reports must match the stored one; absent ⇒ every report refused. */
+  socketLifecycleRevocation?(bot: BotRecord, reported: Pick<IntegrationRevoked, 'botUserId' | 'workspaceId'>): boolean
 
   /** Pending-install funnel state models + their TTL reapers. Absent ⇒ the
    *  platform has no funnel (Telegram/Discord). */

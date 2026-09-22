@@ -416,7 +416,10 @@ export const IntegrationRevoked = z.object({
   // Explicit platform lifecycle events only (`app_uninstalled`, or `tokens_revoked` naming a bot token), never an API error.
   reason: z.enum(['app_uninstalled', 'tokens_revoked']),
   // The platform's own event time in ms — the daemon's only fence, since no credential revision reaches it.
-  eventAtMs: z.number().int().nonnegative()
+  eventAtMs: z.number().int().nonnegative(),
+  // The socket's own identity as the platform reported it; the CP revokes only a bot whose stored identity matches.
+  botUserId: z.string().min(1).max(128),
+  workspaceId: z.string().min(1).max(128)
 })
 export type IntegrationRevoked = z.infer<typeof IntegrationRevoked>
 

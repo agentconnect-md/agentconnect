@@ -3,8 +3,8 @@ import { WireError, type Clock, type TimerHandle } from '@agentconnect.md/connec
 import type { IntegrationRevoked, IntegrationRevokedOk } from '@agentconnect.md/protocol'
 import type { Logger } from '../log.js'
 
-/** One explicit revocation a connection observed: why, and when the platform says it happened. */
-export type CredentialRevocation = Pick<IntegrationRevoked, 'reason' | 'eventAtMs'>
+/** One explicit revocation a connection observed: why, when the platform says it happened, and the connection's own identity. */
+export type CredentialRevocation = Pick<IntegrationRevoked, 'reason' | 'eventAtMs' | 'botUserId' | 'workspaceId'>
 
 /** The slice of the CP client the reporter drives. */
 export interface RevocationReportSink {
