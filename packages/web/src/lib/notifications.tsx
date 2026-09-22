@@ -4,9 +4,15 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import type { SessionAccessNotificationAction } from '@/lib/session-access-notifications'
 
 export type NotificationSeverity = 'info' | 'success' | 'warning' | 'error'
-export type NotificationCategory = 'daemon_lifecycle' | 'session_retention' | 'session_access' | 'approval'
-export type NotificationSourceScope = 'sessions-access' | 'usage-access' | 'approvals'
-const SOURCE_SCOPES: readonly NotificationSourceScope[] = ['sessions-access', 'usage-access', 'approvals']
+export type NotificationCategory =
+  'daemon_lifecycle' | 'session_retention' | 'session_access' | 'approval' | 'integration'
+export type NotificationSourceScope = 'sessions-access' | 'usage-access' | 'approvals' | 'integrations'
+const SOURCE_SCOPES: readonly NotificationSourceScope[] = [
+  'sessions-access',
+  'usage-access',
+  'approvals',
+  'integrations'
+]
 
 /** What a snapshot item becomes once its source vanishes; absent ⇒ it keeps its text and read state and only gains `resolvedAt`. */
 export interface NotificationResolution {
@@ -79,7 +85,7 @@ function browserStorage(storage?: NotificationStorage): NotificationStorage | un
 export function emptyNotificationState(): NotificationStoreState {
   return {
     notifications: [],
-    activeSources: { 'sessions-access': [], 'usage-access': [], approvals: [] }
+    activeSources: { 'sessions-access': [], 'usage-access': [], approvals: [], integrations: [] }
   }
 }
 

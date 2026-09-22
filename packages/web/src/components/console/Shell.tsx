@@ -43,6 +43,7 @@ import { NotificationBell, NotificationToastContainer } from './NotificationCent
 import { useDaemonNotifier } from '@/lib/daemon-notifications'
 import { useSessionAccessNotifier } from '@/lib/session-access-notifier'
 import { useApprovalNotifier } from '@/lib/approval-notifier'
+import { useIntegrationNotifier } from '@/lib/integration-notifier'
 import { MOBILE_NAV, MORE_ROWS, NAV_GROUPS, NAV_LABEL_KEYS, SECTIONS, SHEET_LABEL_KEYS, navVisible } from './nav'
 
 // Top-level routes own the tab-bar + list app bar (no back button, bottom nav shown);
@@ -358,6 +359,8 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
     crons,
     allSessions,
     memberSets,
+    integrations,
+    integrationsLoaded,
     sessionAccessSnapshot,
     usageAccessSnapshot,
     pendingApprovalSessions
@@ -365,6 +368,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
   useDaemonNotifier(daemons)
   useSessionAccessNotifier({ sessionAccessSnapshot, usageAccessSnapshot, orgPath })
   useApprovalNotifier({ pendingApprovalSessions, agents, agentsLoading, orgPath })
+  useIntegrationNotifier({ integrations, integrationsLoaded, agents, agentsLoading, orgPath })
   // Mobile-only chrome state: which bottom sheet is open, and the full-screen search.
   const [mobileSheet, setMobileSheet] = useState<'more' | 'org' | null>(null)
   const [mobileSearch, setMobileSearch] = useState(false)

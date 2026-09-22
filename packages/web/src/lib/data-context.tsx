@@ -151,6 +151,8 @@ interface ConsoleData {
   revalidateSessionLists: () => Promise<unknown>
   crons: CronDto[]
   integrations: IntegrationRow[]
+  /** Whether the integration list has returned successfully at least once. */
+  integrationsLoaded: boolean
   /** Durable bot identities (freed + in-use) — Add-integration picker + Settings Bots card. */
   bots: BotDto[]
   /** Org MCP-provider registry (metadata + header names) — the MCP Servers admin view
@@ -863,7 +865,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     refreshInterval: RESOURCE_REFRESH_MS
   })
   const {
-    data: realIntegrations = [],
+    data: realIntegrations,
     error: integrationsError,
     isLoading: integrationsIsLoading,
     mutate: mutateIntegrations
@@ -1127,9 +1129,10 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const integrations = useMemo(() => {
     const byId = new Map(agents.map((a) => [a.id, a]))
     const botsById = new Map(bots.map((b) => [b.id, b]))
-    const live = realIntegrations.map((d) => integrationRowFromDto(d, byId, botsById))
+    const live = (realIntegrations ?? []).map((d) => integrationRowFromDto(d, byId, botsById))
     return MOCK_MODE ? [...live, ...INTEGRATIONS] : live
   }, [realIntegrations, agents, bots])
+  const integrationsLoaded = realIntegrations !== undefined
 
   const createAgent = useCallback(
     async (input: CreateAgentInput): Promise<string> => {
@@ -1707,6 +1710,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       revalidateSessionLists,
       crons,
       integrations,
+      integrationsLoaded,
       bots,
       mcpProviders,
       mcpProvidersLoading,
@@ -1793,6 +1797,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       revalidateSessionLists,
       crons,
       integrations,
+      integrationsLoaded,
       bots,
       mcpProviders,
       mcpProvidersLoading,
