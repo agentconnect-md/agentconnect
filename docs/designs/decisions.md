@@ -1,6 +1,6 @@
 # Decisions
 
-> Status: Proposed — design only; no runtime behavior is implemented by this document.
+> Status: Proposed — shared contracts and an opt-in mock service exist; live evaluation and routing remain unimplemented.
 > Scope: reusable typed judgments, initially using TypeSafe Jev.
 > Delivery: Stage 1 adds the Decision resource and fixed-target activation; Stage 2 adds shared-bot routing.
 > Primary implementation areas: protocol, control-plane, daemon, relay, and web.
@@ -10,6 +10,10 @@ persistence, delivery lifecycle, and Console flow. Section 10 maps that design t
 the existing code and implementation milestones. Section 11 records possible future
 uses without specifying their implementation. New names and defaults below are
 implementation proposals, not APIs that already exist.
+
+The [UI foundation guide](decision-ui-foundation.md) describes the implemented
+contracts, mock service, fixtures, and their limits. A mock supports both stages
+for design work; it does not advertise either runtime capability.
 
 ## 1. Purpose and delivery stages
 
@@ -21,10 +25,10 @@ target agent.
 
 The first two consumers are delivered separately:
 
-| Stage   | Scope                                                                                                                                                              | Completion boundary                                                                                               |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| Stage 1 | Decision/provider management, selected model, typed evaluation and preview, plus a fixed-target **By decision** activation gate with retained conversation context | A channel decides whether to activate its already-bound agent; no automatic target selection                      |
-| Stage 2 | Shared Bot → Configuration → Routing, answer-to-agent conditions, channel scope, routing previews, and selection/admission coordination                            | Choice can select multiple connected agents for a new conversation; established threads retain their participants |
+| Stage   | Scope                                                                                                                                                                              | Completion boundary                                                                                               |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Stage 1 | Decision management, daemon provider catalog, selected model, typed evaluation and preview, plus a fixed-target **By decision** activation gate with retained conversation context | A channel decides whether to activate its already-bound agent; no automatic target selection                      |
+| Stage 2 | Shared Bot → Configuration → Routing, answer-to-agent conditions, channel scope, routing previews, and selection/admission coordination                                            | Choice can select multiple connected agents for a new conversation; established threads retain their participants |
 
 Stage 1 can ship independently. Shared-bot schemas, APIs, UI, and runtime behavior
 below are the **Stage 2 design**, not Stage 1 release requirements. Completing a
@@ -71,14 +75,15 @@ and the independent [session mode](channel-session-mode.md).
 ## 2. Reusable judgment and its consumers
 
 A **Decision** is an organization-owned resource containing a name, provider
-reference, selected model, and one typed question. The provider owns connection
-credentials; each Decision selects a model and defines what its answer means.
+reference, selected model, and one typed question. The daemon resolves the provider
+connection and credentials; each Decision selects a model and defines what its answer means.
 A Decision contains neither `Trigger when` nor a target agent. Any supported
 consumer can reuse its typed answer; fixed-target gates and shared-bot routing are
 the initial integrations, not the resource's complete set of possible uses.
 
-Reuse the [resource visibility policy](resource-visibility.md). The Decision,
-provider, and consumer must belong to the same organization. Editing a reused
+Reuse the [resource visibility policy](resource-visibility.md). The Decision and
+consumer must belong to the same organization, and the execution daemon must expose
+the selected provider to that organization. Editing a reused
 question shows its visible consumers and affects future evaluations for all of them.
 Changing the model is an ordinary Decision edit, not a provider-wide setting.
 
@@ -92,7 +97,7 @@ For example, a moderator's Decision can be:
 ```json
 {
   "name": "Repeated violations",
-  "providerId": "00000000-0000-4000-8000-000000000001",
+  "providerId": "typesafe-byok",
   "model": "jev-1.13.0",
   "question": {
     "type": "boolean",
@@ -425,13 +430,24 @@ settles its place without blocking the conversation forever; §8 specifies the b
 Record the evaluated result with its delivery identity so transport retries and
 admission replay reuse a settled decision rather than creating another turn.
 
-Keep credentials in the existing encrypted secret infrastructure and distribute
-them only to authorized daemon-side consumers. Configuring a provider alone does
+Configure BYOK credentials in the daemon's environment or secret-backed host
+configuration. Cloud daemons can expose an AC-credits-backed provider through the
+authorized gateway. The daemon owns credential resolution and provider API egress;
+CP and Console receive only the non-secret provider/model catalog and readiness.
+Configuring a provider alone does
 not start observation or spending; binding a Decision explicitly enables evaluation
 of that conversation's eligible messages, including mentions and thread replies.
 A provider credential does not need to be injected into the agent runtime.
 Endpoint configuration can accommodate a gateway
 without changing Decision semantics.
+
+`providerId` is a logical catalog reference, resolved on the selected daemon, not a
+CP-owned credential resource. BYOK and AC credits are separate catalog options, so
+selection is explicit; neither silently falls back to the other. Moving execution
+to a daemon without that option reports Unsupported until configuration is repaired.
+Cloud entitlement, insufficient-credit handling during live evaluation, and
+evaluation-scoped metering still require the Cloud integration work. Their mock
+states do not implement authorization, charging, or provider connectivity.
 
 Record requested and actual model IDs, the evaluated rule snapshot, latency, usage,
 match/skip/failure, and a message reference on the daemon. Evaluation inputs, answers,
@@ -505,7 +521,7 @@ score range. The Decision itself has no condition field.
 | Choice condition           | Declared keys with finite minimum probabilities in `[0, 1]`; no key repeated across routing rules                         |
 | Boolean condition          | Unique Boolean values; no value repeated across routing rules                                                             |
 | Score criteria / condition | 2–10 ordered levels; finite bounds with `0 <= min < max <= N-1`, including decimals; no overlap between routing intervals |
-| Provider / model           | Visible same-organization provider and a supported model/question-type combination                                        |
+| Provider / model           | Authorized daemon catalog option and a supported model/question-type combination                                          |
 | Routing rules              | At most 32 ordered rules with unique row IDs; every action complete                                                       |
 | Routing target             | Usable member of this shared bot; membership and authorization rechecked at admission                                     |
 | Routing channels           | Supported group channels belonging to this bot, edited under their existing permissions                                   |
@@ -554,13 +570,12 @@ automatic model upgrade or separate model resource.
 
 ### 6.2 CP records and atomic changes
 
-| Record                         | Proposed fields / responsibility                                                                        |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------- |
-| `DecisionProvider`             | ID, organization, name, `kind: typesafe`, endpoint, normal ownership/visibility/timestamps              |
-| `DecisionProviderSecret`       | Encrypted API key behind the secret-store port; never returned by list/detail                           |
-| `Decision`                     | ID, organization, name, provider ID, model, question JSON, normal ownership/visibility/timestamps       |
-| `IntegrationChannel`           | Add `decision` trigger and nullable `decisionBinding` JSON                                              |
-| `BotDecisionRouting` (Stage 2) | Bot ID as unique owner, organization, enabled, Decision ID, ordered rules, Otherwise, normal timestamps |
+| Record                         | Proposed fields / responsibility                                                                                                                           |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Daemon provider catalog        | Non-secret logical provider ID, daemon ID, source (`byok` or `ac_credits`), supported models, readiness; reported metadata, not a credential CRUD resource |
+| `Decision`                     | ID, organization, name, logical provider ID, model, question JSON, normal ownership/visibility/timestamps                                                  |
+| `IntegrationChannel`           | Add `decision` trigger and nullable `decisionBinding` JSON                                                                                                 |
+| `BotDecisionRouting` (Stage 2) | Bot ID as unique owner, organization, enabled, Decision ID, ordered rules, Otherwise, normal timestamps                                                    |
 
 The binding invariant is `trigger == decision` exactly when `decisionBinding` is
 present. Off / Mention / Any clears that reference atomically. A shared-bot route
@@ -577,14 +592,15 @@ cannot have both a gate and a router; changing consumers replaces the whole bind
 Preserve existing thread affinity when any of these settings change.
 
 Require both bot configuration authority and permission to configure every affected
-channel, use the Decision/provider, and select each target. The binding is execution
+channel, use the Decision and daemon provider option, and select each target. The binding is execution
 delegation, not access to otherwise hidden definitions or keys. Revalidate revoked
 access and member removal; do not rely on the original editor remaining signed in.
 Usage summaries and target pickers must not disclose inaccessible resource names.
 
-Deleting a used Decision or provider returns `409` with a permission-filtered usage
-summary. Reuse `SecretCipher`; key updates are write-only and DTOs return only
-`credentialConfigured`. Credentials never enter the conversational runtime.
+Deleting a used Decision returns `409` with a permission-filtered usage summary.
+Removing a daemon provider option leaves affected consumers non-executable with
+actionable readiness. The Decision API has no provider secret-write endpoint;
+credentials never enter public DTOs or the conversational runtime.
 Evaluation usage is its own category rather than a fabricated ACP turn.
 
 ### 6.3 Management and preview API
@@ -596,10 +612,7 @@ consumer kind without restricting the reusable resource to gates and routers.
 
 | Method and route                                              | Input / result                                                                           |
 | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `GET /decision-providers`                                     | Visible connections, supported models, credential availability                           |
-| `POST /decision-providers`                                    | Name, kind, endpoint, optional write-only key                                            |
-| `PATCH /decision-providers/:id`                               | Editable connection fields and optional replacement key; kind fixed                      |
-| `DELETE /decision-providers/:id`                              | Refuse while referenced                                                                  |
+| `GET /daemons/:id/decision-providers`                         | Authorized daemon's non-secret catalog, BYOK/AC credits source, models, and readiness    |
 | `GET /decisions`                                              | Visible definitions, model/type, visible consumer counts                                 |
 | `GET /decisions/:id`                                          | Definition and visible consumer usages                                                   |
 | `POST /decisions`                                             | DecisionDraft                                                                            |
@@ -646,7 +659,7 @@ no platform actions. A disconnected daemon does not make CP call Jev itself.
 
 Extend `IntegrationSpec.core` with a complete Decision bundle.
 The bundle contains channel bindings, their resolved
-definitions, and the referenced provider configurations. Resolve it when projecting
+definitions, and their logical provider references. Resolve it when projecting
 the integration; do not fetch the definition from CP on each message.
 Stage 1 carries gates only; the optional `sharedBotRouting` projection is Stage 2.
 
@@ -660,29 +673,24 @@ type DecisionBundle = {
   }>
   sharedBotRouting?: { botId: string; config: SharedBotDecisionRouting }
   definitions: DecisionDefinition[]
-  providers: Array<{
-    id: string
-    kind: 'typesafe'
-    baseUrl: string
-    apiKey: string
-  }>
 }
 ```
 
-This is a secret-bearing daemon projection, never a public DTO or relay payload.
+This bundle carries configuration, not provider credentials. The evaluation daemon
+resolves the selected provider from its host configuration and advertises readiness.
 In Stage 2, only the designated evaluation host receives the shared-bot routing
-bundle and its provider credentials. Relay and target daemons receive only the
+bundle. Relay and target daemons receive only the
 routing metadata or bounded evidence needed for their role (§7.4); membership in
 the bot alone does not grant access to the provider key.
-Definitions/providers are deduplicated within the bundle. An empty bundle clears
+Definitions are deduplicated within the bundle. An empty bundle clears
 previous bindings; missing data must not resurrect an older definition. The daemon
 validates the complete bundle before replacing it and cancels pending work whose
 admission-relevant binding, definition, selected model, provider, or routing config
 changed. Invalidated consumers arrive explicitly disabled, so validation must not
 leave an older active rule in place after an accepted criteria change.
 Use the same projection for hot updates, reconnect snapshots, and agent moves.
-Decrypted credentials follow the existing integration-secret lifetime and logging
-rules and are never written into the agent's prompt or runtime environment.
+Daemon-resolved credentials follow host secret lifetime and logging rules and are
+never written into the agent's prompt or runtime environment.
 
 After definition, provider, or binding changes commit, the existing configuration
 convergence paths rebuild and push complete bundles to affected integrations. Reuse
@@ -1107,8 +1115,10 @@ has ordered levels labeled `0..N-1`. Trigger conditions and target agents belong
 in consumer editors.
 
 Model remains visible with one available choice: Jev 1.13 (`jev-1.13.0`). Provider
-settings manage the connection name, endpoint, and write-only key. Reuse the Console's
-normal resource editor, permissions, Create / Save / Delete, and audit timestamps.
+options come from the authorized daemon catalog, showing BYOK or AC credits and
+readiness. Endpoint/key configuration belongs to the daemon environment or host
+configuration; do not add a Decision-provider credential form. Reuse the Console's
+normal Decision editor, permissions, Create / Save / Delete, and audit timestamps.
 There is no version-publishing flow or agent runtime picker.
 
 An integration's fixed-target binding offers **By decision → Decision → Trigger when**,
@@ -1233,22 +1243,22 @@ Preview never activates an agent, writes retained history, or performs moderatio
 Normal state is **Ready**, without an error banner. Represent these states with
 specific messages and actions; a prototype-only state menu can demonstrate them.
 
-| State                      | Presentation / recovery                                                            |
-| -------------------------- | ---------------------------------------------------------------------------------- |
-| Empty / disabled           | Explain routing and offer configuration; paused rules remain editable              |
-| Loading / saving           | Preserve layout and draft; prevent duplicate submission                            |
-| No connected usable agents | Link to connect an agent; target-dependent Save remains invalid                    |
-| Missing credentials        | Link to the selected provider's credential settings                                |
-| Provider unavailable       | Explain the consumer's eligible continuation, offer Retry preview / Check provider |
-| Removed target             | Preserve its row as Target removed; require replacement or Do not activate         |
-| Temporary target outage    | Show Target unavailable; retain selection, offer Refresh; no reroute               |
-| Criteria/type change       | Needs review on affected consumers; link to invalid rows and the Decision          |
-| Missing required fields    | Row/field errors; Save disabled until valid                                        |
-| Save failed                | Keep draft and newly created Decision; Retry the same configuration                |
-| Pending sync               | Saved configuration remains visible; distinguish saved from applied                |
-| Read-only / denied         | Explain existing access limits; disabled editing, no hidden resource names         |
-| Unsupported daemon/relay   | Configuration cannot be activated; explain required support                        |
-| Details expired            | Preserve summary; do not reconstruct using newer definitions/history               |
+| State                      | Presentation / recovery                                                                     |
+| -------------------------- | ------------------------------------------------------------------------------------------- |
+| Empty / disabled           | Explain routing and offer configuration; paused rules remain editable                       |
+| Loading / saving           | Preserve layout and draft; prevent duplicate submission                                     |
+| No connected usable agents | Link to connect an agent; target-dependent Save remains invalid                             |
+| Missing credentials        | Identify the evaluation daemon and explain that its provider credentials need configuration |
+| Provider unavailable       | Explain the consumer's eligible continuation, offer Retry preview / Check provider          |
+| Removed target             | Preserve its row as Target removed; require replacement or Do not activate                  |
+| Temporary target outage    | Show Target unavailable; retain selection, offer Refresh; no reroute                        |
+| Criteria/type change       | Needs review on affected consumers; link to invalid rows and the Decision                   |
+| Missing required fields    | Row/field errors; Save disabled until valid                                                 |
+| Save failed                | Keep draft and newly created Decision; Retry the same configuration                         |
+| Pending sync               | Saved configuration remains visible; distinguish saved from applied                         |
+| Read-only / denied         | Explain existing access limits; disabled editing, no hidden resource names                  |
+| Unsupported daemon/relay   | Configuration cannot be activated; explain required support                                 |
+| Details expired            | Preserve summary; do not reconstruct using newer definitions/history                        |
 
 Changing a reused Decision shows visible affected bot/channel usages before saving.
 Invalidated conditions are preserved for repair and disabled operationally. The UI
@@ -1308,20 +1318,20 @@ one provider. Implement only the stage being delivered.
 | --------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | Shared contract       | `protocol/src/decision.ts`, typed question/result and gate binding, integration/relay frames, trigger capability | Bot routing schema, selection-result/handoff frames, routing capability               |
 | Pure routing          | Explicit Decision candidate in `activation-policy` and daemon routing, preserving bot-author policy              | Resolve explicit/thread constraints, then evaluate before target admission            |
-| CP persistence        | Decision/provider resources, encrypted secrets, gate references, consumer invalidation                           | `BotDecisionRouting`, atomic routing/scope saves and target authorization             |
+| CP persistence        | Decision resources, logical provider references, gate references, consumer invalidation                          | `BotDecisionRouting`, atomic routing/scope saves and target authorization             |
 | CP API/projection     | Decision/gate APIs and complete bundles through existing placement/integration convergence                       | Bot routing APIs and one evaluation-host assignment                                   |
 | Daemon ingress        | Direct/relay candidates use a gate before dispatch; existing session observation stays session-scoped            | Evaluate once before selecting and deduplicating targets                              |
 | Data-plane durability | Bounded observations, fixed-target receipts, ordered replay-safe admission in both store backends                | Durable bot selection plus per-target receipts and cross-daemon handoff               |
 | Relay                 | Activation candidates and observation-only destinations                                                          | Selected-target forwarding and root-admission/thread-affinity coordination            |
 | Prompt construction   | Missing background plus Decision evidence, deduplicated by stable message IDs                                    | Carry the same bounded evidence to the selected target                                |
-| Console               | Decision/provider management, binding conditions, answer/gate previews and evaluation details                    | Shared Bot Configuration → Routing, scoped channel links and routing previews/details |
+| Console               | Decision management, daemon provider catalog, binding conditions, answer/gate previews and evaluation details    | Shared Bot Configuration → Routing, scoped channel links and routing previews/details |
 
 ### 10.2 Delivery stages
 
 **Stage 1 — reusable Decisions and the first consumer**
 
 1. Implement question/result validation, per-Decision model selection, the Jev
-   adapter, provider secrets, deadlines, and standalone evaluation/preview.
+   adapter, daemon-owned provider resolution, deadlines, and standalone evaluation/preview.
 2. Add Decision CRUD, fixed-target conditions, ordinary resource saves, authorized
    usage links, and complete configuration projection. REST routes carry standard
    OpenAPI metadata; admin tooling uses the same resource/consumer contracts.

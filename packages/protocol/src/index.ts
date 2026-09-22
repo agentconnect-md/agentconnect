@@ -77,6 +77,9 @@ export * from './normalized-message.js'
 // Code-host provider identity (gitlab-com-integration.md §8.1)
 export * from './code-host.js'
 
+export * from './decision.js'
+export * from './decision-api.js'
+
 // ── envelope + control extension ──
 export { Envelope, ControlExt, NIL_UUID } from './envelope.js'
 
