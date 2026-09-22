@@ -1,6 +1,7 @@
 'use client'
 
 import { AgentIconView } from '@/components/marks'
+import { useTranslations } from 'next-intl'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { MENTION_MENU_MAX_HEIGHT, type MentionCoords } from '@/components/console/useMentionAutocomplete'
 
@@ -44,6 +45,7 @@ export function MentionMenu({
   onHover: (index: number) => void
   onPick: (option: MentionOption) => void
 }) {
+  const t = useTranslations('Common.mentionMenu')
   if (options.length === 0 || !coords) return null
   const position = coords.openUpward
     ? { bottom: coords.elHeight - coords.top + 4 }
@@ -55,7 +57,7 @@ export function MentionMenu({
   return (
     <div
       role="listbox"
-      aria-label="Mention an agent"
+      aria-label={t('mentionAgent')}
       style={{ ...position, left, maxHeight: MENTION_MENU_MAX_HEIGHT }}
       className="absolute z-50 w-[220px] max-w-[calc(100%-15px)] overflow-y-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
     >
@@ -89,7 +91,9 @@ export function MentionMenu({
             <AgentIconView icon={option.icon} runtime={option.runtime} size={18} />
           </span>
           <span className="min-w-0 flex-1 truncate text-left">{option.name}</span>
-          {!option.inRoster && <span className="flex-none font-sans text-[10.5px] text-(--text-tertiary)">Add</span>}
+          {!option.inRoster && (
+            <span className="flex-none font-sans text-[10.5px] text-(--text-tertiary)">{t('add')}</span>
+          )}
         </button>
       ))}
     </div>

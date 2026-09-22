@@ -13,7 +13,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useRouter } from 'next/navigation'
-import { useLocale } from 'next-intl'
+import { useLocale, useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
@@ -76,6 +76,26 @@ type TypeFilter = 'all' | SearchKind
 // label so a wider match set is still discoverable).
 const CAP = 3
 
+const SEARCH_PAGE_LABEL_KEYS: Record<string, string> = {
+  '/home': 'home',
+  '/agents': 'agents',
+  '/sessions': 'sessions',
+  '/crons': 'schedules',
+  '/tools': 'tools',
+  '/integrations': 'integrations',
+  '/knowledge': 'knowledge',
+  '/daemons': 'infra',
+  '/usage': 'analytics',
+  '/billing': 'billing',
+  '/settings#organization': 'organization',
+  '/settings#agent-visibility': 'defaultAgentVisibility',
+  '/settings#session-access': 'sessionAccess',
+  '/settings#environment': 'variablesSecrets',
+  '/settings#members': 'membersRoles',
+  '/settings#invite-links': 'inviteLinks',
+  '/profile': 'profile'
+}
+
 // Icon-well glyph for every non-agent kind (agents render their avatar instead). Pages, settings
 // and the three infra entities carry their own glyph on the item; the rest are fixed per kind.
 const wellIcon = (it: SearchItem): string => {
@@ -92,6 +112,7 @@ export function GlobalSearch({
   onClose
 }: { autoFocus?: boolean; mobile?: boolean; rail?: boolean; onClose?: () => void } = {}) {
   const locale = useLocale()
+  const t = useTranslations('Shell.globalSearch')
   const router = useRouter()
   const { orgPath, myRole, activeOrg } = useOrgs()
   const { agents, daemons, crons, allSessions, memberSets, orgSetIds } = useConsoleData()
@@ -170,7 +191,7 @@ export function GlobalSearch({
     // view's "Agents hosted"). NOT daemon.agents, which is the active-session count.
     const hostedByDaemon = new Map<string, number>()
     for (const a of agents) hostedByDaemon.set(a.daemon, (hostedByDaemon.get(a.daemon) ?? 0) + 1)
-    const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
+    const plural = (n: number, noun: 'agent' | 'daemon') => t(`counts.${noun}`, { count: n })
     // The Infra page's own three entities, in its own order — the pool as ONE entry, the machines,
     // then the groups. Matching `daemons` alone found every pool Pod under the pool's shared name
     // (N identical rows, each opening a Pod that a roll replaces) and no group at all.
@@ -225,13 +246,13 @@ export function GlobalSearch({
     const cronMatches = crons.filter((c) => c.name != null && hit(c.name))
     const cronItems: SearchItem[] = cronMatches.slice(0, CAP).map((c) => {
       const owner = c.agentId ? agentById.get(c.agentId) : undefined
-      const agentName = owner ? agentLabel(owner) : c.agentId ? c.agentId.slice(0, 8) : '—'
+      const agentName = owner ? agentLabel(owner) : c.agentId ? c.agentId.slice(0, 8) : t('unknown')
       return {
         key: `schedule:${c.id}`,
         kind: 'schedule',
-        title: c.name ?? '—',
+        title: c.name ?? t('unknown'),
         meta: [agentName, cronHuman(c.schedule, locale)].filter(Boolean).join(' · '),
-        aux: c.enabled ? 'enabled' : 'disabled',
+        aux: c.enabled ? t('enabled') : t('disabled'),
         href: orgPath(`/crons/${c.id}`)
       }
     })
@@ -248,11 +269,13 @@ export function GlobalSearch({
 
     // Console pages and settings — the static SEARCH_PAGES index. Matches on the
     // label or any keyword (route aliases + the settings that live on the page).
-    const pageHit = (p: ConsolePage) => hit(p.label) || (p.keywords ?? []).some(hit)
+    const pageLabel = (p: ConsolePage) =>
+      t(`${p.kind === 'page' ? 'pages' : 'settings'}.${SEARCH_PAGE_LABEL_KEYS[p.href] ?? 'unknown'}`)
+    const pageHit = (p: ConsolePage) => hit(p.label) || hit(pageLabel(p)) || (p.keywords ?? []).some(hit)
     const toItem = (p: ConsolePage): SearchItem => ({
       key: `${p.kind}:${p.href}`,
       kind: p.kind,
-      title: p.label,
+      title: pageLabel(p),
       meta: p.href,
       aux: '',
       iconName: p.icon,
@@ -277,19 +300,19 @@ export function GlobalSearch({
     // Keep all groups (even empty ones) so the chip row can show every type's
     // count; the visible list filters empties + the active type below.
     return [
-      { kind: 'agent' as const, label: 'Agents', count: agentMatches.length, items: agentItems },
-      { kind: 'daemon' as const, label: 'Daemons', count: daemonMatches.length, items: daemonItems },
-      { kind: 'schedule' as const, label: 'Schedules', count: cronMatches.length, items: cronItems },
-      { kind: 'session' as const, label: 'Sessions', count: sessionMatches.length, items: sessionItems },
+      { kind: 'agent' as const, label: t('groups.agents'), count: agentMatches.length, items: agentItems },
+      { kind: 'daemon' as const, label: t('groups.daemons'), count: daemonMatches.length, items: daemonItems },
+      { kind: 'schedule' as const, label: t('groups.schedules'), count: cronMatches.length, items: cronItems },
+      { kind: 'session' as const, label: t('groups.sessions'), count: sessionMatches.length, items: sessionItems },
       {
         kind: 'page' as const,
-        label: 'Pages',
+        label: t('groups.pages'),
         count: pageMatches.length,
         items: pageMatches.slice(0, CAP).map(toItem)
       },
       {
         kind: 'setting' as const,
-        label: 'Settings',
+        label: t('groups.settings'),
         count: settingMatches.length,
         items: settingMatches.slice(0, CAP).map(toItem)
       }
@@ -307,17 +330,18 @@ export function GlobalSearch({
     orgPath,
     authed,
     myRole,
-    sessionAccessRenders
+    sessionAccessRenders,
+    t
   ])
 
   const totalCount = useMemo(() => groups.reduce((n, g) => n + g.count, 0), [groups])
   // Chips: "All" + every kind with at least one match.
   const typeChips = useMemo<{ key: TypeFilter; label: string; count: number }[]>(
     () => [
-      { key: 'all', label: 'All', count: totalCount },
+      { key: 'all', label: t('all'), count: totalCount },
       ...groups.filter((g) => g.count > 0).map((g) => ({ key: g.kind, label: g.label, count: g.count }))
     ],
-    [groups, totalCount]
+    [groups, totalCount, t]
   )
   // The groups actually rendered: only once there's a query, non-empty, narrowed
   // to the active type chip. Empty query → no results (the hint shows instead),
@@ -444,7 +468,7 @@ export function GlobalSearch({
             <input
               ref={inputRef}
               value={q}
-              placeholder="Search agents, daemons, schedules…"
+              placeholder={t('placeholder')}
               onChange={(e) => {
                 setQ(e.target.value)
                 setSel(0)
@@ -459,7 +483,7 @@ export function GlobalSearch({
                   setSel(0)
                   inputRef.current?.focus()
                 }}
-                aria-label="Clear"
+                aria-label={t('clear')}
                 className="flex h-5 w-5 cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-(--text-tertiary)"
               >
                 <Icon name="circle-x" size={18} />
@@ -470,7 +494,7 @@ export function GlobalSearch({
             onClick={close}
             className="h-11 flex-none cursor-pointer border-0 bg-transparent px-3 font-sans text-[14px] font-semibold leading-normal text-(--text-secondary)"
           >
-            Cancel
+            {t('cancel')}
           </button>
         </div>
 
@@ -509,19 +533,19 @@ export function GlobalSearch({
         <div className="flex-1 overflow-y-auto pb-6">
           {query === '' && (
             <div className="px-4 py-6 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-              Search agents, daemons, schedules, sessions and pages.
+              {t('hint')}
             </div>
           )}
           {isEmpty && (
             <div className="px-4 py-6 text-center">
               <div className="font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
-                No results for “{q.trim()}”
+                {t('noResults', { query: q.trim() })}
               </div>
             </div>
           )}
           {noneInType && (
             <div className="px-4 py-[18px] text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-              No matches in this type.
+              {t('noMatchesType')}
             </div>
           )}
           {shownGroups.map((g) => (
@@ -584,7 +608,7 @@ export function GlobalSearch({
         <input
           ref={inputRef}
           className="srinput"
-          placeholder="Search agents, daemons, schedules…"
+          placeholder={t('placeholder')}
           value={q}
           onChange={(e) => {
             setQ(e.target.value)
@@ -595,7 +619,7 @@ export function GlobalSearch({
         />
         {!open && (
           <span className="kbd inline-flex items-center gap-[2px]">
-            {isMac ? <Icon name="command" size={11} strokeWidth={1.5} /> : 'Ctrl'}K
+            {isMac ? <Icon name="command" size={11} strokeWidth={1.5} /> : t('ctrlK')}
           </span>
         )}
         {open && q !== '' && (
@@ -605,7 +629,7 @@ export function GlobalSearch({
               setSel(0)
               inputRef.current?.focus()
             }}
-            title="Clear"
+            title={t('clear')}
             className="flex h-[18px] w-[18px] cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-(--text-tertiary)"
           >
             <Icon name="x" size={14} />
@@ -620,19 +644,19 @@ export function GlobalSearch({
             {typeChipRow}
             {isHint && (
               <div className="px-4 py-5 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-                Search agents, daemons, schedules, sessions and pages.
+                {t('hint')}
               </div>
             )}
             {isEmpty && (
               <div className="px-4 py-5 text-center">
                 <div className="font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
-                  No results for “{q.trim()}”
+                  {t('noResults', { query: q.trim() })}
                 </div>
               </div>
             )}
             {noneInType && (
               <div className="px-4 py-[18px] text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-                No matches in this type.
+                {t('noMatchesType')}
               </div>
             )}
             {hasResults && (
@@ -671,13 +695,13 @@ export function GlobalSearch({
             )}
             <div className="srfoot">
               <span>
-                <span className="kbd">↑↓</span> navigate
+                <span className="kbd">↑↓</span> {t('navigate')}
               </span>
               <span>
-                <span className="kbd">↵</span> open
+                <span className="kbd">↵</span> {t('open')}
               </span>
               <span>
-                <span className="kbd">esc</span> close
+                <span className="kbd">{t('esc')}</span> {t('close')}
               </span>
             </div>
           </div>

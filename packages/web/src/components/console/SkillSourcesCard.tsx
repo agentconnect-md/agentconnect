@@ -365,7 +365,7 @@ export function CreateSkillSourceModal({
             <span className="fldlbl">{t('source')}</span>
             <input
               className="inp mn"
-              placeholder="owner/repo or https://github.com/owner/repo"
+              placeholder={t('skillSourceForm.sourcePlaceholder')}
               value={source}
               onChange={(e) => setSource(e.target.value)}
               autoFocus
@@ -389,7 +389,7 @@ export function CreateSkillSourceModal({
               <span className="fldlbl">{t('refOptional')}</span>
               <input
                 className="inp mn"
-                placeholder="v1.2.0 / main / a commit"
+                placeholder={t('skillSourceForm.refPlaceholder')}
                 value={ref}
                 onChange={(e) => setRef(e.target.value)}
               />
@@ -398,7 +398,7 @@ export function CreateSkillSourceModal({
               <span className="fldlbl">{t('subdirOptional')}</span>
               <input
                 className="inp mn"
-                placeholder="skills"
+                placeholder={t('skillSourceForm.subdirPlaceholder')}
                 value={subDir}
                 onChange={(e) => setSubDir(e.target.value)}
               />
@@ -499,7 +499,7 @@ function EditSkillSourceModal({ source: s, onClose }: { source: SkillSourceDto; 
               <span className="fldlbl">{t('ref')}</span>
               <input
                 className="inp mn"
-                placeholder="v1.2.0 / main"
+                placeholder={t('skillSourceForm.editRefPlaceholder')}
                 value={ref}
                 onChange={(e) => setRef(e.target.value)}
               />

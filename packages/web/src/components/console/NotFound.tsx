@@ -4,6 +4,7 @@ import type { ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button, Icon } from '@/components/ui'
 import { useSearchOpen } from './search-open'
+import { useTranslations } from 'next-intl'
 
 // The console's unified not-found notice. One anatomy for every missing resource
 // (agent / session / schedule / daemon) and for an unknown route: a brand-soft
@@ -52,6 +53,7 @@ export function NotFound({
    *  the shell where global search isn't mounted. */
   showSearch?: boolean
 }) {
+  const t = useTranslations('Common.notFound')
   const router = useRouter()
   const openSearch = useSearchOpen()
 
@@ -97,9 +99,9 @@ export function NotFound({
         {showSearch && (
           <Button variant="ghost" size="sm" onClick={openSearch}>
             <span className="inline-flex items-center gap-[7px]">
-              Search
+              {t('search')}
               <span className="mono rounded-xs border border-(--border-default) bg-(--surface-card) px-[5px] py-px text-[10.5px] font-medium leading-normal text-(--text-tertiary)">
-                ⌘K
+                {t('shortcut')}
               </span>
             </span>
           </Button>

@@ -4,6 +4,7 @@
 // Sized to 60% of their container to match the .av / .imark CSS.
 
 import { useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { Icon } from './ui'
 import { withIconUrl, type AgentIcon } from '@/lib/agent-icon'
 // `logos/gitlab` is the LOGOTYPE (tanuki + wordmark, ~4.6:1); `-icon` is the mark, like `slack-icon`.
@@ -362,6 +363,7 @@ function DiamondFacets() {
 }
 
 export function Wordmark({ height = 36, inverse = false }: { height?: number; inverse?: boolean }) {
+  const t = useTranslations('Common.marks')
   const textFill = inverse ? '#ffffff' : '#3a2a4d'
   const accentFill = inverse ? '#ef7eb4' : '#c62a78'
   return (
@@ -371,7 +373,7 @@ export function Wordmark({ height = 36, inverse = false }: { height?: number; in
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       role="img"
-      aria-label="AgentConnect"
+      aria-label={t('brand')}
     >
       <DiamondFacets />
       <text
@@ -383,13 +385,15 @@ export function Wordmark({ height = 36, inverse = false }: { height?: number; in
         letterSpacing="-0.02em"
         fill={textFill}
       >
-        Agent<tspan fill={accentFill}>Connect</tspan>
+        {t('brandAgent')}
+        <tspan fill={accentFill}>{t('brandConnect')}</tspan>
       </text>
     </svg>
   )
 }
 
 export function LogoMark({ size = 27 }: { size?: number }) {
+  const t = useTranslations('Common.marks')
   return (
     <svg
       width={size}
@@ -398,7 +402,7 @@ export function LogoMark({ size = 27 }: { size?: number }) {
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       role="img"
-      aria-label="AgentConnect"
+      aria-label={t('brand')}
     >
       <DiamondFacets />
     </svg>
@@ -415,13 +419,14 @@ const SPIN = {
 } as const
 
 export function Spinner({ size = 48 }: { size?: number }) {
+  const t = useTranslations('Common.marks')
   return (
     <svg
       width={size}
       height={size}
       viewBox="0 0 48 48"
       role="img"
-      aria-label="Loading"
+      aria-label={t('loading')}
       xmlns="http://www.w3.org/2000/svg"
     >
       {FACETS.map((f, i) => (

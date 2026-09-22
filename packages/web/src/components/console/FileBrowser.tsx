@@ -1,6 +1,7 @@
 'use client'
 
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { Spinner } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { useIsMobile } from '@/lib/use-is-mobile'
@@ -129,6 +130,7 @@ export function FileBrowserBreadcrumb({
   ariaLabel?: string
   inputAriaLabel?: string
 }) {
+  const t = useTranslations('Sessions.fileBrowser')
   const baseSegments = path.split('/').filter(Boolean)
   const draftParts = creating ? (nested ? draftName.replace(/^\/+/, '').split('/') : [draftName]) : []
   const draftDirectories = draftParts.slice(0, -1).filter(Boolean)
@@ -143,8 +145,8 @@ export function FileBrowserBreadcrumb({
           type="button"
           className="iconbtn h-7 w-7 flex-none"
           onClick={onBack}
-          title="Back to files"
-          aria-label="Back to files"
+          title={t('backToFiles')}
+          aria-label={t('backToFiles')}
         >
           <Icon name="arrow-left" size={15} />
         </button>
@@ -197,8 +199,8 @@ export function FileBrowserBreadcrumb({
               event.preventDefault()
               onDraftNameChange([...draftDirectories.slice(0, -1), draftDirectories.at(-1)!].join('/'))
             }}
-            placeholder="Name your file…"
-            aria-label={inputAriaLabel}
+            placeholder={t('fileNamePlaceholder')}
+            aria-label={inputAriaLabel === 'New file path' ? t('newFilePath') : inputAriaLabel}
             spellCheck={false}
             disabled={disabled}
             autoFocus
@@ -220,13 +222,14 @@ export function FileBrowserEditorActions({
   onCancel: () => void
   onSave: () => void
 }) {
+  const t = useTranslations('Sessions.fileBrowser')
   return (
     <div className="flex flex-none items-center gap-2">
       <Button variant="secondary" size="xs" onClick={onCancel} disabled={saving}>
-        Cancel
+        {t('cancel')}
       </Button>
       <Button size="xs" onClick={onSave} disabled={saving || disabled}>
-        {saving ? 'Saving…' : 'Save changes'}
+        {saving ? t('saving') : t('saveChanges')}
       </Button>
     </div>
   )
@@ -245,6 +248,7 @@ export function FileBrowserEditor({
   onCancel: () => void
   onSubmit: () => void
 }) {
+  const t = useTranslations('Sessions.fileBrowser')
   const creating = draft.target === ''
 
   useEffect(() => {
@@ -258,7 +262,7 @@ export function FileBrowserEditor({
   return (
     <form
       className="flex min-h-[300px] flex-1 flex-col"
-      aria-label={creating ? 'New file' : `Edit ${draft.target}`}
+      aria-label={creating ? t('newFile') : t('editFile', { path: draft.target })}
       onSubmit={(event) => {
         event.preventDefault()
         onSubmit()
@@ -279,7 +283,7 @@ export function FileBrowserEditor({
             className="inp mono min-h-[390px] flex-1 resize-y items-start justify-start px-3 py-[10px] leading-[1.6] focus:border-(--brand) focus:outline-none"
             value={draft.content}
             onChange={(event) => onContentChange(event.target.value)}
-            aria-label={creating ? 'New file content' : `Edit ${draft.target}`}
+            aria-label={creating ? t('newFileContent') : t('editFile', { path: draft.target })}
             spellCheck={false}
             disabled={draft.saving || disabled}
             autoFocus={!creating}
@@ -306,6 +310,7 @@ export function FileBrowserLayout({
   /** Keep the mobile preview visible while the parent owns an active inline flow. */
   previewOpen?: boolean
 }) {
+  const t = useTranslations('Sessions.fileBrowser')
   const isMobile = useIsMobile()
   const [mobilePreviewOpen, setMobilePreviewOpen] = useState(false)
   const previousOpenSignal = useRef(openPreviewSignal)
@@ -345,7 +350,7 @@ export function FileBrowserLayout({
           ? preview(isMobile ? () => setMobilePreviewOpen(false) : undefined)
           : (emptyPreview ?? (
               <div className="flex flex-1 items-center justify-center px-4 py-10 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-                Select a file to preview.
+                {t('selectFile')}
               </div>
             ))}
       </div>
@@ -427,6 +432,7 @@ export function FileBrowserPreviewHeader({
   actions?: ReactNode
   onBack?: () => void
 }) {
+  const t = useTranslations('Sessions.fileBrowser')
   return (
     <div className="flex h-[37px] min-w-0 flex-none items-center gap-2 border-b border-(--border-subtle) px-4">
       {onBack && (
@@ -434,8 +440,8 @@ export function FileBrowserPreviewHeader({
           type="button"
           className="iconbtn h-7 w-7 flex-none"
           onClick={onBack}
-          title="Back to files"
-          aria-label="Back to files"
+          title={t('backToFiles')}
+          aria-label={t('backToFiles')}
         >
           <Icon name="arrow-left" size={15} />
         </button>
@@ -461,6 +467,7 @@ export function FileBrowserPreviewSummary({
   actions?: ReactNode
   onBack?: () => void
 }) {
+  const t = useTranslations('Sessions.fileBrowser')
   return (
     <div className="flex h-[37px] min-w-0 flex-none items-center gap-2 border-b border-(--border-subtle) px-4">
       {onBack ? (
@@ -468,8 +475,8 @@ export function FileBrowserPreviewSummary({
           type="button"
           className="iconbtn h-7 w-7 flex-none"
           onClick={onBack}
-          title="Back to files"
-          aria-label="Back to files"
+          title={t('backToFiles')}
+          aria-label={t('backToFiles')}
         >
           <Icon name="arrow-left" size={15} />
         </button>
@@ -483,6 +490,7 @@ export function FileBrowserPreviewSummary({
 }
 
 export function FileBrowserHistoryButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+  const t = useTranslations('Sessions.fileBrowser')
   return (
     <button
       type="button"
@@ -491,7 +499,7 @@ export function FileBrowserHistoryButton({ active, onClick }: { active: boolean;
       onClick={onClick}
     >
       <Icon name="rotate-ccw-clock" size={14} />
-      History
+      {t('history')}
     </button>
   )
 }

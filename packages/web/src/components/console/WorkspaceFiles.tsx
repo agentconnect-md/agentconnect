@@ -6,6 +6,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import dynamic from 'next/dynamic'
+import { useTranslations } from 'next-intl'
 import {
   ApiError,
   deleteWorkspaceFile,
@@ -58,12 +59,17 @@ import {
 // previewed, so keep them out of the main console bundle (lazy client chunk).
 const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), {
   ssr: false,
-  loading: () => (
+  loading: () => <MarkdownLoading />
+})
+
+function MarkdownLoading() {
+  const t = useTranslations('Agents.workspaceFiles')
+  return (
     <div className="px-[18px] py-4 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-      Rendering…
+      {t('rendering')}
     </div>
   )
-})
+}
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
@@ -159,6 +165,7 @@ export function WorkspaceFiles({
    *  daemon round-trip. */
   renderHeader: (header: WorkspaceHeaderInfo) => ReactNode
 }) {
+  const t = useTranslations('Agents.workspaceFiles')
   // The edit frames carry no repo scope, so a write while a secondary root is selected would land in
   // the PRIMARY workspace under the wrong root's name. Editing is the workspace's own, always.
   const canEdit = workspaceCanEdit && !repo
@@ -415,7 +422,7 @@ export function WorkspaceFiles({
     const name = editor.name.trim().replace(/^\/+/, '').replace(/\/+/g, '/')
     const filePath = creating ? [editor.directory, name].filter(Boolean).join('/') : editor.target
     if (!filePath || (creating && !name.split('/').at(-1))) {
-      setEditor({ ...editor, error: 'Enter a file name or relative path.' })
+      setEditor({ ...editor, error: t('fileNameRequired') })
       return
     }
     setEditor({ ...editor, saving: true, error: null })
@@ -432,10 +439,7 @@ export function WorkspaceFiles({
           ? {
               ...current,
               saving: false,
-              error:
-                e instanceof ApiError && e.status === 409
-                  ? 'The agent is working or the file changed. Retry when it is idle.'
-                  : msg(e)
+              error: e instanceof ApiError && e.status === 409 ? t('saveConflict') : msg(e)
             }
           : current
       )
@@ -500,7 +504,7 @@ export function WorkspaceFiles({
           className="py-[7px] pr-3 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)"
           style={{ paddingLeft: 12 + depth * 14 }}
         >
-          Couldn&apos;t load — the daemon may be offline.
+          {t('directoryLoadError')}
         </div>
       )
     return (
@@ -547,7 +551,7 @@ export function WorkspaceFiles({
         {d.nextCursor && (
           <div className="flex flex-col gap-1 py-[6px] pr-3" style={{ paddingLeft: 12 + depth * 14 }}>
             <button className="lnk text-[12px]" onClick={() => loadMoreDir(dirPath)}>
-              {d.loadingMore ? 'Loading…' : d.moreErr ? 'Retry' : 'Load more'}
+              {d.loadingMore ? t('loading') : d.moreErr ? t('retry') : t('loadMore')}
             </button>
           </div>
         )}
@@ -606,7 +610,7 @@ export function WorkspaceFiles({
             onDraftNameChange={updateCreateName}
             onBack={isMobile && editor ? backFromEditor : undefined}
             disabled={editor?.saving}
-            ariaLabel="Workspace path"
+            ariaLabel={t('workspacePath')}
           />
         }
         headerEnd={
@@ -638,7 +642,7 @@ export function WorkspaceFiles({
                     onClick={() => setDeleteDraft(null)}
                     disabled={deleteDraft.deleting}
                   >
-                    Cancel
+                    {t('cancel')}
                   </Button>
                   <Button
                     variant="danger"
@@ -647,25 +651,25 @@ export function WorkspaceFiles({
                     disabled={deleteDraft.deleting}
                   >
                     <Icon name="trash" size={13} />
-                    {deleteDraft.deleting ? 'Deleting…' : 'Delete file'}
+                    {deleteDraft.deleting ? t('deleting') : t('deleteFile')}
                   </Button>
                 </>
               ) : canEdit ? (
                 <>
                   <Button variant="secondary" size="xs" className="flex-none" onClick={startCreate}>
                     <Icon name="file-plus" size={13} />
-                    Add file
+                    {t('addFile')}
                   </Button>
                   {viewerCanEdit ? (
                     <Button variant="secondary" size="xs" className="flex-none" onClick={() => startEdit(viewer!.path)}>
                       <Icon name="pencil" size={13} />
-                      Edit
+                      {t('edit')}
                     </Button>
                   ) : null}
                   {viewerCanDelete ? (
                     <Button variant="secondary" size="xs" className="flex-none" onClick={startDelete}>
                       <Icon name="trash" size={13} />
-                      Delete
+                      {t('delete')}
                     </Button>
                   ) : null}
                 </>
@@ -693,9 +697,7 @@ export function WorkspaceFiles({
                 <div className="flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
                   <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
                   <span>
-                    {workspaceRootReadState(root) === 'asleep'
-                      ? SANDBOX_ASLEEP_NOTICE
-                      : 'Couldn’t browse the workspace — the owning daemon may be offline. Files live only on that machine and are read live from it, so they’re unavailable while it is disconnected.'}
+                    {workspaceRootReadState(root) === 'asleep' ? SANDBOX_ASLEEP_NOTICE : t('workspaceBrowseError')}
                   </span>
                 </div>
               }
@@ -709,14 +711,14 @@ export function WorkspaceFiles({
               sessionId
                 ? sessionWorktreeAbsentNotice(repo)
                 : repo
-                  ? 'Not checked out yet — this repository is materialized on the agent’s next session.'
-                  : 'The workspace has no files yet — the agent creates them as it works.'
+                  ? t('repositoryNotCheckedOut')
+                  : t('workspaceNotCreated')
             }
           />
         )}
 
         {root?.entries && root.exists && root.entries.length === 0 && !editor && (
-          <EmptyNote text="This workspace is empty." />
+          <EmptyNote text={t('workspaceEmpty')} />
         )}
 
         {(editor || (root?.entries && root.exists && root.entries.length > 0)) && (
@@ -728,7 +730,7 @@ export function WorkspaceFiles({
                 renderLevel('', 0, openPreview)
               ) : (
                 <div className="px-3 py-4 text-center font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                  No files yet.
+                  {t('noFiles')}
                 </div>
               )
             }
@@ -798,6 +800,7 @@ function FilePreview({
   onBack?: () => void
   deletePrompt: DeleteDraft | null
 }) {
+  const t = useTranslations('Agents.workspaceFiles')
   const isMd = MARKDOWN_FILE_RE.test(viewer.name)
   const [mode, setMode] = useState<'preview' | 'code'>(isMd ? 'preview' : 'code')
   const [html, setHtml] = useState<string | null>(null)
@@ -850,13 +853,13 @@ function FilePreview({
                 className={mode === 'preview' ? 'pill on py-[3px]' : 'pill py-[3px]'}
                 onClick={() => setMode('preview')}
               >
-                Preview
+                {t('preview')}
               </button>
               <button
                 className={mode === 'code' ? 'pill on py-[3px]' : 'pill py-[3px]'}
                 onClick={() => setMode('code')}
               >
-                Code
+                {t('code')}
               </button>
             </span>
           ) : undefined
@@ -870,7 +873,7 @@ function FilePreview({
         >
           <Icon name="triangle-alert" size={15} color="var(--status-error)" className="mt-[2px] flex-none" />
           <div>
-            <span className="font-semibold text-(--text-primary)">Delete this file?</span> This cannot be undone.
+            <span className="font-semibold text-(--text-primary)">{t('deleteFilePrompt')}</span> {t('cannotUndo')}
             {deletePrompt.error ? <div className="mt-1 text-(--status-error)">{deletePrompt.error}</div> : null}
           </div>
         </div>
@@ -885,20 +888,20 @@ function FilePreview({
       {!viewer.loading && viewer.err && (
         <div className="flex items-start gap-[10px] p-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
           <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
-          <span>Couldn&apos;t read the file — the owning daemon may be offline.</span>
+          <span>{t('fileReadError')}</span>
         </div>
       )}
 
       {!viewer.loading && !viewer.err && viewer.file && !viewer.file.exists && (
         <div className="p-4 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          File not found — it may have been removed since the listing.
+          {t('fileNotFound')}
         </div>
       )}
 
       {!viewer.loading && !viewer.err && viewer.file?.exists && viewer.file.encoding === 'none' && (
         <div className="flex items-center gap-2 p-4 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
           <Icon name="file-question-mark" size={15} />
-          Binary file — not displayed ({formatFileSize(viewer.file.size)})
+          {t('binaryFile', { size: formatFileSize(viewer.file.size) })}
         </div>
       )}
 
@@ -916,14 +919,15 @@ function FilePreview({
           {viewer.file.truncated && (
             <div className="flex items-center gap-[10px] border-t border-(--border-subtle) px-4 pt-[10px] pb-[14px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
               <span>
-                Showing first {formatFileSize(viewer.file.nextOffset)} of {formatFileSize(viewer.file.size)}
+                {t('showingFirst', {
+                  loaded: formatFileSize(viewer.file.nextOffset),
+                  total: formatFileSize(viewer.file.size)
+                })}
               </span>
               <button className="lnk text-[12px]" onClick={onMore}>
-                {viewer.loadingMore ? 'Loading…' : viewer.moreErr ? 'Retry' : 'Load more'}
+                {viewer.loadingMore ? t('loading') : viewer.moreErr ? t('retry') : t('loadMore')}
               </button>
-              {viewer.moreErr && (
-                <span className="text-(--text-tertiary)">Couldn&apos;t load more — the daemon may be offline.</span>
-              )}
+              {viewer.moreErr && <span className="text-(--text-tertiary)">{t('loadMoreError')}</span>}
             </div>
           )}
         </>

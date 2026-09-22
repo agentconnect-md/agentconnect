@@ -1,6 +1,7 @@
 // No 'use client' here: pure, stateless adornments rendered inside SettingsView's
 // client tree.
 
+import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import type { BotDto } from '@/lib/api'
 import type { WebBotSettingsFragments } from '../contract'
@@ -12,15 +13,17 @@ import { FeishuMark } from './mark'
  *  cloud is invisible to the other's console, so a tab-derived host would send
  *  the user to a 404. */
 function FeishuRowLinks({ bot }: { bot: BotDto }) {
+  const t = useTranslations('Platforms.feishu.settings')
   const region = feishuRegionOf(bot)
   const brand = feishuBrand(region)
+  const label = t('configureOn', { brand })
   return (
     <a
       href={feishuConsoleAppUrl(bot.feishuAppId, region)}
       target="_blank"
       rel="noopener noreferrer"
-      title={`Configure on ${brand}`}
-      aria-label={`Configure on ${brand}`}
+      title={label}
+      aria-label={label}
       className="iconbtn h-7 w-7 flex-none"
       onClick={(e) => e.stopPropagation()}
     >
@@ -32,6 +35,7 @@ function FeishuRowLinks({ bot }: { bot: BotDto }) {
 /** What deleting the bot here does NOT do — the app survives in its cloud's
  *  developer console. */
 function FeishuDeleteNotice({ bot }: { bot: BotDto }) {
+  const t = useTranslations('Platforms.feishu.settings')
   const region = feishuRegionOf(bot)
   const brand = feishuBrand(region)
   return (
@@ -39,7 +43,7 @@ function FeishuDeleteNotice({ bot }: { bot: BotDto }) {
       <div className="flex items-start gap-[9px]">
         <Icon name="info" size={15} color="var(--text-tertiary)" className="mt-[1px] flex-none" />
         <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-          The {brand} app itself is not deleted.
+          {t('deleteNotice', { brand })}
         </span>
       </div>
       <a
@@ -51,7 +55,7 @@ function FeishuDeleteNotice({ bot }: { bot: BotDto }) {
         <span className="inline-flex h-[13px] w-[13px] items-center justify-center">
           <FeishuMark />
         </span>
-        Open on {brand}
+        {t('openOn', { brand })}
         <Icon name="arrow-up-right" size={13} />
       </a>
     </>

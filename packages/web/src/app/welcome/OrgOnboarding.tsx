@@ -107,7 +107,8 @@ export default function OrgOnboarding() {
         <span className="flex items-center gap-[10px]">
           <LogoMark size={24} />
           <span className="font-sans text-[16px] font-semibold leading-none tracking-[-.02em] text-(--text-primary)">
-            Agent<span className="text-(--brand)">Connect</span>
+            {t('brandAgent')}
+            <span className="text-(--brand)">{t('brandConnect')}</span>
           </span>
         </span>
         <div className="flex-1" />

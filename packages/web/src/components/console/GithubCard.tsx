@@ -55,7 +55,7 @@ export default function GithubCard({ canWrite, isOwner }: { canWrite: boolean; i
     try {
       const url = await fetchGithubInstallUrl()
       if (url) window.open(url, '_blank', 'noopener')
-      else setErr('Could not mint an install link.')
+      else setErr(t('github.installLinkError'))
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     }
@@ -84,7 +84,7 @@ export default function GithubCard({ canWrite, isOwner }: { canWrite: boolean; i
           <span className="flex h-[14px] w-[14px] flex-none items-center justify-center">
             <GithubMark color="var(--text-primary)" fillPct={SQUARE_MARK_FILL_PCT} />
           </span>
-          GitHub
+          {t('github.label')}
         </span>
         {enabled === true && canWrite && (
           <span className="flex items-center gap-2">
@@ -102,14 +102,14 @@ export default function GithubCard({ canWrite, isOwner }: { canWrite: boolean; i
       {enabled === null && <LoadingState size={22} padding={20} />}
       {enabled === false && (
         <div className="px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          Not enabled on this deployment — the control plane has no GitHub App configured.
+          {t('github.notEnabled')}
         </div>
       )}
       {enabled === true && installs.length === 0 && (
         <div className="px-4 py-7 text-center">
-          <div className="font-sans text-[13px] font-semibold leading-normal">No installations yet</div>
+          <div className="font-sans text-[13px] font-semibold leading-normal">{t('github.noInstallations')}</div>
           <div className="mt-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-            Install the GitHub App to use private repositories with credential-free clone and push.
+            {t('github.noInstallationsHint')}
           </div>
         </div>
       )}
@@ -133,11 +133,13 @@ export default function GithubCard({ canWrite, isOwner }: { canWrite: boolean; i
                 </span>
                 <span className="mono min-w-0 truncate text-[12.5px]">{i.accountLogin}</span>
                 <span className="badge bg-(--surface-active) text-(--text-tertiary)">
-                  {i.accountType === 'Organization' ? 'org' : 'user'}
+                  {i.accountType === 'Organization' ? t('github.organization') : t('github.user')}
                 </span>
-                {i.suspended && <span className="badge bg-(--status-error-soft) text-(--status-error)">suspended</span>}
+                {i.suspended && (
+                  <span className="badge bg-(--status-error-soft) text-(--status-error)">{t('github.suspended')}</span>
+                )}
                 {i.permissionsStatus === 'outdated' && (
-                  <span className="badge bg-(--status-paused-soft) text-(--amber-500)">needs update</span>
+                  <span className="badge bg-(--status-paused-soft) text-(--amber-500)">{t('github.needsUpdate')}</span>
                 )}
               </div>
               <span className="flex items-center justify-between gap-3 desktop:justify-end">
@@ -164,10 +166,10 @@ export default function GithubCard({ canWrite, isOwner }: { canWrite: boolean; i
               >
                 <span className="flex min-w-0 items-start gap-2">
                   <Icon name="triangle-alert" size={14} color="var(--amber-500)" className="mt-[2px] flex-none" />
-                  <span>This installation&rsquo;s GitHub permissions need updating before all features will work.</span>
+                  <span>{t('github.permissionsNeedUpdate')}</span>
                 </span>
                 <a href={i.settingsUrl} target="_blank" rel="noopener noreferrer" className="lnk flex-none text-[12px]">
-                  Update permissions
+                  {t('github.updatePermissions')}
                   <Icon name="external-link" size={12} />
                 </a>
               </div>

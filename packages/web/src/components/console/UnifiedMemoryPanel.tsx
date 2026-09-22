@@ -44,7 +44,7 @@ import {
 // Loaded lazily like the file preview so react-markdown never ships in the main console bundle.
 const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), {
   ssr: false,
-  loading: () => <p className="text-(--text-tertiary)">Rendering…</p>
+  loading: () => <p className="text-(--text-tertiary)">{'Loading…'}</p>
 })
 
 interface Props {
@@ -485,7 +485,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
             overviewOpen ? 'border-r-(--brand) bg-(--brand-soft)' : 'border-r-transparent bg-transparent'
           }`}
           aria-current={overviewOpen ? 'page' : undefined}
-          title="The overview the agent reads first"
+          title={t('overviewTitle')}
           disabled={rowsLocked}
           onClick={() => {
             void openOverview()
@@ -497,9 +497,11 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
             <span
               className={`mono truncate text-[12.5px] ${overviewOpen ? 'text-(--text-primary)' : 'text-(--text-secondary)'}`}
             >
-              MEMORY.md
+              {t('memoryFile')}
             </span>
-            <span className="font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">Overview</span>
+            <span className="font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
+              {t('overview')}
+            </span>
           </span>
           {overviewDoc?.mtime ? (
             <span className="flex-none pt-[1px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
@@ -509,7 +511,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
         </button>
       ) : null}
       {busy ? (
-        <div className="flex justify-center py-4" role="status" aria-label="Loading memory">
+        <div className="flex justify-center py-4" role="status" aria-label={t('loadingMemory')}>
           <Spinner size={18} />
         </div>
       ) : null}
@@ -571,7 +573,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
       <FileBrowserPreviewSummary
         meta={
           reading || overviewBusy || overviewTopicBusy
-            ? 'Loading complete memory…'
+            ? t('loadingComplete')
             : overviewOpen
               ? overviewMeta
               : previewMeta
@@ -581,19 +583,19 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
           overviewTopic ? (
             <Button variant="secondary" size="xs" onClick={() => setOverviewTopic(null)}>
               <Icon name="arrow-left" size={13} />
-              Back to overview
+              {t('backToOverview')}
             </Button>
           ) : mode ? (
             <div className="flex flex-none items-center gap-2">
               <Button variant="secondary" size="xs" disabled={saving} onClick={cancelEdit}>
-                Cancel
+                {t('cancel')}
               </Button>
               <Button
                 size="xs"
                 disabled={saving || blocked || tooLarge || !supports(mode === 'create' ? 'create' : 'update')}
                 onClick={() => void mutate()}
               >
-                {saving ? 'Saving…' : 'Save memory'}
+                {saving ? t('saving') : t('saveMemory')}
               </Button>
             </div>
           ) : document && !reading ? (
@@ -606,7 +608,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
                   onClick={() => setShowHistory((open) => !open)}
                 >
                   <Icon name="rotate-ccw-clock" size={13} />
-                  {showHistory ? 'Hide history' : 'History'}
+                  {showHistory ? t('hideHistory') : t('history')}
                 </Button>
               ) : null}
               {supports('update') && editable ? (
@@ -622,7 +624,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
                   ariaLabel="Edit memory"
                 >
                   <Icon name="pencil" size={13} />
-                  <span className="max-desktop:hidden">Edit memory</span>
+                  <span className="max-desktop:hidden">{t('editMemory')}</span>
                 </Button>
               ) : null}
               {supports('delete') && editable ? (
@@ -631,10 +633,10 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
                   size="xs"
                   disabled={saving || blocked || confirmDelete}
                   onClick={() => setConfirmDelete(true)}
-                  ariaLabel="Delete memory"
+                  ariaLabel={t('deleteMemory')}
                 >
                   <Icon name="trash" size={13} />
-                  <span className="max-desktop:hidden">Delete memory</span>
+                  <span className="max-desktop:hidden">{t('deleteMemory')}</span>
                 </Button>
               ) : null}
             </div>
@@ -644,8 +646,10 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
       {confirmDelete && document ? (
         <div className="flex flex-wrap items-center gap-2 border-b border-(--border-subtle) bg-(--surface-sunken) px-4 py-2 font-sans text-[12.5px] font-normal leading-normal text-(--text-primary)">
           <span className="min-w-0 flex-1">
-            Delete “{document.entry.label || 'this memory'}”?
-            {channelKey ? ' Deleting an override can reveal inherited memory.' : ''}
+            {t('deleteConfirm', {
+              name: document.entry.label || t('thisMemory'),
+              override: channelKey ? t('overrideWarning') : ''
+            })}
           </span>
           <Button
             variant="danger"
@@ -653,10 +657,10 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
             disabled={saving || blocked || !supports('delete')}
             onClick={() => void mutate(true)}
           >
-            Confirm deletion
+            {t('confirmDeletion')}
           </Button>
           <Button variant="secondary" size="xs" disabled={saving} onClick={() => setConfirmDelete(false)}>
-            Keep memory
+            {t('keepMemory')}
           </Button>
         </div>
       ) : null}
@@ -671,9 +675,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
           </div>
         ) : shownOverview ? (
           <div className="px-4 py-6 font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
-            {overviewTopic
-              ? 'This topic no longer exists.'
-              : 'No overview yet. The agent maintains its memory itself as it works.'}
+            {overviewTopic ? t('topicMissing') : t('noOverview')}
           </div>
         ) : null
       ) : reading ? (
@@ -684,8 +686,8 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
         <div className="flex flex-1 flex-col gap-3 p-4">
           {mode === 'create' ? (
             <input
-              aria-label="Memory name"
-              placeholder="Name (optional)"
+              aria-label={t('memoryName')}
+              placeholder={t('nameOptional')}
               value={label}
               maxLength={512}
               disabled={saving}
@@ -695,7 +697,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
             />
           ) : null}
           <textarea
-            aria-label="Memory content"
+            aria-label={t('memoryContent')}
             value={draft}
             disabled={saving}
             onChange={(e) => setDraft(e.target.value)}
@@ -705,13 +707,13 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
           />
           {tooLarge ? (
             <div role="alert" className="font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
-              This change is too large to save here. Reduce its size.
+              {t('tooLarge')}
             </div>
           ) : null}
           {blocked && document ? (
             <div>
               <Button variant="secondary" size="xs" disabled={saving} onClick={() => void open(document.entry)}>
-                Reload saved version
+                {t('reloadSaved')}
               </Button>
             </div>
           ) : null}
@@ -766,7 +768,9 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
                             {edge.label}
                           </button>
                         ) : (
-                          <span className="text-(--text-tertiary)">{edge.label} (missing)</span>
+                          <span className="text-(--text-tertiary)">
+                            {edge.label} {t('missing')}
+                          </span>
                         )}
                       </span>
                     ))}
@@ -883,11 +887,8 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
           role="status"
           className="flex flex-col items-start gap-1 px-[18px] py-6 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)"
         >
-          <span className="font-semibold text-(--text-primary)">Memory cannot be browsed from here yet.</span>
-          <span>
-            This agent’s daemon does not serve the memory entry interface. Upgrade it, then refresh; the agent’s memory
-            itself is unaffected.
-          </span>
+          <span className="font-semibold text-(--text-primary)">{t('unsupportedTitle')}</span>
+          <span>{t('unsupportedBody')}</span>
         </div>
       ) : (
         <FileBrowserLayout

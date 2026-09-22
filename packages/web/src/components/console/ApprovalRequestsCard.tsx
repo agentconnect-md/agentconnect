@@ -82,7 +82,7 @@ export function ApprovalRequestsCard({
         { revalidate: false }
       )
     } catch {
-      setDecisionError('This approval request could not be updated. Try again.')
+      setDecisionError(t('requestUpdateError'))
       void mutate()
     } finally {
       setBusy(null)
@@ -94,11 +94,9 @@ export function ApprovalRequestsCard({
   const body = (
     <>
       {isLoading ? (
-        <div className="px-3 py-3 font-sans text-[12px] text-(--text-tertiary)">Loading requests…</div>
+        <div className="px-3 py-3 font-sans text-[12px] text-(--text-tertiary)">{t('loadingRequests')}</div>
       ) : error && allRequests === undefined ? (
-        <div className="px-3 py-3 font-sans text-[12px] text-(--text-tertiary)">
-          Approval requests are temporarily unavailable.
-        </div>
+        <div className="px-3 py-3 font-sans text-[12px] text-(--text-tertiary)">{t('unavailable')}</div>
       ) : requests?.length ? (
         // Capped so a pile of requests can never push the composer off-screen.
         <div className="max-h-[34vh] overflow-y-auto">
@@ -115,7 +113,7 @@ export function ApprovalRequestsCard({
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-x-2">
                     <span className="font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
-                      {request.requesterName ?? request.requesterId ?? 'Unknown user'}
+                      {request.requesterName ?? request.requesterId ?? t('unknownUser')}
                     </span>
                     <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
                       {formatApprovalTime(request.createdAt)}
@@ -142,10 +140,10 @@ export function ApprovalRequestsCard({
                       disabled={busy !== null}
                       onClick={() => void decide(request, 'deny')}
                     >
-                      {denyBusy ? 'Denying…' : 'Deny'}
+                      {denyBusy ? t('denying') : t('deny')}
                     </Button>
                     <Button size="xs" disabled={busy !== null} onClick={() => void decide(request, 'allow')}>
-                      {allowBusy ? 'Allowing…' : 'Allow'}
+                      {allowBusy ? t('allowing') : t('allow')}
                     </Button>
                   </div>
                 )}
@@ -154,7 +152,7 @@ export function ApprovalRequestsCard({
           })}
         </div>
       ) : (
-        <div className="px-3 py-3 font-sans text-[12px] text-(--text-tertiary)">No approval requests yet.</div>
+        <div className="px-3 py-3 font-sans text-[12px] text-(--text-tertiary)">{t('noRequests')}</div>
       )}
       {decisionError && (
         <div className="border-t border-(--border-subtle) px-3 py-2 font-sans text-[11.5px] text-(--red-600)">

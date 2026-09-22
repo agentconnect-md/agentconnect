@@ -1,7 +1,7 @@
 // No 'use client' here: reached only from ModalProvider's tree (the client boundary).
 
 import type { WebPlatformModule } from '../contract'
-import { inviteBotHint } from '../wizard-chrome'
+import { identityCards, inviteBotHint } from '../wizard-chrome'
 import { telegramApi, type TelegramApi } from './api'
 import { TelegramWizardBody } from './Body'
 import { TelegramMark } from './mark'
@@ -22,7 +22,7 @@ export const telegramModule: WebPlatformModule<TelegramApi> = {
     // No transport concept — the create DTO carries none either.
     buildReuseInput: (bot, ctx) => ({ platform: 'telegram', agentId: ctx.agentId, botId: bot.id }),
     affordances: {},
-    identityCards: () => ({ create: 'Create a bot with @BotFather', existing: 'An unused Telegram bot' }),
+    identityCards: () => identityCards('telegram'),
     inviteHint: () => inviteBotHint('group', 'Telegram')
   },
   apiBindings: telegramApi,

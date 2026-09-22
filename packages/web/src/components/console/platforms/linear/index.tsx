@@ -1,6 +1,7 @@
 // No 'use client' here: reached only from ModalProvider's tree (the client boundary).
 
 import type { WebPlatformModule } from '../contract'
+import { identityCards, inviteBotHint } from '../wizard-chrome'
 import { linearApi, type LinearApi } from './api'
 import { LinearWizardBody } from './Body'
 import { LinearWorkspaceCard, LinearWorkspaceHeaderActions, LinearWorkspaceRows } from './card'
@@ -40,10 +41,10 @@ export const linearModule: WebPlatformModule<LinearApi> = {
     },
     // The pane replaces the identity chassis outright, so these two never render for
     // Linear; the contract requires them of every module and they stay honest copy.
-    identityCards: () => ({ create: 'Connect a Linear workspace', existing: 'A connected Linear workspace' }),
+    identityCards: () => identityCards('linear'),
     // Not `inviteBotHint`: nobody invites the app to an issue. A Linear session starts
     // by delegating the issue to the app or mentioning it, and neither is an invite.
-    inviteHint: () => 'delegate an issue to the app in Linear, or mention it to reach one agent by name.'
+    inviteHint: () => inviteBotHint('issue', 'Linear', true)
   },
   settingsFragments: linearSettingsFragments,
   apiBindings: linearApi,
@@ -60,7 +61,7 @@ export const linearModule: WebPlatformModule<LinearApi> = {
     // No `any`: every Linear event is addressed by construction (§6.1), so nothing would match it.
     triggers: ['off', 'mention'],
     // §4.3: a gated member acts in a team only as its default, so enabling the row is half the gate.
-    gatedNote: 'Private agent — answers only in teams where it is the default.',
+    gatedNote: { key: 'linearGatedNote' },
     // The daemon stores a team as "<Workspace name> / <Team name>" (§4.5), because a session list
     // spanning every workspace needs both. These rows always sit under one workspace's own card,
     // which already names it, so the row keeps the TEAM alone — and never the team KEY, which is
@@ -77,10 +78,9 @@ export const linearModule: WebPlatformModule<LinearApi> = {
     },
     // §6.2: the default seat IS a gated agent's grant, and a Linear AgentSession has one writer (§4.6).
     ownerChangeWarning: {
-      title: 'Move this team’s default?',
-      body: ({ owner, room }) =>
-        `${owner} is a private agent, and being ${room}’s default is what lets it act there. Its live sessions in this team can still be stopped, but it will not answer in them again. A new mention or delegation opens a session with the new default.`,
-      confirmLabel: 'Move'
+      title: { key: 'ownerChange.title' },
+      body: { key: 'ownerChange.body' },
+      confirmLabel: { key: 'ownerChange.confirmLabel' }
     }
   },
   // The host header names the workspace and unlinks it; the module adds Reconnect there and

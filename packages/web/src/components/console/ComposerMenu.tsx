@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Icon } from '@/components/ui'
+import { useTranslations } from 'next-intl'
 
 // Default trigger look — the minimal inline chip used by the session composer.
 // Callers (e.g. the Home composer's design-pill selectors) can replace it via
@@ -73,6 +74,7 @@ export function ComposerMenu({
   onOpenChange: (open: boolean) => void
   onChange: (value: string) => void
 }) {
+  const t = useTranslations('Common.composerMenu')
   const triggerRef = useRef<HTMLButtonElement>(null)
   const menuId = useId()
   const headingId = useId()
@@ -226,7 +228,7 @@ export function ComposerMenu({
                   </button>
                 )
               })}
-              {searchable && visible.length === 0 && <div className="fnohit">No matches</div>}
+              {searchable && visible.length === 0 && <div className="fnohit">{t('noMatches')}</div>}
             </div>
             {footer && <div className="mt-1 border-t border-(--border-subtle)">{footer}</div>}
           </div>

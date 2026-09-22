@@ -582,14 +582,11 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
     return (
       <div className="fixed inset-0 flex flex-col overflow-hidden bg-(--surface-app)">
         <header className="flex h-14 flex-none items-center gap-[14px] border-b border-(--border-subtle) bg-(--surface-card) px-5 desktop:px-[22px]">
-          <Link
-            href={orgPath('/agents')}
-            className="flex items-center gap-[10px] no-underline"
-            aria-label="AgentConnect"
-          >
+          <Link href={orgPath('/agents')} className="flex items-center gap-[10px] no-underline" aria-label={t('brand')}>
             <LogoMark size={24} />
             <span className="font-sans text-[16px] font-semibold leading-none tracking-[-.02em] text-(--text-primary)">
-              Agent<span className="text-(--brand)">Connect</span>
+              {t('brandAgent')}
+              <span className="text-(--brand)">{t('brandConnect')}</span>
             </span>
           </Link>
           <div className="flex-1" />
@@ -698,7 +695,8 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                 >
                   <LogoMark size={24} />
                   <span className="brandword font-sans text-[16px] font-semibold leading-normal tracking-[-.02em] text-white">
-                    Agent<span className="text-(--magenta-300)">Connect</span>
+                    {t('brandAgent')}
+                    <span className="text-(--magenta-300)">{t('brandConnect')}</span>
                   </span>
                 </Link>
                 <button

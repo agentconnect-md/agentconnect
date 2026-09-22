@@ -8,6 +8,7 @@
 // Disconnecting ends the workspace for every agent, so that action is the org view's.
 
 import { createContext, useContext, useMemo, type ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { IntegrationChannelList } from '@/components/console/IntegrationChannelList'
 import { type IntegrationRow } from '@/lib/data'
@@ -29,6 +30,8 @@ const CardCtx = createContext<LinearCardState | null>(null)
 
 /** Card-scope state carrier, not chrome: it renders its children unchanged. */
 export function LinearWorkspaceCard({ integration, children }: { integration: IntegrationRow; children: ReactNode }) {
+  const t = useTranslations('Platforms.linear.card')
+  const notSetUp = t('notSetUp')
   const { bots, refresh } = useConsoleData()
   const botId = integration.botId ?? ''
   const bot = bots.find((b) => b.id === botId)
@@ -38,8 +41,8 @@ export function LinearWorkspaceCard({ integration, children }: { integration: In
   )
   const dead = !!bot?.revokedAt
   const value = useMemo<LinearCardState>(
-    () => ({ flow, err: flow.appMissing ? 'Linear isn’t set up on this deployment.' : flow.err, dead }),
-    [dead, flow]
+    () => ({ flow, err: flow.appMissing ? notSetUp : flow.err, dead }),
+    [dead, flow, notSetUp]
   )
   return <CardCtx.Provider value={value}>{children}</CardCtx.Provider>
 }
@@ -47,19 +50,20 @@ export function LinearWorkspaceCard({ integration, children }: { integration: In
 /** The workspace's one repair, in the header's action track beside the host's unlink.
  *  Haloed while the grant is known dead — the same needs-attention shape Slack's refresh uses. */
 export function LinearWorkspaceHeaderActions() {
+  const t = useTranslations('Platforms.linear.card')
   const card = useContext(CardCtx)
   if (!card) return null
   const reconnecting = card.flow.phase === 'authorizing'
   return (
     <>
       {card.dead && (
-        <span className="badge flex-none bg-(--status-error-soft) text-(--status-error)">grant expired</span>
+        <span className="badge flex-none bg-(--status-error-soft) text-(--status-error)">{t('grantExpired')}</span>
       )}
       <button
         type="button"
         disabled={reconnecting}
-        title={reconnecting ? 'Waiting for Linear…' : 'Reconnect this workspace'}
-        aria-label="Reconnect this workspace"
+        title={reconnecting ? t('waiting') : t('reconnect')}
+        aria-label={t('reconnect')}
         onClick={card.flow.start}
         className={`iconbtn h-7 w-7 flex-none ${card.dead ? 'border-(--status-error) text-(--status-error)' : ''} ${
           reconnecting ? 'cursor-default opacity-55' : 'cursor-pointer'
@@ -72,6 +76,7 @@ export function LinearWorkspaceHeaderActions() {
 }
 
 export function LinearWorkspaceRows({ integration, padX }: { integration: IntegrationRow; padX: number }) {
+  const t = useTranslations('Platforms.linear.card')
   const { getAgent } = useConsoleData()
   const card = useContext(CardCtx)
   const reconnecting = card?.flow.phase === 'authorizing'
@@ -96,7 +101,7 @@ export function LinearWorkspaceRows({ integration, padX }: { integration: Integr
           style={{ padding: `10px ${padX}px` }}
         >
           <Icon name="info" size={14} className="mt-[3px] flex-none" />
-          <span>Approve the workspace in the Linear tab — this card updates once it lands.</span>
+          <span>{t('approveTab')}</span>
         </div>
       )}
       {/* Sharing is structural on a Linear bot (§4.3), so every team row carries the dispatch selector. */}

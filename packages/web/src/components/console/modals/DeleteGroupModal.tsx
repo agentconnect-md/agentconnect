@@ -1,6 +1,7 @@
 // No 'use client' here: rendered only by ModalProvider (the client boundary).
 
 import { useState } from 'react'
+import { useTranslations } from 'next-intl'
 import type { MemberSetRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { Button, Icon } from '@/components/ui'
@@ -11,6 +12,7 @@ import { Button, Icon } from '@/components/ui'
  * offering a button that fails.
  */
 export default function DeleteGroupModal({ group, onClose }: { group: MemberSetRow; onClose: () => void }) {
+  const t = useTranslations('Daemons.deleteGroupModal')
   const { deleteGroup } = useConsoleData()
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -36,7 +38,7 @@ export default function DeleteGroupModal({ group, onClose }: { group: MemberSetR
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--status-error-soft)">
           <Icon name="trash" size={15} color="var(--status-error)" />
         </span>
-        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Delete group</span>
+        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('title')}</span>
         <button className="iconbtn" onClick={onClose}>
           <Icon name="x" size={16} />
         </button>
@@ -44,19 +46,9 @@ export default function DeleteGroupModal({ group, onClose }: { group: MemberSetR
       <div className="modalbody">
         <p className="font-sans text-[13px] font-normal leading-[1.6] text-(--text-secondary)">
           {blocked ? (
-            <>
-              <span className="mono text-(--text-primary)">{group.name}</span> still has{' '}
-              {members > 0 && `${members} daemon${members === 1 ? '' : 's'}`}
-              {members > 0 && group.agentCount > 0 && ' and '}
-              {group.agentCount > 0 && `${group.agentCount} agent${group.agentCount === 1 ? '' : 's'}`} on it. Remove
-              the daemons and move the agents somewhere else first — deleting it now would leave them with nowhere to
-              run.
-            </>
+            <>{t('blocked', { group: group.name, daemons: members, agents: group.agentCount })}</>
           ) : (
-            <>
-              Delete <span className="mono text-(--text-primary)">{group.name}</span>? It is empty, so nothing stops
-              running. This cannot be undone.
-            </>
+            <>{t('empty', { group: group.name })}</>
           )}
         </p>
         {err && (
@@ -69,14 +61,14 @@ export default function DeleteGroupModal({ group, onClose }: { group: MemberSetR
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button
           variant="danger"
           onClick={() => void remove()}
           className={!busy && !blocked ? undefined : 'cursor-default opacity-50'}
         >
-          {busy ? 'Deleting…' : 'Delete'}
+          {busy ? t('deleting') : t('delete')}
         </Button>
       </div>
     </>

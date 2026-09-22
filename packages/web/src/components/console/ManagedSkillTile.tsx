@@ -19,40 +19,41 @@ function bytes(value: number): string {
 }
 
 function Provenance({ value }: { value: ManagedSkillRevisionDto }) {
+  const t = useTranslations('Tools.skills')
   return (
     <div className="flex flex-wrap gap-x-2 gap-y-1 font-mono text-[10px] text-(--text-disabled)">
-      <span>{value.source === 'dream' ? 'Dream proposal' : 'manual publish'}</span>
+      <span>{value.source === 'dream' ? t('dreamProposal') : t('manualPublish')}</span>
       <span aria-hidden>·</span>
       <time dateTime={value.createdAt}>{when(value.createdAt)}</time>
       {value.sourceAgentId && (
         <>
           <span aria-hidden>·</span>
-          <span title={value.sourceAgentId}>agent {value.sourceAgentId}</span>
+          <span title={value.sourceAgentId}>{t('sourceAgent', { id: value.sourceAgentId })}</span>
         </>
       )}
       {value.sourceDreamId && (
         <>
           <span aria-hidden>·</span>
-          <span title={value.sourceDreamId}>dream {value.sourceDreamId}</span>
+          <span title={value.sourceDreamId}>{t('sourceDream', { id: value.sourceDreamId })}</span>
         </>
       )}
       {value.sourceSessionIds.length > 0 && (
         <>
           <span aria-hidden>·</span>
           <span title={value.sourceSessionIds.join(', ')}>
-            {value.sourceSessionIds.length} source session{value.sourceSessionIds.length === 1 ? '' : 's'}
+            {t('sourceSessions', { count: value.sourceSessionIds.length })}
           </span>
         </>
       )}
       {value.reviewedByUserId ? (
         <>
           <span aria-hidden>·</span>
-          <span>reviewed by {value.reviewedByUserId}</span>
+          <span>{t('reviewedBy', { id: value.reviewedByUserId })}</span>
         </>
       ) : value.createdByUserId ? (
         <>
           <span aria-hidden>·</span>
-          <span>published by {value.createdByUserId}</span>
+          <span>{t('publishedBy', { id: value.createdByUserId })}</span>
         </>
       ) : null}
       <span aria-hidden>·</span>
@@ -168,8 +169,11 @@ export function ManagedSkillTile({
                   </select>
                 </label>
                 <span className="font-mono text-[10px] text-(--text-disabled)">
-                  {selected.fileCount} files · {bytes(selected.expandedBytes)} expanded ·{' '}
-                  {bytes(selected.compressedBytes)} archive
+                  {t('revisionFiles', {
+                    count: selected.fileCount,
+                    expanded: bytes(selected.expandedBytes),
+                    archive: bytes(selected.compressedBytes)
+                  })}
                 </span>
               </div>
               <Provenance value={selected} />

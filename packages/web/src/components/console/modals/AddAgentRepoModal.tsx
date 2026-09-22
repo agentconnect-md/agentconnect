@@ -15,6 +15,7 @@
 // so a nested open never tears down the caller.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { GithubMark, LoadingState } from '@/components/marks'
 import { CodeHostMark } from '@/components/console/CodeHostMark'
@@ -127,6 +128,7 @@ export default function AddAgentRepoModal({
   onClose: () => void
   onCreated: (row: AgentRepoAuthDto) => void
 }) {
+  const t = useTranslations('Agents.repoModal')
   const { orgPath } = useOrgs()
   // A repository locked by a manual GitHub workspace pins the host too — that arm
   // may authorize only its own repository, so the choice would be a dead end.
@@ -398,7 +400,7 @@ export default function AddAgentRepoModal({
     gitea: () =>
       gt.error ? (
         <div className="mb-4 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
-          Couldn&rsquo;t load your Gitea repositories — {gt.error}
+          {t('giteaLoadError', { error: gt.error })}
         </div>
       ) : gt.loading ? (
         <div className="mb-4">
@@ -436,9 +438,7 @@ export default function AddAgentRepoModal({
                   return (
                     <div key={choice.repoId} className="fnohit">
                       {choice.repoPath}
-                      {taken === 'workspace'
-                        ? ' is the agent’s workspace repository'
-                        : ' is already authorized for this agent'}
+                      {taken === 'workspace' ? t('workspaceRepository') : t('alreadyAuthorized')}
                     </div>
                   )
                 }
@@ -451,29 +451,31 @@ export default function AddAgentRepoModal({
                   />
                 )
               })}
-              {gtMatches.length === 0 && <div className="fnohit">No repositories match &ldquo;{gtQ}&rdquo;</div>}
+              {gtMatches.length === 0 && <div className="fnohit">{t('noRepositoriesMatch', { query: gtQ })}</div>}
             </GiteaRepositoryField>
           </div>
 
-          <div className="fldlbl mb-2">Access</div>
+          <div className="fldlbl mb-2">{t('access')}</div>
           <div className="mb-4 flex flex-col gap-[9px]">
-            {GITEA_TIERS.map((t) => {
-              const on = access === t.v
+            {GITEA_TIERS.map((tier) => {
+              const on = access === tier.v
               return (
                 <div
-                  key={t.v}
+                  key={tier.v}
                   className={`flex cursor-pointer items-center gap-[11px] rounded-[9px] border px-[13px] py-[11px] ${
                     on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-subtle) bg-(--surface-card)'
                   }`}
-                  onClick={() => setAccess(t.v)}
+                  onClick={() => setAccess(tier.v)}
                 >
                   <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
-                    <Icon name={t.icon} size={16} color={on ? 'var(--brand)' : 'var(--text-tertiary)'} />
+                    <Icon name={tier.icon} size={16} color={on ? 'var(--brand)' : 'var(--text-tertiary)'} />
                   </span>
                   <div className="min-w-0 flex-1">
-                    <div className="font-sans text-[13px] font-semibold leading-normal">{t.label}</div>
+                    <div className="font-sans text-[13px] font-semibold leading-normal">
+                      {tier.v === 'read' ? t('readOnly') : t('readWrite')}
+                    </div>
                     <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-                      {t.desc}
+                      {tier.v === 'read' ? t('readOnlyDescription') : t('giteaWriteDescription')}
                     </div>
                   </div>
                   <span
@@ -493,30 +495,27 @@ export default function AddAgentRepoModal({
       gh === null ? (
         <div className="mb-4 flex items-center gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
           <Icon name="loader" size={15} className="flex-none animate-spin" />
-          Checking your GitHub setup…
+          {t('checkingGithub')}
         </div>
       ) : !gh.enabled ? (
         <div className="mb-4 flex items-start gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
           <Icon name="info" size={15} className="mt-[1px] flex-none" />
-          <span>
-            The GitHub App isn&rsquo;t configured for this deployment. Ask a deployment owner to configure it before
-            authorizing repositories.
-          </span>
+          <span>{t('githubNotConfigured')}</span>
         </div>
       ) : gh.installations.length === 0 ? (
         <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
           <div className="font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)">
-            Connect GitHub to grant repos
+            {t('connectGithubTitle')}
           </div>
           <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-            Install the AgentConnect GitHub app, then choose which repositories this agent can access.
+            {t('connectGithubDescription')}
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-3">
             <Button size="sm" onClick={() => void openGhInstall()}>
               <span className="flex h-4 w-4 items-center justify-center">
                 <GithubMark color="#fff" />
               </span>
-              Install GitHub app
+              {t('installGithub')}
             </Button>
             <button type="button" className="lnk inline-flex items-center gap-[6px]" onClick={() => void syncGh()}>
               <Icon
@@ -524,14 +523,14 @@ export default function AddAgentRepoModal({
                 size={13}
                 className={ghSyncing ? 'animate-spin' : undefined}
               />
-              I&rsquo;ve installed it — sync
+              {t('installedSync')}
             </button>
           </div>
         </div>
       ) : (
         <>
           <div className="fld relative mb-[18px] min-w-0">
-            <span className="fldlbl">Repository</span>
+            <span className="fldlbl">{t('repository')}</span>
             <div
               className={fixedRepo ? 'inp min-w-0 cursor-default gap-2' : 'inp min-w-0 cursor-pointer gap-2'}
               onClick={() => {
@@ -578,14 +577,12 @@ export default function AddAgentRepoModal({
                     className="fsearch h-10 rounded-md px-3 font-sans text-[13px] font-medium leading-normal"
                     value={q}
                     onChange={(e) => setQ(e.target.value)}
-                    placeholder="Search or type owner/repo…"
+                    placeholder={t('searchRepository')}
                     autoFocus
                   />
                   {reposError === 'failed' && (
                     <div className="flex items-center gap-2 px-2 py-[7px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
-                      <span className="min-w-0 flex-1">
-                        Couldn’t load repositories from GitHub — the list may be incomplete.
-                      </span>
+                      <span className="min-w-0 flex-1">{t('githubLoadError')}</span>
                       <button
                         type="button"
                         className="lnk flex-none text-[12px]"
@@ -597,7 +594,7 @@ export default function AddAgentRepoModal({
                           setReposNonce((n) => n + 1)
                         }}
                       >
-                        Retry
+                        {t('retry')}
                       </button>
                     </div>
                   )}
@@ -628,18 +625,20 @@ export default function AddAgentRepoModal({
                           </span>
                           <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                             {isWorkspace(r.fullName)
-                              ? 'The agent’s workspace — already fully covered'
+                              ? t('workspaceCovered')
                               : isAuthorized(r.fullName)
-                                ? 'Already authorized for this agent'
-                                : (r.description ?? 'No description')}
+                                ? t('alreadyAuthorized')
+                                : (r.description ?? t('noDescription'))}
                           </span>
                         </span>
                         {isWorkspace(r.fullName) ? (
                           <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
-                            workspace
+                            {t('workspace')}
                           </span>
                         ) : isAuthorized(r.fullName) ? (
-                          <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">added</span>
+                          <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
+                            {t('added')}
+                          </span>
                         ) : (
                           pick.toLowerCase() === r.fullName.toLowerCase() && (
                             <Icon name="check" size={17} color="var(--brand)" />
@@ -663,7 +662,7 @@ export default function AddAgentRepoModal({
                           {typedRepo}
                         </span>
                         <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                          Use this repository — must be covered by an installation
+                          {t('useRepository')}
                         </span>
                       </span>
                     </button>
@@ -671,16 +670,16 @@ export default function AddAgentRepoModal({
                   {typedRepo && typedTaken && (
                     <div className="fnohit">
                       {isWorkspace(typedRepo)
-                        ? `${typedRepo} is the agent’s workspace`
-                        : `${typedRepo} is already authorized`}
+                        ? t('isWorkspace', { repo: typedRepo })
+                        : t('isAuthorized', { repo: typedRepo })}
                     </div>
                   )}
                   {repos !== null && matches.length === 0 && !typedRepo && !reposError && (
-                    <div className="fnohit">No repositories match &ldquo;{q}&rdquo;</div>
+                    <div className="fnohit">{t('noRepositoriesMatch', { query: q })}</div>
                   )}
                   {repos === null && (
                     <div className="px-2 py-[7px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                      Loading repositories…
+                      {t('loadingRepositories')}
                     </div>
                   )}
                 </div>
@@ -688,7 +687,7 @@ export default function AddAgentRepoModal({
             )}
           </div>
 
-          <div className="fldlbl mb-2">Access</div>
+          <div className="fldlbl mb-2">{t('access')}</div>
           <div className="mb-4 flex flex-col gap-[9px]">
             {TIERS.map((t) => {
               const on = access === t.v
@@ -724,10 +723,7 @@ export default function AddAgentRepoModal({
           {uncovered && (
             <div className="mb-4 flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
               <Icon name="info" size={14} className="mt-[1px] flex-none" />
-              <span>
-                No GitHub App installation covers <span className="mono">{pickOwner}</span>&#32;— install (or extend)
-                the app on that account first.
-              </span>
+              <span>{t('installationMissing', { owner: pickOwner })}</span>
             </div>
           )}
           {!uncovered && probeNote && (
@@ -741,7 +737,7 @@ export default function AddAgentRepoModal({
     gitlab: () =>
       gl.error ? (
         <div className="mb-4 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
-          Couldn&rsquo;t load your GitLab projects — {gl.error}
+          {t('gitlabLoadError', { error: gl.error })}
         </div>
       ) : gl.loading ? (
         <div className="mb-4">
@@ -796,29 +792,31 @@ export default function AddAgentRepoModal({
                   />
                 )
               })}
-              {glMatches.length === 0 && <div className="fnohit">No projects match &ldquo;{glQ}&rdquo;</div>}
+              {glMatches.length === 0 && <div className="fnohit">{t('noProjectsMatch', { query: glQ })}</div>}
             </GitlabProjectField>
           </div>
 
-          <div className="fldlbl mb-2">Access</div>
+          <div className="fldlbl mb-2">{t('access')}</div>
           <div className="mb-4 flex flex-col gap-[9px]">
-            {GITLAB_TIERS.map((t) => {
-              const on = access === t.v
+            {GITLAB_TIERS.map((tier) => {
+              const on = access === tier.v
               return (
                 <div
-                  key={t.v}
+                  key={tier.v}
                   className={`flex cursor-pointer items-center gap-[11px] rounded-[9px] border px-[13px] py-[11px] ${
                     on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-subtle) bg-(--surface-card)'
                   }`}
-                  onClick={() => setAccess(t.v)}
+                  onClick={() => setAccess(tier.v)}
                 >
                   <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
-                    <Icon name={t.icon} size={16} color={on ? 'var(--brand)' : 'var(--text-tertiary)'} />
+                    <Icon name={tier.icon} size={16} color={on ? 'var(--brand)' : 'var(--text-tertiary)'} />
                   </span>
                   <div className="min-w-0 flex-1">
-                    <div className="font-sans text-[13px] font-semibold leading-normal">{t.label}</div>
+                    <div className="font-sans text-[13px] font-semibold leading-normal">
+                      {tier.v === 'read' ? t('readOnly') : t('readWrite')}
+                    </div>
                     <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-                      {t.desc}
+                      {tier.v === 'read' ? t('readOnlyDescription') : t('gitlabWriteDescription')}
                     </div>
                   </div>
                   <span
@@ -841,7 +839,7 @@ export default function AddAgentRepoModal({
       <div className="modal">
         <div className="modalhead">
           {showBack ? (
-            <button className="iconbtn" title="Back to workspace settings" onClick={onClose}>
+            <button className="iconbtn" title={t('backToWorkspace')} onClick={onClose}>
               <Icon name="arrow-left" size={16} />
             </button>
           ) : (
@@ -853,12 +851,12 @@ export default function AddAgentRepoModal({
           )}
           <div className="min-w-0 flex-1">
             <div className="font-sans text-[16px] font-semibold leading-normal">
-              {workspaceContext ? 'Edit workspace' : 'Add repository'}
+              {workspaceContext ? t('editWorkspace') : t('addRepository')}
             </div>
             <div className="mt-[1px] truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
               {workspaceContext
-                ? `authorize an additional ${hostProjection.repoNoun} for `
-                : `authorize a ${hostProjection.label} ${hostProjection.repoNoun} for `}
+                ? t('authorizeAdditional', { noun: hostProjection.repoNoun })
+                : t('authorizeRepo', { host: hostProjection.label, noun: hostProjection.repoNoun })}{' '}
               <span className="mono">{agentLabel(agent)}</span>
             </div>
           </div>
@@ -870,7 +868,7 @@ export default function AddAgentRepoModal({
           {/* A repository fixed by a manual GitHub workspace pins the host too. */}
           {!fixedRepo && (
             <div className="fld mb-[18px]">
-              <span className="fldlbl">Code host</span>
+              <span className="fldlbl">{t('codeHost')}</span>
               <div className="grid grid-cols-1 gap-[10px] desktop:grid-cols-3">
                 {hostTiles.map((host) => (
                   <button
@@ -912,13 +910,13 @@ export default function AddAgentRepoModal({
         <div className="modalfoot">
           <span className="flex-1" />
           <Button variant="ghost" onClick={onClose}>
-            Cancel
+            {t('cancel')}
           </Button>
           <Button
             onClick={() => void submit()}
             className={!canSubmit || saving ? 'pointer-events-none opacity-50' : undefined}
           >
-            {saving ? 'Adding…' : 'Add'}
+            {saving ? t('adding') : t('add')}
           </Button>
         </div>
       </div>

@@ -2,6 +2,7 @@
 // client tree. Discord has no lifecycle machinery — nothing to refresh, no
 // workspace authorization to rotate.
 
+import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import type { BotDto } from '@/lib/api'
 import type { WebBotSettingsFragments } from '../contract'
@@ -11,14 +12,15 @@ import { DiscordMark } from './mark'
 /** The ready-made invite — correct scopes and permissions already in the URL, so
  *  nobody has to hand-build one in the Developer Portal's URL Generator. */
 function DiscordRowLinks({ bot }: { bot: BotDto }) {
+  const t = useTranslations('Platforms.discord.settings')
   if (!bot.discordAppId) return null
   return (
     <a
       href={discordBotInviteUrl(bot.discordAppId)}
       target="_blank"
       rel="noopener noreferrer"
-      title="Invite this bot to a Discord server — preset scopes &amp; permissions"
-      aria-label="Add this bot to a Discord server"
+      title={t('inviteTitle')}
+      aria-label={t('inviteLabel')}
       className="iconbtn h-7 w-7 flex-none"
       onClick={(e) => e.stopPropagation()}
     >
@@ -31,13 +33,14 @@ function DiscordRowLinks({ bot }: { bot: BotDto }) {
  *  the Developer Portal. Without a recorded application id there is no per-app
  *  page to point at, so the block stays off rather than guessing a URL. */
 function DiscordDeleteNotice({ bot }: { bot: BotDto }) {
+  const t = useTranslations('Platforms.discord.settings')
   if (!bot.discordAppId) return null
   return (
     <>
       <div className="flex items-start gap-[9px]">
         <Icon name="info" size={15} color="var(--text-tertiary)" className="mt-[1px] flex-none" />
         <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-          The Discord application itself is not deleted.
+          {t('deleteNotice')}
         </span>
       </div>
       <a
@@ -49,7 +52,7 @@ function DiscordDeleteNotice({ bot }: { bot: BotDto }) {
         <span className="inline-flex h-[13px] w-[13px] items-center justify-center">
           <DiscordMark />
         </span>
-        Open on Discord
+        {t('openOnDiscord')}
         <Icon name="arrow-up-right" size={13} />
       </a>
     </>

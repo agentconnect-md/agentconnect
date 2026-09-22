@@ -9,6 +9,7 @@
 // (zed-industries/zed discussion #49085), so the data is there and the affordance is the gap.
 
 import { AgentIconView } from '@/components/marks'
+import { useTranslations } from 'next-intl'
 import type { AgentIcon } from '@/lib/agent-icon'
 import type { CommandCandidate } from '@/components/console/runtime-command-menu'
 import type { RuntimeCommandsGap } from '@/components/console/useRuntimeCommands'
@@ -40,6 +41,7 @@ export function CommandMenu({
   onHover: (index: number) => void
   onPick: (option: CommandCandidate) => void
 }) {
+  const t = useTranslations('Common.commandMenu')
   // Render for gaps alone too: a roster whose every participant is a gap must say so, not vanish.
   if ((options.length === 0 && (gaps?.length ?? 0) === 0) || !coords) return null
   const active = options[activeIndex]
@@ -60,7 +62,7 @@ export function CommandMenu({
     >
       <div
         role="listbox"
-        aria-label="Run a command"
+        aria-label={t('runCommand')}
         style={{ maxHeight: COMMAND_MENU_MAX_HEIGHT }}
         className="w-[240px] flex-none overflow-y-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
       >
@@ -104,10 +106,8 @@ export function CommandMenu({
             key={gap.agentId}
             className="border-t border-(--border-subtle) px-2 py-[5px] font-sans text-[11px] leading-normal font-normal text-(--text-tertiary)"
           >
-            {gap.agentName || 'One agent'}
-            {gap.reason === 'unreported'
-              ? ' hasn’t reported its skills yet — they appear after its next session starts'
-              : ' is unreachable'}
+            {gap.agentName || t('oneAgent')}
+            {gap.reason === 'unreported' ? t('unreported') : t('unreachable')}
           </div>
         ))}
       </div>
@@ -121,11 +121,11 @@ export function CommandMenu({
             <div className="mono mt-[3px] text-[11px] break-all text-(--text-tertiary)">{active.hint}</div>
           )}
           <p className="mt-2 font-sans text-[12px] leading-[1.5] font-normal text-(--text-secondary)">
-            {active.description || 'This command has no description.'}
+            {active.description || t('noDescription')}
           </p>
           {showOwner && (
             <div className="mt-2 border-t border-(--border-subtle) pt-2 font-sans text-[11px] font-normal text-(--text-tertiary)">
-              Runs on {active.agentName}
+              {t('runsOn', { agent: active.agentName })}
             </div>
           )}
         </div>

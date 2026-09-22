@@ -481,7 +481,7 @@ export function GitPanel({
         ))}
         {!tracked ? (
           <div className="px-3 py-[7px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-            This branch tracks no remote branch, so the console cannot tell which of these commits are pushed.
+            {t('noTracking')}
           </div>
         ) : null}
         {log.log.truncated ? (

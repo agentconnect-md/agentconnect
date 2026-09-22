@@ -15,6 +15,7 @@
  * against its own record of the card rather than against anything the frame said.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import type { McpAppRpc } from '@agentconnect.md/protocol'
 import {
   MCP_APPS_PROTOCOL_VERSION,
@@ -33,11 +34,11 @@ import {
 } from '@/lib/mcp-app-frame'
 
 /** How a settled frame reads once its bridge has stopped answering. */
-const APP_OUTCOME: Record<string, { icon: string; color: string; label: string }> = {
-  completed: { icon: 'check', color: 'var(--text-secondary)', label: 'Configuration saved' },
-  closed: { icon: 'x', color: 'var(--text-tertiary)', label: 'Interface closed' },
-  superseded: { icon: 'refresh-cw', color: 'var(--text-tertiary)', label: 'Replaced by a newer interface' },
-  expired: { icon: 'clock', color: 'var(--text-tertiary)', label: 'Interface expired with the session' }
+const APP_OUTCOME: Record<string, { icon: string; color: string; labelKey: string }> = {
+  completed: { icon: 'check', color: 'var(--text-secondary)', labelKey: 'completed' },
+  closed: { icon: 'x', color: 'var(--text-tertiary)', labelKey: 'closed' },
+  superseded: { icon: 'refresh-cw', color: 'var(--text-tertiary)', labelKey: 'superseded' },
+  expired: { icon: 'clock', color: 'var(--text-tertiary)', labelKey: 'expired' }
 }
 
 export interface McpAppCardProps {
@@ -75,12 +76,14 @@ export function McpAppCard(props: McpAppCardProps) {
 }
 
 function SandboxedMcpAppCard({ step, onRpc, onClose }: McpAppCardProps) {
+  const t = useTranslations('Sessions.mcpApp')
   const theme = useConsoleTheme()
   const app = step.app
   const frameRef = useRef<HTMLIFrameElement | null>(null)
   const [height, setHeight] = useState<number>(() => clampAppHeight(app?.dimensions?.height ?? MCP_APP_DEFAULT_HEIGHT))
   const [minimized, setMinimized] = useState(false)
   const settled = app?.outcome ? APP_OUTCOME[app.outcome] : undefined
+  const settledLabel = settled ? t(`outcomes.${settled.labelKey}`) : undefined
   // A large template arrives as ordered chunks, so it is only usable once the assembled length
   // reaches what the card declared. Handing an iframe half a document renders a broken page —
   // the one outcome worse than saying the interface is still arriving.
@@ -242,9 +245,9 @@ function SandboxedMcpAppCard({ step, onRpc, onClose }: McpAppCardProps) {
         {settled && shows && (
           <span
             className="flex-none font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)"
-            title={settled.label}
+            title={settledLabel}
           >
-            {settled.label}
+            {settledLabel}
           </span>
         )}
         {step.time && (
@@ -258,8 +261,8 @@ function SandboxedMcpAppCard({ step, onRpc, onClose }: McpAppCardProps) {
               type="button"
               className="iconbtn h-[22px] w-[22px]"
               aria-expanded={!minimized}
-              aria-label={minimized ? 'Expand interface' : 'Minimize interface'}
-              title={minimized ? 'Expand interface' : 'Minimize interface'}
+              aria-label={minimized ? t('expand') : t('minimize')}
+              title={minimized ? t('expand') : t('minimize')}
               onClick={() => setMinimized((v) => !v)}
             >
               <Icon name={minimized ? 'chevron-right' : 'chevron-down'} size={12} color="var(--text-tertiary)" />
@@ -269,8 +272,8 @@ function SandboxedMcpAppCard({ step, onRpc, onClose }: McpAppCardProps) {
             <button
               type="button"
               className="iconbtn h-[22px] w-[22px]"
-              aria-label="Close interface"
-              title="Close interface"
+              aria-label={t('close')}
+              title={t('close')}
               onClick={() => onClose(app.appId)}
             >
               <Icon name="x" size={12} color="var(--text-tertiary)" />
@@ -298,14 +301,14 @@ function SandboxedMcpAppCard({ step, onRpc, onClose }: McpAppCardProps) {
           ) : assembling ? (
             <span className="flex min-w-0 items-center gap-[7px] px-[14px] py-[11px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
               <Icon name="loader" size={13} color="var(--text-tertiary)" />
-              <span className="min-w-0 truncate">Loading the interface…</span>
+              <span className="min-w-0 truncate">{t('loading')}</span>
             </span>
           ) : (
             // A card whose template never arrived — a row written before templates were kept, or a
             // full-body read that failed. Saying so is more honest than an empty frame.
             <span className="flex min-w-0 items-center gap-[7px] px-[14px] py-[11px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
               <Icon name="archive" size={13} color="var(--text-tertiary)" />
-              <span className="min-w-0 truncate">This interface was shown live; its page could not be loaded.</span>
+              <span className="min-w-0 truncate">{t('unavailable')}</span>
             </span>
           )}
         </div>

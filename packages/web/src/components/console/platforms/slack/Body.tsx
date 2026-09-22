@@ -5,6 +5,7 @@ import { PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { ApiError } from '@/lib/api'
 import { agentIconBackgroundColor } from '@/lib/agent-icon'
+import { useTranslations } from 'next-intl'
 import type { Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import {
@@ -24,9 +25,11 @@ import { SLACK_INSTALL_EXPIRED, slackMissingScopesFromError, slackPlatformInstal
 import { SlackConfigTokenPreview, SlackManifestPreview } from './previews'
 
 /** This platform's delivery vocabulary — {@link WebTransportAffordance.labels}. */
+// Message keys, not copy: the Body resolves them for its own delivery lines
+// ({@link WebTransportAffordance.labels} is the declaration the registry reads).
 export const SLACK_TRANSPORT_LABEL: Record<WebWizardTransport, string> = {
-  socket: 'Socket Mode',
-  http: 'HTTP (Events API)'
+  socket: 'Platforms.slack.transport.socket',
+  http: 'Platforms.slack.transport.http'
 }
 
 /**
@@ -45,6 +48,11 @@ export const SLACK_TRANSPORT_LABEL: Record<WebWizardTransport, string> = {
  * which is exactly why those live on {@link WizardHost} and not in here.
  */
 export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHost }) {
+  const t = useTranslations('Platforms.slack')
+  const transportLabels: Record<WebWizardTransport, string> = {
+    socket: t('transport.socket'),
+    http: t('transport.http')
+  }
   const { finalizeSlackInstall } = useConsoleData()
   // The chassis reads this same probe for its relay capability; one SWR key ⇒
   // one request. The funnel flags on the DTO are Slack's alone.
@@ -439,18 +447,18 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
   // secret from apps.manifest.create, so there's no paste step.
   const primary = isAuto
     ? {
-        label: 'Connect',
+        label: t('footer.connect'),
         onSubmit: () => void finalizeAuto(),
         // Enabled once the install reaches bot-ready. Socket also needs the pasted
         // app-level token; http finalizes with none (signing secret already captured).
         enabled: autoPhase === 'appToken' && (transport === 'http' || appOk)
       }
     : isConfigSetup
-      ? { label: 'Connect & authorize', onSubmit: () => void saveConfigAndStart(), enabled: !!cfgAccess.trim() }
-      : { label: 'Connect & authorize', onSubmit: () => void submit(), enabled: createValid }
+      ? { label: t('footer.connectAuthorize'), onSubmit: () => void saveConfigAndStart(), enabled: !!cfgAccess.trim() }
+      : { label: t('footer.connectAuthorize'), onSubmit: () => void submit(), enabled: createValid }
   usePublishedFooter(host, {
     ...primary,
-    label: saving ? (isAuto && autoPhase === 'config' ? 'Creating…' : 'Connecting…') : primary.label,
+    label: saving ? (isAuto && autoPhase === 'config' ? t('footer.creating') : t('footer.connecting')) : primary.label,
     enabled: primary.enabled && !saving,
     // The built-in pane's action is its own Add-to-Slack button (the modal closes
     // itself when the install lands), so the custom flow's footer action hides.
@@ -461,7 +469,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
     // Way back to the simple pane — only meaningful when the platform app exists
     // AND this agent is the preset it binds to.
     ...(builtinAppOffered
-      ? { headerAction: { label: 'Use the built-in Slack app', onSelect: () => setSlackIdentity('builtin') } }
+      ? { headerAction: { label: t('identity.useBuiltin'), onSelect: () => setSlackIdentity('builtin') } }
       : {})
   })
 
@@ -476,7 +484,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
             {platformPhase === 'authorizing' ? (
               <div className="flex h-[46px] w-full items-center justify-center gap-[10px] rounded-[10px] bg-(--surface-inverse) font-sans text-[14px] font-semibold leading-normal text-white opacity-85">
                 <Icon name="loader" size={16} className="flex-none animate-spin" />
-                Waiting for Slack…
+                {t('builtin.waiting')}
               </div>
             ) : (
               <button
@@ -488,7 +496,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                 <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
                   <PlatformMark platform="slack" />
                 </span>
-                Add to Slack
+                {t('builtin.add')}
               </button>
             )}
             {platformErr && (
@@ -497,9 +505,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
               </div>
             )}
             <div className="mt-[10px] font-sans text-[12px] font-normal leading-[1.4] text-(--text-tertiary)">
-              {platformPhase === 'authorizing'
-                ? 'Approve the install in the Slack tab — this closes automatically once it lands.'
-                : 'Installs the built-in AgentConnect Slack app.'}
+              {platformPhase === 'authorizing' ? t('builtin.approving') : t('builtin.installs')}
             </div>
           </div>
           <button
@@ -508,7 +514,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
             className="mb-4 flex cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[13px] font-semibold leading-normal text-(--text-primary)"
           >
             <Icon name="chevron-right" size={14} color="var(--text-tertiary)" />
-            Use a custom bot identity instead
+            {t('builtin.useCustom')}
           </button>
         </>
       )}
@@ -517,7 +523,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
           {funnel === null ? (
             <div className="mb-4 flex items-center gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
               <Icon name="loader" size={15} className="flex-none animate-spin" />
-              Checking your Slack setup…
+              {t('checking')}
             </div>
           ) : (
             <>
@@ -532,7 +538,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                           type="button"
                           disabled={!!install}
                           onClick={() => selectMethod(m)}
-                          title={install ? 'Install in progress — “Start over” to switch method' : undefined}
+                          title={install ? t('method.installLocked') : undefined}
                           className={`rounded-[6px] px-[11px] py-[5px] font-sans text-[12px] font-semibold leading-normal ${
                             on ? 'bg-(--brand-soft) text-(--brand)' : 'bg-transparent text-(--text-tertiary)'
                           } ${install ? 'cursor-not-allowed opacity-50' : ''}`}
@@ -543,9 +549,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                     })}
                   </div>
                   <span className="min-w-0 flex-1 font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-                    {method === 'config'
-                      ? 'Recommended — one-click install, no manifest to copy or tokens to paste.'
-                      : 'Manual — copy our manifest into Slack, install, and paste the tokens back.'}
+                    {method === 'config' ? t('method.configHint') : t('method.botHint')}
                   </span>
                 </div>
               )}
@@ -553,7 +557,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                 <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
                   <div className="mb-[14px]">
                     <DeliveryLine
-                      labels={SLACK_TRANSPORT_LABEL}
+                      labels={transportLabels}
                       transport={transport}
                       relayAvailable={relayAvailable}
                       locked={!!install}
@@ -576,7 +580,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                       {autoPhase === 'config' && (
                         <>
                           <div className="mb-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                            Name &amp; create the app (name optional)
+                            {t('method.nameAndCreate')}
                           </div>
                           <div className="flex items-center gap-2">
                             <div className="fld flex-1">
@@ -584,8 +588,8 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                                 className="inp mn"
                                 placeholder={
                                   manifestNames.name
-                                    ? `${manifestNames.name} — from the agent's name`
-                                    : 'Bot name (optional) — e.g. acme-agent'
+                                    ? t('auto.nameFromAgent', { name: manifestNames.name })
+                                    : t('auto.namePlaceholder')
                                 }
                                 value={appName}
                                 onChange={(e) => setAppName(e.target.value)}
@@ -596,7 +600,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                               className={saving ? 'flex-none cursor-default opacity-50' : 'flex-none'}
                             >
                               <Icon name="plus" size={14} />
-                              {saving ? 'Creating…' : 'Create & install'}
+                              {saving ? t('footer.creating') : t('auto.createInstall')}
                             </Button>
                           </div>
                         </>
@@ -605,11 +609,10 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                         <>
                           <div className="flex items-center gap-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
                             <Icon name="loader" size={14} className="flex-none animate-spin" />
-                            Approve the install in Slack
+                            {t('approve.title')}
                           </div>
                           <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                            We opened Slack in a new tab — click &ldquo;Allow&rdquo;, then come back. This updates
-                            automatically.
+                            {t('approve.body')}
                           </div>
                           {install && (
                             <div className="mt-2 flex items-center gap-[14px]">
@@ -619,11 +622,11 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                                 rel="noopener noreferrer"
                                 className="lnk inline-flex items-center gap-[5px]"
                               >
-                                Reopen the Slack install
+                                {t('approve.reopen')}
                                 <Icon name="external-link" size={12} />
                               </a>
                               <button type="button" className="lnk" onClick={restartAuto}>
-                                Start over
+                                {t('approve.startOver')}
                               </button>
                             </div>
                           )}
@@ -631,9 +634,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                       )}
                       {autoPhase === 'appToken' && (
                         <div className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                          {transport === 'http'
-                            ? 'App created & installed — click Connect to finish'
-                            : 'App created & installed — bot token secured'}
+                          {transport === 'http' ? t('auto.readyHttp') : t('auto.readySocket')}
                         </div>
                       )}
                     </div>
@@ -654,13 +655,13 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                         </span>
                         <div className="min-w-0 flex-1">
                           <div className="mb-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                            Generate the App-Level token &amp; paste it{' '}
-                            <span className="font-normal text-(--text-tertiary)">(Slack has no API for this one)</span>
+                            {t('appToken.title')}{' '}
+                            <span className="font-normal text-(--text-tertiary)">{t('appToken.unavailable')}</span>
                           </div>
                           <div className="fld">
                             <input
                               className={`inp mn ${showErrors && !appOk ? 'border-(--status-error)' : ''}`}
-                              placeholder="xapp-…"
+                              placeholder={t('appToken.placeholder')}
                               value={appToken}
                               onChange={(e) => setAppToken(e.target.value)}
                               disabled={autoPhase !== 'appToken'}
@@ -673,12 +674,12 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                               rel="noopener noreferrer"
                               className="lnk mt-[10px] inline-flex items-center gap-[5px]"
                             >
-                              Generate the App-Level token
+                              {t('appToken.generate')}
                               <Icon name="external-link" size={12} />
                             </a>
                           ) : (
                             <div className="mt-[8px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                              Unlocks once you approve the install in Slack.
+                              {t('appToken.locked')}
                             </div>
                           )}
                         </div>
@@ -704,10 +705,10 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                         />
                         <div className="min-w-0 flex-1">
                           <div className="font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
-                            Slack didn’t grant every permission this app needs
+                            {t('scopes.title')}
                           </div>
                           <div className="mt-[3px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                            Reinstall the app in your Slack workspace to grant them, then click Connect again.
+                            {t('scopes.body')}
                           </div>
                           {missingScopes.length > 0 && (
                             <div className="mt-[7px] flex flex-wrap gap-[5px]">
@@ -728,7 +729,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                               rel="noopener noreferrer"
                               className="lnk mt-[9px] inline-flex items-center gap-[5px]"
                             >
-                              Reinstall in Slack
+                              {t('scopes.reinstall')}
                               <Icon name="external-link" size={12} />
                             </a>
                           )}
@@ -757,13 +758,15 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                           <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
                             <PlatformMark platform="slack" />
                           </span>
-                          Open Slack app config tokens
+                          {t('config.open')}
                           <Icon name="external-link" size={14} />
                         </a>
                       </div>
                       <div className="mt-[7px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                        Under <span className="mono">Your apps</span> →{' '}
-                        <span className="mono">configuration tokens</span>, generate a token pair for the workspace.
+                        {t.rich('config.hint', {
+                          apps: (chunks) => <span className="mono">{chunks}</span>,
+                          tokens: (chunks) => <span className="mono">{chunks}</span>
+                        })}
                       </div>
                     </div>
                   </div>
@@ -773,29 +776,30 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                       2
                     </span>
                     <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                      Paste your configuration token
+                      {t('config.paste')}
                     </span>
                   </div>
                   <div className="grid grid-cols-1 gap-[10px] pl-[30px] min-[440px]:grid-cols-2">
                     <div className="fld">
                       <span className="fldlbl">
-                        Access Token <span className="font-normal text-(--text-tertiary)">· required</span>
+                        {t('config.accessToken')}{' '}
+                        <span className="font-normal text-(--text-tertiary)">{t('config.required')}</span>
                       </span>
                       <input
                         className={`inp mn ${showErrors && !cfgAccess.trim() ? 'border-(--status-error)' : ''}`}
-                        placeholder="xoxe.xoxp-1-…"
+                        placeholder={t('config.accessPlaceholder')}
                         value={cfgAccess}
                         onChange={(e) => setCfgAccess(e.target.value)}
                       />
                     </div>
                     <div className="fld">
                       <span className="fldlbl">
-                        Refresh Token{' '}
-                        <span className="font-normal text-(--text-tertiary)">· optional, saved for reuse</span>
+                        {t('config.refreshToken')}{' '}
+                        <span className="font-normal text-(--text-tertiary)">{t('config.optional')}</span>
                       </span>
                       <input
                         className="inp mn"
-                        placeholder="xoxe-1-…"
+                        placeholder={t('config.refreshPlaceholder')}
                         value={cfgRefresh}
                         onChange={(e) => setCfgRefresh(e.target.value)}
                       />
@@ -812,7 +816,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                     </span>
                     <div className="min-w-0 flex-1">
                       <div className="mb-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                        Create &amp; install the Slack app from our manifest
+                        {t('manifest.title')}
                       </div>
                       <div className="group relative">
                         <a
@@ -825,17 +829,18 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                           <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
                             <PlatformMark platform="slack" />
                           </span>
-                          Copy manifest &amp; open Slack
+                          {t('manifest.copy')}
                           <Icon name="external-link" size={14} />
                         </a>
                         <SlackManifestPreview />
                       </div>
                       <div className="mt-[7px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                        In Slack, choose <span className="font-medium text-(--text-secondary)">From a manifest</span>,
-                        paste, select a workspace, then create and install the app.
+                        {t.rich('manifest.hint', {
+                          manifest: (chunks) => <span className="font-medium text-(--text-secondary)">{chunks}</span>
+                        })}
                       </div>
                       <DeliveryLine
-                        labels={SLACK_TRANSPORT_LABEL}
+                        labels={transportLabels}
                         transport={transport}
                         relayAvailable={relayAvailable}
                         locked={false}
@@ -849,36 +854,36 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                       2
                     </span>
                     <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                      Paste the tokens it gives you — required to connect
+                      {t('tokens.paste')}
                     </span>
                   </div>
                   <div className="pl-[30px]">
                     <div className="grid grid-cols-1 gap-[10px] min-[440px]:grid-cols-2">
                       <div className="fld">
-                        <span className="fldlbl">Bot token</span>
+                        <span className="fldlbl">{t('tokens.botToken')}</span>
                         <input
                           className={`inp mn ${showErrors && !botOk ? 'border-(--status-error)' : ''}`}
-                          placeholder="xoxb-…"
+                          placeholder={t('tokens.botPlaceholder')}
                           value={botToken}
                           onChange={(e) => setBotToken(e.target.value)}
                         />
                       </div>
                       {transport === 'http' ? (
                         <div className="fld">
-                          <span className="fldlbl">Signing secret</span>
+                          <span className="fldlbl">{t('tokens.signingSecret')}</span>
                           <input
                             className={`inp mn ${showErrors && !signingOk ? 'border-(--status-error)' : ''}`}
-                            placeholder="Signing secret (Basic Information → App Credentials)"
+                            placeholder={t('tokens.signingPlaceholder')}
                             value={signingSecret}
                             onChange={(e) => setSigningSecret(e.target.value)}
                           />
                         </div>
                       ) : (
                         <div className="fld">
-                          <span className="fldlbl">App-level token</span>
+                          <span className="fldlbl">{t('tokens.appLevelToken')}</span>
                           <input
                             className={`inp mn ${showErrors && !appOk ? 'border-(--status-error)' : ''}`}
-                            placeholder="xapp-…"
+                            placeholder={t('tokens.appPlaceholder')}
                             value={appToken}
                             onChange={(e) => setAppToken(e.target.value)}
                           />
@@ -891,7 +896,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                       <div className="mt-[10px] flex flex-wrap items-center gap-x-[14px] gap-y-1 font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
                         <span className="flex items-center gap-[5px]">
                           <Icon name="corner-down-right" size={12} className="flex-none" />
-                          App&nbsp;<span className="mono">{pastedAppId}</span>
+                          {t('tokens.appLabel')} <span className="mono">{pastedAppId}</span>
                         </span>
                         <a
                           href={slackAppOAuthUrl(pastedAppId)}
@@ -899,7 +904,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                           rel="noopener noreferrer"
                           className="lnk inline-flex items-center gap-[5px]"
                         >
-                          Copy the Bot token
+                          {t('tokens.copyBotToken')}
                           <Icon name="external-link" size={12} />
                         </a>
                         <a
@@ -908,7 +913,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                           rel="noopener noreferrer"
                           className="lnk inline-flex items-center gap-[5px]"
                         >
-                          Open app settings
+                          {t('tokens.openSettings')}
                           <Icon name="external-link" size={12} />
                         </a>
                       </div>
@@ -924,7 +929,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                         className="mt-[1px] flex-none"
                       />
                       <span className="min-w-0 flex-1 font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                        If Slack asks you to reinstall the app, do it once.
+                        {t('tokens.reinstallOnce')}
                       </span>
                     </div>
                   </div>

@@ -3,6 +3,7 @@
 import { useEffect, useId, useState, type KeyboardEvent, type RefObject } from 'react'
 import useSWR from 'swr'
 import { Icon } from '@/components/ui'
+import { useTranslations } from 'next-intl'
 import { addTrustedActor, fetchTrustedActors, removeTrustedActor, type TrustedActorDto } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -27,6 +28,7 @@ export function TrustedUsersField({
   provider: CodeHostProvider
   flushRef?: RefObject<TrustedUsersFlush | null>
 }) {
+  const t = useTranslations('Integrations.trustedUsers')
   const { activeOrg } = useOrgs()
   const inputId = useId()
   const [draft, setDraft] = useState('')
@@ -87,7 +89,7 @@ export function TrustedUsersField({
     <div data-trusted-users>
       <div className="mb-[6px] flex items-center">
         <label htmlFor={inputId} className="fldlbl">
-          Trusted users
+          {t('title')}
         </label>
       </div>
       <div className="inp flex-wrap justify-start gap-[6px] px-2 py-[5px]">

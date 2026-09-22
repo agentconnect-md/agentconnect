@@ -9,6 +9,7 @@ import {
   type WebchatMcpOperationDto
 } from '@/lib/api'
 import { Button } from '@/components/ui'
+import { useTranslations } from 'next-intl'
 
 /** A decided (or decision-lost) operation the owner must still be able to see.
  *  `outcome` is the last DTO the CP returned; `null` means the decision response
@@ -81,6 +82,7 @@ export function WebchatMcpApprovalCard({
    *  Only ever called for a decision whose outcome is known. */
   onDecided?: (operation: WebchatMcpOperationDto, decision: 'approve' | 'deny', outcome: WebchatMcpOperationDto) => void
 }) {
+  const t = useTranslations('Sessions.webchatApproval')
   const { data, mutate } = useSWR(
     ['webchat-mcp-operations', orgId, agentId, conversationId] as const,
     () => listWebchatMcpOperations(orgId, agentId, conversationId),
@@ -171,14 +173,14 @@ export function WebchatMcpApprovalCard({
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-x-2">
                 <span className="font-mono text-[10px] font-semibold uppercase leading-normal tracking-[.08em] text-(--amber-600)">
-                  Approval required
+                  {t('approvalRequired')}
                 </span>
                 <span className="font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
                   {operation.toolName}
                 </span>
               </div>
               <div className="mt-[2px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                The agent requested this change. Only your approval can execute it.
+                {t('description')}
               </div>
             </div>
             <div className="flex flex-none items-center gap-2">
@@ -227,11 +229,11 @@ export function WebchatMcpApprovalCard({
               <div className="flex flex-none items-center gap-2">
                 {unresolved ? (
                   <Button variant="secondary" size="xs" disabled={busy !== null} onClick={() => void recheck(entry)}>
-                    {busy === `${entry.operation.operationId}:recheck` ? 'Checking…' : 'Check status'}
+                    {busy === `${entry.operation.operationId}:recheck` ? t('checking') : t('checkStatus')}
                   </Button>
                 ) : (
                   <Button variant="secondary" size="xs" onClick={() => dismiss(entry)}>
-                    Dismiss
+                    {t('dismiss')}
                   </Button>
                 )}
               </div>

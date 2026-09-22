@@ -186,7 +186,7 @@ export default function ProfileView() {
             {t('signOut')}
           </button>
           <div className="text-center font-mono text-[11px] font-normal leading-normal text-(--text-disabled)">
-            AgentConnect
+            {t('brand')}
           </div>
         </div>
       </div>

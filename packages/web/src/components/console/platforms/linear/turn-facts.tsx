@@ -5,12 +5,14 @@
 // is, never as the XML-shaped context the prompt carries. Earlier comments and workspace
 // guidance follow when the delivery had them.
 
+import { useTranslations } from 'next-intl'
 import type { UserTurnBody } from '@agentconnect.md/protocol'
 import { linearDescriptionMarkdown } from '@/lib/user-turn-body'
 import { MarkdownText } from '../../MessageText'
 import { FactRow, FactRows } from '../../turn-facts-rows'
 
 export function LinearTurnFacts({ body }: { body: UserTurnBody }) {
+  const t = useTranslations('Platforms.linear.turnFacts')
   const facts = body.linear
   if (!facts) return null
   const { issue, team } = facts
@@ -23,7 +25,7 @@ export function LinearTurnFacts({ body }: { body: UserTurnBody }) {
   return (
     <>
       <FactRows>
-        <FactRow label="Issue">
+        <FactRow label={t('issue')}>
           {issue.url ? (
             <a className="lnk" href={issue.url} target="_blank" rel="noopener noreferrer">
               {issueLabel || issue.url}
@@ -32,12 +34,12 @@ export function LinearTurnFacts({ body }: { body: UserTurnBody }) {
             issueLabel
           )}
         </FactRow>
-        <FactRow label="Team">{teamLabel}</FactRow>
-        <FactRow label="Delegated by">{facts.delegatedBy ?? ''}</FactRow>
+        <FactRow label={t('team')}>{teamLabel}</FactRow>
+        <FactRow label={t('delegatedBy')}>{facts.delegatedBy ?? ''}</FactRow>
       </FactRows>
       {description && (
         <div className="mt-2">
-          <p className="mb-[2px] font-sans text-[12px] leading-[1.6] text-(--text-tertiary)">Description</p>
+          <p className="mb-[2px] font-sans text-[12px] leading-[1.6] text-(--text-tertiary)">{t('description')}</p>
           {description.parsed ? (
             <MarkdownText text={description.markdown} />
           ) : (
@@ -49,7 +51,7 @@ export function LinearTurnFacts({ body }: { body: UserTurnBody }) {
       )}
       {facts.comments?.length ? (
         <div className="mt-2">
-          <p className="mb-[2px] font-sans text-[12px] leading-[1.6] text-(--text-tertiary)">Earlier comments</p>
+          <p className="mb-[2px] font-sans text-[12px] leading-[1.6] text-(--text-tertiary)">{t('comments')}</p>
           {facts.comments.map((comment, index) => (
             <div key={index} className="mt-1 border-l-2 border-(--border-subtle) pl-2 [border-radius:0]">
               {comment.userId && (
@@ -62,14 +64,12 @@ export function LinearTurnFacts({ body }: { body: UserTurnBody }) {
       ) : null}
       {facts.guidance && (
         <div className="mt-2">
-          <p className="mb-[2px] font-sans text-[12px] leading-[1.6] text-(--text-tertiary)">Workspace guidance</p>
+          <p className="mb-[2px] font-sans text-[12px] leading-[1.6] text-(--text-tertiary)">{t('guidance')}</p>
           <MarkdownText text={facts.guidance} />
         </div>
       )}
       {facts.truncated && (
-        <p className="mt-1 font-sans text-[11.5px] leading-normal text-(--text-tertiary)">
-          Context truncated by the relay.
-        </p>
+        <p className="mt-1 font-sans text-[11.5px] leading-normal text-(--text-tertiary)">{t('truncated')}</p>
       )}
     </>
   )

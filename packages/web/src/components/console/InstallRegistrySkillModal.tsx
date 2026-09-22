@@ -203,9 +203,7 @@ export function InstallRegistrySkillModal({
               <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
                 {t.rich('installHint', {
                   command: () => (
-                    <span className="mono">
-                      {picked.source} -s {picked.name}
-                    </span>
+                    <span className="mono">{t('installCommand', { source: picked.source, skill: picked.name })}</span>
                   )
                 })}
               </span>

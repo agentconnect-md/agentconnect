@@ -4,6 +4,7 @@
 // The file itself opens in the left-pane viewer (§4), which this panel does not own: a file row reports the path and nothing more.
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { Spinner } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { FileBrowserRow, formatFileMtime, formatFileSize } from '@/components/console/FileBrowser'
@@ -77,6 +78,7 @@ export function FilesPanel({
   /** Whether the first root listing has answered — the input to {@link filesTabStatus}. The caller owns the tab descriptor, so the verdict is reported rather than applied. */
   onRootSettledChange?: (settled: boolean) => void
 }) {
+  const t = useTranslations('Sessions.detail.filesPanel')
   // The wake's own refresh rides beside the tab's: a poll re-reads the tree the same way the refresh action does.
   const [wakeTick, setWakeTick] = useState(0)
   // The automatic re-read (turn edge, poll, reveal) is the same counter shape, so an auto refresh takes
@@ -158,7 +160,7 @@ export function FilesPanel({
           className="py-[7px] pr-3 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)"
           style={{ paddingLeft: 12 + depth * 14 }}
         >
-          Couldn&apos;t load — the daemon may be offline.
+          {t('loadError')}
         </div>
       )
     }
@@ -288,8 +290,8 @@ export function FilesPanel({
             className="inp mn h-8 min-h-8 w-full py-1 pr-2 pl-[27px] text-[12px]"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Find file by path…"
-            aria-label="Find file by path"
+            placeholder={t('findPlaceholder')}
+            aria-label={t('findLabel')}
             spellCheck={false}
           />
         </div>
@@ -327,10 +329,7 @@ export function FilesPanel({
           className="flex flex-none items-center gap-2 border-t border-(--border-subtle) px-3 py-[7px]"
         >
           {git.lastFetchAt ? (
-            <span
-              className="mono flex-none text-[11px] font-normal text-(--text-tertiary)"
-              title="When this checkout last fetched from its remote"
-            >
+            <span className="mono flex-none text-[11px] font-normal text-(--text-tertiary)" title={t('lastFetched')}>
               {`synced ${formatFileMtime(git.lastFetchAt)}`}
             </span>
           ) : null}

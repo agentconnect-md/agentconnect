@@ -15,6 +15,7 @@
 
 import { useMemo, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import { groupFleetStatus, isSetPlacementKind, status, type DaemonRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { featureFlagEnabled } from '@/lib/feature-flags'
@@ -33,6 +34,7 @@ import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 
 export default function GroupDetailView() {
+  const t = useTranslations('Daemons.groupDetail')
   const { orgPath } = useOrgs()
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
@@ -79,11 +81,11 @@ export default function GroupDetailView() {
         <NotFound
           icon="server-off"
           kind="GROUP"
-          title="Group not found"
-          pre="No daemon group with this id belongs to this organization. It may have been removed, or it belongs to another org."
-          actionLabel="Back to daemons"
+          title={t('notFound')}
+          pre={t('notFoundDescription')}
+          actionLabel={t('backToDaemons')}
           actionHref={orgPath('/daemons')}
-          searchLabel="Search daemons"
+          searchLabel={t('searchDaemons')}
         />
       </div>
     )
@@ -110,10 +112,10 @@ export default function GroupDetailView() {
   // question a group answers that a count cannot.
   const memberList =
     members.length === 0
-      ? 'no daemons yet'
+      ? t('noDaemonsYet')
       : members.length <= 3
         ? members.map((m) => m.name).join(', ')
-        : `${members.length} daemons`
+        : t('daemonCount', { count: members.length })
 
   return (
     <div className="wrap max-w-[1240px] px-4 pt-[14px] pb-1 desktop:p-0">
@@ -133,7 +135,7 @@ export default function GroupDetailView() {
               {s.label}
             </span>
             <span className="badge bg-(--surface-active) text-(--text-secondary)">
-              {members.length} daemon{members.length === 1 ? '' : 's'}
+              {t('daemonCount', { count: members.length })}
             </span>
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -144,14 +146,14 @@ export default function GroupDetailView() {
           </div>
         </div>
         <Button variant="secondary" size="sm" onClick={() => openModal('group', group)}>
-          Edit group
+          {t('editGroup')}
         </Button>
         {/* Removal lives here too: the list card's menu is desktop-only, so this is the only path below 769px. */}
         <div className="relative flex-none">
           <button
             className="iconbtn"
-            aria-label="Group actions"
-            title="Group actions"
+            aria-label={t('groupActions')}
+            title={t('groupActions')}
             onClick={() => setMenuOpen((v) => !v)}
           >
             <Icon name="ellipsis" size={16} />
@@ -168,7 +170,7 @@ export default function GroupDetailView() {
                   }}
                 >
                   <Icon name="trash" size={15} />
-                  Remove group
+                  {t('removeGroup')}
                 </button>
               </div>
             </>
@@ -179,23 +181,24 @@ export default function GroupDetailView() {
       {/* Band one — what the group holds, beside the machines that hold it. */}
       <div className="mb-[18px] grid grid-cols-1 gap-[14px] desktop:grid-cols-[300px_1fr]">
         <FleetStatColumn>
-          <FleetStat icon="bot" label="Agents" value={String(hosted.length)} />
+          <FleetStat icon="bot" label={t('agents')} value={String(hosted.length)} />
           {/* Machine-scoped, unlike its neighbours: the CP counts active sessions per DAEMON, so this
               includes the sessions of agents pinned to these members, which the rest of the page excludes. */}
-          <FleetStat icon="activity" label="Active sessions" value={String(sessions)} />
+          <FleetStat icon="activity" label={t('activeSessions')} value={String(sessions)} />
           <FleetStat
             icon="server"
-            label="Daemons"
+            label={t('daemons')}
             value={`${serving.length} / ${members.length}`}
-            note={members.length === 0 ? 'no members yet' : 'serving'}
+            note={members.length === 0 ? t('noMembersYet') : t('serving')}
           />
         </FleetStatColumn>
 
         <div className="card">
           <div className="cardhead">
-            <span className="cardtitle">Daemons in this group</span>
+            <span className="cardtitle">{t('daemonsInGroup')}</span>
             <span className="mono ml-auto text-[11px] text-(--text-tertiary)">
-              <span className="hidden desktop:inline">cpu / memory · </span>pinned
+              <span className="hidden desktop:inline">{t('cpuMemory')} · </span>
+              {t('pinned')}
             </span>
           </div>
           {members.length > 0 ? (
@@ -210,10 +213,10 @@ export default function GroupDetailView() {
           ) : (
             <div className="px-4 py-7 text-center">
               <div className="font-sans text-[13px] font-medium leading-normal text-(--text-secondary)">
-                No daemons in this group
+                {t('noDaemonsInGroup')}
               </div>
               <div className="mt-[3px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                Add daemons from their own page.
+                {t('addDaemonsHint')}
               </div>
             </div>
           )}
@@ -222,28 +225,28 @@ export default function GroupDetailView() {
 
       {/* Band two — what the group can run, and what runs on it. */}
       <FleetRuntimesCard
-        title="Runtimes"
-        note="Only what every serving member offers"
+        title={t('runtimes')}
+        note={t('runtimesNote')}
         runtimes={runtimes}
         agents={hosted}
         empty={
           members.length === 0
-            ? 'No runtimes — the group has no members yet.'
+            ? t('noRuntimesNoMembers')
             : serving.length === 0
-              ? 'No runtimes — no member is serving.'
+              ? t('noRuntimesNoServing')
               : serving.length === 1
-                ? 'No runtimes reported — the serving member has not advertised its runtime profiles yet.'
-                : 'No runtime is on every serving member. An agent here lands on whichever one is serving, so only what they all offer can run.'
+                ? t('noRuntimesUnadvertised')
+                : t('noRuntimesIntersection')
         }
       />
 
       <FleetAgentsCard
-        title="Agents on this group"
+        title={t('agentsOnGroup')}
         agents={hosted}
         capabilitySource={capabilitySource}
         onOpen={(agentId) => router.push(orgPath(`/agents/${agentId}`))}
-        emptyTitle="No agents target this group yet"
-        emptyHint={`Place an agent on ${group.name} and it runs on whichever member is serving.`}
+        emptyTitle={t('noAgentsOnGroup')}
+        emptyHint={t('placeAgentHint', { group: group.name })}
       />
     </div>
   )

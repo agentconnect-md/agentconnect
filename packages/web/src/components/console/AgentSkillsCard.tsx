@@ -238,7 +238,7 @@ export function AgentSkillsCard({
               meta: `rev ${skill.currentRevision}`,
               onPick: () => void saveManaged([...managedIds, skill.id])
             })),
-          emptyLabel: 'No further approved managed skills to add.'
+          emptyLabel: t('noMoreManagedSkills')
         },
         {
           heading: t('gitSkillSources'),
@@ -253,7 +253,7 @@ export function AgentSkillsCard({
               meta: repoLabel(s.source),
               onPick: () => toggleSource(s.name, true)
             })),
-          emptyLabel: 'Every source in your organization is already enabled.'
+          emptyLabel: t('allSourcesEnabled')
         }
       ]}
       actions={[
@@ -275,11 +275,7 @@ export function AgentSkillsCard({
         <AttachedEmpty
           title={loading ? t('loading') : t('noSkills')}
           hint={
-            loading
-              ? 'Reading this agent’s enabled skills.'
-              : canEdit
-                ? t('enableSkillsHint')
-                : 'This agent has no skills enabled.'
+            loading ? 'Reading this agent’s enabled skills.' : canEdit ? t('enableSkillsHint') : t('noSkillsEnabled')
           }
           action={loading ? undefined : menu}
         />
@@ -303,7 +299,7 @@ export function AgentSkillsCard({
                 onRemove={
                   canEdit && !saving ? () => void saveManaged(managedIds.filter((id) => id !== skill.id)) : undefined
                 }
-                removeTitle="Remove from this agent"
+                removeTitle={t('removeFromAgent')}
               />
             ))}
             {attachedSources.map((s) => {
@@ -329,9 +325,9 @@ export function AgentSkillsCard({
                         type="button"
                         className="iconbtn h-[26px] w-[26px] flex-none"
                         onClick={() => expand(s.id)}
-                        aria-label="Choose individual skills"
+                        aria-label={t('chooseIndividualSkills')}
                         aria-expanded={isOpen}
-                        title="Choose individual skills"
+                        title={t('chooseIndividualSkills')}
                       >
                         <Icon name={isOpen ? 'chevron-down' : 'chevron-right'} size={13} />
                       </button>
@@ -343,12 +339,10 @@ export function AgentSkillsCard({
                   {isOpen && s.registry && (
                     <div className="border-t border-(--border-subtle) bg-(--surface-sunken) px-[14px] py-2">
                       {manifest === 'loading' || manifest === undefined ? (
-                        <div className="py-1 font-sans text-[12px] text-(--text-tertiary)">Loading skills…</div>
+                        <div className="py-1 font-sans text-[12px] text-(--text-tertiary)">{t('loadingSkills')}</div>
                       ) : !manifest.resolvable || manifest.skills.length === 0 ? (
                         <div className="py-1 font-sans text-[12px] leading-[1.5] text-(--text-tertiary)">
-                          {manifest.resolvable
-                            ? 'No SKILL.md found in this source.'
-                            : 'Can’t list individual skills for this source — the whole source is enabled.'}
+                          {manifest.resolvable ? t('noSkillManifest') : t('cannotListSkills')}
                         </div>
                       ) : (
                         manifest.skills.map((sk) => (
@@ -382,9 +376,9 @@ export function AgentSkillsCard({
             })}
           </div>
           <AttachedNote>
-            Managed bundles install from their pinned revision; Git sources install with{' '}
-            <span className="mono text-[11.5px]">npx skills</span> on session start. Removing one stops installing it
-            for this agent.
+            {t.rich('skillInstallNote', {
+              command: () => <span className="mono text-[11.5px]">{t('skillsCommand')}</span>
+            })}
           </AttachedNote>
         </>
       )}

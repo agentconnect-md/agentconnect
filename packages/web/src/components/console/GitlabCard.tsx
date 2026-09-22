@@ -117,6 +117,7 @@ function ProjectRow({
   onRemove?: () => void
   onTransfer: () => void
 }) {
+  const t = useTranslations('Integrations.codeHostCards')
   const reason = gitlabStateReasonText(binding.stateReason)
   const webhook = gitlabWebhookBadge(binding.webhookState)
   // Taking a project over is only meaningful where administration has actually lost its
@@ -141,14 +142,14 @@ function ProjectRow({
       </div>
       <span className="flex items-center justify-end gap-2">
         {canWrite && takeable && (
-          <button className="iconbtn h-7 w-7 flex-none" title="Take over administration" onClick={onTransfer}>
+          <button className="iconbtn h-7 w-7 flex-none" title={t('takeOverAdministration')} onClick={onTransfer}>
             <Icon name="key-round" size={14} />
           </button>
         )}
         {canWrite && (
           <button
             className="iconbtn h-7 w-7 flex-none"
-            title={busy ? 'Working…' : 'Repair this project'}
+            title={busy ? t('working') : t('repairProject')}
             disabled={busy}
             onClick={onRepair}
           >
@@ -156,7 +157,7 @@ function ProjectRow({
           </button>
         )}
         {canWrite && onRemove && (
-          <button className="iconbtn h-7 w-7 flex-none" title="Remove this project" onClick={onRemove}>
+          <button className="iconbtn h-7 w-7 flex-none" title={t('removeProject')} onClick={onRemove}>
             <Icon name="trash" size={14} />
           </button>
         )}
@@ -167,6 +168,7 @@ function ProjectRow({
 
 export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
   const t = useTranslations('Integrations')
+  const ct = useTranslations('Integrations.codeHostCards')
   // Gate on the active org like the GitHub card: before it resolves `orgBase()` throws and reads "not enabled".
   const { activeOrg, orgPath } = useOrgs()
   const { getAgent } = useConsoleData()
@@ -468,7 +470,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
           <span className="flex h-[14px] w-[14px] flex-none items-center justify-center">
             <GitlabMark fillPct={SQUARE_MARK_FILL_PCT} />
           </span>
-          GitLab
+          {ct('gitlab')}
           {/* Which instance, and what it runs — one line of hover on the card, not a badge on every identity. */}
           {enabled === true && instance !== null && (
             <span className="flex items-center text-(--text-tertiary)" data-gitlab-instance="" title={instanceHint}>
@@ -481,7 +483,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
         {enabled === true && canWrite && !ownConnection && (
           <Button onClick={connect}>
             <Icon name="external-link" size={13} />
-            {connections.length === 0 ? 'Connect GitLab' : 'Connect my account'}
+            {connections.length === 0 ? ct('connectGitlab') : ct('connectMyAccount')}
           </Button>
         )}
       </div>
@@ -489,30 +491,26 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
       {/* Below the floor every identity on the instance is equally stuck, so the card says it once. */}
       {enabled === true && instance?.instanceVersionSupported === false && (
         <div className="flex flex-wrap items-center gap-2 border-b border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-          <span>GitLab {instance.instanceVersion}</span>
+          <span>{ct('version', { name: 'GitLab', version: instance.instanceVersion ?? '' })}</span>
           <span className="badge bg-(--status-paused-soft) text-(--amber-500)">
-            below {instance.instanceVersionFloor}
+            {ct('belowVersion', { version: instance.instanceVersionFloor })}
           </span>
-          <span>
-            Setting up new projects and bots needs {instance.instanceVersionFloor} or later. Projects already set up
-            keep working until their credentials expire.
-          </span>
+          <span>{ct('gitlabVersionRequirement', { version: instance.instanceVersionFloor })}</span>
         </div>
       )}
 
       {enabled === null && <LoadingState size={22} padding={20} />}
       {enabled === false && (
         <div className="px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          Not enabled on this deployment — no GitLab application is configured.
+          {ct('gitlabNotEnabled')}
         </div>
       )}
 
       {enabled === true && connections.length === 0 && (
         <div className="px-4 py-7 text-center">
-          <div className="font-sans text-[13px] font-semibold leading-normal">Not connected</div>
+          <div className="font-sans text-[13px] font-semibold leading-normal">{ct('notConnected')}</div>
           <div className="mt-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-            Connect a GitLab account with Maintainer or Owner access to your projects. You then pick a project when you
-            add a trigger or an agent workspace, and AgentConnect sets up its project bot and webhook there.
+            {ct('gitlabNotConnectedHint')}
           </div>
         </div>
       )}
@@ -529,10 +527,10 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                 </span>
                 <span className="mono min-w-0 truncate text-[12.5px]">{c.gitlabUsername}</span>
                 {c.state === 'reauth_required' && (
-                  <span className="badge bg-(--status-paused-soft) text-(--amber-500)">reconnect needed</span>
+                  <span className="badge bg-(--status-paused-soft) text-(--amber-500)">{ct('reconnectNeeded')}</span>
                 )}
                 {c.state === 'disconnected' && (
-                  <span className="badge bg-(--status-error-soft) text-(--status-error)">disconnected</span>
+                  <span className="badge bg-(--status-error-soft) text-(--status-error)">{ct('disconnected')}</span>
                 )}
               </div>
               {canWrite && (
@@ -540,7 +538,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                   {c.state !== 'connected' && (
                     <Button variant="ghost" size="xs" onClick={connect}>
                       <Icon name="refresh-cw" size={13} />
-                      Reconnect
+                      {ct('reconnect')}
                     </Button>
                   )}
                   {/* A released row has nothing left to disconnect: it offers the finish instead. */}
@@ -565,7 +563,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                       onClick={() => setPending({ target: c, remove: true })}
                     >
                       <Icon name="trash" size={13} />
-                      Remove
+                      {ct('remove')}
                     </Button>
                   )}
                 </span>
@@ -574,9 +572,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
             {c.state === 'disconnected' && c.assignedProjects > 0 && (
               <div className="border-b border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
                 {/* Removing those projects needs an administering account too, so it is not a way out from here. */}
-                {c.assignedProjects === 1
-                  ? 'This account still administers 1 project below. Transfer that project to your own GitLab account, or reconnect this one to keep managing it, before this row can go.'
-                  : `This account still administers ${c.assignedProjects} projects below. Transfer those projects to your own GitLab account, or reconnect this one to keep managing them, before this row can go.`}
+                {c.assignedProjects === 1 ? ct('assignedOne') : ct('assignedMany', { count: c.assignedProjects })}
               </div>
             )}
             {c.state === 'reauth_required' && (
@@ -586,9 +582,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
               >
                 <span className="flex min-w-0 items-start gap-2">
                   <Icon name="triangle-alert" size={14} color="var(--amber-500)" className="mt-[2px] flex-none" />
-                  <span>
-                    GitLab no longer accepts this connection. Reconnect to keep project setup and repairs working.
-                  </span>
+                  <span>{ct('reauthWarning')}</span>
                 </span>
               </div>
             )}
@@ -597,8 +591,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
 
       {enabled === true && connections.length > 0 && rows.length === 0 && projects.length === 0 && (
         <div className="px-4 py-5 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          No projects are set up yet. Pick one when you add a GitLab trigger or an agent workspace — it is set up there,
-          and shows up here for repairs.
+          {ct('noProjects')}
         </div>
       )}
 
@@ -658,7 +651,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                               target="_blank"
                               rel="noopener noreferrer"
                               title={`@${account.username}`}
-                              aria-label={`${group} — @${account.username} on GitLab`}
+                              aria-label={ct('groupAccountAria', { group, username: account.username })}
                               className="badge flex-none bg-(--surface-active) text-(--text-tertiary) no-underline hover:underline"
                             >
                               {group}
@@ -679,7 +672,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                           )}
                           {account.lifecycle === 'retiring' && (
                             <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
-                              removing
+                              {ct('removing')}
                             </span>
                           )}
                         </span>
@@ -695,8 +688,8 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                       >
                         <Icon name="triangle-alert" size={11} className="mr-[3px] inline-block align-[-1px]" />
                         {wanting.length === 1
-                          ? '1 project needs attention'
-                          : `${wanting.length} projects need attention`}
+                          ? ct('projectsNeedAttentionOne')
+                          : ct('projectsNeedAttentionMany', { count: wanting.length })}
                       </button>
                     )}
                   </div>
@@ -705,7 +698,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                   {canWrite && takeable.length > 0 && (
                     <button
                       className="iconbtn h-7 w-7 flex-none"
-                      title="Take over administration of this bot's projects"
+                      title={ct('takeOverBotProjects')}
                       onClick={() => setTakingBot({ name, bindingIds: takeable })}
                     >
                       <Icon name="key-round" size={14} />
@@ -714,7 +707,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                   {canWrite && repairable.length > 0 && (
                     <button
                       className="iconbtn h-7 w-7 flex-none"
-                      title={busyId === row.agentId ? 'Working…' : 'Repair this bot'}
+                      title={busyId === row.agentId ? ct('working') : ct('repairBot')}
                       disabled={busyId === row.agentId}
                       onClick={() => void repairBot(row.agentId, repairable)}
                     >
@@ -749,7 +742,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
         <div data-gitlab-orphans="true">
           <div className="border-b border-(--border-subtle) bg-(--surface-app) px-4 py-[6px]">
             <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              Projects without a bot — no agent is a member yet, and the webhook stays until the project is removed.
+              {ct('projectsWithoutBot')}
             </span>
           </div>
           {orphans.map((binding) => (
@@ -766,23 +759,13 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
         <div className="scrim" onClick={() => setPending(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <ConfirmGitlab
-              title={pending.remove ? 'Remove connection' : 'Disconnect GitLab'}
+              title={pending.remove ? ct('removeConnection') : ct('disconnectGitlab')}
               body={
-                pending.remove ? (
-                  <>
-                    Remove <span className="mono text-(--text-primary)">{pending.target.gitlabUsername}</span> from the
-                    list? It has already been disconnected and administers no projects, so this only clears the row.
-                    Connect GitLab again whenever you need it.
-                  </>
-                ) : (
-                  <>
-                    Disconnect <span className="mono text-(--text-primary)">{pending.target.gitlabUsername}</span>?
-                    GitLab stops accepting this account for project setup and repairs. Projects you already added keep
-                    running until you remove them.
-                  </>
-                )
+                pending.remove
+                  ? ct('removeConnectionBody', { username: pending.target.gitlabUsername })
+                  : ct('disconnectConnectionBody', { username: pending.target.gitlabUsername })
               }
-              verb={pending.remove ? 'Remove' : 'Disconnect'}
+              verb={pending.remove ? ct('remove') : ct('disconnect')}
               icon={pending.remove ? 'trash' : 'unplug'}
               busy={busyId === pending.target.id}
               onClose={() => setPending(null)}
@@ -796,15 +779,9 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
         <div className="scrim" onClick={() => setTaking(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <ConfirmGitlab
-              title="Take over project"
-              body={
-                <>
-                  Take over <span className="mono text-(--text-primary)">{taking.projectPath}</span>? GitLab is asked
-                  whether your own account has Maintainer or Owner access to the project right now, and if it does, your
-                  account becomes the one AgentConnect uses to set up and repair it.
-                </>
-              }
-              verb="Take over"
+              title={ct('takeOverProject')}
+              body={ct('takeOverProjectBody', { project: taking.projectPath })}
+              verb={ct('takeOver')}
               icon="key-round"
               busy={busyId === taking.id}
               danger={false}
@@ -819,17 +796,9 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
         <div className="scrim" onClick={() => setTakingBot(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <ConfirmGitlab
-              title="Take over project administration"
-              body={
-                <>
-                  Take over the{' '}
-                  {takingBot.bindingIds.length === 1 ? 'project' : `${takingBot.bindingIds.length} projects`}{' '}
-                  <span className="mono text-(--text-primary)">{takingBot.name}</span> works on? GitLab is asked whether
-                  your own account has Maintainer or Owner access to each one right now, and where it does, your account
-                  becomes the one AgentConnect uses to set it up and repair it.
-                </>
-              }
-              verb="Take over"
+              title={ct('takeOverProjectAdministration')}
+              body={ct('takeOverBotBody', { count: takingBot.bindingIds.length, name: takingBot.name })}
+              verb={ct('takeOver')}
               icon="key-round"
               busy={busyId === takingBot.bindingIds.join(',')}
               danger={false}
@@ -844,14 +813,8 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
         <div className="scrim" onClick={() => setBlocked(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <ConfirmGitlab
-              title="Remove project"
-              body={
-                <>
-                  <span className="mono text-(--text-primary)">{blocked.projectPath}</span> cannot be removed yet: the
-                  GitLab account that manages it is no longer connected, and removing the webhook and the project bot
-                  needs one. Reconnect that account, or transfer the project to your own, then remove it.
-                </>
-              }
+              title={ct('removeProject')}
+              body={ct('cannotRemoveProject', { project: blocked.projectPath })}
               busy={false}
               onClose={() => setBlocked(null)}
             />
@@ -863,15 +826,9 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
         <div className="scrim" onClick={() => setRemoving(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <ConfirmGitlab
-              title="Remove project"
-              body={
-                <>
-                  Remove <span className="mono text-(--text-primary)">{removing.projectPath}</span> from this
-                  organization? The webhook and every project bot on it are deleted on GitLab, and agents stop answering
-                  there. Nothing in the project&rsquo;s code or history changes.
-                </>
-              }
-              verb="Remove"
+              title={ct('removeProject')}
+              body={ct('removeProjectBody', { project: removing.projectPath })}
+              verb={ct('remove')}
               icon="trash"
               busy={busyId === removing.id}
               onClose={() => setRemoving(null)}
@@ -905,6 +862,7 @@ function ConfirmGitlab({
   onClose: () => void
   onConfirm?: () => void
 }) {
+  const t = useTranslations('Integrations.codeHostCards')
   return (
     <>
       <div className="modalhead">
@@ -916,7 +874,7 @@ function ConfirmGitlab({
           </span>
         </span>
         <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{title}</span>
-        <button className="iconbtn" onClick={onClose} aria-label="Close">
+        <button className="iconbtn" onClick={onClose} aria-label={t('close')}>
           <Icon name="x" size={16} />
         </button>
       </div>
@@ -926,7 +884,7 @@ function ConfirmGitlab({
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          {onConfirm ? 'Cancel' : 'Close'}
+          {onConfirm ? t('cancel') : t('close')}
         </Button>
         {onConfirm && verb && (
           <Button
@@ -935,7 +893,7 @@ function ConfirmGitlab({
             className={busy ? 'pointer-events-none opacity-50' : undefined}
           >
             {icon && <Icon name={icon} size={15} />}
-            {busy ? 'Working…' : verb}
+            {busy ? t('working') : verb}
           </Button>
         )}
       </div>

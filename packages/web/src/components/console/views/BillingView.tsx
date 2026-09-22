@@ -913,7 +913,7 @@ export default function BillingView() {
                   <span className="mono text-[44px] leading-none font-semibold tracking-[-0.02em]">
                     {fmtMicroUsd(acct.balanceMicro)}
                   </span>
-                  <span className="mono pb-1.5 text-[12px] text-(--text-tertiary)">USD</span>
+                  <span className="mono pb-1.5 text-[12px] text-(--text-tertiary)">{t('usd')}</span>
                 </div>
                 <div className="mt-5 flex gap-[26px] border-t border-(--border-subtle) pt-4">
                   <div>

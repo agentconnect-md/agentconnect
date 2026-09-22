@@ -1,4 +1,5 @@
 import { CompactToggleField } from '@/components/console/CompactToggleField'
+import { useTranslations } from 'next-intl'
 
 /**
  * The OS-sandbox toggle: a private HOME and a workspace-confined runtime, on the machine the
@@ -33,25 +34,34 @@ export function SandboxField({
   clusterPlacement?: boolean
   onChange: (checked: boolean) => void
 }) {
+  const t = useTranslations('Common.sandbox')
   if (clusterPlacement) return null
   // A broken sandbox is not a missing one: the setting stands, and sessions are refused until it is fixed.
   const down = supported && !!unavailable
-  const status = down ? 'Unavailable' : required ? 'Required' : !supported ? 'Unavailable' : checked ? 'On' : 'Off'
-  const detail = down
-    ? `The selected computer cannot provide its sandbox right now, so sessions that need one are refused rather than run unconfined. ${unavailable}`
+  const status = down
+    ? t('unavailable')
     : required
-      ? 'Sandboxing is required on the selected computer. The runtime uses a private HOME and is confined to its workspace.'
+      ? t('required')
       : !supported
-        ? 'Sandboxing is not available for the current selection, so the runtime uses its normal environment.'
+        ? t('unavailable')
+        : checked
+          ? t('on')
+          : t('off')
+  const detail = down
+    ? t('downDetail', { reason: unavailable })
+    : required
+      ? t('requiredDetail')
+      : !supported
+        ? t('unavailableDetail')
         : disabled && disabledDetail
           ? disabledDetail
           : checked
-            ? 'The runtime runs in an OS sandbox with a private HOME and is confined to its workspace.'
-            : 'The runtime uses the selected computer environment without OS sandbox isolation.'
+            ? t('enabledDetail')
+            : t('disabledDetail')
 
   return (
     <CompactToggleField
-      label="Run in sandbox"
+      label={t('label')}
       checked={checked}
       disabled={disabled || required || !supported}
       onChange={onChange}

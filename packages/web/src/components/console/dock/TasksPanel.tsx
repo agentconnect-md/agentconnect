@@ -185,7 +185,7 @@ export function TasksPanel({
         ))}
         {read.data.truncated ? (
           <div className="px-3 pt-1 pb-[10px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-            Older tasks are not shown — the daemon keeps a bounded history.
+            {t('olderTasksHidden')}
           </div>
         ) : null}
       </>

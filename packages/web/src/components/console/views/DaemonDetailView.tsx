@@ -9,6 +9,7 @@
 
 import { useState, type ReactNode } from 'react'
 import { useParams, useRouter } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import {
   agentLabel,
   agentModelDisplay,
@@ -49,6 +50,7 @@ import { useIsMobile } from '@/lib/use-is-mobile'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 
 export default function DaemonDetailView() {
+  const t = useTranslations('Daemons.detail')
   const acpRegistry = useAcpRegistry()
   const { orgPath } = useOrgs()
   const { me } = useProfile()
@@ -92,13 +94,13 @@ export default function DaemonDetailView() {
         <NotFound
           icon="server-off"
           kind="DAEMON"
-          title="Daemon not found"
-          pre="No daemon "
+          title={t('notFound.title')}
+          pre={`${t('notFound.pre')} `}
           chip={id}
-          post=" in this organization. It may have been deregistered."
-          actionLabel="Back to daemons"
+          post={t('notFound.post')}
+          actionLabel={t('notFound.back')}
           actionHref={orgPath('/daemons')}
-          searchLabel="Search daemons"
+          searchLabel={t('notFound.search')}
         />
       </div>
     )
@@ -158,12 +160,12 @@ export default function DaemonDetailView() {
     ? []
     : unionRuntimes([{ ...daemon, runtimeModels }]).filter((rt) => showSandboxOnly || !sandboxOnlyIds.has(rt.runtime))
   const runtimeEmpty = sandboxDownReason
-    ? `Sandbox is unavailable on this daemon. ${sandboxDownReason}`
+    ? t('runtimeEmpty.sandboxReason', { reason: sandboxDownReason })
     : sandboxUnavailable
-      ? 'Sandbox is unavailable on this daemon.'
+      ? t('runtimeEmpty.sandboxUnavailable')
       : sandboxOnlyIds.size > 0
-        ? 'Expand below to see runtimes installed only in the sandbox.'
-        : 'No runtimes reported by this daemon.'
+        ? t('runtimeEmpty.expandSandbox')
+        : t('runtimeEmpty.noRuntimes')
   const sandboxOnlyControl = sandboxOnlyIds.size > 0 && (
     <button
       type="button"
@@ -172,13 +174,14 @@ export default function DaemonDetailView() {
       className="flex w-full cursor-pointer items-center gap-2 border-0 border-t border-(--border-subtle) bg-transparent px-4 py-3 text-left font-sans text-[12px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover)"
     >
       <Icon name={showSandboxOnly ? 'chevron-up' : 'chevron-down'} size={14} className="flex-none" />
-      {showSandboxOnly ? 'Hide' : 'Show'} runtimes in sandbox but not on host ({sandboxOnlyIds.size})
+      {showSandboxOnly ? t('runtimeEmpty.hide') : t('runtimeEmpty.show')}{' '}
+      {t('runtimeEmpty.sandboxOnly', { count: sandboxOnlyIds.size })}
     </button>
   )
   const runtimeModeControl = sandboxRequired ? (
-    <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">Sandbox</span>
+    <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">{t('sandbox')}</span>
   ) : (
-    <div className="pillbar" role="group" aria-label="Runtime environment">
+    <div className="pillbar" role="group" aria-label={t('runtimeEnvironment')}>
       {(['host', 'sandbox'] as const).map((mode) => (
         <button
           key={mode}
@@ -189,12 +192,12 @@ export default function DaemonDetailView() {
           aria-pressed={runtimeEnvironment === mode}
           onClick={() => setRuntimeMode(mode)}
         >
-          {mode === 'host' ? 'Host' : 'Sandbox'}
+          {mode === 'host' ? t('host') : t('sandbox')}
         </button>
       ))}
     </div>
   )
-  const seen = daemon.uptime === '—' ? 'never connected' : `last seen ${daemon.uptime} ago`
+  const seen = daemon.uptime === '—' ? t('neverConnected') : t('lastSeenAgo', { value: daemon.uptime })
   // `conns` is the daemon's agent ceiling; <= 0 is its UNBOUNDED sentinel, not a ceiling of zero.
   // Its numerator is the daemon's OWN heartbeat count, never `hosted`: a group duty this member
   // is serving names the set, not the machine, so a full 8-slot member would read `0 / 8` — and
@@ -295,7 +298,7 @@ export default function DaemonDetailView() {
               className="flex h-11 flex-1 cursor-pointer items-center justify-center gap-2 rounded-md border border-(--border-default) bg-(--surface-card) font-sans text-[14px] font-semibold leading-normal text-(--text-primary)"
             >
               <Icon name="refresh-cw" size={16} />
-              Reconnect
+              {t('actions.reconnect')}
             </button>
           )}
           {canRestart && (
@@ -304,13 +307,13 @@ export default function DaemonDetailView() {
               className="flex h-11 flex-1 cursor-pointer items-center justify-center gap-2 rounded-md border border-(--border-default) bg-(--surface-card) font-sans text-[14px] font-semibold leading-normal text-(--text-primary)"
             >
               <Icon name="refresh-cw" size={16} />
-              Restart
+              {t('actions.restart')}
             </button>
           )}
           {daemon.canEdit && (
             <button
               onClick={() => openModal('editDaemon', daemon)}
-              aria-label="Edit daemon"
+              aria-label={t('actions.edit')}
               className="flex h-11 w-11 flex-none cursor-pointer items-center justify-center rounded-md border border-(--border-default) bg-(--surface-card) text-(--text-secondary)"
             >
               <Icon name="pencil" size={16} />
@@ -338,7 +341,7 @@ export default function DaemonDetailView() {
         {/* runtimes — full-width stacked rows */}
         <div className="mx-4 mt-1 overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs)">
           <div className="flex items-center justify-between gap-3 border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal">
-            <span>Runtimes</span>
+            <span>{t('runtimes')}</span>
             {runtimeModeControl}
           </div>
           {runtimes.length > 0 ? (
@@ -347,7 +350,7 @@ export default function DaemonDetailView() {
               const users = runtimeAgents.filter(
                 (a) => a.runtime === rt.runtime || runtimeLabel(a.runtime) === runtimeLabel(rt.runtime, meta?.name)
               )
-              const usage = users.length > 0 ? `${users.length} agent${users.length === 1 ? '' : 's'}` : 'no agents'
+              const usage = users.length > 0 ? t('runtimeUsage', { count: users.length }) : t('noAgents')
               const version = rt.version ? `v${rt.version.replace(/^v/, '')}` : null
               // Expand only runtimes that reported models.
               const hasDetail = rt.models.length > 0
@@ -371,7 +374,7 @@ export default function DaemonDetailView() {
                   </span>
                   <span className="flex flex-none items-center gap-[5px]">
                     <span className="whitespace-nowrap rounded-full bg-(--surface-active) px-[9px] py-[2px] font-mono text-[11px] font-semibold leading-normal text-(--text-secondary)">
-                      {rt.models.length} model{rt.models.length === 1 ? '' : 's'}
+                      {t('modelsCount', { count: rt.models.length })}
                     </span>
                   </span>
                   {hasDetail && (
@@ -402,7 +405,7 @@ export default function DaemonDetailView() {
                   {warning === 'auth-required' && (
                     <button
                       type="button"
-                      title="Show the command to sign in on the daemon host."
+                      title={t('showLoginCommand')}
                       onClick={() =>
                         openModal('runtimeLogin', {
                           runtimeId: rt.runtime,
@@ -413,9 +416,9 @@ export default function DaemonDetailView() {
                       className="flex w-full cursor-pointer items-center gap-[6px] border-0 bg-(--status-paused-soft) px-4 py-[7px] text-left font-sans text-[11.5px] font-medium leading-normal text-(--amber-500) transition-opacity hover:opacity-80"
                     >
                       <Icon name="triangle-alert" size={12} className="flex-none" />
-                      <span className="min-w-0 truncate">Login required — sign in on the daemon host</span>
+                      <span className="min-w-0 truncate">{t('loginRequired')}</span>
                       <span className="ml-auto flex flex-none items-center gap-[3px] underline underline-offset-2">
-                        Show command
+                        {t('showCommand')}
                         <Icon name="chevron-right" size={12} className="flex-none" />
                       </span>
                     </button>
@@ -425,7 +428,7 @@ export default function DaemonDetailView() {
                       {rt.models.length > 0 && (
                         <div className="flex flex-col gap-[7px]">
                           <span className="font-sans text-[10px] font-semibold tracking-[.05em] uppercase leading-normal text-(--text-tertiary)">
-                            Models
+                            {t('models')}
                           </span>
                           {/* The id is the model, and for claude it is an ALIAS — `opus[1m]`
                               names whichever Opus the runtime resolves it to today. The runtime's
@@ -468,7 +471,7 @@ export default function DaemonDetailView() {
         {/* agents on this daemon — stacked rows, tap through to the agent page */}
         <div className="mx-4 mt-3 overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs)">
           <div className="border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal">
-            Agents
+            {t('agents')}
           </div>
           {hosted.length > 0 ? (
             hosted.map((a, i) => {
@@ -501,10 +504,10 @@ export default function DaemonDetailView() {
           ) : (
             <div className="px-4 py-7 text-center">
               <div className="font-sans text-[13px] font-medium leading-normal text-(--text-secondary)">
-                No agents on this daemon
+                {t('noAgentsOnDaemon')}
               </div>
               <div className="mt-[3px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                Deploy an agent here to start handling messages.
+                {t('deployAgentHint')}
               </div>
             </div>
           )}
@@ -512,13 +515,13 @@ export default function DaemonDetailView() {
 
         {/* usage — the same session history the desktop band carries */}
         <div className="mx-4 mt-3">
-          <FleetUsageCard agentIds={hosted.map((a) => a.id)} note="agents placed here · 30d" />
+          <FleetUsageCard agentIds={hosted.map((a) => a.id)} note={t('usageNote')} />
         </div>
 
         {/* resources — CPU + Memory bars (no fabricated disk) */}
         <div className="mx-4 mt-3 overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs)">
           <div className="border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal">
-            Resources
+            {t('resources')}
           </div>
           <div className="flex flex-col gap-[13px] px-4 py-[14px]">
             {resBars.map(([label, pct]) => {
@@ -541,7 +544,7 @@ export default function DaemonDetailView() {
         {/* system — real Details fields (no fabricated ip/os/arch/heartbeat) */}
         <div className="mx-4 mt-3 overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs)">
           <div className="border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal">
-            System
+            {t('system')}
           </div>
           {sysRows.map(([k, v, color], i) => (
             <div
@@ -557,26 +560,32 @@ export default function DaemonDetailView() {
             </div>
           ))}
           <div className="flex items-center justify-between gap-4 border-t border-(--border-subtle) px-4 py-3">
-            <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">Created</span>
+            <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
+              {t('created')}
+            </span>
             <span className="text-right font-mono text-[12px] font-medium leading-normal text-(--text-primary)">
               {creatorLabel(daemon.createdBy, me)}{' '}
               <span className="font-normal whitespace-nowrap text-(--text-tertiary)">· {daemon.createdAt}</span>
             </span>
           </div>
           <div className="flex items-center justify-between gap-4 border-t border-(--border-subtle) px-4 py-3">
-            <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">Modified</span>
+            <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
+              {t('modified')}
+            </span>
             <span className="text-right font-mono text-[12px] font-medium leading-normal text-(--text-primary)">
               {creatorLabel(daemon.lastModifiedBy, me)}{' '}
               <span className="font-normal whitespace-nowrap text-(--text-tertiary)">· {daemon.lastModifiedAt}</span>
             </span>
           </div>
           <div className="flex items-center justify-between gap-4 border-t border-(--border-subtle) px-4 py-3">
-            <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">Visibility</span>
+            <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
+              {t('visibility')}
+            </span>
             {daemon.canManageSharing ? (
               <button
                 type="button"
                 onClick={() => openModal('editDaemon', daemon)}
-                title="Edit visibility"
+                title={t('editVisibility')}
                 className="inline-flex cursor-pointer border-0 bg-transparent p-0"
               >
                 <VisibilityValue visibility={daemon.visibility} sharedWith={daemon.sharedWith} />
@@ -590,12 +599,12 @@ export default function DaemonDetailView() {
         {/* capabilities */}
         <div className="mx-4 mt-3 overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs)">
           <div className="border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal">
-            Capabilities
+            {t('capabilities')}
           </div>
           <div className="py-[6px]">
             {labeled('ACP', daemon.caps.acp ? 'supported' : '—')}
-            <ChipRow label="Platforms" items={daemon.caps.platforms.map(platName)} />
-            <ChipRow label="Features" items={daemon.caps.features} />
+            <ChipRow label={t('platforms')} items={daemon.caps.platforms.map(platName)} />
+            <ChipRow label={t('features')} items={daemon.caps.features} />
           </div>
         </div>
 
@@ -607,7 +616,7 @@ export default function DaemonDetailView() {
               className="flex h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-md border border-(--border-default) bg-(--surface-card) font-sans text-[14px] font-semibold leading-normal text-(--red-600)"
             >
               <Icon name="trash" size={16} />
-              Delete daemon
+              {t('actions.deleteDaemon')}
             </button>
           </div>
         )}
@@ -679,7 +688,7 @@ export default function DaemonDetailView() {
         {/* No menu at all when the caller may do none of it (a pool member is nobody's to
             edit, restart or detach) — an empty popover is worse than a missing button. */}
         <div className={daemon.canEdit || canRestart ? 'relative flex-none' : 'hidden'}>
-          <button className="iconbtn" onClick={() => setMenuOpen((v) => !v)} title="Daemon actions">
+          <button className="iconbtn" onClick={() => setMenuOpen((v) => !v)} title={t('actions.daemonActions')}>
             <Icon name="ellipsis" size={16} />
           </button>
           {menuOpen && (
@@ -695,7 +704,7 @@ export default function DaemonDetailView() {
                     }}
                   >
                     <Icon name="pencil" size={15} />
-                    Edit
+                    {t('actions.edit')}
                   </button>
                 )}
                 {canRestart && (
@@ -707,7 +716,7 @@ export default function DaemonDetailView() {
                     }}
                   >
                     <Icon name="refresh-cw" size={15} />
-                    Restart
+                    {t('actions.restart')}
                   </button>
                 )}
                 {/* Joining is refused while agents are still pinned here and leaving while the
@@ -723,7 +732,7 @@ export default function DaemonDetailView() {
                         }}
                       >
                         <Icon name="log-out" size={15} />
-                        Leave {group.name}
+                        {t('actions.leave', { name: group.name })}
                       </button>
                     ) : (
                       memberSets.map((g) => (
@@ -736,7 +745,7 @@ export default function DaemonDetailView() {
                           }}
                         >
                           <Icon name="boxes" size={15} />
-                          Join {g.name}
+                          {t('actions.join', { name: g.name })}
                         </button>
                       ))
                     )}
@@ -752,7 +761,7 @@ export default function DaemonDetailView() {
                       }}
                     >
                       <Icon name="refresh-cw" size={15} />
-                      Reconnect
+                      {t('actions.reconnect')}
                     </button>
                     <div className="dmsep" />
                     <button
@@ -763,7 +772,7 @@ export default function DaemonDetailView() {
                       }}
                     >
                       <Icon name="trash" size={15} />
-                      Delete
+                      {t('actions.deleteDaemon')}
                     </button>
                   </>
                 )}
@@ -784,26 +793,26 @@ export default function DaemonDetailView() {
           run on it. */}
       <div className="mb-[18px] grid grid-cols-1 gap-[14px] desktop:grid-cols-[280px_120px_1fr]">
         <FleetStatColumn>
-          <FleetStat icon="bot" label="Agents" value={load} note="running" />
-          <FleetStat icon="activity" label="Active sessions" value={daemon.activeSessions} />
+          <FleetStat icon="bot" label={t('agents')} value={load} note={t('running')} />
+          <FleetStat icon="activity" label={t('activeSessions')} value={daemon.activeSessions} />
           {/* `daemon.uptime` is time-since-last-seen (fmtSeen), not a real uptime. */}
-          <FleetStat icon="timer" label="Last seen" value={daemon.uptime} />
+          <FleetStat icon="timer" label={t('lastSeen')} value={daemon.uptime} />
         </FleetStatColumn>
         <div className="card flex flex-col">
           <div className="cardhead">
-            <span className="cardtitle">Resources</span>
+            <span className="cardtitle">{t('resources')}</span>
           </div>
           <ResourceDials>
-            <ResourceDial label="CPU" pct={daemon.cpu} />
-            <ResourceDial label="Memory" pct={daemon.mem} />
+            <ResourceDial label={t('cpu')} pct={daemon.cpu} />
+            <ResourceDial label={t('memory')} pct={daemon.mem} />
           </ResourceDials>
         </div>
-        <FleetUsageCard agentIds={hosted.map((a) => a.id)} note="agents placed here · 30d" />
+        <FleetUsageCard agentIds={hosted.map((a) => a.id)} note={t('usageNote')} />
       </div>
 
       {/* Band two — what this machine can run, and what runs on it. */}
       <FleetRuntimesCard
-        title="Runtimes"
+        title={t('runtimes')}
         runtimes={runtimes}
         agents={runtimeAgents}
         empty={runtimeEmpty}
@@ -813,36 +822,40 @@ export default function DaemonDetailView() {
       />
 
       <FleetAgentsCard
-        title="Agents"
+        title={t('agents')}
         agents={hosted}
         capabilitySource={daemon}
         statusHost={daemon}
         onOpen={(agentId) => router.push(orgPath(`/agents/${agentId}`))}
-        emptyTitle="No agents on this daemon"
-        emptyHint="Deploy an agent here to start handling messages."
+        emptyTitle={t('noAgentsOnDaemon')}
+        emptyHint={t('deployAgentHint')}
       />
 
       {/* Band three — the machine's own record, beside what it told the CP it can do. */}
       <div className="mt-[18px] grid grid-cols-1 items-start gap-[18px] desktop:grid-cols-2">
         <div className="card">
           <div className="cardhead">
-            <span className="cardtitle">Details</span>
+            <span className="cardtitle">{t('details')}</span>
           </div>
           <div className="py-[6px]">
-            {labeled('Hostname', daemon.host)}
-            {labeled('Status', s.label)}
-            {labeled('Version', daemon.version)}
-            {pending && labeled('Pending', pendingLabel)}
-            {labeled('Last seen', daemon.uptime)}
+            {labeled(t('hostname'), daemon.host)}
+            {labeled(t('status'), s.label)}
+            {labeled(t('version'), daemon.version)}
+            {pending && labeled(t('pending'), pendingLabel)}
+            {labeled(t('lastSeen'), daemon.uptime)}
             <div className="row grid-cols-[auto_1fr] gap-3">
-              <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">Created</span>
+              <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
+                {t('created')}
+              </span>
               <span className="min-w-0 text-right font-sans text-[12.5px] font-medium leading-normal">
                 {creatorLabel(daemon.createdBy, me)}{' '}
                 <span className="mono font-normal whitespace-nowrap text-(--text-tertiary)">· {daemon.createdAt}</span>
               </span>
             </div>
             <div className="row grid-cols-[auto_1fr] gap-3">
-              <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">Modified</span>
+              <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
+                {t('modified')}
+              </span>
               <span className="min-w-0 text-right font-sans text-[12.5px] font-medium leading-normal">
                 {creatorLabel(daemon.lastModifiedBy, me)}{' '}
                 <span className="mono font-normal whitespace-nowrap text-(--text-tertiary)">
@@ -852,14 +865,14 @@ export default function DaemonDetailView() {
             </div>
             <div className="row grid-cols-[auto_1fr] gap-3">
               <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
-                Visibility
+                {t('visibility')}
               </span>
               <span className="flex min-w-0 justify-end">
                 {daemon.canManageSharing ? (
                   <button
                     type="button"
                     onClick={() => openModal('editDaemon', daemon)}
-                    title="Edit visibility"
+                    title={t('editVisibility')}
                     className="inline-flex cursor-pointer border-0 bg-transparent p-0"
                   >
                     <VisibilityValue visibility={daemon.visibility} sharedWith={daemon.sharedWith} />
@@ -874,12 +887,12 @@ export default function DaemonDetailView() {
 
         <div className="card">
           <div className="cardhead">
-            <span className="cardtitle">Capabilities</span>
+            <span className="cardtitle">{t('capabilities')}</span>
           </div>
           <div className="py-[6px]">
             {labeled('ACP', daemon.caps.acp ? 'supported' : '—')}
-            <ChipRow label="Platforms" items={daemon.caps.platforms.map(platName)} />
-            <ChipRow label="Features" items={daemon.caps.features} />
+            <ChipRow label={t('platforms')} items={daemon.caps.platforms.map(platName)} />
+            <ChipRow label={t('features')} items={daemon.caps.features} />
           </div>
         </div>
       </div>

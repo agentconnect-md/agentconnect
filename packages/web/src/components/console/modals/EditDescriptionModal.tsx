@@ -1,6 +1,7 @@
 // No 'use client' here: rendered only by ModalProvider (the client boundary).
 
 import { useEffect, useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import type { Agent } from '@/lib/data'
 import { fetchAgentDto } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
@@ -10,6 +11,7 @@ import { Button, Icon } from '@/components/ui'
 // The Description card's dedicated editor (design: isEditDescModal) — description
 // left the Edit-agent form when it became its own card on the config tab.
 export default function EditDescriptionModal({ agent, onClose }: { agent: Agent; onClose: () => void }) {
+  const t = useTranslations('Agents.descriptionEdit')
   const { updateAgent } = useConsoleData()
   const [loaded, setLoaded] = useState(false)
   const [description, setDescription] = useState('')
@@ -53,7 +55,7 @@ export default function EditDescriptionModal({ agent, onClose }: { agent: Agent;
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--brand-soft)">
           <Icon name="pencil" size={15} color="var(--brand)" />
         </span>
-        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Edit description</span>
+        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('title')}</span>
         <button className="iconbtn" onClick={onClose}>
           <Icon name="x" size={16} />
         </button>
@@ -65,11 +67,11 @@ export default function EditDescriptionModal({ agent, onClose }: { agent: Agent;
           </div>
         ) : (
           <div className="fld">
-            <span className="fldlbl">Description</span>
+            <span className="fldlbl">{t('description')}</span>
             <textarea
               className="inp resize-y px-3 py-[10px] leading-[1.6] focus:border-(--brand) focus:outline-none"
               rows={6}
-              placeholder="What does this agent do?"
+              placeholder={t('placeholder')}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               autoFocus
@@ -86,10 +88,10 @@ export default function EditDescriptionModal({ agent, onClose }: { agent: Agent;
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t('cancel')}
         </Button>
         <Button onClick={() => void save()} className={!saving && loaded ? undefined : 'cursor-default opacity-50'}>
-          {saving ? 'Saving…' : 'Save'}
+          {saving ? t('saving') : t('save')}
         </Button>
       </div>
     </>

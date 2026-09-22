@@ -2,6 +2,7 @@
 // offers one. Each row says which credentials the pick would run on: an App
 // installation, or an anonymous public clone (badged `public`, read-only).
 import type { ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { GithubRepositoryOption } from '@/components/console/WorkspaceFormFields'
 import type { GithubRepoDto } from '@/lib/api'
 import type { GithubRepoPickerLookup, InstalledRepo } from '@/lib/use-github-repo-picker'
@@ -29,17 +30,18 @@ export function GithubRepoPickerOptions({
   onPickInstalled: (repo: InstalledRepo) => void
   onPickPublic: (repo: GithubRepoDto) => void
 }) {
+  const t = useTranslations('Agents.workspaceEdit')
   const { typedRepo, matches, installedExact, publicExact, exactState, publicMatches, searching } = lookup
   const is = (fullName: string) => selected.toLowerCase() === fullName.toLowerCase()
   return (
     <>
-      {exactState === 'checking' && typedRepo && <Note>Checking GitHub repository…</Note>}
+      {exactState === 'checking' && typedRepo && <Note>{t('checkingRepository')}</Note>}
       {installedExact && (
         <GithubRepositoryOption
           key={`installation:${installedExact.installationId}:${installedExact.fullName}`}
           fullName={installedExact.fullName}
           icon={installedExact.private ? 'lock' : 'book-bookmark'}
-          description="Available through the GitHub App"
+          description={t('availableThroughGithubApp')}
           selected={is(installedExact.fullName)}
           onSelect={() => onPickInstalled(installedExact)}
         />
@@ -49,8 +51,8 @@ export function GithubRepoPickerOptions({
           key={`public-exact:${publicExact.fullName}`}
           fullName={publicExact.fullName}
           icon="book-bookmark"
-          description="Use public repository — credential-free read-only clone"
-          badge="public"
+          description={t('publicRepositoryClone')}
+          badge={t('public')}
           onSelect={() => onPickPublic(publicExact)}
         />
       )}
@@ -64,7 +66,7 @@ export function GithubRepoPickerOptions({
             description={
               row?.description ?? (
                 <>
-                  {repo.description ?? 'No description'}
+                  {repo.description ?? t('noDescription')}
                   {updatedTrail(repo)}
                 </>
               )
@@ -82,7 +84,7 @@ export function GithubRepoPickerOptions({
           icon="book-bookmark"
           description={
             <>
-              {repo.description ?? 'Public GitHub repository'}
+              {repo.description ?? t('publicGithubRepository')}
               {updatedTrail(repo)}
             </>
           }
@@ -90,8 +92,8 @@ export function GithubRepoPickerOptions({
           onSelect={() => onPickPublic(repo)}
         />
       ))}
-      {searching && <Note>Searching public repositories…</Note>}
-      {loading && <Note>Loading repositories…</Note>}
+      {searching && <Note>{t('searchingPublicRepositories')}</Note>}
+      {loading && <Note>{t('loadingRepositories')}</Note>}
       {!loading &&
         !searching &&
         !failed &&
@@ -103,8 +105,8 @@ export function GithubRepoPickerOptions({
         query.trim() && (
           <div className="fnohit">
             {typedRepo && exactState === 'missing'
-              ? `No GitHub repository found for "${typedRepo}"`
-              : `No repositories match "${query.trim()}"`}
+              ? t('noGithubRepository', { query: typedRepo })
+              : t('noRepositoriesMatch', { query: query.trim() })}
           </div>
         )}
     </>

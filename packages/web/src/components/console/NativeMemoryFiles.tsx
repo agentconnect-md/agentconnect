@@ -3,6 +3,7 @@
 // The runtime's own memory files (Claude auto-memory / Codex memories), browsed and edited as files: the runtime
 // owns their format, so they have no entry projection and keep the file browser the workspace tab uses.
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import dynamic from 'next/dynamic'
 import { ApiError, fetchAgentMemoryFull, listAgentMemory, updateAgentMemory, type MemoryFileEntry } from '@/lib/api'
 import { Spinner } from '@/components/marks'
@@ -24,13 +25,19 @@ import { useIsMobile } from '@/lib/use-is-mobile'
 
 const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), {
   ssr: false,
-  loading: () => <p className="text-(--text-tertiary)">Rendering…</p>
+  loading: () => <MarkdownLoading />
 })
+
+function MarkdownLoading() {
+  const t = useTranslations('Agents.detail.nativeMemory')
+  return <p className="text-(--text-tertiary)">{t('rendering')}</p>
+}
 
 const INDEX = 'MEMORY.md'
 const TOPIC_RE = /^[A-Za-z0-9._-]+\.md$/ // flat file name, .md
 
 export function NativeMemoryFiles({ agentId, canEdit }: { agentId: string; canEdit: boolean }) {
+  const t = useTranslations('Agents.detail.nativeMemory')
   const isMobile = useIsMobile()
   const [files, setFiles] = useState<MemoryFileEntry[]>([])
   const [listLoading, setListLoading] = useState(true)
@@ -203,13 +210,13 @@ export function NativeMemoryFiles({ agentId, canEdit }: { agentId: string; canEd
         <div className="flex flex-col items-start gap-2 px-4 py-3 font-sans text-[12px] font-normal leading-normal text-(--red-600)">
           <span>{listError}</span>
           <button type="button" className="lnk text-[12px]" onClick={() => void loadList()}>
-            Retry
+            {t('retry')}
           </button>
         </div>
       ) : null}
       {!listLoading && !listError && files.length === 0 ? (
         <div className="px-4 py-3 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-          No memory yet.
+          {t('noMemory')}
         </div>
       ) : null}
       {!listLoading
@@ -259,7 +266,7 @@ export function NativeMemoryFiles({ agentId, canEdit }: { agentId: string; canEd
         <div className="flex flex-col items-start gap-3 px-4 py-6 font-sans text-[13px] font-normal leading-normal text-(--red-600)">
           <span>{error}</span>
           <Button variant="secondary" size="xs" onClick={() => void loadFile(selected)}>
-            Retry
+            {t('retry')}
           </Button>
         </div>
       ) : content.trim() ? (
@@ -296,8 +303,8 @@ export function NativeMemoryFiles({ agentId, canEdit }: { agentId: string; canEd
           onBack={isMobile && editor ? backFromEditor : undefined}
           disabled={editor?.saving}
           nested={false}
-          ariaLabel="Memory file path"
-          inputAriaLabel="New memory file name"
+          ariaLabel={t('memoryFilePath')}
+          inputAriaLabel={t('newMemoryFileName')}
         />
       }
       headerEnd={
@@ -312,12 +319,12 @@ export function NativeMemoryFiles({ agentId, canEdit }: { agentId: string; canEd
           <div className="flex flex-none items-center gap-2">
             <Button variant="secondary" size="xs" className="flex-none" onClick={startCreate}>
               <Icon name="file-plus" size={13} />
-              Add file
+              {t('addFile')}
             </Button>
             {!loading && !error && fileExists !== null ? (
               <Button variant="secondary" size="xs" className="flex-none" onClick={startEdit}>
                 <Icon name="pencil" size={13} />
-                Edit
+                {t('edit')}
               </Button>
             ) : null}
           </div>

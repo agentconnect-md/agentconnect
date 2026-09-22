@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { KeyboardEvent, ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { GiteaMark, GithubMark, GitlabMark } from '@/components/marks'
 import { CodeHostMark } from '@/components/console/CodeHostMark'
@@ -32,58 +33,50 @@ const workspaceModeMark = (child: ReactNode) => (
   <span className="flex h-[18px] w-[18px] flex-none items-center justify-center">{child}</span>
 )
 
-// One short choice, so each tile carries its label alone and hands the one-line description to its tooltip.
-const WORKSPACE_MODE_OPTIONS: {
-  value: WorkspaceMode
-  label: string
-  hint: string
-  mark: (selected: boolean) => ReactNode
-}[] = [
-  {
-    value: 'scratch',
-    label: 'Scratch',
-    hint: 'Fresh empty directory.',
-    mark: (selected) =>
-      workspaceModeMark(<Icon name="sparkles" size={16} color={selected ? 'var(--brand)' : 'var(--text-tertiary)'} />)
-  },
-  // One tile per code host the console can pick a repository on, named and worded by its own projection.
-  ...PICKABLE_CODE_HOST_PROVIDERS.map((provider) => ({
-    value: provider,
-    label: CODE_HOST_PROJECTION[provider].label,
-    hint: `Clone a ${CODE_HOST_PROJECTION[provider].repoNounShort} on a branch.`,
-    mark: () => workspaceModeMark(<CodeHostMark provider={provider} color="var(--text-primary)" fillPct={100} />)
-  })),
-  {
-    value: 'giturl',
-    label: 'Git URL',
-    hint: 'Clone any Git server anonymously.',
-    mark: (selected) =>
-      workspaceModeMark(<Icon name="link-2" size={16} color={selected ? 'var(--brand)' : 'var(--text-tertiary)'} />)
-  }
-]
-
 export function WorkspaceModeField({
   value,
   onChange,
   className,
   // Add-agent renders this under a "Workspace" section heading, so it passes `null`
   // to drop the label rather than say "Workspace" twice.
-  label = 'Workspace'
+  label
 }: {
   value: WorkspaceMode
   onChange: (value: WorkspaceMode) => void
   className?: string
   label?: string | null
 }) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
   const fieldClassName = className ? `fld ${className}` : 'fld'
   // Fixed at mount: a workspace already on a git URL keeps its tile even where the flag is off
   // (live state stays representable — and reversible while the modal is open), new picks don't.
   const [withGitUrl] = useState(() => featureFlagEnabled('git-url') || value === 'giturl')
-  const options = withGitUrl ? WORKSPACE_MODE_OPTIONS : WORKSPACE_MODE_OPTIONS.filter((o) => o.value !== 'giturl')
+  const options = [
+    {
+      value: 'scratch' as const,
+      label: t('scratch'),
+      hint: t('scratchHint'),
+      mark: (selected: boolean) =>
+        workspaceModeMark(<Icon name="sparkles" size={16} color={selected ? 'var(--brand)' : 'var(--text-tertiary)'} />)
+    },
+    ...PICKABLE_CODE_HOST_PROVIDERS.map((provider) => ({
+      value: provider,
+      label: CODE_HOST_PROJECTION[provider].label,
+      hint: t('cloneOnBranch', { repo: CODE_HOST_PROJECTION[provider].repoNounShort }),
+      mark: () => workspaceModeMark(<CodeHostMark provider={provider} color="var(--text-primary)" fillPct={100} />)
+    })),
+    {
+      value: 'giturl' as const,
+      label: t('gitUrl'),
+      hint: t('gitUrlHint'),
+      mark: (selected: boolean) =>
+        workspaceModeMark(<Icon name="link-2" size={16} color={selected ? 'var(--brand)' : 'var(--text-tertiary)'} />)
+    }
+  ].filter((option) => withGitUrl || option.value !== 'giturl')
 
   return (
     <div className={fieldClassName}>
-      {label !== null && <span className="fldlbl">{label}</span>}
+      {label !== null && <span className="fldlbl">{label ?? t('workspace')}</span>}
       <div className="flex flex-wrap gap-[10px]">
         {options.map((option) => {
           const selected = value === option.value
@@ -121,6 +114,7 @@ export function GithubInstallPrompt({
   onSync?: () => void
   syncing?: boolean
 }) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
   return (
     <div className="flex items-start gap-4 rounded-lg border border-(--border-default) bg-(--surface-card) p-4 desktop:col-span-2">
       <span className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-md bg-(--surface-inverse)">
@@ -129,16 +123,16 @@ export function GithubInstallPrompt({
         </span>
       </span>
       <div className="min-w-0 flex-1">
-        <div className="font-sans text-[13.5px] font-semibold leading-normal">Connect GitHub to sync repos</div>
+        <div className="font-sans text-[13.5px] font-semibold leading-normal">{t('githubConnectTitle')}</div>
         <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-          Install the GitHub App to browse repositories.
+          {t('githubInstallDescription')}
         </div>
         <div className="mt-[10px] flex flex-wrap items-center gap-[10px]">
           <Button onClick={onInstall}>
             <span className="flex h-[14px] w-[14px] items-center justify-center">
               <GithubMark color="#fff" />
             </span>
-            Install GitHub app
+            {t('installGithubApp')}
           </Button>
           {onSync ? (
             <button
@@ -152,11 +146,11 @@ export function GithubInstallPrompt({
                 size={13}
                 className={syncing ? 'animate-spin' : undefined}
               />
-              I&rsquo;ve installed it — sync
+              {t('installedSync')}
             </button>
           ) : (
             <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              Opens github.com in a new tab
+              {t('opensGithub')}
             </span>
           )}
         </div>
@@ -166,11 +160,12 @@ export function GithubInstallPrompt({
 }
 
 export function GithubConnectedBanner({ onManage }: { onManage: () => void }) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
   return (
     <div className="flex min-w-0 items-center gap-2 rounded-md border border-(--status-online) bg-(--status-online-soft) px-3 py-[9px] desktop:col-span-2">
       <Icon name="circle-check" size={16} color="var(--status-online)" />
       <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-primary)">
-        GitHub app connected — repos and metadata sync automatically.
+        {t('githubConnected')}
       </span>
       <button
         type="button"
@@ -178,22 +173,23 @@ export function GithubConnectedBanner({ onManage }: { onManage: () => void }) {
         onClick={onManage}
       >
         <Icon name="settings-2" size={13} />
-        Manage access
+        {t('manageAccess')}
       </button>
     </div>
   )
 }
 
 export function GithubPrivateReposNotice({ profileHref }: { profileHref: string }) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
   return (
     <div className="mt-[6px] flex items-start gap-[6px] font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-secondary)">
       <Icon name="info" size={13} className="mt-[1px] flex-none" />
       <span>
-        Public repositories are shown.{' '}
+        {t('publicRepositoriesShown')}{' '}
         <a className="lnk font-medium" href={profileHref}>
-          Link your GitHub profile
+          {t('linkGithubProfile')}
         </a>
-        &#32;to see private repositories.
+        &#32;{t('toSeePrivateRepositories')}
       </span>
     </div>
   )
@@ -250,6 +246,7 @@ function RepositoryPickerField({
   children,
   note
 }: Omit<RepositoryPickerProps, 'label'> & RepositoryPickerWords) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
   const triggerRef = useRef<HTMLDivElement>(null)
   const [menuStyle, setMenuStyle] = useState<RepositoryMenuStyle | null>(null)
 
@@ -324,7 +321,7 @@ function RepositoryPickerField({
                   <span className="min-w-0 flex-1">{error}</span>
                   {onRetry && (
                     <button type="button" className="lnk flex-none text-[12px]" onClick={onRetry}>
-                      Retry
+                      {t('retry')}
                     </button>
                   )}
                 </div>
@@ -340,40 +337,43 @@ function RepositoryPickerField({
 }
 
 export function GithubRepositoryField(props: RepositoryPickerProps) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
   return (
     <RepositoryPickerField
       {...props}
-      label={props.label ?? 'GitHub repository'}
+      label={props.label ?? t('githubRepository')}
       mark={<GithubMark color="var(--text-secondary)" />}
-      emptyLabel="Pick a repository"
-      loadingLabel="Loading repositories…"
-      searchPlaceholder="Search or type owner/repo…"
+      emptyLabel={t('pickRepository')}
+      loadingLabel={t('loadingRepositories')}
+      searchPlaceholder={t('searchOwnerRepo')}
     />
   )
 }
 
 export function GitlabProjectField(props: RepositoryPickerProps) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
   return (
     <RepositoryPickerField
       {...props}
-      label={props.label ?? 'GitLab project'}
+      label={props.label ?? t('gitlabProject')}
       mark={<GitlabMark />}
-      emptyLabel="Pick a project"
-      loadingLabel="Loading projects…"
-      searchPlaceholder="Search your GitLab projects…"
+      emptyLabel={t('pickProject')}
+      loadingLabel={t('loadingProjects')}
+      searchPlaceholder={t('searchGitlabProjects')}
     />
   )
 }
 
 export function GiteaRepositoryField(props: RepositoryPickerProps) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
   return (
     <RepositoryPickerField
       {...props}
-      label={props.label ?? 'Gitea repository'}
+      label={props.label ?? t('giteaRepository')}
       mark={<GiteaMark color="var(--text-secondary)" />}
-      emptyLabel="Pick a repository"
-      loadingLabel="Loading repositories…"
-      searchPlaceholder="Search the repositories the bot administers…"
+      emptyLabel={t('pickRepository')}
+      loadingLabel={t('loadingRepositories')}
+      searchPlaceholder={t('searchGiteaRepositories')}
     />
   )
 }
@@ -391,9 +391,10 @@ export function GiteaRepositoryOption({
   selected?: boolean
   onSelect: () => void
 }) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
   const selectable = giteaChoiceSelectable(choice)
   const state = choice.binding ? GITEA_REPOSITORY_STATE[choice.binding.state] : null
-  const branch = choice.defaultBranch ? `default branch ${choice.defaultBranch}` : 'no default branch reported'
+  const branch = choice.defaultBranch ? t('defaultBranch', { branch: choice.defaultBranch }) : t('noDefaultBranch')
   return (
     <button
       type="button"
@@ -418,7 +419,7 @@ export function GiteaRepositoryOption({
           {choice.repoPath}
         </span>
         <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-          {choice.binding ? branch : `${branch} · added on save`}
+          {choice.binding ? branch : t('addedOnSave', { branch })}
         </span>
       </span>
       {state && state.label !== 'ready' && <span className={`badge flex-none ${state.badge}`}>{state.label}</span>}
@@ -444,18 +445,19 @@ export function GiteaNoRepositoriesNotice({
   onSync?: () => void
   syncing?: boolean
 }) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
   if (enabled && !connected) {
     return (
       <div className="rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] desktop:col-span-2">
         <div className="font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)">
-          Connect Gitea to watch repositories
+          {t('connectGiteaTitle')}
         </div>
         <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-          Add a Gitea bot under Integrations &rarr; Code hosts first.
+          {t('connectGiteaDescription')}
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <a className="lnk font-medium" href={integrationsHref}>
-            Open Integrations
+            {t('openIntegrations')}
           </a>
           {onSync && (
             <button
@@ -469,7 +471,7 @@ export function GiteaNoRepositoriesNotice({
                 size={13}
                 className={syncing ? 'animate-spin' : undefined}
               />
-              I&rsquo;ve connected it — sync
+              {t('connectedSync')}
             </button>
           )}
         </div>
@@ -481,14 +483,7 @@ export function GiteaNoRepositoriesNotice({
       <span className="mt-[1px] flex h-[14px] w-[14px] flex-none items-center justify-center">
         <GiteaMark fillPct={100} />
       </span>
-      {!enabled ? (
-        <span>Gitea is not enabled on this deployment — its control plane predates Gitea support.</span>
-      ) : (
-        <span>
-          The connected Gitea bot administers no repository. Give it Admin on one — as a collaborator or through a team
-          — before it can be picked here.
-        </span>
-      )}
+      {!enabled ? <span>{t('giteaDisabled')}</span> : <span>{t('giteaNoAdminRepository')}</span>}
     </div>
   )
 }
@@ -508,9 +503,10 @@ export function GitlabProjectOption({
   busy?: boolean
   onSelect: () => void
 }) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
   const selectable = gitlabChoiceSelectable(choice) && !busy
   const state = choice.binding ? GITLAB_PROJECT_STATE[choice.binding.state] : null
-  const branch = choice.defaultBranch ? `default branch ${choice.defaultBranch}` : 'no default branch reported'
+  const branch = choice.defaultBranch ? t('defaultBranch', { branch: choice.defaultBranch }) : t('noDefaultBranch')
   return (
     <button
       type="button"
@@ -535,7 +531,7 @@ export function GitlabProjectOption({
           {choice.projectPath}
         </span>
         <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-          {busy ? 'Setting up the project bot and webhook…' : choice.binding ? branch : `${branch} · sets up on pick`}
+          {busy ? t('settingUpProject') : choice.binding ? branch : t('setsUpOnPick', { branch })}
         </span>
       </span>
       {state && state.label !== 'ready' && <span className={`badge flex-none ${state.badge}`}>{state.label}</span>}
@@ -555,6 +551,7 @@ export function PublicGitlabProjectOption({
   choices: readonly GitlabProjectChoice[]
   onSelect: (path: string) => void
 }) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
   const path = query.trim()
   if (!/^[^/\s]+\/[^\s]+$/.test(path)) return null
   if (choices.some((choice) => choice.projectPath.toLowerCase() === path.toLowerCase())) return null
@@ -568,10 +565,10 @@ export function PublicGitlabProjectOption({
           {path}
         </span>
         <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-          Use as a public project — read-only anonymous clone
+          {t('publicProjectReadOnly')}
         </span>
       </span>
-      <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">public</span>
+      <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">{t('public')}</span>
     </button>
   )
 }
@@ -603,13 +600,14 @@ export function GitUrlTileFields({
   onAgentDirChange: (value: string) => void
   onWorktreeChange: (value: boolean) => void
 }) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
   return (
     <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-2 desktop:gap-x-7">
       <label className="fld desktop:col-span-2">
-        <span className="fldlbl">Clone URL</span>
+        <span className="fldlbl">{t('cloneUrl')}</span>
         <input
           className="inp mn font-mono text-[12.5px]"
-          placeholder="https://git.example.test/team/repo.git"
+          placeholder={t('cloneUrlPlaceholder')}
           value={url}
           onChange={(event) => onUrlChange(event.target.value)}
         />
@@ -623,8 +621,8 @@ export function GitUrlTileFields({
       <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_96px] desktop:gap-x-[14px]">
         <WorkspaceBranchField
           repositorySelected={!!url.trim()}
-          unselectedLabel="Enter a clone URL first"
-          defaultBranchLabel="Remote default branch"
+          unselectedLabel={t('enterCloneUrlFirst')}
+          defaultBranchLabel={t('remoteDefaultBranch')}
           value={branch}
           branches={null}
           open={false}
@@ -639,7 +637,7 @@ export function GitUrlTileFields({
       </div>
       <div className="flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary) desktop:col-span-2">
         <Icon name="info" size={14} className="mt-[1px] flex-none" />
-        <span>Cloned with the daemon host&rsquo;s own git credentials.</span>
+        <span>{t('clonedWithDaemonCredentials')}</span>
       </div>
     </div>
   )
@@ -661,20 +659,21 @@ export function GitlabNoProjectsNotice({
   onSync?: () => void
   syncing?: boolean
 }) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
   // Connecting belongs where the project is picked, exactly as installing the GitHub app does.
   if (enabled && !connected) {
     return (
       <div className="rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] desktop:col-span-2">
         <div className="font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)">
-          Connect GitLab to watch projects
+          {t('connectGitlabTitle')}
         </div>
         <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-          Authorize on GitLab to pick a project; Maintainer or Owner access required.
+          {t('connectGitlabDescription')}
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <Button size="sm" onClick={onConnect}>
             <Icon name="external-link" size={13} />
-            Connect GitLab
+            {t('connectGitlab')}
           </Button>
           {onSync && (
             <button
@@ -688,11 +687,11 @@ export function GitlabNoProjectsNotice({
                 size={13}
                 className={syncing ? 'animate-spin' : undefined}
               />
-              I&rsquo;ve connected it — sync
+              {t('connectedSync')}
             </button>
           )}
           <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-            Opens GitLab in a new tab
+            {t('opensGitlab')}
           </span>
         </div>
       </div>
@@ -703,14 +702,7 @@ export function GitlabNoProjectsNotice({
       <span className="mt-[1px] flex h-[14px] w-[14px] flex-none items-center justify-center">
         <GitlabMark fillPct={100} />
       </span>
-      {!enabled ? (
-        <span>GitLab is not enabled on this deployment — no GitLab application is configured.</span>
-      ) : (
-        <span>
-          The connected GitLab account has no project to offer. You need Maintainer or Owner access to a project before
-          it can be set up here.
-        </span>
-      )}
+      {!enabled ? <span>{t('gitlabDisabled')}</span> : <span>{t('gitlabNoProject')}</span>}
     </div>
   )
 }
@@ -758,27 +750,15 @@ export function GithubRepositoryOption({
   )
 }
 
-function accessOptions(writeDescription: string): Array<{
-  value: WorkspaceRepoAccess
-  icon: 'eye' | 'git-branch'
-  label: string
-  description: string
-}> {
-  return [
-    { value: 'read', icon: 'eye', label: 'Read only', description: 'Clone & read files only' },
-    { value: 'write', icon: 'git-branch', label: 'Read & write', description: writeDescription }
-  ]
-}
-
 export function RepositoryAccessField({
   repositorySelected,
   value,
   open,
   readOnly = false,
   readOnlyNote,
-  label = 'Repository access',
-  unselectedLabel = 'Select repository first',
-  writeDescription = 'Push, open PRs & run GitHub Actions',
+  label,
+  unselectedLabel,
+  writeDescription,
   onToggle,
   onClose,
   onChange
@@ -796,17 +776,26 @@ export function RepositoryAccessField({
   onClose: () => void
   onChange: (value: WorkspaceRepoAccess) => void
 }) {
-  const options = accessOptions(writeDescription)
+  const t = useTranslations('Integrations.dialog.workspaceFields')
+  const options = [
+    { value: 'read' as const, icon: 'eye' as const, label: t('readOnly'), description: t('readOnlyDescription') },
+    {
+      value: 'write' as const,
+      icon: 'git-branch' as const,
+      label: t('readWrite'),
+      description: writeDescription ?? t('githubWriteAccess')
+    }
+  ]
   const selected = options.find((option) => option.value === value)!
   return (
     <div className="fld relative min-w-0">
-      <span className="fldlbl">{label}</span>
+      <span className="fldlbl">{label ?? t('repositoryAccess')}</span>
       {!repositorySelected ? (
         <div className="inp min-w-0 cursor-not-allowed pl-[10px] opacity-70" aria-disabled="true">
           <span className="inline-flex min-w-0 flex-1 items-center gap-[7px]">
             <Icon name="book-bookmark" size={16} color="var(--text-tertiary)" className="flex-none" />
             <span className="truncate font-sans text-[13px] font-medium leading-normal text-(--text-tertiary)">
-              {unselectedLabel}
+              {unselectedLabel ?? t('selectRepositoryFirst')}
             </span>
           </span>
         </div>
@@ -866,8 +855,8 @@ export function WorkspaceBranchField({
   defaultBranch,
   open,
   query,
-  unselectedLabel = 'Pick repository first',
-  defaultBranchLabel = 'GitHub default branch',
+  unselectedLabel,
+  defaultBranchLabel,
   onToggle,
   onClose,
   onQueryChange,
@@ -886,18 +875,19 @@ export function WorkspaceBranchField({
   onQueryChange: (value: string) => void
   onChange: (value: string) => void
 }) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
   const matchingBranches = (branches ?? []).filter(
     (branch) => !query.trim() || branch.toLowerCase().includes(query.trim().toLowerCase())
   )
   return (
     <div className="fld relative min-w-0">
-      <span className="fldlbl">Branch</span>
+      <span className="fldlbl">{t('branch')}</span>
       {!repositorySelected ? (
         <div className="inp min-w-0 cursor-not-allowed pl-[10px] opacity-70" aria-disabled="true">
           <span className="inline-flex min-w-0 flex-1 items-center gap-[7px]">
             <Icon name="git-branch" size={16} color="var(--text-tertiary)" className="flex-none" />
             <span className="truncate font-sans text-[13px] font-medium leading-normal text-(--text-tertiary)">
-              {unselectedLabel}
+              {unselectedLabel ?? t('pickRepositoryFirst')}
             </span>
           </span>
         </div>
@@ -913,7 +903,7 @@ export function WorkspaceBranchField({
                     : 'truncate font-sans text-[13px] font-medium leading-normal text-(--text-tertiary)'
                 }
               >
-                {value || defaultBranchLabel}
+                {value || defaultBranchLabel || t('githubDefaultBranch')}
               </span>
             </span>
             <Icon name="chevron-down" size={15} color="var(--text-tertiary)" />
@@ -926,7 +916,7 @@ export function WorkspaceBranchField({
                   className="fsearch h-10 rounded-md px-3 font-sans text-[13px] font-medium leading-normal"
                   value={query}
                   onChange={(event) => onQueryChange(event.target.value)}
-                  placeholder="Search branches…"
+                  placeholder={t('searchBranches')}
                   autoFocus
                 />
                 {matchingBranches.map((branch) => (
@@ -942,14 +932,14 @@ export function WorkspaceBranchField({
                     </span>
                     {defaultBranch === branch && (
                       <span className="inline-flex h-[22px] flex-none items-center rounded-md bg-(--surface-active) px-2 font-mono text-[10.5px] font-semibold leading-normal text-(--text-secondary)">
-                        default
+                        {t('default')}
                       </span>
                     )}
                     {value === branch && <Icon name="check" size={17} color="var(--brand)" />}
                   </button>
                 ))}
                 {query.trim() && matchingBranches.length === 0 && (
-                  <div className="fnohit">No branches match &quot;{query}&quot;</div>
+                  <div className="fnohit">{t('noBranchesMatch', { query })}</div>
                 )}
               </div>
             </>
@@ -961,7 +951,7 @@ export function WorkspaceBranchField({
             <Icon name="git-branch" size={16} color="var(--text-tertiary)" className="flex-none" />
             <input
               className="mn min-w-0 flex-1 border-0 bg-transparent font-mono text-[12.5px] font-medium leading-normal text-(--text-primary) outline-none"
-              placeholder="main"
+              placeholder={t('mainBranch')}
               value={value}
               onChange={(event) => onChange(event.target.value)}
             />
@@ -981,19 +971,20 @@ export function WorkingSubdirectoryField({
   onChange: (value: string) => void
   error?: string | null
 }) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
   return (
     <div className="fld min-w-0">
-      <span className="fldlbl">Working subdirectory (optional)</span>
+      <span className="fldlbl">{t('workingSubdirectory')}</span>
       <div className="inp min-w-0 justify-between gap-3 pl-[10px]">
         <input
           className="mn min-w-0 flex-1 border-0 bg-transparent font-mono text-[12.5px] font-medium leading-normal text-(--text-secondary) outline-none"
-          placeholder="services/api"
+          placeholder={t('workingSubdirectoryPlaceholder')}
           value={value}
           onChange={(event) => onChange(event.target.value)}
-          aria-label="Working subdirectory"
+          aria-label={t('workingSubdirectoryAriaLabel')}
         />
         <span className="flex-none font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
-          {value.trim() ? '' : 'repo root'}
+          {value.trim() ? '' : t('repoRoot')}
         </span>
       </div>
       {error && (

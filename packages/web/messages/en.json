@@ -3,6 +3,54 @@
     "metadata": {
       "description": "Multi-agent platform bridging IM platforms to AI coding agents"
     },
+    "outputModeHelp": {
+      "compare": "Compare output modes",
+      "channelHeading": "What appears in the channel",
+      "historyNote": "All modes keep full activity in session history."
+    },
+    "pendingActions": {
+      "waiting": "{label} is waiting for your action",
+      "show": "Show"
+    },
+    "runtimeChat": {
+      "label": "Allow change in chat",
+      "enabled": "Chat users can change runtime settings and answer approval requests.",
+      "disabled": "Only agent editors can manage runtime settings. Chat users cannot change them or answer approval requests."
+    },
+    "sandbox": {
+      "label": "Run in sandbox",
+      "unavailable": "Unavailable",
+      "required": "Required",
+      "on": "On",
+      "off": "Off",
+      "downDetail": "The selected computer cannot provide its sandbox right now, so sessions that need one are refused rather than run unconfined. {reason}",
+      "requiredDetail": "Sandboxing is required on the selected computer. The runtime uses a private HOME and is confined to its workspace.",
+      "unavailableDetail": "Sandboxing is not available for the current selection, so the runtime uses its normal environment.",
+      "enabledDetail": "The runtime runs in an OS sandbox with a private HOME and is confined to its workspace.",
+      "disabledDetail": "The runtime uses the selected computer environment without OS sandbox isolation."
+    },
+    "sandboxWake": {
+      "starting": "Starting the agent’s sandbox…",
+      "start": "Start"
+    },
+    "brand": "AgentConnect",
+    "brandAgent": "Agent",
+    "brandConnect": "Connect",
+    "marks": {
+      "brand": "AgentConnect",
+      "brandAgent": "Agent",
+      "brandConnect": "Connect",
+      "loading": "Loading"
+    },
+    "labelFilter": {
+      "filterByLabels": "Filter by labels",
+      "onlyWithLabels": "Only with labels",
+      "removeLabel": "Remove label {label}",
+      "addLabel": "Add a label",
+      "addAnother": "add another…",
+      "typeLabel": "type a label, Enter adds it",
+      "limitReached": "Label limit reached — remove one to add another."
+    },
     "language": {
       "label": "Language",
       "beta": "Beta"
@@ -33,6 +81,58 @@
       "retry": "Retry",
       "close": "Close"
     },
+    "attachedList": {
+      "add": "Add"
+    },
+    "builtinBadge": {
+      "title": "Built-in agent",
+      "label": "builtin"
+    },
+    "commandMenu": {
+      "runCommand": "Run a command",
+      "oneAgent": "One agent",
+      "unreported": " hasn’t reported its skills yet — they appear after its next session starts",
+      "unreachable": " is unreachable",
+      "noDescription": "This command has no description.",
+      "runsOn": "Runs on {agent}"
+    },
+    "composerMenu": {
+      "noMatches": "No matches"
+    },
+    "contextWindow": {
+      "label": "Context window",
+      "usageUnavailable": "Usage unavailable",
+      "percentage": "{percentage}% used ({left}% left)",
+      "tokensWithSize": "{used} / {size} tokens used",
+      "tokens": "{used} tokens used"
+    },
+    "defaultDispatch": {
+      "label": "Default dispatch",
+      "title": "Default dispatch — {name}",
+      "none": "none",
+      "unknown": "—"
+    },
+    "fleetDetail": {
+      "usage": "Usage",
+      "unavailable": "unavailable",
+      "noAgentSplit": "This control plane reports no per-agent split.",
+      "noUsage": "No usage in this window.",
+      "modelsCount": "{count, plural, one {# model} other {# models}}",
+      "showLoginCommand": "Show the command to sign in on the daemon host.",
+      "loginRequired": "Login required",
+      "showCommand": "Show command",
+      "models": "Models"
+    },
+    "lineDiff": {
+      "lineChanges": "Line changes",
+      "removed": "removed",
+      "added": "added",
+      "noChanges": "No line changes."
+    },
+    "mentionMenu": {
+      "mentionAgent": "Mention an agent",
+      "add": "Add"
+    },
     "permissionModes": {
       "askForApproval": "Ask for approval",
       "approveForMe": "Approve for me",
@@ -46,13 +146,31 @@
     "notFound": {
       "kind": "PAGE",
       "title": "Page not found",
+      "pageTitle": "Page not found",
       "post": " doesn’t exist. Check the address, or head back home.",
+      "pageDescription": "This page doesn’t exist. Check the address, or head back home.",
       "goHome": "Go to home",
-      "search": "Search"
+      "search": "Search",
+      "shortcut": "⌘K"
     }
   },
   "Profile": {
+    "brand": "AgentConnect",
     "editProfile": "Edit profile",
+    "editProfileForm": {
+      "fullNameRequired": "Full name is required.",
+      "changePhoto": "Change profile photo",
+      "profilePhoto": "Profile photo",
+      "restoreOnSave": "Your sign-in photo will be restored when you save.",
+      "undo": "Undo",
+      "uploadHint": "Click the photo to upload a PNG, JPEG, or WebP image.",
+      "useSignInPhoto": "Use sign-in photo",
+      "uploadsDisabled": "Photo uploads are not enabled in this deployment.",
+      "emailProvider": "Email comes from your sign-in provider.",
+      "cancel": "Cancel",
+      "saving": "Saving…",
+      "save": "Save"
+    },
     "account": "Account",
     "name": "Name",
     "fullName": "Full name",
@@ -144,8 +262,11 @@
       "notConfigured": "Not configured.",
       "hintBefore": "A config token works for about 12 hours; add the refresh token to auto-renew. Generate both at",
       "hintAfter": "→ Your App Configuration Tokens.",
+      "appsUrl": "api.slack.com/apps",
       "configToken": "Config token",
+      "accessPlaceholder": "xoxe.xoxp-…",
       "refreshToken": "Refresh token",
+      "refreshPlaceholder": "xoxe-…",
       "optional": "optional",
       "saving": "Saving…",
       "save": "Save",
@@ -171,12 +292,111 @@
     "daysAgo": "{count}d ago"
   },
   "Sessions": {
+    "fileBrowser": {
+      "backToFiles": "Back to files",
+      "fileNamePlaceholder": "Name your file…",
+      "newFilePath": "New file path",
+      "cancel": "Cancel",
+      "saving": "Saving…",
+      "saveChanges": "Save changes",
+      "newFile": "New file",
+      "editFile": "Edit {path}",
+      "newFileContent": "New file content",
+      "selectFile": "Select a file to preview.",
+      "history": "History"
+    },
+    "focusMenu": {
+      "focus": "Focus"
+    },
+    "webchatApproval": {
+      "approvalRequired": "Approval required",
+      "description": "The agent requested this change. Only your approval can execute it.",
+      "checking": "Checking…",
+      "checkStatus": "Check status",
+      "dismiss": "Dismiss"
+    },
+    "mcpApp": {
+      "outcomes": {
+        "completed": "Configuration saved",
+        "closed": "Interface closed",
+        "superseded": "Replaced by a newer interface",
+        "expired": "Interface expired with the session"
+      },
+      "expand": "Expand interface",
+      "minimize": "Minimize interface",
+      "close": "Close interface",
+      "loading": "Loading the interface…",
+      "unavailable": "This interface was shown live; its page could not be loaded."
+    },
+    "userTurnDetails": {
+      "subject": "Subject",
+      "event": "Event",
+      "from": "From",
+      "revision": "Revision",
+      "ref": "Ref",
+      "environment": "Environment",
+      "draft": "Draft",
+      "yes": "yes",
+      "labels": "Labels",
+      "review": "Review",
+      "reviewValues": {
+        "generation": "requested for this revision",
+        "inline": "reply in an inline review thread",
+        "conversation": "reply in the conversation"
+      },
+      "bodyTruncated": "Body truncated by the relay.",
+      "less": "less",
+      "more": "more"
+    },
+    "panel": {
+      "pinSession": "Pin session",
+      "unpinSession": "Unpin session",
+      "newSession": "New session",
+      "newSessionWith": "New session with {agent}",
+      "allSessions": "All sessions",
+      "related": "Related",
+      "delegatedBy": "Delegated by",
+      "delegatedTo": "Delegated to",
+      "via": "via {agent}",
+      "allAgents": "All agents",
+      "removeFromFilter": "Remove from filter",
+      "removeFromAgentFilter": "Remove {agent} from the agent filter",
+      "filterByAgent": "Filter by agent",
+      "filterAgentsPlaceholder": "Filter agents…",
+      "filterAgents": "Filter agents",
+      "noMatches": "No matches"
+    },
+    "viewer": {
+      "retry": "Retry",
+      "notFound": "Not found — this checkout has no file at that path. It may have been removed since the link was made, or the link may name another agent’s workspace.",
+      "folderPath": "That path is a folder, not a file. Open it in the Files tab to see what is inside it.",
+      "binaryFile": "Binary file — not displayed ({size})",
+      "emptyFile": "This file is empty.",
+      "viewerMode": "Viewer mode",
+      "stagedChanges": "Staged changes to this file",
+      "unstagedChanges": "Unstaged changes to this file",
+      "diff": "Diff",
+      "fileOnDisk": "The file as it is on disk",
+      "file": "File",
+      "unstageTitle": "Take this file out of the index; the working tree is untouched",
+      "stageTitle": "Add this file’s changes to the index",
+      "unstageFile": "Unstage file",
+      "stageFile": "Stage file",
+      "backToConversation": "Back to the conversation",
+      "reload": "Reload",
+      "loading": "Loading…",
+      "loadMore": "Load more",
+      "diffTooLarge": "This diff is too large to send whole — only its first part is shown. Open the file to read the rest.",
+      "diffTruncated": "This diff has more lines than the viewer draws — only its first part is shown.",
+      "malformedDiff": "Part of this diff is shown raw — its hunks are not two-way (a merge conflict, usually). Counts cover only the readable parts."
+    },
     "list": {
       "allAgents": "All agents",
       "allIntegrations": "All integrations",
       "allChannels": "All channels",
       "allTriggers": "All triggers",
       "agents": "Agents",
+      "agentSummary": "{count} agents: {names}",
       "people": "People",
       "schedules": "Schedules",
       "count": "{count, plural, one {# session} other {# sessions}}",
@@ -268,6 +488,46 @@
       "linkProfile": "Link {provider} profile",
       "reviewProfile": "Review {provider} profile",
       "details": "Details",
+      "workspace": "Workspace",
+      "expandQuestion": "Expand question",
+      "minimizeQuestion": "Minimize question",
+      "declineWithoutAnswer": "Decline without answering",
+      "openLink": "Open link",
+      "refuseWithoutOpening": "Refuse without opening",
+      "decline": "Decline",
+      "opensNewTab": "Opens in a new tab",
+      "submitAnswers": "Submit answers",
+      "dismissWithoutAnswer": "Dismiss without answering",
+      "dismiss": "Dismiss",
+      "optionalAnswers": "Optional answers left blank are not sent",
+      "yourAnswer": "Your answer",
+      "submit": "Submit",
+      "enterSubmits": "Enter submits",
+      "confirm": "Confirm",
+      "other": "Other…",
+      "terminal": "terminal {ref}",
+      "truncatedPreview": "Truncated preview · full size {size}",
+      "toolBodyParseError": "Couldn’t parse the tool body.",
+      "input": "INPUT",
+      "output": "OUTPUT",
+      "content": "CONTENT",
+      "locations": "LOCATIONS",
+      "viewFull": "View full",
+      "noToolBody": "No body captured for this tool call.",
+      "parentConversation": "Parent conversation",
+      "parentConversations": "Parent conversations ({count})",
+      "parentSession": "Parent session",
+      "siblingSession": "Sibling session",
+      "siblingSessions": "Sibling sessions ({count})",
+      "delegation": "Delegation",
+      "delegations": "Delegations ({count})",
+      "childSession": "Child session",
+      "childSessions": "Child sessions ({count})",
+      "viaAgent": "via {agent}",
+      "startWith": "Start with",
+      "conversationUnavailableLabel": "Conversation unavailable",
+      "filesScopeFailed": "Couldn’t tell which checkout this session reads — its details didn’t load. Reopen the session, or read the files from the agent’s workspace page.",
+      "gitScopeFailed": "Couldn’t tell which checkout this session works in — its details didn’t load. Reopen the session, or read its git status from the agent’s workspace page.",
       "requests": "Requests",
       "approvalRequests": "Approval requests",
       "copyLink": "Copy a link to this session",
@@ -304,6 +564,36 @@
       "fastModeHint": "Fast mode trades depth for latency",
       "lowerLatency": "lower latency",
       "panels": "Panels",
+      "commitBox": {
+        "commitMessage": "Commit message",
+        "stageFileFirst": "Stage a file to commit it",
+        "generateMessage": "Generate a commit message from the staged diff",
+        "stageSomethingFirst": "Stage something first — the message is written from the staged diff",
+        "generateMessageTitle": "Generate a commit message from the staged diff (runs on the agent’s own runtime and spends its tokens)",
+        "generating": "Generating from staged diff…",
+        "nothingStaged": "Nothing is staged",
+        "writeMessageFirst": "Write a commit message first",
+        "commitChanges": "Commit the staged changes on the agent’s machine",
+        "commitAndPush": "Commit and push",
+        "commitAndPushTitle": "Commit, then push the branch to the remote the daemon authorizes",
+        "push": "Push",
+        "identityTitle": "Console commits are attributed to the git identity the owning daemon registered at handshake, so a commit made here reads as the agent’s work — not as yours.",
+        "identityLabel": "Commits as the agent’s registered identity, not as you"
+      },
+      "filesPanel": {
+        "loadError": "Couldn’t load — the daemon may be offline.",
+        "findPlaceholder": "Find file by path…",
+        "findLabel": "Find file by path",
+        "lastFetched": "When this checkout last fetched from its remote"
+      },
+      "sessionDock": {
+        "resizePanel": "Resize panel",
+        "more": "More",
+        "closePanels": "Close panels",
+        "loading": "Loading",
+        "loadingDots": "Loading…",
+        "nothingToShow": "Nothing to show"
+      },
       "gitPanel": {
         "staged": "Staged",
         "changes": "Changes",
@@ -317,6 +607,7 @@
         "notGitCheckout": "Not a git checkout",
         "sandboxNotRunning": "Sandbox not running",
         "statusUnavailable": "Git status unavailable",
+        "noTracking": "This branch tracks no remote branch, so the console cannot tell which of these commits are pushed.",
         "commits": "Commits",
         "commitsAhead": "Commits ahead",
         "unpushed": "unpushed",
@@ -379,7 +670,25 @@
         "noThreads": "No unresolved review threads.",
         "botTitle": "A GitHub App identity, not a person",
         "outdatedTitle": "The commented lines have changed since this thread was opened",
-        "keepOpen": "Keep the pull request open"
+        "keepOpen": "Keep the pull request open",
+        "branchNoRemote": "Branch {branch} tracks no remote branch. Publish this branch to set its upstream before creating a pull request.",
+        "branchNoPullRequest": "Branch {branch} tracks {tracking}, and no pull request is linked to this session yet.",
+        "sessionNoPullRequest": "No pull request is linked to this session yet.",
+        "createRequested": "A pull request was requested — this tab links it once the branch is pushed and the pull request exists. Refresh if that just happened.",
+        "sharedCheckoutWarning": "This pull request may carry work from other sessions on this agent’s shared checkout.",
+        "ambiguousBranch": "Branch {branch} has more than one open pull request",
+        "ambiguousSessionBranch": "This session’s branch has more than one open pull request",
+        "firstOfThem": "— this is the first of them.",
+        "recordedReview": "This agent’s recorded review:",
+        "reviewStates": {
+          "approved": "approved",
+          "changes_requested": "changes requested",
+          "commented": "commented",
+          "dismissed": "dismissed",
+          "pending": "pending"
+        },
+        "threadsTruncated": "More unresolved threads than one read carries — the first {count} are shown.",
+        "lastCheck": "Last check: {error}"
       },
       "tasksPanel": {
         "backgroundTasks": "Background tasks",
@@ -388,7 +697,8 @@
         "noTasksInSession": "No background tasks in this session — everything the agent ran finished inside its turn.",
         "unnamedTask": "Unnamed task",
         "subagent": "subagent",
-        "subagentTitle": "The runtime’s own internal subagent invocation"
+        "subagentTitle": "The runtime’s own internal subagent invocation",
+        "olderTasksHidden": "Older tasks are not shown — the daemon keeps a bounded history."
       }
     }
   },
@@ -408,6 +718,59 @@
       "profile": "Profile",
       "organizationSettings": "Organization settings",
       "more": "More"
+    },
+    "brand": "AgentConnect",
+    "brandAgent": "Agent",
+    "brandConnect": "Connect",
+    "globalSearch": {
+      "groups": {
+        "agents": "Agents",
+        "daemons": "Daemons",
+        "schedules": "Schedules",
+        "sessions": "Sessions",
+        "pages": "Pages",
+        "settings": "Settings"
+      },
+      "all": "All",
+      "placeholder": "Search agents, daemons, schedules…",
+      "clear": "Clear",
+      "cancel": "Cancel",
+      "hint": "Search agents, daemons, schedules, sessions and pages.",
+      "noResults": "No results for “{query}”",
+      "noMatchesType": "No matches in this type.",
+      "navigate": "navigate",
+      "open": "open",
+      "close": "close",
+      "esc": "esc",
+      "ctrlK": "Ctrl K",
+      "unknown": "—",
+      "enabled": "enabled",
+      "disabled": "disabled",
+      "counts": {
+        "agent": "{count, plural, one {# agent} other {# agents}}",
+        "daemon": "{count, plural, one {# daemon} other {# daemons}}"
+      },
+      "pages": {
+        "home": "Home",
+        "agents": "Agents",
+        "sessions": "Sessions",
+        "schedules": "Schedules",
+        "tools": "Tools & Skills",
+        "integrations": "Integrations",
+        "knowledge": "Knowledge",
+        "infra": "Infra",
+        "analytics": "Analytics",
+        "billing": "Billing"
+      },
+      "settings": {
+        "organization": "Organization",
+        "defaultAgentVisibility": "Default agent visibility",
+        "sessionAccess": "Session access",
+        "variablesSecrets": "Variables & secrets",
+        "membersRoles": "Members & roles",
+        "inviteLinks": "Invite links",
+        "profile": "Profile"
+      }
     },
     "actions": {
       "account": "Account",
@@ -430,6 +793,33 @@
       "copyLink": "Copy link",
       "linkCopied": "Link copied",
       "cancel": "Cancel"
+    },
+    "connectAi": {
+      "title": "Connect your AI",
+      "close": "Close",
+      "tagline": "Connects as you — your role, your permissions",
+      "serverUrl": "MCP server URL",
+      "copied": "Copied",
+      "copy": "Copy",
+      "desktopLabel": "Claude Desktop & claude.ai",
+      "desktopInstructions": "Settings → Connectors → Add custom connector, then Connect",
+      "codeLabel": "Claude Code",
+      "copyCommand": "Copy command",
+      "commandCopied": "Command copied",
+      "signInHint": "Then /mcp to sign in",
+      "apiKeyToggle": "Headless client? Use an API key",
+      "docs": "MCP docs",
+      "apiKeyHint": "Skip OAuth: send a key from Profile → API keys as Authorization: Bearer &lt;key&gt;. It carries your full permissions.",
+      "customize": "Customize",
+      "addCustomConnector": "Add custom connector",
+      "appName": "AgentConnect",
+      "add": "Add",
+      "notConnected": "You are not connected yet",
+      "connect": "Connect",
+      "skills": "Skills",
+      "connectors": "Connectors",
+      "plugins": "Plugins",
+      "memory": "Memory"
     },
     "help": {
       "menu": "Help & resources",
@@ -735,6 +1125,8 @@
     },
     "organization": {
       "step": "Step 1 of 2",
+      "brandAgent": "Agent",
+      "brandConnect": "Connect",
       "title": "Create your organization",
       "description": "Everything — agents, daemons, billing — lives under it.",
       "slug": "Organization slug",
@@ -792,6 +1184,7 @@
       "finishing": "Finishing…",
       "finish": "Finish",
       "yourMachine": "your machine",
+      "platforms": "{machine} · macOS, Linux, WSL",
       "copied": "Copied",
       "copy": "Copy",
       "provisionError": "Could not provision a key — {error}",
@@ -808,6 +1201,9 @@
   },
   "Integrations": {
     "description": "Messaging bots and code hosts installed for this organization, and the agents bound to them.",
+    "trustedUsers": {
+      "title": "Trusted users"
+    },
     "addIntegration": "Add integration",
     "workspace": "Workspace",
     "appLabel": "App",
@@ -833,18 +1229,170 @@
     "directMessages": "Direct messages",
     "groupDm": "Group DM",
     "directMessage": "Direct message",
+    "channelList": {
+      "nouns": {
+        "channel": "channel",
+        "channelPlural": "channels",
+        "conversation": "conversation",
+        "conversationPlural": "conversations",
+        "group": "group",
+        "groupPlural": "groups",
+        "groupChat": "group chat",
+        "groupChatPlural": "group chats",
+        "team": "team",
+        "teamPlural": "teams"
+      },
+      "thisRoom": "this {noun}",
+      "trigger": {
+        "off": "off",
+        "on": "on",
+        "anyMessage": "any message",
+        "mention": "@-mention",
+        "offHint": "The agent doesn't respond in {room}, even when @-mentioned.",
+        "anyMessageHint": "The agent responds to every message in {room}.",
+        "mentionHint": "The agent responds when @-mentioned. Follow-ups in a thread it has joined don't need another mention.",
+        "dmOffHint": "The agent doesn't respond in this conversation.",
+        "dmOnHint": "The agent responds to messages in this conversation.",
+        "ariaLabel": "Trigger for {name}",
+        "hint": "Trigger — when the agent responds here"
+      },
+      "action": {
+        "leaveLabel": "Leave {noun}",
+        "leaveHint": "The bot leaves this {noun} in {platform} and the row goes with it. Add it back to undo.",
+        "leaveConfirm": "Have the bot leave {name}? It leaves the {noun} in {platform} and stops receiving anything there. Add it back to undo.",
+        "directListing": "Nobody adds or removes a bot in a {noun} — the row comes back on the next message.",
+        "genericCannotLeave": "The bot stays in the {noun} — remove it in {platform} for that. If it is still in there, the row will come back.",
+        "removeLabel": "Remove from this list",
+        "onlyStopsShowing": "Only stops showing it here. {rest}",
+        "removeConfirm": "Remove {name} from this list? {rest}"
+      },
+      "defaultDispatch": {
+        "button": "Default dispatch — {agent}",
+        "label": "Default dispatch",
+        "thisAgent": "this agent",
+        "makeDefault": "Make {agent} default"
+      },
+      "gatedNote": "Private agent — answers only where enabled below.",
+      "linearGatedNote": "Private agent — answers only in teams where it is the default.",
+      "discordCannotLeaveRowHint": "A Discord bot belongs to a server, not one channel — use Leave on the server heading above to take it out. If it is still in there, the row will come back.",
+      "space": {
+        "thisServer": "this server",
+        "leaveTitle": "Leave {space} — the bot leaves the whole server, with every {noun} in it",
+        "leaveAria": "Leave the server {space}",
+        "leaveConfirm": "Leave {space}? A {platform} bot cannot leave one {noun} — it leaves the whole server, and every {nounPlural} of it disappears from this list. Re-invite it to undo."
+      },
+      "directMessages": "Direct messages",
+      "ownerChange": {
+        "title": "Move this team’s default?",
+        "body": "{owner} is a private agent, and being {room}’s default is what lets it act there. Its live sessions in this team can still be stopped, but it will not answer in them again. A new mention or delegation opens a session with the new default.",
+        "confirmLabel": "Move",
+        "busy": "Moving…"
+      }
+    },
     "github": {
       "sync": "Sync",
+      "label": "GitHub",
       "syncing": "Syncing…",
       "install": "Install on GitHub",
       "allRepositories": "all repositories",
       "selectedRepositories": "selected repositories",
-      "uninstall": "Uninstall"
+      "uninstall": "Uninstall",
+      "installLinkError": "Could not mint an install link.",
+      "notEnabled": "Not enabled on this deployment — the control plane has no GitHub App configured.",
+      "noInstallations": "No installations yet",
+      "noInstallationsHint": "Install the GitHub App to use private repositories with credential-free clone and push.",
+      "organization": "org",
+      "user": "user",
+      "suspended": "suspended",
+      "needsUpdate": "needs update",
+      "permissionsNeedUpdate": "This installation’s GitHub permissions need updating before all features will work.",
+      "updatePermissions": "Update permissions"
     },
     "codeHostActions": {
       "addRepository": "Add repository",
       "replaceToken": "Replace token",
       "disconnect": "Disconnect"
+    },
+    "codeHostCards": {
+      "newBotToken": "New bot token",
+      "botToken": "Bot token",
+      "newGiteaBotToken": "New Gitea bot token",
+      "giteaBotToken": "Gitea bot token",
+      "botTokenPlaceholder": "personal access token of the bot user",
+      "settingsScopes": "Bot user’s Settings → Applications, scopes",
+      "dedicatedBot": "Use a dedicated bot user with Admin on each repository agents will use. Everything an agent writes is attributed to it, and an agent can do anything the bot can.",
+      "checking": "Checking…",
+      "replaceToken": "Replace token",
+      "connectGitea": "Connect Gitea",
+      "cancel": "Cancel",
+      "openRepository": "Open {repo} on Gitea",
+      "working": "Working…",
+      "repairRepository": "Repair this repository",
+      "rotateSecret": "Rotate the webhook signing secret",
+      "removeRepository": "Remove this repository",
+      "gitea": "Gitea",
+      "version": "{name} {version}",
+      "belowVersion": "below {version}",
+      "versionRequirement": "Adding repositories and replacing the token need {version} or later. Repositories already set up keep working.",
+      "giteaNotEnabled": "Not enabled on this deployment — its control plane predates Gitea support.",
+      "notConnected": "Not connected",
+      "notConnectedHint": "Create a bot user on {host}, give it Admin on the repositories you want agents to work in, and paste its personal access token here. Every comment, review and commit status an agent writes comes from that user.",
+      "openProfile": "Open @{username} on Gitea",
+      "tokenRejected": "token rejected",
+      "disconnecting": "disconnecting",
+      "tokenRejectedWarning": "Gitea no longer accepts this token. Gitea tokens do not expire on their own, so it was most likely revoked — generate a new one for @{username} and replace it here.",
+      "noRepositories": "No repositories in use yet. Point a trigger or an agent workspace at one the bot administers and it appears here — or add one ahead of time.",
+      "addRepository": "Add repository",
+      "close": "Close",
+      "repository": "Repository",
+      "searchRepositories": "Search repositories the bot administers…",
+      "searchRepositoriesAria": "Search Gitea repositories",
+      "noRepositoryMatch": "No repositories match “{query}”",
+      "noAdminRepository": "@{username} administers no repository that is not already added. Give it Admin on one in Gitea, then try again.",
+      "installing": "Installing the webhook…",
+      "defaultBranch": "default branch {branch}",
+      "noDefaultBranch": "no default branch reported",
+      "disconnectGitea": "Disconnect Gitea",
+      "disconnectBody": "Disconnect @{username}? Every managed webhook is removed from Gitea first, and agents stop answering there. Revoke the token in Gitea afterwards — AgentConnect cannot.",
+      "disconnect": "Disconnect",
+      "removeRepositoryTitle": "Remove repository",
+      "removeRepositoryBody": "Remove {repo} from this organization? Its managed webhook is deleted on Gitea and agents stop answering there. Nothing in the repository’s code or history changes.",
+      "remove": "Remove",
+      "takeOverAdministration": "Take over administration",
+      "repairProject": "Repair this project",
+      "removeProject": "Remove this project",
+      "gitlab": "GitLab",
+      "connectGitlab": "Connect GitLab",
+      "connectMyAccount": "Connect my account",
+      "gitlabVersionRequirement": "Setting up new projects and bots needs {version} or later. Projects already set up keep working until their credentials expire.",
+      "gitlabNotEnabled": "Not enabled on this deployment — no GitLab application is configured.",
+      "gitlabNotConnectedHint": "Connect a GitLab account with Maintainer or Owner access to your projects. You then pick a project when you add a trigger or an agent workspace, and AgentConnect sets up its project bot and webhook there.",
+      "reconnectNeeded": "reconnect needed",
+      "disconnected": "disconnected",
+      "reconnect": "Reconnect",
+      "assignedOne": "This account still administers 1 project below. Transfer that project to your own GitLab account, or reconnect this one to keep managing it, before this row can go.",
+      "assignedMany": "This account still administers {count} projects below. Transfer those projects to your own GitLab account, or reconnect this one to keep managing them, before this row can go.",
+      "reauthWarning": "GitLab no longer accepts this connection. Reconnect to keep project setup and repairs working.",
+      "noProjects": "No projects are set up yet. Pick one when you add a GitLab trigger or an agent workspace — it is set up there, and shows up here for repairs.",
+      "groupAccountAria": "{group} — @{username} on GitLab",
+      "removing": "removing",
+      "projectsNeedAttentionOne": "1 project needs attention",
+      "projectsNeedAttentionMany": "{count} projects need attention",
+      "takeOverBotProjects": "Take over administration of this bot’s projects",
+      "repairBot": "Repair this bot",
+      "projectsWithoutBot": "Projects without a bot — no agent is a member yet, and the webhook stays until the project is removed.",
+      "removeConnection": "Remove connection",
+      "disconnectGitlab": "Disconnect GitLab",
+      "removeConnectionBody": "Remove @{username} from the list? It has already been disconnected and administers no projects, so this only clears the row. Connect GitLab again whenever you need it.",
+      "disconnectConnectionBody": "Disconnect @{username}? GitLab stops accepting this account for project setup and repairs. Projects you already added keep running until you remove them.",
+      "disconnect": "Disconnect",
+      "takeOverProject": "Take over project",
+      "takeOverProjectBody": "Take over {project}? GitLab is asked whether your own account has Maintainer or Owner access to the project right now, and if it does, your account becomes the one AgentConnect uses to set up and repair it.",
+      "takeOver": "Take over",
+      "takeOverProjectAdministration": "Take over project administration",
+      "takeOverBotBody": "Take over the {count, plural, one {project} other {# projects}} {name} works on? GitLab is asked whether your own account has Maintainer or Owner access to each one right now, and where it does, your account becomes the one AgentConnect uses to set it up and repair it.",
+      "cannotRemoveProject": "{project} cannot be removed yet: the GitLab account that manages it is no longer connected, and removing the webhook and the project bot needs one. Reconnect that account, or transfer the project to your own, then remove it.",
+      "removeProjectBody": "Remove {project} from this organization? The webhook and every project bot on it are deleted on GitLab, and agents stop answering there. Nothing in the project’s code or history changes."
     },
     "noConversations": "No conversations yet — the roster fills in once the bot reaches its first {room}.",
     "empty": {
@@ -858,6 +1406,129 @@
       "builtin": "builtin"
     },
     "dialog": {
+      "workspaceFields": {
+        "workspace": "Workspace",
+        "scratch": "Scratch",
+        "scratchHint": "Fresh empty directory.",
+        "cloneOnBranch": "Clone a {repo} on a branch.",
+        "gitUrl": "Git URL",
+        "gitUrlHint": "Clone any Git server anonymously.",
+        "githubConnectTitle": "Connect GitHub to sync repos",
+        "githubInstallDescription": "Install the GitHub App to browse repositories.",
+        "installGithubApp": "Install GitHub app",
+        "installedSync": "I’ve installed it — sync",
+        "opensGithub": "Opens github.com in a new tab",
+        "githubConnected": "GitHub app connected — repos and metadata sync automatically.",
+        "manageAccess": "Manage access",
+        "publicRepositoriesShown": "Public repositories are shown.",
+        "linkGithubProfile": "Link your GitHub profile",
+        "toSeePrivateRepositories": "to see private repositories.",
+        "retry": "Retry",
+        "githubRepository": "GitHub repository",
+        "gitlabProject": "GitLab project",
+        "giteaRepository": "Gitea repository",
+        "pickRepository": "Pick a repository",
+        "pickProject": "Pick a project",
+        "loadingRepositories": "Loading repositories…",
+        "loadingProjects": "Loading projects…",
+        "searchOwnerRepo": "Search or type owner/repo…",
+        "searchGitlabProjects": "Search your GitLab projects…",
+        "searchGiteaRepositories": "Search the repositories the bot administers…",
+        "defaultBranch": "default branch {branch}",
+        "noDefaultBranch": "no default branch reported",
+        "addedOnSave": "{branch} · added on save",
+        "connectGiteaTitle": "Connect Gitea to watch repositories",
+        "connectGiteaDescription": "Add a Gitea bot under Integrations → Code hosts first.",
+        "openIntegrations": "Open Integrations",
+        "connectedSync": "I’ve connected it — sync",
+        "giteaDisabled": "Gitea is not enabled on this deployment — its control plane predates Gitea support.",
+        "giteaNoAdminRepository": "The connected Gitea bot administers no repository. Give it Admin on one — as a collaborator or through a team — before it can be picked here.",
+        "settingUpProject": "Setting up the project bot and webhook…",
+        "setsUpOnPick": "{branch} · sets up on pick",
+        "publicProjectReadOnly": "Use as a public project — read-only anonymous clone",
+        "public": "public",
+        "cloneUrl": "Clone URL",
+        "cloneUrlPlaceholder": "https://git.example.test/team/repo.git",
+        "enterCloneUrlFirst": "Enter a clone URL first",
+        "remoteDefaultBranch": "Remote default branch",
+        "clonedWithDaemonCredentials": "Cloned with the daemon host’s own git credentials.",
+        "connectGitlabTitle": "Connect GitLab to watch projects",
+        "connectGitlabDescription": "Authorize on GitLab to pick a project; Maintainer or Owner access required.",
+        "connectGitlab": "Connect GitLab",
+        "opensGitlab": "Opens GitLab in a new tab",
+        "gitlabDisabled": "GitLab is not enabled on this deployment — no GitLab application is configured.",
+        "gitlabNoProject": "The connected GitLab account has no project to offer. You need Maintainer or Owner access to a project before it can be set up here.",
+        "readOnly": "Read only",
+        "readOnlyDescription": "Clone & read files only",
+        "readWrite": "Read & write",
+        "githubWriteAccess": "Push, open PRs & run GitHub Actions",
+        "repositoryAccess": "Repository access",
+        "selectRepositoryFirst": "Select repository first",
+        "branch": "Branch",
+        "pickRepositoryFirst": "Pick repository first",
+        "githubDefaultBranch": "GitHub default branch",
+        "searchBranches": "Search branches…",
+        "default": "default",
+        "noBranchesMatch": "No branches match “{query}”",
+        "mainBranch": "main",
+        "workingSubdirectory": "Working subdirectory (optional)",
+        "workingSubdirectoryPlaceholder": "services/api",
+        "workingSubdirectoryAriaLabel": "Working subdirectory",
+        "repoRoot": "repo root"
+      },
+      "listenFor": "Listen for",
+      "alreadyWatched": "already watched",
+      "triggerWhen": "Trigger when",
+      "triggerFor": "Trigger for {subject}",
+      "sameSessionKey": "Deliveries with the same {header} header share one session.",
+      "postJson": "POST JSON with a {field} field. Keep the URL private — its token is the credential.",
+      "methodPost": "POST",
+      "hmacDescription": "HMAC over the raw body, sent as {header}.",
+      "shownOnlyOnce": "Shown only once — copy it now.",
+      "sendTestDelivery": "Send a test delivery",
+      "webhookTestMessage": "Webhook test message",
+      "copyCommand": "Copy command",
+      "runTestDelivery": "Run this to send a test delivery.",
+      "checkingGithubSetup": "Checking your GitHub setup…",
+      "githubNotConfigured": "The GitHub App isn’t configured on this deployment — set the GITHUB_APP_* control-plane environment to enable repository subscriptions.",
+      "connectGithubTitle": "Connect GitHub to watch repos",
+      "connectGithubDescription": "Install the GitHub App to subscribe to repository events.",
+      "githubRepositoriesLoadError": "Couldn’t load repositories from GitHub — the list may be incomplete.",
+      "alreadyWatchedByAgent": "Already watched by this agent",
+      "agentWorkspaceRepository": "The agent’s workspace repository",
+      "authorizedForAgent": "Authorized for this agent",
+      "askEditorToAuthorize": "Ask an editor to authorize this repository",
+      "notAuthorizedReviewAccess": "Not yet authorized — review settings will request access",
+      "added": "added",
+      "authorize": "authorize",
+      "agentAlreadyWatches": "This agent already watches {repo}",
+      "checkingGithubRepository": "Checking GitHub repository…",
+      "notInListAuthorize": "Not in the list — authorize it for this agent to watch it.",
+      "authorizeEllipsis": "Authorize…",
+      "noWatchableRepositories": "No watchable repositories match “{query}”",
+      "noGithubRepositoriesVisible": "No repositories are visible to the GitHub App — install it on the accounts you want to watch.",
+      "noRepositoriesMatch": "No repositories match “{query}”",
+      "githubAppRepositoryList": "Lists every repository the GitHub App can see.",
+      "scratchGithubAccess": "This scratch workspace can access explicitly authorized GitHub repositories.",
+      "manualGithubAccess": "This manual workspace can authorize its repository for review and Check effects.",
+      "reviewSettingsAccess": "Review settings request write access to post formal reviews and Checks.",
+      "giteaLoadError": "Couldn’t load your Gitea repositories — {error}",
+      "thisRepository": "this repository",
+      "giteaNotAuthorized": "{agent} is not authorized for {repo}. Authorize the repository on the agent’s Workspace tab, or make it the agent’s workspace repository, first.",
+      "gitlabLoadError": "Couldn’t load your GitLab projects — {error}",
+      "noProjectsMatch": "No projects match “{query}”",
+      "checkingRepository": "Checking GitHub repository…",
+      "availableThroughGithubApp": "Available through the GitHub App",
+      "publicRepositoryClone": "Use public repository — credential-free read-only clone",
+      "public": "public",
+      "noDescription": "No description",
+      "publicGithubRepository": "Public GitHub repository",
+      "searchingPublicRepositories": "Searching public repositories…",
+      "loadingRepositories": "Loading repositories…",
+      "noGithubRepository": "No GitHub repository found for “{query}”",
+      "noRepositoriesMatch": "No repositories match “{query}”",
+      "thisProject": "this project",
+      "gitlabNotAuthorized": "This agent isn’t authorized for {project}. Authorize the project on the agent’s Workspace tab, or make it the agent’s workspace project, then create the trigger.",
       "configuration": "Integration configuration",
       "addIntegration": "Add integration",
       "connectDescription": "Connect a chat platform, webhook or repository to one of your agents",
@@ -1029,6 +1700,36 @@
         "deleting": "Deleting…",
         "disconnect": "Disconnect",
         "delete": "Delete"
+      },
+      "platformHints": {
+        "listen": "invite the bot to any {target} in {platform} and it starts listening there.",
+        "mention": "invite the bot to any {target} in {platform} and @-mention it to start."
+      },
+      "identityCards": {
+        "slack": {
+          "create": "Create with a Slack manifest",
+          "existing": "An unused Slack app"
+        },
+        "telegram": {
+          "create": "Create a bot with @BotFather",
+          "existing": "An unused Telegram bot"
+        },
+        "discord": {
+          "create": "Create a bot in Discord",
+          "existing": "An unused Discord bot"
+        },
+        "linear": {
+          "create": "Connect a Linear workspace",
+          "existing": "A connected Linear workspace"
+        },
+        "feishuLark": {
+          "create": "Create with one-click Lark setup",
+          "existing": "An unused Lark bot"
+        },
+        "feishuFeishu": {
+          "create": "Create with one-click Feishu setup",
+          "existing": "An unused Feishu bot"
+        }
       }
     }
   },
@@ -1036,6 +1737,195 @@
     "description": "AI agents running across your daemons. Click one to inspect its sessions.",
     "addAgent": "Add agent",
     "add": "Add",
+    "apiPanel": {
+      "organizationLoadError": "Couldn’t load the organization required for API access.",
+      "loading": "Loading API configuration…",
+      "relayNotConfigured": "Relay endpoint not configured",
+      "buildDescription": "Build on <agent>{agent}</agent>: mint short-lived credentials, then stream a run through the relay.",
+      "authentication": "Authentication",
+      "apiKeyDescription": "Use a personal API key for {organization}. It acts as you in this organization and is shown only once when created.",
+      "connectionEndpoints": "Connection endpoints",
+      "post": "POST",
+      "webSocketMethod": "WSS",
+      "streaming": "streaming",
+      "copied": "Copied",
+      "copyMintEndpoint": "Copy mint endpoint",
+      "mintEndpointCopied": "Mint endpoint copied",
+      "copyWebSocketEndpoint": "Copy WebSocket endpoint",
+      "webSocketEndpointCopied": "WebSocket endpoint copied",
+      "connect": "Connect",
+      "copy": "Copy",
+      "streamEvents": "Stream events",
+      "serverToClient": "server → client",
+      "events": {
+        "ready": "Socket accepted — carries the conversationId the CP allocated.",
+        "ack": "Your message was delivered to the agent — carries a turnId.",
+        "output": "A reply chunk: output.event is message / thinking / tool_call / tool_update.",
+        "done": "Turn finished — done.stopReason and done.usage (tokens / cost).",
+        "error": "Delivery failed — e.g. the agent has no live daemon."
+      }
+    },
+    "workspaceScope": {
+      "defaultBranch": "HEAD",
+      "workspaceCheckout": "Workspace checkout: {name}",
+      "openSession": "Open this session",
+      "session": "Session",
+      "closeMenu": "Close workspace checkout menu",
+      "openMenu": "Open workspace checkout menu",
+      "closeCheckoutMenu": "Close checkout menu",
+      "chooseCheckout": "Choose checkout",
+      "workspaceCheckoutMenu": "Workspace checkout",
+      "loading": "Loading {kind}…",
+      "noneYet": "No {kind} yet.",
+      "showing": "Showing {count} recent {kind}",
+      "loadingMore": "Loading…",
+      "loadOlder": "Load older"
+    },
+    "descriptionEdit": {
+      "title": "Edit description",
+      "description": "Description",
+      "placeholder": "What does this agent do?",
+      "cancel": "Cancel",
+      "saving": "Saving…",
+      "save": "Save"
+    },
+    "deleteModal": {
+      "title": "Delete agent",
+      "body": "{agent} will be removed from the control plane and torn down on its daemon. This can’t be undone.",
+      "cancel": "Cancel",
+      "deleting": "Deleting…",
+      "delete": "Delete"
+    },
+    "outputMode": {
+      "outputMode": "Output mode",
+      "showFooter": "Show footer",
+      "showStatusBar": "Show status bar",
+      "on": "On",
+      "off": "Off"
+    },
+    "workspaceEdit": {
+      "title": "Edit workspace",
+      "subtitle": "Workspace and repository access for {agent}",
+      "destructiveWarning": "Replaces all files in the current workspace — commit anything you need first.",
+      "gitlabLoadError": "Couldn’t load your GitLab projects — {error}",
+      "noProjectsMatch": "No projects match “{query}”",
+      "projectAccess": "Project access",
+      "selectProjectFirst": "Select project first",
+      "gitlabWriteAccess": "Push, open merge requests & run pipelines",
+      "publicProjectReadOnly": "Public project — read-only clone.",
+      "giteaLoadError": "Couldn’t load your Gitea repositories — {error}",
+      "noRepositoriesMatch": "No repositories match “{query}”",
+      "giteaWriteAccess": "Push, open pull requests & request reviews",
+      "checkingGithub": "Checking your GitHub setup…",
+      "githubNotConfigured": "The GitHub App isn’t configured for this deployment — only public repositories are available, cloned read-only.",
+      "githubLoadError": "Couldn’t load repositories from GitHub — the list may be incomplete.",
+      "alreadyAuthorized": "Already authorized for this agent",
+      "noDescription": "No description",
+      "publicRepositoryReadOnly": "Public repository — read-only clone.",
+      "installationMissing": "No GitHub App installation covers {owner} — install (or extend) the app on that account first.",
+      "additionalRepositories": "Additional repositories",
+      "authorizeRepository": "Authorize repository",
+      "noAdditionalRepositories": "No additional repositories authorized.",
+      "revokeRepositoryAccess": "Revoke repository access",
+      "cancel": "Cancel",
+      "saving": "Saving…",
+      "replaceWorkspace": "Replace workspace",
+      "save": "Save"
+    },
+    "reachability": {
+      "noAgents": "No agents to map yet",
+      "addAgentHint": "Add an agent to start building the topology.",
+      "visibleAgents": "Visible agents",
+      "directPaths": "Direct paths",
+      "rootAgents": "Root agents",
+      "cycleGroups": "Cycle groups",
+      "configuredTopology": "Configured topology",
+      "directCallPaths": "Arrows are direct call paths.",
+      "focus": "Focus",
+      "allAgents": "All agents",
+      "directCallPath": "direct call path",
+      "openAgentAria": "Open {agent}. {incoming} incoming and {outgoing} outgoing direct paths.",
+      "openAgentDetails": "Open agent details",
+      "pathsSummary": "{incoming} in · {outgoing} out",
+      "mutualReachability": "Mutual-reachability {count, plural, one {group} other {groups}}",
+      "selectGroupHint": "Select a group to highlight its members and internal paths.",
+      "mutualReachabilityGroups": "Mutual-reachability groups",
+      "groupNumber": "Group {number}",
+      "noMutualGroups": "No mutual-reachability groups detected in the current graph."
+    },
+    "workspaceFiles": {
+      "rendering": "Rendering…",
+      "directoryLoadError": "Couldn’t load — the daemon may be offline.",
+      "loading": "Loading…",
+      "retry": "Retry",
+      "loadMore": "Load more",
+      "cancel": "Cancel",
+      "deleting": "Deleting…",
+      "deleteFile": "Delete file",
+      "addFile": "Add file",
+      "edit": "Edit",
+      "delete": "Delete",
+      "workspacePath": "Workspace path",
+      "workspaceBrowseError": "Couldn’t browse the workspace — the owning daemon may be offline. Files live only on that machine and are read live from it, so they’re unavailable while it is disconnected.",
+      "repositoryNotCheckedOut": "Not checked out yet — this repository is materialized on the agent’s next session.",
+      "workspaceNotCreated": "The workspace has no files yet — the agent creates them as it works.",
+      "workspaceEmpty": "This workspace is empty.",
+      "noFiles": "No files yet.",
+      "preview": "Preview",
+      "code": "Code",
+      "noPreview": "No preview for this item.",
+      "deleteFilePrompt": "Delete this file?",
+      "cannotUndo": "This cannot be undone.",
+      "fileReadError": "Couldn’t read the file — the owning daemon may be offline.",
+      "fileNotFound": "File not found — it may have been removed since the listing.",
+      "binaryFile": "Binary file — not displayed ({size})",
+      "showingFirst": "Showing first {loaded} of {total}",
+      "loadMoreError": "Couldn’t load more — the daemon may be offline.",
+      "fileNameRequired": "Enter a file name or relative path.",
+      "saveConflict": "The agent is working or the file changed. Retry when it is idle."
+    },
+    "repoModal": {
+      "giteaLoadError": "Couldn’t load your Gitea repositories — {error}",
+      "gitlabLoadError": "Couldn’t load your GitLab projects — {error}",
+      "workspaceRepository": " is the agent’s workspace repository",
+      "alreadyAuthorized": " is already authorized for this agent",
+      "noRepositoriesMatch": "No repositories match “{query}”",
+      "noProjectsMatch": "No projects match “{query}”",
+      "access": "Access",
+      "readOnly": "Read only",
+      "readWrite": "Read & write",
+      "readOnlyDescription": "Clone & read files only",
+      "giteaWriteDescription": "Push, open pull requests & request reviews",
+      "gitlabWriteDescription": "Push, open merge requests & run pipelines",
+      "checkingGithub": "Checking your GitHub setup…",
+      "githubNotConfigured": "The GitHub App isn’t configured for this deployment. Ask a deployment owner to configure it before authorizing repositories.",
+      "connectGithubTitle": "Connect GitHub to grant repos",
+      "connectGithubDescription": "Install the AgentConnect GitHub app, then choose which repositories this agent can access.",
+      "installGithub": "Install GitHub app",
+      "installedSync": "I’ve installed it — sync",
+      "repository": "Repository",
+      "searchRepository": "Search or type owner/repo…",
+      "githubLoadError": "Couldn’t load repositories from GitHub — the list may be incomplete.",
+      "retry": "Retry",
+      "workspaceCovered": "The agent’s workspace — already fully covered",
+      "noDescription": "No description",
+      "workspace": "workspace",
+      "added": "added",
+      "useRepository": "Use this repository — must be covered by an installation",
+      "isWorkspace": "{repo} is the agent’s workspace",
+      "isAuthorized": "{repo} is already authorized",
+      "loadingRepositories": "Loading repositories…",
+      "installationMissing": "No GitHub App installation covers {owner} — install (or extend) the app on that account first.",
+      "backToWorkspace": "Back to workspace settings",
+      "editWorkspace": "Edit workspace",
+      "addRepository": "Add repository",
+      "authorizeAdditional": "authorize an additional {noun} for",
+      "authorizeRepo": "authorize a {host} {noun} for",
+      "codeHost": "Code host",
+      "cancel": "Cancel",
+      "adding": "Adding…",
+      "add": "Add"
+    },
     "filters": {
       "all": "All",
       "mine": "Mine"
@@ -1094,6 +1984,8 @@
       "name": "Name",
       "displayName": "Display name",
       "displayNamePlaceholder": "Deploy Bot (optional)",
+      "namePlaceholder": "deploy-bot",
+      "repositoryPlaceholder": "acme/infra",
       "description": "Description",
       "descriptionPlaceholder": "Ships and rolls back deploys from chat",
       "runsOn": "Runs on",
@@ -1298,11 +2190,74 @@
         "introduceOnJoinOn": "On — greets peers on join",
         "introduceOnJoinHint": "Introduces itself to agents already in a channel it joins.",
         "placeAgent": "Place agent",
-        "saveChanges": "Save changes"
+        "saveChanges": "Save changes",
+        "sourceForceOffline": "{daemon} is offline, so this move force reassigns; if it is still running, both copies may process messages.",
+        "bringOnline": "Bring {daemon} online, then retry.",
+        "bringOnlineRetry": "To move safely, bring {daemon} online, then retry.",
+        "upgradeBeforeMove": "Upgrade {daemon} before moving this agent.",
+        "selectOnlineDestination": "Select an online destination to force reassign this agent there.",
+        "noOnlinePool": "{pool} has no online member right now; try again shortly.",
+        "noOnlineGroup": "No daemon in {group} is serving right now; try again shortly.",
+        "chooseOnlineDaemon": "Choose an online daemon that supports agent moves.",
+        "chooseRuntime": "Choose a runtime before placing this agent on a daemon.",
+        "runtimeUnavailable": "{daemon} does not advertise the {runtime} runtime.",
+        "modelUnavailable": "{daemon} does not advertise model “{model}”. Choose one of its models.",
+        "noCurrentDaemon": "This agent has no current daemon to repair.",
+        "currentDaemonNotReady": "The current daemon must be online and upgraded before this agent can be repaired.",
+        "selectedDaemon": "the selected daemon",
+        "currentDaemon": "the current daemon",
+        "initialPlacementNotice": "Places the agent on {daemon} from its saved settings; nothing is copied.",
+        "forceReassignNotice": "Skips confirmation from {daemon} and copies nothing — use only if that machine is permanently stopped.",
+        "hardCutoverNotice": "Hard cutover: current turns on {daemon} are cancelled, and workspace, memory and history are not copied.",
+        "reprovisionNotice": "Re-provisions the agent in place; current turns drain first.",
+        "agentNameImmutable": "The agent name can’t be changed.",
+        "placing": "Placing…",
+        "reassigning": "Reassigning…",
+        "moving": "Moving…",
+        "repairing": "Repairing…",
+        "saving": "Saving…",
+        "forceReassign": "Force reassign",
+        "moveAgent": "Move agent",
+        "repairAgent": "Repair agent"
       }
     },
     "detail": {
       "on": "On",
+      "dreams": {
+        "title": "Dreams",
+        "unsupported": "Dreams need a newer version of this agent’s daemon. Upgrade it to consolidate memory here.",
+        "dreamDiscarded": "Dream discarded.",
+        "loading": "Loading…",
+        "dreaming": "Dreaming…",
+        "dreamNow": "Dream now",
+        "scriptsPrefix": "scripts/",
+        "empty": "No dreams yet.",
+        "history": "History",
+        "scheduled": "scheduled",
+        "openSession": "Open session",
+        "hide": "Hide",
+        "review": "Review",
+        "discard": "Discard",
+        "cancel": "Cancel",
+        "startTitle": "Start a memory dream?",
+        "start": "Start dream",
+        "startBodyAuto": "This runs a model over the agent’s memory and recent sessions. It takes a few minutes and uses model tokens. The memory result is adopted automatically unless live-memory changes conflict. Suggested skills still require review.",
+        "startBody": "This runs a model over the agent’s memory and recent sessions. It takes a few minutes and uses model tokens. Nothing changes until you review and adopt the memory result. Suggested skills still require review.",
+        "adoptTitle": "Adopt this dream?",
+        "adopt": "Adopt",
+        "adoptBody": "This replaces the agent’s live memory with the staged version. The current store is kept as a backup, and adopting is refused if memory changed underneath this dream.",
+        "adoptAnywayTitle": "Adopt anyway?",
+        "adoptAnyway": "Adopt anyway",
+        "forceAdoptBody": "Memory changed underneath this dream since it was snapshotted. Adopting replaces the whole store. {count, plural, =0 {Any live file not in the staged version is dropped.} one {It drops 1 live file not in the staged version: {files}.} other {It drops # live files not in the staged version: {files}.}} The current store is kept as a backup. To keep newer changes instead, re-run the dream.",
+        "deleted": "deleted",
+        "nothingStaged": "Nothing staged.",
+        "deletingFiles": "Adopting removes {count, plural, one {# file} other {# files}} the dream left out: {files}.",
+        "suggestedSkills": "Suggested skills",
+        "dismiss": "Dismiss",
+        "accept": "Accept",
+        "showSkill": "Show what this installs",
+        "candidateGone": "This candidate is no longer staged."
+      },
       "off": "Off",
       "noIntegration": "No integration",
       "sessions": "{count, plural, one {# session} other {# sessions}}",
@@ -1351,6 +2306,15 @@
       },
       "description": "Description",
       "access": "Access",
+      "teamVisibility": "Team visibility",
+      "agentVisibility": "Agent visibility",
+      "notFound": {
+        "title": "Agent not found",
+        "pre": "No agent",
+        "post": "in this organization. It may have been deleted or renamed.",
+        "back": "Back to agents",
+        "search": "Search agents"
+      },
       "callVisibility": {
         "title": "Agent visibility",
         "allAgents": "All agents",
@@ -1401,17 +2365,78 @@
         "approvalRequests": "Approval requests",
         "pendingRequests": "Pending requests",
         "pendingCount": "{count} pending",
+        "requestUpdateError": "This approval request could not be updated. Try again.",
+        "loadingRequests": "Loading requests…",
+        "unavailable": "Approval requests are temporarily unavailable.",
+        "unknownUser": "Unknown user",
+        "denying": "Denying…",
+        "deny": "Deny",
+        "allowing": "Allowing…",
+        "allow": "Allow",
+        "noRequests": "No approval requests yet.",
         "recentSessions": "Recent sessions",
         "noSessions": "No sessions yet.",
         "loadedFromWorkspace": "Loaded from workspace",
         "projectGuide": "project guide · {size}",
         "skillsCount": "{count, plural, one {# skill} other {# skills}}",
-        "filesIndexed": "{count, plural, one {# file indexed} other {# files indexed}}"
+        "filesIndexed": "{count, plural, one {# file indexed} other {# files indexed}}",
+        "inviteDiscord": "Invite this bot to a Discord server — preset scopes & permissions",
+        "addToDiscord": "Add this bot to a Discord server",
+        "delete": "Delete integration",
+        "deleteNamed": "Delete the {name} integration",
+        "webhook": "webhook",
+        "watchAnotherSubject": "Watch another subject",
+        "review": "review",
+        "informationalCheck": "informational Check",
+        "runNote": "run note",
+        "commitStatus": "commit status",
+        "settings": "Settings",
+        "recentDeliveries": "Recent deliveries",
+        "deleteWebhook": "Delete webhook",
+        "disconnectGithub": "Disconnect GitHub",
+        "addRepository": "Add repository",
+        "addProject": "Add project",
+        "customRuleHint": "The stored subscription matches no trigger exactly — the nearest one is shown. Picking a trigger replaces it.",
+        "customRule": "custom rule",
+        "loadError": "Couldn’t load webhooks.",
+        "noneTitle": "No integration yet",
+        "noneDescription": "Connect {agent} to a channel so it can read and post. It can’t receive messages until you do.",
+        "plusEverythingIn": "Plus everything in",
+        "workspaceKnowledge": "workspace knowledge & skills",
+        "sharedAcrossAgents": ", shared across all agents.",
+        "unauthorizedRepoHint": "This repo isn’t authorized for the agent — events still trigger it, but replies and pushes back to GitHub have no credentials. Open Edit workspace to authorize it.",
+        "unauthorizedRepo": "write-back unauthorized",
+        "loadingDeliveries": "Loading deliveries…",
+        "noDeliveries": "No deliveries yet — POST the endpoint URL to fire this agent.",
+        "openSession": "Open session",
+        "gitlab": "GitLab",
+        "gitea": "Gitea",
+        "claudeFile": "CLAUDE.md",
+        "skillsDirectory": ".agent/skills/",
+        "runbooksDirectory": "docs/runbooks/",
+        "seconds": "{value}s"
+      },
+      "tools": {
+        "plusEverythingIn": "Plus everything in",
+        "workspaceKnowledge": "workspace knowledge & skills",
+        "sharedAcrossAgents": ", shared across all agents."
+      },
+      "reviewDialog": {
+        "close": "Close",
+        "cancel": "Cancel",
+        "saving": "Saving…",
+        "save": "Save"
       },
       "workspace": {
         "source": "Source",
+        "workspace": "workspace",
+        "additionalRepositories": "Additional repositories",
         "scratchWorkspace": "Scratch workspace",
         "publicRepository": "Public repository, cloned anonymously",
+        "public": "public",
+        "pull": "Fast-forward pull from the remote",
+        "viewRemote": "View on {provider}",
+        "implicitAuthorization": "The workspace repository — authorized implicitly by the GitHub App installation",
         "editWorkspace": "Edit workspace",
         "authorizedRepos": "Authorized repos",
         "noneAuthorized": "None explicitly authorized.",
@@ -1423,6 +2448,80 @@
       },
       "memory": {
         "backend": "Memory backend",
+        "overviewTitle": "The overview the agent reads first",
+        "overview": "Overview",
+        "memoryFile": "MEMORY.md",
+        "missing": "(missing)",
+        "loadingMemory": "Loading memory",
+        "loadingComplete": "Loading complete memory…",
+        "backToOverview": "Back to overview",
+        "saving": "Saving…",
+        "saveMemory": "Save memory",
+        "hideHistory": "Hide history",
+        "history": "History",
+        "editMemory": "Edit memory",
+        "deleteMemory": "Delete memory",
+        "deleteConfirm": "Delete “{name}”? {override}",
+        "thisMemory": "this memory",
+        "overrideWarning": "Deleting an override can reveal inherited memory.",
+        "confirmDeletion": "Confirm deletion",
+        "keepMemory": "Keep memory",
+        "topicMissing": "This topic no longer exists.",
+        "noOverview": "No overview yet. The agent maintains its memory itself as it works.",
+        "memoryName": "Memory name",
+        "nameOptional": "Name (optional)",
+        "memoryContent": "Memory content",
+        "tooLarge": "This change is too large to save here. Reduce its size.",
+        "reloadSaved": "Reload saved version",
+        "unsupportedTitle": "Memory cannot be browsed from here yet.",
+        "unsupportedBody": "This agent’s daemon does not serve the memory entry interface. Upgrade it, then refresh; the agent’s memory itself is unaffected.",
+        "providerSelected": "{provider} selected",
+        "agent": "Agent",
+        "channel": "Channel",
+        "scope": "Scope",
+        "aboutScope": "About memory scope",
+        "scopeHelp": "Agent scope shares one memory across everyone who talks to this agent. Channel scope gives each channel (DMs and webchat included) its own memory folder, so different channels never mix. Dreaming is turned off under channel scope.",
+        "memoryHome": "Memory home",
+        "onDaemon": "On the daemon",
+        "inControlPlane": "In the Control Plane",
+        "onDaemonHelp": "The daemon keeps the memory files on the machine that runs the agent.",
+        "inControlPlaneHelp": "The Control Plane keeps the memory files, so they follow the agent to any daemon and need no machine to be up.",
+        "movingToControlPlane": "Moving memory to the Control Plane…",
+        "externalDescription": "An owner-reviewed external plugin; configure exactly what may be recalled and captured below.",
+        "nativeDescription": "The runtime’s own memory (Claude / Codex), isolated under the agent root.",
+        "noneDescription": "No persistent memory is loaded or saved.",
+        "managedDescription": "A memory directory we keep for the agent.",
+        "autoDistillLabel": "Automatically distill durable facts after each turn (uses an additional model call).",
+        "channelScopeHint": "One memory folder per channel. Dreaming is unavailable.",
+        "enableDreaming": "Enable dreaming — consolidate the store from recent sessions. Runs on demand and on the schedule below.",
+        "autoAdopt": "Automatically adopt completed memory results without review (opt in).",
+        "autoAdoptWarning": "Results can be inaccurate; conflicts still pause for review.",
+        "mineSkills": "Also mine reusable skills from repeated procedures.",
+        "mineSkillsHint": "Suggested skills always need your review.",
+        "instructions": "Instructions (optional — steer what the dream focuses on)",
+        "instructionsPlaceholder": "Focus on coding-style preferences; ignore one-off debugging notes.",
+        "settingsBlocker": "{reason} The agent is still using {provider}.",
+        "saving": "Saving…",
+        "saveSettings": "Save memory settings",
+        "staysActiveUntilSave": "{provider} stays active until you save.",
+        "moveBackToDaemon": "Move memory back to the daemon",
+        "moveBackWarning": "Deletes all memory and its history.",
+        "saveToDisable": "Save memory settings to turn persistent memory off.",
+        "saveToViewExternal": "Save memory settings to switch External connections and view the selected connection’s memory.",
+        "saveToSwitch": "Save memory settings to switch to {provider} and view its memory.",
+        "persistentDisabled": "Persistent memory is disabled for this agent. Existing memory remains stored but is not loaded.",
+        "channelMemoryFolder": "Channel memory folder",
+        "agentShared": "Agent (shared)",
+        "noChannelMemory": "No channel has memory yet — showing the shared base.",
+        "switchBackendTitle": "Switch memory backend?",
+        "switchBackend": "Switch backend",
+        "switchBackendBody": "This switches the agent from {from} to {to}. Existing memory is not migrated, and any pending capture stays with its original connection.",
+        "moveToControlPlaneTitle": "Move memory to the Control Plane?",
+        "move": "Move",
+        "moveToControlPlaneBody": "The owning daemon copies this agent’s memory into the Control Plane. Memory is unavailable until the copy completes, and it cannot be moved back without deleting it.",
+        "moveBackTitle": "Move memory back to the daemon?",
+        "moving": "Moving…",
+        "moveBackBody": "Nothing is kept. Every memory file and its history in the Control Plane is deleted, and the agent starts with empty memory on its daemon.",
         "managedDirectory": "Managed directory",
         "autoDistill": "Auto-distill {state}",
         "dreamingOff": "Dreaming off",
@@ -1489,11 +2588,84 @@
         "loadedFromWorkspace": "Loaded from workspace",
         "dream": "Dream",
         "gitSource": "Git source",
-        "repo": "Repo"
+        "repo": "Repo",
+        "noMoreManagedSkills": "No further approved managed skills to add.",
+        "allSourcesEnabled": "Every source in your organization is already enabled.",
+        "noSkillsEnabled": "This agent has no skills enabled.",
+        "removeFromAgent": "Remove from this agent",
+        "chooseIndividualSkills": "Choose individual skills",
+        "loadingSkills": "Loading skills…",
+        "noSkillManifest": "No SKILL.md found in this source.",
+        "cannotListSkills": "Can’t list individual skills for this source — the whole source is enabled.",
+        "skillInstallNote": "Managed bundles install from their pinned revision; Git sources install with <command>npx skills</command> on session start. Removing one stops installing it for this agent.",
+        "skillsCommand": "npx skills",
+        "servedByRuntime": "Served by the {runtime} runtime. Removing a server hides its tools from this agent.",
+        "servedByRuntimeOnDaemon": "Served by the {runtime} runtime on <daemon>{daemon}</daemon>. Removing a server hides its tools from this agent.",
+        "readingAttachedServers": "Reading the servers this agent attaches.",
+        "noAttachedServers": "This agent has no MCP servers attached."
+      },
+      "dreamSchedule": {
+        "runOnSchedule": "Run on a schedule (otherwise dreams only run when you trigger them)",
+        "frequency": "Schedule frequency",
+        "modes": {
+          "hourly": "Hourly",
+          "daily": "Daily",
+          "weekdays": "Weekdays",
+          "weekly": "Weekly",
+          "custom": "Custom"
+        },
+        "dayOfWeek": "Day of week",
+        "weekdays": {
+          "0": "Sunday",
+          "1": "Monday",
+          "2": "Tuesday",
+          "3": "Wednesday",
+          "4": "Thursday",
+          "5": "Friday",
+          "6": "Saturday"
+        },
+        "timeOfDay": "Time of day",
+        "minutePastHour": "Minute past the hour",
+        "cronExpression": "Cron expression",
+        "timezone": "Timezone",
+        "scheduleTimezone": "Schedule timezone",
+        "timezonePlaceholder": "{zone} (blank = the daemon host’s zone)",
+        "invalidCron": "That cron expression is not valid.",
+        "unknownTimezone": "{human} · “{timezone}” is not a known IANA timezone",
+        "nextRun": "{human} · next {next} ({timezone})",
+        "daemonTimezone": "{human} · in the daemon host’s timezone"
+      },
+      "nativeMemory": {
+        "rendering": "Rendering…",
+        "retry": "Retry",
+        "noMemory": "No memory yet.",
+        "memoryFilePath": "Memory file path",
+        "newMemoryFileName": "New memory file name",
+        "addFile": "Add file",
+        "edit": "Edit",
+        "listError": "Couldn't list memory — the owning daemon may be offline.",
+        "readError": "Couldn't read the file — the owning daemon may be offline."
+      },
+      "toolsDialog": {
+        "wrongOrganization": "This agent belongs to another organization.",
+        "loading": "Loading configuration…",
+        "unavailable": "This agent is unavailable.",
+        "reviewed": "Reviewed {agent}’s tools and skills — {summary}.",
+        "description": "Add or remove what <agent>{agent}</agent> can use. Each change saves as you make it.",
+        "readOnly": "You can review this agent’s tools and skills, but not change them.",
+        "saving": "Saving…",
+        "close": "Close",
+        "done": "Done"
       }
     }
   },
   "Tools": {
+    "skillSourceForm": {
+      "sourcePlaceholder": "owner/repo or https://github.com/owner/repo",
+      "refPlaceholder": "v1.2.0 / main / a commit",
+      "subdirPlaceholder": "skills",
+      "editRefPlaceholder": "v1.2.0 / main"
+    },
     "description": "Shared across every agent in your organization — MCP tools they can call and skills they can run.",
     "mcpServers": "MCP servers",
     "skillsLibrary": "Skills library",
@@ -1560,13 +2732,17 @@
       "create": {
         "title": "Add MCP server",
         "name": "Name",
+        "namePlaceholder": "linear",
         "url": "URL",
+        "urlPlaceholder": "https://mcp.example.com/sse",
         "urlHint": "Agents never see this URL — the relay dials it.",
         "authentication": "Authentication",
         "authHeaders": "API key / headers",
         "authOauth": "OAuth",
         "advancedOauth": "Advanced — existing OAuth client (optional)",
         "oauthClientHint": "Leave blank unless you registered your own OAuth app.",
+        "clientIdPlaceholder": "client_id",
+        "clientSecretPlaceholder": "client_secret",
         "cancel": "Cancel",
         "adding": "Adding…",
         "add": "Add"
@@ -1654,6 +2830,14 @@
       "revisionHistoryUnavailable": "Revision history is unavailable.",
       "revision": "Revision",
       "current": "current",
+      "dreamProposal": "Dream proposal",
+      "manualPublish": "manual publish",
+      "sourceAgent": "agent {id}",
+      "sourceDream": "dream {id}",
+      "sourceSessions": "{count, plural, one {# source session} other {# source sessions}}",
+      "reviewedBy": "reviewed by {id}",
+      "publishedBy": "published by {id}",
+      "revisionFiles": "{count} files · {expanded} expanded · {archive} archive",
       "create": {
         "title": "Import skills from GitHub",
         "source": "Source",
@@ -1707,7 +2891,8 @@
         "install": "Install",
         "installsMillions": "{value}M installs",
         "installsThousands": "{value}K installs",
-        "installsCount": "{count, plural, one {# install} other {# installs}}"
+        "installsCount": "{count, plural, one {# install} other {# installs}}",
+        "installCommand": "{source} -s {skill}"
       }
     },
     "connectors": {
@@ -1739,6 +2924,7 @@
       "connectionCreatedNoAuth": "Connection created, but authorization did not start.",
       "createFailed": "Failed to create connection.",
       "connectionName": "Connection name",
+      "connectionNamePlaceholder": "e.g. prod-gmail",
       "connectionNameHint": "Unique within your organization · letters, digits, <underscore></underscore> or <hyphen></hyphen> (max 32).",
       "signInToAuthorize": "Sign in with {name} in a popup to authorize this connection.",
       "noAuthNote": "This connector needs no credentials — just name it and add.",
@@ -1783,6 +2969,7 @@
       "editSchedule": "Edit schedule",
       "newSchedule": "New schedule",
       "name": "Name",
+      "namePlaceholder": "weekly-deploy-report",
       "agent": "Agent",
       "noAgent": "No agent",
       "noAgents": "No agents",
@@ -1834,6 +3021,11 @@
     },
     "detail": {
       "scheduleNotFound": "Schedule not found",
+      "agent": "Agent",
+      "edit": "Edit",
+      "delete": "Delete",
+      "createdBy": "Created by {creator}",
+      "modifiedBy": "Modified by {creator}",
       "backToSchedules": "Back to schedules",
       "searchSchedules": "Search schedules",
       "enabled": "Enabled",
@@ -1869,6 +3061,94 @@
     }
   },
   "Daemons": {
+    "deleteModal": {
+      "title": "Delete daemon",
+      "body": "{daemon} will be removed from the control plane. Its daemon process keeps running until you stop it, but it can no longer host agents or hold connections. This can’t be undone.",
+      "hostedWarning": "{count, plural, one {# agent} other {# agents}} hosted here will be unplaced until reassigned to another daemon.",
+      "typeToConfirm": "Type {daemon} to confirm",
+      "cancel": "Cancel",
+      "deleting": "Deleting…",
+      "delete": "Delete"
+    },
+    "deleteGroupModal": {
+      "title": "Delete group",
+      "blocked": "{group} still has {daemons, plural, =0 {no daemons} one {# daemon} other {# daemons}} and {agents, plural, =0 {no agents} one {# agent} other {# agents}} on it. Remove the daemons and move the agents somewhere else first — deleting it now would leave them with nowhere to run.",
+      "empty": "Delete {group}? It is empty, so nothing stops running. This cannot be undone.",
+      "cancel": "Cancel",
+      "deleting": "Deleting…",
+      "delete": "Delete"
+    },
+    "groupDetail": {
+      "notFound": "Group not found",
+      "notFoundDescription": "No daemon group with this id belongs to this organization. It may have been removed, or it belongs to another org.",
+      "backToDaemons": "Back to daemons",
+      "searchDaemons": "Search daemons",
+      "noDaemonsYet": "no daemons yet",
+      "daemonCount": "{count, plural, one {# daemon} other {# daemons}}",
+      "editGroup": "Edit group",
+      "groupActions": "Group actions",
+      "removeGroup": "Remove group",
+      "agents": "Agents",
+      "activeSessions": "Active sessions",
+      "daemons": "Daemons",
+      "noMembersYet": "no members yet",
+      "serving": "serving",
+      "daemonsInGroup": "Daemons in this group",
+      "cpuMemory": "cpu / memory",
+      "pinned": "pinned",
+      "noDaemonsInGroup": "No daemons in this group",
+      "addDaemonsHint": "Add daemons from their own page.",
+      "runtimes": "Runtimes",
+      "runtimesNote": "Only what every serving member offers",
+      "noRuntimesNoMembers": "No runtimes — the group has no members yet.",
+      "noRuntimesNoServing": "No runtimes — no member is serving.",
+      "noRuntimesUnadvertised": "No runtimes reported — the serving member has not advertised its runtime profiles yet.",
+      "noRuntimesIntersection": "No runtime is on every serving member. An agent here lands on whichever one is serving, so only what they all offer can run.",
+      "agentsOnGroup": "Agents on this group",
+      "noAgentsOnGroup": "No agents target this group yet",
+      "placeAgentHint": "Place an agent on {group} and it runs on whichever member is serving."
+    },
+    "clusterDetail": {
+      "cloudUnavailable": "Cloud is not available here",
+      "noCluster": "No cluster connected",
+      "cloudEmpty": "No Cloud capacity has registered with this control plane yet. Place your agents on a daemon you connected in the meantime.",
+      "clusterEmpty": "No pool member has registered with this control plane. Install the daemon runtime on a cluster and it appears here.",
+      "backToDaemons": "Back to daemons",
+      "searchDaemons": "Search daemons",
+      "agents": "Agents",
+      "activeSessions": "Active sessions",
+      "runtimesAvailable": "Runtimes available",
+      "managedBy": "Managed by AgentConnect",
+      "nodesServing": "{count, plural, one {1 node serving} other {# nodes serving}}",
+      "noNodesServing": "no nodes serving",
+      "manageBilling": "Manage billing",
+      "running": "running",
+      "nodes": "Nodes",
+      "serving": "serving",
+      "agentsPlaced": "agents placed here · 30d",
+      "runtimes": "Runtimes",
+      "noCloudRuntimes": "No runtimes reported — Cloud has not advertised its runtime profiles yet.",
+      "noClusterRuntimes": "No runtimes reported — no node has advertised its runtime profiles yet.",
+      "agentsOnCloud": "Agents on Cloud",
+      "agentsOnCluster": "Agents on this cluster",
+      "noAgentsHere": "No agents run here yet",
+      "placeAgent": "Place an agent on {pool} to start handling messages.",
+      "cloudBilled": "Cloud usage is billed to this organization’s balance.",
+      "spent": "spent",
+      "toppedUp": "topped up",
+      "credits": "Credits",
+      "lastDays": "last {count} days",
+      "toppedUpWindow": "Topped up · {days}d",
+      "spentWindow": "Spent · {days}d",
+      "averagePerDay": "avg {amount} / day",
+      "balance": "Balance",
+      "dailySpend": "daily spend",
+      "topUp": "top-up",
+      "unavailable": "unavailable",
+      "resources": "Resources",
+      "cpu": "CPU",
+      "memory": "Memory"
+    },
     "description": "Your AgentConnect daemons. Each hosts agents over ACP and holds platform connections.",
     "addDaemon": "Add daemon",
     "online": "{count} online",
@@ -1885,6 +3165,21 @@
     "rename": "Rename",
     "restart": "Restart",
     "reconnect": "Reconnect",
+    "reconnectModal": {
+      "title": "Reconnect daemon",
+      "runOnHost": "Run this on {daemon}’s host to reconnect it; its agents are preserved.",
+      "terminal": "{daemon} · terminal",
+      "copied": "copied",
+      "copy": "copy",
+      "mintError": "Could not mint a key — {error}",
+      "minting": "Minting key…",
+      "reconnected": "Daemon reconnected",
+      "backOnline": "{daemon} is back online.",
+      "waiting": "Waiting for daemon…",
+      "waitingHint": "It’ll flip back to online once it re-runs the command.",
+      "copyKeyNow": "copy this key now — shown only once",
+      "done": "Done"
+    },
     "delete": "Delete",
     "doubleClickRename": "Double-click to rename",
     "restrictedHint": "Selected — only shared members can see this daemon",
@@ -1956,6 +3251,10 @@
       "createGroup": "Create group",
       "expireSessions": "Expire sessions",
       "visibility": "Visibility",
+      "editDaemon": "Edit daemon",
+      "daemonPlaceholder": "edge-1",
+      "saveChanges": "Save changes",
+      "groupPlaceholder": "edge-pool",
       "sessionRetention": {
         "afterDays": "After {count, plural, one {# day} other {# days}}",
         "never": "Never",
@@ -1967,9 +3266,125 @@
         "invalidDays": "Enter a whole number of days (1–9999).",
         "hint": "Finished sessions older than this are deleted from the daemon, including their workspaces."
       }
+    },
+    "lifecycleDialog": {
+      "upgradeTitle": "Upgrade daemon",
+      "restartTitle": "Restart daemon",
+      "upgradeWarning": "<daemon>{daemon}</daemon> installs the target version, drains active sessions, then relaunches. Brief downtime.",
+      "restartWarning": "<daemon>{daemon}</daemon> drains active sessions, then relaunches. Brief downtime.",
+      "noTargets": "No other published versions are available to upgrade to (currently on <version>{version}</version>).",
+      "targetVersion": "Target version",
+      "upgraded": "Daemon upgraded",
+      "restarted": "Daemon restarted",
+      "backOnlineVersion": "{daemon} is back online on {version}.",
+      "backOnline": "{daemon} is back online.",
+      "done": "Done",
+      "close": "Close",
+      "cancel": "Cancel",
+      "sending": "Sending…",
+      "upgrade": "Upgrade",
+      "restart": "Restart"
+    },
+    "runtimeLogin": {
+      "title": "Log in to {label}",
+      "warning": "<runtime>{runtime}</runtime> needs a sign-in on <host>{host}</host>’s host — run this there.",
+      "daemonHost": "the daemon",
+      "terminal": "{daemon} · terminal",
+      "daemonTerminal": "daemon host · terminal",
+      "copied": "copied",
+      "copy": "copy",
+      "methods": "It lists the login methods <runtime>{runtime}</runtime> offers and walks the chosen one — a browser URL, an API key, or the runtime’s own interactive CLI.",
+      "nextStart": "Sessions pick the credential up on their next start — the daemon needs no restart, and this warning clears on its next probe.",
+      "done": "Done"
+    },
+    "detail": {
+      "notFound": {
+        "title": "Daemon not found",
+        "pre": "No daemon",
+        "post": "in this organization. It may have been deregistered.",
+        "back": "Back to daemons",
+        "search": "Search daemons"
+      },
+      "runtimeEmpty": {
+        "sandboxReason": "Sandbox is unavailable on this daemon. {reason}",
+        "sandboxUnavailable": "Sandbox is unavailable on this daemon.",
+        "expandSandbox": "Expand below to see runtimes installed only in the sandbox.",
+        "noRuntimes": "No runtimes reported by this daemon.",
+        "hide": "Hide",
+        "show": "Show",
+        "sandboxOnly": "runtimes in sandbox but not on host ({count})"
+      },
+      "sandbox": "Sandbox",
+      "host": "Host",
+      "runtimeEnvironment": "Runtime environment",
+      "neverConnected": "never connected",
+      "lastSeenAgo": "last seen {value} ago",
+      "runtimes": "Runtimes",
+      "runtimeUsage": "{count, plural, one {# agent} other {# agents}}",
+      "noAgents": "no agents",
+      "modelsCount": "{count, plural, one {# model} other {# models}}",
+      "showLoginCommand": "Show the command to sign in on the daemon host.",
+      "loginRequired": "Login required — sign in on the daemon host",
+      "showCommand": "Show command",
+      "models": "Models",
+      "agents": "Agents",
+      "noAgentsOnDaemon": "No agents on this daemon",
+      "deployAgentHint": "Deploy an agent here to start handling messages.",
+      "usageNote": "agents placed here · 30d",
+      "resources": "Resources",
+      "cpu": "CPU",
+      "memory": "Memory",
+      "system": "System",
+      "created": "Created",
+      "modified": "Modified",
+      "visibility": "Visibility",
+      "editVisibility": "Edit visibility",
+      "capabilities": "Capabilities",
+      "platforms": "Platforms",
+      "features": "Features",
+      "details": "Details",
+      "hostname": "Hostname",
+      "status": "Status",
+      "version": "Version",
+      "pending": "Pending",
+      "lastSeen": "Last seen",
+      "running": "running",
+      "activeSessions": "Active sessions",
+      "actions": {
+        "reconnect": "Reconnect",
+        "restart": "Restart",
+        "edit": "Edit daemon",
+        "daemonActions": "Daemon actions",
+        "leave": "Leave {name}",
+        "join": "Join {name}",
+        "deleteDaemon": "Delete daemon"
+      }
     }
   },
   "Knowledge": {
+    "memoryHistory": {
+      "kinds": {
+        "created": "Created",
+        "deleted": "Deleted",
+        "updated": "Updated"
+      },
+      "sources": {
+        "console": "Console",
+        "distill": "Automatic distillation",
+        "dream": "Dream adoption",
+        "tool": "Agent tool",
+        "backend": "Backend"
+      },
+      "noSnapshot": "No snapshot was recorded for this change.",
+      "longSnapshot": "Long snapshots were shortened when this change was recorded.",
+      "changeHistory": "Change history",
+      "loading": "Loading change history…",
+      "noChanges": "No recorded changes for this memory.",
+      "newestFirst": "Newest first.",
+      "backendOrder": "In the order the backend reports.",
+      "onlyHomeKeeps": "Only what the memory home keeps is shown.",
+      "loadOlder": "Load older changes"
+    },
     "description": "Owner-approved, revisioned knowledge shared across your organization and discovered by agents on demand.",
     "publishKnowledge": "Publish knowledge",
     "tabs": {
@@ -2059,6 +3474,7 @@
       "deleteConnectionConfirm": "Delete this external-memory connection? Unbind every agent first. Backend data is not deleted.",
       "deleteInstallationConfirm": "Remove the reviewed installation “{pluginId}”?",
       "unknownPlugin": "Unknown plugin",
+      "versionPrefix": "v",
       "status": {
         "ready": "Ready",
         "probing": "Connecting",
@@ -2091,6 +3507,12 @@
       "removeCredentialField": "Remove credential field",
       "addCredentialField": "+ Add credential field",
       "secretValuePlaceholder": "secret value",
+      "apiKeyPlaceholder": "apiKey",
+      "authorizationPlaceholder": "Authorization",
+      "pluginIdPlaceholder": "ai.mem0.memory",
+      "commandReferencePlaceholder": "mem0-oss",
+      "endpointPlaceholder": "https://memory-plugin.example/mcp",
+      "digestPlaceholder": "sha256:…",
       "addTitle": "Add memory connection",
       "close": "Close",
       "reviewedInstallation": "Reviewed plugin installation",
@@ -2195,6 +3617,7 @@
       "body": "Billing is per organization. Pick one from the switcher, or sign in again if your session has expired."
     },
     "accountLoadError": "Could not reach the billing service: {error}",
+    "usd": "USD",
     "retry": "Retry",
     "balance": "Balance",
     "lastDeduction": "Last deduction",
@@ -2263,10 +3686,22 @@
       "barNameUsage": "usage",
       "barNameTopup": "top-up",
       "ranges": {
-        "h24": { "label": "24h", "period": "24 hours" },
-        "d7": { "label": "7d", "period": "7 days" },
-        "d30": { "label": "30d", "period": "30 days" },
-        "d90": { "label": "90d", "period": "90 days" }
+        "h24": {
+          "label": "24h",
+          "period": "24 hours"
+        },
+        "d7": {
+          "label": "7d",
+          "period": "7 days"
+        },
+        "d30": {
+          "label": "30d",
+          "period": "30 days"
+        },
+        "d90": {
+          "label": "90d",
+          "period": "90 days"
+        }
       }
     },
     "membersDontPay": {
@@ -2315,7 +3750,24 @@
   "Settings": {
     "organization": {
       "title": "Organization",
-      "edit": "Edit"
+      "edit": "Edit",
+      "editDialog": {
+        "title": "Edit organization",
+        "name": "Name",
+        "slugHint": "Lowercase letters and hyphens — appears in the URL.",
+        "displayName": "Display name (optional)",
+        "displayNameHint": "Leave blank to use the URL name.",
+        "urlWarning": "Changing the name changes the organization URL.",
+        "deleteOrganization": "Delete organization",
+        "removeDaemonsFirst": "Remove its daemons first.",
+        "confirmDelete": "Confirm delete",
+        "delete": "Delete",
+        "cancel": "Cancel",
+        "saving": "Saving…",
+        "save": "Save",
+        "slugTaken": "That URL name is already taken.",
+        "hasDaemons": "The organization still has daemons — remove them on the Daemons page first."
+      }
     },
     "members": {
       "title": "Members & roles",
@@ -2334,6 +3786,7 @@
         "title": "Invite members",
         "emailAddresses": "Email addresses",
         "emailHelp": "Separate addresses with commas.",
+        "emailPlaceholder": "dev@acme.dev, ops@acme.dev",
         "role": "Role",
         "recommended": "recommended",
         "noEmail": "No email is sent; access starts at their first sign-in.",
@@ -2350,7 +3803,10 @@
             "title": "Collaborator",
             "description": "Create, edit & run agents, manage sessions. No member or organization changes."
           },
-          "viewer": { "title": "Viewer", "description": "Read-only — view agents, sessions and usage." }
+          "viewer": {
+            "title": "Viewer",
+            "description": "Read-only — view agents, sessions and usage."
+          }
         }
       },
       "editDialog": {
@@ -2395,7 +3851,10 @@
             "title": "Collaborator",
             "description": "Create, edit & run agents, manage sessions. No member or organization changes."
           },
-          "viewer": { "title": "Viewer", "description": "Read-only — view agents, sessions and usage." }
+          "viewer": {
+            "title": "Viewer",
+            "description": "Read-only — view agents, sessions and usage."
+          }
         }
       }
     },
@@ -2443,8 +3902,14 @@
       "newAgentsStart": "New agents start",
       "ownerOnly": "Only organization owners can change this setting",
       "options": {
-        "all": { "label": "All agents", "description": "Open in both directions to every agent." },
-        "selected": { "label": "Isolated", "description": "No peer access until agents are selected." }
+        "all": {
+          "label": "All agents",
+          "description": "Open in both directions to every agent."
+        },
+        "selected": {
+          "label": "Isolated",
+          "description": "No peer access until agents are selected."
+        }
       }
     },
     "inviteLinks": {
@@ -2456,7 +3921,11 @@
       "none": "No invite link",
       "noneDescription": "Generate the organization's single collaborator link.",
       "organizationLink": "Organization invite link",
-      "status": { "active": "Active", "expired": "Expired", "revoked": "Revoked" },
+      "status": {
+        "active": "Active",
+        "expired": "Expired",
+        "revoked": "Revoked"
+      },
       "revoking": "Revoking…",
       "revoke": "Revoke",
       "copyOnce": "Copy this link now — it is shown only once",
@@ -2475,7 +3944,10 @@
       "deleteBody": "Every agent this {kind} was assigned to stops receiving it. If an agent defines its own {key}, that value becomes effective again.",
       "deleteSecretWarning": "The value cannot be recovered afterwards.",
       "restartNote": "Applies on the agent's next restart.",
-      "kinds": { "variable": "Variable", "secret": "Secret" },
+      "kinds": {
+        "variable": "Variable",
+        "secret": "Secret"
+      },
       "writeOnly": "Write-only — value can't be viewed",
       "selectedAgents": "Selected agents ({count})",
       "edit": "Edit",
@@ -2487,6 +3959,7 @@
       "editTitle": "Edit {key}",
       "close": "Close",
       "name": "Name",
+      "namePlaceholder": "API_KEY",
       "nameLocked": "The name and type can't change. Delete and re-create to rename.",
       "type": "Type",
       "variableDescription": "Plain configuration, readable here",
@@ -2501,7 +3974,10 @@
           "label": "All agents",
           "description": "Every agent you can manage, now and as new ones are configured"
         },
-        "selected": { "label": "Selected agents", "description": "Only the agents you pick below" }
+        "selected": {
+          "label": "Selected agents",
+          "description": "Only the agents you pick below"
+        }
       },
       "agents": "Agents",
       "noManagedAgents": "You don't manage any agents yet. You can save this entry now and assign it later.",
@@ -2514,6 +3990,418 @@
       "replace": "Replace",
       "applyAllBody": "This assigns {key} to every agent you can manage, and to agents you configure later. Agents you cannot manage are not affected, and existing assignments are kept.",
       "replaceBody": "Agents assigned {key} will receive the new value. The previous value cannot be recovered."
+    }
+  },
+  "Platforms": {
+    "chrome": {
+      "delivery": {
+        "label": "Delivery:",
+        "switchTo": "Switch to {transport}"
+      },
+      "walkthrough": {
+        "show": "Show the {count} setup steps",
+        "hide": "Hide the {count} setup steps"
+      },
+      "token": {
+        "prompt": "Paste the bot token — required to connect",
+        "label": "Bot token"
+      }
+    },
+    "telegram": {
+      "guide": {
+        "step1": "Open @BotFather → New bot (or send /newbot), give it a display name and a username ending in “bot” — it hands back the token.",
+        "step1Warning": "In @BotFather, send /setprivacy, select this bot and choose Disable. AgentConnect checks it after you paste the token.",
+        "link": "Open @BotFather",
+        "walkthroughLabel": "Telegram bot setup steps",
+        "tokenPlaceholder": "123456789:AAE…"
+      },
+      "privacy": {
+        "checking": "Checking the token and Privacy Mode…",
+        "ready": "Privacy Mode is off. This bot can receive ordinary group messages.",
+        "privacyEnabled": "Privacy Mode is still on. Disable it in @BotFather. Checking automatically.",
+        "invalid": "Telegram rejected this token. Copy it again from @BotFather.",
+        "unreachable": "AgentConnect could not reach Telegram. Try the check again.",
+        "checkingNow": "Checking…",
+        "checkNow": "Check now",
+        "tryAgain": "Try again"
+      },
+      "footer": {
+        "connect": "Connect & authorize",
+        "connecting": "Connecting…"
+      },
+      "steps": {
+        "findBot": {
+          "label": "Find the bot",
+          "caption": "Search <name></name> in Telegram (the verified one) and open the chat.",
+          "bar": "Telegram — search",
+          "contacts": "Contacts and chats",
+          "open": "OPEN",
+          "globalSearch": "Global search",
+          "impostors": "Impostors are everywhere — take the verified one.",
+          "verifiedName": "BotFather",
+          "searchValue": "@BotFather"
+        },
+        "newBot": {
+          "label": "New bot",
+          "caption": "Tap <start>Start</start> → <action>New bot</action>, then pick a name and a username ending in <handle>bot</handle>.",
+          "bar": "BotFather",
+          "title": "New bot",
+          "subtitle": "Enter a name, description and username to create a new bot.",
+          "nameValue": "My Agent",
+          "aboutValue": "About (Optional)",
+          "available": "my_agent_bot is available.",
+          "handleSample": "my_agent_bot",
+          "handlePrefix": "t.me/"
+        },
+        "copyToken": {
+          "label": "Copy token",
+          "caption": "The bot’s screen shows the API token — copy it and paste it below.",
+          "bar": "BotFather",
+          "title": "My Agent",
+          "copy": "Copy",
+          "revoke": "Revoke",
+          "notice": "Access the API using this token. Keep it secret.",
+          "avatarInitial": "M",
+          "handle": "@my_agent_bot",
+          "tokenSample": "123456789:AAEabcdefghijklmnopqrstuvwxyz"
+        }
+      }
+    },
+    "discord": {
+      "guide": {
+        "step1": "Name and create the application. In Bot, reset and copy the token.",
+        "link": "Create Discord app",
+        "walkthroughLabel": "Discord bot setup steps",
+        "tokenPlaceholder": "Bot token from the Developer Portal"
+      },
+      "footer": {
+        "connect": "Connect & authorize",
+        "connecting": "Connecting…"
+      },
+      "invite": {
+        "add": "Add to Discord",
+        "scopes": "— invites with the bot & applications.commands scopes and the right permissions.",
+        "pasteFirst": "Paste the bot token and an “Add to Discord” button appears — no need to build the invite URL by hand.",
+        "appLabel": "App"
+      },
+      "settings": {
+        "inviteTitle": "Invite this bot to a Discord server — preset scopes & permissions",
+        "inviteLabel": "Add this bot to a Discord server",
+        "deleteNotice": "The Discord application itself is not deleted.",
+        "openOnDiscord": "Open on Discord"
+      },
+      "steps": {
+        "newApp": {
+          "label": "New app",
+          "caption": "<action>New Application</action> → name it, accept the developer terms, then Create.",
+          "screenTitle": "Applications",
+          "screenAction": "New Application",
+          "cardTitle": "Create a new app",
+          "nameLabel": "Name",
+          "nameValue": "my-agent",
+          "terms": "By clicking Create, you agree to the Discord Developer Terms of Service.",
+          "cancel": "Cancel",
+          "create": "Create"
+        },
+        "copyToken": {
+          "label": "Copy token",
+          "caption": "<action>Bot</action> → Reset Token, then copy it — Discord shows the token only once.",
+          "navGeneral": "General Info",
+          "navInstallation": "Installation",
+          "navOauth2": "OAuth2",
+          "navBot": "Bot",
+          "title": "Bot",
+          "generated": "A new token was generated! Copy it now — it won’t be shown again.",
+          "tokenLabel": "Token",
+          "copy": "Copy",
+          "reset": "Reset Token",
+          "tokenSample": "MTIzNDU2Nzg5MDEyMzQ1Njc4.Gabcde.fghijklmnopqrstuvwxyz"
+        }
+      }
+    },
+    "feishu": {
+      "transport": {
+        "socket": "Long connection",
+        "http": "HTTP callbacks"
+      },
+      "footer": {
+        "connect": "Connect & authorize",
+        "connecting": "Connecting…"
+      },
+      "method": {
+        "deeplink": "One-click",
+        "manual": "Manual",
+        "locked": "App setup is in progress",
+        "deeplinkHint": "Recommended — approve in {brand}; permissions, events and credentials are connected automatically.",
+        "manualHint": "Advanced — configure a self-built app yourself and paste its credentials."
+      },
+      "walkthroughLabel": "{brand} bot setup steps",
+      "deeplink": {
+        "approveTitle": "Approve the app setup in {brand}",
+        "approveBody": "We opened the authorization page in a new tab. Confirm the app and permissions; this dialog updates automatically.",
+        "reopen": "Reopen {brand} setup",
+        "nameTitle": "Name and create the bot",
+        "botNamePlaceholder": "Bot name",
+        "creating": "Creating…",
+        "create": "Create {brand} bot"
+      },
+      "manual": {
+        "step1": "Create a self-built app in the {brand} console, enable the bot, then copy its App ID and App Secret.",
+        "step2": "Paste the App ID & App Secret",
+        "step3": "Configure HTTP callback security",
+        "appId": "App ID",
+        "appSecret": "App Secret",
+        "appSecretPlaceholder": "App Secret",
+        "verificationToken": "Verification Token",
+        "encryptKey": "Encrypt Key",
+        "optional": "· optional",
+        "fromEventSubscriptions": "From Event Subscriptions",
+        "requestUrl": "Request URL",
+        "requestUrlHint": "Connect here first, then save this Request URL in {brand}. It starts receiving as soon as the integration is connected.",
+        "appIdPlaceholder": "cli_…"
+      },
+      "checklistTitle": "{brand} setup checklist",
+      "checklist": {
+        "sameOrg": {
+          "title": "Use the same organization",
+          "desc": "Create every Bot App in the same Lark/Feishu organization as the App used to sign in to AgentConnect."
+        },
+        "botCapability": {
+          "title": "Enable the bot capability",
+          "desc": "In the app’s “Add features”, turn on Bot — otherwise it can’t send or receive messages."
+        },
+        "scopes": {
+          "title": "Grant message, contact and tenant scopes",
+          "desc": "Request the message, chat and resource scopes, the two basic-contact read scopes, and tenant:tenant:readonly, then publish."
+        },
+        "inviteBot": {
+          "title": "Add the bot to your group",
+          "desc": "Invite the bot into the target chat — it replies wherever it’s a member and @-mentioned."
+        },
+        "longConnection": {
+          "title": "Use Long Connection",
+          "desc": "Under Event Subscriptions, choose Long Connection and subscribe to im.message.receive_v1."
+        },
+        "httpCallbacks": {
+          "title": "Use HTTP callbacks",
+          "desc": "Connect here first, then add the Request URL shown above under Event Subscriptions and subscribe to im.message.receive_v1."
+        }
+      },
+      "registration": {
+        "denied": "The Lark/Feishu app setup was cancelled.",
+        "expired": "This setup link expired — start again.",
+        "agentUnavailable": "This agent moved or was removed during setup. Check its daemon, then try again.",
+        "invalidCredentials": "The app was created, but its credentials could not be verified.",
+        "orgMismatch": "This app belongs to a different Lark/Feishu organization from this AgentConnect deployment. Create it in the same organization and try again.",
+        "setupFailed": "Lark/Feishu could not complete the app setup. Please try again."
+      },
+      "settings": {
+        "configureOn": "Configure on {brand}",
+        "deleteNotice": "The {brand} app itself is not deleted.",
+        "openOn": "Open on {brand}"
+      },
+      "steps": {
+        "createApp": {
+          "label": "Create app",
+          "caption": "In the {brand} developer console, create a <customApp>custom app</customApp> for your workspace.",
+          "title": "Create app",
+          "customApp": "Custom app",
+          "note": "Only usable inside your own organization — no review needed.",
+          "appName": "App name",
+          "cancel": "Cancel",
+          "create": "Create",
+          "appNameValue": "acp-tester"
+        },
+        "idSecret": {
+          "label": "ID & Secret",
+          "caption": "<credentials>Credentials & Basic Info</credentials> — copy the App ID and reveal the App Secret; both go in the fields below.",
+          "basicInfo": "Basic Info",
+          "features": "Features",
+          "credentials": "Credentials",
+          "navCredentials": "Credentials & Basic Info",
+          "navCollaborators": "Collaborators",
+          "navFeatures": "Add Features",
+          "navBot": "Bot",
+          "appId": "App ID",
+          "appSecret": "App Secret",
+          "masked": "The secret is masked — reveal it once and store it safely.",
+          "appIdSample": "cli_xxxxxxxxxxxxxxxx",
+          "secretSample": "****************************"
+        }
+      }
+    },
+    "linear": {
+      "footer": {
+        "connect": "Connect"
+      },
+      "setup": {
+        "checking": "Checking your Linear setup…",
+        "appRequired": "Linear isn’t set up on this deployment yet. An administrator registers one Linear OAuth application for the whole deployment before workspaces can be connected.",
+        "relayRequired": "Linear delivers over HTTP callbacks only, so it needs a public callback endpoint. Ask an administrator to configure one, then connect a workspace here."
+      },
+      "connect": {
+        "connectedTitle": "Workspace connected — {agent} is its default agent.",
+        "tryAgain": "Try again",
+        "back": "Back",
+        "waiting": "Waiting for Linear…",
+        "approveTab": "Approve the workspace in the Linear tab.",
+        "becomesDefault": "{agent} becomes the workspace’s default agent. You approve the workspace in a Linear popup.",
+        "cta": "Connect Linear",
+        "done": "Done"
+      },
+      "picker": {
+        "title": "Pick the Linear workspace {agent} works in.",
+        "alreadyLinked": "Already linked to this agent",
+        "linked": "linked",
+        "another": "Connect another workspace…"
+      },
+      "card": {
+        "notSetUp": "Linear isn’t set up on this deployment.",
+        "grantExpired": "grant expired",
+        "reconnect": "Reconnect this workspace",
+        "waiting": "Waiting for Linear…",
+        "approveTab": "Approve the workspace in the Linear tab — this card updates once it lands."
+      },
+      "settings": {
+        "waiting": "Waiting for Linear…",
+        "reconnect": "Reconnect this workspace",
+        "disconnect": "Disconnect this workspace",
+        "disconnectTitle": "Disconnect workspace",
+        "disconnectBody": "{workspace} is removed for {audience}, and AgentConnect forgets its Linear grant. Delegations in that workspace stop reaching any agent. Connecting it again is a fresh authorization in Linear.",
+        "disconnectAudienceOrg": "this organization",
+        "disconnectAudienceOne": "the agent that uses it",
+        "disconnectAudienceMany": "all {count} agents that use it",
+        "disconnectFootnote": "Disconnects the workspace for the whole organization.",
+        "cancel": "Cancel",
+        "disconnecting": "Disconnecting…",
+        "disconnectAction": "Disconnect"
+      },
+      "turnFacts": {
+        "issue": "Issue",
+        "team": "Team",
+        "delegatedBy": "Delegated by",
+        "description": "Description",
+        "comments": "Earlier comments",
+        "guidance": "Workspace guidance",
+        "truncated": "Context truncated by the relay."
+      }
+    },
+    "slack": {
+      "transport": {
+        "socket": "Socket Mode",
+        "http": "HTTP (Events API)"
+      },
+      "footer": {
+        "connect": "Connect",
+        "connectAuthorize": "Connect & authorize",
+        "creating": "Creating…",
+        "connecting": "Connecting…"
+      },
+      "identity": {
+        "useBuiltin": "Use the built-in Slack app"
+      },
+      "builtin": {
+        "waiting": "Waiting for Slack…",
+        "add": "Add to Slack",
+        "approving": "Approve the install in the Slack tab — this closes automatically once it lands.",
+        "installs": "Installs the built-in AgentConnect Slack app.",
+        "useCustom": "Use a custom bot identity instead"
+      },
+      "checking": "Checking your Slack setup…",
+      "method": {
+        "nameAndCreate": "Name & create the app (name optional)",
+        "installLocked": "Install in progress — “Start over” to switch method",
+        "configHint": "Recommended — one-click install, no manifest to copy or tokens to paste.",
+        "botHint": "Manual — copy our manifest into Slack, install, and paste the tokens back."
+      },
+      "auto": {
+        "namePlaceholder": "Bot name (optional) — e.g. acme-agent",
+        "nameFromAgent": "{name} — from the agent’s name",
+        "createInstall": "Create & install",
+        "readyHttp": "App created & installed — click Connect to finish",
+        "readySocket": "App created & installed — bot token secured"
+      },
+      "approve": {
+        "title": "Approve the install in Slack",
+        "body": "We opened Slack in a new tab — click “Allow”, then come back. This updates automatically.",
+        "reopen": "Reopen the Slack install",
+        "startOver": "Start over"
+      },
+      "appToken": {
+        "title": "Generate the App-Level token & paste it",
+        "unavailable": "(Slack has no API for this one)",
+        "placeholder": "xapp-…",
+        "generate": "Generate the App-Level token",
+        "locked": "Unlocks once you approve the install in Slack."
+      },
+      "scopes": {
+        "title": "Slack didn’t grant every permission this app needs",
+        "body": "Reinstall the app in your Slack workspace to grant them, then click Connect again.",
+        "reinstall": "Reinstall in Slack"
+      },
+      "config": {
+        "open": "Open Slack app config tokens",
+        "hint": "Under <apps>Your apps</apps> → <tokens>configuration tokens</tokens>, generate a token pair for the workspace.",
+        "paste": "Paste your configuration token",
+        "accessToken": "Access Token",
+        "required": "· required",
+        "accessPlaceholder": "xoxe.xoxp-1-…",
+        "refreshToken": "Refresh Token",
+        "optional": "· optional, saved for reuse",
+        "refreshPlaceholder": "xoxe-1-…"
+      },
+      "manifest": {
+        "title": "Create & install the Slack app from our manifest",
+        "copy": "Copy manifest & open Slack",
+        "hint": "In Slack, choose <manifest>From a manifest</manifest>, paste, select a workspace, then create and install the app."
+      },
+      "tokens": {
+        "paste": "Paste the tokens it gives you — required to connect",
+        "botToken": "Bot token",
+        "botPlaceholder": "xoxb-…",
+        "signingSecret": "Signing secret",
+        "signingPlaceholder": "Signing secret (Basic Information → App Credentials)",
+        "appLevelToken": "App-level token",
+        "appPlaceholder": "xapp-…",
+        "appLabel": "App",
+        "copyBotToken": "Copy the Bot token",
+        "openSettings": "Open app settings",
+        "reinstallOnce": "If Slack asks you to reinstall the app, do it once."
+      },
+      "previews": {
+        "manifestHeader": "In Slack, pick “From a manifest”",
+        "ownWay": "Or start your own way",
+        "manifestTile": "From a manifest",
+        "manifestTileDesc": "Upload JSON or YAML config.",
+        "blankTile": "Blank app",
+        "blankTileDesc": "Empty app with minimal setup.",
+        "pasteStep": "Then paste the copied manifest, choose a workspace, and create the app.",
+        "yourApps": "Your apps",
+        "appsUrl": "api.slack.com/apps",
+        "configTokens": "Your App Configuration Tokens",
+        "generateToken": "Generate Token",
+        "workspace": "Workspace",
+        "access": "Access",
+        "refresh": "Refresh",
+        "workspaceValue": "your-workspace",
+        "copy": "Copy",
+        "expires": "Expires in 5 hours",
+        "scrollHint": "Scroll to the bottom of <apps>Your apps</apps> — the token pair lives under “App configuration tokens”."
+      },
+      "settings": {
+        "configure": "Configure on Slack",
+        "needsAttention": "Slack app needs attention",
+        "refresh": "Refresh Slack app",
+        "refreshFailed": "Couldn’t refresh this Slack app — {error}",
+        "copied": "Copied",
+        "copyScopes": "Copy scopes",
+        "reinstalling": "Reinstalling…",
+        "deleteNotice": "The Slack app itself is not deleted.",
+        "openOn": "Open on Slack",
+        "manifestMissing": "Manifest missing: {scopes}",
+        "missing": "Missing: {scopes}",
+        "builtinRejected": "Slack rejected this workspace authorization. Reinstall the app to reconnect it."
+      }
     }
   }
 }

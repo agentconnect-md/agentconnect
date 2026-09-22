@@ -1108,6 +1108,7 @@ const ELICIT_ACTIONS = 'flex flex-wrap items-center gap-[8px] border-t border-(-
  *  Without `onAnswer` — a reader with no live socket to answer over — the same card renders
  *  as a plain record of the ask, controls inert rather than missing. */
 function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value: ElicitAnswerValue) => void }) {
+  const t = useTranslations('Sessions.detail')
   // A custom-answer box the daemon could not bind — a bridge that marks the pair with no
   // `_meta`, or an older daemon that read no marker — is folded into its question HERE, off
   // the pair's names, so the box is never asked as a question of its own titled "Other".
@@ -1196,8 +1197,8 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                 type="button"
                 className="iconbtn h-[22px] w-[22px]"
                 aria-expanded={!minimized}
-                aria-label={minimized ? 'Expand question' : 'Minimize question'}
-                title={minimized ? 'Expand question' : 'Minimize question'}
+                aria-label={minimized ? t('expandQuestion') : t('minimizeQuestion')}
+                title={minimized ? t('expandQuestion') : t('minimizeQuestion')}
                 onClick={() => setMinimized((v) => !v)}
               >
                 <Icon name={minimized ? 'chevron-right' : 'chevron-down'} size={12} color="var(--text-tertiary)" />
@@ -1208,8 +1209,8 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                 type="button"
                 className="iconbtn h-[22px] w-[22px]"
                 disabled={!onAnswer}
-                aria-label="Decline without answering"
-                title="Decline without answering"
+                aria-label={t('declineWithoutAnswer')}
+                title={t('declineWithoutAnswer')}
                 onClick={() => onAnswer?.(null)}
               >
                 <Icon name="x" size={12} color="var(--text-tertiary)" />
@@ -1264,21 +1265,21 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                     rel="noopener noreferrer"
                     onClick={() => onAnswer(consentUrl)}
                   >
-                    Open link
+                    {t('openLink')}
                   </a>
                 ) : (
-                  <span className="dsbtn dsbtn-primary xs cursor-default opacity-55">Open link</span>
+                  <span className="dsbtn dsbtn-primary xs cursor-default opacity-55">{t('openLink')}</span>
                 )}
                 <button
                   type="button"
                   className={ELICIT_CHIP}
                   disabled={!onAnswer}
                   onClick={() => onAnswer?.(null)}
-                  title="Refuse without opening"
+                  title={t('refuseWithoutOpening')}
                 >
-                  Decline
+                  {t('decline')}
                 </button>
-                <span className={`ml-auto ${ELICIT_HINT}`}>Opens in a new tab</span>
+                <span className={`ml-auto ${ELICIT_HINT}`}>{t('opensNewTab')}</span>
               </div>
             </div>
           ) : fields && rows ? (
@@ -1377,7 +1378,7 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                           })}
                           {companion ? (
                             <ElicitOption
-                              label="Other…"
+                              label={t('other')}
                               on={!!others[f.propName]}
                               list={list}
                               soft
@@ -1422,18 +1423,18 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                   disabled={!onAnswer || rows.some((f) => !!rowInvalidReason(f, companionOf(fields, f), drafts, picks))}
                   onClick={() => onAnswer?.(formAnswer(fields, drafts, picks))}
                 >
-                  Submit answers
+                  {t('submitAnswers')}
                 </button>
                 <button
                   type="button"
                   className={ELICIT_CHIP}
                   disabled={!onAnswer}
                   onClick={() => onAnswer?.(null)}
-                  title="Dismiss without answering"
+                  title={t('dismissWithoutAnswer')}
                 >
-                  Dismiss
+                  {t('dismiss')}
                 </button>
-                <span className={`ml-auto ${ELICIT_HINT}`}>Optional answers left blank are not sent</span>
+                <span className={`ml-auto ${ELICIT_HINT}`}>{t('optionalAnswers')}</span>
               </div>
             </div>
           ) : typed ? (
@@ -1443,7 +1444,7 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                 type={elicit.number ? 'number' : 'text'}
                 value={draft}
                 disabled={!onAnswer}
-                aria-label="Your answer"
+                aria-label={t('yourAnswer')}
                 {...(elicit.number?.minimum !== undefined ? { min: elicit.number.minimum } : {})}
                 {...(elicit.number?.maximum !== undefined ? { max: elicit.number.maximum } : {})}
                 {...(elicit.number?.integer ? { step: 1 } : {})}
@@ -1468,18 +1469,18 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                   disabled={!onAnswer || !!invalid}
                   onClick={() => onAnswer?.(elicit.number ? Number(draft) : draft)}
                 >
-                  Submit
+                  {t('submit')}
                 </button>
                 <button
                   type="button"
                   className={ELICIT_CHIP}
                   disabled={!onAnswer}
                   onClick={() => onAnswer?.(null)}
-                  title="Dismiss without answering"
+                  title={t('dismissWithoutAnswer')}
                 >
-                  Dismiss
+                  {t('dismiss')}
                 </button>
-                <span className={`ml-auto ${ELICIT_HINT}`}>Enter submits</span>
+                <span className={`ml-auto ${ELICIT_HINT}`}>{t('enterSubmits')}</span>
               </div>
             </div>
           ) : (
@@ -1526,7 +1527,7 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                     disabled={!onAnswer || !complete}
                     onClick={() => onAnswer?.(picked)}
                   >
-                    Confirm
+                    {t('confirm')}
                   </button>
                 </div>
               )}
@@ -1771,6 +1772,7 @@ function DetailLabel({ children }: { children: string }) {
 // oldText, newText } | { type:'terminal', terminalId }. Kept opaque in the schema,
 // so narrow structurally here.
 function ContentBlock({ block }: { block: unknown }) {
+  const t = useTranslations('Sessions.detail')
   if (!block || typeof block !== 'object') return <CodeBlock>{fmtValue(block)}</CodeBlock>
   const b = block as Record<string, unknown>
   if (b.type === 'diff') {
@@ -1799,7 +1801,7 @@ function ContentBlock({ block }: { block: unknown }) {
     const ref = typeof b.terminalId === 'string' ? b.terminalId : fmtValue(b.terminalId)
     return (
       <div className="mt-[6px]">
-        <span className="scope">terminal {ref}</span>
+        <span className="scope">{t('terminal', { ref })}</span>
       </div>
     )
   }
@@ -1880,6 +1882,7 @@ function ToolBodyDetail({
   sessionId: string
   autoOpen?: boolean
 }) {
+  const t = useTranslations('Sessions.detail')
   const [open, setOpen] = useState(false)
   const [full, setFull] = useState<{ source: SessionMessageDto; body: string } | null>(null)
   const [loading, setLoading] = useState(false)
@@ -1997,7 +2000,7 @@ function ToolBodyDetail({
         )}
         {truncated && bytes != null && (
           <span className="font-sans text-[10.5px] font-medium leading-normal text-(--text-tertiary)">
-            Truncated preview · full size {kb(bytes)}
+            {t('truncatedPreview', { size: kb(bytes) })}
           </span>
         )}
       </div>
@@ -2006,25 +2009,25 @@ function ToolBodyDetail({
         <div className="mt-1">
           {parseErr ? (
             <div className="mt-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--red-600)">
-              Couldn&apos;t parse the tool body.
+              {t('toolBodyParseError')}
             </div>
           ) : body ? (
             <>
               {body.rawInput != null && (
                 <>
-                  <DetailLabel>INPUT</DetailLabel>
+                  <DetailLabel>{t('input')}</DetailLabel>
                   <CodeBlock>{fmtValue(body.rawInput)}</CodeBlock>
                 </>
               )}
               {body.rawOutput != null && (
                 <>
-                  <DetailLabel>OUTPUT</DetailLabel>
+                  <DetailLabel>{t('output')}</DetailLabel>
                   <CodeBlock>{fmtValue(body.rawOutput)}</CodeBlock>
                 </>
               )}
               {body.content && body.content.length > 0 && (
                 <>
-                  <DetailLabel>CONTENT</DetailLabel>
+                  <DetailLabel>{t('content')}</DetailLabel>
                   {body.content.map((c, i) => (
                     <ContentBlock key={i} block={c} />
                   ))}
@@ -2032,7 +2035,7 @@ function ToolBodyDetail({
               )}
               {body.locations && body.locations.length > 0 && (
                 <>
-                  <DetailLabel>LOCATIONS</DetailLabel>
+                  <DetailLabel>{t('locations')}</DetailLabel>
                   <div className="mt-[6px] flex flex-wrap gap-[6px]">
                     {body.locations.map((l, i) => (
                       <span key={i} className="scope">
@@ -2058,14 +2061,14 @@ function ToolBodyDetail({
                     }`}
                   >
                     {loading ? <Spinner size={13} /> : <Icon name="maximize-2" size={13} />}
-                    View full
+                    {t('viewFull')}
                   </button>
                 </div>
               )}
             </>
           ) : (
             <div className="mt-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              No body captured for this tool call.
+              {t('noToolBody')}
             </div>
           )}
         </div>
@@ -2279,6 +2282,7 @@ function MobileSessionFamilyLinks({
   /** Delegation target id → waking member agentId (conversation mode). */
   childOriginById?: ReadonlyMap<string, string>
 }) {
+  const t = useTranslations('Sessions.detail')
   if (parents.length === 0 && siblings.length === 0 && children.length === 0) return null
   return (
     <div className="card mx-4 mt-4 overflow-hidden desktop:hidden">
@@ -2291,9 +2295,9 @@ function MobileSessionFamilyLinks({
           <span className="py-[10px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
             {conversation
               ? parents.length === 1
-                ? 'Parent conversation'
-                : `Parent conversations (${parents.length})`
-              : 'Parent session'}
+                ? t('parentConversation')
+                : t('parentConversations', { count: parents.length })
+              : t('parentSession')}
           </span>
           <div className="min-w-0">
             {parents.map((parent, index) => (
@@ -2316,7 +2320,7 @@ function MobileSessionFamilyLinks({
           }`}
         >
           <span className="py-[10px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
-            {siblings.length === 1 ? 'Sibling session' : `Sibling sessions (${siblings.length})`}
+            {siblings.length === 1 ? t('siblingSession') : t('siblingSessions', { count: siblings.length })}
           </span>
           <div className="min-w-0">
             {siblings.map((sibling, index) => (
@@ -2337,11 +2341,11 @@ function MobileSessionFamilyLinks({
           <span className="py-[10px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
             {conversation
               ? children.length === 1
-                ? 'Delegation'
-                : `Delegations (${children.length})`
+                ? t('delegation')
+                : t('delegations', { count: children.length })
               : children.length === 1
-                ? 'Child session'
-                : `Child sessions (${children.length})`}
+                ? t('childSession')
+                : t('childSessions', { count: children.length })}
           </span>
           <div className="min-w-0">
             {children.map((child, index) => {
@@ -2353,7 +2357,7 @@ function MobileSessionFamilyLinks({
                 <div key={child.id}>
                   {newGroup && (
                     <div className="pt-[8px] font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-(--text-tertiary)">
-                      via {originAgent ? agentLabel(originAgent) : origin}
+                      {t('viaAgent', { agent: originAgent ? agentLabel(originAgent) : origin })}
                     </div>
                   )}
                   <SessionRelationLink
@@ -4795,7 +4799,7 @@ export default function SessionDetailView() {
                   title={workspaceTitle}
                 >
                   <Icon name={workspaceIcon} size={13} />
-                  Workspace
+                  {t('workspace')}
                 </Link>
               ) : null}
               {visibilityControl}
@@ -4821,7 +4825,7 @@ export default function SessionDetailView() {
                   aria-describedby={detailTooltipId}
                 >
                   <Icon name="info" size={14} />
-                  Details
+                  {t('details')}
                 </button>
                 <div
                   id={detailTooltipId}
@@ -5496,7 +5500,7 @@ export default function SessionDetailView() {
                     {pgEmpty && (
                       <div className="desktop:mt-[6px]">
                         <div className="mb-2 font-mono text-[10.5px] font-semibold uppercase tracking-[.08em] text-(--text-tertiary)">
-                          Start with
+                          {t('startWith')}
                         </div>
                         <div className="flex flex-wrap gap-2">
                           {prompts.map((p) => (
@@ -5618,7 +5622,7 @@ export default function SessionDetailView() {
                         {resumeDisabled && (
                           <textarea
                             className="absolute inset-0 z-10 block h-full min-h-[92px] w-full resize-none rounded-[10px] border-0 bg-(--surface-sunken) px-[15px] py-[13px] font-sans text-[14px] font-normal leading-[1.55] text-(--text-tertiary) outline-none placeholder:text-(--text-tertiary) disabled:cursor-not-allowed"
-                            aria-label="Conversation unavailable"
+                            aria-label={t('conversationUnavailableLabel')}
                             placeholder={resumePlaceholder}
                             disabled
                           />
@@ -6011,8 +6015,7 @@ export default function SessionDetailView() {
               data-files-scope-failed=""
               className="px-3 py-4 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)"
             >
-              Couldn’t tell which checkout this session reads — its details didn’t load. Reopen the session, or read the
-              files from the agent’s workspace page.
+              {t('filesScopeFailed')}
             </div>
           ) : null}
           {filesAgentId && filesScopeReady ? (
@@ -6036,8 +6039,7 @@ export default function SessionDetailView() {
               data-git-scope-failed=""
               className="px-3 py-4 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)"
             >
-              Couldn’t tell which checkout this session works in — its details didn’t load. Reopen the session, or read
-              its git status from the agent’s workspace page.
+              {t('gitScopeFailed')}
             </div>
           ) : null}
           {/* Mounted on the same terms as Files, and for the same reason: the panel's verdict is what keeps its own tab out of the dock's vacant state, so a lazily mounted one makes the tab unreachable. */}

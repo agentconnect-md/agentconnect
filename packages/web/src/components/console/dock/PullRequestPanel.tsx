@@ -437,10 +437,10 @@ export function PullRequestPanel({
         <PanelNotice
           text={
             unpublished
-              ? `Branch ${branch} tracks no remote branch. Publish this branch to set its upstream before creating a pull request.`
+              ? t('branchNoRemote', { branch })
               : branch !== null
-                ? `Branch ${branch} tracks ${tracking}, and no pull request is linked to this session yet.`
-                : 'No pull request is linked to this session yet.'
+                ? t('branchNoPullRequest', { branch, tracking: tracking ?? '' })
+                : t('sessionNoPullRequest')
           }
         />
         {/* What this state still depends on, said rather than hidden: a PR is found through this worktree's own head branch, so it appears once the branch is pushed and the PR exists against it — not the instant the agent replies. Drawn only after the ask, because until then it is not the reader's problem. */}
@@ -450,10 +450,7 @@ export function PullRequestPanel({
             className="flex items-start gap-2 px-3 pb-[6px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)"
           >
             <Icon name="info" size={13} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
-            <span>
-              A pull request was requested — this tab links it once the branch is pushed and the pull request exists.
-              Refresh if that just happened.
-            </span>
+            <span>{t('createRequested')}</span>
           </div>
         ) : null}
         <div className="flex flex-none px-3 pb-2">
@@ -702,7 +699,7 @@ export function PullRequestPanel({
             className="flex items-start gap-2 px-3 pt-[7px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)"
           >
             <Icon name="info" size={13} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
-            <span>This pull request may carry work from other sessions on this agent’s shared checkout.</span>
+            <span>{t('sharedCheckoutWarning')}</span>
           </div>
         ) : null}
         {/* A branch-resolved link can be ambiguous where a run-linked one never is: the head branch is the whole identity, so several open PRs on it are all equally "this session's". The panel names the pick rather than picking silently. */}
@@ -713,10 +710,8 @@ export function PullRequestPanel({
           >
             <Icon name="info" size={13} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
             <span>
-              {view.linkBranch
-                ? `Branch ${view.linkBranch} has more than one open pull request`
-                : 'This session’s branch has more than one open pull request'}{' '}
-              — this is the first of them.
+              {view.linkBranch ? t('ambiguousBranch', { branch: view.linkBranch }) : t('ambiguousSessionBranch')}{' '}
+              {t('firstOfThem')}
             </span>
           </div>
         ) : null}
@@ -736,8 +731,7 @@ export function PullRequestPanel({
                   className="flex-none"
                 />
                 <span>
-                  This agent’s recorded review:{' '}
-                  <span className="font-medium">{REVIEW_META[view.agentReview].label}</span>
+                  {t('recordedReview')} <span className="font-medium">{t(`reviewStates.${view.agentReview}`)}</span>
                 </span>
               </div>
             ) : null}
@@ -782,7 +776,7 @@ export function PullRequestPanel({
                   {view.threads.map(threadCard)}
                   {view.threadsTruncated ? (
                     <div className="font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                      More unresolved threads than one read carries — the first {view.threads.length} are shown.
+                      {t('threadsTruncated', { count: view.threads.length })}
                     </div>
                   ) : null}
                 </div>
@@ -933,7 +927,7 @@ export function PullRequestPanel({
               data-pr-automerge-error=""
               className="font-sans text-[11px] font-normal leading-[1.5] text-(--status-paused)"
             >
-              Last check: {view.autoMergeError}
+              {t('lastCheck', { error: view.autoMergeError })}
             </div>
           ) : null}
           {merge.err ? (

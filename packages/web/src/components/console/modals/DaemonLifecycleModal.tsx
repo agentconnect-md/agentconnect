@@ -1,6 +1,7 @@
 // No 'use client' here: rendered only by ModalProvider (the client boundary).
 
 import { useEffect, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { useConsoleData } from '@/lib/data-context'
 import { getDaemonLifecycleOp, type DaemonLifecycleOpDto } from '@/lib/api'
 import { daemonLifecycleLabel } from '../DaemonLifecycleBadge'
@@ -26,6 +27,7 @@ export default function DaemonLifecycleModal({
   onClose: () => void
 }) {
   const { upgradeDaemon, restartDaemon, daemons, refresh } = useConsoleData()
+  const t = useTranslations('Daemons.lifecycleDialog')
 
   // Upgrade targets: published versions other than the one already running.
   const options = mode === 'upgrade' ? daemon.availableVersions.filter((v) => v !== daemon.version) : []
@@ -88,7 +90,7 @@ export default function DaemonLifecycleModal({
   }
 
   const isUpgrade = mode === 'upgrade'
-  const title = isUpgrade ? 'Upgrade daemon' : 'Restart daemon'
+  const title = isUpgrade ? t('upgradeTitle') : t('restartTitle')
   const icon = isUpgrade ? 'circle-arrow-up' : 'refresh-cw'
   const noTargets = isUpgrade && options.length === 0
   const succeeded = !gone && tracked?.status === 'succeeded'
@@ -113,13 +115,15 @@ export default function DaemonLifecycleModal({
               <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
                 {isUpgrade ? (
                   <>
-                    <span className="mono text-(--text-primary)">{daemon.name}</span> installs the target version,
-                    drains active sessions, then relaunches. Brief downtime.
+                    {t.rich('upgradeWarning', {
+                      daemon: () => <span className="mono text-(--text-primary)">{daemon.name}</span>
+                    })}
                   </>
                 ) : (
                   <>
-                    <span className="mono text-(--text-primary)">{daemon.name}</span> drains active sessions, then
-                    relaunches. Brief downtime.
+                    {t.rich('restartWarning', {
+                      daemon: () => <span className="mono text-(--text-primary)">{daemon.name}</span>
+                    })}
                   </>
                 )}
               </span>
@@ -127,12 +131,13 @@ export default function DaemonLifecycleModal({
             {isUpgrade &&
               (noTargets ? (
                 <div className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                  No other published versions are available to upgrade to (currently on{' '}
-                  <span className="mono text-(--text-secondary)">{daemon.version}</span>).
+                  {t.rich('noTargets', {
+                    version: () => <span className="mono text-(--text-secondary)">{daemon.version}</span>
+                  })}
                 </div>
               ) : (
                 <div className="fld">
-                  <span className="fldlbl">Target version</span>
+                  <span className="fldlbl">{t('targetVersion')}</span>
                   <div className="inp relative">
                     <span className="mono truncate text-[12.5px] text-(--text-primary)">{version}</span>
                     <Icon name="chevron-down" size={15} color="var(--text-tertiary)" className="ml-auto" />
@@ -140,7 +145,7 @@ export default function DaemonLifecycleModal({
                       value={version}
                       onChange={(e) => setVersion(e.target.value)}
                       className="absolute inset-0 cursor-pointer opacity-0"
-                      aria-label="Target version"
+                      aria-label={t('targetVersion')}
                     >
                       {options.map((v) => (
                         <option key={v} value={v}>
@@ -162,10 +167,12 @@ export default function DaemonLifecycleModal({
                 </span>
                 <div className="flex-1">
                   <div className="font-sans text-[13px] font-semibold leading-normal">
-                    {isUpgrade ? 'Daemon upgraded' : 'Daemon restarted'}
+                    {isUpgrade ? t('upgraded') : t('restarted')}
                   </div>
                   <div className="mono text-[11px] text-(--text-tertiary)">
-                    {daemon.name} is back online{isUpgrade ? ` on ${live?.version ?? version}` : ''}.
+                    {isUpgrade
+                      ? t('backOnlineVersion', { daemon: daemon.name, version: live?.version ?? version })
+                      : t('backOnline', { daemon: daemon.name })}
                   </div>
                 </div>
               </>
@@ -214,12 +221,12 @@ export default function DaemonLifecycleModal({
         <div className="flex-1" />
         {opId ? (
           <Button variant={terminal ? 'primary' : 'ghost'} onClick={onClose}>
-            {terminal ? 'Done' : 'Close'}
+            {terminal ? t('done') : t('close')}
           </Button>
         ) : (
           <>
             <Button variant="ghost" onClick={onClose}>
-              Cancel
+              {t('cancel')}
             </Button>
             <Button
               variant="primary"
@@ -227,7 +234,7 @@ export default function DaemonLifecycleModal({
               className={busy || noTargets || (isUpgrade && !version) ? 'pointer-events-none opacity-50' : undefined}
             >
               <Icon name={icon} size={15} />
-              {busy ? 'Sending…' : isUpgrade ? 'Upgrade' : 'Restart'}
+              {busy ? t('sending') : isUpgrade ? t('upgrade') : t('restart')}
             </Button>
           </>
         )}

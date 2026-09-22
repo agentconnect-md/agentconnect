@@ -166,11 +166,11 @@ describe('buildReuseInput', () => {
 describe('affordances', () => {
   it('only slack and feishu offer a transport choice, with their own default rule', () => {
     expect(wizardOf('slack').affordances.transport).toEqual({
-      labels: { socket: 'Socket Mode', http: 'HTTP (Events API)' },
+      labels: { socket: 'Platforms.slack.transport.socket', http: 'Platforms.slack.transport.http' },
       httpByDefaultWhenRelayAvailable: true
     })
     expect(wizardOf('feishu').affordances.transport).toEqual({
-      labels: { socket: 'Long connection', http: 'HTTP callbacks' },
+      labels: { socket: 'Platforms.feishu.transport.socket', http: 'Platforms.feishu.transport.http' },
       httpByDefaultWhenRelayAvailable: false
     })
     // A SINGLE FIXED transport is the absent member, not a one-armed choice:
@@ -195,39 +195,49 @@ describe('region-parameterised copy', () => {
   it('feishu rebrands its mode cards and invite hint per cloud', () => {
     const feishu = wizardOf('feishu')
     expect(feishu.identityCards('lark')).toEqual({
-      create: 'Create with one-click Lark setup',
-      existing: 'An unused Lark bot'
+      create: 'Integrations.dialog.identityCards.feishuLark.create',
+      existing: 'Integrations.dialog.identityCards.feishuLark.existing'
     })
     expect(feishu.identityCards('feishu')).toEqual({
-      create: 'Create with one-click Feishu setup',
-      existing: 'An unused Feishu bot'
+      create: 'Integrations.dialog.identityCards.feishuFeishu.create',
+      existing: 'Integrations.dialog.identityCards.feishuFeishu.existing'
     })
-    expect(feishu.inviteHint('lark')).toBe('invite the bot to any group in Lark and @-mention it to start.')
-    expect(feishu.inviteHint('feishu')).toBe('invite the bot to any group in Feishu and @-mention it to start.')
+    expect(feishu.inviteHint('lark')).toEqual({
+      key: 'Integrations.dialog.platformHints.mention',
+      values: { target: 'group', platform: 'Lark' }
+    })
+    expect(feishu.inviteHint('feishu')).toEqual({
+      key: 'Integrations.dialog.platformHints.mention',
+      values: { target: 'group', platform: 'Feishu' }
+    })
   })
 
   it('the regionless platforms ignore the region argument', () => {
-    expect(wizardOf('slack').inviteHint(undefined)).toBe(
-      'invite the bot to any channel in Slack and it starts listening there.'
-    )
-    expect(wizardOf('telegram').inviteHint(undefined)).toBe(
-      'invite the bot to any group in Telegram and it starts listening there.'
-    )
-    expect(wizardOf('discord').inviteHint(undefined)).toBe(
-      'invite the bot to any channel in Discord and it starts listening there.'
-    )
+    expect(wizardOf('slack').inviteHint(undefined)).toEqual({
+      key: 'Integrations.dialog.platformHints.listen',
+      values: { target: 'channel', platform: 'Slack' }
+    })
+    expect(wizardOf('telegram').inviteHint(undefined)).toEqual({
+      key: 'Integrations.dialog.platformHints.listen',
+      values: { target: 'group', platform: 'Telegram' }
+    })
+    expect(wizardOf('discord').inviteHint(undefined)).toEqual({
+      key: 'Integrations.dialog.platformHints.listen',
+      values: { target: 'channel', platform: 'Discord' }
+    })
     expect(wizardOf('slack').identityCards(undefined)).toEqual({
-      create: 'Create with a Slack manifest',
-      existing: 'An unused Slack app'
+      create: 'Integrations.dialog.identityCards.slack.create',
+      existing: 'Integrations.dialog.identityCards.slack.existing'
     })
     // Linear's mode cards name a workspace, not a bot: create CONNECTS one and
     // existing joins one the org already holds.
     expect(wizardOf('linear').identityCards(undefined)).toEqual({
-      create: 'Connect a Linear workspace',
-      existing: 'A connected Linear workspace'
+      create: 'Integrations.dialog.identityCards.linear.create',
+      existing: 'Integrations.dialog.identityCards.linear.existing'
     })
-    expect(wizardOf('linear').inviteHint(undefined)).toBe(
-      'delegate an issue to the app in Linear, or mention it to reach one agent by name.'
-    )
+    expect(wizardOf('linear').inviteHint(undefined)).toEqual({
+      key: 'Integrations.dialog.platformHints.mention',
+      values: { target: 'issue', platform: 'Linear' }
+    })
   })
 })

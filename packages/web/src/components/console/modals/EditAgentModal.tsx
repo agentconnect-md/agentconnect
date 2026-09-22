@@ -625,8 +625,8 @@ export default function EditAgentModal({
       if (initialDaemonId.current && sourceDaemon && !moveReady(sourceDaemon) && !forceMove) {
         setErr(
           sourceDaemon.status === 'offline'
-            ? `To move safely, bring ${sourceDaemon.name} online, then retry.`
-            : `Upgrade ${sourceDaemon.name} before moving this agent.`
+            ? t('edit.bringOnlineRetry', { daemon: sourceDaemon.name })
+            : t('edit.upgradeBeforeMove', { daemon: sourceDaemon.name })
         )
         return
       }
@@ -636,10 +636,10 @@ export default function EditAgentModal({
       if (!targetReady) {
         setErr(
           daemonId === POOL_PLACEMENT
-            ? `${poolLabel()} has no online member right now; try again shortly.`
+            ? t('edit.noOnlinePool', { pool: poolLabel() })
             : selectedGroup
-              ? `No daemon in ${selectedGroup.name} is serving right now; try again shortly.`
-              : 'Choose an online daemon that supports agent moves.'
+              ? t('edit.noOnlineGroup', { group: selectedGroup.name })
+              : t('edit.chooseOnlineDaemon')
         )
         return
       }
@@ -648,12 +648,15 @@ export default function EditAgentModal({
       // advertises profiles cannot advertise the empty one, and "does not
       // advertise the — runtime" is not the problem to report.
       if (initialPlacement && !runtime.trim()) {
-        setErr('Choose a runtime before placing this agent on a daemon.')
+        setErr(t('edit.chooseRuntime'))
         return
       }
       if (runtimeUnavailable) {
         setErr(
-          `${daemon?.name ?? poolLabel()} does not advertise the ${runtimeLabel(runtime, runtimeMeta?.name)} runtime.`
+          t('edit.runtimeUnavailable', {
+            daemon: daemon?.name ?? poolLabel(),
+            runtime: runtimeLabel(runtime, runtimeMeta?.name)
+          })
         )
         return
       }
@@ -661,16 +664,16 @@ export default function EditAgentModal({
         // Reachable only when the target DOES advertise models (see
         // `modelUnavailable`), so the picker always has a real id to point at —
         // never a synthesized "Default" the runtime does not offer.
-        setErr(`${daemon?.name ?? poolLabel()} does not advertise model “${selectedModel}”. Choose one of its models.`)
+        setErr(t('edit.modelUnavailable', { daemon: daemon?.name ?? poolLabel(), model: selectedModel }))
         return
       }
     }
     if (repairPlacement && !daemonId) {
-      setErr('This agent has no current daemon to repair.')
+      setErr(t('edit.noCurrentDaemon'))
       return
     }
     if (repairPlacement && daemon && !moveReady(daemon)) {
-      setErr('The current daemon must be online and upgraded before this agent can be repaired.')
+      setErr(t('edit.currentDaemonNotReady'))
       return
     }
     setSaving(true)
@@ -857,26 +860,16 @@ export default function EditAgentModal({
                         </div>
                         <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-secondary)">
                           {forceMove ? (
-                            <>
-                              <span className="font-semibold text-(--text-primary)">{sourceDaemon.name}</span> is
-                              offline, so this move force reassigns; if it is still running, both copies may process
-                              messages.
-                            </>
+                            <>{t('edit.sourceForceOffline', { daemon: sourceDaemon.name })}</>
                           ) : sourceOffline ? (
-                            <>
-                              Bring <span className="font-semibold text-(--text-primary)">{sourceDaemon.name}</span>{' '}
-                              online, then retry.
-                            </>
+                            <>{t('edit.bringOnline', { daemon: sourceDaemon.name })}</>
                           ) : (
-                            <>
-                              Upgrade <span className="font-semibold text-(--text-primary)">{sourceDaemon.name}</span>{' '}
-                              before moving this agent.
-                            </>
+                            <>{t('edit.upgradeBeforeMove', { daemon: sourceDaemon.name })}</>
                           )}
                         </div>
                         {sourceOffline && !daemonChanged && (
                           <div className="mt-[5px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                            Select an online destination to force reassign this agent there.
+                            {t('edit.selectOnlineDestination')}
                           </div>
                         )}
                       </div>
@@ -1075,36 +1068,26 @@ export default function EditAgentModal({
                 <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
                 {initialPlacement ? (
                   <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                    Places the agent on{' '}
-                    <span className="font-semibold text-(--text-primary)">{daemon?.name ?? 'the selected daemon'}</span>{' '}
-                    from its saved settings; nothing is copied.
+                    {t('edit.initialPlacementNotice', { daemon: daemon?.name ?? t('edit.selectedDaemon') })}
                   </span>
                 ) : daemonChanged && forceMove ? (
                   <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                    Skips confirmation from{' '}
-                    <span className="font-semibold text-(--text-primary)">
-                      {sourceDaemon?.name ?? 'the current daemon'}
-                    </span>{' '}
-                    and copies nothing — use only if that machine is permanently stopped.
+                    {t('edit.forceReassignNotice', { daemon: sourceDaemon?.name ?? t('edit.currentDaemon') })}
                   </span>
                 ) : daemonChanged ? (
                   <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                    Hard cutover: current turns on{' '}
-                    <span className="font-semibold text-(--text-primary)">
-                      {sourceDaemon?.name ?? 'the current daemon'}
-                    </span>{' '}
-                    are cancelled, and workspace, memory and history are not copied.
+                    {t('edit.hardCutoverNotice', { daemon: sourceDaemon?.name ?? t('edit.currentDaemon') })}
                   </span>
                 ) : (
                   <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                    Re-provisions the agent in place; current turns drain first.
+                    {t('edit.reprovisionNotice')}
                   </span>
                 )}
               </div>
             )}
             <div className="mt-[14px] flex items-center gap-2 rounded-md bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
               <Icon name="info" size={14} />
-              The agent name can&rsquo;t be changed.
+              {t('edit.agentNameImmutable')}
             </div>
             {err && (
               <div className="mt-[14px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[11px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)">
@@ -1128,22 +1111,22 @@ export default function EditAgentModal({
           <Icon name={forceMove ? 'triangle-alert' : 'check'} size={15} />
           {saving
             ? initialPlacement
-              ? 'Placing…'
+              ? t('edit.placing')
               : forceMove
-                ? 'Reassigning…'
+                ? t('edit.reassigning')
                 : daemonChanged
-                  ? 'Moving…'
+                  ? t('edit.moving')
                   : repairPlacement
-                    ? 'Repairing…'
-                    : 'Saving…'
+                    ? t('edit.repairing')
+                    : t('edit.saving')
             : initialPlacement
               ? t('edit.placeAgent')
               : forceMove
-                ? 'Force reassign'
+                ? t('edit.forceReassign')
                 : daemonChanged
-                  ? 'Move agent'
+                  ? t('edit.moveAgent')
                   : repairPlacement
-                    ? 'Repair agent'
+                    ? t('edit.repairAgent')
                     : t('edit.saveChanges')}
         </Button>
       </div>

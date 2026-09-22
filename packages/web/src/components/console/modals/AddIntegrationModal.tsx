@@ -273,9 +273,10 @@ function FamilyCards<F extends string, M extends string>({
   titleOf: (mode: M, fam: F) => string
   bodyExtra?: (fam: F) => ReactNode
 }) {
+  const t = useTranslations('Integrations.dialog')
   return (
     <>
-      <div className="fldlbl mb-2">Listen for</div>
+      <div className="fldlbl mb-2">{t('listenFor')}</div>
       <div className="mb-4 flex flex-col gap-[9px]">
         {families.map((row) => {
           const taken = takenOf(row.fam)
@@ -311,7 +312,7 @@ function FamilyCards<F extends string, M extends string>({
                 </span>
                 {taken && (
                   <span className="flex-none font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                    already watched
+                    {t('alreadyWatched')}
                   </span>
                 )}
                 <span
@@ -325,14 +326,14 @@ function FamilyCards<F extends string, M extends string>({
               {on && (
                 <div className="flex flex-col gap-3 border-t border-(--brand) bg-(--surface-card) px-3 py-3">
                   <div>
-                    <div className="fldlbl mb-2">Trigger when</div>
+                    <div className="fldlbl mb-2">{t('triggerWhen')}</div>
                     <div
                       // One column per tile: a two-cadence subject must not leave a hole in a 3-up grid.
                       className={`grid grid-cols-1 gap-2 ${
                         tilesOf(row.fam).length === 2 ? 'desktop:grid-cols-2' : 'desktop:grid-cols-3'
                       }`}
                       role="group"
-                      aria-label={`Trigger for ${row.pill}`}
+                      aria-label={t('triggerFor', { subject: row.pill })}
                     >
                       {tilesOf(row.fam).map((tile) => {
                         const picked = tile.mode === active
@@ -454,6 +455,9 @@ export default function AddIntegrationModal({
   onClose: () => void
 }) {
   const t = useTranslations('Integrations.dialog')
+  // The platform-module hints name their key in full (`Integrations.dialog.platformHints.*`),
+  // so they resolve through an unscoped translator rather than the one above.
+  const hintsT = useTranslations()
   const {
     createIntegration,
     bots,
@@ -1508,7 +1512,7 @@ export default function AddIntegrationModal({
               </select>
               {hookSessionMode === 'perSubject' && (
                 <div className="mt-1.5 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                  {t('sameSessionKeyPrefix')} <span className="mono">X-AC-Session-Key</span> {t('sameSessionKeySuffix')}
+                  {t('sameSessionKey', { header: 'X-AC-Session-Key' })}
                 </div>
               )}
             </div>
@@ -1525,9 +1529,7 @@ export default function AddIntegrationModal({
             </label>
             <div className="mt-3 flex items-start gap-2 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
               <Icon name="info" size={13} className="mt-[1px] flex-none" />
-              <span>
-                {t('postJsonPrefix')} <span className="mono">message</span> {t('postJsonSuffix')}
-              </span>
+              <span>{t('postJson', { field: 'message' })}</span>
             </div>
           </div>
         )}
@@ -1536,7 +1538,7 @@ export default function AddIntegrationModal({
             <div className="fldlbl mb-2">{t('inboundEndpoint')}</div>
             <div className="flex items-center gap-2 rounded-[9px] border border-(--border-default) bg-(--surface-card) py-[6px] pr-[6px] pl-3">
               <span className="mono flex-none rounded bg-(--surface-active) px-[7px] py-[2px] text-[11px] font-semibold text-(--text-secondary)">
-                POST
+                {t('methodPost')}
               </span>
               <span className="mono min-w-0 flex-1 truncate text-[12.5px]">{createdHook.url ?? '—'}</span>
               <button
@@ -1548,7 +1550,7 @@ export default function AddIntegrationModal({
               </button>
             </div>
             <div className="mt-2 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-              {t('postJsonPrefix')} <span className="mono">message</span> {t('postJsonSuffix')}
+              {t('postJson', { field: 'message' })}
             </div>
             {createdHook.hmacSecret && (
               <div className="mt-[14px] border-t border-dashed border-(--border-default) pt-[13px]">
@@ -1567,8 +1569,8 @@ export default function AddIntegrationModal({
                   </button>
                 </div>
                 <div className="mt-2 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                  HMAC over the raw body, sent as <span className="mono">X-AC-Signature: sha256=&lt;hmac&gt;</span>.{' '}
-                  <span className="font-medium text-(--text-secondary)">Shown only once — copy it now.</span>
+                  {t('hmacDescription', { header: 'X-AC-Signature: sha256=&lt;hmac&gt;' })}{' '}
+                  <span className="font-medium text-(--text-secondary)">{t('shownOnlyOnce')}</span>
                 </div>
               </div>
             )}
@@ -1576,7 +1578,7 @@ export default function AddIntegrationModal({
               <div className="mt-[14px] border-t border-dashed border-(--border-default) pt-[13px]">
                 <div className="mb-2 flex items-center gap-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
                   <Icon name="terminal" size={14} className="flex-none" />
-                  Send a test delivery
+                  {t('sendTestDelivery')}
                 </div>
                 {(() => {
                   const body = hookTestBody(hookTestMessage)
@@ -1604,7 +1606,7 @@ export default function AddIntegrationModal({
                             className="mx-[2px] min-h-[20px] min-w-[18ch] flex-1 resize-none overflow-hidden rounded-xs border border-(--gray-800) bg-(--gray-900) px-[3px] py-0 font-mono text-[12px] leading-[1.65] text-[#cdd6e0] outline-none focus:border-(--brand)"
                             rows={1}
                             spellCheck={false}
-                            aria-label="Webhook test message"
+                            aria-label={t('webhookTestMessage')}
                             value={hookTestMessage}
                             onChange={(e) => setHookTestMessage(e.target.value)}
                           />
@@ -1615,7 +1617,7 @@ export default function AddIntegrationModal({
                         className={`absolute top-2 right-2 flex h-7 w-7 items-center justify-center rounded-md border border-white/15 bg-white/5 ${
                           canCopyCurl ? 'cursor-pointer' : 'cursor-default opacity-50'
                         }`}
-                        title="Copy command"
+                        title={t('copyCommand')}
                         disabled={!canCopyCurl}
                         onClick={() => canCopyCurl && void copyHookField('curl', curl)}
                       >
@@ -1625,7 +1627,7 @@ export default function AddIntegrationModal({
                   )
                 })()}
                 <div className="mt-2 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                  Run this to send a test delivery.
+                  {t('runTestDelivery')}
                 </div>
               </div>
             )}
@@ -1636,30 +1638,27 @@ export default function AddIntegrationModal({
             {gh === null ? (
               <div className="mb-4 flex items-center gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
                 <Icon name="loader" size={15} className="flex-none animate-spin" />
-                Checking your GitHub setup…
+                {t('checkingGithubSetup')}
               </div>
             ) : !gh.enabled ? (
               <div className="mb-4 flex items-start gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
                 <Icon name="info" size={15} className="mt-[1px] flex-none" />
-                <span>
-                  The GitHub App isn&rsquo;t configured on this deployment — set the{' '}
-                  <span className="mono">GITHUB_APP_*</span> control-plane env to enable repository subscriptions.
-                </span>
+                <span>{t('githubNotConfigured')}</span>
               </div>
             ) : gh.installations.length === 0 ? (
               <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
                 <div className="font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)">
-                  Connect GitHub to watch repos
+                  {t('connectGithubTitle')}
                 </div>
                 <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                  Install the GitHub App to subscribe to repository events.
+                  {t('connectGithubDescription')}
                 </div>
                 <div className="mt-3 flex flex-wrap items-center gap-3">
                   <Button size="sm" onClick={() => void openGhInstall()}>
                     <span className="flex h-4 w-4 items-center justify-center">
                       <GithubMark color="#fff" />
                     </span>
-                    Install GitHub app
+                    {t('workspaceFields.installGithubApp')}
                   </Button>
                   <button
                     type="button"
@@ -1671,10 +1670,10 @@ export default function AddIntegrationModal({
                       size={13}
                       className={ghSyncing ? 'animate-spin' : undefined}
                     />
-                    I&rsquo;ve installed it — sync
+                    {t('workspaceFields.installedSync')}
                   </button>
                   <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                    Opens github.com in a new tab
+                    {t('workspaceFields.opensGithub')}
                   </span>
                 </div>
               </div>
@@ -1789,20 +1788,18 @@ export default function AddIntegrationModal({
                               className="fsearch h-10 rounded-md px-3 font-sans text-[13px] font-medium leading-normal"
                               value={ghQ}
                               onChange={(e) => setGhQ(e.target.value)}
-                              placeholder="Search or type owner/repo…"
+                              placeholder={t('workspaceFields.searchOwnerRepo')}
                               autoFocus
                             />
                             {loading ? (
                               <div className="px-2 py-[7px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                                Loading repositories…
+                                {t('loadingRepositories')}
                               </div>
                             ) : (
                               <>
                                 {ghReposError === 'failed' && (
                                   <div className="flex items-center gap-2 px-2 py-[7px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
-                                    <span className="min-w-0 flex-1">
-                                      Couldn’t load repositories from GitHub — the list may be incomplete.
-                                    </span>
+                                    <span className="min-w-0 flex-1">{t('githubRepositoriesLoadError')}</span>
                                     <button
                                       type="button"
                                       className="lnk flex-none text-[12px]"
@@ -1814,7 +1811,7 @@ export default function AddIntegrationModal({
                                         setGhReposNonce((value) => value + 1)
                                       }}
                                     >
-                                      Retry
+                                      {t('workspaceFields.retry')}
                                     </button>
                                   </div>
                                 )}
@@ -1851,32 +1848,31 @@ export default function AddIntegrationModal({
                                         </span>
                                         <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                                           {watched
-                                            ? 'Already watched by this agent'
+                                            ? t('alreadyWatchedByAgent')
                                             : isWorkspace
-                                              ? 'The agent’s workspace repository'
+                                              ? t('agentWorkspaceRepository')
                                               : authTier
-                                                ? (repo.description ?? 'Authorized for this agent')
+                                                ? (repo.description ?? t('authorizedForAgent'))
                                                 : blockedNoEdit
-                                                  ? 'Ask an editor to authorize this repository'
-                                                  : (repo.description ??
-                                                    'Not yet authorized — review settings will request access')}
+                                                  ? t('askEditorToAuthorize')
+                                                  : (repo.description ?? t('notAuthorizedReviewAccess'))}
                                         </span>
                                       </span>
                                       {watched ? (
                                         <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
-                                          added
+                                          {t('added')}
                                         </span>
                                       ) : (
                                         <>
                                           {isWorkspace ? (
                                             <span className="badge flex-none bg-(--surface-app) text-(--text-tertiary)">
-                                              workspace
+                                              {t('workspaceFields.workspace')}
                                             </span>
                                           ) : authTier ? (
                                             <span className={REPOSITORY_ACCESS_BADGE[authTier]}>{authTier}</span>
                                           ) : blockedNoEdit ? null : (
                                             <span className="badge flex-none bg-(--surface-app) text-(--brand-soft-text)">
-                                              authorize
+                                              {t('authorize')}
                                             </span>
                                           )}
                                           {ghRepoPick === repo.fullName && (
@@ -1888,7 +1884,7 @@ export default function AddIntegrationModal({
                                   )
                                 })}
                                 {typedRepo && !typedInList && typedWatched && (
-                                  <div className="fnohit">This agent already watches {typedRepo}</div>
+                                  <div className="fnohit">{t('agentAlreadyWatches', { repo: typedRepo })}</div>
                                 )}
                                 {typedRepo && !typedInList && !typedWatched && (typedWorkspace || typedAuthorized) && (
                                   <button
@@ -1910,9 +1906,7 @@ export default function AddIntegrationModal({
                                         {typedRepo}
                                       </span>
                                       <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                                        {typedWorkspace
-                                          ? 'The agent’s workspace repository'
-                                          : 'Authorized for this agent'}
+                                        {typedWorkspace ? t('agentWorkspaceRepository') : t('authorizedForAgent')}
                                       </span>
                                     </span>
                                   </button>
@@ -1924,7 +1918,7 @@ export default function AddIntegrationModal({
                                   !typedAuthorized &&
                                   ghExactRepoLoading && (
                                     <div className="px-2 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                                      Checking GitHub repository…
+                                      {t('checkingGithubRepository')}
                                     </div>
                                   )}
                                 {typedRepo &&
@@ -1940,7 +1934,7 @@ export default function AddIntegrationModal({
                                           {typedRepo}
                                         </span>
                                         <span className="block w-full min-w-0 font-sans text-[12px] font-normal leading-[1.4] text-(--text-tertiary)">
-                                          Not in the list — authorize it for this agent to watch it.
+                                          {t('notInListAuthorize')}
                                         </span>
                                       </span>
                                       {canEditAgent && canAuthorizeAdditionalRepos && (
@@ -1955,7 +1949,7 @@ export default function AddIntegrationModal({
                                             setGhRepoOpen(false)
                                           }}
                                         >
-                                          Authorize…
+                                          {t('authorizeEllipsis')}
                                         </button>
                                       )}
                                     </div>
@@ -1963,10 +1957,10 @@ export default function AddIntegrationModal({
                                 {repoRows.length === 0 && !typedRepo && !ghReposError && (
                                   <div className="px-2 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
                                     {!canAuthorizeAdditionalRepos
-                                      ? `No watchable repositories match “${ghQ}”`
+                                      ? t('noWatchableRepositories', { query: ghQ })
                                       : (ghRepos ?? []).length === 0
-                                        ? 'No repositories are visible to the GitHub App — install it on the accounts you want to watch.'
-                                        : `No repositories match “${ghQ}”`}
+                                        ? t('noGithubRepositoriesVisible')
+                                        : t('noRepositoriesMatch', { query: ghQ })}
                                   </div>
                                 )}
                               </>
@@ -1976,11 +1970,11 @@ export default function AddIntegrationModal({
                       )}
                       <div className="font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
                         {isGithubAppWs
-                          ? 'Lists every repository the GitHub App can see.'
+                          ? t('githubAppRepositoryList')
                           : agent.workspace.mode === 'scratch'
-                            ? 'This scratch workspace can access explicitly authorized GitHub repositories.'
-                            : 'This manual workspace can authorize its repository for review and Check effects.'}{' '}
-                        Review settings request write access to post formal reviews and Checks.
+                            ? t('scratchGithubAccess')
+                            : t('manualGithubAccess')}{' '}
+                        {t('reviewSettingsAccess')}
                       </div>
                     </div>
                   )
@@ -2048,7 +2042,7 @@ export default function AddIntegrationModal({
           <>
             {gt.error ? (
               <div className="mb-4 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
-                Couldn&rsquo;t load your Gitea repositories — {gt.error}
+                {t('giteaLoadError', { error: gt.error })}
               </div>
             ) : gt.loading ? (
               <LoadingState size={20} padding={16} />
@@ -2091,7 +2085,7 @@ export default function AddIntegrationModal({
                         onSelect={() => pickGtRepository(choice)}
                       />
                     ))}
-                    {gtMatches.length === 0 && <div className="fnohit">No repositories match &ldquo;{gtQ}&rdquo;</div>}
+                    {gtMatches.length === 0 && <div className="fnohit">{t('noRepositoriesMatch', { query: gtQ })}</div>}
                   </GiteaRepositoryField>
                 </div>
 
@@ -2099,9 +2093,10 @@ export default function AddIntegrationModal({
                   <div className="mb-4 flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
                     <Icon name="shield-alert" size={14} className="mt-[1px] flex-none" />
                     <span>
-                      <span className="mono">{agentLabel(agent)}</span>&#32;is not authorized for{' '}
-                      <span className="mono">{gtPicked?.repoPath ?? 'this repository'}</span>. Authorize the repository
-                      on the agent&rsquo;s Workspace tab, or make it the agent&rsquo;s workspace repository, first.
+                      {t('giteaNotAuthorized', {
+                        agent: agentLabel(agent),
+                        repo: gtPicked?.repoPath ?? t('thisRepository')
+                      })}
                     </span>
                   </div>
                 )}
@@ -2158,7 +2153,7 @@ export default function AddIntegrationModal({
           <>
             {gl.error ? (
               <div className="mb-4 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
-                Couldn&rsquo;t load your GitLab projects — {gl.error}
+                {t('gitlabLoadError', { error: gl.error })}
               </div>
             ) : gl.loading ? (
               <LoadingState size={20} padding={16} />
@@ -2204,19 +2199,14 @@ export default function AddIntegrationModal({
                         onSelect={() => void pickGlProject(choice)}
                       />
                     ))}
-                    {glMatches.length === 0 && <div className="fnohit">No projects match &ldquo;{glQ}&rdquo;</div>}
+                    {glMatches.length === 0 && <div className="fnohit">{t('noProjectsMatch', { query: glQ })}</div>}
                   </GitlabProjectField>
                 </div>
                 {/* §8.3 — stated where the pick is, not only inside the closed dropdown. */}
                 {!glProjectAuthorized && (
                   <div className="mb-4 flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
                     <Icon name="shield-alert" size={14} className="mt-[1px] flex-none" />
-                    <span>
-                      This agent isn&rsquo;t authorized for{' '}
-                      <span className="mono">{glPicked?.projectPath ?? 'this project'}</span>. Authorize the project on
-                      the agent&rsquo;s Workspace tab, or make it the agent&rsquo;s workspace project, then create the
-                      trigger.
-                    </span>
+                    <span>{t('gitlabNotAuthorized', { project: glPicked?.projectPath ?? t('thisProject') })}</span>
                   </div>
                 )}
                 <FamilyCards
@@ -2294,13 +2284,13 @@ export default function AddIntegrationModal({
                   key: 'create' as const,
                   icon: 'key-round',
                   title: t('createNewBot'),
-                  desc: wizard.identityCards(region).create
+                  desc: hintsT(wizard.identityCards(region).create)
                 },
                 {
                   key: 'existing' as const,
                   icon: 'bot',
                   title: t('useExistingBot'),
-                  desc: wizard.identityCards(region).existing
+                  desc: hintsT(wizard.identityCards(region).existing)
                 }
               ] as const
             ).map((t) => {
@@ -2395,7 +2385,10 @@ export default function AddIntegrationModal({
               ? 'Each POST starts a session; retries are de-duplicated by the X-AC-Delivery-Key header.'
               : isCodeHostProvider(platform)
                 ? CODE_HOST_SUBSCRIPTION_HINT[platform]
-                : wizard?.inviteHint(region)}
+                : (() => {
+                    const hint = wizard?.inviteHint(region)
+                    return hint ? hintsT(hint.key, hint.values) : null
+                  })()}
           </span>
         </div>
         {shareToggleAvailable && !identityHidden && (
@@ -2466,6 +2459,7 @@ export default function AddIntegrationModal({
  *  `.inp` trigger showing the current choice, an `.fmenu` listbox of the roster.
  *  Only rendered when the dialog was opened without an agent. */
 function AgentPicker({ agents, value, onPick }: { agents: Agent[]; value: string; onPick: (id: string) => void }) {
+  const t = useTranslations('Integrations.dialog')
   const [open, setOpen] = useState(false)
   const [activeIndex, setActiveIndex] = useState(0)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -2523,7 +2517,7 @@ function AgentPicker({ agents, value, onPick }: { agents: Agent[]; value: string
             ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)'
             : 'hover:border-(--border-strong) hover:bg-(--surface-hover) focus-visible:border-(--border-focus) focus-visible:ring-[3px] focus-visible:ring-(--brand-ring)'
         }`}
-        aria-label="Agent"
+        aria-label={t('agent')}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
@@ -2559,7 +2553,7 @@ function AgentPicker({ agents, value, onPick }: { agents: Agent[]; value: string
             id={listboxId}
             role="listbox"
             tabIndex={-1}
-            aria-label="Agent"
+            aria-label={t('agent')}
             aria-activedescendant={`${listboxId}-option-${activeIndex}`}
             className="fmenu left-0 z-40 max-h-[260px] w-full overflow-y-auto rounded-lg p-2 shadow-(--shadow-xl) outline-none"
             onKeyDown={onListKeyDown}

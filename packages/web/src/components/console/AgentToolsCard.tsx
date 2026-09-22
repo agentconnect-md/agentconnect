@@ -201,20 +201,18 @@ export function AgentToolsCard({
                     </span>
                   }
                   onRemove={canEdit && !saving ? () => void attach(name, false) : undefined}
-                  removeTitle="Remove from this agent"
+                  removeTitle={t('removeFromAgent')}
                 />
               )
             })}
           </div>
           <AttachedNote>
-            Served by the {runtime} runtime
-            {daemon ? (
-              <>
-                {' '}
-                on <span className="mono text-[11.5px]">{daemon.name}</span>
-              </>
-            ) : null}
-            . Removing a server hides its tools from this agent.
+            {daemon
+              ? t.rich('servedByRuntimeOnDaemon', {
+                  runtime,
+                  daemon: () => <span className="mono text-[11.5px]">{daemon.name}</span>
+                })
+              : t('servedByRuntime', { runtime })}
           </AttachedNote>
         </>
       ) : (
@@ -222,13 +220,7 @@ export function AgentToolsCard({
           // `enabled` null ⇒ the saved allow-list is still in flight; claiming
           // "no servers" then would be a guess, not a fact.
           title={enabled === null ? t('loading') : t('noMcpServers')}
-          hint={
-            enabled === null
-              ? 'Reading the servers this agent attaches.'
-              : canEdit
-                ? t('attachMcpHint')
-                : 'This agent has no MCP servers attached.'
-          }
+          hint={enabled === null ? t('readingAttachedServers') : canEdit ? t('attachMcpHint') : t('noAttachedServers')}
           action={enabled === null ? undefined : menu}
         />
       )}

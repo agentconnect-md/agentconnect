@@ -4,6 +4,7 @@
 // Every refusal here is DATA the reader can act on — nothing staged, a blank message, no registered commit identity, a diverged branch, a runtime that declines to write a message. The box reports them in place and keeps the draft, because a message a reader wrote (or paid a model for) must survive the answer.
 
 import { useSyncExternalStore } from 'react'
+import { useTranslations } from 'next-intl'
 import { Spinner } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { gitWriteFailureText, gitWriteRequestFailureText } from '@/components/console/dock/git-write'
@@ -107,6 +108,7 @@ export function CommitBox({
   /** A commit or a push landed: the caller's status, log and tree reads are all stale now. Not called for a draft, which writes nothing. */
   onWrote: () => void
 }) {
+  const t = useTranslations('Sessions.detail.commitBox')
   // The draft lives ONLY in the module store, read here through `useSyncExternalStore`. It is per
   // checkout because a draft belongs to one, and it must never follow the reader into another agent's
   // workspace; and it outlives this component because the panel above unmounts the box while a newly
@@ -218,8 +220,8 @@ export function CommitBox({
           maxLength={MAX_MESSAGE}
           onChange={(event) => setMessage(event.target.value)}
           disabled={busy === 'commit' || busy === 'push'}
-          aria-label="Commit message"
-          placeholder={nothingStaged ? 'Stage a file to commit it' : 'Commit message'}
+          aria-label={t('commitMessage')}
+          placeholder={nothingStaged ? t('stageFileFirst') : t('commitMessage')}
           className="min-h-16 w-full resize-y rounded-md border border-(--border-subtle) bg-(--surface-sunken) py-2 pr-9 pl-[10px] font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-primary) outline-none focus:border-(--border-strong)"
         />
         {/* The wand rides the field's own corner, as the design draws it: it fills THIS box, and a button in the row below would read as a third commit action. */}
@@ -228,12 +230,8 @@ export function CommitBox({
           data-commit-draft=""
           className="iconbtn absolute top-[5px] right-[5px] h-[26px] w-[26px] disabled:pointer-events-none disabled:opacity-50"
           disabled={busy !== null || nothingStaged}
-          aria-label="Generate a commit message from the staged diff"
-          title={
-            nothingStaged
-              ? 'Stage something first — the message is written from the staged diff'
-              : 'Generate a commit message from the staged diff (runs on the agent’s own runtime and spends its tokens)'
-          }
+          aria-label={t('generateMessage')}
+          title={nothingStaged ? t('stageSomethingFirst') : t('generateMessageTitle')}
           onClick={() => void draft()}
         >
           {busy === 'draft' ? <Spinner size={13} /> : <Icon name="wand-sparkles" size={14} />}
@@ -245,7 +243,7 @@ export function CommitBox({
           data-commit-drafting=""
           className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)"
         >
-          Generating from staged diff…
+          {t('generating')}
         </div>
       ) : null}
       <div className="flex items-center gap-2">
@@ -254,13 +252,7 @@ export function CommitBox({
           data-commit-submit=""
           className="dsbtn dsbtn-primary sm min-w-0 flex-1 disabled:pointer-events-none disabled:opacity-50"
           disabled={busy !== null || nothingStaged || blank}
-          title={
-            nothingStaged
-              ? 'Nothing is staged'
-              : blank
-                ? 'Write a commit message first'
-                : 'Commit the staged changes on the agent’s machine'
-          }
+          title={nothingStaged ? t('nothingStaged') : blank ? t('writeMessageFirst') : t('commitChanges')}
           onClick={() => void commit(false)}
         >
           {busy === 'commit' ? <Spinner size={13} /> : <Icon name="git-commit-horizontal" size={14} />}
@@ -273,12 +265,12 @@ export function CommitBox({
             data-commit-push=""
             className="dsbtn dsbtn-secondary sm flex-none disabled:pointer-events-none disabled:opacity-50"
             disabled={busy !== null || nothingStaged || blank}
-            aria-label="Commit and push"
-            title="Commit, then push the branch to the remote the daemon authorizes"
+            aria-label={t('commitAndPush')}
+            title={t('commitAndPushTitle')}
             onClick={() => void commit(true)}
           >
             {busy === 'push' ? <Spinner size={13} /> : <Icon name="arrow-up-from-line" size={14} />}
-            <span>Push</span>
+            <span>{t('push')}</span>
           </button>
         )}
       </div>
@@ -294,10 +286,10 @@ export function CommitBox({
       <div
         data-commit-identity=""
         className="flex items-center gap-[5px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)"
-        title="Console commits are attributed to the git identity the owning daemon registered at handshake, so a commit made here reads as the agent’s work — not as yours."
+        title={t('identityTitle')}
       >
         <Icon name="id-card" size={12} color="var(--text-tertiary)" className="flex-none" />
-        <span className="truncate">Commits as the agent’s registered identity, not as you</span>
+        <span className="truncate">{t('identityLabel')}</span>
       </div>
       {outcome ? (
         <div

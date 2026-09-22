@@ -5,9 +5,11 @@
 // Delete action (the CP refuses the delete regardless).
 export function BuiltinBadge({ show }: { show: boolean }) {
   if (!show) return null
+  const t = useTranslations('Common.builtinBadge')
   return (
-    <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)" title="Built-in agent">
-      builtin
+    <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)" title={t('title')}>
+      {t('label')}
     </span>
   )
 }
+import { useTranslations } from 'next-intl'

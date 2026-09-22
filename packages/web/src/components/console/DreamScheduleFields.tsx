@@ -16,6 +16,7 @@
 //     schedule read from Berlin advertises a fire time that never happens.
 
 import { useState } from 'react'
+import { useTranslations } from 'next-intl'
 import {
   buildCron,
   cronHuman,
@@ -63,6 +64,7 @@ export function DreamScheduleFields({
   onChange: (schedule: string, timezone: string) => void
   disabled: boolean
 }) {
+  const t = useTranslations('Agents.detail.dreamSchedule')
   const enabled = value.trim().length > 0
   const parsed = parseCron(value.trim() || '0 4 * * *')
   // Held separately so Custom is reachable from a preset (see the note above).
@@ -102,7 +104,7 @@ export function DreamScheduleFields({
             onChange(enabled ? '' : '0 4 * * *', enabled ? '' : browserZone())
           }}
         />
-        Run on a schedule (otherwise dreams only run when you trigger them)
+        {t('runOnSchedule')}
       </label>
 
       {enabled ? (
@@ -111,13 +113,13 @@ export function DreamScheduleFields({
             <select
               value={mode}
               disabled={disabled}
-              aria-label="Schedule frequency"
+              aria-label={t('frequency')}
               onChange={(e) => emit(e.target.value as CronMode, parsed.hour, parsed.minute, parsed.weekday)}
               className={FIELD}
             >
               {MODES.map((m) => (
                 <option key={m.value} value={m.value}>
-                  {m.label}
+                  {t(`modes.${m.value}`)}
                 </option>
               ))}
             </select>
@@ -126,13 +128,13 @@ export function DreamScheduleFields({
               <select
                 value={parsed.weekday}
                 disabled={disabled}
-                aria-label="Day of week"
+                aria-label={t('dayOfWeek')}
                 onChange={(e) => emit('weekly', parsed.hour, parsed.minute, Number(e.target.value))}
                 className={FIELD}
               >
                 {WEEKDAYS.map((day, i) => (
                   <option key={day} value={i}>
-                    {day}
+                    {t(`weekdays.${i}`)}
                   </option>
                 ))}
               </select>
@@ -143,7 +145,7 @@ export function DreamScheduleFields({
                 type="time"
                 value={`${String(parsed.hour).padStart(2, '0')}:${String(parsed.minute).padStart(2, '0')}`}
                 disabled={disabled}
-                aria-label="Time of day"
+                aria-label={t('timeOfDay')}
                 onChange={(e) => {
                   const [h, m] = e.target.value.split(':').map(Number)
                   emit(mode as Exclude<CronMode, 'custom'>, h ?? 4, m ?? 0, parsed.weekday)
@@ -159,7 +161,7 @@ export function DreamScheduleFields({
                 max={59}
                 value={parsed.minute}
                 disabled={disabled}
-                aria-label="Minute past the hour"
+                aria-label={t('minutePastHour')}
                 onChange={(e) => emit('hourly', parsed.hour, Number(e.target.value), parsed.weekday)}
                 className={`${FIELD} w-[72px]`}
               />
@@ -171,7 +173,7 @@ export function DreamScheduleFields({
               type="text"
               value={value}
               disabled={disabled}
-              aria-label="Cron expression"
+              aria-label={t('cronExpression')}
               placeholder="0 4 * * *"
               onChange={(e) => onChange(e.target.value, timezone)}
               className={`${FIELD} font-mono`}
@@ -179,13 +181,13 @@ export function DreamScheduleFields({
           ) : null}
 
           <label className="flex flex-col gap-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-            Timezone
+            {t('timezone')}
             <input
               type="text"
               value={timezone}
               disabled={disabled}
-              aria-label="Schedule timezone"
-              placeholder={`${browserZone()} (blank = the daemon host’s zone)`}
+              aria-label={t('scheduleTimezone')}
+              placeholder={t('timezonePlaceholder', { zone: browserZone() })}
               onChange={(e) => onChange(value, e.target.value)}
               className={`${FIELD} max-w-[280px]`}
             />
@@ -195,12 +197,12 @@ export function DreamScheduleFields({
               so nobody has to decode a cron string to know what they saved. */}
           <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
             {!human
-              ? 'That cron expression is not valid.'
+              ? t('invalidCron')
               : timezone && !zoneKnown
-                ? `${human} · “${timezone}” is not a known IANA timezone`
+                ? t('unknownTimezone', { human, timezone })
                 : zoneKnown
-                  ? `${human} · next ${next} (${timezone})`
-                  : `${human} · in the daemon host’s timezone`}
+                  ? t('nextRun', { human, next, timezone })
+                  : t('daemonTimezone', { human })}
           </span>
         </div>
       ) : null}

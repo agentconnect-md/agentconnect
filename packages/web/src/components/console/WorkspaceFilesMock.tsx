@@ -7,6 +7,7 @@
 // `workspace.files`; live agents stream the real working tree from the daemon.
 
 import { Fragment, useEffect, useMemo, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import dynamic from 'next/dynamic'
 import { flattenFiles, type WorkspaceFile } from '@/lib/data'
 import { indexWorkspaceFileTree, resolveWorkspaceMarkdownLink } from '@/components/console/workspace-links'
@@ -26,6 +27,7 @@ const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), 
 const keyOf = (prefix: string, f: WorkspaceFile) => (prefix ? `${prefix}/${f.name}` : f.name)
 
 export function WorkspaceFilesMock({ files }: { files: WorkspaceFile[] }) {
+  const t = useTranslations('Agents.workspaceFiles')
   // Default-select the project guide (CLAUDE.md / README.md) so the preview isn't
   // empty on entry; else the first file with content anywhere in the tree.
   const flat = useMemo(() => flattenFiles(files), [files])
@@ -143,13 +145,13 @@ function MockPreview({
                 className={mode === 'preview' ? 'pill on py-[3px]' : 'pill py-[3px]'}
                 onClick={() => setMode('preview')}
               >
-                Preview
+                {t('preview')}
               </button>
               <button
                 className={mode === 'code' ? 'pill on py-[3px]' : 'pill py-[3px]'}
                 onClick={() => setMode('code')}
               >
-                Code
+                {t('code')}
               </button>
             </span>
           ) : undefined
@@ -157,7 +159,7 @@ function MockPreview({
       />
       {!file.content ? (
         <div className="flex flex-1 items-center justify-center px-4 py-10 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          No preview for this item.
+          {t('noPreview')}
         </div>
       ) : isMd && mode === 'preview' ? (
         <div className="max-h-[420px] overflow-auto px-[18px] py-4">

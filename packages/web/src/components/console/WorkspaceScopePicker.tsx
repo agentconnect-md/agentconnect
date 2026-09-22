@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
+import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import type { Session } from '@/lib/data'
 import type { SessionIsolationLabel } from '@/lib/session-isolation'
@@ -59,6 +60,7 @@ export function WorkspaceScopePicker({
   onLoadMore: () => void
   orgPath: (path: string) => string
 }) {
+  const t = useTranslations('Agents.workspaceScope')
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -74,7 +76,7 @@ export function WorkspaceScopePicker({
       ? [selectedWorktree, ...worktrees]
       : worktrees
   const selectedIdentity = selectedSessionId ? worktreeIdentity(selectedWorktree, selectedSessionId) : undefined
-  const primaryBranchLabel = primaryBranch.trim() || 'HEAD'
+  const primaryBranchLabel = primaryBranch.trim() || t('defaultBranch')
   const canChooseCheckout = selectedSessionId !== null || menuWorktrees.length > 0 || hasMore
 
   useEffect(() => {
@@ -146,7 +148,7 @@ export function WorkspaceScopePicker({
               ref={triggerRef}
               type="button"
               className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 border-0 bg-transparent px-2 text-left text-(--text-primary) outline-none"
-              aria-label={`Workspace checkout: ${selectedIdentity?.fullTitle ?? primaryBranchLabel}`}
+              aria-label={t('workspaceCheckout', { name: selectedIdentity?.fullTitle ?? primaryBranchLabel })}
               aria-haspopup="menu"
               aria-expanded={open}
               aria-controls={open ? menuId : undefined}
@@ -193,11 +195,11 @@ export function WorkspaceScopePicker({
             <Link
               href={sessionHref(selectedSessionId)}
               className="mx-1 inline-flex h-5 flex-none items-center gap-1 rounded-sm border border-(--border-default) bg-(--surface-card) px-1.5 font-sans text-[11px] font-medium leading-normal text-(--text-secondary) no-underline hover:border-(--border-strong) hover:bg-(--surface-hover) hover:text-(--text-primary)"
-              title="Open this session"
+              title={t('openSession')}
               onClick={() => setOpen(false)}
             >
               <Icon name="messages-square" size={11} />
-              <span className="max-desktop:hidden">Session</span>
+              <span className="max-desktop:hidden">{t('session')}</span>
             </Link>
           ) : null}
 
@@ -205,11 +207,11 @@ export function WorkspaceScopePicker({
             <button
               type="button"
               className="flex h-full w-8 flex-none cursor-pointer items-center justify-center border-0 border-l border-(--border-subtle) bg-transparent text-(--text-tertiary) outline-none hover:bg-(--surface-hover) hover:text-(--text-primary)"
-              aria-label={open ? 'Close workspace checkout menu' : 'Open workspace checkout menu'}
+              aria-label={open ? t('closeMenu') : t('openMenu')}
               aria-haspopup="menu"
               aria-expanded={open}
               aria-controls={open ? menuId : undefined}
-              title={open ? 'Close checkout menu' : 'Choose checkout'}
+              title={open ? t('closeCheckoutMenu') : t('chooseCheckout')}
               onClick={() => setOpen((current) => !current)}
               onKeyDown={openFromKeyboard}
             >
@@ -225,7 +227,7 @@ export function WorkspaceScopePicker({
               ref={menuRef}
               id={menuId}
               role="menu"
-              aria-label="Workspace checkout"
+              aria-label={t('workspaceCheckoutMenu')}
               className="fmenu right-0 left-auto z-30 w-[min(max(120%,360px),calc(100vw-32px))] max-h-none min-w-0 overflow-hidden rounded-lg p-0 shadow-(--shadow-lg)"
               onKeyDown={moveChoiceFocus}
             >
@@ -298,22 +300,22 @@ export function WorkspaceScopePicker({
                         <Link
                           href={sessionHref(session.id)}
                           className="mr-3 inline-flex h-5 flex-none items-center gap-1 rounded-sm border border-(--border-default) bg-(--surface-card) px-1.5 font-sans text-[11px] font-medium leading-normal text-(--text-secondary) no-underline hover:border-(--border-strong) hover:bg-(--surface-hover) hover:text-(--text-primary)"
-                          title="Open this session"
+                          title={t('openSession')}
                           onClick={() => setOpen(false)}
                         >
                           <Icon name="messages-square" size={11} />
-                          <span className="max-desktop:hidden">Session</span>
+                          <span className="max-desktop:hidden">{t('session')}</span>
                         </Link>
                       </div>
                     )
                   })}
                   {loading && menuWorktrees.length === 0 ? (
                     <div className="px-4 py-5 text-center font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                      Loading {isolationLabel.checkouts}…
+                      {t('loading', { kind: isolationLabel.checkouts })}
                     </div>
                   ) : !hasMore && menuWorktrees.length === 0 ? (
                     <div className="px-4 py-5 text-center font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                      No {isolationLabel.checkouts} yet.
+                      {t('noneYet', { kind: isolationLabel.checkouts })}
                     </div>
                   ) : null}
                 </div>
@@ -322,8 +324,10 @@ export function WorkspaceScopePicker({
               {(menuWorktrees.length > 0 || hasMore) && (
                 <div className="flex min-h-10 items-center gap-3 border-t border-(--border-subtle) bg-(--surface-app) px-4 py-2">
                   <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                    Showing {menuWorktrees.length} recent{' '}
-                    {menuWorktrees.length === 1 ? isolationLabel.checkout : isolationLabel.checkouts}
+                    {t('showing', {
+                      count: menuWorktrees.length,
+                      kind: menuWorktrees.length === 1 ? isolationLabel.checkout : isolationLabel.checkouts
+                    })}
                   </span>
                   {hasMore ? (
                     <button
@@ -332,7 +336,7 @@ export function WorkspaceScopePicker({
                       disabled={loadingMore}
                       className="lnk ml-auto flex-none text-[12px] disabled:cursor-default disabled:opacity-50"
                     >
-                      {loadingMore ? 'Loading…' : 'Load older'}
+                      {loadingMore ? t('loadingMore') : t('loadOlder')}
                     </button>
                   ) : null}
                 </div>

@@ -364,9 +364,7 @@ export default function SessionsView() {
         </span>
         <span className={`truncate ${label}`}>
           <span aria-hidden="true">+{roster.length}</span>
-          <span className="sr-only">
-            {roster.length} agents: {rosterNames.join(', ')}
-          </span>
+          <span className="sr-only">{t('agentSummary', { count: roster.length, names: rosterNames.join(', ') })}</span>
         </span>
       </>
     )

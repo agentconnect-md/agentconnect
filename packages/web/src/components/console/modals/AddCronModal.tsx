@@ -251,7 +251,7 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
             <span className="fldlbl">{t('name')}</span>
             <input
               className="inp mn"
-              placeholder="weekly-deploy-report"
+              placeholder={t('namePlaceholder')}
               value={name}
               onChange={(e) => setName(e.target.value)}
               autoFocus
