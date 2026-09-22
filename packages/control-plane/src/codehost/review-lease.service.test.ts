@@ -490,6 +490,32 @@ describe('code-host review authorization (gitlab-com-integration.md §15)', () =
     }
   })
 
+  it('authorizes the verdict of a run the reaper orphaned, and still refuses one that finished (#2247)', async () => {
+    const withRun = (current: HookRunRecord) =>
+      build({
+        hook: {
+          getRun: async () => current,
+          getUnscoped: async () => hook(),
+          recordStart: async () => true
+        } as CodeHostReviewBrokerDeps['hook']
+      })
+    const reaped = new Date(2_000)
+    const orphaned = withRun(run({ status: 'failed', completedAt: reaped, orphanedAt: reaped }))
+    expect(await orphaned.service.authorize(authorizeInput(), DAEMON, ORG)).toMatchObject({ authorized: true })
+    // The rest of the fence still binds a late verdict.
+    await expect(orphaned.service.authorize(authorizeInput(), OTHER_DAEMON, ORG)).rejects.toBeInstanceOf(
+      CodeHostReviewBrokerError
+    )
+    const finished = withRun(run({ status: 'success', completedAt: reaped }))
+    await expect(finished.service.authorize(authorizeInput(), DAEMON, ORG)).rejects.toBeInstanceOf(
+      CodeHostReviewBrokerError
+    )
+    const failed = withRun(run({ status: 'failed', completedAt: reaped }))
+    await expect(failed.service.authorize(authorizeInput(), DAEMON, ORG)).rejects.toBeInstanceOf(
+      CodeHostReviewBrokerError
+    )
+  })
+
   it('fences the head of every run the start barrier crossed', async () => {
     const { service } = build({
       hook: {

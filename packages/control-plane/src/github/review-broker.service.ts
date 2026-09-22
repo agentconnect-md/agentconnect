@@ -98,9 +98,11 @@ function requireAcceptedRun(
   run: HookRunRecord | null,
   snapshot: HookConfigSnapshot,
   daemonId: DaemonId,
-  opts: { started: boolean }
+  opts: { started: boolean; acceptOrphaned?: boolean }
 ): HookRunRecord {
-  if (!run || run.status !== 'running' || !snapshotMatches(run, snapshot, daemonId)) {
+  // A review step may still act on a run only the reaper ended: the result replaces the timeout, as a late completion does (#2247).
+  const live = run?.status === 'running' || (opts.acceptOrphaned === true && run?.orphanedAt != null)
+  if (!run || !live || !snapshotMatches(run, snapshot, daemonId)) {
     denied('review dispatch fence does not match the accepted hook run')
   }
   if (opts.started && run.turnStartedAt === null) denied('hook turn has not crossed the start barrier')
@@ -274,7 +276,7 @@ export class GithubReviewBrokerService {
       await this.deps.hook.getRun(HookId(input.hookId), input.deliveryKey),
       input.snapshot,
       reportingDaemonId,
-      { started: true }
+      { started: true, acceptOrphaned: true }
     )
     if (
       run.reviewAttemptId !== input.attemptId ||
@@ -380,7 +382,7 @@ export class GithubReviewBrokerService {
       await this.deps.hook.getRun(hookId, input.deliveryKey),
       input.snapshot,
       reportingDaemonId,
-      { started: true }
+      { started: true, acceptOrphaned: true }
     )
     if (initial.agentId === null) denied('accepted hook run has no agent identity')
     if (reportingOrgId && initial.orgId !== reportingOrgId) denied('organization does not match the accepted hook run')
@@ -513,7 +515,7 @@ export class GithubReviewBrokerService {
       await this.deps.hook.getRun(hookId, input.deliveryKey),
       input.snapshot,
       reportingDaemonId,
-      { started: true }
+      { started: true, acceptOrphaned: true }
     )
     if (reportingOrgId && run.orgId !== reportingOrgId) denied('organization does not match the accepted hook run')
     if (run.reviewAttemptId !== input.attemptId) denied('review result does not own this hook run', 'CONFLICT')
