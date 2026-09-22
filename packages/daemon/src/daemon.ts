@@ -19121,21 +19121,19 @@ export class Daemon {
           ? await this.store.agentLastActivityTs(agentId)
           : await this.store.sessionLastActivityTs(sessionKey)
       const last = Math.max(activity ?? 0, since)
-      if (now - last <= ttl) continue
-      // A console page is watching work a suspend would throw away — uncommitted edits on the pod's
-      // volume, or an armed in-pod merge watcher. The lease is renewed by that page and lapses on
-      // its own within one TTL once it closes, so this defers the suspend rather than cancelling it.
-      // Asked of THIS pod: a dirty session's lease is about its own pod's volume and must not pin the agent's or a sibling session's (§11).
+      const quiet = now - last > ttl
+      // An open page watching THIS pod's dirty volume or armed merge watcher defers the suspend; its lease lapses within one TTL of closing (§11).
       if (this.sandboxHolds.holds(subject)) {
-        this.log.debug?.(`idle: holding the sandbox "${subject}" — ${this.sandboxHolds.reasons(subject).join(', ')}`)
+        if (quiet)
+          this.log.debug?.(`idle: holding the sandbox "${subject}" — ${this.sandboxHolds.reasons(subject).join(', ')}`)
         continue
       }
-      void plane
-        .suspendIdle(subject)
+      // Inside the window only a pod that never came up goes, judged by the plane against the launch it reads: the agent's traffic says nothing about that pod, and it holds its node's resources while it waits.
+      void (quiet ? plane.suspendIdle(subject) : plane.suspendStalled(subject))
         .then((outcome) => {
           if (outcome !== 'suspended') return
           this.log.info(
-            `idle: suspended the sandbox "${subject}" (idle ${Math.round((now - last) / 1000)}s) — ` +
+            `idle: suspended the sandbox "${subject}" (${quiet ? `idle ${Math.round((now - last) / 1000)}s` : 'its pod never came up'}) — ` +
               `its workspace volume is kept and the next message resumes onto it`
           )
         })

@@ -79,6 +79,41 @@ describe('sandbox lease holds', () => {
 
     expect(await subject.suspendIfIdle('agent-a', 'sb-1', () => {})).toBe('suspended')
   })
+
+  it('runs a release callback once the LAST hold goes, and at once when nothing holds the Sandbox', () => {
+    const { api } = fakeApi()
+    const subject = lease(api)
+    const then = vi.fn()
+    subject.retain('sb-1')
+    subject.retain('sb-1')
+    subject.whenReleased('sb-1', then)
+
+    subject.release('sb-1')
+    expect(then).not.toHaveBeenCalled()
+    subject.release('sb-1')
+    expect(then).toHaveBeenCalledTimes(1)
+    // One-shot: a later hold and release on the same Sandbox does not run it again.
+    subject.retain('sb-1')
+    subject.release('sb-1')
+    expect(then).toHaveBeenCalledTimes(1)
+
+    const now = vi.fn()
+    subject.whenReleased('sb-1', now)
+    expect(now).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops a pending release callback with the Sandbox this member no longer serves', () => {
+    const { api } = fakeApi()
+    const subject = lease(api)
+    const then = vi.fn()
+    subject.retain('sb-1')
+    subject.whenReleased('sb-1', then)
+    subject.forgetSandbox('sb-1')
+
+    subject.retain('sb-1')
+    subject.release('sb-1')
+    expect(then).not.toHaveBeenCalled()
+  })
 })
 
 describe('sandbox lease suspension gate', () => {

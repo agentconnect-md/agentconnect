@@ -158,7 +158,11 @@ function podSide() {
   return { connect, exit: (subject: string) => exits.get(subject)?.() }
 }
 
-function member(api: ReturnType<typeof cluster>['api'], connect: ReturnType<typeof podSide>['connect']) {
+function member(
+  api: ReturnType<typeof cluster>['api'],
+  connect: ReturnType<typeof podSide>['connect'],
+  options: { readyTimeoutMs?: number } = {}
+) {
   const records: SpawnRecord[] = []
   const warnings: string[] = []
   const generations = fakeGenerations()
@@ -169,6 +173,7 @@ function member(api: ReturnType<typeof cluster>['api'], connect: ReturnType<type
     warmPoolName: 'pool',
     generations,
     clock,
+    ...options,
     connectChannel: async (record) => {
       records.push(record)
       return await connect(record)
@@ -343,7 +348,7 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
     // launch's catch drains its holds while the companion is still binding, and the retain it then
     // takes belongs to no runtime and no `onExit`: the agent pod stays busy until this process
     // restarts, and the idle sweep can never reclaim it.
-    const { api } = cluster()
+    const { api, claims, modeWrites } = cluster()
     const pod = podSide()
     const session = sandboxSubjectFor(T1)
     let releaseCompanion: () => void = () => {}
@@ -363,14 +368,117 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
     // waited for it. Suspending it is the observable form of "nothing still retains this Sandbox".
     expect(driver.currentLaunch(AGENT)).toBeDefined()
     expect(await driver.suspendIfIdle(AGENT)).toBe('suspended')
-    // The session's own Sandbox — claimed before its channel refused — is released by the same drain.
+    // The session's own Sandbox — claimed before its channel refused — is released by the same drain, and nothing uses a pod whose bind failed, so it goes back to sleep.
+    await vi.waitFor(() => expect(driver.currentLaunch(session)).toBeUndefined())
+    const sessionSandbox = claims.get(driver.claimName(session))!.status!.sandbox!.name
+    expect(modeWrites).toContainEqual({ sandbox: sessionSandbox, desired: 'Suspended' })
+  })
+
+  it('puts a resumed session pod that never comes up back to sleep, so it cannot keep its node full', async () => {
+    // Left Running, a pod the scheduler cannot place keeps its CPU request, and every later wake on that node fails the same way.
+    const { api, claims, sandboxes, modeWrites } = cluster()
+    const { driver } = member(api, podSide().connect, { readyTimeoutMs: 0 })
+    const session = sandboxSubjectFor(T1)
+    await driver.ensureSandbox(session)
+    const claimUid = (await driver.claimUidFor(session))!
     expect(await driver.suspendIfIdle(session)).toBe('suspended')
+    const name = claims.get(driver.claimName(session))!.status!.sandbox!.name!
+    sandboxes.set(name, { ...sandboxes.get(name)!, status: { conditions: [{ type: 'Ready', status: 'False' }] } })
+
+    await expect(driver.resumeBoundChannel(session, claimUid)).rejects.toThrow(/did not become ready in time/)
+    await vi.waitFor(() => expect(driver.currentLaunch(session)).toBeUndefined())
+    expect(modeWrites.filter((write) => write.sandbox === name).map((write) => write.desired)).toEqual([
+      'Suspended',
+      'Running',
+      'Suspended'
+    ])
+    // Claim and volume stay: the next read or message resumes onto them.
+    expect(claims.get(driver.claimName(session))!.metadata!.uid).toBe(claimUid)
+  })
+
+  it('leaves a pod alone when a re-dial fails while an earlier channel to it is still attached', async () => {
+    const { api, modeWrites } = cluster()
+    const pod = podSide()
+    let refuse = false
+    const { driver } = member(api, async (record) => {
+      if (refuse) throw new Error('shim refused the re-dial')
+      return await pod.connect(record)
+    })
+    await driver.ensureBoundChannel(AGENT)
+    refuse = true
+
+    await expect(driver.ensureBoundChannel(AGENT)).rejects.toThrow(/refused the re-dial/)
+    // Still launched and nothing in flight: the pod serves the channel that is attached.
+    expect(modeWrites).toEqual([])
+    expect(await driver.suspendIfIdle(AGENT)).toBe('suspended')
+  })
+
+  it('suspends a launched pod still not up a full pod-up bound later and never bound, and nothing else', async () => {
+    const { api, claims, sandboxes, modeWrites } = cluster()
+    const { driver, clock } = member(api, podSide().connect)
+    const stuck = sandboxSubjectFor(T1)
+    const bound = sandboxSubjectFor(T2)
+    await driver.ensureBoundChannel(bound)
+    await driver.ensureSandbox(stuck)
+    const sandboxOf = (subject: string): string => claims.get(driver.claimName(subject))!.status!.sandbox!.name!
+    const readiness = (subject: string, status: 'True' | 'False'): void => {
+      const name = sandboxOf(subject)
+      const sandbox = sandboxes.get(name)!
+      sandboxes.set(name, { ...sandbox, status: { ...sandbox.status, conditions: [{ type: 'Ready', status }] } })
+    }
+    readiness(stuck, 'False')
+    readiness(bound, 'False')
+
+    // Inside the bound it may still be coming up.
+    expect(await driver.suspendIfStalled(stuck)).toBe('absent')
+    clock.advance(driver.podUpTimeoutMs)
+    // One this member ever bound is judged as bound, whatever its pod does next; a subject with no launch has nothing to suspend.
+    expect(await driver.suspendIfStalled(bound)).toBe('absent')
+    expect(await driver.suspendIfStalled(AGENT)).toBe('absent')
+    // A pod that is up is idle, not stalled, and is left to the activity window.
+    readiness(stuck, 'True')
+    expect(await driver.suspendIfStalled(stuck)).toBe('absent')
+    expect(modeWrites).toEqual([])
+
+    readiness(stuck, 'False')
+    expect(await driver.suspendIfStalled(stuck)).toBe('suspended')
+    expect(driver.currentLaunch(stuck)).toBeUndefined()
+    expect(modeWrites).toEqual([{ sandbox: sandboxOf(stuck), desired: 'Suspended' }])
+  })
+
+  it('lets a bind that lands during the readiness read win over a stalled suspension', async () => {
+    // The read can outlive what justified it: the pod comes up and a console wake binds it before the stale `starting` answer returns.
+    const { api, claims, sandboxes, modeWrites } = cluster()
+    const { driver, clock } = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+    await driver.ensureSandbox(session)
+    const name = claims.get(driver.claimName(session))!.status!.sandbox!.name!
+    const ready = sandboxes.get(name)!
+    sandboxes.set(name, { ...ready, status: { conditions: [{ type: 'Ready', status: 'False' }] } })
+    clock.advance(driver.podUpTimeoutMs)
+    const read = api.getSandbox
+    let answer: () => void = () => {}
+    const answered = new Promise<void>((resolve) => (answer = resolve))
+    api.getSandbox = async (sandboxName: string) => {
+      api.getSandbox = read
+      const snapshot = await read(sandboxName)
+      await answered
+      return snapshot
+    }
+
+    const suspending = driver.suspendIfStalled(session)
+    sandboxes.set(name, ready)
+    await driver.ensureBoundChannel(session)
+    answer()
+
+    expect(await suspending).toBe('absent')
+    expect(modeWrites).toEqual([])
+    expect(driver.sessionFor(session)?.isAttached()).toBe(true)
   })
 
   it('still degrades rather than failing the launch when only the companion cannot come up', async () => {
-    // The companion is a reachability convenience for the agent-scoped seams, never a precondition:
-    // settling it beside the session bind must not turn its failure into the session's.
-    const { api } = cluster()
+    // The companion is a reachability convenience for the agent-scoped seams, never a precondition: its failure must not become the session's.
+    const { api, claims, modeWrites } = cluster()
     const pod = podSide()
     const { driver } = member(api, async (record) => {
       if (record.subject === AGENT) throw new Error('agent pod refused the channel')
@@ -379,7 +487,10 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
 
     await expect(driver.launch(request(T1))).resolves.toBeDefined()
     expect(await driver.suspendIfIdle(sandboxSubjectFor(T1))).toBe('busy')
-    expect(await driver.suspendIfIdle(AGENT)).toBe('suspended')
+    // Not held by the runtime either: the companion that would not bind goes back to sleep.
+    await vi.waitFor(() => expect(driver.currentLaunch(AGENT)).toBeUndefined())
+    const agentSandbox = claims.get(driver.claimName(AGENT))!.status!.sandbox!.name!
+    expect(modeWrites).toContainEqual({ sandbox: agentSandbox, desired: 'Suspended' })
   })
 
   it('reads the pod a path lives on off the PATH, so a suspended pod stays addressable', () => {

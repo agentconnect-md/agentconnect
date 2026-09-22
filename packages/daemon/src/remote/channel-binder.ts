@@ -23,6 +23,8 @@ export interface ChannelBinderDeps<L extends Launch = Launch> {
   revokeChannel?: (subject: string) => void
   /** Prepares a freshly bound channel before anything runs on it; failures degrade, never fail the bind. */
   onChannelReady?: (subject: string, session: ShimSession) => Promise<void>
+  /** Told of a failed bind while the bind still holds the launch; must not throw. */
+  onBindFailed?: (subject: string, launch: L) => void
 }
 
 /**
@@ -53,6 +55,10 @@ export class ChannelBinder<L extends Launch = Launch> {
     this.deps.endpoints.retain(launch)
     try {
       return await this.bindHeld(subject, launch, timer, grants)
+    } catch (err) {
+      // Before the release below, so the host learns of it while the pod is still held.
+      this.deps.onBindFailed?.(subject, launch)
+      throw err
     } finally {
       this.deps.endpoints.release(launch)
     }

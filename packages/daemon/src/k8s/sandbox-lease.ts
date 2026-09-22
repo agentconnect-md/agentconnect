@@ -38,6 +38,8 @@ export class SandboxLease {
    *  waits this out and then re-claims, which is the ordinary resume path. */
   // Per SUBJECT, never per agent: a subject owns exactly one Sandbox, so the gate and the `busy` count it pairs with name one pod — an agent-keyed gate would let a session pod's suspend refuse its sibling's acquisition.
   private readonly suspending = new Map<string, Promise<void>>()
+  /** What to run once the last hold on a Sandbox goes, per Sandbox — see `whenReleased`. */
+  private readonly onReleased = new Map<string, () => void>()
 
   constructor(private readonly deps: SandboxLeaseDeps) {}
 
@@ -53,6 +55,15 @@ export class SandboxLease {
       return
     }
     this.busy.delete(sandboxName)
+    const then = this.onReleased.get(sandboxName)
+    this.onReleased.delete(sandboxName)
+    then?.()
+  }
+
+  /** Run `then` once nothing holds the Sandbox — at once when nothing does now; a later call replaces an earlier one. */
+  whenReleased(sandboxName: string, then: () => void): void {
+    if ((this.busy.get(sandboxName) ?? 0) > 0) this.onReleased.set(sandboxName, then)
+    else then()
   }
 
   /** The suspension gate to wait on before reading a cached launch, or undefined when none is open. */
@@ -110,6 +121,7 @@ export class SandboxLease {
   forgetSandbox(sandboxName: string): void {
     this.busy.delete(sandboxName)
     this.modeQueue.delete(sandboxName)
+    this.onReleased.delete(sandboxName)
   }
 
   /**
