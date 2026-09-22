@@ -453,10 +453,11 @@ export class K8sDriver implements SpawnDriver {
     return this.lease.queueMode(launch.sandboxName, desired)
   }
 
-  // `withSandbox` without the ensure: retain a Sandbox this member ALREADY launched, or answer that it holds none. For a caller that may neither claim nor wake a pod but must not have one suspended underneath it either — the idle gate reads `busy` synchronously, so the retain excludes the sweep rather than racing it.
+  // `withSandbox` without the ensure: retain a Sandbox this member ALREADY launched and is not suspending, or answer undefined; the idle gate reads `busy` synchronously, so the retain excludes the sweep rather than racing it.
   retainLaunched(subject: string): (() => void) | undefined {
     const launch = this.registry.currentLaunch(subject)
-    if (!launch) return undefined
+    // A pod whose suspension is already in flight is going: holding it would serve work its write is about to take away.
+    if (!launch || this.lease.suspensionOf(subject)) return undefined
     this.lease.retain(launch.sandboxName)
     let released = false
     return () => {
@@ -475,6 +476,19 @@ export class K8sDriver implements SpawnDriver {
     } finally {
       this.lease.release(launch.sandboxName)
     }
+  }
+
+  /** Bind the channel of a Running pod this member ALREADY launched — a takeover records one with none — claiming and waking nothing; undefined when it holds no such pod. */
+  async bindLaunched(subject: SandboxSubject): Promise<ShimSession | undefined> {
+    const launch = this.registry.currentLaunch(subject)
+    const current = (): boolean => this.registry.currentLaunch(subject) === launch && !this.lease.suspensionOf(subject)
+    if (!launch || !current()) return undefined
+    const attached = this.binder.sessionFor(subject)
+    if (attached?.isAttached()) return attached
+    // Only a pod that is up: binding resumes the Sandbox, so a stalled or suspended one would be woken, not asked.
+    if ((await this.sandboxReadiness(subject)) !== 'ready' || !current()) return undefined
+    await this.binder.bindChannel(subject, launch, undefined, this.grantsFor(subject))
+    return this.binder.sessionFor(subject)
   }
 
   /** Forget a subject and delete its claim; the volume goes with it, which is the intent. */

@@ -68,6 +68,10 @@ export interface AutoMergeWatcherDeps {
   clusterPlaced: (agentId: string) => boolean
   /** The agent's pod channel while its sandbox is attached; undefined when it is asleep. */
   sandboxFor: (agentId: string) => AutoMergeSandbox | undefined
+  /** Hold the agent's pod against the idle sweep across an arm, or undefined when it is asleep or being suspended. */
+  holdSandbox?: (agentId: string) => (() => void) | undefined
+  /** The pod answered with a watcher armed in it: renew the idle sweep's own hold on it. */
+  onArmed?: (agentId: string) => void
   /** The agent's runtime-only gitcred capability, so the POD's watcher can fetch its own token. */
   capabilityFor: (agentId: string) => string
   /** A GH_TOKEN-plane token for the LOCAL loop; the pod fetches its own over the gitcred tunnel. */
@@ -127,16 +131,22 @@ export class AutoMergeWatcher {
 
   private async arm(target: AutoMergeTarget): Promise<AutoMergeState> {
     if (this.deps.clusterPlaced(target.agentId)) {
-      const sandbox = this.deps.sandboxFor(target.agentId)
-      if (!sandbox) {
-        throw new AutoMergeViolationError(
-          'sandbox-asleep',
-          'this agent’s sandbox is not running — start it, then arm merge-when-ready'
-        )
-      }
+      if (!this.deps.sandboxFor(target.agentId)) throw sandboxAsleep()
       await this.refuseIfMergeableNow(target)
-      const answer = await sandbox.arm({ ...this.call(target), capability: this.deps.capabilityFor(target.agentId) })
-      return this.project(target, 'sandbox', answer)
+      // Held from before the arm is sent until the sweep's own hold is renewed, so a sweep that asked the pod before this arm landed cannot suspend it after.
+      const release = this.deps.holdSandbox?.(target.agentId)
+      const sandbox = this.deps.sandboxFor(target.agentId)
+      if (!sandbox || (this.deps.holdSandbox && !release)) {
+        release?.()
+        throw sandboxAsleep()
+      }
+      try {
+        const answer = await sandbox.arm({ ...this.call(target), capability: this.deps.capabilityFor(target.agentId) })
+        if (answer.armed) this.deps.onArmed?.(target.agentId)
+        return this.project(target, 'sandbox', answer)
+      } finally {
+        release?.()
+      }
     }
     const key = keyOf(target)
     const held = this.local.get(key)
@@ -256,6 +266,13 @@ export class AutoMergeWatcher {
       ...(s.merged ? { merged: true } : {})
     }
   }
+}
+
+function sandboxAsleep(): AutoMergeViolationError {
+  return new AutoMergeViolationError(
+    'sandbox-asleep',
+    'this agent’s sandbox is not running — start it, then arm merge-when-ready'
+  )
 }
 
 function clamp(detail: string): string {

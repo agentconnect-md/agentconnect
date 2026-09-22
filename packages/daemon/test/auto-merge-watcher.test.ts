@@ -354,6 +354,61 @@ describe('AutoMergeWatcher', () => {
     expect(await watcher.armedFor('agent-1')).toBe(false)
   })
 
+  it('holds the pod across an arm and renews the idle sweep’s own hold before letting go', async () => {
+    // The sweep asks the pod, then suspends in the tick it re-reads its holds: this order is what leaves no gap an arm can land in unseen.
+    const sandbox = fakeSandbox()
+    const events: string[] = []
+    const arm = sandbox.arm
+    sandbox.arm = async (call) => {
+      events.push('sent')
+      return await arm(call)
+    }
+    const watcher = new AutoMergeWatcher({
+      knownAgent: () => true,
+      clusterPlaced: () => true,
+      sandboxFor: () => sandbox,
+      holdSandbox: () => {
+        events.push('held')
+        return () => events.push('released')
+      },
+      onArmed: (agentId) => events.push(`renewed ${agentId}`),
+      capabilityFor: () => 'cap',
+      tokenFor: async () => 'ghs_x',
+      fetchImpl: githubStub([prAnswer([{ __typename: 'CheckRun', name: 'build', status: 'QUEUED' }])]).fetchImpl
+    })
+
+    await watcher.set(TARGET, true)
+    expect(events).toEqual(['held', 'sent', 'renewed agent-1', 'released'])
+
+    // A failed arm renews nothing and still lets go.
+    events.length = 0
+    sandbox.arm = async () => {
+      throw new Error('the shim went away')
+    }
+    await expect(watcher.set({ ...TARGET, prNumber: 8 }, true)).rejects.toThrow(/went away/)
+    expect(events).toEqual(['held', 'released'])
+  })
+
+  it('refuses to arm a pod the idle sweep is already suspending, sending nothing', async () => {
+    // Its channel is still attached until the suspend write lands; a watcher started now would die with it behind a checked box.
+    const sandbox = fakeSandbox()
+    const onArmed = vi.fn()
+    const watcher = new AutoMergeWatcher({
+      knownAgent: () => true,
+      clusterPlaced: () => true,
+      sandboxFor: () => sandbox,
+      holdSandbox: () => undefined,
+      onArmed,
+      capabilityFor: () => 'cap',
+      tokenFor: async () => 'ghs_x',
+      fetchImpl: githubStub([prAnswer([{ __typename: 'CheckRun', name: 'build', status: 'QUEUED' }])]).fetchImpl
+    })
+
+    await expect(watcher.set(TARGET, true)).rejects.toMatchObject({ reason: 'sandbox-asleep' })
+    expect(sandbox.ops).toEqual([])
+    expect(onArmed).not.toHaveBeenCalled()
+  })
+
   it('refuses to arm a pull request that is mergeable NOW — one click must not squash-merge', async () => {
     // The loop's first tick is immediate, so arming a green pull request would merge it inside one
     // round trip. The direct Merge button is that action, and it takes two presses.

@@ -1,28 +1,6 @@
 import type { SandboxHoldReason } from '@agentconnect.md/protocol'
 
-/**
- * Leases that keep one cluster POD out of the idle sweep while a console page is watching it.
- *
- * Keyed by sandbox SUBJECT, not by agent: an isolated session's work lives on its own pod (§11), so a
- * lease taken on a dirty session tree must hold that pod and no other — keyed by agent, one dirty page
- * pinned every sibling session pod of the agent, and the sweep judged them all on it. The agent's own
- * pod IS the agent id as a subject, so nothing about the agent-pod path changed.
- *
- * In memory and nowhere else, like every other keep-alive in this daemon: a lease that outlived the
- * process holding it would pin a pod for a page nobody has open. Each renewal is a fresh deadline,
- * so the whole release mechanism is "stop asking" — the page closing, the tab going to the
- * background, or the machine sleeping all end the hold within one TTL with nothing to unset.
- *
- * Leases are per HOLDER under one agent, not one lease per agent, because the facts they are taken
- * on are per SESSION: a page reads its own session's worktree. With a single agent-wide entry, a
- * second page polling a CLEAN session erased the still-live lease of a page watching a DIRTY one and
- * the pod could be suspended out from under it — last poll wins. Now each page renews and releases
- * only its own holder, and the sweep asks whether ANY of them is live.
- *
- * The TTL is deliberately several times the console's renewal cadence: one dropped poll (a slow
- * daemon, a re-render, a network blip) must not suspend a pod out from under a page that is still
- * open and still dirty.
- */
+/** In-memory leases keeping one pod (by SUBJECT, per HOLDER: a page's session, or this daemon's watcher hold) out of the idle sweep; each renewal is a fresh deadline several console polls long, so stopping is the release (k8s-daemon-pool §4). */
 export const SANDBOX_HOLD_TTL_MS = 180_000
 
 export interface SandboxHoldDeps {
@@ -34,6 +12,9 @@ export interface SandboxHoldDeps {
 /** The console page a lease belongs to — its session id, or {@link AGENT_WIDE_HOLDER} for a poll
  *  that named no session and therefore speaks for the agent rather than one worktree. */
 export const AGENT_WIDE_HOLDER = '<agent>'
+
+/** The daemon's own lease on a pod a merge-when-ready watcher runs in: renewed whenever it sees one armed, never released by hand, so an arm racing a disarm cannot lose it. */
+export const AUTO_MERGE_HOLDER = '<auto-merge>'
 
 export class SandboxHolds {
   private readonly held = new Map<string, Map<string, { until: number; reasons: SandboxHoldReason[] }>>()

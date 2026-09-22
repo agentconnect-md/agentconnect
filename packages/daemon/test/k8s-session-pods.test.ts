@@ -588,6 +588,53 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
     expect(api.ensureClaim.mock.calls.length).toBe(claimedSoFar)
   })
 
+  it('refuses to retain a pod whose suspension is already in flight', async () => {
+    // Its channel is still attached until the write lands, so only the gate says the pod is going: an arm held across it would start a watcher the write then kills.
+    const { api } = cluster()
+    const { driver } = member(api, podSide().connect)
+    await driver.ensureBoundChannel(AGENT)
+
+    const suspending = driver.suspendIfIdle(AGENT)
+    expect(driver.sessionFor(AGENT)?.isAttached()).toBe(true)
+    expect(driver.retainLaunched(AGENT)).toBeUndefined()
+    expect(await suspending).toBe('suspended')
+  })
+
+  it('binds a pod it already launched but never bound — a takeover — claiming and waking nothing', async () => {
+    // A successor records a Running pod with no channel, and asking its watcher registry needs one.
+    const { api, modeWrites } = cluster()
+    const first = member(api, podSide().connect)
+    await first.driver.ensureBoundChannel(AGENT)
+    const successor = member(api, podSide().connect)
+    expect(await successor.driver.adopt(AGENT)).toBeDefined()
+    expect(successor.driver.sessionFor(AGENT)).toBeUndefined()
+    const claimed = api.ensureClaim.mock.calls.length
+
+    expect((await successor.driver.bindLaunched(AGENT))?.isAttached()).toBe(true)
+    expect(successor.records.map((record) => record.subject)).toEqual([AGENT])
+    expect(api.ensureClaim.mock.calls.length).toBe(claimed)
+    expect(modeWrites).toEqual([])
+    // Already bound: the same session, no second dial.
+    await successor.driver.bindLaunched(AGENT)
+    expect(successor.records).toHaveLength(1)
+  })
+
+  it('binds nothing it holds no launch for, and no pod that is not up', async () => {
+    const { api, claims, sandboxes, modeWrites } = cluster()
+    const { driver, records } = member(api, podSide().connect)
+    expect(await driver.bindLaunched(AGENT)).toBeUndefined()
+    expect(claims.size).toBe(0)
+
+    // Launched, but its Sandbox is not Running: a bind would resume it, which is a wake, not a question.
+    await driver.ensureSandbox(AGENT)
+    const name = claims.get(driver.claimName(AGENT))!.status!.sandbox!.name!
+    const sandbox = sandboxes.get(name)!
+    sandboxes.set(name, { ...sandbox, spec: { ...sandbox.spec, operatingMode: 'Suspended' } })
+    expect(await driver.bindLaunched(AGENT)).toBeUndefined()
+    expect(records).toEqual([])
+    expect(modeWrites).toEqual([])
+  })
+
   it('stamps every admission on the claim, so a reused one is a new incarnation to a reader', async () => {
     // The orphan sweep proves a session gone from a snapshot and then deletes on the version it
     // listed. A session that comes back reuses this claim rather than making one, so without a write

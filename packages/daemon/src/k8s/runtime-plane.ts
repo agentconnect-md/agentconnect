@@ -174,6 +174,8 @@ export interface K8sRuntimePlane extends ExecutionPlane {
   /** The agent pod's merge-when-ready channel — the watcher runs IN that pod so its armed set dies
    *  with it, which is the lifetime the console projects. */
   autoMergeFor: (agentId: string) => ShimAutoMergeClient | undefined
+  /** Whether a merge-when-ready watcher is armed in one subject's pod, asked of its own registry; a launched pod with no channel yet is bound, never claimed or woken. */
+  armedIn: (subject: string) => Promise<boolean>
   /** The agent's managed memory tree on its OWN pod's volume: one root beside the checkout
    *  (`<mount>/.agentconnect/memory`), so it follows the agent across members and survives a
    *  rollout, and is reachable exactly when that pod is. */
@@ -468,6 +470,10 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     autoMergeFor: (agentId) => {
       const session = boundSession(agentSandboxSubject(agentId))
       return session ? new ShimAutoMergeClient(session) : undefined
+    },
+    armedIn: async (subject) => {
+      const session = boundSession(subject) ?? (await driver.bindLaunched(subject as SandboxSubject))
+      return session ? await new ShimAutoMergeClient(session).anyArmed(sandboxSubjectAgentId(subject)) : false
     },
     memoryFsFor: (agentId) => {
       const subject = agentSandboxSubject(agentId)
