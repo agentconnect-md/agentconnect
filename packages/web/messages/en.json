@@ -1923,11 +1923,6 @@
       "cpuShort": "cpu",
       "memoryShort": "mem"
     },
-    "executor": {
-      "sessions": "{hosted, plural, one {# session} other {# sessions}}",
-      "sessionsOfCapacity": "{hosted} / {capacity} sessions",
-      "strategyUnavailable": "{strategy} unavailable"
-    },
     "pool": {
       "managed": "Managed by AgentConnect",
       "notServing": "Managed by AgentConnect · not serving",

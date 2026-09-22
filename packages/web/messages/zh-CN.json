@@ -1923,11 +1923,6 @@
       "cpuShort": "cpu",
       "memoryShort": "内存"
     },
-    "executor": {
-      "sessions": "{hosted, plural, other {# 个会话}}",
-      "sessionsOfCapacity": "{hosted} / {capacity} 个会话",
-      "strategyUnavailable": "{strategy} 不可用"
-    },
     "pool": {
       "managed": "由 AgentConnect 管理",
       "notServing": "由 AgentConnect 管理 · 未提供服务",

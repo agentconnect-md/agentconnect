@@ -662,7 +662,6 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
               onClick={canUpgrade ? () => openModal('upgradeDaemon', m) : undefined}
             />
             {m.lifecycleOp?.phase === 'preparing' && <DaemonLifecycleBadge op={m.lifecycleOp} />}
-            <SharedExecution m={m} />
           </div>
         </div>
         <span
@@ -774,48 +773,6 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
         )}
       </div>
     </div>
-  )
-}
-
-/**
- * What a daemon lends its group's sessions (session-executors.md §10): how many it hosts against
- * its capacity, beside the strategies it offers.
- *
- * Silent unless the machine's owner turned `sandbox.share` on — a daemon that shares nothing has no
- * capacity to report and no strategy to offer, and the row would read as a limit it does not have.
- * An unavailable strategy keeps its reason the way a daemon's own sandbox does: named here, said on
- * hover, never withdrawn — "why is nothing landing here" is the question this answers.
- */
-function SharedExecution({ m }: { m: DaemonRow }) {
-  const t = useTranslations('Daemons')
-  const executor = m.caps.executor
-  if (!executor?.enabled) return null
-  // The count is as fresh as the last heartbeat; before the first there is none, and nothing is hosted.
-  const hosted = m.hostedSessions ?? 0
-  const capacity = executor.capacity
-  return (
-    <>
-      <span className="badge mono flex-none bg-(--surface-active) text-(--text-secondary)">
-        {capacity === undefined
-          ? t('executor.sessions', { hosted })
-          : t('executor.sessionsOfCapacity', { hosted, capacity })}
-      </span>
-      {Object.entries(executor.strategies ?? {}).map(([strategy, state]) =>
-        state.available ? (
-          <span key={strategy} className="badge mono flex-none bg-(--surface-active) text-(--text-secondary)">
-            {strategy}
-          </span>
-        ) : (
-          <span
-            key={strategy}
-            title={state.reason}
-            className="badge mono flex-none bg-(--surface-sunken) text-(--text-tertiary)"
-          >
-            {t('executor.strategyUnavailable', { strategy })}
-          </span>
-        )
-      )}
-    </>
   )
 }
 
