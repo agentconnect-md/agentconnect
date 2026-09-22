@@ -87,7 +87,7 @@ import { AgentMark, GiteaMark, GithubMark, GitlabMark, LoadingState, PlatformMar
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import type { Platform } from '@/components/console/modals/AddIntegrationModal'
 import { INTEGRATION_BLURB, isCoreTriggerKind } from '@/components/console/platforms/host-projections'
-import { platformAgentCard } from '@/components/console/platforms/registry'
+import { botCardCopy, platformAgentCard } from '@/components/console/platforms/registry'
 import {
   GT_TRIGGER_MODES,
   GT_TRIGGER_PILL,
@@ -184,6 +184,46 @@ function FeishuRegionBadge({ integration }: { integration: Pick<IntegrationRow, 
   return (
     <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
       {integration.region === 'lark' ? 'Lark' : 'Feishu'}
+    </span>
+  )
+}
+
+// One integration's state pill: a revoked credential first, then whether the agent itself is served.
+function IntegrationStatePill({
+  integration,
+  agentOffline,
+  mobile
+}: {
+  integration: Pick<IntegrationRow, 'platform' | 'revoked'>
+  agentOffline: boolean
+  mobile: boolean
+}) {
+  const t = useTranslations('Agents.detail')
+  const shape = mobile
+    ? 'inline-flex flex-none items-center gap-[5px] rounded-full px-[10px] py-[3px] font-sans text-[12px] font-semibold leading-normal'
+    : 'badge'
+  if (integration.revoked) {
+    return (
+      <span
+        className={`${shape} bg-(--status-error-soft) text-(--status-error)`}
+        title={botCardCopy(integration.platform).revokedHint}
+      >
+        {t('integrations.revoked')}
+      </span>
+    )
+  }
+  if (agentOffline) {
+    return (
+      <span className={`${shape} bg-(--surface-active) text-(--text-tertiary)`}>
+        <span className="dot h-[6px] w-[6px] bg-(--text-disabled)" />
+        {t('integrations.offline')}
+      </span>
+    )
+  }
+  return (
+    <span className={`${shape} bg-(--brand-soft) text-(--brand-soft-text)`}>
+      <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
+      {t('integrations.connected')}
     </span>
   )
 }
@@ -821,6 +861,8 @@ export default function AgentDetailView() {
   // editor). Falls back to the static labels when the daemon reports no catalog.
   const modelText = agentModelDisplay(capabilitySource, da.runtime, da.model)
   const ds = status(effectiveAgentStatus(da, owningDaemon))
+  // The agents list's own reading: an agent nothing is serving cannot answer on any integration.
+  const agentOffline = ds.label === 'offline'
   const ws = da.workspace
   // Demo agents have no daemon to read git state from, so the workspace card's
   // live half comes straight from their static mock workspace instead.
@@ -1597,8 +1639,7 @@ export default function AgentDetailView() {
                     bordered sub-cards (padX 14); both unlink from the header. */}
                 <div className="desktop:hidden">
                   {agentInts.map((g, i) => {
-                    // A module with its own card body replaces the generic conversation
-                    // list — and, with it, the header's first-channel subline.
+                    // A module's own card body replaces the generic conversation list and the header's first-channel subline.
                     const card = platformAgentCard(g.platform)
                     const AgentCardBody = card?.Body
                     const HeaderActions = card?.HeaderActions
@@ -1631,10 +1672,7 @@ export default function AgentDetailView() {
                               </span>
                             </Link>
                             <span className="ml-auto flex flex-none items-center gap-3">
-                              <span className="inline-flex flex-none items-center gap-[5px] rounded-full bg-(--brand-soft) px-[10px] py-[3px] font-sans text-[12px] font-semibold leading-normal text-(--brand-soft-text)">
-                                <span className="h-[6px] w-[6px] rounded-full bg-(--status-online)" />
-                                {t('integrations.connected')}
-                              </span>
+                              <IntegrationStatePill integration={g} agentOffline={agentOffline} mobile />
                               {g.platform === 'discord' && g.discordAppId && (
                                 <a
                                   href={discordBotInviteUrl(g.discordAppId)}
@@ -1936,10 +1974,7 @@ export default function AgentDetailView() {
                                     {g.name}
                                   </span>
                                   <FeishuRegionBadge integration={g} />
-                                  <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
-                                    <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
-                                    {t('integrations.connected')}
-                                  </span>
+                                  <IntegrationStatePill integration={g} agentOffline={agentOffline} mobile={false} />
                                 </div>
                               </div>
                             </Link>

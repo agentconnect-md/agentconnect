@@ -84,6 +84,7 @@ const INSTALL: IntegrationRow = {
   workspace: 'Example Workspace',
   daemon: 'edge-1',
   status: 'online',
+  revoked: false,
   channels: [
     {
       channelId: 'team-des',
