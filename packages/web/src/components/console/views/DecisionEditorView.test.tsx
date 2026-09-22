@@ -105,6 +105,25 @@ describe('DecisionEditorView', () => {
     expect(push).not.toHaveBeenCalled()
   })
 
+  // A preview parses the draft, so an unfinished question must not even offer to run — and a
+  // rejection must never escape as an unhandled promise.
+  it('only offers to run once the question can be evaluated', async () => {
+    await render()
+    const run = () => [...document.body.querySelectorAll('button')].find((node) => node.textContent?.includes('Run'))
+    expect(run()?.disabled).toBe(true)
+
+    await type('textarea[placeholder="Ask one question about currentMessage."]', 0, 'Which request is this?')
+    await type('input[placeholder="key"]', 0, 'deploy')
+    await type('input[placeholder="key"]', 1, 'review')
+    await type('input[placeholder="What this answer means"]', 0, 'Shipping')
+    await type('input[placeholder="What this answer means"]', 1, 'Review')
+    expect(run()?.disabled).toBe(false)
+
+    // Back to an unfinished question: the control returns to inert rather than rejecting.
+    await type('input[placeholder="key"]', 1, '')
+    expect(run()?.disabled).toBe(true)
+  })
+
   it('creates a valid choice decision and returns to the list', async () => {
     await render()
     await fillValidChoice()

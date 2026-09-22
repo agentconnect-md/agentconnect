@@ -11,16 +11,15 @@ import { Button, Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { LoadingState } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
-import {
-  gateIssues,
-  gateNeedsReview,
-  gateUsages,
-  useDecisionProviders,
-  useDecisionsPrototype
-} from '@/lib/decisions/provider'
+import { gateUsages, useDecisionProviders, useDecisionsPrototype } from '@/lib/decisions/provider'
 import { DecisionsNotOffered } from '@/components/console/decisions/DecisionsNotOffered'
 import { featureFlagEnabled } from '@/lib/feature-flags'
-import { DecisionDraft, type DecisionQuestion, type DecisionValidationIssue } from '@agentconnect.md/protocol/decision'
+import {
+  DecisionDraft,
+  decisionConditionNeedsReview,
+  type DecisionQuestion,
+  type DecisionValidationIssue
+} from '@agentconnect.md/protocol/decision'
 import type { DecisionUsage } from '@agentconnect.md/protocol/decision-api'
 
 type QuestionType = DecisionQuestion['type']
@@ -140,7 +139,7 @@ export default function DecisionEditorView() {
   // URL here would turn our own editor into an open redirect.
   const requested = search.get('returnTo')
   const returnTo = requested?.startsWith('/') && !requested.startsWith('//') ? requested : null
-  const { decisions, loading, api, reload, gates } = useDecisionsPrototype()
+  const { decisions, loading, api, reload, gates, markGatesForReview } = useDecisionsPrototype()
   const { providers } = useDecisionProviders()
   const definition = id ? decisions.find((entry) => entry.id === id) : undefined
 
@@ -208,7 +207,7 @@ export default function DecisionEditorView() {
   const gated = id && definition ? gateUsages(gates, id) : []
   const brokenGates =
     draft && definition
-      ? gated.filter((usage) => gateIssues({ ...definition, question: questionFrom(draft) }, usage.when).length > 0)
+      ? gated.filter((usage) => decisionConditionNeedsReview(definition.question, questionFrom(draft), usage.when))
       : []
 
   if (!featureFlagEnabled('decisions')) return <DecisionsNotOffered />
@@ -277,8 +276,11 @@ export default function DecisionEditorView() {
     return found
   }
 
+  // The name is only needed to save: a preview must run on the question alone.
+  const previewIssues = validate().filter((issue) => issue.path[0] === 'question')
+
   const run = async () => {
-    if (!provider || running) return
+    if (!provider || running || previewIssues.length) return
     setRunning(true)
     setResult(null)
     try {
@@ -326,6 +328,15 @@ export default function DecisionEditorView() {
       const badge =
         answer.type === 'boolean' ? (answer.value ? t('condition.yes') : t('condition.no')) : String(answer.value)
       setResult({ signature, badge, rows, model: evaluation.model, context: history.length, unavailable: false })
+    } catch {
+      setResult({
+        signature,
+        badge: t('try.unavailableBadge'),
+        rows: [],
+        model: draft.model,
+        context: history.length,
+        unavailable: true
+      })
     } finally {
       setRunning(false)
     }
@@ -351,8 +362,12 @@ export default function DecisionEditorView() {
     }
     setSaving(true)
     try {
-      if (id) await api.updateDecision(id, parsed.data)
-      else await api.createDecision(parsed.data)
+      if (id) {
+        await api.updateDecision(id, parsed.data)
+        // The mock service has no gate bindings, so the Needs review state an edit causes is
+        // recorded against the prototype gates here, before the list re-reads.
+        if (definition) markGatesForReview(id, definition.question, parsed.data.question)
+      } else await api.createDecision(parsed.data)
       await reload()
       router.push(returnTo ?? orgPath('/decisions'))
     } catch (cause) {
@@ -635,7 +650,7 @@ export default function DecisionEditorView() {
             </div>
             <div className="py-[6px]">
               {gated.map((usage) => {
-                const review = gateNeedsReview(definition ?? null, usage.when)
+                const review = usage.needsReview
                 return (
                   <div key={`gate:${usage.channelId}`} className="flex flex-wrap items-center gap-[10px] px-4 py-[9px]">
                     <Icon name="hash" size={13} color="var(--text-tertiary)" />
@@ -753,11 +768,17 @@ export default function DecisionEditorView() {
                 />
               </div>
               <div className="flex flex-wrap items-center gap-[9px]">
-                <Button variant="primary" size="sm" disabled={running || !provider} onClick={() => void run()}>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  disabled={running || !provider || previewIssues.length > 0}
+                  onClick={() => void run()}
+                >
                   <Icon name="play" size={14} />
                   {running ? t('try.running') : t('try.run')}
                 </Button>
               </div>
+              {previewIssues[0] && <IssueLine>{previewIssues[0].message}</IssueLine>}
               <div className="flex gap-2 font-sans text-[12px] font-normal leading-[1.55] text-(--text-tertiary)">
                 <Icon name="shield" size={13} className="mt-[2px] flex-none" />
                 <span>{t('try.note')}</span>

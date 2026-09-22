@@ -10,11 +10,14 @@ import { createContext, useCallback, useContext, useMemo, useState, type ReactNo
 import useSWR from 'swr'
 import {
   decisionConditionIssues,
+  decisionConditionNeedsReview,
   type DecisionCondition,
   type DecisionDefinition,
+  type DecisionQuestion,
   type DecisionValidationIssue
 } from '@agentconnect.md/protocol/decision'
 import type { DecisionApi, DecisionProviderOption, DecisionSummary } from '@agentconnect.md/protocol/decision-api'
+import { useOrgs } from '@/lib/org-context'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { createDecisionMockApi } from './mock-api'
 
@@ -24,6 +27,8 @@ export interface DecisionGateBinding {
   when: DecisionCondition
   /** The room's name as the console prints it, so a usage list can name it without console data. */
   channelName: string
+  /** Set when an edit to the decision stranded this condition; cleared by saving the gate again. */
+  needsReview?: boolean
 }
 
 /** One conversation a decision is bound to, for the editor's `Used by` card and delete guard. */
@@ -31,6 +36,17 @@ export interface DecisionGateUsage {
   channelId: string
   channelName: string
   when: DecisionCondition
+  needsReview: boolean
+}
+
+/**
+ * The identity a gate is stored under. A platform conversation coordinate is NOT unique on
+ * its own: two bots can both be installed in one Slack channel, and the shell-wide provider
+ * survives an organization switch — so the organization and the owning bot belong in the key.
+ * Sibling integrations of one bot deliberately share it, which is what converges the rows.
+ */
+export function gateKey(orgId: string | null | undefined, botId: string | null | undefined, channelId: string): string {
+  return `${orgId ?? ''}|${botId ?? ''}|${channelId}`
 }
 
 interface DecisionsPrototype {
@@ -41,15 +57,22 @@ interface DecisionsPrototype {
   error: string | null
   /** Re-read after a write; a failed read is reported to the caller instead. */
   reload: () => Promise<unknown>
-  /** Gate binding by conversation id — the conversation owns it, as on the CP. */
+  /** Gate binding by {@link gateKey} — the conversation owns it, as on the CP. */
   gates: Readonly<Record<string, DecisionGateBinding>>
-  setGate: (channelId: string, binding: DecisionGateBinding) => void
-  clearGate: (channelId: string) => void
+  /** This store's identity for one conversation. The org is the store's, not the row's. */
+  gateKeyFor: (botId: string | null | undefined, channelId: string) => string
+  setGate: (key: string, binding: DecisionGateBinding) => void
+  clearGate: (key: string) => void
+  /** Flag the gates an edit to this decision invalidated, before the caller re-reads. */
+  markGatesForReview: (decisionId: string, previous: DecisionQuestion, next: DecisionQuestion) => void
 }
 
 const DecisionsContext = createContext<DecisionsPrototype | null>(null)
 
 export function DecisionsPrototypeProvider({ children }: { children: ReactNode }) {
+  // The store sits inside OrgProvider, so it — not each conversation row — owns the tenant
+  // half of a binding's identity. A row that had to ask would depend on the org context.
+  const { activeOrg } = useOrgs()
   // The instance must outlive every render: one created per render would reset saved state.
   const [api] = useState<DecisionApi>(() => createDecisionMockApi())
   const [gates, setGates] = useState<Record<string, DecisionGateBinding>>({})
@@ -60,11 +83,30 @@ export function DecisionsPrototypeProvider({ children }: { children: ReactNode }
     () => api.listDecisions()
   )
   const reload = useCallback(async () => mutate(), [mutate])
-  const setGate = useCallback((channelId: string, binding: DecisionGateBinding) => {
-    setGates((current) => ({ ...current, [channelId]: binding }))
+  const gateKeyFor = useCallback(
+    (botId: string | null | undefined, channelId: string) => gateKey(activeOrg?.id, botId, channelId),
+    [activeOrg?.id]
+  )
+  const setGate = useCallback((key: string, binding: DecisionGateBinding) => {
+    setGates((current) => ({ ...current, [key]: binding }))
   }, [])
-  const clearGate = useCallback((channelId: string) => {
-    setGates((current) => Object.fromEntries(Object.entries(current).filter(([key]) => key !== channelId)))
+  const clearGate = useCallback((key: string) => {
+    setGates((current) => Object.fromEntries(Object.entries(current).filter(([entry]) => entry !== key)))
+  }, [])
+  // The mock service cannot see these bindings, so the invalidation the CP would record has
+  // to be recorded here — including a Score rubric-length change, which leaves an interval
+  // that still fits but no longer means what it did (docs/designs/decisions.md §6.1).
+  const markGatesForReview = useCallback((decisionId: string, previous: DecisionQuestion, next: DecisionQuestion) => {
+    setGates((current) =>
+      Object.fromEntries(
+        Object.entries(current).map(([key, binding]) => [
+          key,
+          binding.decisionId === decisionId && decisionConditionNeedsReview(previous, next, binding.when)
+            ? { ...binding, needsReview: true }
+            : binding
+        ])
+      )
+    )
   }, [])
   const value = useMemo<DecisionsPrototype>(
     () => ({
@@ -74,10 +116,12 @@ export function DecisionsPrototypeProvider({ children }: { children: ReactNode }
       error: error ? (error instanceof Error ? error.message : String(error)) : null,
       reload,
       gates,
+      gateKeyFor,
       setGate,
-      clearGate
+      clearGate,
+      markGatesForReview
     }),
-    [api, data, isLoading, error, reload, gates, setGate, clearGate]
+    [api, data, isLoading, error, reload, gates, gateKeyFor, setGate, clearGate, markGatesForReview]
   )
   return <DecisionsContext.Provider value={value}>{children}</DecisionsContext.Provider>
 }
@@ -125,21 +169,23 @@ export function gateUsages(
 ): DecisionGateUsage[] {
   return Object.entries(gates)
     .filter(([, binding]) => binding.decisionId === decisionId)
-    .map(([channelId, binding]) => ({ channelId, channelName: binding.channelName, when: binding.when }))
+    .map(([key, binding]) => ({
+      channelId: key,
+      channelName: binding.channelName,
+      when: binding.when,
+      needsReview: binding.needsReview === true
+    }))
 }
 
-/** A gate whose saved condition can no longer be evaluated against the decision as it stands. */
-export function gateNeedsReview(decision: DecisionDefinition | null, when: DecisionCondition): boolean {
-  return gateIssues(decision, when).length > 0
-}
-
-/** A condition matching the decision's question type, with the design's defaults. */
+/** A condition matching the decision's question type, with the design's canonical defaults:
+ *  every Choice key at 50%, both Boolean answers, the whole Score rubric. An untouched gate
+ *  must not silently skip every No or activate a low-confidence answer. */
 export function defaultConditionFor(decision: DecisionDefinition): DecisionCondition {
   const question = decision.question
-  if (question.type === 'boolean') return { type: 'boolean', values: [true] }
+  if (question.type === 'boolean') return { type: 'boolean', values: [true, false] }
   if (question.type === 'score') return { type: 'score', min: 0, max: question.criteria.length - 1 }
   return {
     type: 'choice',
-    thresholds: Object.fromEntries(Object.keys(question.criteria).map((key) => [key, 0.3]))
+    thresholds: Object.fromEntries(Object.keys(question.criteria).map((key) => [key, 0.5]))
   }
 }

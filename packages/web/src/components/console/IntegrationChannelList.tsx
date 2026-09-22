@@ -686,25 +686,27 @@ export function IntegrationChannelList({
   // bot-wide just like channels.
   const dmRows = channels.filter((c) => isDirectConversation(c.kind))
   const grouped = groupBySpace(channelRows)
-  /** Who a gate here would wake: the conversation's explicit owner, else this agent. */
-  const dispatchedAgent = (c: IntegrationChannelRow): MemberAgent | undefined => {
-    const id = c.agentId ?? agentId ?? members[0]?.id
-    return id ? member(id) : undefined
-  }
   // Rows the operator switched to `by decision` this session, plus every saved gate: a gate
   // outlives navigation, and the row must keep saying `by decision` while it exists.
   const decisions = useOptionalDecisionsPrototype()
   const decisionsOffered = featureFlagEnabled('decisions') && !!decisions
   const [pickedDecision, setPickedDecision] = useState<Record<string, boolean>>({})
-  const rowTrigger = (c: IntegrationChannelRow): RowTrigger =>
-    pickedDecision[c.channelId] || decisions?.gates[c.channelId] ? 'decision' : c.trigger
+  // The binding's identity, not the row's: a platform channel coordinate repeats across bots,
+  // so the store composes organization + owning bot + conversation. Without the store there
+  // are no gates at all, and the choice is hidden — a bare channel id is then only a map key.
+  const bindingKey = (c: IntegrationChannelRow) => decisions?.gateKeyFor(botId, c.channelId) ?? c.channelId
+  const rowTrigger = (c: IntegrationChannelRow): RowTrigger => {
+    const key = bindingKey(c)
+    return pickedDecision[key] || decisions?.gates[key] ? 'decision' : c.trigger
+  }
   const pickTrigger = (c: IntegrationChannelRow, trigger: RowTrigger) => {
+    const key = bindingKey(c)
     if (trigger === 'decision') {
-      setPickedDecision((current) => ({ ...current, [c.channelId]: true }))
+      setPickedDecision((current) => ({ ...current, [key]: true }))
       return
     }
-    setPickedDecision((current) => Object.fromEntries(Object.entries(current).filter(([key]) => key !== c.channelId)))
-    decisions?.clearGate(c.channelId)
+    setPickedDecision((current) => Object.fromEntries(Object.entries(current).filter(([entry]) => entry !== key)))
+    decisions?.clearGate(key)
     // The CP trigger word is unchanged by a gate, so a row that never had one has nothing to write.
     if (trigger === c.trigger) return
     return setChannelTrigger(integrationId!, c.channelId, trigger)
@@ -821,16 +823,19 @@ export function IntegrationChannelList({
         </div>
         {trigger === 'decision' && decisions && (
           <DecisionBindingStrip
-            channelId={c.channelId}
+            bindingKey={bindingKey(c)}
             channelName={rowLabel(c)}
             canWrite={!!integrationId}
-            agentName={dispatchedAgent(c)?.label ?? ''}
+            // The same effective owner the row's default-dispatch picker shows: for a shared bot
+            // that may be a sibling install's agent, not the agent whose page this is.
+            agentName={(defaultAgent(c) ?? (agentId ? member(agentId) : undefined))?.label ?? ''}
             padX={padX}
-            onAbandon={() =>
+            onAbandon={() => {
+              const key = bindingKey(c)
               setPickedDecision((current) =>
-                Object.fromEntries(Object.entries(current).filter(([key]) => key !== c.channelId))
+                Object.fromEntries(Object.entries(current).filter(([entry]) => entry !== key))
               )
-            }
+            }}
           />
         )}
       </Fragment>

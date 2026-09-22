@@ -57,7 +57,7 @@ describe('DecisionBindingStrip', () => {
   it('opens the editor on the first decision with its answer keys enabled', async () => {
     const view = await render(
       <DecisionBindingStrip
-        channelId="#help"
+        bindingKey="org-test|support-bot|#help"
         channelName="#help"
         canWrite
         agentName="Billing"
@@ -75,7 +75,7 @@ describe('DecisionBindingStrip', () => {
   it('saves the gate and collapses to a summary that names the decision and its condition', async () => {
     const view = await render(
       <DecisionBindingStrip
-        channelId="#help"
+        bindingKey="org-test|support-bot|#help"
         channelName="#help"
         canWrite
         agentName="Billing"
@@ -89,7 +89,7 @@ describe('DecisionBindingStrip', () => {
       save?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(findByText(view, 'Support category')).toBeTruthy()
-    expect(findByText(view, 'billing ≥ 30%, technical ≥ 30%, sales ≥ 30%')).toBeTruthy()
+    expect(findByText(view, 'billing ≥ 50%, technical ≥ 50%, sales ≥ 50%')).toBeTruthy()
     expect(findByText(view, 'Edit')).toBeTruthy()
     // The editor is gone: no minimum-probability control survives the save.
     expect(view.querySelector('input[aria-label="Minimum probability for billing"]')).toBeNull()
@@ -99,7 +99,7 @@ describe('DecisionBindingStrip', () => {
     const onAbandon = vi.fn()
     const view = await render(
       <DecisionBindingStrip
-        channelId="#help"
+        bindingKey="org-test|support-bot|#help"
         channelName="#help"
         canWrite
         agentName="Billing"
@@ -116,7 +116,7 @@ describe('DecisionBindingStrip', () => {
   it('offers no editor controls without write permission', async () => {
     const view = await render(
       <DecisionBindingStrip
-        channelId="#help"
+        bindingKey="org-test|support-bot|#help"
         channelName="#help"
         canWrite={false}
         agentName="Billing"
@@ -126,5 +126,45 @@ describe('DecisionBindingStrip', () => {
     )
     expect(findByText(view, 'Save')).toBeUndefined()
     expect(findByText(view, 'Cancel')).toBeUndefined()
+  })
+
+  // A platform conversation coordinate is not an identity: two bots can both be installed in
+  // one Slack channel, and saving bot A's gate must not make bot B's row render it.
+  it('keeps two bots’ gates in one conversation apart', async () => {
+    const view = await render(
+      <>
+        <DecisionBindingStrip
+          bindingKey="org-test|bot-a|C123"
+          channelName="#help"
+          canWrite
+          agentName="Billing"
+          padX={18}
+          onAbandon={() => undefined}
+        />
+        <DecisionBindingStrip
+          bindingKey="org-test|bot-b|C123"
+          channelName="#help"
+          canWrite
+          agentName="Technical"
+          padX={18}
+          onAbandon={() => undefined}
+        />
+      </>
+    )
+    const saves = () => [...view.querySelectorAll('button')].filter((node) => node.textContent?.trim() === 'Save')
+    expect(saves()).toHaveLength(2)
+
+    await act(async () => {
+      saves()[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    // Bot A collapsed to its summary; bot B's editor is untouched.
+    expect(saves()).toHaveLength(1)
+    expect(
+      [...view.querySelectorAll('span')].filter(
+        (node) => node.textContent?.trim() === 'billing ≥ 50%, technical ≥ 50%, sales ≥ 50%'
+      )
+    ).toHaveLength(1)
+    expect(view.querySelectorAll('input[aria-label="Minimum probability for billing"]')).toHaveLength(1)
   })
 })

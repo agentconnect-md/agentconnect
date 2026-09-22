@@ -64,14 +64,15 @@ function Row({ label, value }: { label: ReactNode; value: ReactNode }) {
 }
 
 export function DecisionBindingStrip({
-  channelId,
+  bindingKey,
   channelName,
   canWrite,
   agentName,
   padX,
   onAbandon
 }: {
-  channelId: string
+  /** The gate's identity: organization, owning bot, and conversation (see `gateKey`). */
+  bindingKey: string
   /** The room as the console prints it, carried into the saved binding for the usage list. */
   channelName: string
   canWrite: boolean
@@ -87,7 +88,7 @@ export function DecisionBindingStrip({
   const search = useSearchParams()
   const { decisions, loading, gates, setGate, api } = useDecisionsPrototype()
   const { daemonId } = useDecisionProviders()
-  const saved = gates[channelId] ?? null
+  const saved = gates[bindingKey] ?? null
   const savedDecision = boundDecision(decisions, saved)
   const [draft, setDraft] = useState<DecisionGateBinding | null>(null)
   const [helpOpen, setHelpOpen] = useState(false)
@@ -153,6 +154,8 @@ export function DecisionBindingStrip({
         rows,
         unavailable: false
       })
+    } catch {
+      setTryResult({ matched: false, rows: [], unavailable: true })
     } finally {
       setTryRunning(false)
     }
@@ -393,7 +396,8 @@ export function DecisionBindingStrip({
             size="sm"
             disabled={!!invalidText}
             onClick={() => {
-              setGate(channelId, activeDraft)
+              // Saving the repaired gate is what clears its Needs review state.
+              setGate(bindingKey, { ...activeDraft, needsReview: false })
               setDraft(null)
               setTryResult(null)
             }}
