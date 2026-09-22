@@ -69,10 +69,16 @@ flowchart LR
 
 ### Conversations and activation
 
-Scope identity to AppID and distinguish group and DM addresses. Use a stable
+Scope user identity to AppID plus OpenID; `user_openid` and `member_openid`
+normalize into the same identity when their values match. Distinguish group and DM addresses. Use a stable
 logical session key per group, independent of the sender or quoted message;
 retain each sender's identity. Secret rotation must not change session identity.
-Do not equate group-member and DM OpenIDs or merge people by nickname.
+Never merge people by nickname.
+
+When an event supplies `author.username`, cache it under that app-scoped
+identity so later group and DM messages share the confirmed name. A nameless
+event never replaces a cached name. Derive the avatar URL from AppID plus OpenID
+inside the QQ module; do not call an external profile service.
 
 After admission checks, match pending answers before treating a message as a
 prompt. QQ group tasks require an explicit mention: the whole-group session key

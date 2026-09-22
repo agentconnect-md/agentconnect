@@ -80,6 +80,7 @@ describe('the read-port registry', () => {
   })
 
   it('labels the platforms whose errors name them', () => {
+    expect(platformLabel('qq')).toBe('QQ')
     expect(platformLabel('slack')).toBe('Slack')
     expect(platformLabel('telegram')).toBe('Telegram')
   })
@@ -106,6 +107,7 @@ describe('credentialed attachment tools', () => {
   it('keeps the learned tool names — the mechanism generalized, the names did not', () => {
     expect(attachmentReadToolsFor(['slack']).map((t) => t.name)).toEqual(['readSlackFile'])
     expect(attachmentReadToolsFor(['telegram']).map((t) => t.name)).toEqual(['readTelegramFile'])
+    expect(attachmentReadToolsFor(['qq']).map((t) => t.name)).toEqual(['readQQFile'])
   })
 
   it('emits in registry order, not in the caller-supplied order', () => {
@@ -129,12 +131,13 @@ describe('credentialed attachment tools', () => {
   })
 
   it('lists every injectable name for the permission auto-allow set', () => {
-    expect(allAttachmentReadTools().map((t) => t.name)).toEqual(['readSlackFile', 'readTelegramFile'])
+    expect(allAttachmentReadTools().map((t) => t.name)).toEqual(['readSlackFile', 'readTelegramFile', 'readQQFile'])
   })
 
   it('recognizes exactly the declared tool names at dispatch', () => {
     expect(isAttachmentReadTool('readSlackFile')).toBe(true)
     expect(isAttachmentReadTool('readTelegramFile')).toBe(true)
+    expect(isAttachmentReadTool('readQQFile')).toBe(true)
     expect(isAttachmentReadTool('readDiscordFile')).toBe(false)
     expect(isAttachmentReadTool('getCurrentChannel')).toBe(false)
     expect(isAttachmentReadTool('')).toBe(false)

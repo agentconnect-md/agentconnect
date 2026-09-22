@@ -1055,6 +1055,42 @@ describe('R1/R2a persistence foundation', () => {
     })
   })
 
+  it('lets a run the reaper orphaned take its review reservation, and refuses one that completed (#2247)', async () => {
+    const repo = new PgHookRepo(prisma)
+    const hookId = HookId(randomUUID())
+    const agentId = AgentId(randomUUID())
+    const create = (deliveryKey: string, extra: { status?: 'success'; completedAt?: Date } = {}) =>
+      prisma.hookRun.create({
+        data: {
+          hookId,
+          orgId: DEFAULT_ORG_ID,
+          deliveryKey,
+          startedAt: new Date('2026-07-11T00:00:00.000Z'),
+          turnStartedAt: new Date('2026-07-11T00:00:01.000Z'),
+          agentId,
+          configRevision: 1n,
+          dispatchRevision: 1n,
+          dispatchDaemonId: D1,
+          ...extra
+        }
+      })
+    await create('orphaned')
+    await create('completed', { status: 'success', completedAt: new Date('2026-07-11T00:00:30.000Z') })
+    expect(await repo.reapStaleRuns(new Date('2026-07-11T00:31:00.000Z'))).toBe(1)
+    const reservation = (deliveryKey: string) => ({
+      deliveryKey,
+      attemptId: randomUUID(),
+      agentId,
+      configRevision: 1n,
+      dispatchRevision: 1n,
+      dispatchDaemonId: D1,
+      requestedEvent: 'APPROVE' as const,
+      requestedVerdict: 'pass' as const
+    })
+    expect(await repo.reserveReviewAttempt(hookId, D1, reservation('orphaned'))).toBe('reserved')
+    expect(await repo.reserveReviewAttempt(hookId, D1, reservation('completed'))).toBe('rejected')
+  })
+
   it('keeps late review/report/reaper state off a tombstoned generation and drains only cleanup', async () => {
     const repo = new PgHookRepo(prisma)
     const hookId = HookId(randomUUID())

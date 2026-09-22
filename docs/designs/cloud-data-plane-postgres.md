@@ -9,11 +9,11 @@ This rule applies to every process started with `--k8s`. Since the per-org execu
 envelope was deleted, that means the daemon pool's members; there is no
 single-organization envelope daemon any more, and the one-shot `reconcile` job opens no
 store at all — it needs the sandbox API and a control-plane connection, nothing durable.
-Local and
-self-hosted daemons started without `--k8s` keep their daemon-local SQLite store and
-never read the cloud data-plane configuration.
+A daemon
+started without `--k8s` keeps its daemon-local SQLite store unless its owner opts in
+([below](#a-self-hosted-daemon-on-the-shared-store)), and never reads the mount.
 
-The daemon accepts no database CLI flag or environment variable. The deployment must mount a Kubernetes Secret at `/var/run/ac-data-plane/config.json`:
+The daemon accepts no database CLI flag or environment variable. Under `--k8s` the deployment must mount a Kubernetes Secret at `/var/run/ac-data-plane/config.json`:
 
 ```json
 {
@@ -27,6 +27,40 @@ The daemon accepts no database CLI flag or environment variable. The deployment 
 connects to this one database and shares one table set for every organization
 managed by the Control Plane. There is no per-org database setting. The connection
 file should therefore be mounted from a Secret, not a ConfigMap.
+
+## A self-hosted daemon on the shared store
+
+A daemon started without `--k8s` can run the same store (#2188), so the members of one
+daemon group share session rows and transcripts the way pool members do. Its
+`config.json` names a connection file in the mount's shape, resolved against the daemon
+root:
+
+```json
+{ "store": { "backend": "postgres", "configFile": "data-plane.json" } }
+```
+
+- The default is `{ "backend": "sqlite" }`. The setting is the machine owner's: it is
+  read at start, and `config/push` cannot set it. Under `--k8s` the mount is read
+  whatever the file says.
+- The daemon opens one store for all its agents, so the setting moves every agent on the
+  machine, not only its group agents. A group that wants shared history sets it on every
+  member against one database; a group without it keeps working, and history stays on
+  the member that ran each conversation.
+- It needs the Control Plane, which names the organization every row is attributed to; a
+  daemon with `controlPlane.enabled: false` refuses to start on it. An agent defined in
+  the machine's own agents directory has no organization, and its id is unique only on
+  that machine, so it is not served on this store: the daemon logs it and skips it.
+- Nothing is migrated. Switching a machine to `postgres` leaves `state/local.sqlite` in
+  place and unread; the machine starts with the database's history, which is empty for
+  its own past conversations. Switching back does the reverse.
+- The file holds a credential. Keep it readable by the daemon's user only.
+
+A shared store carries rows, not runtimes. A session that ran on its holder keeps its
+runtime state on that machine, so a successor holder cannot resume it; a webchat turn
+for it is refused with `content_elsewhere`
+([webchat-multi-agents.md](webchat-multi-agents.md) §6.1). A session placed on an
+executor ([session-executors.md](session-executors.md) §7) resumes from the successor,
+which finds the executor on the row.
 
 ## Store boundary
 

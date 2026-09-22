@@ -776,6 +776,7 @@ idle --(message/cron synthetic message)--> prompting (session/prompt)
 prompting --(streaming session/update)--> idle (turn ends with stopReason)
 idle --(cancel)--> cancelling (session/cancel, 30s forced backstop) --> idle
 prompting --(no runtime signal > turnStallTimeoutMs)--> cancelling (stall watchdog: ⚠️ notice, session/cancel, same backstop) --> idle
+prompting | resuming | cancelling --(no turn held by this process, untouched > agentMaxLifetimeMs)--> idle (a process died mid-turn)
 idle --(long inactivity / TTL)--> closed (metadata retained; body in Local Store)
 closed --(new thread message)--> resuming (session/load) --> idle
 ```
@@ -794,6 +795,18 @@ through the `!stop` path: `session/cancel`, the `cancelBackstopMs` force-stop
 if the runtime ignores it, and queued messages fail-stopped. A prompt the
 runtime rejects with "Session not found" also clears the row's `acpSessionId`,
 so the next message opens a fresh session instead of repeating the failure.
+
+**A turn a dead process left behind.** A daemon killed mid-turn leaves its row
+in `prompting`, `resuming` or `cancelling`, and none of its in-process repair
+paths ran, so the row would never close or be collected. The idle sweep puts
+it back to `idle` when this daemon serves the agent, holds no turn of that
+session, and the row has been untouched for longer than
+`limits.agentMaxLifetimeMs`; the TTL close in the same pass then closes it.
+The write is conditional on the row still being exactly what was read, so a
+turn that took it meanwhile wins. It is never done at startup: on a shared
+store another member may be running that turn (#2245). A Dream's row is
+exempt: a Dream runs off the chat-turn queue, stays `prompting` for its whole
+run, and its runner owns the row and its crash recovery.
 
 ### 7.4 Message-to-Execution Flow
 

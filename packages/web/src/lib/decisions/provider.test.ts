@@ -11,7 +11,7 @@ const metadata = {
   createdBy: 'example-user',
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
-  providerId: 'typesafe-byok',
+  providerId: 'typesafe',
   model: 'jev-1.13.0',
   visibility: 'org' as const,
   sharedWith: []

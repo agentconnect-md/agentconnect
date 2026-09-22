@@ -3447,6 +3447,31 @@ export class LocalStore {
     return closed
   }
 
+  /** Rows left mid-turn and untouched since `before` (#2245): candidates only — the caller proves no turn runs them. */
+  async listAbandonedTurnSessions(
+    before: number
+  ): Promise<{ key: string; agentId: string; platform: string; state: SessionRecord['state']; updatedAt: number }[]> {
+    return (await this.db
+      .prepare(
+        "SELECT key, agentId, platform, state, updatedAt FROM sessions WHERE state IN ('prompting', 'resuming', 'cancelling') AND updatedAt < ?"
+      )
+      .all(before)) as {
+      key: string
+      agentId: string
+      platform: string
+      state: SessionRecord['state']
+      updatedAt: number
+    }[]
+  }
+
+  /** Put an abandoned row back to `idle` only while it is still the row that was read; `updatedAt` stays its last activity. */
+  async releaseAbandonedTurnSession(key: string, state: SessionRecord['state'], updatedAt: number): Promise<boolean> {
+    const res = await this.db
+      .prepare("UPDATE sessions SET state = 'idle' WHERE key = ? AND state = ? AND updatedAt = ?")
+      .run(key, state, updatedAt)
+    return Number(res.changes) > 0
+  }
+
   /** Retention-GC candidates (#485): sessions whose last activity (`updatedAt`)
    *  is older than `cutoff` and that are not mid-turn. Unlike listSessions this
    *  includes rows with no ACP id — a session that never bound one can still own

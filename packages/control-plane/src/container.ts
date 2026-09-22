@@ -79,6 +79,7 @@ import {
   PgRelayRepo,
   PgAgentRepo,
   PgAgentSecretStore,
+  PgProviderKeyStore,
   PgAgentConfigWriter,
   PgMemoryConnectionWriter,
   PgAssignmentRepo,
@@ -444,6 +445,7 @@ export function buildContainer(
     // Owns its transaction: install/revoke each write two tables behind the
     // credential-generation fence, and serialize on the bot row (§5.3).
     botCredential: new PgBotCredentialWriter(prisma, secretCipher),
+    providerKey: new PgProviderKeyStore(prisma, secretCipher),
     agentSecret: new PgAgentSecretStore(prisma, secretCipher),
     agentConfig: new PgAgentConfigWriter(prisma, secretCipher),
     mcpProvider: new PgMcpProviderRepo(prisma),
@@ -1696,6 +1698,7 @@ export function buildContainer(
       bot: repos.bot,
       botSecret: repos.botSecret,
       botCredential: repos.botCredential,
+      providerKey: repos.providerKey,
       agentSecret: repos.agentSecret,
       agentConfig: repos.agentConfig,
       mcpProvider: repos.mcpProvider,

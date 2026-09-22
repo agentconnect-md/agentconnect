@@ -8,6 +8,7 @@ function consoleKey<const Resource extends string, const Parts extends readonly 
 
 /** Canonical org-scoped SWR keys. Fetchers must read every request parameter from these keys. */
 export const consoleKeys = {
+  providerKeys: (orgId: string | null | undefined) => consoleKey(orgId, 'provider-keys'),
   agents: (orgId: string | null | undefined) => consoleKey(orgId, 'agents'),
   daemons: (orgId: string | null | undefined) => consoleKey(orgId, 'daemons'),
   /** Fleet capability — split off the liveness poll because it only moves when a daemon

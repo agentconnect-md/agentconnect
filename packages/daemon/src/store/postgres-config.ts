@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { z } from 'zod'
 
-/** Kubernetes Secret mount consumed only by `--k8s`; no CLI/env credential surface exists. */
+/** The pool's Secret mount, read under `--k8s`; elsewhere only a `postgres` store's own file names a database, never a CLI flag or env. */
 export const DATA_PLANE_CONFIG_PATH = '/var/run/ac-data-plane/config.json'
 
 const PostgresUrl = z

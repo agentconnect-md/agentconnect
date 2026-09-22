@@ -23,6 +23,8 @@ export interface Attachment extends Omit<PlatformAttachment, 'sourceUrl'> {
   size?: number
   /** Auth-gated provider URL/key, absent for an inline webchat upload. */
   sourceUrl?: string
+  /** Platform-owned read tool for provider URLs the agent cannot fetch directly. */
+  readerToolName?: string
   /** Already-bounded bytes from webchat, absent for provider-backed attachments. */
   inlineData?: Buffer
   // Provider-owned fallback when the image cannot be downloaded or displayed by the runtime.

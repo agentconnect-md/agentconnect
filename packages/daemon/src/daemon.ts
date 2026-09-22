@@ -71,7 +71,7 @@ import {
 } from '@agentconnect.md/protocol'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { basename, dirname, join, relative, sep } from 'node:path'
+import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { installMicrosandbox } from './microsandbox/install.js'
 import { microsandboxRuntimeHome, prepareMicrosandboxLaunch } from './microsandbox/launch.js'
 import type { MicrosandboxManager, MicrosandboxEnvironment } from './microsandbox/driver.js'
@@ -521,7 +521,8 @@ import { CpMemoryConnectionRegistry, type MemoryPluginConnector } from './cp/mem
 import { MemoryCaptureOutbox } from './memory-plugin/outbox.js'
 import { managedDistillCapture, withManagedDistill } from './memory/managed-distill-outbox.js'
 import { defaultMemoryPluginMetrics } from './memory-plugin/metrics.js'
-import { openMountedPostgresDataPlane, type PostgresDataPlane } from './store/postgres-data-plane.js'
+import { openPostgresDataPlane, type PostgresDataPlane } from './store/postgres-data-plane.js'
+import { DATA_PLANE_CONFIG_PATH } from './store/postgres-config.js'
 import type { EvaluationCapabilityProfile } from './evaluation/events.js'
 import { DaemonEvaluationHooks, type DaemonEvaluationHost } from './evaluation/daemon-hooks.js'
 import { SessionMetadataOutbox, type SessionMetadataHost } from './store/session-metadata-outbox.js'
@@ -935,6 +936,8 @@ export class Daemon {
   // mirrors only the loaded local files and is rebuilt each reconcile.
   private agents = new Map<string, LoadedAgent>()
   private fileAgents = new Map<string, LoadedAgent>()
+  // File-authored agents a self-hosted shared store cannot attribute to an organization (#2188), warned once each.
+  private readonly unattributableFileAgents = new Set<string>()
   // Every live ACP host by HostKey (agent id, or agent id + session key for a confined session); every per-host map below is keyed alike.
   private hosts = new Map<HostKey, AcpHost>()
   // Per-host launch facts: the agent dir (the roster entry is gone when a removed agent's host stops) and the launch cwd.
@@ -1535,8 +1538,8 @@ export class Daemon {
        *  outcome the mode exists to prevent, so it must not be a fallback. Tests override this
        *  to exercise k8s-mode policy without a cluster. */
       startK8sPlane?: typeof startK8sRuntimePlane
-      /** Test seam only; production `--k8s` always reads the fixed Secret mount. */
-      openDataPlane?: typeof openMountedPostgresDataPlane
+      /** Test seam only; production reads the fixed Secret mount under `--k8s`, else the `postgres` store's file. */
+      openDataPlane?: typeof openPostgresDataPlane
       /** Test seam for the pool member startup barrier; production waits for CP register/ok. */
       startControlPlane?: (root: string) => Promise<void> | undefined
       /** Test seams for local catalog resolution and executable/state filtering. */
@@ -2111,18 +2114,29 @@ export class Daemon {
     }
   }
 
-  /** Phase 4 — under --k8s only: the shared data plane, then the execution plane the workspaces resolve through. */
+  /** Phase 4 — the shared data plane (under --k8s, or a `postgres` store), then under --k8s the execution plane the workspaces resolve through. */
   private async startClusterPlanes(root: string, cfg: Config): Promise<void> {
-    if (this.k8s) {
-      const openDataPlane = this.opts.openDataPlane ?? openMountedPostgresDataPlane
+    // `--k8s` needs the pool's shared store whatever the file says; any other daemon opens one only when its owner asked (#2188).
+    const dataPlaneConfig = this.k8s
+      ? DATA_PLANE_CONFIG_PATH
+      : cfg.store.backend === 'postgres'
+        ? resolve(root, cfg.store.configFile)
+        : undefined
+    if (dataPlaneConfig !== undefined) {
+      // The shared store attributes every row to its agent's organization, which only the Control Plane knows.
+      if (!this.k8s && !cfg.controlPlane?.enabled)
+        throw new Error('store: a postgres store needs the control plane, which names the organization of every row')
+      const openDataPlane = this.opts.openDataPlane ?? openPostgresDataPlane
       this.dataPlane = await openDataPlane(
         (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
         (error) => {
           this.log.error(`data-plane: PostgreSQL persistence failed — ${formatErr(error)}`)
           this.draining = true
           this.requestExit(1)
-        }
+        },
+        dataPlaneConfig
       )
+      if (!this.k8s) this.log.info('store: PostgreSQL (a shared store; this machine keeps no local session history)')
     }
     if (this.k8s) {
       // A pod's terminationGracePeriodSeconds must exceed this, or the kubelet SIGKILLs
@@ -2917,6 +2931,8 @@ export class Daemon {
       now: () => Date.now(),
       canRun: (ctx) => this.toolTurnRunnable(ctx),
       gatewayFor: (integrationId) => this.connForIntegration(integrationId),
+      attachmentReaderFor: (integrationId) =>
+        this.connForIntegration(integrationId) ?? this.QQConnByIntegration.get(integrationId),
       // The live turn's own delivery thread, which `activeTurnShare` already records per
       // turn from `plan.thread`. The bridge context froze the opening turn's value at
       // registration, and a session that spans several threads outgrows it immediately.
@@ -3922,6 +3938,18 @@ export class Daemon {
       for (const previous of preserved.values()) {
         if (!agents.some((agent) => agent.dir === previous.dir)) agents.push(previous)
       }
+    }
+
+    // A file-authored agent belongs to no organization, and its id is unique only on this machine (#2188).
+    if (this.dataPlane && !this.k8s) {
+      for (const agent of agents) {
+        if (this.unattributableFileAgents.has(agent.id)) continue
+        this.unattributableFileAgents.add(agent.id)
+        this.log.warn(
+          `agent "${agent.id}" in ${this.agentsDir} is not served: a postgres store holds Control Plane agents only`
+        )
+      }
+      agents = []
     }
 
     // §6.4: an integration entry whose opaque `config` its platform module
@@ -9588,15 +9616,16 @@ export class Daemon {
   }
 
   /** The op-switch behind {@link handleRelayMsg} (dedup handled by the caller). */
-  /** Whether this daemon is neither the conversation's recorder nor a holder of the store it wrote to
-   *  (§7): the rows are the proof — a shared store puts them here too, a private one does not. A
-   *  conversation with no session yet, and a relay that sends no recorder, are served as before. */
+  /** Whether this daemon cannot continue a conversation another member recorded (#2218): it lacks the row, or has it without a reachable runtime (#2188). */
   private async webchatContentIsElsewhere(msg: RdMsgWebchat, sessionKey: string): Promise<boolean> {
     const recorded = msg.recordedDaemonId
     // A session-targeted continuation is fenced by the Control Plane at mint and at verify.
     if (!recorded || msg.targetSessionId !== undefined || recorded === this.cfg.daemonId) return false
     try {
-      return (await this.store.getSession(sessionKey)) === undefined
+      const row = await this.store.getSession(sessionKey)
+      if (row === undefined) return true
+      // The runtime of a session that ran on its holder stayed on that machine; a placed one's environment is still where it was.
+      return !this.k8s && !row.executorDaemonId
     } catch (err) {
       this.log.warn(`webchat: reading ${sessionKey} to place its content failed: ${formatErr(err)}`)
       return false
@@ -18254,6 +18283,27 @@ export class Daemon {
     }
   }
 
+  /** Whether this process holds a turn of `key`: admitted, dispatching, or waiting in the gate. */
+  private turnRunsHere(key: string): boolean {
+    return (
+      this.inflight.has(key) ||
+      this.activeDispatchDoneByKey.has(key) ||
+      [...this.pending.values()].some((p) => p.plan.sessionKey === key)
+    )
+  }
+
+  /** #2245: a row a dead process left mid-turn goes back to `idle` here, never at boot — on a shared store a peer may be running it. */
+  private async releaseAbandonedTurns(now: number): Promise<void> {
+    const rows = await this.store.listAbandonedTurnSessions(now - this.cfg.limits.agentMaxLifetimeMs)
+    let released = 0
+    for (const row of rows) {
+      // A Dream runs off the chat-turn queue, and its runner owns its row and its crash recovery.
+      if (row.platform === 'dream' || !this.servesAgent(row.agentId) || this.turnRunsHere(row.key)) continue
+      if (await this.store.releaseAbandonedTurnSession(row.key, row.state, row.updatedAt)) released += 1
+    }
+    if (released) this.log.warn(`idle: released ${released} session(s) an earlier process left mid-turn`)
+  }
+
   /** Session-retention GC (#485): delete sessions untouched (sessions.updatedAt)
    *  for longer than `cfg.sessions.retention`, removing each one's per-session
    *  worktree first. Runs at startup and hourly on the idle sweep. Auto-deletion
@@ -18276,9 +18326,7 @@ export class Daemon {
     return (
       !this.servesAgent(rec.agentId) ||
       this.drainingAgents.has(rec.agentId) ||
-      this.inflight.has(rec.key) ||
-      this.activeDispatchDoneByKey.has(rec.key) ||
-      [...this.pending.values()].some((p) => p.plan.sessionKey === rec.key) ||
+      this.turnRunsHere(rec.key) ||
       (await this.store.sessionHasPendingInboxRows(rec.key)) ||
       !this.sessionSdkQuiescent(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId)
     )
@@ -18756,6 +18804,10 @@ export class Daemon {
       // Backstop for receipts this member came to own without a sweep of its own (a lapsed peer's).
       void this.drainSessionPurges()
     }
+    // Before the TTL close, so a released row closes in this same pass.
+    await this.releaseAbandonedTurns(now).catch((err) =>
+      this.log.warn(`idle: releasing sessions left mid-turn failed (${formatErr(err)})`)
+    )
     const ttl = this.cfg.limits.agentIdleTimeoutMs
     const maxLifetime = this.cfg.limits.agentMaxLifetimeMs
     // §7.3 idle→closed: a thread untouched past the TTL stops catching up — UNLESS it

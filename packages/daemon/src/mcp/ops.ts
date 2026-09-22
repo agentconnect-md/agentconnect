@@ -461,14 +461,18 @@ async function executeRegisteredTool(
     })
   }
 
-  // Past this point are the session-bound read tools — they need the session's message
-  // gateway (bound to the integration that triggered this session). A memory-only
-  // session has no `integrationId` and never carries these tools, so this only fires
-  // if a read tool is called without a live connection.
+  if (isAttachmentReadTool(name)) {
+    const reader = ctx.integrationId
+      ? (deps.attachmentReaderFor?.(ctx.integrationId) ?? deps.gatewayFor(ctx.integrationId))
+      : undefined
+    if (!reader) throw new Error(`no live attachment connection for integration ${ctx.integrationId ?? '(none)'}`)
+    return await readAttachment(ctx, args, deps, reader)
+  }
+
+  // The remaining session-bound read tools need the session's generic message gateway.
   const gw = ctx.integrationId ? deps.gatewayFor(ctx.integrationId) : undefined
   if (!gw) throw new Error(`no live platform connection for integration ${ctx.integrationId ?? '(none)'}`)
 
-  if (isAttachmentReadTool(name)) return await readAttachment(ctx, args, deps, gw)
   if (name === 'getCurrentChannel')
     return await getCurrentChannel(ctx, gw, deps.deliveryThreadNow?.(ctx) ?? ctx.deliveryThread)
   throw new Error(`unknown tool: ${name}`)

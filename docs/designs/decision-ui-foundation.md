@@ -101,16 +101,19 @@ Invalid fixture output becomes `unavailable`, never an invented negative answer.
 
 ## Provider ownership and scenarios
 
-Provider configuration belongs to the daemon environment or secret-backed host
-configuration. The API exposes only catalog IDs, supported models/question types,
-BYOK versus AC credits, and readiness. Each Decision keeps its own model selection.
-There is no endpoint/key editor, provider credential mutation, ACP runtime picker,
-or revision field in this contract. Catalog IDs are resolved on the evaluation
-daemon; equal logical IDs can use different daemon-local credentials.
+Organization owners configure keys in **Infra → Provider keys**, backed by the
+real organization-scoped REST API. The Decision API remains a secret-free catalog
+projection: one logical provider ID, supported models/question types, the resolved
+BYOK or AC-credits source (or `null` when unconfigured), and readiness. Each Decision
+keeps its own model selection. The Decision editor does not own key mutation or an
+endpoint editor. See [credential resolution](./decisions.md#provider-keys-and-credential-resolution)
+for the real configuration surface and the remaining daemon/Cloud integration.
 
-`createDecisionMockApi({ scenario })` supports `ready`, `missing_credentials`,
-`needs_review`, `provider_unavailable`, `pending_sync`, `daemon_offline`, and
-`insufficient_credits`. The default catalog includes BYOK and AC credits. Scenarios
+`createDecisionMockApi({ scenario })` supports `ready`, `ac_credits`,
+`missing_credentials`, `needs_review`, `provider_unavailable`, `pending_sync`,
+`daemon_offline`, and `insufficient_credits`. The default catalog resolves
+`typesafe` to BYOK; Cloud scenarios use the same provider ID with `ac_credits` as
+the resolved source. These fixtures do not read or use the real saved key. Scenarios
 show configuration readiness separately from an attempted evaluation returning
 `unavailable`; the latter previews eligible continuation to constrained/default
 recipients rather than a successful match.

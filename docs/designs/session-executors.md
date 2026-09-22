@@ -269,9 +269,9 @@ The wire contract is unchanged; only the paths move.
 **Configured is what a machine offers; reported is what is effective.** A strategy
 whose probe fails at startup is reported unavailable with its reason, the way the
 daemon already reports `sandboxUnavailable`; placement reads only the effective
-table. The console keeps showing the reason exactly as it does for a daemon whose
-sandbox is down. The table is a process-level fact, so it rides registration beside
-`sandboxUnavailable`, not the heartbeat (§6).
+table. The console does not display the table; a daemon's own sandbox keeps its
+unavailable reason exactly as before. The table is a process-level fact, so it rides
+registration beside `sandboxUnavailable`, not the heartbeat (§6).
 
 **Placement is a match.** An agent asks for a strategy; the holder places the session
 on an executor whose effective table offers it. In v1 the ask is the existing
@@ -983,9 +983,10 @@ off, enforced where the facts are served: with the switch off,
 has the question of sessions already placed). Either consent alone would let one
 party volunteer the other.
 
-The console adds no new kind of row. On the Infra page each daemon shows the
-sessions it hosts and its capacity beside the strategies it offers. A group has one
-switch, "spread sessions across the group", default off. A session's detail shows
+The console adds no new kind of row, and no per-daemon executor readout: the hosted
+count, the capacity and the strategy table are reported for placement, not for
+display (#2232 took them off the daemon card). A group has one switch, "spread
+sessions across the group", default off. A session's detail shows
 which daemon executes it, or why it stayed on its holder (§7). The existing "Run in
 sandbox" state and its unavailable reason keep their meaning per strategy.
 
@@ -1026,8 +1027,8 @@ feature shipping:
 **The feature is seven pull requests.** The earlier estimate of three weeks of
 focused work predates both the groundwork and the cuts, and each shortens it; the
 week of validation on a real multi-machine deployment, which the requester of #2111
-offered to run, stands. F1, F2a, F2b, F3 and F4 have landed; F1b is the revision that
-took the shared store out, and F5 follows it.
+offered to run, stands. All seven have landed; F1b is the revision that took the
+shared store out.
 
 | PR  | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1037,7 +1038,7 @@ took the shared store out, and F5 follows it.
 | F1b | The shared store leaves the design: `launchId` on `prepare` and the executor-allocated `generation` on its reply, the CP's adjacency of the last duty read and the send, the relayed `executor/release`, the `sessionKey` hint on `executor/candidates`, and the backstop reconcile on `agent/exists` plus this machine's retention. The holder side that SENDS a release is F3.                                                                                                                   |
 | F3  | The holder: `ExecutorPlane` and its `ShimEndpointProvider`, per-session plane resolution, the birth predicate with its recorded reason, minting a `launchId` per launch and binding at the generation the reply returns, launch retirement at idle and on a retired-launch refusal, sending `executor/release` at retirement, failover through the candidates hint, the lazy loss rule; and a two-daemon, one-CP integration fixture covering holder failover, executor loss and executor restart. |
 | F4  | The `microsandbox` strategy: "prepare an environment" split from "spawn the runtime" in the microsandbox driver, the pipe into the guest over agentd's TCP stream, the session's state in an executor-local mount.                                                                                                                                                                                                                                                                                 |
-| F5  | Console: the group switch, per-daemon hosting and capacity, a session's executor or the reason it stayed home.                                                                                                                                                                                                                                                                                                                                                                                     |
+| F5  | Console: the group switch, and a session's executor or the reason it stayed home. Per-daemon hosting and capacity landed with it and were removed in #2232.                                                                                                                                                                                                                                                                                                                                        |
 
 Documents travel with the code that changes them: the pointers in the group and
 backend designs already exist, and the workspace model's tier rule gains its
@@ -1075,14 +1076,16 @@ reused as is. The shim, at twice the size of that whole path, is reused unchange
 - **Default for the group switch** (proposed: off, explicit opt-in).
 - **What a shared data-plane store would still buy.** Nothing here needs one any
   more, and a group that has one gains one thing: a successor holder inherits the
-  session's transcript and ACP resume state, instead of attaching to the environment
-  with the work in it but no history (§7). That is a property of the group, not of
-  spreading: a group without a shared store already loses a session's history when a
-  duty moves, spread or not. Making the daemon's store backend configurable is separate
-  ([#2188](https://github.com/agentconnect-md/agentconnect/issues/2188)): today a
-  daemon opens one store for all its agents and only does so under `--k8s`, which is
-  precisely why requiring it here would have put every ordinary agent on a lending
-  machine onto PostgreSQL (§15).
+  session's transcript, and for a session placed on an executor its ACP resume state
+  too, instead of attaching to the environment with the work in it but no history
+  (§7). A session that ran on its holder keeps its runtime state on that machine
+  either way. That is a property of the group, not of spreading: a group without a
+  shared store already loses a session's history when a duty moves, spread or not.
+  The store backend became a daemon setting in
+  [#2188](https://github.com/agentconnect-md/agentconnect/issues/2188)
+  ([cloud-data-plane-postgres.md](cloud-data-plane-postgres.md)); a daemon still
+  opens one store for all its agents, which is precisely why requiring it here would
+  have put every ordinary agent on a lending machine onto PostgreSQL (§15).
 
 ## 14. Non-goals
 
@@ -1095,10 +1098,8 @@ reused as is. The shim, at twice the size of that whole path, is reused unchange
 - Carrying a session's transcript or ACP resume state across holder failover. That
   needs the group's shared data-plane store, which this design deliberately does not
   require (§13); without one a successor attaches to the environment and its work,
-  and starts a fresh conversation over it.
-- Making the daemon's store backend configurable, so a group could have a shared
-  store without Kubernetes. Separate, and tracked as
-  [#2188](https://github.com/agentconnect-md/agentconnect/issues/2188).
+  and starts a fresh conversation over it. The store itself is a separate daemon
+  setting ([#2188](https://github.com/agentconnect-md/agentconnect/issues/2188)).
 - Adopting running VMs or detached shims across an executor restart (§9).
 - NAT traversal, relays, or an executor behind a firewall the holder cannot reach.
 - Changing `sandbox.backend`, `security.requireSandbox` or `runInSandbox`. §5 records
@@ -1214,9 +1215,8 @@ Removed by the 2026-09-21 revision:
 
 - **Allocating the launch's binding generation from the group's shared store.** It
   was the natural place — `LaunchRegistry.recordLaunch` already allocates per subject
-  there — but the daemon opens **one** store for all its agents, and only under
-  `--k8s`: `startClusterPlanes` is the sole caller, and `store/postgres-config.ts`
-  states outright that no CLI or environment credential surface exists. Requiring it
+  there — but the daemon opens **one** store for all its agents, and at the time only
+  under `--k8s` (#2188 has since made it a setting, still one store per daemon). Requiring it
   would have made a machine that merely lends compute run every one of its own
   agents on PostgreSQL, which is precisely the cost the requester of #2111 does not
   want and #2188 exists to remove. Allocating on the executor needs no store at all,

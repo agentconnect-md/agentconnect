@@ -303,18 +303,18 @@ describe('Decision mock API', () => {
     expect((await createDecisionMockApi({ seed }).getRouting('support-bot')).readiness.status).toBe('needs_review')
   })
 
-  it('exposes daemon-scoped BYOK/Cloud options without secrets or a provider mutation API', async () => {
+  it('resolves BYOK or Cloud behind the same provider identity without exposing credentials', async () => {
     const api = createDecisionMockApi()
-    expect((await api.listProviders('example-daemon')).map((provider) => provider.source)).toEqual([
-      'byok',
-      'ac_credits'
-    ])
+    expect((await api.listProviders('example-daemon')).map((provider) => provider.source)).toEqual(['byok'])
     expect(await api.listProviders('unknown-daemon')).toEqual([])
     await expect(api.createDecision({ ...draft('needs-response'), model: 'unsupported-model' })).rejects.toMatchObject({
       status: 400
     })
     const seed = createDecisionMockSeed('insufficient_credits')
-    expect(seed.decisions.every((entry) => entry.providerId === 'typesafe-cloud')).toBe(true)
+    expect(seed.decisions.every((entry) => entry.providerId === 'typesafe')).toBe(true)
+    expect(seed.providers[0]!.source).toBe('ac_credits')
+    expect(createDecisionMockSeed('ac_credits').providers[0]!.readiness.status).toBe('ready')
+    expect(createDecisionMockSeed('missing_credentials').providers[0]!.source).toBeNull()
     expect(
       (await createDecisionMockApi({ seed }).listChannels()).find((channel) => channel.id === 'help-channel')!.readiness
         .status

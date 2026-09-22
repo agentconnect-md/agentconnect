@@ -235,9 +235,10 @@ export class CodeHostReviewBrokerService {
     }
     const hookId = HookId(input.hookId)
     const run = await this.deps.hook.getRun(hookId, input.deliveryKey)
+    // A run the reaper orphaned is still the accepted run: its verdict replaces the timeout, as a late completion does (#2247).
     if (
       !run ||
-      run.status !== 'running' ||
+      (run.status !== 'running' && run.orphanedAt === null) ||
       run.agentId === null ||
       !snapshotMatches(run, input.snapshot, reportingDaemonId)
     ) {

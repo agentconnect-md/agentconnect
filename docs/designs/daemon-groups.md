@@ -34,7 +34,7 @@ member-shaped — none of it knows or cares whether the holder is a Pod or a lap
 
 | Need                                                                               | Landed as                                                                                                                                                                              |
 | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A duty moving between machines needs the agent's durable state reachable on both   | Shared Postgres data plane (#958). For local groups this is the one operational prerequisite: the members must share a Postgres, and workspaces must be re-cloneable                   |
+| A duty moving between machines needs the agent's durable state reachable on both   | Shared Postgres data plane (#958); optional for a local group, where each member opts in with `store.backend: postgres` (#2188). Workspaces must be re-cloneable either way            |
 | No two members serve one agent across a partition                                  | Daemon self-fence with per-group deadlines anchored on CP-confirmed renewal, plus the general withdrawal guard (#976)                                                                  |
 | A member that wins a duty for an agent it never had can serve it                   | Install-on-grant: `duty/fetch` pulls the bundle, authorized by holding the duty; the grant is applied only after the install (#972, #989)                                              |
 | Every later update reaches whoever holds the agent, not whoever it was placed on   | `AgentDelivery` + `servedAgents` (#978); MCP/memory definitions ride the bundle and the roster (#989)                                                                                  |
@@ -280,9 +280,15 @@ the set explicitly.
 
 These are the operator's, not the code's:
 
-- **Shared Postgres.** Group members must point at one data-plane Postgres, the same
-  way pool members do. A duty that moves to a member whose store does not have the
-  agent's history is not a move, it is a loss.
+- **A shared store, if history must follow the duty.** A group runs without one. A duty
+  that moves then carries the agent, its workspaces and its placed sessions'
+  environments, but each conversation's transcript stays on the member that ran it, and
+  a webchat turn that reaches another member is refused rather than answered blind.
+  Members that set `store: { "backend": "postgres", "configFile": … }` against one
+  database share those rows, the same way pool members do
+  ([cloud-data-plane-postgres.md](cloud-data-plane-postgres.md)). A session that ran on
+  its holder still keeps its runtime state on that machine; one placed on an executor
+  resumes from the successor.
 - **Re-cloneable workspaces.** A GitHub-mode workspace re-materializes on the new holder
   from its repo; a scratch workspace does not follow. This is already true for the pool
   and is documented there; a group inherits the same constraint and the same guidance

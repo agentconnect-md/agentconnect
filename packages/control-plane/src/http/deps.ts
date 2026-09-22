@@ -25,6 +25,7 @@ import type {
   BotSecretStore,
   BotCredentialWriter,
   AgentSecretStore,
+  ProviderKeyStore,
   AgentConfigWriter,
   McpProviderRepo,
   MemberSetRepo,
@@ -204,8 +205,9 @@ export interface HttpDeps {
     /** The ONLY token read/write path (values pass the SecretCipher seam). */
     botSecret: BotSecretStore
     botCredential: BotCredentialWriter
-    /** The ONLY read/write path for agent write-only secret env vars — key names
-     *  via `keys` for DTOs, values via `get` for wire projection only. */
+    // Configuration routes cannot read provider credential values.
+    providerKey: Pick<ProviderKeyStore, 'list' | 'put' | 'delete'>
+    // Agent secret names enter DTOs; values are read only for wire projection.
     agentSecret: AgentSecretStore
     /** Transactional agent-row + secret-row writer — REST create/PATCH go through
      *  this so a failure between the two writes can't leave a partial definition. */

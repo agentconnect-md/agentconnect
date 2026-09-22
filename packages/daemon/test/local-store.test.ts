@@ -4,7 +4,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { NoteProjectionRow } from '../src/gitlab/note-projection.js'
-import { LocalStore, sessionKey, type StoreDatabase, SCHEMA_VERSION } from '../src/store/local-store.js'
+import {
+  LocalStore,
+  sessionKey,
+  type SessionRecord,
+  type StoreDatabase,
+  SCHEMA_VERSION
+} from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { memoryStoreDatabase, openTestStore, usingPostgresStore } from './store-support.js'
 
@@ -1532,7 +1538,7 @@ describe('LocalStore session/transcript read-back (session/list, session/history
 })
 
 describe('LocalStore session lifecycle (§7.3/#111/#118)', () => {
-  const seed = async (s: LocalStore, key: string, agentId: string, state: 'idle' | 'prompting', updatedAt: number) =>
+  const seed = async (s: LocalStore, key: string, agentId: string, state: SessionRecord['state'], updatedAt: number) =>
     await s.upsertSession({
       key,
       agentId,
@@ -1619,6 +1625,27 @@ describe('LocalStore session lifecycle (§7.3/#111/#118)', () => {
     expect((await s.getSession('old-idle'))?.state).toBe('closed')
     expect((await s.getSession('fresh-idle'))?.state).toBe('idle')
     expect((await s.getSession('old-prompting'))?.state).toBe('prompting')
+    await s.close()
+  })
+
+  it('lists rows left mid-turn, and releases one only while it is still the row that was read (#2245)', async () => {
+    const s = await store()
+    await seed(s, 'old-prompting', 'bot-a', 'prompting', 100)
+    await seed(s, 'old-resuming', 'bot-a', 'resuming', 100)
+    await seed(s, 'old-cancelling', 'bot-a', 'cancelling', 100)
+    await seed(s, 'fresh-prompting', 'bot-a', 'prompting', 900)
+    await seed(s, 'old-idle', 'bot-a', 'idle', 100)
+    const rows = await s.listAbandonedTurnSessions(500)
+    expect(rows.map((r) => r.key).sort()).toEqual(['old-cancelling', 'old-prompting', 'old-resuming'])
+    expect(rows.find((r) => r.key === 'old-prompting')?.platform).toBe('slack')
+    // A turn that took the row since it was read wins.
+    await s.setSessionState('old-resuming', 'prompting', 950)
+    expect(await s.releaseAbandonedTurnSession('old-resuming', 'resuming', 100)).toBe(false)
+    expect(await s.releaseAbandonedTurnSession('old-prompting', 'prompting', 100)).toBe(true)
+    const released = await s.getSession('old-prompting')
+    expect(released?.state).toBe('idle')
+    expect(Number(released?.updatedAt)).toBe(100)
+    expect((await s.getSession('old-resuming'))?.state).toBe('prompting')
     await s.close()
   })
 

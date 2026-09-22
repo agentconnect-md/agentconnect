@@ -310,6 +310,44 @@ describe('GithubReviewBrokerService', () => {
     })
   })
 
+  it('authorizes and records the verdict of a run the reaper orphaned, and still refuses one that finished (#2247)', async () => {
+    const reaped = new Date(2_000)
+    const orphaned = { status: 'failed' as const, completedAt: reaped, orphanedAt: reaped }
+    const { service, hookRepo, setRun } = setup()
+    setRun(run(orphaned))
+    hookRepo.reserveReviewAttempt.mockImplementation(async (_hookId, _daemonId, input) => {
+      setRun(
+        run({
+          ...orphaned,
+          reviewAttemptId: input.attemptId,
+          reviewAttemptState: 'reserved',
+          reviewEvent: input.requestedEvent,
+          verdict: input.requestedVerdict
+        })
+      )
+      return 'reserved' as const
+    })
+    expect(await service.authorize(authorizeInput(), DAEMON)).toMatchObject({ token: 'broker-secret' })
+    await service.recordResult(
+      {
+        hookId: HOOK,
+        deliveryKey: 'delivery-1',
+        attemptId: ATTEMPT,
+        snapshot,
+        result: { state: 'submitted', reviewId: '1', event: 'APPROVE', verdict: 'pass', commitId: 'head-sha' }
+      },
+      DAEMON
+    )
+    expect(hookRepo.recordReviewResult).toHaveBeenLastCalledWith(
+      HOOK,
+      DAEMON,
+      expect.objectContaining({ state: 'submitted' })
+    )
+
+    setRun(run({ status: 'success', completedAt: reaped }))
+    await expect(service.authorize(authorizeInput(), DAEMON)).rejects.toThrow('review dispatch fence')
+  })
+
   it('releases a reservation when token minting fails before any review can be posted', async () => {
     const { service, hookRepo } = setup({
       github: {

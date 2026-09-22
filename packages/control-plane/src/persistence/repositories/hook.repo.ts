@@ -1456,9 +1456,10 @@ export class PgHookRepo implements HookRepo {
       const run = await tx.hookRun.findUnique({
         where: { hookId_deliveryKey: { hookId, deliveryKey: r.deliveryKey } }
       })
+      // A run only the reaper ended still takes its review, which then replaces the timeout (#2247).
       if (
         !run ||
-        run.status !== 'running' ||
+        (run.status !== 'running' && run.orphanedAt === null) ||
         run.turnStartedAt === null ||
         run.agentId !== r.agentId ||
         run.configRevision !== r.configRevision ||
@@ -1476,7 +1477,7 @@ export class PgHookRepo implements HookRepo {
       }
       if (run.reviewAttemptId !== null) return 'rejected'
       const reserved = await tx.hookRun.updateMany({
-        where: { id: run.id, reviewAttemptId: null, status: 'running' },
+        where: { id: run.id, reviewAttemptId: null, OR: [{ status: 'running' }, { orphanedAt: { not: null } }] },
         data: {
           reviewAttemptId: r.attemptId,
           reviewAttemptState: 'reserved',

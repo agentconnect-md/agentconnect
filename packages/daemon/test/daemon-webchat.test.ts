@@ -1780,14 +1780,15 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     await daemon.stop()
   })
 
-  // #2218: a group keeps no shared store, so a turn that reached the wrong member must refuse
-  // rather than answer over a transcript it cannot see.
+  // #2218: a turn that reached a member which cannot see the transcript or reach the runtime must refuse.
   const RECORDER = 'd1111111-1111-4111-8111-111111111111'
   const SELF = 'd2222222-2222-4222-8222-222222222222'
-  const seedRow = async (daemon: unknown): Promise<void> => {
+  const EXECUTOR = 'd3333333-3333-4333-8333-333333333333'
+  const seedRow = async (daemon: unknown, executorDaemonId?: string): Promise<void> => {
     const d = daemon as any
+    const key = d.webchatTransport.webchatSessionKey(CONV, AGENT_ID)
     await d.store.upsertSession({
-      key: d.webchatTransport.webchatSessionKey(CONV, AGENT_ID),
+      key,
       agentId: AGENT_ID,
       platform: 'webchat',
       channel: CONV,
@@ -1797,6 +1798,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
       lastDeliveredTs: null,
       updatedAt: Date.now()
     })
+    if (executorDaemonId) await d.store.setSessionExecutor(key, { executorDaemonId })
   }
 
   it('refuses a turn whose conversation was recorded by another member, and keeps serving one it has', async () => {
@@ -1811,10 +1813,23 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     expect(refused).toMatchObject({ accepted: false, reason: 'content_elsewhere' })
     expect(refused.detail).toContain('another machine')
 
-    // A shared store puts the rows here too, and then this member serves the same turn.
+    // A shared store (#2188) puts the row here too, but a session that ran on its holder left its runtime there.
     await seedRow(daemon)
-    const served = await (daemon as any).handleRelayMsg(
+    const homeRun = await (daemon as any).handleRelayMsg(
       rd(turn, { recordedDaemonId: RECORDER, msgId: 'm-2' }),
+      () => {}
+    )
+    expect(homeRun).toMatchObject({ accepted: false, reason: 'content_elsewhere' })
+    // A pool member reaches every session's runtime in its sandbox pod, so the row alone is enough there.
+    const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
+    ;(daemon as any).k8s = true
+    expect(await (daemon as any).webchatContentIsElsewhere(rd(turn, { recordedDaemonId: RECORDER }), key)).toBe(false)
+    ;(daemon as any).k8s = false
+
+    // A session placed on an executor is still where it was, so this member serves the same turn.
+    await seedRow(daemon, EXECUTOR)
+    const served = await (daemon as any).handleRelayMsg(
+      rd(turn, { recordedDaemonId: RECORDER, msgId: 'm-5' }),
       () => {}
     )
     expect(served).toMatchObject({ accepted: true })

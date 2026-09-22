@@ -101,7 +101,7 @@ function TenantProbe({ tick }: { tick: number }) {
           void api
             .createDecision({
               name: 'Tenant-local',
-              providerId: 'typesafe-byok',
+              providerId: 'typesafe',
               model: 'jev-1.13.0',
               question: { type: 'boolean', instructions: 'Tenant local?', criteria: { true: 'y', false: 'n' } }
             })

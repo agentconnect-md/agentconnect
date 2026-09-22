@@ -67,7 +67,7 @@ describe('QQ native quote association', () => {
     expect(dispatched.action).toBe('message')
     if (dispatched.action !== 'message') throw new Error('expected message')
     expect(conn.normalizeMessage(dispatched.msg)).toMatchObject({
-      sender: { id: 'Bob' },
+      sender: { id: 'qq:user:100:Bob' },
       text: 'explain this',
       replyTo: 'sent-message',
       quoted: { messageId: 'sent-message', sender: 'QQ bot', text: 'An earlier reply' }

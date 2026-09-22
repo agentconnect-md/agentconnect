@@ -1741,6 +1741,21 @@ describe('executeTool: telegram tool names dispatch through the same gateway', (
   })
 })
 
+describe('executeTool: attachment-only platform connection', () => {
+  it('reads a QQ file without requiring the generic message gateway', async () => {
+    const reader = { downloadFile: vi.fn(async () => Buffer.from('QQ document')) }
+    const d = makeDeps({ gatewayFor: () => undefined, attachmentReaderFor: () => reader })
+    const res = (await executeTool(
+      { ...ctx, platform: 'qq', integrationId: 'int-qq' },
+      'readQQFile',
+      { url: 'https://gchat.qpic.cn/document.txt', mimeType: 'text/plain' },
+      d
+    )) as { mcpContent: { type: string; text?: string }[] }
+    expect(reader.downloadFile).toHaveBeenCalledWith('https://gchat.qpic.cn/document.txt', expect.any(Number))
+    expect(res.mcpContent).toEqual([{ type: 'text', text: 'QQ document' }])
+  })
+})
+
 describe('executeTool: listAgents', () => {
   // A deps bundle whose channelAgents dep records the request it received and
   // returns a canned roster. gatewayFor throws to prove discovery does NOT need a

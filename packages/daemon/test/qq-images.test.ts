@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ApiError } from '@tencent-connect/qqbot-nodejs/protocol'
-import { downloadQQImage } from '../src/platforms/qq/images.js'
+import { downloadQQAttachment, downloadQQImage } from '../src/platforms/qq/images.js'
 import { QQSender, type QQRestPort, type QQStreamCursor } from '../src/platforms/qq/sender.js'
 import { attachmentToBlock } from '../src/session/attachment-block.js'
 
@@ -60,6 +60,13 @@ describe('QQ image input', () => {
       redirect: 'manual',
       signal: expect.any(AbortSignal)
     })
+  })
+  it('downloads bounded non-image attachments without applying image validation', async () => {
+    const pdf = Buffer.from('%PDF-1.7')
+    const fetchImpl = vi.fn(async () => new Response(pdf))
+    expect(
+      await downloadQQAttachment('https://gchat.qpic.cn/invoice', 1000, new AbortController().signal, fetchImpl)
+    ).toEqual(pdf)
   })
   it('distinguishes oversized, non-image and expired content without logging URLs or response bodies', async () => {
     for (const [response, reason] of [

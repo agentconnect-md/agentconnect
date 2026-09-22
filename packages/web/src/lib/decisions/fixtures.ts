@@ -23,6 +23,7 @@ export interface DecisionMockSeed {
 
 export type DecisionMockScenario =
   | 'ready'
+  | 'ac_credits'
   | 'missing_credentials'
   | 'needs_review'
   | 'provider_unavailable'
@@ -41,9 +42,9 @@ export function createDecisionMockSeed(scenario: DecisionMockScenario = 'ready')
     sharedWith: []
   }
   const provider: DecisionProviderOption = {
-    id: 'typesafe-byok',
+    id: 'typesafe',
     daemonId: 'example-daemon',
-    name: 'TypeSafe · Your API key',
+    name: 'TypeSafe',
     kind: 'typesafe',
     source: 'byok',
     readiness,
@@ -176,7 +177,7 @@ export function createDecisionMockSeed(scenario: DecisionMockScenario = 'ready')
   const seed: DecisionMockSeed = structuredClone({
     orgId: metadata.orgId,
     userId: metadata.createdBy,
-    providers: [provider, { ...provider, id: 'typesafe-cloud', name: 'TypeSafe · AC credits', source: 'ac_credits' }],
+    providers: [provider],
     decisions,
     channels,
     bots: [
@@ -207,23 +208,12 @@ export function createDecisionMockSeed(scenario: DecisionMockScenario = 'ready')
       channel.readiness = { status: 'pending_sync' }
     })
     seed.routings[0]!.readiness = { status: 'pending_sync' }
-  } else if (
-    scenario === 'missing_credentials' ||
-    scenario === 'daemon_offline' ||
-    scenario === 'insufficient_credits'
-  ) {
-    seed.providers.forEach((entry) => {
-      if (
-        scenario === 'daemon_offline' ||
-        (scenario === 'missing_credentials' && entry.source === 'byok') ||
-        (scenario === 'insufficient_credits' && entry.source === 'ac_credits')
-      )
-        entry.readiness = { status: scenario }
-    })
-    if (scenario === 'insufficient_credits')
-      seed.decisions.forEach((decision) => {
-        decision.providerId = 'typesafe-cloud'
-      })
+  } else if (scenario === 'ac_credits' || scenario === 'insufficient_credits') {
+    seed.providers[0]!.source = 'ac_credits'
+    if (scenario === 'insufficient_credits') seed.providers[0]!.readiness = { status: scenario }
+  } else if (scenario === 'missing_credentials' || scenario === 'daemon_offline') {
+    seed.providers[0]!.readiness = { status: scenario }
+    if (scenario === 'missing_credentials') seed.providers[0]!.source = null
   }
   return seed
 }

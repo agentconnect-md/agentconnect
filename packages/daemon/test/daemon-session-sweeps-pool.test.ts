@@ -106,7 +106,7 @@ const seedSession = async (
   store: LocalStore,
   key: string,
   agentId: string,
-  state: 'idle' | 'closed',
+  state: 'idle' | 'closed' | 'prompting',
   updatedAt: number
 ): Promise<string> => {
   await store.upsertSession({
@@ -161,6 +161,42 @@ describe('session sweeps on a daemon pool are holder-only (#1032)', () => {
     await a.inner.sweepIdle()
     expect((await store.getSession('a-busy'))?.state).toBe('idle')
     expect((await store.getSession('a-quiet'))?.state).toBe('closed')
+    await stop()
+  })
+
+  it('the holder releases a row a dead process left mid-turn, and nobody touches one a turn still holds (#2245)', async () => {
+    const { a, b, stop } = await bootPool()
+    hold(a.inner, GROUP_A, AGENT_A)
+    hold(b.inner, GROUP_B, AGENT_B)
+    const store: LocalStore = a.inner.store
+    const past = a.inner.cfg.limits.agentMaxLifetimeMs + 1
+    await seedSession(store, 'a-dead', AGENT_A, 'prompting', 0)
+    await seedSession(store, 'a-running', AGENT_A, 'prompting', 0)
+    a.inner.inflight.add('a-running')
+    // A Dream's row is `prompting` for its whole run, outside every map the turn check reads.
+    await store.upsertSession({
+      key: 'a-dream',
+      agentId: AGENT_A,
+      platform: 'dream',
+      channel: 'memory',
+      thread: 'dream-1',
+      acpSessionId: 'acp-a-dream',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: 0
+    })
+
+    // B does not serve A's agent, so it leaves both rows to A.
+    await advance(b, past)
+    await b.inner.sweepIdle()
+    expect((await store.getSession('a-dead'))?.state).toBe('prompting')
+
+    // A releases the abandoned row, and the TTL close in the same pass takes it; the running turn keeps its row.
+    await advance(a, past)
+    await a.inner.sweepIdle()
+    expect((await store.getSession('a-dead'))?.state).toBe('closed')
+    expect((await store.getSession('a-running'))?.state).toBe('prompting')
+    expect((await store.getSession('a-dream'))?.state).toBe('prompting')
     await stop()
   })
 
