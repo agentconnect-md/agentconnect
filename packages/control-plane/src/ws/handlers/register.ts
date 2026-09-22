@@ -12,6 +12,7 @@
  */
 import {
   MEMORY_TRANSACTION_V1_FEATURE,
+  PROVIDER_CREDENTIALS_V1_FEATURE,
   MEMORY_CAPTURE_FENCE_V1_FEATURE,
   isFrame,
   AGENT_EXISTS_FEATURE,
@@ -99,6 +100,7 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
     // caller's current channel, because an older CP rejects a channel-less payload.
     serverFeatures: [
       'gitcred-actions-v1',
+      ...(deps.providerKey ? [PROVIDER_CREDENTIALS_V1_FEATURE] : []),
       // §17.1: this CP decodes provider-qualified gitcred v2 requests. A daemon
       // may name provider 'gitlab' only after seeing this.
       GITCRED_PROVIDER_V2_FEATURE,

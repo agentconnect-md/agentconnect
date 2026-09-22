@@ -4184,7 +4184,6 @@
     "apiKey": "API key",
     "replacementKey": "新的 API key",
     "writeOnly": "已保存的 key 不会再次显示。修改其他设置时，留空即可保留原 key。",
-    "statusNote": "已配置仅表示 key 已保存。保存不会向 provider 验证 key，也不会运行评估。",
     "save": "保存",
     "saving": "保存中…",
     "cancel": "取消",

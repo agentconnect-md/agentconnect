@@ -81,6 +81,11 @@ import { McpServerUpsert, McpServerRemove } from './frames/mcpserver.js'
 import { MemoryConnectionUpsert, MemoryConnectionRemove, MemoryConnectionFacts } from './frames/memory-connection.js'
 import { GitCredRequest, GitCredGrant } from './frames/gitcred.js'
 import { LinearCredRequest, LinearCredGrant } from './frames/linearcred.js'
+import {
+  ProviderCredentialsRequest,
+  ProviderCredentialsReply,
+  ProviderCredentialsChanged
+} from './frames/provider-credentials.js'
 import { SecretsRequest, SecretsGrant, SecretsRenew, SecretsRevoke, ScopeAttestation } from './frames/secrets.js'
 import {
   SessionHistoryReq,
@@ -341,6 +346,9 @@ export const FRAME_SCHEMAS = {
   // ── Linear access-token broker (linear-integration.md §7.3; token-bearing — never log) ──
   'linearcred/request': LinearCredRequest,
   'linearcred/grant': LinearCredGrant,
+  'provider-credentials/request': ProviderCredentialsRequest,
+  'provider-credentials/reply': ProviderCredentialsReply,
+  'provider-credentials/changed': ProviderCredentialsChanged,
   // ── secrets ──
   'secrets/request': SecretsRequest,
   'secrets/grant': SecretsGrant,
@@ -647,6 +655,9 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('gitcred/grant', FRAME_SCHEMAS['gitcred/grant']),
   frame('linearcred/request', FRAME_SCHEMAS['linearcred/request']),
   frame('linearcred/grant', FRAME_SCHEMAS['linearcred/grant']),
+  frame('provider-credentials/request', FRAME_SCHEMAS['provider-credentials/request']),
+  frame('provider-credentials/reply', FRAME_SCHEMAS['provider-credentials/reply']),
+  frame('provider-credentials/changed', FRAME_SCHEMAS['provider-credentials/changed']),
   frame('secrets/request', FRAME_SCHEMAS['secrets/request']),
   frame('secrets/grant', FRAME_SCHEMAS['secrets/grant']),
   frame('secrets/renew', FRAME_SCHEMAS['secrets/renew']),

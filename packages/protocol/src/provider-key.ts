@@ -12,7 +12,7 @@ export const PROVIDER_KEY_PROFILES: Record<
   cloudflare: { name: 'Cloudflare AI Gateway', defaultEndpoint: null, endpointRequired: true }
 }
 
-const Endpoint = z
+export const ProviderEndpoint = z
   .url()
   .max(2048)
   .refine((value) => {
@@ -60,7 +60,7 @@ export type ProviderKeyStatus = z.infer<typeof ProviderKeyStatus>
 export const SetProviderKeyBody = z
   .object({
     apiKey: z.string().trim().min(1).max(8192).regex(/^\S+$/, 'API key must not contain whitespace').optional(),
-    endpoint: Endpoint.nullable().optional(),
+    endpoint: ProviderEndpoint.nullable().optional(),
     headers: HeaderPatch.optional()
   })
   .strict()

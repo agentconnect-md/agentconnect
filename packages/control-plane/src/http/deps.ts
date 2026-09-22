@@ -118,6 +118,7 @@ import type { IconStore } from '../icons/icon-store.js'
 import type { ConnectorsClient } from '../connectors/client.js'
 import type { SessionAccessPlugin } from './session-access-plugin.js'
 import type { RuntimeConfigRouteDeps } from './routes/runtime-config.js'
+import type { ProviderKeyProvider } from '@agentconnect.md/protocol'
 
 export interface HttpServerConfig extends HumanAuthConfig {
   /** Drives browser CORS for the Web UI (see `buildHttpServer`). */
@@ -166,6 +167,7 @@ export interface HttpServerConfig extends HumanAuthConfig {
 }
 
 export interface HttpDeps {
+  providerCredentialsChanged?: (orgId: OrgId, provider: ProviderKeyProvider) => void
   /** Secret-free startup snapshot served to the prebuilt browser image. */
   runtimeConfig: RuntimeConfigRouteDeps
   /** Deployment quota for non-ADMIN organization creation; absent defaults to one. */

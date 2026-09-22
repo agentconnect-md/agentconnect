@@ -27,7 +27,8 @@ import type {
   GithubInstallationRepo,
   DaemonLifecycleOpRepo,
   AgentRecord,
-  AgentMemoryHistoryRepo
+  AgentMemoryHistoryRepo,
+  ProviderKeyStore
 } from '../persistence/ports.js'
 import type { AgentMemoryStoreService } from '../agent-memory/store.service.js'
 import type { UsageWriter } from '../usage/writer.js'
@@ -165,6 +166,7 @@ export interface DaemonWsDeps {
   /** Linear workspace token custody (linear-integration.md §7.3) — the one seam the `linearcred`
    *  broker calls; absent ⇒ `linearcred/request` answers SCOPE_DENIED. */
   linearTokens?: Pick<LinearTokenService, 'accessToken'>
+  providerKey?: Pick<ProviderKeyStore, 'get'>
   /** R1 action-time formal-review broker; absent ⇒ review/start REQs fail closed. */
   githubReviewBroker?: GithubReviewBrokerService
   /** Provider-neutral formal reviews: publication lease, operation ledger, outcome

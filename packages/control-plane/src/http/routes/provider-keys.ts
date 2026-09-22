@@ -80,6 +80,7 @@ export function providerKeyRoutes(deps: HttpDeps) {
             return reply
               .code(400)
               .send({ error: 'Bad Request', statusCode: 400, message: 'An API key is required for the first save.' })
+          deps.providerCredentialsChanged?.(orgOf(req), req.params.provider)
           return status(req.params.provider, saved)
         } catch {
           // Cipher and database errors may embed the submitted value; never serialize or log them.
@@ -108,6 +109,7 @@ export function providerKeyRoutes(deps: HttpDeps) {
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
         await store.delete(orgOf(req), req.params.provider)
+        deps.providerCredentialsChanged?.(orgOf(req), req.params.provider)
         return reply.code(204).send(null)
       }
     )

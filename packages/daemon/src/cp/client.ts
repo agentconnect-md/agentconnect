@@ -1,5 +1,6 @@
 import {
   MEMORY_TRANSACTION_V1_FEATURE,
+  PROVIDER_CREDENTIALS_V1_FEATURE,
   MEMORY_CAPTURE_FENCE_V1_FEATURE,
   type MemoryTransactionReq,
   type MemoryTransactionResult
@@ -49,6 +50,8 @@ import type {
   GitCredGrant,
   LinearCredRequest,
   LinearCredGrant,
+  ProviderCredentialsRequest,
+  ProviderCredentialsReply,
   ChannelAgentsReq,
   ChannelAgentsOk,
   ChildSessionStatus,
@@ -175,6 +178,8 @@ export interface CpClientDeps
     SandboxKeepAliveDeps,
     CodeHostControlDeps,
     WorkspaceReadDeps {
+  // Credential leases must not lengthen when the wall clock moves backward.
+  monotonicNow?: () => number
   url: string
   /** The CP API key. Absent on an in-cluster daemon, which presents
    *  {@link CpClientDeps.clusterIdentityToken} instead. */
@@ -266,6 +271,9 @@ export class CpClient {
   private stopped = false
   private fatal = false // 4401 — this connection never redials (the process may still exit and retry)
   private serverFeatures = new Set<string>()
+  private readonly providerCredentials = new Map<string, { expiresAt: number; reply: ProviderCredentialsReply }>()
+  private providerCredentialEpoch = 0
+  private readonly providerCredentialNow: () => number
   private organizationMode: OrganizationMode = 'connection'
   /** The member set the CP announced at `auth/ok` (daemon-groups.md §3); null ⇒ in none. Never
    *  asserted from here — membership is the CP's to record and this connection's to be told. */
@@ -315,6 +323,7 @@ export class CpClient {
   private readonly controlDeps: ControlDeps
 
   constructor(private readonly deps: CpClientDeps) {
+    this.providerCredentialNow = deps.monotonicNow ?? (() => performance.now())
     this.correlator = new ReqRep<AnyFrame>(deps.clock, ACK_TIMEOUT_MS)
     this.wire = {
       reply: (req, type, payload) => this.reply(req, type, payload),
@@ -365,6 +374,7 @@ export class CpClient {
 
   async stop(): Promise<void> {
     this.stopped = true
+    this.clearProviderCredentials()
     this.connectPending = false
     if (this.reconnectTimer !== undefined) {
       this.deps.clock.clearTimeout(this.reconnectTimer)
@@ -542,6 +552,7 @@ export class CpClient {
     }
 
     // ── register ──
+    this.clearProviderCredentials()
     const registerCapabilities = this.deps.capabilities()
     this.lastSentCapabilities = JSON.stringify(registerCapabilities)
     const register = buildEnvelope('register', {
@@ -1023,6 +1034,50 @@ export class CpClient {
     return rep.payload as LinearCredGrant
   }
 
+  async requestProviderCredentials(
+    payload: ProviderCredentialsRequest,
+    signal?: AbortSignal
+  ): Promise<ProviderCredentialsReply> {
+    signal?.throwIfAborted()
+    const orgId = this.deps.orgForAgent?.(payload.agentId)
+    const cacheKey = JSON.stringify([orgId, payload.agentId, payload.provider])
+    const now = this.providerCredentialNow()
+    const cached = this.providerCredentials.get(cacheKey)
+    if (orgId && cached && cached.expiresAt > now && !this.terminallyClosed()) return structuredClone(cached.reply)
+    this.providerCredentials.delete(cacheKey)
+    this.requireReady('provider credentials')
+    if (!this.supportsServerFeature(PROVIDER_CREDENTIALS_V1_FEATURE))
+      throw new WireError('SCOPE_DENIED', 'control plane does not support provider credentials', false)
+    const epoch = this.providerCredentialEpoch
+    const frame = this.scopedFrame('provider-credentials/request', payload)
+    const abort = () => this.correlator.reject(frame.id, signal!.reason)
+    signal?.addEventListener('abort', abort, { once: true })
+    try {
+      const rep = await this.correlator.request(frame, (encoded) => this.transport!.send(encoded), {
+        maxTries: 1,
+        ackTimeoutMs: 5_000
+      })
+      if (rep.type !== 'provider-credentials/reply')
+        throw new WireError('INTERNAL', 'unexpected provider credential reply', false)
+      if (epoch !== this.providerCredentialEpoch || orgId !== this.deps.orgForAgent?.(payload.agentId))
+        throw new WireError('SCOPE_DENIED', 'provider credential read was invalidated', true)
+      const reply = rep.payload as ProviderCredentialsReply
+      if (orgId && now + 60_000 > this.providerCredentialNow()) {
+        if (this.providerCredentials.size >= 256)
+          this.providerCredentials.delete(this.providerCredentials.keys().next().value!)
+        this.providerCredentials.set(cacheKey, { reply: structuredClone(reply), expiresAt: now + 60_000 })
+      }
+      return reply
+    } finally {
+      signal?.removeEventListener('abort', abort)
+    }
+  }
+
+  private clearProviderCredentials(): void {
+    this.providerCredentialEpoch++
+    this.providerCredentials.clear()
+  }
+
   /**
    * `duty/release` (D→C REQ → `ack`) — surrender duty groups on drain instead of
    * waiting out the CP's reassignment window. Install-wide: duty groups span
@@ -1462,6 +1517,10 @@ export class CpClient {
       this.sendError(frame.id, 'SCOPE_DENIED', 'organization does not match the targeted resource', false)
       return
     }
+    if (frame.type === 'provider-credentials/changed') {
+      this.clearProviderCredentials()
+      return
+    }
     this.dispatchControl(frame)
   }
 
@@ -1538,6 +1597,7 @@ export class CpClient {
     // The fence needs nothing here: it has been running off the last confirmed renewal since that
     // renewal arrived, and a closed socket is simply one more way for the next one not to.
     if (code === 4401) {
+      this.clearProviderCredentials()
       this.fatal = true
       this.state = 'CLOSED'
       // An API key is minted by a human and a rejected one stays rejected, so redialing it forever

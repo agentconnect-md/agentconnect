@@ -27,7 +27,7 @@ export const KEY_SERVER_REVOKE_KEY_PATH = '/v1/revoke-key' as const
 export const KEY_SERVER_AUTH_HEADER = 'authorization' as const
 
 /** Provider API dialect the credential must speak. */
-// `typesafe` has no runtime that selects it yet — `modelProviderTarget` maps none — so it is issuable but unreachable from a spawn until one does.
+// TypeSafe is consumed by daemon Decisions rather than an ACP runtime.
 export const KeyProvider = z.enum(['anthropic', 'openai', 'deepseek', 'typesafe'])
 export type KeyProvider = z.infer<typeof KeyProvider>
 
@@ -37,6 +37,7 @@ export const IssueKeyRequest = z
   .object({
     orgId: z.string().min(1),
     agentId: z.string().min(1),
+    // Decisions use decision:<evaluationId> without creating an agent session.
     sessionId: z.string().min(1),
     provider: KeyProvider,
     // Desired validity, relative to avoid clock skew. Absent ⇒ the caller asks
