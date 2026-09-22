@@ -24,6 +24,10 @@ const V23_SHAPE = [
      ts TEXT NOT NULL, agentId TEXT NOT NULL,
      PRIMARY KEY (orgId, channel, thread, ts, agentId))`,
   'ALTER TABLE transcript ALTER COLUMN thread SET NOT NULL',
+  'DROP INDEX IF EXISTS transcript_agent_tool_call',
+  'ALTER TABLE transcript DROP COLUMN IF EXISTS sessionScope',
+  `CREATE UNIQUE INDEX transcript_agent_tool_call
+     ON transcript (orgId, channel, thread, sender, tool_call_id) WHERE tool_call_id IS NOT NULL`,
   'CREATE INDEX transcript_thread_seq ON transcript (orgId, channel, thread, seq)',
   "CREATE UNIQUE INDEX transcript_text_ts ON transcript (orgId, channel, thread, ts) WHERE kind = 'text'",
   'CREATE INDEX transcript_thread_event_time ON transcript (orgId, channel, thread, eventTimeUs DESC, seq DESC)',

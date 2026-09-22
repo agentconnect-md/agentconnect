@@ -395,9 +395,15 @@ export class WebchatArena {
 
   /** Shared-conversation transcript rows (what a peer's context refresh reads). */
   transcriptRows(): Promise<{ sender: string; text: string }[]> {
+    // Whole-conversation scope: webchat rows wear the conversation's physical thread, so the
+    // coordinate matches them all without standing in for one session's admissions.
     return (this.daemon as any).store.transcriptSince(
-      transcriptChannelKey(this.conversationId, undefined),
-      `webchat:${this.conversationId}`,
+      {
+        transcriptChannel: transcriptChannelKey(this.conversationId, undefined),
+        coordinate: `webchat:${this.conversationId}`,
+        sessionKey: '',
+        agentId: ''
+      },
       null
     ) as Promise<{ sender: string; text: string }[]>
   }

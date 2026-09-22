@@ -127,9 +127,11 @@ interface PendingToolWrite {
 /** The partition a coalesced write lands in — its notification and revision scope. */
 const threadKeyOf = (write: PendingToolWrite): string => [write.orgId, write.channel, write.thread].join('\0')
 
-/** The buffer slot one tool call owns: latest-wins, one entry per call in flight. */
+/** The buffer slot one tool call owns: latest-wins, one entry per call in flight. Keyed exactly
+ *  as the row is identified, session included — two sessions at one physical thread reusing an
+ *  ACP tool id own two rows, and one slot would collapse their updates onto whichever wrote last. */
 const writeKeyOf = (write: PendingToolWrite): string =>
-  [write.orgId, write.channel, write.thread, write.agentId, write.toolCallId].join('\0')
+  [write.orgId, write.channel, write.thread, write.agentId, write.sessionKey, write.toolCallId].join('\0')
 
 /** How long a streaming tool-call body may sit unwritten. Short enough that a crash loses at
  *  most this much of an in-flight tool body, long enough to swallow a chunk burst. */
@@ -1248,8 +1250,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   },
   // message-intake.md §10: the transcript becomes a per-conversation channel record and
   // transcript_recipient becomes the per-session admission. thread goes nullable and holds the
-  // PHYSICAL thread; the dedup index drops it; admissions are backfilled from recipient, the old
-  // delivery rows and sender-if-agent, joined to sessions for the key a row's session was under.
+  // PHYSICAL thread; the dedup index drops it; a tool row gains the sessionScope discriminator its
+  // identity now carries; admissions are backfilled from recipient, the old delivery rows and
+  // sender-if-agent, joined to sessions for the key a row's session was under.
   async (db, store) => {
     await db.exec('ALTER TABLE transcript_recipient RENAME TO transcript_recipient_legacy')
     // SQLite cannot drop a NOT NULL in place, so `thread` goes nullable by copy-rename (the #1041
@@ -1257,10 +1260,12 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     if (store.postgres)
       await db.exec(`
       ALTER TABLE transcript ALTER COLUMN thread DROP NOT NULL;
+      ALTER TABLE transcript ADD COLUMN IF NOT EXISTS sessionScope TEXT NOT NULL DEFAULT '';
       DROP INDEX IF EXISTS transcript_thread_seq;
       DROP INDEX IF EXISTS transcript_text_ts;
       DROP INDEX IF EXISTS transcript_thread_event_time;
       DROP INDEX IF EXISTS transcript_thread_revision;
+      DROP INDEX IF EXISTS transcript_agent_tool_call;
     `)
     else
       await db.exec(`
@@ -1271,7 +1276,8 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
         sender TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
         tool_call_id TEXT, body TEXT, recipient TEXT, eventTimeUs INTEGER,
         attachmentsJson TEXT, quoteJson TEXT, trustedAgentBot INTEGER, revision INTEGER NOT NULL DEFAULT 0,
-        postId TEXT
+        postId TEXT,
+        sessionScope TEXT NOT NULL DEFAULT ''
       );
       INSERT INTO transcript_rekeyed
         (seq, orgId, channel, thread, ts, sender, kind, text, tool_call_id, body, recipient,
@@ -1293,6 +1299,13 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     // Its own exec: the PostgreSQL rewrite converts `INSERT OR IGNORE` only when it STARTS the
     // statement, and appends the conflict clause at the very end of the text.
     await db.exec(TRANSCRIPT_ADMISSION_BACKFILL)
+    // A pre-upgrade tool row inherits its one session, so a scoped update in flight across the upgrade still finds it.
+    await db.exec(`
+      UPDATE transcript
+         SET sessionScope = (SELECT r.sessionKey FROM transcript_recipient r WHERE r.seq = transcript.seq)
+       WHERE kind = 'tool' AND sessionScope = ''
+         AND (SELECT COUNT(*) FROM transcript_recipient r WHERE r.seq = transcript.seq) = 1
+    `)
     // §10 step 3: rows sharing (orgId, channel, ts) collapse onto the smallest seq. A mapping
     // table, plus a DELETE that keeps only one agent's LOWEST-seq admission per merge group —
     // repointing two admissions of one agent onto one (seq, agentId) would violate the PK.
@@ -1599,7 +1612,8 @@ export class LocalStore {
         sender TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
         tool_call_id TEXT, body TEXT, recipient TEXT, eventTimeUs INTEGER,
         attachmentsJson TEXT, quoteJson TEXT, trustedAgentBot INTEGER, revision INTEGER NOT NULL DEFAULT 0,
-        postId TEXT
+        postId TEXT,
+        sessionScope TEXT NOT NULL DEFAULT ''
       );
       CREATE INDEX IF NOT EXISTS transcript_channel_seq ON transcript (orgId, channel, seq);
       -- One conversational message is one row per conversation, whoever admits it. Internal rows
@@ -1616,10 +1630,11 @@ export class LocalStore {
         PRIMARY KEY (seq, agentId)
       );
       CREATE INDEX IF NOT EXISTS transcript_recipient_session ON transcript_recipient (sessionKey, seq);
-      -- ACP tool ids are session-local, so same-thread agents may legitimately reuse
-      -- them; the uniqueness that matters is per agent.
+      -- ACP tool ids are session-local, so peers AND a successor session at the same physical
+      -- thread may legitimately reuse one; sessionScope is the row's own session discriminator
+      -- (sessions.key, '' where the kind does not carry one) and is what makes them distinct.
       CREATE UNIQUE INDEX IF NOT EXISTS transcript_agent_tool_call
-        ON transcript (orgId, channel, thread, sender, tool_call_id) WHERE tool_call_id IS NOT NULL;
+        ON transcript (orgId, channel, thread, sender, sessionScope, tool_call_id) WHERE tool_call_id IS NOT NULL;
       -- An MCP App card is found by its card id ALONE when a reloaded view names it (§8.1), and
       -- the index above leads with the thread, so it cannot serve that. Partial on app rows: a
       -- handful per conversation, so the write cost is paid only where the read happens.
@@ -2513,17 +2528,18 @@ export class LocalStore {
     )?.agentId
   }
 
-  /** Addressable session ids for the session keys a mutation was admitted into — the only handle
-   *  an `append` session has, since its `sessions.thread` is a coordinate the row no longer wears. */
-  async sessionIdsForKeys(keys: string[]): Promise<string[]> {
+  /** The addressable (agent, session) pairs a mutation's session keys were admitted into — the only
+   *  handle an `append` session has, since its `sessions.thread` is a coordinate the row no longer
+   *  wears. The owning agent rides along because a row's SENDERS are not its admitters: pairing a
+   *  session with a mutation's agent ids would address it under a human, or under a peer agent. */
+  async sessionOwnersForKeys(keys: string[]): Promise<{ agentId: string; sessionId: string }[]> {
     if (keys.length === 0) return []
-    const rows = (await this.db
+    return (await this.db
       .prepare(
-        `SELECT DISTINCT COALESCE(sessionId, acpSessionId) AS sessionId FROM sessions
-         WHERE key IN (${keys.map(() => '?').join(', ')}) AND acpSessionId IS NOT NULL`
+        `SELECT DISTINCT agentId, COALESCE(sessionId, acpSessionId) AS sessionId FROM sessions
+         WHERE key IN (${keys.map(() => '?').join(', ')}) AND acpSessionId IS NOT NULL AND agentId IS NOT NULL`
       )
-      .all(...keys)) as { sessionId: string }[]
-    return rows.map((row) => row.sessionId)
+      .all(...keys)) as { agentId: string; sessionId: string }[]
   }
 
   /** Addressable session ids whose authorized transcript scope may have changed. */
@@ -4975,10 +4991,11 @@ export class LocalStore {
     }
   }
 
-  /** First sight of a tool call: insert its kind='tool' row (title in `text`, the
-   *  serialized ToolBody in `body`). INSERT OR IGNORE so a re-fired first update is a
-   *  no-op — the partial unique index on (channel, thread, sender, tool_call_id)
-   *  dedups within one agent. `seq` stays stable across later updates. */
+  /** First sight of a tool call: insert its kind='tool' row (title in `text`, the serialized
+   *  ToolBody in `body`). INSERT OR IGNORE so a re-fired first update is a no-op — the partial
+   *  unique index on (channel, thread, sender, sessionScope, tool_call_id) dedups within one
+   *  agent's session, so a successor session reusing an id gets its own row rather than losing the
+   *  insert to the retired one. `seq` stays stable across later updates. */
   async insertToolCall(e: {
     channel: string
     thread: string
@@ -5012,8 +5029,9 @@ export class LocalStore {
       {
         kind: 'run',
         sql: `INSERT OR IGNORE INTO transcript
-           (orgId, channel, thread, ts, sender, kind, text, tool_call_id, body, eventTimeUs, revision)
-         VALUES (@orgId, @channel, @thread, @ts, @sender, 'tool', @text, @toolCallId, @body, @eventTimeUs, @revision)`,
+           (orgId, channel, thread, ts, sender, kind, text, tool_call_id, body, eventTimeUs, revision, sessionScope)
+         VALUES (@orgId, @channel, @thread, @ts, @sender, 'tool', @text, @toolCallId, @body, @eventTimeUs, @revision,
+                 @sessionScope)`,
         params: [
           {
             orgId,
@@ -5025,7 +5043,8 @@ export class LocalStore {
             toolCallId: e.toolCallId,
             body: e.body,
             eventTimeUs: transcriptEventTimeUs(e.ts),
-            revision: this.transcriptRevision + 1
+            revision: this.transcriptRevision + 1,
+            sessionScope: e.admission.sessionKey
           }
         ]
       },
@@ -5037,8 +5056,10 @@ export class LocalStore {
     }
   }
 
-  /** Later update for one agent's tool call. `seq`/`ts` keep their first-seen values; a peer
-   *  reusing the same session-local tool id cannot overwrite it. The store's highest-frequency
+  /** Later update for one agent's tool call, scoped to the session that inserted the row: ACP tool
+   *  ids are session-local, so a peer OR a successor session at the same physical thread may reuse
+   *  one, and only `sessionKey` tells the two rows apart (`''` names no session and matches either
+   *  way, as before Stage 1). `seq`/`ts` keep their first-seen values. The store's highest-frequency
    *  writer, and every write is a full latest-wins overlay of the merged ToolBody rather than an
    *  append — so the burst is coalesced per row, and writing only its last state leaves exactly
    *  the row the per-chunk path left. Flushed before any other statement, on
@@ -5097,6 +5118,7 @@ export class LocalStore {
           kind: 'run' as const,
           sql: `UPDATE transcript SET text = ?, body = ?, revision = ?
          WHERE orgId = ? AND channel = ? AND thread = ? AND sender = ? AND tool_call_id = ?
+           AND (sessionScope = ? OR ? = '')
            AND (text IS NOT ? OR body IS NOT ?)`,
           params: [
             write.title,
@@ -5107,6 +5129,8 @@ export class LocalStore {
             write.thread,
             write.agentId,
             write.toolCallId,
+            write.sessionKey,
+            write.sessionKey,
             write.title,
             write.body
           ]
@@ -5283,13 +5307,16 @@ export class LocalStore {
     })
   }
 
-  /** One agent's full stored ToolBody JSON, or undefined if unknown/not owned. */
+  /** One agent's full stored ToolBody JSON, or undefined if unknown/not owned. A reused tool id
+   *  leaves one row per session at the physical thread, so this session's own row wins; a row
+   *  written without a session (pre-Stage-1) still answers when nothing scoped matches. */
   async getToolBodyForAgent(scope: TranscriptSessionScope, toolCallId: string): Promise<string | undefined> {
     const row = (await this.db
       .prepare(
         `SELECT body FROM transcript WHERE orgId = ? AND channel = ?
            AND ${SESSION_ROW_SCOPE_SQL}
-           AND sender = ? AND tool_call_id = ?`
+           AND sender = ? AND tool_call_id = ?
+         ORDER BY (sessionScope = ?) DESC, seq DESC LIMIT 1`
       )
       .get(
         this.orgForRead(scope.agentId, scope.orgId),
@@ -5297,7 +5324,8 @@ export class LocalStore {
         scope.coordinate,
         scope.sessionKey,
         scope.agentId,
-        toolCallId
+        toolCallId,
+        scope.sessionKey
       )) as { body: string | null } | undefined
     return row?.body ?? undefined
   }

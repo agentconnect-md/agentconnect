@@ -113,14 +113,15 @@ All changes are to the daemon store, in both dialects, through `SCHEMA_MIGRATION
 
 ### 4.1 `transcript`
 
-| Change               | Detail                                                                                                                                                                                                                                                                                   |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `thread`             | The physical thread as the platform normalizes it (root = its own id). Never an `append:*` coordinate. Nullable: `NULL` means the thread was not recorded (only rows migrated from `append` coordinates, §10), and §9 reports it as unknown rather than as a root.                       |
-| `transcript_text_ts` | Unique on `(orgId, channel, ts) WHERE kind = 'text'`. One conversational message is one row per conversation. Internal rows (`tool`, `reasoning`, `app`) have no platform `ts` and are not deduplicated, as today.                                                                       |
-| `recipient`          | Retired from the visibility predicate. It stays as provenance of the first delivery; admissions are the authority.                                                                                                                                                                       |
-| Indexes              | `transcript_thread_seq`, `transcript_thread_event_time`, `transcript_thread_revision` lose `thread` from their leading columns and become `(orgId, channel, …)`; the physical thread is a filter, not a partition. `transcript_app_card` and `transcript_agent_tool_call` are unchanged. |
+| Change               | Detail                                                                                                                                                                                                                                                                                                                                                                             |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `thread`             | The physical thread as the platform normalizes it (root = its own id). Never an `append:*` coordinate. Nullable: `NULL` means the thread was not recorded (only rows migrated from `append` coordinates, §10), and §9 reports it as unknown rather than as a root.                                                                                                                 |
+| `transcript_text_ts` | Unique on `(orgId, channel, ts) WHERE kind = 'text'`. One conversational message is one row per conversation. Internal rows (`tool`, `reasoning`, `app`) have no platform `ts` and are not deduplicated, as today.                                                                                                                                                                 |
+| `recipient`          | Retired from the visibility predicate. It stays as provenance of the first delivery; admissions are the authority.                                                                                                                                                                                                                                                                 |
+| `sessionScope`       | The session a row with a `tool_call_id` belongs to (`sessions.key`), `''` on every other row. Internal rows moved from the session coordinate to the physical thread, and ACP tool ids are session-local, so without it a successor session at one thread cannot own a row for a tool id the retired session already used.                                                         |
+| Indexes              | `transcript_thread_seq`, `transcript_thread_event_time`, `transcript_thread_revision` lose `thread` from their leading columns and become `(orgId, channel, …)`; the physical thread is a filter, not a partition. `transcript_app_card` is unchanged; `transcript_agent_tool_call` gains `sessionScope`, becoming `(orgId, channel, thread, sender, sessionScope, tool_call_id)`. |
 
-Nothing is added to the row. Whether it was admitted, by whom, into what, is the next table's job.
+The row gains only that discriminator. Whether it was admitted, by whom, into what, is the next table's job.
 
 ### 4.2 `transcript_recipient` becomes the admission record
 
@@ -415,8 +416,11 @@ One `SCHEMA_MIGRATIONS` step, run in a transaction before the `CREATE` block:
    such rows as thread-unknown and marks the context partial while any is in the window, which a
    busy conversation outgrows within 100 messages. Participation for their real threads is already in
    `thread_participation`.
-5. Drop and recreate the transcript indexes with the new leading columns; the `CREATE` block emits
-   them.
+5. **Add `sessionScope`** (`''` on every existing row): a tool row written before this step belongs
+   to whatever session was live at its thread, and no column recorded which, so the old rows stay
+   unscoped and a scoped read falls back to them.
+6. Drop and recreate the transcript indexes with the new leading columns — `transcript_agent_tool_call`
+   included, since it gains `sessionScope`; the `CREATE` block emits them.
 
 **Downgrade** is refused by the existing `user_version` check.
 

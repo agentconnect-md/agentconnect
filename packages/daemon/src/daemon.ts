@@ -20538,39 +20538,33 @@ export class Daemon {
   private async scheduleSessionActivity(mutation: TranscriptMutation): Promise<void> {
     const ts = new Date(this.clock.now()).toISOString()
     // The admissions first: an append session's `sessions.thread` is a coordinate the row no
-    // longer carries, so the key path is the only one that resolves it. The thread lookup stays
-    // as the fallback for rows written with no admission (a provider snapshot, an observation).
-    const admitted = await this.store.sessionIdsForKeys(mutation.sessionKeys)
-    for (const agentId of mutation.agentIds) {
-      const ids = new Set([
-        ...admitted,
-        ...(await this.store.sessionIdsForTranscript(agentId, mutation.channel, mutation.thread))
-      ])
-      for (const sessionId of ids) {
-        const key = `${agentId}\0${sessionId}`
-        const existing = this.transcriptActivityTimers.get(key)
-        if (existing) {
-          existing.activity.revision = String(mutation.revision)
-          existing.activity.ts = ts
-          continue
-        }
-        const activity: SessionActivity = {
-          sessionId,
-          agentId,
-          revision: String(mutation.revision),
-          ts
-        }
-        const timer = this.clock.setTimeout(() => {
-          const pending = this.transcriptActivityTimers.get(key)
-          if (!pending || pending.timer !== timer) return
-          this.transcriptActivityTimers.delete(key)
-          // Optional call: the debounce can outlive a test whose partial cp
-          // client mock lacks this method — a missing sink is a no-op, not a
-          // crash (matches the ?.-guarded client itself).
-          this.cpClient?.emitSessionActivity?.(pending.activity)
-        }, 250)
-        this.transcriptActivityTimers.set(key, { timer, activity })
+    // longer carries, so the key path is the only one that resolves it. Each admission carries its
+    // OWN agent — a mutation's agent ids are its senders (a human, on an inbound text row), so
+    // crossing them with the admitted sessions would address a session under a stranger.
+    const pairs = new Map<string, { agentId: string; sessionId: string }>()
+    for (const owner of await this.store.sessionOwnersForKeys(mutation.sessionKeys))
+      pairs.set(`${owner.agentId}\0${owner.sessionId}`, owner)
+    // The physical-thread lookup stays as the fallback for rows written with no admission (a
+    // provider snapshot, an observation), scoped per candidate agent as it always was.
+    for (const agentId of mutation.agentIds)
+      for (const sessionId of await this.store.sessionIdsForTranscript(agentId, mutation.channel, mutation.thread))
+        pairs.set(`${agentId}\0${sessionId}`, { agentId, sessionId })
+    for (const [key, { agentId, sessionId }] of pairs) {
+      const existing = this.transcriptActivityTimers.get(key)
+      if (existing) {
+        existing.activity.revision = String(mutation.revision)
+        existing.activity.ts = ts
+        continue
       }
+      const activity: SessionActivity = { sessionId, agentId, revision: String(mutation.revision), ts }
+      const timer = this.clock.setTimeout(() => {
+        const pending = this.transcriptActivityTimers.get(key)
+        if (!pending || pending.timer !== timer) return
+        this.transcriptActivityTimers.delete(key)
+        // Optional call: a partial cp client mock may lack this method — a missing sink is a no-op.
+        this.cpClient?.emitSessionActivity?.(pending.activity)
+      }, 250)
+      this.transcriptActivityTimers.set(key, { timer, activity })
     }
   }
 

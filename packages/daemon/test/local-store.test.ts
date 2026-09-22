@@ -1489,6 +1489,57 @@ describe('LocalStore session/transcript read-back (session/list, session/history
     await s.close()
   })
 
+  it('keeps a session-local tool id isolated between successive sessions at ONE physical thread', async () => {
+    // In append mode the statusThread does not move across `!new`, so a successor session of the
+    // SAME agent can reuse an ACP tool id: identity carries sessionScope, or the successor's
+    // insert is dedup'd away onto the retired session's row and its updates overwrite it.
+    const s = await store()
+    const toolCallId = 'reused-tc'
+    const retired = { agentId: 'bot-a', sessionKey: 'k:C1:T:bot-a:1' }
+    const successor = { agentId: 'bot-a', sessionKey: 'k:C1:T:bot-a:2' }
+    const row = (admission: { agentId: string; sessionKey: string }, ts: string, body: string) => ({
+      channel: 'C1',
+      thread: 'T',
+      ts,
+      sender: 'bot-a',
+      toolCallId,
+      title: 'Bash',
+      body,
+      admission
+    })
+    await s.insertToolCall(row(retired, '1', '{"rawOutput":"retired"}'))
+    await s.updateToolCall(
+      'C1',
+      'T',
+      'bot-a',
+      toolCallId,
+      { title: 'Bash', body: '{"rawOutput":"retired done"}' },
+      retired.sessionKey
+    )
+    await s.insertToolCall(row(successor, '2', '{"rawOutput":"successor"}'))
+    await s.updateToolCall(
+      'C1',
+      'T',
+      'bot-a',
+      toolCallId,
+      { title: 'Bash', body: '{"rawOutput":"successor done"}' },
+      successor.sessionKey
+    )
+    await s.flushToolCallWrites()
+
+    // Two rows, one per session — the successor's insert is NOT swallowed by the retired row.
+    const tools = (await s.threadTranscript('C1', 'T')).filter((r) => r.kind === 'tool')
+    expect(tools).toHaveLength(2)
+    // And each session's update landed on its own row.
+    expect(await s.getToolBodyForAgent(readScope('C1', 'T', 'bot-a', retired.sessionKey), toolCallId)).toBe(
+      '{"rawOutput":"retired done"}'
+    )
+    expect(await s.getToolBodyForAgent(readScope('C1', 'T', 'bot-a', successor.sessionKey), toolCallId)).toBe(
+      '{"rawOutput":"successor done"}'
+    )
+    await s.close()
+  })
+
   it('transcriptPageForAgent scopes to what THAT agent received or produced (no peer cross-talk)', async () => {
     const s = await store()
     // Delivered to bot-a + bot-a's own reply.
