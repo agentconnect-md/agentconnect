@@ -69,6 +69,8 @@ export interface DutyRegistryHost {
 export interface DutyGateHost {
   moveStagedAgents(): Set<string>
   agentRemovalPending(agentId: string): boolean
+  /** A grant re-adds the agent here: lift the drain and dropped marks a register-time detach left on it. */
+  readmitGrantedAgent(agentId: string): void
   queueAgentLifecycle<T>(agentId: string, work: () => Promise<T>): Promise<T>
 }
 
@@ -492,12 +494,16 @@ export class DutyCoordinator {
         this.log.warn(`duty: install of ${agentId} skipped — spec revision is ${applied}`)
         return
       }
-      for (const integration of bundle.integrations) this.host.cpIntegrations()?.upsert(integration)
-      for (const cron of bundle.crons) this.host.cpCrons()?.upsert(cron)
-      this.host.exactCpDependents(agentId, {
+      const dependents = {
         integrationIds: bundle.integrations.map((integration) => integration.integrationId),
         cronIds: bundle.crons.map((cron) => cron.cronId)
-      })
+      }
+      // An unchanged spec does not rewrite the replica, so a detached one comes back only through activate.
+      if (applied === 'idempotent') this.host.cpAgents()?.activate(agentId, dependents)
+      for (const integration of bundle.integrations) this.host.cpIntegrations()?.upsert(integration)
+      for (const cron of bundle.crons) this.host.cpCrons()?.upsert(cron)
+      this.host.exactCpDependents(agentId, dependents)
+      this.host.readmitGrantedAgent(agentId)
       await this.host.flushReconcile()
       this.log.info(
         `duty: installed granted agent ${agentId} (${bundle.integrations.length} integration(s), ` +

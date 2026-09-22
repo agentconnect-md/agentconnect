@@ -10770,6 +10770,7 @@ export class Daemon {
       exactCpDependents: (agentId, desired) => this.exactCpDependents(agentId, desired),
       moveStagedAgents: () => this.moveStagedAgents,
       agentRemovalPending: (agentId) => this.agentRemovalPending(agentId),
+      readmitGrantedAgent: (agentId) => this.readmitGrantedAgent(agentId),
       queueAgentLifecycle: <T>(agentId: string, work: () => Promise<T>): Promise<T> =>
         this.queueAgentLifecycle(agentId, work),
       agents: () => this.agents,
@@ -19508,6 +19509,15 @@ export class Daemon {
       throw new AggregateError(cleared.degraded, `cannot clear agent "${agentId}" removal tombstone for re-add`)
     }
     this.removedAgentTombstones.delete(agentId)
+  }
+
+  /** The grant twin of `applyAgentUpsert`'s re-add: without it a detached-then-granted agent is served but refuses every turn. */
+  private readmitGrantedAgent(agentId: string): void {
+    if (this.removedAgentTombstones.has(agentId) || this.cpDroppedAgents.has(agentId))
+      this.clearRemovalForReadd(agentId)
+    if (this.cpDroppedAgents.delete(agentId) && !this.agentDestructivePending(agentId))
+      this.drainingAgents.delete(agentId)
+    this.gitCreds?.clearDenied(agentId)
   }
 
   /** Publish a stop/detach admission gate synchronously. `release(true)` keeps
