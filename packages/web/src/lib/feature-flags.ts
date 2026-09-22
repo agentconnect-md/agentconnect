@@ -40,8 +40,7 @@ export type FeatureFlagId =
   | 'git-url'
   /** The QQ integration's install entry points; a QQ bot the org already has keeps its Bots tab. */
   | 'qq'
-  /** The Decisions surface: its rail entry, its routes, and the `By decision` channel trigger.
-   *  It reads an opt-in mock `DecisionApi`, not a live Control Plane resource. */
+  /** Temporary Decisions rollout gate; remove it for the final Jev release. */
   | 'decisions'
 
 function enabledIds(): ReadonlySet<string> {

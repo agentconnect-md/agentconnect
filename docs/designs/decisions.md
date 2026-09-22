@@ -1547,6 +1547,18 @@ Jev's pinned model and aliases documented in [Models](https://docs.typesafe.ai/m
 it is shipped with the adapter, not discovered using a secret or paid probe. Other
 provider connections may be saved in Infra but do not become Decision adapters.
 
+The `decisions` flag is a temporary prerelease gate. Helm exposes it through
+`features.decisions` (default `false`), which adds `decisions` to the Web runtime's
+`FEATURE_FLAGS`. Enabling it exposes Decision management and standalone preview;
+it does not enable live message triggers or Stage 2 shared-bot routing.
+
+Before the final Jev release:
+
+- Remove the `decisions` feature flag and its Console navigation, route, and data-loading
+  gates so Decision management is available by default.
+- Remove `features.decisions`, its chart-to-environment mapping, rollout overrides,
+  and flag-specific tests and documentation. Do not retain a permanent install switch.
+
 `GET /decisions/providers` projects each visible daemon's `decision/catalog` response,
 its supported models, and BYOK/Cloud readiness. Configured BYOK takes priority over
 Cloud; no upstream authentication or credit check is performed by this read. Offline,
