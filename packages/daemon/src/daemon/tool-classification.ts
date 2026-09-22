@@ -3,11 +3,8 @@ import { ALL_TOOL_NAMES } from '../mcp/tools.js'
 import { RESERVED_MCP_SERVER_NAME } from '../mcp/resolve-servers.js'
 import { turnChromeFor } from '../platforms/turn-chrome.js'
 
-// ACP runtime identities for THIS daemon's own MCP tools. ALL_TOOL_NAMES is the
-// registry of every tool the agentconnect MCP server can inject; both approval
-// transports below derive their trust policy from this same set.
+// ACP runtime identities for this daemon's own MCP tools; both approval transports below trust only these.
 const BUILTIN_TOOL_NAMES = new Set(ALL_TOOL_NAMES)
-const BUILTIN_PERMISSION_TOOL_FQNS = new Set(ALL_TOOL_NAMES.map((name) => `mcp__${RESERVED_MCP_SERVER_NAME}__${name}`))
 const BUILTIN_TOOL_FQNS = new Set(
   ALL_TOOL_NAMES.flatMap((name) => [
     `mcp__${RESERVED_MCP_SERVER_NAME}__${name}`,
@@ -18,33 +15,32 @@ const BUILTIN_TOOL_FQNS = new Set(
   ])
 )
 
-/**
- * Gemini CLI identifies an MCP tool over ACP ONLY by its display title — DiscoveredMCPTool's
- * `${tool} (${server} MCP Server)` — and it asks for permission BEFORE emitting the tool_call
- * update that would correlate an id, so neither the FQN nor the id path can match. Accept that
- * exact title, anchored as a whole-string set membership: another server's tool gains its OWN
- * ` (<that server> MCP Server)` suffix, so it cannot spoof one of ours by naming itself after it.
- */
+// Gemini CLI's `<tool> (<server> MCP Server)` title; another server's tool gets its own suffix, so it cannot spoof ours.
 const BUILTIN_TOOL_DISPLAY_TITLES = new Set(
   ALL_TOOL_NAMES.map((name) => `${name} (${RESERVED_MCP_SERVER_NAME} MCP Server)`)
 )
 
-function containsBuiltinToolFqn(id: string): boolean {
-  if (BUILTIN_TOOL_FQNS.has(id) || BUILTIN_TOOL_DISPLAY_TITLES.has(id)) return true
-  // Some ACP adapters suffix an opaque invocation id to the flattened MCP name.
-  for (const fqn of BUILTIN_PERMISSION_TOOL_FQNS) if (id.includes(fqn)) return true
-  return false
+// Ids built from the flattened name: qwen-code's `mcp__<server>__<tool>-<suffix>`, gemini-cli's `mcp_<server>_<tool>__<suffix>`.
+const BUILTIN_TOOL_CALL_ID_PREFIXES = ALL_TOOL_NAMES.flatMap((name) => [
+  `mcp__${RESERVED_MCP_SERVER_NAME}__${name}-`,
+  `mcp_${RESERVED_MCP_SERVER_NAME}_${name}__`
+])
+
+// A free-text field names one of our tools only as the whole string, never inside a longer one such as a shell command.
+function isBuiltinToolLabel(value: unknown): boolean {
+  return typeof value === 'string' && (BUILTIN_TOOL_FQNS.has(value) || BUILTIN_TOOL_DISPLAY_TITLES.has(value))
 }
 
 /** Identify a structured ACP tool event for one of this daemon's own MCP tools. */
 export function isBuiltinSystemToolCall(update: unknown): boolean {
   if (!update || typeof update !== 'object') return false
-  const u = update as { sessionUpdate?: unknown; rawInput?: unknown; title?: unknown }
+  const u = update as { sessionUpdate?: unknown; name?: unknown; rawInput?: unknown; title?: unknown }
   if (u.sessionUpdate !== 'tool_call' && u.sessionUpdate !== 'tool_call_update') return false
+  // ACP's programmatic tool name outranks rawInput, which some runtimes fill with the model's own arguments.
+  if (typeof u.name === 'string' && u.name) return BUILTIN_TOOL_FQNS.has(u.name)
   const rawInput =
     u.rawInput && typeof u.rawInput === 'object' ? (u.rawInput as { server?: unknown; tool?: unknown }) : undefined
-  // When the adapter provides structured identity, it is authoritative. Do not let
-  // a friendly/misleading display title override a different MCP server identity.
+  // Structured server/tool identity outranks a friendly or misleading display title.
   if (rawInput && (rawInput.server !== undefined || rawInput.tool !== undefined)) {
     return (
       rawInput.server === RESERVED_MCP_SERVER_NAME &&
@@ -55,24 +51,18 @@ export function isBuiltinSystemToolCall(update: unknown): boolean {
   return typeof u.title === 'string' && BUILTIN_TOOL_FQNS.has(u.title)
 }
 
-/**
- * True when an ACP permission request is for one of the daemon's OWN built-in MCP tools.
- * Those are platform system tools the agent is always granted — a human should never have
- * to approve them per call (they carry no more authority than the agent already has). We
- * match the runtime-assigned `mcp__agentconnect__<name>` FQN against our registered tool
- * set across the request's identifying fields (`title`/`kind`/`toolCallId`). Deliberately
- * strict + fail-SAFE: an unrecognized/friendly title simply falls through to the normal
- * permission card, never a wrongful auto-allow. The runtime's own dangerous built-ins
- * (Bash/Edit/…) carry different names, are NOT in this set, and still prompt.
- */
+/** True when an ACP permission request is for one of this daemon's own MCP tools; anything unrecognized still gets a card. */
 export function isBuiltinSystemTool(
   params: RequestPermissionRequest,
   correlatedToolCallIds?: ReadonlySet<string>
 ): boolean {
   const tc = params.toolCall
-  if (typeof tc?.toolCallId === 'string' && correlatedToolCallIds?.has(tc.toolCallId)) return true
-  const ids = [tc?.title, tc?.kind, tc?.toolCallId]
-  return ids.some((id) => typeof id === 'string' && containsBuiltinToolFqn(id))
+  // ACP's programmatic tool name, when sent, outranks every free-text field and any correlated id.
+  if (typeof tc?.name === 'string' && tc.name) return BUILTIN_TOOL_FQNS.has(tc.name)
+  const id = tc?.toolCallId
+  if (typeof id === 'string' && correlatedToolCallIds?.has(id)) return true
+  if (isBuiltinToolLabel(tc?.title) || isBuiltinToolLabel(tc?.kind)) return true
+  return typeof id === 'string' && BUILTIN_TOOL_CALL_ID_PREFIXES.some((prefix) => id.startsWith(prefix))
 }
 
 /** Codex ACP carries MCP approval through form elicitation when the client supports it. */

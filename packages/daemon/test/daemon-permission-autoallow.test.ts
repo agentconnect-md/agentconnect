@@ -33,6 +33,7 @@ import {
 
 /** A minimal permission request whose toolCall carries the given identifying fields. */
 function req(fields: {
+  name?: string
   title?: string
   kind?: string
   toolCallId?: string
@@ -86,6 +87,64 @@ describe('isBuiltinSystemTool — auto-approve the daemon’s own MCP tools', ()
     expect(isBuiltinSystemTool(req({ title: 'mcp_othersrv_sendMessage' }))).toBe(false)
     // Not one of our tool names.
     expect(isBuiltinSystemTool(req({ title: 'rmRf (agentconnect MCP Server)' }))).toBe(false)
+  })
+
+  it('does NOT auto-approve a shell command that merely mentions a built-in tool', () => {
+    // Claude and Gemini title a shell request with the command itself, so its text is the model's.
+    for (const title of [
+      'pnpm test # mcp__agentconnect__sendMessage',
+      'echo mcp__agentconnect__sendMessage',
+      'ls `mcp__agentconnect__sendMessage`',
+      'mcp__agentconnect__sendMessage && ls',
+      'ls # mcp.agentconnect.sendMessage',
+      'ls # mcp_agentconnect_sendMessage',
+      'ls # sendMessage (agentconnect MCP Server)'
+    ]) {
+      expect(isBuiltinSystemTool(req({ title, kind: 'execute', rawInput: { command: title } }))).toBe(false)
+      expect(isBuiltinSystemTool(req({ kind: title }))).toBe(false)
+    }
+  })
+
+  it('decides by the runtime’s programmatic tool name when the request carries one', () => {
+    for (const name of ALL_TOOL_NAMES) {
+      expect(isBuiltinSystemTool(req({ name: `mcp__agentconnect__${name}`, title: 'Use tool?' }))).toBe(true)
+    }
+    // claude-agent-acp 0.71–0.78 titled a Bash request with the model's own description.
+    expect(isBuiltinSystemTool(req({ name: 'Bash', title: 'mcp__agentconnect__sendMessage' }))).toBe(false)
+    expect(isBuiltinSystemTool(req({ name: 'Bash', toolCallId: 'mcp__agentconnect__sendMessage-42' }))).toBe(false)
+    expect(isBuiltinSystemTool(req({ name: 'mcp__othersrv__sendMessage' }))).toBe(false)
+    // An id correlated from a model-authored rawInput does not outrank the name either.
+    expect(
+      isBuiltinSystemTool(req({ name: 'mcp__othersrv__sendMessage', toolCallId: 'opaque-42' }), new Set(['opaque-42']))
+    ).toBe(false)
+  })
+
+  it('matches a tool-call id only as the flattened name, its separator, then a suffix', () => {
+    for (const name of ALL_TOOL_NAMES) {
+      // qwen-code builds `<name>-<uuid>-<index>`, gemini-cli `<name>__<raw id>`.
+      expect(isBuiltinSystemTool(req({ toolCallId: `mcp__agentconnect__${name}-3f0c5a8e-0` }))).toBe(true)
+      expect(
+        isBuiltinSystemTool(req({ toolCallId: `mcp_agentconnect_${name}__mcp_agentconnect_${name}_1758000000000_3` }))
+      ).toBe(true)
+    }
+    // gemini-cli after 0.60.0 titles an MCP call that has arguments `tool(args)`; only its id names the server.
+    expect(
+      isBuiltinSystemTool(req({ title: 'sendMessage(text: hi)', toolCallId: 'mcp_agentconnect_sendMessage__1' }))
+    ).toBe(true)
+    expect(
+      isBuiltinSystemTool(req({ title: 'sendMessage(text: hi)', toolCallId: 'mcp_othersrv_sendMessage__1' }))
+    ).toBe(false)
+    for (const toolCallId of [
+      'mcp__agentconnect__sendMessage',
+      'mcp__agentconnect__sendMessage_42',
+      'mcp__agentconnect__sendMessageX-42',
+      'x-mcp__agentconnect__sendMessage-42',
+      'resolve-prompt-/tmp/mcp__agentconnect__sendMessage-3f0c5a8e',
+      'run_shell_command__mcp_agentconnect_sendMessage__1',
+      'mcp_agentconnect_sendMessage_1758000000000_3'
+    ]) {
+      expect(isBuiltinSystemTool(req({ toolCallId }))).toBe(false)
+    }
   })
 
   it('does NOT auto-approve the runtime’s dangerous built-ins (still card them)', () => {
@@ -241,6 +300,49 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
     expect(isBuiltinSystemToolCall(event)).toBe(true)
     expect(isBuiltinSystemToolCall({ ...event, rawInput: { ...event.rawInput, server: 'another-server' } })).toBe(false)
     expect(isBuiltinSystemToolCall({ ...event, title: 'Bash', rawInput: { command: 'pwd' } })).toBe(false)
+    // A runtime that names the tool outranks rawInput, which some runtimes fill with the model's arguments.
+    expect(isBuiltinSystemToolCall({ ...event, name: 'mcp__othersrv__readFile' })).toBe(false)
+    expect(
+      isBuiltinSystemToolCall({ ...event, name: 'mcp__agentconnect__sendMessage', rawInput: { text: 'hi' } })
+    ).toBe(true)
+  })
+
+  it('lets a named permission request outrank an id correlated from a nameless update', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending = installPending(daemon)
+    // A refining update omits `name`, and its rawInput can be the model's own tool arguments.
+    ;(daemon as any).onAcpUpdate('agent-1', 's1', {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'call-1',
+      rawInput: { server: 'agentconnect', tool: 'sendMessage', path: 'notes.md' }
+    })
+    expect(pending.builtinSystemToolCallIds).toContain('call-1')
+
+    const result = (daemon as any).permissions.onAcpPermission(
+      'agent-1',
+      's1',
+      req({ toolCallId: 'call-1', name: 'mcp__othersrv__readFile', title: 'mcp__othersrv__readFile' })
+    )
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingEditorPermissions.keys()
+    await (daemon as any).permissions.decideEditorPermission({ agentId: 'agent-1', requestId, decision: 'deny' })
+    await expect(result).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'deny' } })
+  })
+
+  it('queues a shell request that merely mentions a built-in tool for an Agent editor', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    installPending(daemon)
+    const command = 'pnpm test # mcp__agentconnect__sendMessage'
+
+    const result = (daemon as any).permissions.onAcpPermission(
+      'agent-1',
+      's1',
+      req({ title: command, kind: 'execute', rawInput: { command } })
+    )
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingEditorPermissions.keys()
+    await (daemon as any).permissions.decideEditorPermission({ agentId: 'agent-1', requestId, decision: 'deny' })
+    await expect(result).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'deny' } })
   })
 
   it.each(ALL_TOOL_NAMES)('bypasses both approval paths for %s after a trusted tool event', async (name) => {
@@ -2018,6 +2120,9 @@ describe('memory extraction turns grant only the daemon’s own bound bridge too
     })
     await expect(
       permissions.onAcpPermission('agent-1', 's1', req({ title: 'Bash', rawInput: { command: 'rm -rf memory' } }))
+    ).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    await expect(
+      permissions.onAcpPermission('agent-1', 's1', req({ title: 'cat notes.md # mcp__agentconnect__writeMemory' }))
     ).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
     await expect(permissions.onAcpElicit('agent-1', 's1', elicitation('uncorrelated'))).resolves.toEqual({
       action: 'cancel'
