@@ -16,6 +16,7 @@ describe('QQ installation', () => {
         vi.fn(async () => new Response(JSON.stringify(data), { status }))
       )
       expect(result.ok).toBe(expected)
+      if (result.ok) expect(result.identity).toEqual({ name: 'QQ · 100', externalAppId: '100' })
       if (!result.ok) expect(result.status).toBe(status === 503 ? 503 : 400)
     }
   })
