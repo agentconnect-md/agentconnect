@@ -592,7 +592,7 @@
         "identityLabel": "Commits as the agent’s registered identity, not as you"
       },
       "filesPanel": {
-        "loadError": "Couldn’t load — the daemon may be offline.",
+        "loadError": "Couldn't load — the daemon may be offline.",
         "findPlaceholder": "Find file by path…",
         "findLabel": "Find file by path",
         "lastFetched": "When this checkout last fetched from its remote"
@@ -1880,7 +1880,7 @@
     },
     "workspaceFiles": {
       "rendering": "Rendering…",
-      "directoryLoadError": "Couldn’t load — the daemon may be offline.",
+      "directoryLoadError": "Couldn't load — the daemon may be offline.",
       "loading": "Loading…",
       "retry": "Retry",
       "loadMore": "Load more",
@@ -1901,11 +1901,11 @@
       "noPreview": "No preview for this item.",
       "deleteFilePrompt": "Delete this file?",
       "cannotUndo": "This cannot be undone.",
-      "fileReadError": "Couldn’t read the file — the owning daemon may be offline.",
+      "fileReadError": "Couldn't read the file — the owning daemon may be offline.",
       "fileNotFound": "File not found — it may have been removed since the listing.",
       "binaryFile": "Binary file — not displayed ({size})",
       "showingFirst": "Showing first {loaded} of {total}",
-      "loadMoreError": "Couldn’t load more — the daemon may be offline.",
+      "loadMoreError": "Couldn't load more — the daemon may be offline.",
       "fileNameRequired": "Enter a file name or relative path.",
       "saveConflict": "The agent is working or the file changed. Retry when it is idle."
     },
