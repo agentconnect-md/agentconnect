@@ -418,7 +418,8 @@
       "settings": "设置",
       "profile": "个人资料",
       "organizationSettings": "组织设置",
-      "more": "更多"
+      "more": "更多",
+      "decisions": "决策"
     },
     "actions": {
       "account": "账户",
@@ -2573,6 +2574,152 @@
       "replace": "替换",
       "applyAllBody": "这会将 {key} 分配给你可以管理的每个 Agent，以及之后配置的 Agent。你无法管理的 Agent 不受影响，现有分配会保留。",
       "replaceBody": "已分配 {key} 的 Agent 将收到新值。之前的值无法恢复。"
+    }
+  },
+  "Decisions": {
+    "metadata": {
+      "title": "决策 · AgentConnect",
+      "create": "新建决策 · AgentConnect"
+    },
+    "description": "决策针对一条收到的消息提出一个问题并返回答案。由频道决定每个答案触发什么。",
+    "searchPlaceholder": "搜索决策…",
+    "createDecision": "新建决策",
+    "create": "创建",
+    "loading": "正在加载决策…",
+    "emptyTitle": "还没有决策",
+    "emptyBody": "创建一个决策来对收到的消息提问，然后选择哪些答案唤醒 Agent。",
+    "noMatches": "没有匹配“{query}”的决策。",
+    "notFound": "该决策已不存在。",
+    "noInstructions": "还没有指令",
+    "untitled": "决策",
+    "newDecision": "新建决策",
+    "editing": "正在编辑 {name}",
+    "copyName": "{name} 副本",
+    "places": "{count, plural, other {# 处}}",
+    "rowActions": "{name} 的操作",
+    "edit": "编辑",
+    "duplicate": "复制",
+    "delete": "删除",
+    "deleting": "正在删除…",
+    "deleteTitle": "删除 {name}",
+    "deleteBodyUsed": "{names} 正在使用该决策。在你选择其他决策之前，这些频道将停止评估消息。此操作无法撤销。",
+    "deleteBodyUnused": "该决策未被任何地方使用。此操作无法撤销。",
+    "save": "保存",
+    "cancel": "取消",
+    "byDecision": "按决策",
+    "viewAndEdit": "查看并编辑",
+    "model": "模型",
+    "provider": "提供方",
+    "name": "名称",
+    "namePlaceholder": "请求类型",
+    "questionType": "问题类型",
+    "instructions": "指令",
+    "instructionsPlaceholder": "针对 currentMessage 提出一个问题。",
+    "instructionsHelp": "用 <code>currentMessage</code> 指代收到的消息。最近的对话历史会自动包含在内。",
+    "criteria": "判定标准",
+    "criteriaHelp": "这些键是模型可能返回的答案。每个答案触发什么，在使用该决策的地方配置。",
+    "keyPlaceholder": "键",
+    "answerDescriptionPlaceholder": "这个答案的含义",
+    "booleanDescriptionPlaceholder": "这个答案适用的情形",
+    "levelDescriptionPlaceholder": "这个等级的含义",
+    "addAnswer": "添加答案",
+    "addLevel": "添加等级",
+    "removeAnswer": "删除答案",
+    "removeLevel": "删除等级",
+    "moveUp": "上移",
+    "moveDown": "下移",
+    "notUsed": "尚未被任何地方使用。",
+    "types": {
+      "choice": "选项",
+      "boolean": "布尔",
+      "score": "评分"
+    },
+    "typeHint": {
+      "choice": "返回你设定的某个判定标准键。",
+      "boolean": "返回 Yes 或 No。",
+      "score": "在你的量表上返回一个数值，可含小数。"
+    },
+    "criteriaHint": {
+      "choice": "键 + 描述",
+      "boolean": "固定答案",
+      "score": "有序等级"
+    },
+    "columns": {
+      "providerModel": "提供方 / 模型",
+      "updated": "更新时间"
+    },
+    "usedBy": {
+      "title": "使用处",
+      "kind": {
+        "gate": "频道门控",
+        "shared_bot_routing": "共享 Bot 路由"
+      },
+      "needsReview": "需要复核",
+      "ok": "正常"
+    },
+    "errors": {
+      "name": "保存前请先为决策命名。",
+      "instructions": "指令为必填项——这就是模型要回答的问题。",
+      "choiceCriteria": "请至少添加两个带键的答案。",
+      "duplicateKeys": "每个答案键都必须唯一。",
+      "emptyCriterion": "保存前请描述每个答案。",
+      "scoreLevels": "评分使用两到十个等级。",
+      "unknown": "保存前请检查上方字段。",
+      "inUse": "该决策仍在使用中。请先移除它的绑定再删除。"
+    },
+    "condition": {
+      "yes": "Yes",
+      "no": "No",
+      "noAnswer": "未选择任何答案",
+      "min": "最低",
+      "minimumProbability": "{answer} 的最低概率",
+      "choiceHelp": "任一选项达到或超过其最低概率时触发一次该 Agent。",
+      "from": "从",
+      "to": "到",
+      "intervalStart": "区间起点",
+      "intervalEnd": "区间终点"
+    },
+    "binding": {
+      "decision": "决策",
+      "selectDecision": "选择决策…",
+      "pickDecision": "请选择一个决策。",
+      "decisionRemoved": "决策已删除",
+      "triggerWhen": "触发条件",
+      "howThisWorks": "工作原理",
+      "tryMessage": "试一条消息",
+      "tryPlaceholder": "在这个频道里试一条消息…",
+      "try": "试运行",
+      "wouldTrigger": "会触发",
+      "skipped": "已跳过",
+      "triggerCondition": "触发条件",
+      "triggers": "触发对象",
+      "helpMentions": "@提及不会跳过决策；它只决定可以被触发的 Agent 是这一个。",
+      "helpHistory": "最近的对话历史会自动包含在内，包括没有触发 Agent 的消息。",
+      "helpUnavailable": "如果评估不可用，符合条件的消息会继续交给该 Agent。"
+    },
+    "try": {
+      "title": "用示例试运行",
+      "loadExample": "载入示例",
+      "history": "对话历史",
+      "senderPlaceholder": "@user",
+      "messagePlaceholder": "消息",
+      "addMessage": "添加消息",
+      "removeMessage": "删除消息",
+      "current": "当前消息",
+      "currentPlaceholder": "正在被评估的消息",
+      "run": "运行",
+      "running": "运行中…",
+      "note": "此预览只解释答案本身。是否唤醒 Agent 在使用该决策的地方配置。",
+      "stale": "本次运行之后决策已被修改。请重新运行。",
+      "unavailableBadge": "评估不可用",
+      "unavailableBody": "评估不可用——提供方没有返回答案。这既不是 No，也不是跳过。",
+      "context": "上下文",
+      "messages": "{count, plural, other {# 条消息}}"
+    },
+    "breaksChannels": "这些频道绑定会失去触发条件：{names}。保存后它们会标记为“需要复核”；系统不会替你重新选择。",
+    "notOffered": {
+      "title": "决策功能未启用",
+      "body": "该控制台尚未开启决策功能。管理员可以通过 decisions 功能开关启用。"
     }
   },
   "ProviderKeys": {

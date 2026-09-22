@@ -418,7 +418,8 @@
       "settings": "Settings",
       "profile": "Profile",
       "organizationSettings": "Organization settings",
-      "more": "More"
+      "more": "More",
+      "decisions": "Decisions"
     },
     "actions": {
       "account": "Account",
@@ -2573,6 +2574,152 @@
       "replace": "Replace",
       "applyAllBody": "This assigns {key} to every agent you can manage, and to agents you configure later. Agents you cannot manage are not affected, and existing assignments are kept.",
       "replaceBody": "Agents assigned {key} will receive the new value. The previous value cannot be recovered."
+    }
+  },
+  "Decisions": {
+    "metadata": {
+      "title": "Decisions · AgentConnect",
+      "create": "New decision · AgentConnect"
+    },
+    "description": "A decision asks one question about an incoming message and returns an answer. Channels decide what each answer does.",
+    "searchPlaceholder": "Search decisions…",
+    "createDecision": "Create decision",
+    "create": "Create",
+    "loading": "Loading decisions…",
+    "emptyTitle": "No decisions yet",
+    "emptyBody": "Create one to ask a question about incoming messages, then pick which answers wake an agent.",
+    "noMatches": "No decisions match “{query}”.",
+    "notFound": "This decision no longer exists.",
+    "noInstructions": "No instructions yet",
+    "untitled": "decision",
+    "newDecision": "New decision",
+    "editing": "Editing {name}",
+    "copyName": "{name} copy",
+    "places": "{count, plural, one {1 place} other {# places}}",
+    "rowActions": "Actions for {name}",
+    "edit": "Edit",
+    "duplicate": "Duplicate",
+    "delete": "Delete",
+    "deleting": "Deleting…",
+    "deleteTitle": "Delete {name}",
+    "deleteBodyUsed": "{names} uses this decision. Those channels stop evaluating messages until another decision is picked. This can’t be undone.",
+    "deleteBodyUnused": "This decision is not used anywhere. This can’t be undone.",
+    "save": "Save",
+    "cancel": "Cancel",
+    "byDecision": "By decision",
+    "viewAndEdit": "View and edit",
+    "model": "Model",
+    "provider": "Provider",
+    "name": "Name",
+    "namePlaceholder": "Request type",
+    "questionType": "Question type",
+    "instructions": "Instructions",
+    "instructionsPlaceholder": "Ask one question about currentMessage.",
+    "instructionsHelp": "Refer to the incoming message as <code>currentMessage</code>. Recent conversation history is included automatically.",
+    "criteria": "Criteria",
+    "criteriaHelp": "These keys are the answers the model may return. What each answer does is configured where the decision is used.",
+    "keyPlaceholder": "key",
+    "answerDescriptionPlaceholder": "What this answer means",
+    "booleanDescriptionPlaceholder": "When this answer applies",
+    "levelDescriptionPlaceholder": "What this level means",
+    "addAnswer": "Add answer",
+    "addLevel": "Add level",
+    "removeAnswer": "Remove answer",
+    "removeLevel": "Remove level",
+    "moveUp": "Move up",
+    "moveDown": "Move down",
+    "notUsed": "Not used anywhere yet.",
+    "types": {
+      "choice": "Choice",
+      "boolean": "Boolean",
+      "score": "Score"
+    },
+    "typeHint": {
+      "choice": "Returns one of your criteria keys.",
+      "boolean": "Returns Yes or No.",
+      "score": "Returns a number on your scale, decimals included."
+    },
+    "criteriaHint": {
+      "choice": "key + description",
+      "boolean": "fixed answers",
+      "score": "ordered levels"
+    },
+    "columns": {
+      "providerModel": "Provider / model",
+      "updated": "Updated"
+    },
+    "usedBy": {
+      "title": "Used by",
+      "kind": {
+        "gate": "channel gate",
+        "shared_bot_routing": "shared bot routing"
+      },
+      "needsReview": "needs review",
+      "ok": "ok"
+    },
+    "errors": {
+      "name": "Give the decision a name before saving.",
+      "instructions": "Instructions are required — this is the question the model answers.",
+      "choiceCriteria": "Add at least two answers with keys.",
+      "duplicateKeys": "Every answer key must be unique.",
+      "emptyCriterion": "Describe every answer before saving.",
+      "scoreLevels": "A score uses between two and ten levels.",
+      "unknown": "Check the fields above before saving.",
+      "inUse": "This decision is still used. Remove its bindings before deleting it."
+    },
+    "condition": {
+      "yes": "Yes",
+      "no": "No",
+      "noAnswer": "no answer selected",
+      "min": "min",
+      "minimumProbability": "Minimum probability for {answer}",
+      "choiceHelp": "Any option at or above its minimum triggers the agent once.",
+      "from": "From",
+      "to": "To",
+      "intervalStart": "Interval start",
+      "intervalEnd": "Interval end"
+    },
+    "binding": {
+      "decision": "Decision",
+      "selectDecision": "Select a decision…",
+      "pickDecision": "Pick a decision.",
+      "decisionRemoved": "decision removed",
+      "triggerWhen": "Trigger when",
+      "howThisWorks": "How this works",
+      "tryMessage": "Try a message",
+      "tryPlaceholder": "Try a message in this channel…",
+      "try": "Try",
+      "wouldTrigger": "Would trigger",
+      "skipped": "Skipped",
+      "triggerCondition": "Trigger condition",
+      "triggers": "Triggers",
+      "helpMentions": "A mention does not skip the decision; it only fixes that this agent is the one that can be triggered.",
+      "helpHistory": "Recent conversation history is included automatically, including messages that did not trigger the agent.",
+      "helpUnavailable": "If evaluation is unavailable, eligible messages continue to the agent."
+    },
+    "try": {
+      "title": "Try with an example",
+      "loadExample": "Load example",
+      "history": "Conversation history",
+      "senderPlaceholder": "@user",
+      "messagePlaceholder": "Message",
+      "addMessage": "Add message",
+      "removeMessage": "Remove message",
+      "current": "Current message",
+      "currentPlaceholder": "The message being evaluated",
+      "run": "Run",
+      "running": "Running…",
+      "note": "This preview explains the answer only. Whether it wakes an agent is configured where the decision is used.",
+      "stale": "The decision changed after this run. Run again.",
+      "unavailableBadge": "Evaluation unavailable",
+      "unavailableBody": "Evaluation unavailable — the provider returned no answer. This is not a No and not a skip.",
+      "context": "Context",
+      "messages": "{count, plural, one {1 message} other {# messages}}"
+    },
+    "breaksChannels": "These channel bindings lose their trigger condition: {names}. They are flagged Needs review after saving; nothing is reselected for you.",
+    "notOffered": {
+      "title": "Decisions are not enabled",
+      "body": "This console has not turned on the Decisions surface. An administrator can enable it with the decisions feature flag."
     }
   },
   "ProviderKeys": {

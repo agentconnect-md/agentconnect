@@ -28,6 +28,8 @@ export const NAV_GROUPS: NavItem[][] = [
     { href: '/home', label: 'Home', icon: 'house' },
     { href: '/agents', label: 'Agents', icon: 'bot' },
     { href: '/sessions', label: 'Sessions', icon: 'messages-square' },
+    // The judgement a channel consults, so it sits with the work rather than with Infra.
+    { href: '/decisions', label: 'Decisions', icon: 'split', requires: 'decisions' },
     { href: '/crons', label: 'Schedules', icon: 'calendar-clock' },
     { href: '/tools', label: 'Tools & Skills', icon: 'blocks' },
     { href: '/integrations', label: 'Integrations', icon: 'plug' },
@@ -57,6 +59,7 @@ export const MOBILE_NAV: NavItem[] = [
 export const MORE_ROWS: NavItem[] = [
   { href: '/tools', label: 'Tools & Skills', icon: 'blocks' },
   { href: '/integrations', label: 'Integrations', icon: 'plug' },
+  { href: '/decisions', label: 'Decisions', icon: 'split', requires: 'decisions' },
   { href: '/knowledge', label: 'Knowledge', icon: 'book-open' },
   { href: '/daemons', label: 'Infra', icon: 'server' },
   { href: '/usage', label: 'Analytics', icon: 'circle-gauge' },
@@ -72,6 +75,7 @@ export const SECTIONS: { prefix: string; label: string }[] = [
   { prefix: '/sessions', label: 'Sessions' },
   // Merged conversation pages live in the Sessions section (§5.3).
   { prefix: '/conversations', label: 'Sessions' },
+  { prefix: '/decisions', label: 'Decisions' },
   { prefix: '/crons', label: 'Schedules' },
   { prefix: '/tools', label: 'Tools & Skills' },
   { prefix: '/integrations', label: 'Integrations' },
@@ -82,6 +86,51 @@ export const SECTIONS: { prefix: string; label: string }[] = [
   { prefix: '/settings', label: 'Settings' },
   { prefix: '/profile', label: 'Profile' }
 ]
+
+// ── Localized labels ─────────────────────────────────────────────────────────
+// Which catalog key words each destination, kept HERE beside the tables rather than in a
+// `switch` in the shell: two switches had drifted, so the rail fell back to English.
+
+/** The `Shell.navigation` keys, spelled out so a template lookup still type-checks. */
+export type ShellNavKey =
+  | 'home'
+  | 'agents'
+  | 'sessions'
+  | 'decisions'
+  | 'schedules'
+  | 'tools'
+  | 'integrations'
+  | 'knowledge'
+  | 'infra'
+  | 'analytics'
+  | 'billing'
+  | 'settings'
+  | 'profile'
+  | 'organizationSettings'
+
+/** The rail, the mobile tab bar, and the mobile app-bar crumb. */
+export const NAV_LABEL_KEYS: Readonly<Record<string, ShellNavKey>> = {
+  '/home': 'home',
+  '/agents': 'agents',
+  '/sessions': 'sessions',
+  '/conversations': 'sessions',
+  '/decisions': 'decisions',
+  '/crons': 'schedules',
+  '/tools': 'tools',
+  '/integrations': 'integrations',
+  '/knowledge': 'knowledge',
+  '/daemons': 'infra',
+  '/usage': 'analytics',
+  '/billing': 'billing',
+  '/settings': 'settings',
+  '/profile': 'profile'
+}
+
+/** The mobile "More" sheet, which names `/settings` in full. */
+export const SHEET_LABEL_KEYS: Readonly<Record<string, ShellNavKey>> = {
+  ...NAV_LABEL_KEYS,
+  '/settings': 'organizationSettings'
+}
 
 // ── Search page index ────────────────────────────────────────────────────────
 
@@ -104,6 +153,7 @@ const PAGE_KEYWORDS: Record<string, string[]> = {
   '/billing': ['balance', 'credit', 'invoice', 'payment', 'top up'],
   '/tools': ['mcp', 'connectors', 'skills'],
   '/integrations': ['bots', 'github', 'slack', 'telegram', 'discord', 'lark', 'feishu'],
+  '/decisions': ['judgement', 'question', 'trigger when', 'routing'],
   '/usage': ['usage', 'costs', 'tokens']
 }
 
