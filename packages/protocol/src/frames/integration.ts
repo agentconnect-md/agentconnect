@@ -408,3 +408,20 @@ export const IntegrationLeaveOk = z.object({
   error: z.string().optional()
 })
 export type IntegrationLeaveOk = z.infer<typeof IntegrationLeaveOk>
+
+/** D→C REQ → `integration/revoked/ok`: a daemon-held socket saw the platform revoke its bot — the daemon twin of the relay's `rc/bot-revoked`. */
+export const IntegrationRevoked = z.object({
+  // The integrations the socket serves; the daemon's spec carries no bot id, so the CP resolves each one.
+  integrationIds: z.array(z.string().uuid()).min(1).max(256),
+  // Explicit platform lifecycle events only (`app_uninstalled`, or `tokens_revoked` naming a bot token), never an API error.
+  reason: z.enum(['app_uninstalled', 'tokens_revoked']),
+  // The platform's own event time in ms — the daemon's only fence, since no credential revision reaches it.
+  eventAtMs: z.number().int().nonnegative()
+})
+export type IntegrationRevoked = z.infer<typeof IntegrationRevoked>
+
+/** C→D REP (corr = `integration/revoked` id): a committed verdict, `applied: false` meaning refused or fenced; both are terminal, only a missing reply is retried. */
+export const IntegrationRevokedOk = z.object({
+  applied: z.boolean()
+})
+export type IntegrationRevokedOk = z.infer<typeof IntegrationRevokedOk>

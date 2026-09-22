@@ -1505,6 +1505,22 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     ])
   })
 
+  // A daemon socket's report takes the same revocation, but a socket bot never had a relay ingest to release.
+  it('revokeBot on a socket bot pulls the daemon specs without a relay release', async () => {
+    botRow = bot({ transport: 'socket', shareable: false })
+
+    await expect(makeOrch().revokeBot(BOT, 'app_uninstalled', { eventAtMs: Date.now() })).resolves.toEqual({
+      applied: true
+    })
+
+    expect(integrations.map((i) => i.status)).toEqual(['revoked', 'revoked'])
+    expect(ch.sends).toEqual([])
+    expect(removals).toEqual([
+      { daemonId: D1, integrationId: INT_A },
+      { daemonId: D2, integrationId: INT_B }
+    ])
+  })
+
   // Slack does not guarantee lifecycle-event ordering: an `app_uninstalled` from a
   // PRIOR install can be delivered after the workspace re-installed. Applying it
   // would revoke a live, freshly-authorized bot and kill its integrations.

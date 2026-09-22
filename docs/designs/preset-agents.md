@@ -314,6 +314,18 @@ installed via standard OAuth v2. Verified gaps against current code:
 - **Install lifecycle.** Handle `app_uninstalled` and `tokens_revoked` (mark the Bot
   revoked, surface in the console). Token rotation stays off, matching existing
   manifests.
+
+  A socket-mode app receives the same two events over the daemon's Socket Mode
+  connection rather than the relay. The daemon reports them as `integration/revoked`
+  (the integrations that socket serves, the reason, and Slack's `event_time`) and
+  keeps the report until the Control Plane answers, as the relay does for
+  `rc/bot-revoked`; `tokens_revoked` counts only when it lists a bot token, and a Web
+  API error is never read as a revocation. The Control Plane accepts the report only
+  from a daemon that serves the integration's agent, for a socket-transport bot of
+  the same organization, and applies the same revocation fenced by the event time
+  alone. A daemon sends the frame only to a Control Plane that advertises
+  `integration-revoked-v1`.
+
 - **Transport.** Distributed apps are Events-API-only — a socket-mode app token is
   per-app and cannot be demuxed per workspace — so this path hard-depends on the relay
   pool (`PUBLIC_RELAY_URL` + ≥1 connected relay), exactly like `http` transport today.

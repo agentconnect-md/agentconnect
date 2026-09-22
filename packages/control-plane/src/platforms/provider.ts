@@ -515,6 +515,9 @@ export interface CpPlatformProvider<TCredentials = unknown> {
   /** Normalize the provider realm used to fence bot-agnostic SessionMeta thread fallback. */
   threadFallbackRealm?(bot: BotRecord): string | null
 
+  /** Whether a daemon-held socket here delivers explicit credential-lifecycle events, so the serving daemon's `integration/revoked` may revoke a socket bot; absent ⇒ refused. */
+  socketLifecycleRevocation?: boolean
+
   /** Pending-install funnel state models + their TTL reapers. Absent ⇒ the
    *  platform has no funnel (Telegram/Discord). */
   pendingInstalls?: readonly CpPendingInstallDecl[]

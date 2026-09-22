@@ -1816,3 +1816,55 @@ describe('SlackConnection chat.postMessage boundary', () => {
     expect(calls).toHaveLength(1)
   })
 })
+
+describe('SlackConnection credential lifecycle', () => {
+  // Socket Mode delivers the app's lifecycle events to the daemon; only an explicit revocation of THIS install's bot counts.
+  const EVENT_TIME = 1_780_000_000
+  const lifecycleApp = (handlers: Map<string, (a: { event: unknown; body?: unknown }) => unknown>) => ({
+    message() {},
+    event(type: string, h: (a: { event: unknown; body?: unknown }) => unknown) {
+      handlers.set(type, h)
+    },
+    action() {},
+    shortcut() {},
+    view() {},
+    client: { auth: { test: async () => ({ user_id: 'UBOT', bot_id: 'BBOT', team_id: 'T1' }) } },
+    start: async () => {},
+    stop: async () => {}
+  })
+
+  const started = async () => {
+    const handlers = new Map<string, (a: { event: unknown; body?: unknown }) => unknown>()
+    const revoked: unknown[] = []
+    const conn = new SlackConnection(
+      { ...deps(), onCredentialRevoked: (r: unknown) => void revoked.push(r) } as any,
+      () => lifecycleApp(handlers) as any
+    )
+    await conn.start()
+    const fire = (type: string, event: unknown, body: unknown = { team_id: 'T1', event_time: EVENT_TIME }) =>
+      handlers.get(type)!({ event, body })
+    return { revoked, fire }
+  }
+
+  it('reports an uninstall with the envelope time as the fence', async () => {
+    const { revoked, fire } = await started()
+    await fire('app_uninstalled', { type: 'app_uninstalled' })
+    expect(revoked).toEqual([{ reason: 'app_uninstalled', eventAtMs: EVENT_TIME * 1000 }])
+  })
+
+  it('reports a token revocation only when it names a bot token', async () => {
+    const { revoked, fire } = await started()
+    await fire('tokens_revoked', { type: 'tokens_revoked', tokens: { oauth: ['U2'] } })
+    await fire('tokens_revoked', { type: 'tokens_revoked', tokens: { oauth: ['U2'], bot: [] } })
+    expect(revoked).toEqual([])
+    await fire('tokens_revoked', { type: 'tokens_revoked', tokens: { bot: ['UBOT'] } })
+    expect(revoked).toEqual([{ reason: 'tokens_revoked', eventAtMs: EVENT_TIME * 1000 }])
+  })
+
+  it("ignores another workspace's event and one without an event time", async () => {
+    const { revoked, fire } = await started()
+    await fire('app_uninstalled', { type: 'app_uninstalled' }, { team_id: 'T2', event_time: EVENT_TIME })
+    await fire('app_uninstalled', { type: 'app_uninstalled' }, { team_id: 'T1' })
+    expect(revoked).toEqual([])
+  })
+})

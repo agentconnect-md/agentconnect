@@ -122,6 +122,8 @@ export interface CpClientReadyHost {
   memoryConnections(): CpMemoryConnectionRegistry | undefined
   replayHookTerminalReports(): Promise<void>
   replayChannelSnapshots(): Promise<void>
+  /** Re-send platform credential revocations the CP has not acknowledged yet. */
+  replayCredentialRevocations(): Promise<void>
   /** Re-assert every live approval wait: the CP cleared them when this daemon dropped (slack-approval-dm.md §7). */
   replayApprovalActivity(): void
   sessionMetadataOutbox(): SessionMetadataOutbox
@@ -296,6 +298,8 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       host.wakeMemoryHomeMigrations()
       await host.replayHookTerminalReports()
       await host.replayChannelSnapshots()
+      // ...and every explicit credential revocation still unacknowledged: the platform never redelivers one.
+      void host.replayCredentialRevocations()
       // Only snapshots written to the durable outbox by this build are
       // replayed. Historical session rows are never scanned or backfilled.
       // The approval replay follows the drain: a wait for a session whose `start` snapshot is still in

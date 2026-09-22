@@ -54,6 +54,7 @@ import { consolidateLinear, linearConnKey, LinearConnection } from './linear/con
 import { QQConnection, consolidateQQ, QQConnKey } from './qq/connection.js'
 import type { ObservedChat } from './observed-channels.js'
 import { ConnectionPool, type ConnectionKey } from './registry.js'
+import { CredentialRevocationReporter } from './credential-revocation.js'
 
 /** Deadline on the detached Linear team-list refresh — long enough for a slow answer, short
  *  enough that a stalled provider does not leave a request hanging for the next reconcile. */
@@ -225,7 +226,21 @@ export class ConnectionReconciler {
   // appearing after its strict close pass has ACKed.
   private readonly slackRetryRuns = new Map<string, { botToken: string; promise: Promise<void> }>()
 
-  constructor(private readonly host: ConnectionReconcilerHost) {}
+  // Explicit credential revocations a connection observed, held until the CP commits a verdict on each.
+  private readonly revocations: CredentialRevocationReporter
+
+  constructor(private readonly host: ConnectionReconcilerHost) {
+    this.revocations = new CredentialRevocationReporter({
+      cp: () => host.cpClient(),
+      clock: () => host.clock(),
+      log: () => host.log()
+    })
+  }
+
+  /** Re-send unacknowledged revocation reports; called on every CP (re)connect. */
+  replayCredentialRevocations(): Promise<void> {
+    return this.revocations.replay()
+  }
 
   private get log(): Logger {
     return this.host.log()
@@ -255,6 +270,12 @@ export class ConnectionReconciler {
         this.host.onInbound(msg, this.host.srcIntegrationIds(conn()))
       },
       onChannelsChanged: () => void this.host.refreshChannels(conn()),
+      // Only CP-owned integrations have a bot the CP can revoke.
+      onCredentialRevoked: (revocation) =>
+        this.revocations.report(
+          this.host.srcIntegrationIds(conn()).filter((id) => this.host.integrationConfigById(id)?.origin === 'cp'),
+          revocation
+        ),
       onMessageShortcut: (shortcut) => this.host.slackShortcutSession(shortcut, this.host.srcIntegrationIds(conn())),
       onThreadSessions: (a) => this.host.slackThreadSessions(a, this.host.srcIntegrationIds(conn())),
       onSlotSettle: (a) => this.host.settleSlackSlot(conn(), a),
@@ -1206,6 +1227,7 @@ export class ConnectionReconciler {
   cancelRetryTimers(): void {
     for (const t of this.slackRetryTimers.values()) this.host.clock().clearTimeout(t)
     this.slackRetryTimers.clear()
+    this.revocations.stop()
   }
 
   /** Join any retry attempt still inside `conn.start()`, then stop every pooled

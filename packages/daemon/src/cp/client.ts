@@ -27,6 +27,8 @@ import type {
   AgentActivity,
   SessionPurged,
   IntegrationChannels,
+  IntegrationRevoked,
+  IntegrationRevokedOk,
   CronReport,
   HookReport,
   HookStart,
@@ -105,6 +107,7 @@ import {
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
+  INTEGRATION_REVOKED_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   AGENT_MEMORY_HISTORY_READ_V1_FEATURE,
   AGENT_MEMORY_STORE_V1_FEATURE,
@@ -831,6 +834,19 @@ export class CpClient {
     this.transport?.send(
       encode(this.scopedFrame('integration/channels', snapshot, this.deps.orgForIntegration?.(snapshot.integrationId)))
     )
+  }
+
+  /** D→C `integration/revoked` REQ; `'unsupported'` before a CP advertising {@link INTEGRATION_REVOKED_FEATURE}, which would refuse the frame. */
+  async reportIntegrationRevoked(payload: IntegrationRevoked): Promise<IntegrationRevokedOk | 'unsupported'> {
+    this.requireReady('integration/revoked')
+    if (!this.supportsServerFeature(INTEGRATION_REVOKED_FEATURE)) return 'unsupported'
+    // One connection is one bot, so its integrations share the org of the first.
+    const orgId = this.deps.orgForIntegration?.(payload.integrationIds[0]!)
+    const rep = await this.request('integration/revoked', payload, orgId)
+    if (rep.type !== 'integration/revoked/ok') {
+      throw new WireError('INTERNAL', `expected integration/revoked/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as IntegrationRevokedOk
   }
 
   /**

@@ -10,6 +10,8 @@ import {
 import type { Agent } from '../agents/agent-schema.js'
 import { integrationCore, platformIntegrationConfig } from '../platforms/integration-config.js'
 import { normalizeSlackEvent, toAttachment, type SlackFile, type SlackMessageEvent } from './normalize.js'
+import { SLACK_LIFECYCLE_EVENTS, slackLifecycleRevocation } from './lifecycle.js'
+import type { CredentialRevocation } from '../platforms/credential-revocation.js'
 import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
 import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
@@ -409,6 +411,8 @@ export interface SlackDeps {
   /** Fired when the bot's channel membership changes (invited to / removed from a
    *  channel), so the daemon can re-list + re-report the membership snapshot. */
   onChannelsChanged?: () => void
+  /** Fired when Slack explicitly revokes this install's bot token over the socket (`app_uninstalled`, or `tokens_revoked` naming a bot). */
+  onCredentialRevoked?: (revocation: CredentialRevocation) => void
   /** Fired when a user interacts with the status modal's selects, or raises a cancel —
    *  Slack's native Stop, or a status row posted while the overflow still rendered one.
    *  `sessionKey` comes from the modal's `private_metadata`; payload fields are present
@@ -538,7 +542,8 @@ type SlackSearchContextResponse = {
 
 export type AppLike = {
   message: (handler: (args: { message: unknown }) => Promise<void> | void) => void
-  event: (type: string, handler: (args: { event: unknown }) => Promise<void> | void) => void
+  // `body` is the Events API envelope (team id, event time) Bolt hands every listener beside the event itself.
+  event: (type: string, handler: (args: { event: unknown; body?: unknown }) => Promise<void> | void) => void
   action: (actionId: string | RegExp, handler: (args: BlockActionArgs) => Promise<void> | void) => void
   shortcut: (callbackId: string, handler: (args: MessageShortcutArgs) => Promise<void> | void) => void
   client: {
@@ -1124,6 +1129,18 @@ export class SlackConnection implements PlatformConnection {
       this.app.event(type, async ({ event }) => {
         log?.debug(`slack: bot left channel ${(event as { channel?: string }).channel ?? '?'} (${type})`)
         this.deps.onChannelsChanged?.()
+      })
+    }
+    // Credential lifecycle, Socket Mode arm: only an explicit event for this install revokes, never a Web API error.
+    for (const type of SLACK_LIFECYCLE_EVENTS) {
+      this.app.event(type, async ({ event, body }) => {
+        const revocation = slackLifecycleRevocation(type, event, body, { teamId: this.teamId })
+        if (!revocation) {
+          log?.debug(`slack: ${type} ignored — it does not revoke this install's bot token`)
+          return
+        }
+        log?.warn(`slack: workspace revoked the app (${type})`)
+        this.deps.onCredentialRevoked?.(revocation)
       })
     }
     this.app.shortcut(SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID, async ({ ack, shortcut }) => {
