@@ -319,73 +319,73 @@ export function DecisionBindingStrip({
 
       {helpOpen && (
         <div className="flex flex-col gap-1">
-          <Note icon="at-sign">{t('binding.helpMentions')}</Note>
+          <Note icon="messages-square">{t('binding.helpMentions')}</Note>
           <Note icon="clock">{t('binding.helpHistory')}</Note>
-          <Note icon="shield-alert">{t('binding.helpUnavailable', { agent: agentName })}</Note>
+          <Note icon="shield-alert">{t('binding.helpUnavailable')}</Note>
         </div>
       )}
 
       {tryOpen && (
-        <div className="flex flex-col gap-[9px]">
-          <div className="flex flex-wrap items-center gap-[9px]">
-            <input
-              value={tryText}
-              onChange={(event) => setTryText(event.target.value)}
-              placeholder={t('binding.tryPlaceholder')}
-              aria-label={t('binding.tryMessage')}
-              className="inp h-8 min-h-0 min-w-[200px] flex-1"
-            />
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={!tryText.trim() || tryRunning || !daemonId}
-              onClick={() => void runTry()}
+        <div className="flex flex-wrap items-center gap-[9px]">
+          <input
+            value={tryText}
+            onChange={(event) => setTryText(event.target.value)}
+            placeholder={t('binding.tryPlaceholder')}
+            aria-label={t('binding.tryMessage')}
+            className="inp h-8 min-h-0 min-w-[200px] flex-1"
+          />
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={!tryText.trim() || tryRunning || !daemonId}
+            onClick={() => void runTry()}
+          >
+            <Icon name="play" size={14} />
+            {tryRunning ? t('try.running') : t('binding.try')}
+          </Button>
+        </div>
+      )}
+
+      {/* Outside the `Try a message` disclosure, so collapsing it keeps the verdict on screen. */}
+      {tryResult && (
+        <div className="overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card)">
+          <div className="flex items-center gap-[9px] border-b border-(--border-subtle) px-[12px] py-[10px]">
+            <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-[1.45]">{tryText}</span>
+            <span
+              className={`badge flex-none ${
+                tryResult.unavailable
+                  ? 'bg-(--status-error-soft) text-(--red-600)'
+                  : tryResult.matched
+                    ? 'bg-(--status-online-soft) text-(--status-online)'
+                    : 'bg-(--surface-active) text-(--text-secondary)'
+              }`}
             >
-              <Icon name="play" size={14} />
-              {tryRunning ? t('try.running') : t('binding.try')}
-            </Button>
+              {tryResult.unavailable
+                ? t('try.unavailableBadge')
+                : tryResult.matched
+                  ? t('binding.wouldTrigger')
+                  : t('binding.skipped')}
+            </span>
           </div>
-          {tryResult && (
-            <div className="overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card)">
-              <div className="flex items-center gap-[9px] border-b border-(--border-subtle) px-[12px] py-[10px]">
-                <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-[1.45]">{tryText}</span>
-                <span
-                  className={`badge flex-none ${
-                    tryResult.unavailable
-                      ? 'bg-(--status-error-soft) text-(--red-600)'
-                      : tryResult.matched
-                        ? 'bg-(--status-online-soft) text-(--status-online)'
-                        : 'bg-(--surface-active) text-(--text-secondary)'
-                  }`}
-                >
-                  {tryResult.unavailable
-                    ? t('try.unavailableBadge')
-                    : tryResult.matched
-                      ? t('binding.wouldTrigger')
-                      : t('binding.skipped')}
-                </span>
-              </div>
-              <div className="flex flex-col gap-[7px] bg-(--surface-app) px-[12px] py-[11px]">
-                {tryResult.unavailable ? (
-                  <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                    {t('try.unavailableBody')}
-                  </span>
-                ) : (
-                  <>
-                    {tryResult.rows.map((row) => (
-                      <Row key={row.label} label={<span className="mono">{row.label}</span>} value={row.value} />
-                    ))}
-                    <Row
-                      label={t('binding.triggerCondition')}
-                      value={conditionSummary(activeDecision, activeDraft.when, words)}
-                    />
-                    <Row label={t('binding.triggers')} value={tryResult.matched ? agentName : '—'} />
-                  </>
-                )}
-                <Row label={t('model')} value={`${activeDecision.providerId} / ${activeDecision.model}`} />
-              </div>
-            </div>
-          )}
+          <div className="flex flex-col gap-[7px] bg-(--surface-app) px-[12px] py-[11px]">
+            {tryResult.unavailable ? (
+              <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
+                {t('try.unavailableBody')}
+              </span>
+            ) : (
+              <>
+                {tryResult.rows.map((row) => (
+                  <Row key={row.label} label={<span className="mono">{row.label}</span>} value={row.value} />
+                ))}
+                <Row
+                  label={t('binding.triggerCondition')}
+                  value={conditionSummary(activeDecision, activeDraft.when, words)}
+                />
+                <Row label={t('binding.triggers')} value={tryResult.matched ? agentName : '—'} />
+              </>
+            )}
+            <Row label={t('model')} value={`${activeDecision.providerId} / ${activeDecision.model}`} />
+          </div>
         </div>
       )}
 

@@ -50,16 +50,6 @@ export function intervalText(condition: Extract<DecisionCondition, { type: 'scor
   return `${condition.min} ≤ score ${condition.max >= maximum ? '≤ ' : '< '}${condition.max}`
 }
 
-/** Does one rubric level fall inside the interval? The terminal level is included at the maximum. */
-export function levelInInterval(
-  condition: Extract<DecisionCondition, { type: 'score' }>,
-  level: number,
-  levels: number
-): boolean {
-  const maximum = levels - 1
-  return level >= condition.min && (condition.max >= maximum ? level <= condition.max : level < condition.max)
-}
-
 export function DecisionConditionFields({
   question,
   value,
@@ -162,7 +152,7 @@ export function DecisionConditionFields({
     }
     return (
       <div className="flex flex-col gap-[7px]">
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-[9px]">
           <label className="flex items-center gap-2 font-sans text-[11.5px] leading-normal text-(--text-tertiary)">
             {t('from')}
             <input
@@ -173,7 +163,7 @@ export function DecisionConditionFields({
               onChange={(event) =>
                 onChange({ type: 'score', min: bound(event.target.value, value.min), max: value.max })
               }
-              className="inp mn h-7 w-[72px] min-h-0 text-center"
+              className="inp mn h-7 w-[66px] min-h-0 text-center"
             />
           </label>
           <label className="flex items-center gap-2 font-sans text-[11.5px] leading-normal text-(--text-tertiary)">
@@ -186,50 +176,43 @@ export function DecisionConditionFields({
               onChange={(event) =>
                 onChange({ type: 'score', min: value.min, max: bound(event.target.value, value.max) })
               }
-              className="inp mn h-7 w-[72px] min-h-0 text-center"
+              className="inp mn h-7 w-[66px] min-h-0 text-center"
             />
           </label>
-        </div>
-        <div className="relative h-[26px] max-w-[340px]">
-          <div className="absolute inset-x-0 top-[11px] h-1 rounded-[3px] bg-(--gray-200)" />
-          <div
-            className="absolute top-[11px] h-1 rounded-[3px] bg-(--brand)"
-            style={{ left: fromPercent, width: spanPercent }}
-          />
-          <input
-            type="range"
-            min={0}
-            max={maximum}
-            step={0.1}
-            value={value.min}
-            aria-label={t('intervalStart')}
-            onChange={(event) =>
-              onChange({ type: 'score', min: Math.min(Number(event.target.value), value.max - 0.1), max: value.max })
-            }
-            className="pointer-events-none absolute inset-0 h-[26px] w-full appearance-none bg-transparent [&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-(--surface-card) [&::-moz-range-thumb]:bg-(--brand) [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-(--surface-card) [&::-webkit-slider-thumb]:bg-(--brand)"
-          />
-          <input
-            type="range"
-            min={0}
-            max={maximum}
-            step={0.1}
-            value={value.max}
-            aria-label={t('intervalEnd')}
-            onChange={(event) =>
-              onChange({ type: 'score', min: value.min, max: Math.max(Number(event.target.value), value.min + 0.1) })
-            }
-            className="pointer-events-none absolute inset-0 h-[26px] w-full appearance-none bg-transparent [&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-(--surface-card) [&::-moz-range-thumb]:bg-(--brand) [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-(--surface-card) [&::-webkit-slider-thumb]:bg-(--brand)"
-          />
-        </div>
-        <span className="font-mono text-[11.5px] leading-normal text-(--text-secondary)">
-          {intervalText(value, levels)}
-        </span>
-        <div className="flex flex-wrap gap-[6px]">
-          {question.criteria.map((description, level) => (
-            <Chip key={level} on={levelInInterval(value, level, levels)} title={description}>
-              {level}
-            </Chip>
-          ))}
+          <div className="relative h-[26px] min-w-[150px] flex-1">
+            <div className="absolute inset-x-0 top-[11px] h-1 rounded-[3px] bg-(--gray-200)" />
+            <div
+              className="absolute top-[11px] h-1 rounded-[3px] bg-(--brand)"
+              style={{ left: fromPercent, width: spanPercent }}
+            />
+            <input
+              type="range"
+              min={0}
+              max={maximum}
+              step={0.1}
+              value={value.min}
+              aria-label={t('intervalStart')}
+              onChange={(event) =>
+                onChange({ type: 'score', min: Math.min(Number(event.target.value), value.max - 0.1), max: value.max })
+              }
+              className="pointer-events-none absolute inset-0 h-[26px] w-full appearance-none bg-transparent [&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-(--surface-card) [&::-moz-range-thumb]:bg-(--brand) [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-(--surface-card) [&::-webkit-slider-thumb]:bg-(--brand)"
+            />
+            <input
+              type="range"
+              min={0}
+              max={maximum}
+              step={0.1}
+              value={value.max}
+              aria-label={t('intervalEnd')}
+              onChange={(event) =>
+                onChange({ type: 'score', min: value.min, max: Math.max(Number(event.target.value), value.min + 0.1) })
+              }
+              className="pointer-events-none absolute inset-0 h-[26px] w-full appearance-none bg-transparent [&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-(--surface-card) [&::-moz-range-thumb]:bg-(--brand) [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-(--surface-card) [&::-webkit-slider-thumb]:bg-(--brand)"
+            />
+          </div>
+          <span className="flex-none font-mono text-[11.5px] leading-normal text-(--text-secondary)">
+            {intervalText(value, levels)}
+          </span>
         </div>
         {invalid && <ConditionIssue issue={issues[0]!} />}
       </div>

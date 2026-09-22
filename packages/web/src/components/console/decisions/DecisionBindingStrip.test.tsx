@@ -53,6 +53,24 @@ async function render(node: ReactNode) {
 const findByText = (scope: HTMLElement, text: string) =>
   [...scope.querySelectorAll('button, span, a, b, label')].find((node) => node.textContent?.trim() === text)
 
+/** React tracks a controlled field's value, so a bare assignment is swallowed; set it natively. */
+async function typeInto(input: HTMLInputElement | null, value: string) {
+  if (!input) throw new Error('no field to type into')
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+  await act(async () => {
+    setter?.call(input, value)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+}
+
+const clickText = async (scope: HTMLElement, text: string) => {
+  const node = findByText(scope, text)
+  if (!node) throw new Error(`nothing reading "${text}"`)
+  await act(async () => {
+    node.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+}
+
 describe('DecisionBindingStrip', () => {
   it('opens the editor on the first decision with its answer keys enabled', async () => {
     const view = await render(
@@ -166,5 +184,33 @@ describe('DecisionBindingStrip', () => {
       )
     ).toHaveLength(1)
     expect(view.querySelectorAll('input[aria-label="Minimum probability for billing"]')).toHaveLength(1)
+  })
+  // The verdict is its own block, so a reader who collapses the disclosure keeps the result.
+  it('keeps the preview verdict after collapsing Try a message', async () => {
+    const view = await render(
+      <DecisionBindingStrip
+        bindingKey="org-test|support-bot|#help"
+        channelName="#help"
+        canWrite
+        agentName="Billing"
+        padX={18}
+        onAbandon={() => undefined}
+      />
+    )
+    // The daemon catalog is a second read; wait for it or Try stays inert.
+    await act(async () => {})
+    await act(async () => {})
+
+    await clickText(view, 'Try a message')
+    await typeInto(view.querySelector('input[aria-label="Try a message"]'), 'Can someone ship the hotfix?')
+    await clickText(view, 'Try')
+    await act(async () => {})
+
+    // Every fixture probability (0.4/0.4/0.2) sits below the canonical 50% minimum.
+    expect(findByText(view, 'Skipped')).toBeTruthy()
+
+    await clickText(view, 'Try a message')
+    expect(view.querySelector('input[aria-label="Try a message"]')).toBeNull()
+    expect(findByText(view, 'Skipped')).toBeTruthy()
   })
 })

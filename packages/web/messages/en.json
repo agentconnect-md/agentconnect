@@ -2693,9 +2693,9 @@
       "skipped": "Skipped",
       "triggerCondition": "Trigger condition",
       "triggers": "Triggers",
-      "helpMentions": "Mentions and thread replies are also evaluated. Repeated or unnecessary messages can be skipped.",
+      "helpMentions": "A mention does not skip the decision; it only fixes that this agent is the one that can be triggered.",
       "helpHistory": "Recent conversation history is included automatically, including messages that did not trigger the agent.",
-      "helpUnavailable": "If evaluation is unavailable, eligible messages continue to {agent}."
+      "helpUnavailable": "If evaluation is unavailable, eligible messages continue to the agent."
     },
     "try": {
       "title": "Try with an example",

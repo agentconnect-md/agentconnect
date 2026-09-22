@@ -156,9 +156,14 @@ route: a decision created on the editor is still there when a conversation row b
   opens the gate editor beneath the row: the decision picker (with **Create decision**),
   the **Trigger when** condition editor for the question type, the three explanation
   notes, and **Try a message**, which matches the condition locally with
-  `matchDecisionCondition` against the preview's answer. The CP's
-  `IntegrationChannelDto.trigger` is never written with `decision` — the binding lives
-  in the provider, keyed by conversation id.
+  `matchDecisionCondition` against the preview's answer. Its verdict is its own block, so
+  collapsing the disclosure keeps the result on screen. The CP's
+  `IntegrationChannelDto.trigger` is never written with `decision` — the binding lives in
+  the provider, keyed by organization, owning bot, and conversation.
+- The gate is offered on a **single-owner** bot's group rooms only. A shared bot's consumer
+  is that bot's own routing rules (§3.2), and one delivery cannot carry both consumers — so
+  until the router ships the choice is withheld there rather than offering a gate the
+  design says cannot apply.
 
 Still unimplemented: the shared-bot routing screen and its evaluation log (Stage 2),
 prototype-local gates surviving a reload, and every live Control Plane route, projection,

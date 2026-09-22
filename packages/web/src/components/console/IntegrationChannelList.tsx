@@ -37,7 +37,7 @@ function TriggerToggle({
   disabled: boolean
   /** The row's effective choice, which is the memory trigger unless a gate overrides it. */
   value: RowTrigger
-  /** Whether `by decision` is offered here at all — the flag, and only for group rooms. */
+  /** Whether `by decision` is offered here at all — the flag, a group room, and a non-shared bot. */
   allowDecision: boolean
   onChange: (trigger: RowTrigger) => void
 }) {
@@ -804,7 +804,10 @@ export function IntegrationChannelList({
               platform={platform}
               disabled={!integrationId}
               value={trigger}
-              allowDecision={decisionsOffered}
+              // A shared bot's consumer is the bot's own routing rules, not a per-channel gate
+              // (docs/designs/decisions.md §3.2), and that router is not implemented yet — so the
+              // choice is withheld there rather than offering a gate the design says cannot apply.
+              allowDecision={decisionsOffered && !shareable}
               onChange={(next) => pickTrigger(c, next)}
             />
             {/* Demo rows carry no button rather than an inert one, and a derived roster none at all — the
@@ -821,7 +824,7 @@ export function IntegrationChannelList({
             )}
           </div>
         </div>
-        {trigger === 'decision' && decisions && (
+        {trigger === 'decision' && decisions && !shareable && (
           <DecisionBindingStrip
             bindingKey={bindingKey(c)}
             channelName={rowLabel(c)}
