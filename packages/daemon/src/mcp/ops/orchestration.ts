@@ -103,6 +103,8 @@ export async function startOrchestration(
     mainAgentId: ctx.agentId,
     platform: ctx.platform,
     channel: ctx.channel,
+    // Session identity: the coordinator feeds this to `sessionKey()` for the requester and
+    // main-session lookups, so it is the session's coordinate, never a delivery target.
     thread: ctx.thread,
     ...(ctx.integrationId !== undefined ? { integrationId: ctx.integrationId } : {}),
     ...(ctx.transportScope !== undefined ? { transportScope: ctx.transportScope } : {}),

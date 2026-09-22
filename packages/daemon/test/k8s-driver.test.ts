@@ -227,7 +227,9 @@ describe('cluster spawn driver', () => {
           'skills-wide',
           'skills-receipts'
         ],
-        podName: 'sb-1'
+        podName: 'sb-1',
+        // The pool's peer is a pod, and its identity is the TokenReview's (session-executors.md §6).
+        peer: 'pod'
       }
     ])
     expect(connectChannel).toHaveBeenCalledWith(expect.objectContaining({ podName: 'sb-1' }), '10.0.0.8', 90_000)
@@ -760,6 +762,18 @@ describe('cluster spawn driver', () => {
       relPath: ['agent-a.gitconfig'],
       content: '[credential]\n'
     })
+  })
+
+  it('empties the launch directories before writing its files, so a removed secret does not outlive its launch', async () => {
+    const served: Array<{ capability: string; payload: unknown }> = []
+    const { api } = fakeApi()
+    const { instance } = driver(api, { connectChannel: async () => answeringConnection(served) })
+    const files = [{ root: '/run/agentconnect/config-files', relPath: ['kubeconfig'], content: 'apiVersion: v1\n' }]
+    const clearDirs = ['/run/agentconnect/config-files']
+    await instance.launch({ ...(launchRequest as object), files, clearDirs } as never)
+    expect(served.map((request) => request.capability)).toEqual(['materialize', 'materialize', 'acp'])
+    expect(served[0]!.payload).toEqual({ op: 'clear', root: '/run/agentconnect/config-files' })
+    expect(served[1]!.payload).toMatchObject({ op: 'write', relPath: ['kubeconfig'] })
   })
 
   it('fails the launch when a file cannot be materialized, releasing the hold', async () => {

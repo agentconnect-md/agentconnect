@@ -35,6 +35,17 @@ describe('cpRuntimeEnv', () => {
     })
   })
 
+  it('also emits the runtime-native model variable for runtimes with no ACP model selector', () => {
+    const gemini = base({ runtime: 'gemini', runtimeOverrides: { model: 'gemini-3.8-flash', env: [], secrets: [] } })
+    expect(cpRuntimeEnv(gemini)).toEqual({ AGENTCONNECT_MODEL: 'gemini-3.8-flash', GEMINI_MODEL: 'gemini-3.8-flash' })
+    // No model configured ⇒ neither variable, so the runtime keeps its own default.
+    expect(cpRuntimeEnv(base({ runtime: 'gemini' }))).toEqual({})
+    // ACP-selecting runtimes never get a native variable they do not read.
+    expect(cpRuntimeEnv(base({ runtimeOverrides: { model: 'opus', env: [], secrets: [] } }))).not.toHaveProperty(
+      'GEMINI_MODEL'
+    )
+  })
+
   it('does NOT emit a system-prompt env — the system prompt rides _meta.systemPrompt', () => {
     expect(cpRuntimeEnv(base({ description: 'you are a helpful agent' }))).toEqual({})
   })

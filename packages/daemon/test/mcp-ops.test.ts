@@ -24,6 +24,7 @@ const ctx: SessionContext = {
   isDm: false,
   channel: 'C_CURRENT',
   thread: '111.1',
+  deliveryThread: '111.1',
   tools: toolsForIntegrations([
     {
       id: 'int-1',
@@ -145,17 +146,104 @@ describe('executeTool: sendMessage (channel post)', () => {
     expect(recorded).toEqual([{ channel: 'C_CURRENT', thread: 'ts-123', text: 'hi', ts: 'ts-123' }])
   })
 
-  it('rejects `thread` on a channel post — there is no visible in-thread form', async () => {
-    // send-message-routing-rework.md §2.2: no branch accepts `thread`. Addressing the
-    // current thread is the ordinary turn reply's job (§2.1), so a `thread` here is a
-    // caller working from an old example. Reject LOUDLY: silently posting at the root what
-    // the caller meant for a thread is the outcome that would confuse them.
-    const gw = fakeGateway()
-    const { deps: d } = deps(gw)
-    await expect(
-      executeTool(ctx, 'sendMessage', { channel: 'C_CURRENT', thread: '111.1', message: 'hi' }, d)
-    ).rejects.toThrow(/thread/)
-    expect(gw.postMessage).not.toHaveBeenCalled()
+  // The UPDATE form (send-message-routing-rework.md §2.4): `thread` names a conversation that
+  // already exists and the post lands inside it, so an agent can act everywhere it can already
+  // read — the status update for a request crossposted to several channels belongs in each of
+  // those threads, not at each channel's root.
+  describe('update in an existing thread', () => {
+    /** A gateway whose thread reads answer for one real thread root in C_OTHER. */
+    function gatewayWithThread(root = '900.1'): MessageGateway {
+      return fakeGateway({
+        getThreadReplies: vi.fn(async (_c, thread) =>
+          thread === root
+            ? [{ sender: 'U1', ts: root, text: 'root', isBot: false, chrome: false, attachments: [] }]
+            : []
+        )
+      })
+    }
+
+    it('posts inside the named thread and records the row on it', async () => {
+      const gw = gatewayWithThread()
+      const { deps: d, recorded } = deps(gw)
+      const res = (await executeTool(
+        ctx,
+        'sendMessage',
+        { channel: 'C_OTHER', thread: '900.1', message: 'shipped' },
+        d
+      )) as Record<string, unknown>
+
+      // §2.4: routed by ingress like any other agent-authored message, so it arrives FINALIZED
+      // and carrying THIS turn's hop — an update minted at depth 0 would let a cron-woken agent
+      // re-arm a conversation on every tick.
+      expect(gw.postMessage).toHaveBeenCalledWith('C_OTHER', 'shipped', '900.1', {
+        agentAuthorId: 'bot-a',
+        response: { responseId: expect.any(String), deliveryState: 'final', hopCount: 0, mentionedAgentIds: [] }
+      })
+      expect(res).toMatchObject({ post: { channel: 'C_OTHER', thread: '900.1', ts: 'ts-123' } })
+      // Keyed on the thread it JOINED, which is where a reply to it canonicalizes.
+      expect(recorded).toEqual([{ channel: 'C_OTHER', thread: '900.1', text: 'shipped', ts: 'ts-123' }])
+    })
+
+    it('joins the author to that thread with the posting session as origin', async () => {
+      // The anchoring rule, and the reason the form is safe: without a session on the target
+      // thread a human's reply there has no lineage back to the work that produced the update.
+      const gw = gatewayWithThread()
+      const spawn = vi.fn(async () => true)
+      const { deps: d } = deps(gw)
+      d.spawnChannelRootSession = spawn
+      await executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', thread: '900.1', message: 'shipped' }, d)
+      expect(spawn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'bot-a',
+          channel: 'C_OTHER',
+          thread: '900.1',
+          postTs: 'ts-123',
+          originChannel: 'C_CURRENT',
+          originThread: '111.1'
+        })
+      )
+    })
+
+    it('refuses the caller’s OWN thread and names the repair', async () => {
+      // §2.1 still governs the current thread: the ordinary reply already reaches it, and a
+      // second delivery path would compete with the one this turn is streaming.
+      const gw = gatewayWithThread('111.1')
+      const { deps: d } = deps(gw)
+      await expect(
+        executeTool(ctx, 'sendMessage', { channel: 'C_CURRENT', thread: '111.1', message: 'hi' }, d)
+      ).rejects.toThrow(/ordinary reply/)
+      expect(gw.postMessage).not.toHaveBeenCalled()
+    })
+
+    it('refuses a thread id that is not a root, rather than posting at the root', async () => {
+      // A reply's own id would post into the right thread but key a session no reply reaches.
+      const gw = gatewayWithThread()
+      const { deps: d } = deps(gw)
+      await expect(
+        executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', thread: '900.7', message: 'hi' }, d)
+      ).rejects.toThrow(/not a thread root/)
+      expect(gw.postMessage).not.toHaveBeenCalled()
+    })
+
+    it('refuses on a platform that cannot address an existing thread', async () => {
+      // Fail-closed by absence: an unregistered platform must never quietly fall back to the
+      // channel root, which loses the message where the caller was looking for it.
+      const gw = gatewayWithThread()
+      const { deps: d } = deps(gw)
+      const tgCtx: SessionContext = {
+        ...ctx,
+        integrations: [...ctx.integrations!, { id: 'int-tg', platform: 'telegram' }]
+      }
+      await expect(
+        executeTool(
+          tgCtx,
+          'sendMessage',
+          { channel: 'C_OTHER', thread: '900.1', platform: 'telegram', message: 'hi' },
+          d
+        )
+      ).rejects.toThrow(/cannot post inside an existing thread/)
+      expect(gw.postMessage).not.toHaveBeenCalled()
+    })
   })
 
   it('posts a cross-channel send at that channel’s root', async () => {
@@ -581,11 +669,12 @@ describe('executeTool: sendMessage (channel post)', () => {
 
     it('does not interrogate the platform where the answer cannot change the key', async () => {
       // Slack and Discord key the same way for DMs and channels, so no send pays for a
-      // lookup it does not need.
-      const getChannelInfo = vi.fn(async (id: string) => ({ id, isIm: true }))
+      // lookup it does not need. The ONE Slack lookup here is the reach gate describing a
+      // channel other than the session's own (channel-reach.ts), not a key classification.
+      const getChannelInfo = vi.fn(async (id: string) => ({ id }))
       const slack = tgDeps({}, { getChannelInfo })
       await executeTool(ctx, 'sendMessage', { channel: 'C_X', message: 'hi' }, slack.d)
-      expect(getChannelInfo).not.toHaveBeenCalled()
+      expect(getChannelInfo).toHaveBeenCalledTimes(1)
     })
 
     it('falls back to a non-DM key when the platform lookup fails', async () => {
@@ -905,8 +994,115 @@ describe('executeTool: read tools', () => {
       nextCursor: 'next-page'
     })
 
-    await executeTool(ctx, 'getChannelHistory', { channel: 'C_OTHER' }, d)
-    expect(getChannelHistory).toHaveBeenLastCalledWith('C_CURRENT', {})
+    // Another channel by `channel`: a public one is read (the connection joins it on demand).
+    const other = (await executeTool(ctx, 'getChannelHistory', { channel: 'C_OTHER' }, d)) as Record<string, unknown>
+    expect(getChannelHistory).toHaveBeenLastCalledWith('C_OTHER', {})
+    expect(other).toMatchObject({ channel: 'C_OTHER' })
+  })
+
+  // channel-reach.ts: on Slack a tool reaches any PUBLIC channel, and a private channel, DM or
+  // group DM only as the conversation the session was started in. Membership is not consent.
+  describe('channel reach beyond the current conversation', () => {
+    const reply = { sender: 'U1', ts: '100.1', text: 'hello', isBot: false, chrome: false, attachments: [] }
+    const describing = (kinds: Record<string, { isPrivate?: boolean; isIm?: boolean }>) =>
+      fakeGateway({
+        getChannelInfo: vi.fn(async (id: string) => ({ id, name: 'x', ...(kinds[id] ?? {}) })),
+        getChannelHistory: vi.fn(async () => ({ messages: [], hasMore: false })),
+        getThreadReplies: vi.fn(async () => [reply])
+      })
+
+    it('refuses a private channel the session was not started in, on every cross-channel tool', async () => {
+      const gw = describing({ G_PRIVATE: { isPrivate: true } })
+      const { deps: d } = deps(gw)
+      const refused = /private Slack conversation/
+      await expect(executeTool(ctx, 'getChannelHistory', { channel: 'G_PRIVATE' }, d)).rejects.toThrow(refused)
+      await expect(executeTool(ctx, 'getThreadHistory', { channel: 'G_PRIVATE', thread: '1' }, d)).rejects.toThrow(
+        refused
+      )
+      await expect(executeTool(ctx, 'sendMessage', { channel: 'G_PRIVATE', message: 'hi' }, d)).rejects.toThrow(refused)
+      await expect(
+        executeTool(ctx, 'sendMessage', { toUser: ['U1'], channel: 'G_PRIVATE', message: 'hi' }, d)
+      ).rejects.toThrow(refused)
+      await expect(
+        executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', channel: 'G_PRIVATE', message: 'hi' }, d)
+      ).rejects.toThrow(refused)
+      expect(gw.getChannelHistory).not.toHaveBeenCalled()
+      expect(gw.getThreadReplies).not.toHaveBeenCalled()
+      expect(gw.postMessage).not.toHaveBeenCalled()
+    })
+
+    it('refuses a direct message the session was not started in', async () => {
+      const gw = describing({ D_OTHER: { isIm: true } })
+      const { deps: d } = deps(gw)
+      await expect(executeTool(ctx, 'getChannelHistory', { channel: 'D_OTHER' }, d)).rejects.toThrow(
+        /private Slack conversation/
+      )
+    })
+
+    it('reads and posts in a public channel, and in its own private conversation without asking', async () => {
+      const gw = describing({ C_CURRENT: { isPrivate: true } })
+      const { deps: d } = deps(gw)
+      await executeTool(ctx, 'getChannelHistory', { channel: 'C_PUBLIC' }, d)
+      expect(gw.getChannelHistory).toHaveBeenCalledWith('C_PUBLIC', {})
+      await executeTool(ctx, 'sendMessage', { channel: 'C_PUBLIC', message: 'yo' }, d)
+      expect(gw.postMessage).toHaveBeenCalledWith('C_PUBLIC', 'yo', undefined, authorIdentity)
+      // The session's own conversation is never described: being invoked there IS the consent.
+      await executeTool(ctx, 'getChannelHistory', {}, d)
+      expect(gw.getChannelHistory).toHaveBeenLastCalledWith('C_CURRENT', {})
+      expect(gw.getChannelInfo).not.toHaveBeenCalledWith('C_CURRENT')
+    })
+
+    it('lets a conversation the platform does not know through to the platform’s own refusal', async () => {
+      // `channel_not_found` proves the downstream call fails identically, so the more precise
+      // provider error is the one the agent should read.
+      const gw = fakeGateway({
+        getChannelInfo: vi.fn(async () => {
+          throw Object.assign(new Error('channel_not_found'), { data: { error: 'channel_not_found' } })
+        }),
+        getChannelHistory: vi.fn(async () => {
+          throw new Error('Slack channel history failed: channel_not_found')
+        })
+      })
+      const { deps: d } = deps(gw)
+      await expect(executeTool(ctx, 'getChannelHistory', { channel: 'C_GONE' }, d)).rejects.toThrow(
+        'Slack channel history failed: channel_not_found'
+      )
+    })
+
+    it('fails closed when the conversation cannot be classified at all', async () => {
+      // A timeout or rate limit says nothing about privacy, and the bot may be a member of the
+      // private channel behind the id — so the call is refused, not admitted.
+      const gw = fakeGateway({
+        getChannelInfo: vi.fn(async () => {
+          throw new Error('ratelimited')
+        }),
+        getChannelHistory: vi.fn(async () => ({ messages: [], hasMore: false }))
+      })
+      const { deps: d } = deps(gw)
+      await expect(executeTool(ctx, 'getChannelHistory', { channel: 'C_MAYBE' }, d)).rejects.toThrow(
+        /could not determine whether C_MAYBE is a private/
+      )
+      await expect(executeTool(ctx, 'sendMessage', { channel: 'C_MAYBE', message: 'hi' }, d)).rejects.toThrow(
+        /could not determine/
+      )
+      expect(gw.getChannelHistory).not.toHaveBeenCalled()
+      expect(gw.postMessage).not.toHaveBeenCalled()
+    })
+
+    it('does not gate a platform that declares no public-only reach', async () => {
+      const tgSession: SessionContext = {
+        ...ctx,
+        platform: 'telegram',
+        integrationId: 'int-tg',
+        channel: '-100123',
+        thread: 'tg:100',
+        integrations: [{ id: 'int-tg', platform: 'telegram' }]
+      }
+      const gw = describing({ '-100999': { isPrivate: true } })
+      const { deps: d } = deps(gw)
+      await executeTool(tgSession, 'sendMessage', { channel: '-100999', message: 'hi' }, d)
+      expect(gw.postMessage).toHaveBeenCalledWith('-100999', 'hi', undefined, authorIdentity)
+    })
   })
 
   it('routes a read to another connected platform via the `platform` arg', async () => {
@@ -1164,6 +1360,35 @@ describe('executeTool: reactions', () => {
     const { deps: d } = deps(fakeGateway())
     await expect(executeTool(ctx, 'addReaction', { messageTs: '1', emoji: 'eyes' }, d)).rejects.toThrow(
       /reactions is unavailable/
+    )
+  })
+})
+
+describe('executeTool: deleteMessage', () => {
+  it('deletes in the session conversation by default', async () => {
+    const del = vi.fn(async () => true)
+    const { deps: d } = deps(fakeGateway({ deleteMessage: del }))
+
+    const res = await executeTool(ctx, 'deleteMessage', { messageTs: '100.1' }, d)
+
+    expect(del).toHaveBeenCalledWith('C_CURRENT', '100.1')
+    expect(res).toEqual({ platform: 'slack', channel: 'C_CURRENT', messageTs: '100.1', deleted: true })
+  })
+
+  it('reports a platform refusal as deleted:false rather than throwing', async () => {
+    const del = vi.fn(async () => false)
+    const { deps: d } = deps(fakeGateway({ deleteMessage: del }))
+
+    const res = await executeTool(ctx, 'deleteMessage', { channel: 'C_OTHER', messageTs: '100.1' }, d)
+
+    expect(del).toHaveBeenCalledWith('C_OTHER', '100.1')
+    expect(res).toMatchObject({ channel: 'C_OTHER', deleted: false })
+  })
+
+  it('refuses on a connection that does not offer it', async () => {
+    const { deps: d } = deps(fakeGateway())
+    await expect(executeTool(ctx, 'deleteMessage', { messageTs: '1' }, d)).rejects.toThrow(
+      /message deletion is unavailable/
     )
   })
 })
@@ -1513,6 +1738,21 @@ describe('executeTool: telegram tool names dispatch through the same gateway', (
     }
     expect(gw.downloadFile).toHaveBeenCalledWith('AgACAgID', expect.any(Number))
     expect(res.mcpContent).toEqual([{ type: 'text', text: 'doc' }])
+  })
+})
+
+describe('executeTool: attachment-only platform connection', () => {
+  it('reads a QQ file without requiring the generic message gateway', async () => {
+    const reader = { downloadFile: vi.fn(async () => Buffer.from('QQ document')) }
+    const d = makeDeps({ gatewayFor: () => undefined, attachmentReaderFor: () => reader })
+    const res = (await executeTool(
+      { ...ctx, platform: 'qq', integrationId: 'int-qq' },
+      'readQQFile',
+      { url: 'https://gchat.qpic.cn/document.txt', mimeType: 'text/plain' },
+      d
+    )) as { mcpContent: { type: string; text?: string }[] }
+    expect(reader.downloadFile).toHaveBeenCalledWith('https://gchat.qpic.cn/document.txt', expect.any(Number))
+    expect(res.mcpContent).toEqual([{ type: 'text', text: 'QQ document' }])
   })
 })
 

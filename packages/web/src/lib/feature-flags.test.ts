@@ -19,6 +19,8 @@ describe('featureFlagEnabled', () => {
     expect(featureFlagEnabled('daemon-pool')).toBe(false)
     // `managed` off is the SELF-HOSTED reading, which is what an unconfigured install is.
     expect(featureFlagEnabled('managed')).toBe(false)
+    // A mock-backed surface ships off (docs/designs/decision-ui-foundation.md).
+    expect(featureFlagEnabled('decisions')).toBe(false)
     setEnv('')
     expect(featureFlagEnabled('daemon-groups')).toBe(false)
     expect(featureFlagEnabled('daemon-pool')).toBe(false)

@@ -191,23 +191,21 @@ describe('GitCredServer routing (gitcred.sock)', () => {
   })
 
   it('routes a private GitHub skill source to GitHub even when the workspace credential is gitlab', async () => {
-    // Skill acquisition is daemon-owned and asks under the implicit (GitHub) provider. Without the
-    // spec-derived skill authority the ask would inherit the WORKSPACE provider and reach the gitlab
-    // broker, so a gitlab/gitea-workspace agent could never install a private GitHub skill source.
+    // Skill acquisition sends no host hint, so without the spec's skill authority it would reach the gitlab broker.
     const { sockPath, gets, capability } = await boot('example-group/example-project', {
       providerOf: () => 'gitlab',
       qualifiedRepoOf: () => undefined,
       privateGithubSkillRepoOf: (_agentId: string, repoFullName: string) =>
-        repoFullName.toLowerCase() === 'qargotms/claude-plugins'
+        repoFullName.toLowerCase() === 'example-org/example-skills'
     })
     const res = await roundtrip(sockPath, {
       op: 'get',
       agentId: 'a1',
       capability,
-      repoFullName: 'QargoTMS/claude-plugins'
+      repoFullName: 'Example-Org/Example-Skills'
     })
     expect(res.ok).toBe(true)
-    expect(gets).toEqual([{ agentId: 'a1', opts: { plane: 'git', repo: 'QargoTMS/claude-plugins' } }])
+    expect(gets).toEqual([{ agentId: 'a1', opts: { plane: 'git', repo: 'Example-Org/Example-Skills' } }])
 
     // An unrelated repository still follows the workspace provider.
     const other = await roundtrip(sockPath, {
@@ -219,6 +217,48 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     expect(other.ok).toBe(true)
     expect(gets[1]).toEqual({ agentId: 'a1', opts: { plane: 'git', repo: 'example-group/other', provider: 'gitlab' } })
   })
+
+  it.each(['gitlab', 'gitea'] as const)(
+    'routes a GitHub additional repository to GitHub when the workspace credential is %s',
+    async (workspaceProvider) => {
+      // The GitHub helper sends no host hint, so without the spec's GitHub row the ask took the workspace provider.
+      const { sockPath, gets, erases, capability } = await boot('example-group/example-project', {
+        providerOf: () => workspaceProvider,
+        qualifiedRepoOf: () => undefined,
+        githubAdditionalRepoOf: (_agentId: string, repoFullName: string) => repoFullName.toLowerCase() === 'acme/infra'
+      })
+      const git = await roundtrip(sockPath, { op: 'get', agentId: 'a1', capability, repoFullName: 'Acme/Infra' })
+      const gh = await roundtrip(sockPath, {
+        op: 'get',
+        agentId: 'a1',
+        capability,
+        repoFullName: 'acme/infra',
+        plane: 'gh'
+      })
+      expect([git.ok, gh.ok]).toEqual([true, true])
+      expect(gets).toEqual([
+        { agentId: 'a1', opts: { plane: 'git', repo: 'Acme/Infra' } },
+        { agentId: 'a1', opts: { plane: 'gh', repo: 'acme/infra' } }
+      ])
+
+      // The workspace host's own helper naming the same path asks for that host's repository.
+      await roundtrip(sockPath, {
+        op: 'get',
+        agentId: 'a1',
+        capability,
+        repoFullName: 'acme/infra',
+        provider: workspaceProvider
+      })
+      expect(gets[2]).toEqual({
+        agentId: 'a1',
+        opts: { plane: 'git', repo: 'acme/infra', provider: workspaceProvider }
+      })
+
+      // Erase from the GitHub helper reaches the key its get used.
+      await roundtrip(sockPath, { op: 'erase', agentId: 'a1', capability, repoFullName: 'acme/infra', password: 'x' })
+      expect(erases).toEqual([{ agentId: 'a1', password: 'x', opts: { plane: 'git', repo: 'acme/infra' } }])
+    }
+  )
 
   it('does not fold a private GitHub skill source onto a gitlab workspace that shares its path', async () => {
     // A gitlab workspace `acme/tools` and a private GitHub source `acme/tools` (a mirror) are two
@@ -258,12 +298,12 @@ describe('GitCredServer routing (gitcred.sock)', () => {
       op: 'get',
       agentId: 'a1',
       capability,
-      repoFullName: 'QargoTMS/claude-plugins',
+      repoFullName: 'example-org/example-skills',
       provider: 'gitlab'
     })
     expect(res.ok).toBe(true)
     expect(gets).toEqual([
-      { agentId: 'a1', opts: { plane: 'git', repo: 'QargoTMS/claude-plugins', provider: 'gitlab' } }
+      { agentId: 'a1', opts: { plane: 'git', repo: 'example-org/example-skills', provider: 'gitlab' } }
     ])
   })
 

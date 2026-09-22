@@ -149,6 +149,8 @@ features:
   # repositories included, keep working; daemonPool.workspaceGitAllowedOrigins is then
   # refused as contradictory.
   gitUrl: true
+  # The QQ integration's console entry points; off hides them (an existing QQ bot keeps its Bots tab).
+  qq: true
 
 # The install-wide daemon pool, whose Pods are pool members. Every member serves agents
 # from every organization and derives the org from the CP agent registry. The fixed

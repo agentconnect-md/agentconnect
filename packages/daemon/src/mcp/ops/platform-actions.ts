@@ -40,6 +40,12 @@ export const GET_REACTIONS_ARGS = z.object({
   messageTs: requiredString('messageTs')
 })
 
+export const DELETE_MESSAGE_ARGS = z.object({
+  ...botSelector,
+  channel: optionalString('channel'),
+  messageTs: requiredString('messageTs')
+})
+
 export const CREATE_CONVERSATION_ARGS = z.object({
   ...botSelector,
   name: optionalString('name'),
@@ -205,6 +211,20 @@ export async function getReactions(
   const { platform, gw, channel } = resolveTarget(ctx, deps, parsed, 'read reactions')
   if (!gw.getReactions) throw unsupported(platform, 'reactions')
   return { platform, channel, messageTs: parsed.messageTs, reactions: await gw.getReactions(channel, parsed.messageTs) }
+}
+
+/** Retire one message. Best-effort by contract: a platform refuses a message that is too old
+ *  or not the bot's own, and that refusal is `deleted: false`, not a thrown error. */
+export async function deleteMessage(
+  ctx: SessionContext,
+  args: Record<string, unknown>,
+  deps: PlatformActionDeps
+): Promise<unknown> {
+  const parsed = parseArgs(DELETE_MESSAGE_ARGS, args)
+  const { platform, gw, channel } = resolveTarget(ctx, deps, parsed, 'delete a message')
+  if (!gw.deleteMessage) throw unsupported(platform, 'message deletion')
+  const deleted = await gw.deleteMessage(channel, parsed.messageTs)
+  return { platform, channel, messageTs: parsed.messageTs, deleted }
 }
 
 /**

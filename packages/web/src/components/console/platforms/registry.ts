@@ -14,6 +14,7 @@ import { discordModule } from './discord'
 import { feishuModule } from './feishu'
 import { linearModule } from './linear'
 import { slackModule } from './slack'
+import { QQModule } from './qq'
 import { telegramModule } from './telegram'
 
 /**
@@ -28,7 +29,14 @@ import { telegramModule } from './telegram'
  *
  * Order is the picker order.
  */
-const MODULES: readonly WebPlatformModule[] = [slackModule, telegramModule, discordModule, feishuModule, linearModule]
+const MODULES: readonly WebPlatformModule[] = [
+  slackModule,
+  telegramModule,
+  discordModule,
+  feishuModule,
+  linearModule,
+  QQModule
+]
 
 const BY_ID = new Map(MODULES.map((m) => [m.platformId, m]))
 const IDS: readonly string[] = MODULES.map((m) => m.platformId)
@@ -37,6 +45,11 @@ export const platformRegistry: WebPlatformRegistry = {
   get: (platformId) => BY_ID.get(platformId),
   all: () => MODULES,
   ids: () => IDS
+}
+
+/** A platform-owned label for an unresolved sender, without changing their stored identity. */
+export function platformSenderFallback(platform: string, sender?: string | null): string | undefined {
+  return sender ? platformRegistry.get(platform)?.senderFallback?.(sender) : undefined
 }
 
 /**

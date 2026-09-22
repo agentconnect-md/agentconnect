@@ -24,7 +24,8 @@ const group = (setId: string, memberDaemonIds: string[], name = setId) => ({
   setId,
   name,
   memberDaemonIds,
-  agentCount: 0
+  agentCount: 0,
+  spreadSessions: false
 })
 
 describe('addAgentDaemonChoice', () => {

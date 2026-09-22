@@ -92,6 +92,8 @@ export interface GitCredServerDeps {
     agentId: string,
     repoFullName: string
   ) => { provider: QualifiedCodeHostProvider; externalId: string } | undefined
+  /** A NAMED repository the replicated spec lists as a GitHub additional authorization (§8.3) — `qualifiedRepoOf`'s implicit-host twin. */
+  githubAdditionalRepoOf?: (agentId: string, repoFullName: string) => boolean
   /** A NAMED repository the replicated spec lists as a PRIVATE GitHub skill source
    *  (shared-skills.md §3) — the third spec-derived authority. Acquisition is daemon-owned and
    *  always GitHub, so such a request routes to GitHub whatever the WORKSPACE provider is; without
@@ -108,6 +110,7 @@ export class GitCredServer {
   private readonly providerOf?: GitCredServerDeps['providerOf']
   private readonly workspaceRepoIdOf?: GitCredServerDeps['workspaceRepoIdOf']
   private readonly qualifiedRepoOf?: GitCredServerDeps['qualifiedRepoOf']
+  private readonly githubAdditionalRepoOf?: GitCredServerDeps['githubAdditionalRepoOf']
   private readonly privateGithubSkillRepoOf?: GitCredServerDeps['privateGithubSkillRepoOf']
 
   constructor(
@@ -120,6 +123,7 @@ export class GitCredServer {
     if (deps.providerOf) this.providerOf = deps.providerOf
     if (deps.workspaceRepoIdOf) this.workspaceRepoIdOf = deps.workspaceRepoIdOf
     if (deps.qualifiedRepoOf) this.qualifiedRepoOf = deps.qualifiedRepoOf
+    if (deps.githubAdditionalRepoOf) this.githubAdditionalRepoOf = deps.githubAdditionalRepoOf
     if (deps.privateGithubSkillRepoOf) this.privateGithubSkillRepoOf = deps.privateGithubSkillRepoOf
   }
 
@@ -220,16 +224,12 @@ export class GitCredServer {
     const workspaceProvider = this.providerOf?.(req.agentId) ?? IMPLICIT_CREDENTIAL_PROVIDER
     // The host the REQUEST is for: the helper names every provider but the implicit one.
     const requestProvider: string = req.provider ?? IMPLICIT_CREDENTIAL_PROVIDER
-    // A private GitHub skill source the spec enables is GitHub by construction: the daemon's own
-    // acquisition asks for it under the implicit provider, and the workspace's provider (gitlab,
-    // gitea) must not capture that ask. Classified on the NAMED path, before the workspace fold
-    // below: a gitlab/gitea workspace may share `owner/repo` with a private GitHub source (a
-    // mirror), and folding first would hand that workspace's credential to the GitHub helper.
-    // An explicit non-GitHub host hint is still a mismatch below.
-    const privateSkill =
+    // A named repository the spec lists on GitHub (private skill source, additional authorization) is GitHub on any workspace; classified before the fold.
+    const githubNamed =
       repo !== undefined &&
       requestProvider === IMPLICIT_CREDENTIAL_PROVIDER &&
-      this.privateGithubSkillRepoOf?.(req.agentId, repo) === true
+      (this.privateGithubSkillRepoOf?.(req.agentId, repo) === true ||
+        this.githubAdditionalRepoOf?.(req.agentId, repo) === true)
     // Workspace normalization: a request naming the workspace repo folds onto
     // the repo-less key (one cache entry with pre-warm/spawn; and old CPs that
     // strip the wire field keep serving the workspace unchanged) — only when the
@@ -240,7 +240,7 @@ export class GitCredServer {
       if (workspace && workspace.toLowerCase() === repo.toLowerCase()) repo = undefined
     }
     const named = repo !== undefined ? this.qualifiedRepoOf?.(req.agentId, repo) : undefined
-    const provider: CodeHostProvider = privateSkill
+    const provider: CodeHostProvider = githubNamed
       ? IMPLICIT_CREDENTIAL_PROVIDER
       : named !== undefined && (req.provider === named.provider || workspaceProvider === named.provider)
         ? named.provider

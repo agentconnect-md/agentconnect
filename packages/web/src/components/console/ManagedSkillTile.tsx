@@ -169,7 +169,7 @@ export function ManagedSkillTile({
                   </select>
                 </label>
                 <span className="font-mono text-[10px] text-(--text-disabled)">
-                  {t('revisionFiles', {
+                  {t('skills.revisionFiles', {
                     count: selected.fileCount,
                     expanded: bytes(selected.expandedBytes),
                     archive: bytes(selected.compressedBytes)

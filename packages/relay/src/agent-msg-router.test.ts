@@ -7,7 +7,11 @@ import type {
   RdAgentMsgFwd,
   RdAgentMsgAck
 } from '@agentconnect.md/protocol'
-import { MAX_AGENT_CALL_HOPS, RD_HEADLESS_AGENT_DELIVERY_V1 } from '@agentconnect.md/protocol'
+import {
+  MAX_AGENT_CALL_HOPS,
+  RD_HEADLESS_AGENT_DELIVERY_V1,
+  RD_CODEHOST_REPLY_TARGET_V1
+} from '@agentconnect.md/protocol'
 import { CollaborationRouter } from './collaboration-router.js'
 import { createAgentMsgRouter } from './agent-msg-router.js'
 import type { RelayDaemonServer } from './relay-daemon-server.js'
@@ -102,7 +106,7 @@ function baseMsg(over: Partial<RdAgentMsg> = {}): RdAgentMsg {
 function fakeDaemons(
   ack: RdAgentMsgAck,
   forwards: RdAgentMsgFwd[],
-  capabilities: readonly string[] = [RD_HEADLESS_AGENT_DELIVERY_V1]
+  capabilities: readonly string[] = [RD_HEADLESS_AGENT_DELIVERY_V1, RD_CODEHOST_REPLY_TARGET_V1]
 ): RelayDaemonServer {
   const conn = {
     supports: (capability: string) => capabilities.includes(capability),
@@ -117,6 +121,47 @@ function fakeDaemons(
 }
 
 describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
+  it('forwards an origin reply under one-way policy while refusing direct calls, forged callers and foreign organizations', async () => {
+    const snapshot = snap()
+    snapshot.agents[0]!.outboundPolicy = 'selected'
+    snapshot.agents[1]!.callPolicy = 'selected'
+    const router = new CollaborationRouter()
+    router.replace(snapshot)
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'reply', delivered: true }, forwards),
+      log: noopLog
+    })
+    expect(await route(D1, baseMsg())).toMatchObject({ delivered: false, reason: 'not_allowed' })
+    const codeHostReplyTarget = { provider: 'github', hookId: 'hook-1', repo: 'acme/project', number: 42 }
+    const reply = baseMsg({
+      deliveryId: 'reply',
+      deliveryKind: 'session-reply',
+      lineageReplyTo: 'parent-session',
+      codeHostReplyTarget
+    })
+    expect(await route(D1, reply)).toMatchObject({ delivered: true })
+    expect(forwards).toHaveLength(1)
+    expect(forwards[0]).toMatchObject({
+      trustedFromAgentId: A,
+      orgId: ORG,
+      lineageReplyTo: 'parent-session',
+      codeHostReplyTarget
+    })
+    expect(await route(D2, { ...reply, deliveryId: 'forged' })).toMatchObject({
+      delivered: false,
+      reason: 'not_allowed'
+    })
+    snapshot.agents[1]!.orgId = ORG2
+    router.replace(snapshot)
+    expect(await route(D1, { ...reply, deliveryId: 'foreign' })).toMatchObject({
+      delivered: false,
+      reason: 'not_found'
+    })
+    expect(forwards).toHaveLength(1)
+  })
+
   it('recognizes a managed Slack app only alongside the target channel placement', () => {
     const router = new CollaborationRouter()
     router.replace(snap())
@@ -225,13 +270,33 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
       log: noopLog
     })
 
-    const ack = await route(D1, baseMsg({ originSessionId: 'acp-parent-1', needsReply: true }))
+    const ack = await route(
+      D1,
+      baseMsg({ originSessionId: 'acp-parent-1', needsReply: true, originCodeHostReplyTarget: null })
+    )
     expect(ack.delivered).toBe(true)
     // The router copies field-by-field, so a new optional field is silently dropped unless it is
     // explicitly forwarded — assert it survives the hop.
     expect(forwards[0]!.needsReply).toBe(true)
     expect(forwards[0]!.originSessionId).toBe('acp-parent-1')
+    expect(forwards[0]!.originCodeHostReplyTarget).toBeNull()
   })
+
+  it.each(['originCodeHostReplyTarget', 'codeHostReplyTarget'] as const)(
+    'refuses a target daemon that would lose %s',
+    async (field) => {
+      const router = new CollaborationRouter()
+      router.replace(snap())
+      const forwards: RdAgentMsgFwd[] = []
+      const route = createAgentMsgRouter({
+        router,
+        daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards, [RD_HEADLESS_AGENT_DELIVERY_V1]),
+        log: noopLog
+      })
+      expect(await route(D1, baseMsg({ [field]: null }))).toMatchObject({ delivered: false, reason: 'unsupported' })
+      expect(forwards).toHaveLength(0)
+    }
+  )
 
   it('forwards the caller daemon’s external source binding opaquely', async () => {
     const router = new CollaborationRouter()

@@ -37,6 +37,7 @@ export interface FeishuTurn {
     channel: string
     thread?: string
     statusThread: string
+    sessionThread: string
     transcriptChannel: string
     agentId: string
     sessionKey: string
@@ -122,7 +123,7 @@ export async function applyFeishuAction<TTurn extends FeishuTurn>(
       const id = await conn.postMessage(turn.plan.channel, action.text, turn.plan.thread)
       await host.appendTranscript({
         channel: turn.plan.transcriptChannel,
-        thread: turn.plan.statusThread,
+        thread: turn.plan.sessionThread,
         ts: id ?? `local-${Date.now()}`,
         sender: turn.plan.agentId,
         kind: 'text',

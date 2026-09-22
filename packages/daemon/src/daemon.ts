@@ -13,6 +13,7 @@ import {
   CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   CODEHOST_REVIEW_V1_FEATURE,
   codeHostHookMetadataOf,
+  isCodeHostProvider,
   pickCodeHostHookMembers,
   GITLAB_COM_V1_FEATURE,
   GITLAB_INSTANCE_V1_FEATURE,
@@ -34,6 +35,8 @@ import {
   ORGANIZATION_KNOWLEDGE_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   SESSION_EXECUTORS_V1_FEATURE,
+  type ExecutorCandidatesResult,
+  type SessionStayedHomeReason,
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
   MAX_TASK_DESCRIPTION,
@@ -68,7 +71,7 @@ import {
 } from '@agentconnect.md/protocol'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { basename, dirname, join, relative, sep } from 'node:path'
+import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { installMicrosandbox } from './microsandbox/install.js'
 import { microsandboxRuntimeHome, prepareMicrosandboxLaunch } from './microsandbox/launch.js'
 import type { MicrosandboxManager, MicrosandboxEnvironment } from './microsandbox/driver.js'
@@ -182,6 +185,8 @@ import {
   clearConfigFiles,
   materializeConfigFiles
 } from './shim/config-file-env.js'
+import { DEFAULT_SHIM_RUNTIME_ROOT, shimPaths } from './shim/sandbox-paths.js'
+import type { SpawnFile } from './acp/spawn-driver.js'
 import { writeGhShim } from './cp/gh-shim.js'
 import { glabSessionEnv, writeGlabShim } from './cp/glab-shim.js'
 import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
@@ -243,18 +248,22 @@ import {
   isUsableSourceDepth,
   routeRules
 } from './router/routing-table.js'
-import { parseCommand } from './commands/commands.js'
+import { parseCommand, requiresTrustedActor } from './commands/commands.js'
 import { CommandHandlers, type CommandHost } from './commands/handlers.js'
 import {
   rulesFromAgent,
   resolveCpRule,
   resolveAgentIntegration,
+  conversationSessionMode,
   integrationRouting,
   conversationAdmitted,
   type RoutingRule
 } from './router/routing-rule.js'
 import { CpRoutingLayer } from './router/cp-routing-layer.js'
 import { SlackConnection, type SlackAppFactory, type SlackStatusOptions } from './slack/connection.js'
+import { QQConnection } from './platforms/qq/connection.js'
+import { createQQTurnOutput } from './platforms/qq/surface.js'
+import { QQCommandChrome } from './platforms/qq/command-chrome.js'
 import { TelegramConnection, type TelegramCallback } from './telegram/connection.js'
 import { DiscordConnection } from './discord/connection.js'
 import { FeishuConnection } from './feishu/connection.js'
@@ -395,9 +404,12 @@ import {
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { runtimeCredentialsConfigured } from './runtimes/runtime-credential-discovery.js'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
-import { wireWorkspacePlane, type ExecutionPlane, type PlaneLaunch } from './execution/plane.js'
+import type { ExecutionPlane, PlaneLaunch, PlaneScope } from './execution/plane.js'
 import { seedSessionHome, startExecutorFacet, type ExecutorFacet } from './execution/executor-facet.js'
-import { effectiveStrategies } from './execution/strategies.js'
+import { ExecutorPlane, executorMcpBridge, type PlacedSession } from './execution/executor-plane.js'
+import { placeSession, type PlacementAsk, type PlacementChoice } from './execution/executor-placement.js'
+import { microsandboxLauncher } from './execution/executor-vm.js'
+import { effectiveStrategies, hostLauncher } from './execution/strategies.js'
 import {
   declaredRuntimeCatalog,
   loadK8sRuntimeTable,
@@ -461,6 +473,7 @@ import { CpCollabRoutes, isSyntheticA2aChannel } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import { z } from 'zod'
 import { isNoResponseBody } from './session/no-response.js'
+import { sessionReplyRoute } from './session/reply-route.js'
 import { WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createWorkspaceScope } from './cp/workspace-scope.js'
 import { createWorkspaceFileLinkResolver, type WorkspaceFileLinkResolver } from './messages/workspace-file-links.js'
@@ -481,6 +494,7 @@ import {
 } from './memory/provider.js'
 import { memoryChannelKey, MemoryHomeUnavailableError, type MemoryFs } from './memory/store.js'
 import {
+  memoryHomeOf,
   memoryHomeUnavailable,
   resolveMemoryHomePorts,
   type MemoryHomeDeps,
@@ -507,7 +521,8 @@ import { CpMemoryConnectionRegistry, type MemoryPluginConnector } from './cp/mem
 import { MemoryCaptureOutbox } from './memory-plugin/outbox.js'
 import { managedDistillCapture, withManagedDistill } from './memory/managed-distill-outbox.js'
 import { defaultMemoryPluginMetrics } from './memory-plugin/metrics.js'
-import { openMountedPostgresDataPlane, type PostgresDataPlane } from './store/postgres-data-plane.js'
+import { openPostgresDataPlane, type PostgresDataPlane } from './store/postgres-data-plane.js'
+import { DATA_PLANE_CONFIG_PATH } from './store/postgres-config.js'
 import type { EvaluationCapabilityProfile } from './evaluation/events.js'
 import { DaemonEvaluationHooks, type DaemonEvaluationHost } from './evaluation/daemon-hooks.js'
 import { SessionMetadataOutbox, type SessionMetadataHost } from './store/session-metadata-outbox.js'
@@ -523,7 +538,14 @@ import { SystemMetrics } from './metrics/system-metrics.js'
 import { estimateOpenAiTurnCost } from './usage/openai-public-pricing.js'
 import type { McpServer } from '@agentclientprotocol/sdk'
 import type { Agent, CronDef, Integration } from './agents/agent-schema.js'
-import { fromPlatformMessage, stableMessageId, stableTurnId, type NormalizedMessage } from './messages/normalized.js'
+import {
+  fromPlatformMessage,
+  stableMessageId,
+  stableTurnId,
+  type NormalizedMessage,
+  sessionThreadOf
+} from './messages/normalized.js'
+import { isAppendCoordinate } from './session/append-coordinate.js'
 import {
   ConnectionReconciler,
   type ConnectionReconcilerHost,
@@ -914,6 +936,8 @@ export class Daemon {
   // mirrors only the loaded local files and is rebuilt each reconcile.
   private agents = new Map<string, LoadedAgent>()
   private fileAgents = new Map<string, LoadedAgent>()
+  // File-authored agents a self-hosted shared store cannot attribute to an organization (#2188), warned once each.
+  private readonly unattributableFileAgents = new Set<string>()
   // Every live ACP host by HostKey (agent id, or agent id + session key for a confined session); every per-host map below is keyed alike.
   private hosts = new Map<HostKey, AcpHost>()
   // Per-host launch facts: the agent dir (the roster entry is gone when a removed agent's host stops) and the launch cwd.
@@ -1034,6 +1058,7 @@ export class Daemon {
     registry.register(discordCommandChrome)
     registry.register(feishuCommandChrome)
     registry.register(linearCommandChrome)
+    registry.register(QQCommandChrome)
     return registry
   })()
 
@@ -1117,6 +1142,19 @@ export class Daemon {
           this.enqueueApply(p, { kind: 'card-cancel' }, { allowWhenSuppressed: true })
         }
       })
+      registry.register(
+        createQQTurnOutput(async (p, text) => {
+          if (p.plan.transcriptChannel && p.plan.statusThread)
+            await this.store.appendTranscript({
+              channel: p.plan.transcriptChannel,
+              thread: p.plan.statusThread,
+              ts: monotonicTs(),
+              sender: p.plan.agentId,
+              kind: 'text',
+              text
+            })
+        })
+      )
       registry.register({
         platform: 'linear',
         createConverger: (ctx) => createLinearConverger(ctx),
@@ -1172,6 +1210,14 @@ export class Daemon {
   private readiness?: ReadinessGate
   // The executor facet (session-executors.md §3): dark unless `sandbox.share`, and all of its logic lives in `execution/executor-facet.ts`.
   private executorFacet?: ExecutorFacet
+  // The holder half (§7): this daemon's own sessions placed on other machines of its group. Empty until one is.
+  private executorPlane?: ExecutorPlane
+  /** Birth verdicts waiting for their session's row, which is written after placement decides its host key. */
+  private readonly sessionExecutorVerdicts = new Map<string, SessionStayedHomeReason | { executorDaemonId: string }>()
+  /** Open isolated sessions executing here as last counted; the facet and heartbeat read it synchronously, each idle sweep and placement refresh it. */
+  private ownIsolatedSessionCount = 0
+  /** The plane every scope of this daemon falls back to — its VMs or its pods; a spread session resolves to the executor plane instead. */
+  private localPlane?: ExecutionPlane
   private k8sRuntimeProbed = false
   private startupComplete = false
   // The shutdown duty drain in progress: its deadline, its counters, and the release of every grant
@@ -1200,6 +1246,7 @@ export class Daemon {
   // integrationId -> the FeishuConnection that owns it (for replies). Separate from
   // connByIntegration so Slack reconcile (which reads `.appToken`) never sees a Feishu conn.
   private fsConnByIntegration = new Map<string, FeishuConnection>()
+  private QQConnByIntegration = new Map<string, QQConnection>()
   // integrationId -> the LinearConnection that owns it. Linear's only reply surface is the
   // agent activity feed (§4.6), so this is the egress port every Linear write resolves through.
   private lnConnByIntegration = new Map<string, LinearConnection>()
@@ -1491,8 +1538,8 @@ export class Daemon {
        *  outcome the mode exists to prevent, so it must not be a fallback. Tests override this
        *  to exercise k8s-mode policy without a cluster. */
       startK8sPlane?: typeof startK8sRuntimePlane
-      /** Test seam only; production `--k8s` always reads the fixed Secret mount. */
-      openDataPlane?: typeof openMountedPostgresDataPlane
+      /** Test seam only; production reads the fixed Secret mount under `--k8s`, else the `postgres` store's file. */
+      openDataPlane?: typeof openPostgresDataPlane
       /** Test seam for the pool member startup barrier; production waits for CP register/ok. */
       startControlPlane?: (root: string) => Promise<void> | undefined
       /** Test seams for local catalog resolution and executable/state filtering. */
@@ -1689,6 +1736,9 @@ export class Daemon {
       sessionLinkSource: (platform, integrationId) => this.sessionLinkSource(platform, integrationId),
       threadOwner: async (channel, thread, transportScope) =>
         await this.sessions.threadOwner(channel, thread, transportScope),
+      sessionCoordinateFor: async (agentId, integrationId, msg, opts) =>
+        await this.sessionCoordinateFor(agentId, integrationId, msg, opts),
+      conversationAppends: (agentId, integrationId, msg) => this.conversationAppends(agentId, integrationId, msg),
       mergedRulesForSource: (srcIntegrationIds) => this.mergedRulesForSource(srcIntegrationIds),
       transportScopeForIntegrationIds: (integrationIds) => this.transportScopeForIntegrationIds(integrationIds),
       integrationBelongsToSource: (integrationId, srcIntegrationIds) =>
@@ -1719,6 +1769,7 @@ export class Daemon {
         telegram: this.tgConnByIntegration,
         discord: this.dcConnByIntegration,
         feishu: this.fsConnByIntegration,
+        qq: this.QQConnByIntegration,
         linear: this.lnConnByIntegration
       }),
       bindSlack: (integrationId, conn, botUserId) => {
@@ -1731,6 +1782,7 @@ export class Daemon {
         this.bind(this.dcConnByIntegration, integrationId, conn, botUserId),
       bindFeishu: (integrationId, conn, botOpenId) =>
         this.bind(this.fsConnByIntegration, integrationId, conn, botOpenId),
+      bindQQ: (id, conn, botId) => this.bind(this.QQConnByIntegration, id, conn, botId),
       bindLinear: (integrationId, conn, appUserId) =>
         this.bind(this.lnConnByIntegration, integrationId, conn, appUserId),
       unbindIntegration: (integrationId) => this.unbindIntegration(integrationId),
@@ -1816,6 +1868,7 @@ export class Daemon {
     this.dcConnByIntegration.delete(integrationId)
     this.fsConnByIntegration.delete(integrationId)
     this.lnConnByIntegration.delete(integrationId)
+    this.QQConnByIntegration.delete(integrationId)
     delete this.botUserIds[integrationId]
     this.channelSnapshots.delete(integrationId)
   }
@@ -2031,7 +2084,7 @@ export class Daemon {
   private async sandboxPreflight(cfg: Config, root: string): Promise<void> {
     if (cfg.sandbox.backend === 'microsandbox') {
       if (this.k8s) throw new Error('sandbox.backend=microsandbox cannot be combined with --k8s')
-      wireWorkspacePlane(this.workspaces, this.microsandboxPlane)
+      this.wirePlaneResolver(this.microsandboxPlane)
       try {
         this.microsandbox = await installMicrosandbox({
           root,
@@ -2061,18 +2114,29 @@ export class Daemon {
     }
   }
 
-  /** Phase 4 — under --k8s only: the shared data plane, then the execution plane the workspaces resolve through. */
+  /** Phase 4 — the shared data plane (under --k8s, or a `postgres` store), then under --k8s the execution plane the workspaces resolve through. */
   private async startClusterPlanes(root: string, cfg: Config): Promise<void> {
-    if (this.k8s) {
-      const openDataPlane = this.opts.openDataPlane ?? openMountedPostgresDataPlane
+    // `--k8s` needs the pool's shared store whatever the file says; any other daemon opens one only when its owner asked (#2188).
+    const dataPlaneConfig = this.k8s
+      ? DATA_PLANE_CONFIG_PATH
+      : cfg.store.backend === 'postgres'
+        ? resolve(root, cfg.store.configFile)
+        : undefined
+    if (dataPlaneConfig !== undefined) {
+      // The shared store attributes every row to its agent's organization, which only the Control Plane knows.
+      if (!this.k8s && !cfg.controlPlane?.enabled)
+        throw new Error('store: a postgres store needs the control plane, which names the organization of every row')
+      const openDataPlane = this.opts.openDataPlane ?? openPostgresDataPlane
       this.dataPlane = await openDataPlane(
         (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
         (error) => {
           this.log.error(`data-plane: PostgreSQL persistence failed — ${formatErr(error)}`)
           this.draining = true
           this.requestExit(1)
-        }
+        },
+        dataPlaneConfig
       )
+      if (!this.k8s) this.log.info('store: PostgreSQL (a shared store; this machine keeps no local session history)')
     }
     if (this.k8s) {
       // A pod's terminationGracePeriodSeconds must exceed this, or the kubelet SIGKILLs
@@ -2120,7 +2184,7 @@ export class Daemon {
         throw error
       }
       // Workspace git, files, path clearing and session retirement then run where the workspace is; an agent with no bound channel answers undefined for those, yet its workspace still reads as off this disk, which decides what operations exist at all: an in-place conversion has no pod-side rollback.
-      wireWorkspacePlane(this.workspaces, this.k8sPlane)
+      this.wirePlaneResolver(this.k8sPlane)
       this.log.info('k8s: execution plane ready — daemon-to-sandbox shim dialing enabled')
     }
   }
@@ -2240,6 +2304,13 @@ export class Daemon {
         }
         return undefined
       },
+      // The same allowlist's GitHub rows, which `qualifiedRepoOf` skips: GitHub whatever the workspace provider is.
+      githubAdditionalRepoOf: (agentId: string, repoFullName: string) => {
+        const wanted = repoFullName.toLowerCase()
+        return (this.agents.get(agentId)?.workspace.additionalRepos ?? []).some(
+          (row) => row.provider === IMPLICIT_CREDENTIAL_PROVIDER && row.repoFullName.toLowerCase() === wanted
+        )
+      },
       // A PRIVATE GitHub skill source the spec enables (shared-skills.md §3): the daemon's own
       // acquisition asks for exactly that owner/repo, and it is GitHub whatever the workspace is.
       privateGithubSkillRepoOf: (agentId: string, repoFullName: string) => {
@@ -2257,17 +2328,30 @@ export class Daemon {
       // Off the SAME predicate the workspace git runner uses, so the pointers always describe the
       // filesystem the git that reads them will run in. Derived per call rather than fixed at boot:
       // a cluster agent's channel comes and goes, and both resolvers follow it together.
-      targetFor: (agentId) =>
-        this.k8sPlane?.runsInSandbox(agentId) ? sandboxGitCredentialTarget() : daemonCredentialTarget,
+      targetFor: (agentId, cwd) => {
+        // A session placed on another machine runs its git there, at the roots that session's `prepare` named (§5).
+        const remote = this.executorPlane?.rootsForPath(agentId, cwd)
+        if (remote) return sandboxGitCredentialTarget(remote.runtimeRoot, remote.helperRoot)
+        return this.k8sPlane?.runsInSandbox(agentId) ? sandboxGitCredentialTarget() : daemonCredentialTarget
+      },
       // Git the daemon runs itself (skill acquisition) reads these on THIS filesystem, whatever
       // `targetFor` says about the agent's workspace git.
       daemonTarget: daemonCredentialTarget,
       capabilityFor: (agentId) => this.gitCredServer!.capabilityFor(agentId),
-      preWarm: async (agentId, reason) => {
+      preWarm: async (agentId, reason, repository) => {
+        // An additional repository warms the key its own helper ask lands on, never the workspace's — a scratch agent has none.
+        if (repository !== undefined) {
+          await this.gitCreds.get(agentId, reason, {
+            repo: repository.repoFullName,
+            ...(repository.provider === IMPLICIT_CREDENTIAL_PROVIDER
+              ? {}
+              : { provider: repository.provider, externalRepoId: repository.repoId })
+          })
+          return
+        }
         const agent = this.agents.get(agentId)
         const provider = agent ? this.workspaces.managedCredentialProvider(agent) : undefined
-        // A provider named on the wire pre-warms under its own numeric identity (§17.1); the
-        // implicit one keeps the v1 ask, which carries neither field.
+        // A provider named on the wire pre-warms under its own numeric identity (§17.1); the implicit one keeps the v1 ask.
         if (provider !== undefined && provider !== IMPLICIT_CREDENTIAL_PROVIDER) {
           const externalRepoId = this.managedWorkspaceRepo(agentId)?.repoId
           await this.gitCreds.get(agentId, reason, {
@@ -2847,6 +2931,14 @@ export class Daemon {
       now: () => Date.now(),
       canRun: (ctx) => this.toolTurnRunnable(ctx),
       gatewayFor: (integrationId) => this.connForIntegration(integrationId),
+      attachmentReaderFor: (integrationId) =>
+        this.connForIntegration(integrationId) ?? this.QQConnByIntegration.get(integrationId),
+      // The live turn's own delivery thread, which `activeTurnShare` already records per
+      // turn from `plan.thread`. The bridge context froze the opening turn's value at
+      // registration, and a session that spans several threads outgrows it immediately.
+      deliveryThreadNow: (ctx) =>
+        this.activeTurnShare.get(sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope))
+          ?.thread,
       // A platform's own session tools act through ANY platform's connection — including the one
       // the reply-surface registry above omits (Linear, §4.6).
       sessionToolConnectionFor: (integrationId) => this.anyConnForIntegration(integrationId),
@@ -3034,6 +3126,12 @@ export class Daemon {
         if (t.synthetic) return { ok: false, reason: 'no-conversation' }
         const { headless: _headless, synthetic: _synthetic, ...target } = t
         return { ok: true, ...target }
+      },
+      imageUploaderFor: (ctx) => {
+        const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+        const p = [...this.pending.values()].find((turn) => turn.plan.sessionKey === key)
+        if (!p || p.outputSuppressed || !this.toolTurnRunnable(ctx)) return undefined
+        return this.turnSurfaces.exact(p.plan.platform)?.imageUploader?.(p)
       },
       readWorkspaceImage: async (ctx, rel): Promise<ShareReadResult> => {
         const scope = createWorkspaceScope({
@@ -3290,7 +3388,17 @@ export class Daemon {
       // ACP session to its exact channel/thread/delivery integration.
       // The agent's enabled daemon-configured MCP servers are appended AFTER the bridge entry, gated
       // on the runtime's probed transport caps.
-      mcpServersFor: ({ agent, platform, channel, thread, integrationId, transportScope, isDm }) => {
+      mcpServersFor: ({
+        agent,
+        platform,
+        channel,
+        thread,
+        deliveryThread,
+        integrationId,
+        transportScope,
+        isDm,
+        sessionKey
+      }) => {
         // An OpenClaw-style bridge rejects non-empty session mcpServers — skip assembly instead of failing session/new.
         if (this.runtimes[agent.runtime]?.sessionMcpServers === 'unsupported') {
           this.log.debug(
@@ -3345,6 +3453,7 @@ export class Daemon {
             isDm,
             channel,
             thread,
+            deliveryThread,
             tools,
             // Full integration set so sendPlatformMessage can route to ANY connected
             // platform, not only the one that delivered this turn.
@@ -3354,7 +3463,7 @@ export class Daemon {
             agentName: agent.displayName?.trim() || agent.name,
             ...(agent.iconUrl ? { iconUrl: agent.iconUrl } : {})
           })
-          servers.push(...this.mcpToolServerSpec(token, agent))
+          servers.push(...this.mcpToolServerSpec(token, agent, sessionKey))
         }
         servers.push(
           ...resolveAgentMcpServers({
@@ -3379,12 +3488,13 @@ export class Daemon {
         )
         return servers
       },
-      // §9.2: download inbound attachment bytes via the agent's Slack connection
-      // (bot-token auth). Returns null (→ baseline resource_link) if no connection.
-      downloadAttachment: (agentId, att) =>
+      // Download from the actual ingress integration, including platforms without a legacy reply connection.
+      downloadAttachment: (agentId, att, integrationId) =>
         att.sourceUrl
-          ? (this.replyConnFor(agentId)?.downloadFile?.(att.sourceUrl, this.cfg.limits.maxAttachmentBytes) ??
-            Promise.resolve(null))
+          ? (this.commandConnFor(agentId, integrationId)?.downloadFile(
+              att.sourceUrl,
+              this.cfg.limits.maxAttachmentBytes
+            ) ?? Promise.resolve(null))
           : Promise.resolve(null),
       attachmentMaxBytes: cfg.limits.maxAttachmentBytes,
       // §8.4/§8.5/§9.2: snapshot real Slack thread history for cold backfill and
@@ -3417,13 +3527,23 @@ export class Daemon {
       daemonRoot: root,
       share: cfg.sandbox.share,
       strategies: () => this.executionStrategies(),
+      // Both are offered; the effective table above is what decides which of them a `prepare` may ask for.
+      launchers: { host: hostLauncher(), microsandbox: microsandboxLauncher({ manager: () => this.microsandbox }) },
       capacity: () => this.cfg.limits.maxConcurrentSessions,
-      ownSessions: () => [...this.hosts.keys()].filter((key) => hostKeySessionKey(key) !== undefined).length,
+      ownSessions: () => this.ownIsolatedSessionCount,
       draining: () => this.draining,
       endpointHost: () => this.cpClient?.localAddress?.(),
       seedHome: (home) => {
         this.refreshAdmittedRuntimes()
-        seedSessionHome(home, this.runtimes, this.log)
+        return seedSessionHome(home, this.runtimes, this.log)
+      },
+      // What a local agent here would start, so a holder never names a path in its own store (§8): a VM its image's adapter, a host process this machine's install.
+      runtimeLaunch: async (runtimeId, strategy) => {
+        if (strategy === 'host') await this.ensureRuntimeInstalled(runtimeId, this.localRuntimeCatalog !== undefined)
+        const catalog =
+          strategy === 'microsandbox' ? this.microsandboxCatalog : (this.localRuntimeCatalog ?? this.runtimeCatalog)
+        const runtime = catalog?.entries[runtimeId]?.runtime
+        return runtime && { command: runtime.command, args: [...runtime.args] }
       },
       agentsExist: async (agentIds) => {
         if (!this.cpClient) throw new Error('no control plane connection')
@@ -3434,6 +3554,236 @@ export class Daemon {
       log: this.log,
       clock: this.clock
     })
+    this.startExecutorPlane(root)
+  }
+
+  /**
+   * The holder half of the same feature (§7): where this daemon's own isolated sessions execute when
+   * the group lends it compute. It owns no listener and no timer, so a daemon that never spreads a
+   * session pays nothing for having one.
+   */
+  private startExecutorPlane(root: string): void {
+    // Under --k8s every isolated session already gets a pod of the install's own pool; nothing spreads (§11).
+    if (this.k8s) return
+    this.executorPlane = new ExecutorPlane({
+      prepare: (launch) => {
+        // Named so the executor can answer with its own install of it (§8).
+        const runtime = this.agents.get(launch.agentId)?.runtime
+        return this.requireCp('executor/prepare').executorPrepare(
+          {
+            agentId: launch.agentId,
+            sessionKey: launch.sessionKey,
+            executorDaemonId: launch.executorDaemonId,
+            launchId: launch.launchId,
+            strategy: launch.strategy,
+            ...(runtime ? { runtime } : {})
+          },
+          this.orgForAgent(launch.agentId)
+        )
+      },
+      release: (placed, launchId) =>
+        this.requireCp('executor/release').executorRelease(
+          {
+            agentId: placed.agentId,
+            sessionKey: placed.sessionKey,
+            executorDaemonId: placed.executorDaemonId,
+            launchId
+          },
+          this.orgForAgent(placed.agentId)
+        ),
+      replace: (placed) => this.replaceLostExecutor(placed),
+      // The same policy the pool's plane is given: only the daemon knows which of its own sockets this agent needs.
+      tunnelsFor: (agentId) => {
+        const agent = this.agents.get(agentId)
+        if (!agent) return []
+        return this.workspaces.helperBackedCredential(agent) ? ['mcp', 'gitcred'] : ['mcp']
+      },
+      tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
+      log: {
+        info: (m) => this.log.info(m),
+        warn: (m) => this.log.warn(m),
+        debug: (m) => this.log.debug?.(m)
+      },
+      clock: this.clock
+    })
+    this.wirePlaneResolver()
+  }
+
+  /** The control connection an executor request needs; a holder that cannot ask does not spread, and its turn waits (§6). */
+  private requireCp(op: string): CpClient {
+    const cp = this.cpClient
+    if (!cp?.connected()) throw new Error(`${op} needs a control plane connection`)
+    return cp
+  }
+
+  /** What this machine hosts, counted as a candidate's `hostedSessions` is — its own isolated sessions included, so the number means the same for every candidate (§6). */
+  private async hostedSessionCount(placing: string): Promise<number> {
+    // The session being placed is not load yet: counted, it would send an idle group's first session away.
+    await this.refreshOwnIsolatedSessions(placing)
+    return this.executorFacet?.hostedSessions() ?? this.ownIsolatedSessionCount
+  }
+
+  /** Live runtimes, as the facet counts its shims: an open isolated row whose own host runs or whose agent's shared host has it loaded — a placed session's pipe, a stuck row and a reclaimed runtime hold nothing. */
+  private async refreshOwnIsolatedSessions(exceptKey?: string): Promise<void> {
+    try {
+      // A revoked duty keeps its replica and rows here, so only the agents this member serves are its load.
+      const served = [...this.agents.keys()].filter((agentId) => this.servesAgent(agentId))
+      const rows = await this.store.listOwnIsolatedSessions(served, exceptKey)
+      this.ownIsolatedSessionCount = rows.filter((row) => this.sessionRuntimeLive(row)).length
+    } catch (err) {
+      this.log.warn(`executor: counting this machine's isolated sessions failed: ${formatErr(err)}`)
+    }
+  }
+
+  /** Its own host is running, or its agent's shared host has loaded it (a worktree session keeps no host of its own). */
+  private sessionRuntimeLive(row: { key: string; agentId: string; acpSessionId: string | null }): boolean {
+    if (this.hosts.has(sessionHostKey(row.agentId, row.key))) return true
+    return (
+      row.acpSessionId !== null && (this.hosts.get(agentHostKey(row.agentId))?.hasSession(row.acpSessionId) ?? false)
+    )
+  }
+
+  /** Between placements only a hosting facet reports the count, so only it keeps the count current. */
+  private refreshHostedCountIfHosting(): void {
+    if (this.executorFacet?.hostedSessions() !== undefined) void this.refreshOwnIsolatedSessions()
+  }
+
+  /** What the holder knows about a session being born, in the vocabulary the birth predicate reads (§7). */
+  private placementAsk(agent: LoadedAgent, sessionKey: string): PlacementAsk {
+    return {
+      isolation: this.sessionIsolation.get(sessionKey),
+      runInSandbox: this.agentRunsInSandbox(agent),
+      runtime: agent.runtime,
+      // The only memory condition left: a binding the Control Plane's boot-time flip has not reached yet (§7).
+      memoryDaemonHomed: memoryKindOf(agent) === 'managed' && memoryHomeOf(agent) === 'daemon'
+    }
+  }
+
+  /** The strategy v1's ask names: `runInSandbox` true asks for a sandboxing one, false for `host` (§5). */
+  private askedStrategy(ask: PlacementAsk): string {
+    return ask.runInSandbox ? 'microsandbox' : 'host'
+  }
+
+  /**
+   * Where this session executes, decided once at its birth and kept for its whole life (§6, §7).
+   *
+   * Nothing is asked for a session already placed here, for one whose verdict this daemon recorded,
+   * or on a connection that belongs to no member set — the two consents are the group's and each
+   * machine's, and a daemon in no group has neither to read.
+   */
+  private async placeSessionOnExecutor(agent: LoadedAgent, sessionKey: string): Promise<void> {
+    const plane = this.executorPlane
+    if (!plane) return
+    // A verdict this daemon reached for a turn that never recorded it: the row exists by now.
+    await this.flushSessionExecutorVerdict(sessionKey)
+    if (plane.placementOf(sessionKey)) return
+    const recorded = await this.store.getSessionExecutor(sessionKey).catch(() => undefined)
+    if (recorded && 'stayedHomeReason' in recorded) return
+    const ask = this.placementAsk(agent, sessionKey)
+    if (recorded) {
+      // Sticky, and a restart does not re-decide: the next launch prepares the environment again where the session was born.
+      plane.place({
+        agentId: agent.id,
+        sessionKey,
+        executorDaemonId: recorded.executorDaemonId,
+        strategy: this.askedStrategy(ask)
+      })
+      return
+    }
+    // A daemon with no control plane has no group to spread onto and nobody to report a verdict to.
+    if (!this.cpClient) return
+    if (ask.isolation !== 'session') return await this.recordSessionExecutor(sessionKey, 'shared_session')
+    if (!this.cpClient.memberSet()) return await this.recordSessionExecutor(sessionKey, 'not_on_group')
+    const answer = await this.executorCandidates(agent.id, sessionKey)
+    const placement = placeSession({
+      ask,
+      holderHostedSessions: await this.hostedSessionCount(sessionKey),
+      ...(answer ? { answer } : {})
+    })
+    if ('stayedHome' in placement) return await this.recordSessionExecutor(sessionKey, placement.stayedHome)
+    const landed = await plane.prepareAt(agent.id, sessionKey, placement.spread)
+    if ('refused' in landed) {
+      return await this.recordSessionExecutor(
+        sessionKey,
+        landed.refused === 'full' ? 'candidates_full' : 'no_candidate'
+      )
+    }
+    this.log.info(
+      `executor: session ${landed.placed.leaf} of agent ${agent.id} runs on daemon ${landed.placed.executorDaemonId}`
+    )
+    await this.recordSessionExecutor(sessionKey, { executorDaemonId: landed.placed.executorDaemonId })
+  }
+
+  /**
+   * The birth verdict on this daemon's own row; the Control Plane's copy rides the session's
+   * metadata (§7).
+   *
+   * Held until the row exists: placement is decided BEFORE `SessionManager` records the session,
+   * because the host key it decides is what that call needs, and a write for a key the store does
+   * not know yet is a no-op that would lose the verdict for good.
+   */
+  private async recordSessionExecutor(
+    sessionKey: string,
+    verdict: SessionStayedHomeReason | { executorDaemonId: string }
+  ): Promise<void> {
+    this.sessionExecutorVerdicts.set(sessionKey, verdict)
+    await this.flushSessionExecutorVerdict(sessionKey)
+  }
+
+  /** Write a held verdict once its session has a row; anything still held is retried at the next turn's placement. */
+  private async flushSessionExecutorVerdict(sessionKey: string): Promise<void> {
+    const verdict = this.sessionExecutorVerdicts.get(sessionKey)
+    if (verdict === undefined) return
+    try {
+      if (!(await this.store.getSession(sessionKey))) return
+      await this.store.setSessionExecutor(
+        sessionKey,
+        typeof verdict === 'string' ? { stayedHomeReason: verdict } : verdict
+      )
+      // Dropped only once it is written, and only when nothing replaced it while the write was in flight.
+      if (this.sessionExecutorVerdicts.get(sessionKey) === verdict) this.sessionExecutorVerdicts.delete(sessionKey)
+    } catch (err) {
+      this.log.warn(`executor: recording where session ${sessionKey} runs failed: ${formatErr(err)}`)
+    }
+  }
+
+  /** `executor/candidates` — facts, never a choice; undefined when the Control Plane could not be asked at all (§6). */
+  private async executorCandidates(agentId: string, sessionKey: string): Promise<ExecutorCandidatesResult | undefined> {
+    const cp = this.cpClient
+    if (!cp?.connected()) return undefined
+    return await cp.executorCandidates({ agentId, sessionKey }, this.orgForAgent(agentId)).catch((err: unknown) => {
+      this.log.warn(`executor: asking the control plane for candidates failed: ${formatErr(err)}`)
+      return undefined
+    })
+  }
+
+  /** The loss rule's second branch (§7): the executor has been out of touch past the grace, so the session is prepared elsewhere and the user is told the previous environment is gone. */
+  private async replaceLostExecutor(placed: PlacedSession): Promise<PlacementChoice | undefined> {
+    const agent = this.agents.get(placed.agentId)
+    if (!agent) return undefined
+    const answer = await this.executorCandidates(placed.agentId, placed.sessionKey)
+    const placement = placeSession({
+      ask: this.placementAsk(agent, placed.sessionKey),
+      holderHostedSessions: await this.hostedSessionCount(placed.sessionKey),
+      ...(answer ? { answer } : {})
+    })
+    // Nowhere else to put it: the session stays where it is and the turn fails, which is what a machine that comes back needs.
+    if ('stayedHome' in placement) return undefined
+    const next = placement.spread.find((choice) => choice.daemonId !== placed.executorDaemonId)
+    if (!next) return undefined
+    await this.recordSessionExecutor(placed.sessionKey, { executorDaemonId: next.daemonId })
+    this.noteEnvironmentLost(placed)
+    return next
+  }
+
+  /** Told in the conversation, as a pinned daemon's death is: the work in the old environment is not coming back. */
+  private noteEnvironmentLost(placed: PlacedSession): void {
+    const text =
+      'The machine this session was running on has been out of touch, so it starts again on another one — anything uncommitted in the previous environment is gone.'
+    for (const pending of this.pending.values()) {
+      if (pending.plan.agentId !== placed.agentId || pending.plan.sessionKey !== placed.sessionKey) continue
+      if (pending.conn) this.enqueueApply(pending, { kind: 'notice', text })
+    }
   }
 
   /** Phase 26 — under --k8s the CP organization registry MUST arrive before ingress opens; otherwise the connect is deferred to the last phase. */
@@ -3458,6 +3808,7 @@ export class Daemon {
 
   /** Phase 27 — Slack connections gate boot; the long-poll/gateway platforms deliberately do not. */
   private async openPlatformConnections(agents: LoadedAgent[]): Promise<void> {
+    void this.connections.reconcileQQConnections().catch(() => this.log.warn('qq: initial connect failed'))
     // open consolidated Slack connections, resolve bot user ids (merged rules are per-message)
     await this.connections.openInitialSlackConnections(agents)
     // Open send-only Slack clients for HTTP bots (inbound lives on the relay).
@@ -3587,6 +3938,18 @@ export class Daemon {
       for (const previous of preserved.values()) {
         if (!agents.some((agent) => agent.dir === previous.dir)) agents.push(previous)
       }
+    }
+
+    // A file-authored agent belongs to no organization, and its id is unique only on this machine (#2188).
+    if (this.dataPlane && !this.k8s) {
+      for (const agent of agents) {
+        if (this.unattributableFileAgents.has(agent.id)) continue
+        this.unattributableFileAgents.add(agent.id)
+        this.log.warn(
+          `agent "${agent.id}" in ${this.agentsDir} is not served: a postgres store holds Control Plane agents only`
+        )
+      }
+      agents = []
     }
 
     // §6.4: an integration entry whose opaque `config` its platform module
@@ -3877,6 +4240,7 @@ export class Daemon {
       await this.connections.reconcileDiscordConnections()
       await this.connections.reconcileFeishuConnections()
       await this.connections.reconcileLinearConnections()
+      await this.connections.reconcileQQConnections()
       // Converged for real: the sockets a duty change invalidated are closed. Publishing the
       // CLAIMED value (not the current one) leaves a duty change that landed mid-pass outstanding,
       // so the trailing re-run still converges it.
@@ -4142,9 +4506,22 @@ export class Daemon {
 
   /** Where one host's runtime executes; undefined is this daemon's own host, where AcpHost keeps its LocalDriver. */
   private planeFor(launch: PlaneLaunch): ExecutionPlane | undefined {
+    // A session placed on another machine runs there for its whole life, whatever this machine would have done with it (§7).
+    if (this.placedSession(hostKeySessionKey(launch.hostKey))) return this.executorPlane
     if (this.k8sPlane) return this.k8sPlane
     // Only a launch prepared for a VM runs in one: an agent that runs unsandboxed beside it stays on this host.
     return launch.prepared.microsandbox ? this.microsandboxPlane : undefined
+  }
+
+  /** Every workspace scope's plane: a session this holder placed on another machine, else this daemon's own — a VM, a pod, or its disk. */
+  private wirePlaneResolver(local?: ExecutionPlane): void {
+    if (local) this.localPlane = local
+    this.workspaces.setPlaneResolver((scope: PlaneScope) => this.executorPlane?.planeFor(scope) ?? this.localPlane)
+  }
+
+  /** Where a session is placed, or undefined for one that runs on this machine. */
+  private placedSession(sessionKey: string | undefined): PlacedSession | undefined {
+    return sessionKey === undefined ? undefined : this.executorPlane?.placementOf(sessionKey)
   }
 
   private workspaceFilesFor(agentId: string) {
@@ -4296,6 +4673,8 @@ export class Daemon {
    */
   private confinedSession(agent: Agent, sessionKey?: string): boolean {
     if (sessionKey === undefined) return false
+    // A session placed on another machine is always the clone tier: the primary checkout is not on it (§2).
+    if (this.placedSession(sessionKey)) return true
     // Workspace isolation is independent of whether the runtime owns a VM.
     if (!this.sessionIsolated(agent, sessionKey)) return false
     return this.workspaces.confinedSessionTier(agent, sessionKey, this.k8s || this.agentRunsInSandbox(agent))
@@ -4454,7 +4833,13 @@ export class Daemon {
   }
 
   /** That tool server's `session/new` spec, in the coordinates of wherever the runtime runs. */
-  private mcpToolServerSpec(token: string, agent?: Agent): McpStdioServer[] {
+  private mcpToolServerSpec(token: string, agent?: Agent, sessionKey?: string): McpStdioServer[] {
+    // A session on an executor reaches this daemon through its own environment's `mcp` tunnel, and runs that machine's bridge (§5).
+    const remote = sessionKey === undefined ? undefined : this.executorPlane?.rootsFor(sessionKey)
+    if (remote) {
+      const bridge = executorMcpBridge(remote)
+      return bridge ? buildSandboxMcpServers({ bridge, token, runtimeRoot: remote.runtimeRoot }) : []
+    }
     if (agent && this.usesMicrosandbox(agent)) {
       const bridge = this.microsandboxTable?.mcpBridge
       if (!bridge) throw new Error('microsandbox image does not provide the AgentConnect MCP bridge')
@@ -4479,6 +4864,20 @@ export class Daemon {
     // and none of the local preparation below may run — its mkdir/existsSync/skills work would
     // land on this daemon's disk, describing a filesystem the runtime never sees. Skills and
     // git-repo checkouts for cluster agents arrive with the materialize/runner phases.
+    // A session placed on another machine prepares IN that machine's environment, over the shim: its clones,
+    // its skills, its HOME. The agent's primary checkout is not there and is not consulted (§7).
+    const placed = request && this.placedSession(request.sessionKey)
+    if (placed && this.executorPlane) {
+      const plane = this.executorPlane
+      return await plane.withEnvironment(placed.subject, async () => {
+        const cwd = await this.workspaces.prepareExecutorWorkspace(agent, plane.mountFor(placed.subject), {
+          ...request!,
+          confined: true
+        })
+        await this.reconcileClusterSkills(agent, placed.subject, plane)
+        return cwd
+      })
+    }
     if (this.k8sPlane) {
       const plane = this.k8sPlane
       // The pod's own preparation: clone and pull happen on its volume through the runner, and
@@ -4539,8 +4938,13 @@ export class Daemon {
     )
   }
 
-  private async reconcileClusterSkills(agent: Agent, pod: SandboxSubject): Promise<void> {
-    const plane = this.k8sPlane
+  /** Skills through a shim, whichever plane holds the environment: a pod of the pool, or a session's on an executor. */
+  private async reconcileClusterSkills(
+    agent: Agent,
+    pod: SandboxSubject,
+    plane: Pick<K8sRuntimePlane, 'skillClientFor' | 'workspaceIncarnationFor' | 'shimGenerationFor'> | undefined = this
+      .k8sPlane
+  ): Promise<void> {
     const workspaceIncarnation = plane?.workspaceIncarnationFor?.(pod)
     const shimGeneration = plane?.shimGenerationFor?.(pod)
     await this.reconcileSandboxSkills(agent, {
@@ -4972,8 +5376,13 @@ export class Daemon {
     await this.stopHost(agentId)
   }
 
-  /** Construct + memoize the host for `key`; `cwd` is the session directory for a session-bound host. */
-  private ensureHost(key: HostKey, cfg: ReturnType<typeof loadConfig>, cwd?: string): AcpHost {
+  /** Construct + memoize the host for `key`; `cwd` is the session directory for a session-bound host, `sessionGitDirs` its clones' `.git` when they are off this disk. */
+  private ensureHost(
+    key: HostKey,
+    cfg: ReturnType<typeof loadConfig>,
+    cwd?: string,
+    sessionGitDirs?: string[]
+  ): AcpHost {
     const host = this.hosts.get(key)
     if (host) return host
     const agentId = hostKeyAgentId(key)
@@ -4983,12 +5392,13 @@ export class Daemon {
       hostKey: key,
       runInSandbox: this.agentRunsInSandbox(agent),
       cwd: launchCwd,
-      warnOnSandboxDowngrade: true
+      warnOnSandboxDowngrade: true,
+      ...(sessionGitDirs ? { sessionGitDirs } : {})
     })
     this.hosts.set(key, built.host)
     this.hostLaunch.set(key, { agentDir: agent.dir, cwd: launchCwd })
     this.hostStartedAt.set(key, this.clock.now())
-    this.hostConfigFiles.set(agentId, { agentDir: agent.dir, ...built.configFileState })
+    if (built.configFileState) this.hostConfigFiles.set(agentId, { agentDir: agent.dir, ...built.configFileState })
     return built.host
   }
 
@@ -5017,10 +5427,13 @@ export class Daemon {
       warnOnSandboxDowngrade?: boolean
       excludeAgentToolCredentials?: boolean
       modelCredential?: { target: ModelProviderTarget; credential: ModelCredential }
+      /** A session whose clones are off this disk: their `.git`, as the filesystem holding them answered. */
+      sessionGitDirs?: string[]
     }
   ): {
     host: AcpHost
-    configFileState: { childEnv?: Record<string, string | undefined>; materialized: boolean }
+    /** Undefined for a host whose config files travel with its launch: it keeps none on this disk. */
+    configFileState?: { childEnv?: Record<string, string | undefined>; materialized: boolean }
   } {
     const agentId = agent.id
     const onUpdate = (sid: string, u: any) => this.enqueueAcpUpdate(opts.hostKey, sid, u)
@@ -5044,7 +5457,7 @@ export class Daemon {
         this.externalMemoryAdmission(agent.id)
       ).runtimeEnv()
     }
-    let configFileState: { childEnv?: Record<string, string | undefined>; materialized: boolean } = {
+    let configFileState: { childEnv?: Record<string, string | undefined>; materialized: boolean } | undefined = {
       materialized: false
     }
     if (this.opts.hostFactory) {
@@ -5052,7 +5465,21 @@ export class Daemon {
     }
     const runtime = catalog?.runtimes[agent.runtime]
     if (!runtime) throw new Error(this.runtimeUnavailableMessage(agent.runtime))
-    const microPlacement = micro ? this.microsandboxPlacement(agent, opts.cwd, opts.hostKey) : undefined
+    // A session placed on another machine runs inside that machine's strategy, so this one's own VM composes none of it (§7).
+    const remoteSession = this.placedSession(hostKeySessionKey(opts.hostKey))
+    const microPlacement =
+      micro && !remoteSession ? this.microsandboxPlacement(agent, opts.cwd, opts.hostKey) : undefined
+    // Its HOME is the one its executor seeded, on the root that machine's shim reported; without it a launch would name this disk (§7, §8).
+    const remoteHome = remoteSession && this.executorPlane?.homeFor(remoteSession.subject)
+    // The roots its `prepare` named, where the session gitconfig and config files land in that machine's environment (§5).
+    const remoteRoots = remoteSession && this.executorPlane?.rootsFor(remoteSession.sessionKey)
+    if (remoteSession && (!remoteHome || !remoteRoots)) {
+      throw new Error(
+        `session ${remoteSession.leaf} has no environment on daemon ${remoteSession.executorDaemonId} to launch in — its next turn prepares one`
+      )
+    }
+    // And its adapter is the one that machine installed, never a path in this machine's store (§8).
+    const launchDef = (remoteSession && this.executorPlane?.runtimeDefFor(remoteSession.sessionKey, runtime)) || runtime
     // A dream reads only its materialized inputs to produce a memory proposal, so
     // it never needs the agent's TOOL credentials (github-app git helper, gh
     // wrapper, or materialized `*_DATA` config-file secrets like KUBECONFIG /
@@ -5087,22 +5514,25 @@ export class Daemon {
     // process tree inherits. sessionGitEnv additionally supplies GitHub App identity.
     // Keep this channel LAST so runtimeOverrides cannot replace either policy.
     const baseEnv: Record<string, string> = { ...agentChildEnv(agent), ...cpRuntimeEnv(agent) }
-    const runInSandbox = opts.runInSandbox
-    if (agent.runInSandbox && !runInSandbox && opts.warnOnSandboxDowngrade) {
+    // This machine wraps nothing around a placed session: the executor's strategy is its boundary.
+    const runInSandbox = opts.runInSandbox && !remoteSession
+    if (agent.runInSandbox && !opts.runInSandbox && opts.warnOnSandboxDowngrade) {
       this.log.warn(
         runtime.externalExecution
           ? `acp: agent "${agentId}" requested Run in sandbox but runtime "${agent.runtime}" executes in an external machine-local service — running without it`
           : `acp: agent "${agentId}" requested Run in sandbox but this host has no supported Linux sandbox — running without it (#312)`
       )
     }
-    // Native memory is redirected under the HOME this host actually launches with — a confined session's own (§11).
+    // Native memory is redirected under the HOME this host actually launches with — a confined session's own (§11), or its executor's.
     const memoryAgent =
-      memoryKindOf(agent) === 'native' && runInSandbox
+      memoryKindOf(agent) === 'native' && (runInSandbox || remoteHome)
         ? {
             ...agent,
-            dir: microPlacement
-              ? microsandboxRuntimeHome(agent.dir, opts.hostKey, microPlacement.trustedSessionDir)
-              : privateRuntimeHomeFor(agent.dir, opts.hostKey)
+            dir:
+              remoteHome ??
+              (microPlacement
+                ? microsandboxRuntimeHome(agent.dir, opts.hostKey, microPlacement.trustedSessionDir)
+                : privateRuntimeHomeFor(agent.dir, opts.hostKey))
           }
         : agent
     const runtimeEnv = {
@@ -5117,9 +5547,13 @@ export class Daemon {
     const sessionGitScope = managedCredentials ? managedScope : null
     const sessionGitIdentity = managedCredentials ? this.gitCommitIdentity : undefined
     const needsSessionGit = managedCredentials || agent.workspace.mode === 'git-repo'
+    // A session on an executor reads the same file in that machine's environment, at the roots its `prepare` named (§5).
+    const sandboxGitTarget = remoteRoots
+      ? sandboxGitCredentialTarget(remoteRoots.runtimeRoot, remoteRoots.helperRoot)
+      : sandboxGitCredentialTarget()
     const sandboxSessionGit =
-      this.k8sPlane && needsSessionGit
-        ? sessionGitConfig(agent.id, sessionGitIdentity, sandboxGitCredentialTarget(), sessionGitScope)
+      (this.k8sPlane || remoteRoots) && needsSessionGit
+        ? sessionGitConfig(agent.id, sessionGitIdentity, sandboxGitTarget, sessionGitScope)
         : undefined
     // Held as its own value: the sandbox read grant must come from the path the DAEMON authored,
     // never read back out of the merged child env, where runtimeOverrides.env could name any file.
@@ -5164,12 +5598,12 @@ export class Daemon {
         delete runtimeEnv[secret.name]
       }
     }
-    // The cluster driver routes every pod launch by AC_AGENT_ID, credentials or not.
-    if (this.k8sPlane || micro) env.AC_AGENT_ID = agent.id
+    // Every shim driver routes its launch by AC_AGENT_ID — a pod's, a VM's, and an executor environment's.
+    if (this.k8sPlane || micro || remoteSession) env.AC_AGENT_ID = agent.id
     const shimDirs = new Set<string>()
     // The gh wrapper is a DAEMON path: prepending it to a pod launch would name a dir the pod
     // never had, and the pod image ships no wrapper (gh there degrades to unauthenticated).
-    if (githubAppCredentials && this.ghBinDir && !this.k8sPlane && !micro) {
+    if (githubAppCredentials && this.ghBinDir && !this.k8sPlane && !micro && !remoteSession) {
       // gh wrapper (multi-repo #457): PATH prepend + the agent identity the
       // wrapper hands to the hidden token helper. sessionGitEnv supplies the
       // matching runtime-only capability; a user PATH override must not
@@ -5177,7 +5611,7 @@ export class Daemon {
       env.AC_AGENT_ID = agent.id
       shimDirs.add(this.ghBinDir)
     }
-    if (gitlabCredentials && this.glabBinDir && !this.k8sPlane && !micro) {
+    if (gitlabCredentials && this.glabBinDir && !this.k8sPlane && !micro && !remoteSession) {
       // glab wrapper (§13.3): read-only project tokens for the managed workspace.
       env.AC_AGENT_ID = agent.id
       // §24.4: point the real CLI at the deployment's instance, prefix and port included.
@@ -5188,6 +5622,14 @@ export class Daemon {
       env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? runtimeEnv.PATH ?? process.env.PATH ?? ''}`
     }
     const target = opts.modelCredential?.target ?? modelProviderTarget(agent, runtime)
+    // A runtime on another filesystem reads its config files there, so they travel with its launch as the gitconfig does (§8): the pod's image root, or the one an executor reported.
+    const launchFilesRoot = remoteRoots
+      ? remoteRoots.runtimeRoot
+      : this.k8sPlane
+        ? DEFAULT_SHIM_RUNTIME_ROOT
+        : undefined
+    if (launchFilesRoot !== undefined) configFileState = undefined
+    let launchConfigFiles: { dir: string; files: SpawnFile[] } | undefined
     // OS sandbox decision (issue #312). security.requireSandbox forces every agent
     // on; otherwise the per-agent preference is effective only when this host has a
     // mechanism. The writable set is derived from the TRUSTED agent dir
@@ -5209,8 +5651,10 @@ export class Daemon {
               }
             }
           : {}),
+        ...(remoteHome ? { executor: { home: remoteHome } } : {}),
+        ...(opts.sessionGitDirs ? { sessionGitDirs: opts.sessionGitDirs } : {}),
         runtimeId: runtimeEntry?.aliasOf ?? agent.runtime,
-        runtime,
+        runtime: launchDef,
         provider: memoryKindOf(agent),
         scopeDir: agent.dir,
         cwd: opts.cwd,
@@ -5221,7 +5665,11 @@ export class Daemon {
         runtimeEnv,
         agentEnv: env,
         // A dream host materializes nothing: it has no cleanup path and needs none of these secrets.
-        ...(excludeAgentToolCredentials ? {} : { configFileDir: agent.dir }),
+        ...(excludeAgentToolCredentials
+          ? {}
+          : launchFilesRoot !== undefined
+            ? { configFileLaunchDir: shimPaths(launchFilesRoot).configFilesDir }
+            : { configFileDir: agent.dir }),
         finalizeLaunchEnv: (launchEnv) => {
           // A dream host on OpenCode carries the daemon-authored `read-only` agent, which the extraction gate prefers over `plan`.
           // Every launch but a pod inherits this daemon's environment beneath the explicit env, so overlay that value too.
@@ -5269,7 +5717,8 @@ export class Daemon {
       })
       if (assembled.configFiles) {
         this.queueSpawnNotices(agentId, assembled.configFiles.notices)
-        if (Object.keys(assembled.configFiles.env).length > 0) {
+        launchConfigFiles = assembled.configFiles.launch
+        if (!launchConfigFiles && Object.keys(assembled.configFiles.env).length > 0) {
           configFileState = { childEnv: assembled.configFiles.sourceEnv, materialized: true }
         }
       }
@@ -5278,8 +5727,11 @@ export class Daemon {
       // The grant is computed once per host and lives only in the child's argv; name it here so a
       // session that later fails a Git write can be matched against what its host was given.
       const reopened = launch.gitMetadataWriteRoots.length > 0 ? launch.gitMetadataWriteRoots.join(', ') : 'none'
+      const boundary = remoteSession
+        ? `on daemon ${remoteSession.executorDaemonId} (${remoteSession.strategy}, ${launchDef === runtime ? 'adapter as defined here' : 'its own adapter install'})`
+        : `sandbox ${runInSandbox ? 'on' : 'off'}`
       this.log.info(
-        `acp: agent "${agentId}" host launch — sandbox ${runInSandbox ? 'on' : 'off'}, cwd ${opts.cwd}, git metadata reopened: ${reopened}`
+        `acp: agent "${agentId}" host launch — ${boundary}, cwd ${opts.cwd}, git metadata reopened: ${reopened}`
       )
     } catch (err) {
       if (err instanceof SandboxError) {
@@ -5317,17 +5769,19 @@ export class Daemon {
       // Pairs the runtime's terminal exit with the ordinary rebuild — see reapTerminalHost.
       onTerminal: () => this.reapTerminalHost(opts.hostKey, constructed.host),
       env: launch.env,
-      ...(sandboxSessionGit
-        ? {
-            files: [
+      files: [
+        ...(sandboxSessionGit
+          ? [
               {
                 root: dirname(sandboxSessionGit.path),
                 relPath: [basename(sandboxSessionGit.path)],
                 content: sandboxSessionGit.content
               }
             ]
-          }
-        : {}),
+          : []),
+        ...(launchConfigFiles?.files ?? [])
+      ],
+      ...(launchConfigFiles ? { clearDirs: [launchConfigFiles.dir] } : {}),
       inheritProcessEnv: launch.inheritProcessEnv,
       runtimeId: runtimeEntry?.aliasOf ?? agent.runtime,
       isolateAccountApps: cfg.security.isolateAccountApps,
@@ -5533,7 +5987,7 @@ export class Daemon {
           }
         }
       })
-      if (configFileState.childEnv) {
+      if (configFileState?.childEnv) {
         this.hostConfigFiles.set(agent.id, { agentDir: agent.dir, ...configFileState })
       }
       this.hostLaunch.set(hostKey, { agentDir: agent.dir, cwd })
@@ -5830,6 +6284,7 @@ export class Daemon {
           isDm: false,
           channel: 'memory',
           thread: 'distill',
+          deliveryThread: 'distill',
           tools: MEMORY_TOOLS,
           memoryBinding: {
             source: 'distill',
@@ -6310,6 +6765,7 @@ export class Daemon {
       isDm: false,
       channel: 'memory',
       thread: context.dreamId,
+      deliveryThread: context.dreamId,
       tools: [...KNOWLEDGE_TOOLS, ...MEMORY_TOOLS],
       memoryBinding: {
         source: 'dream',
@@ -7062,7 +7518,7 @@ export class Daemon {
    *    failure — never downgraded into an envelope-less child.
    */
   private async activateVerifiedAgentTarget(
-    msg: NormalizedMessage,
+    shared: NormalizedMessage,
     verified: NonNullable<ReturnType<Daemon['verifyAgentAuthor']>>,
     targetAgentId: string,
     deliveryHopCount: number,
@@ -7070,6 +7526,11 @@ export class Daemon {
   ): Promise<
     { kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle } | undefined
   > {
+    // One response can name several local agents, and this ladder walks them over ONE
+    // object — so every per-target field goes on a private copy. Without it a target's
+    // trigger, and now its session coordinate, leak into the next target and into the peer
+    // fan-out that follows, which is a per-target answer written to a shared place.
+    const msg: NormalizedMessage = { ...shared }
     // `!stop` means "stop reacting to this conversation implicitly", and an implicitly
     // selected agent continuation is exactly that — the fact that another AGENT rather
     // than a human produced the message does not exempt it. Checked here because this
@@ -7111,8 +7572,14 @@ export class Daemon {
     // this post. Keying on the observer would let the author's connection read an
     // unrelated scope's mute, dispatch the target anyway, and leave the real tombstone
     // standing — after which the target's own copy deduplicates before it can clear it.
-    const muteKey = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, targetAgentId, targetScope)
-    if (via === 'implicit' && (await this.commands.isSessionMuted(muteKey))) {
+    const targetCoordinate = await this.sessionCoordinateFor(targetAgentId, integrationId, msg)
+    if (targetCoordinate !== undefined) msg.sessionThread = targetCoordinate
+    const muteKey = sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), targetAgentId, targetScope)
+    // A conversation that appends is never muted: `!stop` there interrupts the turn and
+    // sets no latch (§6.3), and a latch left over from before the flip must not silence the
+    // one session the whole room now shares.
+    const appendSession = isAppendCoordinate(sessionThreadOf(msg))
+    if (!appendSession && via === 'implicit' && (await this.commands.isSessionMuted(muteKey))) {
       await this.recordUnrouted(msg)
       this.log.debug(
         `routing: agent-authored ${msg.msgId} → "${targetAgentId}" dropped (muted by !stop; awaiting @mention)`
@@ -7200,6 +7667,41 @@ export class Daemon {
       `routing: agent-authored mention ch=${msg.channel} "${verified.authorAgentId}" → "${targetAgentId}" (hop ${deliveryHopCount})`
     )
     return { kind: 'dispatched', handle }
+  }
+
+  /**
+   * The SESSION coordinate this target will key on, when it differs from the delivery
+   * thread (channel-session-mode.md §3.1). Undefined leaves today's behavior: the session
+   * belongs to the thread the message arrived in.
+   *
+   * Resolved HERE — after routing has picked the target, before the inbox lane and the
+   * serial gate key on the result — and per target, because one inbound message reaches
+   * several agents and two of them in one conversation may not share a mode. The same
+   * placement, and the same reason, as the target's own `muteKey` and transport scope.
+   */
+  /** Whether this conversation appends for this target. The mode alone — no store read —
+   *  so a caller can tell "nobody has spoken here yet" from "this is not an append
+   *  conversation", which decide opposite things about the latest-session fallback. */
+  private conversationAppends(agentId: string, integrationId: string | undefined, msg: NormalizedMessage): boolean {
+    if (integrationId === undefined) return false
+    const int = this.agents.get(agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
+    return int !== undefined && conversationSessionMode(int, msg.channel) === 'append'
+  }
+
+  private async sessionCoordinateFor(
+    agentId: string,
+    integrationId: string | undefined,
+    msg: Pick<NormalizedMessage, 'channel' | 'transportScope'>,
+    opts: { mint?: boolean } = {}
+  ): Promise<string | undefined> {
+    if (integrationId === undefined) return undefined
+    const int = this.agents.get(agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
+    if (!int || conversationSessionMode(int, msg.channel) !== 'append') return undefined
+    // A delivery mints the coordinate; a reader only asks. Otherwise a `/status` typed into
+    // a conversation nobody has spoken in would create the reservation it reports on.
+    return opts.mint === false
+      ? await this.store.currentAppendCoordinate(agentId, msg.channel, msg.transportScope)
+      : await this.store.resolveAppendCoordinate(agentId, msg.channel, msg.transportScope)
   }
 
   private onInbound(msg: NormalizedMessage, srcIntegrationIds?: string[]): void {
@@ -7310,8 +7812,8 @@ export class Daemon {
       // Resetting a durable safety latch is privileged control input. A malformed
       // platform wrapper or bot echo must never be able to forge !resume and reopen
       // the same loop it caused.
-      if (command.kind === 'resume' && !isTrustedHumanTurn(msg)) {
-        this.log.warn(`loop guard: ignored unauthenticated resume for ${loopGuardScope(msg)}`)
+      if (requiresTrustedActor(command.kind) && !isTrustedHumanTurn(msg)) {
+        this.log.warn(`command: ignored unauthenticated ${command.kind} for ${loopGuardScope(msg)}`)
         return { kind: 'rejected', reason: 'suppressed' }
       }
       // §14.3: a command that resolved no admitted target in an Off gated
@@ -7351,6 +7853,8 @@ export class Daemon {
     const targetMsg = { ...msg }
     if (result.via === 'mention') targetMsg.trigger = 'mention'
     else delete targetMsg.trigger
+    const primaryCoordinate = await this.sessionCoordinateFor(result.agentId, result.integrationId, targetMsg)
+    if (primaryCoordinate !== undefined) targetMsg.sessionThread = primaryCoordinate
     // Observation precedes activation gates and queue admission. A clarification
     // arriving while this logical thread is busy must be visible to the running
     // turn's final refresh even though its own SessionManager.handle() has not begun.
@@ -7369,11 +7873,14 @@ export class Daemon {
     const muteKey = sessionKey(
       targetMsg.platform,
       targetMsg.channel,
-      targetMsg.thread ?? targetMsg.msgId,
+      sessionThreadOf(targetMsg),
       result.agentId,
       targetMsg.transportScope
     )
-    if (await this.commands.isSessionMuted(muteKey)) {
+    // A conversation that appends is never muted: `!stop` there interrupts the turn and
+    // sets no latch (§6.3), and a latch left over from before the flip must not silence the
+    // one session the whole room now shares.
+    if (!isAppendCoordinate(sessionThreadOf(targetMsg)) && (await this.commands.isSessionMuted(muteKey))) {
       if (result.via !== 'mention') {
         await this.recordUnrouted(targetMsg)
         this.log.debug(
@@ -7404,7 +7911,7 @@ export class Daemon {
             sessionKey: sessionKey(
               targetMsg.platform,
               targetMsg.channel,
-              targetMsg.thread ?? targetMsg.msgId,
+              sessionThreadOf(targetMsg),
               result.agentId,
               targetMsg.transportScope
             ),
@@ -7502,10 +8009,12 @@ export class Daemon {
       const targetMsg = { ...msg }
       if (via === 'mention') targetMsg.trigger = 'mention'
       else delete targetMsg.trigger
+      const peerCoordinate = await this.sessionCoordinateFor(agentId, rule.integrationId, targetMsg)
+      if (peerCoordinate !== undefined) targetMsg.sessionThread = peerCoordinate
       if (this.cfg.features.turnFinalContextRefresh) await this.recordObservedInbound(targetMsg, agentId)
-      const targetThread = targetMsg.thread ?? targetMsg.msgId
+      const targetThread = sessionThreadOf(targetMsg)
       const muteKey = sessionKey(targetMsg.platform, targetMsg.channel, targetThread, agentId, targetMsg.transportScope)
-      if (await this.commands.isSessionMuted(muteKey)) {
+      if (!isAppendCoordinate(targetThread) && (await this.commands.isSessionMuted(muteKey))) {
         if (via === 'implicit') {
           await this.recordObservedInbound(targetMsg, agentId, this.cfg.features.turnFinalContextRefresh)
           outcomes.push({ kind: 'rejected', reason: 'gated' })
@@ -7802,14 +8311,23 @@ export class Daemon {
     // `handleRelayIm` applies the `!stop` gate only on the path this branch returns
     // before, so an implicit continuation is checked against it here — otherwise a muted
     // conversation would silence its humans and none of its agents.
+    const relayCoordinate = await this.sessionCoordinateFor(msg.agentId, msg.integrationId, normalized)
+    if (relayCoordinate !== undefined) normalized.sessionThread = relayCoordinate
     const muteKey = sessionKey(
       normalized.platform,
       normalized.channel,
-      normalized.thread ?? normalized.msgId,
+      sessionThreadOf(normalized),
       msg.agentId,
       normalized.transportScope
     )
-    if (via === 'implicit' && (await this.commands.isSessionMuted(muteKey))) {
+    // A conversation that appends is never muted: `!stop` there interrupts the turn and
+    // sets no latch (§6.3), and a latch left over from before the flip must not silence the
+    // one session the whole room now shares.
+    if (
+      !isAppendCoordinate(sessionThreadOf(normalized)) &&
+      via === 'implicit' &&
+      (await this.commands.isSessionMuted(muteKey))
+    ) {
       await this.recordUnrouted(normalized)
       this.log.debug(`relay: dropping agent-authored ${msg.msgId} for "${msg.agentId}" (muted by !stop)`)
       return false
@@ -7939,8 +8457,10 @@ export class Daemon {
     // `!resume`, otherwise an open loop circuit drops the only recovery message.
     const command = parseCommand(normalized.text)
     if (command) {
-      if (command.kind === 'resume' && !isTrustedHumanTurn(normalized)) {
-        this.log.warn(`loop guard: ignored unauthenticated relay resume for ${loopGuardScope(normalized)}`)
+      // The same gate as direct ingress: relay is where Slack and Feishu HTTP callbacks
+      // arrive, so an event carrying neither a user nor a bot id lands here, not there.
+      if (requiresTrustedActor(command.kind) && !isTrustedHumanTurn(normalized)) {
+        this.log.warn(`command: ignored unauthenticated relay ${command.kind} for ${loopGuardScope(normalized)}`)
         return { msgId: msg.msgId, accepted: false, reason: 'unauthorized' }
       }
       const target = this.commands.resolveExplicitCommandTarget(msg.agentId, msg.integrationId, normalized)
@@ -7955,15 +8475,22 @@ export class Daemon {
     // while muted, implicit routing (thread affinity / keyword / auto / dm) never
     // dispatches — only an explicit @mention does, and it clears the mute. Muted traffic
     // still enters the transcript so the agent catches up when re-activated (§8.5).
+    // Pre-addressed to exactly one agent, so the coordinate resolves for it here — the
+    // relay path never reaches the per-target fan-out that resolves it for direct ingress.
+    const imCoordinate = await this.sessionCoordinateFor(msg.agentId, msg.integrationId, normalized)
+    if (imCoordinate !== undefined) normalized.sessionThread = imCoordinate
     const muteKey = sessionKey(
       normalized.platform,
       normalized.channel,
-      normalized.thread ?? normalized.msgId,
+      sessionThreadOf(normalized),
       msg.agentId,
       normalized.transportScope
     )
     trace.stage = 'mute'
-    if (await this.commands.isSessionMuted(muteKey)) {
+    // A conversation that appends is never muted: `!stop` there interrupts the turn and
+    // sets no latch (§6.3), and a latch left over from before the flip must not silence the
+    // one session the whole room now shares.
+    if (!isAppendCoordinate(sessionThreadOf(normalized)) && (await this.commands.isSessionMuted(muteKey))) {
       if (normalized.trigger !== 'mention') {
         await this.recordUnrouted(normalized)
         this.log.debug(`relay: dropping ${msg.msgId} for agent "${msg.agentId}" (muted by !stop; awaiting @mention)`)
@@ -8433,9 +8960,19 @@ export class Daemon {
       const routing = integrationRouting(integration)
       const unauthorized = !conversationAdmitted(routing, payload.channelId)
       const transportScope = this.transportScopeForIntegrationIds([integration.id])
+      // A conversation that appends has no session at the tapped thread — its session lives
+      // at the coordinate in force, so look there rather than reporting "no session".
+      const appendCoordinate = unauthorized
+        ? undefined
+        : await this.store.currentAppendCoordinate(msg.agentId, payload.channelId, transportScope)
       const rec = unauthorized
         ? undefined
-        : await this.store.latestSessionForTransport(msg.agentId, payload.channelId, transportScope, payload.threadTs)
+        : await this.store.latestSessionForTransport(
+            msg.agentId,
+            payload.channelId,
+            transportScope,
+            appendCoordinate ?? payload.threadTs
+          )
       const binding = rec ? this.sessionDeliveryBindings.get(rec.key) : undefined
       const validBinding =
         !binding ||
@@ -8648,12 +9185,7 @@ export class Daemon {
       return this.cpCollab.agent(msg.toAgentId) ? nak(RD_AGENTMSG_NOT_READY) : record(nak('not_found'))
     }
 
-    // TERMINAL-VERIFY against the local collaboration snapshot (§2.5 #4), now ORG-scoped
-    // rather than (org, channel)-scoped: the relay's asserted org must be the org this
-    // daemon's directory records for the target, and the directional call policy must admit
-    // caller→target. Channel is only the session coordinate here (A2A is postless, #854), so
-    // a caller and target that share no channel — or a target with no IM integration at all —
-    // is legitimate. Missing snapshot / unknown agent ⇒ fail closed, as before.
+    // Terminal-verify same-org ownership; ordinary calls also require directional visibility.
     const targetOrg = this.cpCollab.orgForAgent(msg.toAgentId)
     // Our directory copy may still be catching up with the grant: refuse retryably, uncached.
     if (targetOrg === undefined) {
@@ -8664,14 +9196,25 @@ export class Daemon {
       this.log.warn(`relay: rd/agentmsg/fwd terminal-verify failed (org mismatch) for ${msg.toAgentId} — fail closed`)
       return record(nak('not_allowed'))
     }
-    if (!this.cpCollab.admits(msg.trustedFromAgentId, msg.toAgentId)) {
+    // A parent return uses the origin capability; ordinary calls still need directional visibility.
+    if (
+      this.cpCollab.orgForAgent(msg.trustedFromAgentId) !== msg.orgId ||
+      (msg.lineageReplyTo === undefined && !this.cpCollab.admits(msg.trustedFromAgentId, msg.toAgentId))
+    ) {
       this.log.info(
         `relay: rd/agentmsg/fwd not_allowed — call policy excludes ${msg.trustedFromAgentId} → ${msg.toAgentId}`
       )
       return record(nak('not_allowed'))
     }
-    // Build the trusted turn context + NormalizedMessage (source:'agent'), reusing the
-    // same shape as the same-daemon path. callFrom = the RELAY-minted trusted caller.
+    // Reject reply providers this daemon cannot execute before admitting their trusted coordinates.
+    if (
+      [msg.originCodeHostReplyTarget, msg.codeHostReplyTarget].some(
+        (target) => target && !isCodeHostProvider(target.provider)
+      )
+    ) {
+      return record(nak('unsupported'))
+    }
+    // The relay-minted caller and its origin snapshot become the durable turn context.
     const callMeta: CallMeta = {
       callFrom: msg.trustedFromAgentId,
       ...(msg.correlationId !== undefined ? { correlationId: msg.correlationId } : {}),
@@ -8680,6 +9223,7 @@ export class Daemon {
       // §5.3: preserve the remote caller's origin lineage so a child woken here can reply
       // back across the relay to a parent session that lives on the caller's daemon.
       ...(msg.originSessionId !== undefined ? { originSessionId: msg.originSessionId } : {}),
+      originCodeHostReplyTarget: msg.originCodeHostReplyTarget as CodeHostReplyTarget | null | undefined,
       ...(msg.originCoords !== undefined ? { originCoords: msg.originCoords } : {}),
       ...(msg.externalOrigin !== undefined ? { externalOrigin: msg.externalOrigin } : {}),
       // §5.4: the remote caller asked this child to report its outcome back. Same gate as the
@@ -8691,29 +9235,17 @@ export class Daemon {
       ...(msg.parentPrivate === true ? { parentPrivate: true } : {})
     }
 
-    // §5.3 lineage REPLY: dispatch into the EXACT existing origin session instead of
-    // coordinate keying. The sender's daemon enforced origin-only authorization (the
-    // replier's turn originated from this session); terminal validation here is
-    // possession + ownership — the high-entropy acpSessionId is only handed out
-    // through wake lineage, and the AGENT-SCOPED lookup below IS the ownership check
-    // (ACP session ids are runtime/agent-local, so two agents may legitimately share
-    // one; a global lookup could surface the wrong agent's row). This branch runs
-    // BEFORE the wake-coordinate membership gate: a lineage reply never keys or
-    // creates a session from `coords`, so the aliasing threat that gate closes is
-    // absent — and membership would wrongly reject a replier that does not share the
-    // origin's channel (an explicitly supported org-scoped case). Org + directional
-    // policy above still apply. A missing session NAKs `not_found`, mirroring the
-    // local replyToSession contract — SessionTarget never creates a session.
+    // The source daemon checks origin authority; an agent-scoped lookup here prevents session aliasing.
     if (msg.lineageReplyTo !== undefined) {
       const origin = await this.store.getSessionByOutwardId(msg.lineageReplyTo, msg.toAgentId)
       if (!origin) return record(nak('not_found'))
-      // Reply transport from the SESSION's own scope (mirrors replyToSession's local branch).
-      const replyIntegrationId = this.integrationIdForSessionTransport(
-        origin.agentId,
-        origin.platform,
-        origin.transportScope
+      const route = sessionReplyRoute(
+        origin,
+        (...args) => this.integrationIdForSessionTransport(...args),
+        msg.codeHostReplyTarget as CodeHostReplyTarget | null | undefined
       )
-      if (origin.transportScope && !replyIntegrationId) return record(nak('not_found'))
+      if (!route) return record(nak('not_found'))
+      const { integrationId: replyIntegrationId, codeHostReply } = route
       // §7: a lineage reply IS the cross-daemon parent-session reply, so it behaves exactly
       // like `replyToSession`'s local branch — no `headless` stamp. The injected report is
       // transcript-only (nothing here publishes it) and the resumed parent runs an ordinary
@@ -8725,7 +9257,13 @@ export class Daemon {
         source: 'agent',
         platform: origin.platform,
         channel: origin.channel,
-        ...(origin.thread ? { thread: origin.thread } : {}),
+        // Same as the local branch: a synthetic stored thread is the session's, not a
+        // delivery target, so it rides `sessionThread` and the reply posts at the root.
+        ...(isAppendCoordinate(origin.thread)
+          ? { sessionThread: origin.thread }
+          : origin.thread
+            ? { thread: origin.thread }
+            : {}),
         ...(origin.transportScope ? { transportScope: origin.transportScope } : {}),
         // Ordered as NEW content in the origin session (see replyToSession's local branch).
         transcriptTs: monotonicTs(),
@@ -8743,15 +9281,24 @@ export class Daemon {
         // can answer in its own thread. A parent living on another daemon must not differ
         // from a local one, so neither branch stamps `headless` any more.
       }
+      let settleAdmission!: (result: { accepted: boolean; reason?: string }) => void
+      const admitted = new Promise<{ accepted: boolean; reason?: string }>((resolve) => {
+        settleAdmission = resolve
+      })
       void this.dispatch(
         msg.toAgentId,
         reply,
         replyIntegrationId,
         this.webchatTransport.webchatWakeContext(origin.platform, origin.channel),
-        callMeta
-      ).catch((err) =>
+        callMeta,
+        { requireDurable: true, onAdmission: (result) => settleAdmission(result) },
+        codeHostReply
+      ).catch((err) => {
         this.log.error(`relay lineage-reply dispatch failed for agent "${msg.toAgentId}": ${formatErr(err)}`)
-      )
+        settleAdmission({ accepted: false, reason: 'error' })
+      })
+      const admission = await admitted
+      if (!admission.accepted) return record(nak(admission.reason === 'queue_full' ? 'queue_full' : 'busy'))
       this.log.info(
         `relay: rd/agentmsg/fwd lineage reply ${msg.trustedFromAgentId} → ${msg.toAgentId} (${origin.key}) delivery=${msg.deliveryId}`
       )
@@ -8796,10 +9343,18 @@ export class Daemon {
     // key, the msgId and the dispatched message all agree on one channel (branches 1 and 2 leave
     // it exactly as asserted; only the channel-free branch 3 substitutes).
     const childMsgId = `agentcall:${sessionChannel}:${msg.deliveryId}`
+    // The callee's own coordinate, resolved HERE because this is its daemon: the source
+    // daemon cannot see this agent's integration or its reservation, so it forwards only the
+    // physical thread. Without this a remote append-mode callee opens a session per caller
+    // instead of continuing its one conversation — the cross-daemon half of the local fix.
+    const childCoordinate = await this.sessionCoordinateFor(msg.toAgentId, integrationId, {
+      channel: sessionChannel,
+      ...(childTransportScope !== undefined ? { transportScope: childTransportScope } : {})
+    })
     const childSessionId = sessionKey(
       platform,
       sessionChannel,
-      thread ?? childMsgId,
+      childCoordinate ?? thread ?? childMsgId,
       msg.toAgentId,
       childTransportScope
     )
@@ -8823,6 +9378,7 @@ export class Daemon {
       platform,
       channel: sessionChannel,
       ...(thread !== undefined ? { thread } : {}),
+      ...(childCoordinate !== undefined ? { sessionThread: childCoordinate } : {}),
       sender: { id: msg.trustedFromAgentId, isBot: true },
       // The forwarded text already names the caller (`From <caller>: …`, built on the caller's
       // daemon in prepareAgentDelivery) — deliver it as-is. Re-wrapping it here would
@@ -9060,6 +9616,22 @@ export class Daemon {
   }
 
   /** The op-switch behind {@link handleRelayMsg} (dedup handled by the caller). */
+  /** Whether this daemon cannot continue a conversation another member recorded (#2218): it lacks the row, or has it without a reachable runtime (#2188). */
+  private async webchatContentIsElsewhere(msg: RdMsgWebchat, sessionKey: string): Promise<boolean> {
+    const recorded = msg.recordedDaemonId
+    // A session-targeted continuation is fenced by the Control Plane at mint and at verify.
+    if (!recorded || msg.targetSessionId !== undefined || recorded === this.cfg.daemonId) return false
+    try {
+      const row = await this.store.getSession(sessionKey)
+      if (row === undefined) return true
+      // The runtime of a session that ran on its holder stayed on that machine; a placed one's environment is still where it was.
+      return !this.k8s && !row.executorDaemonId
+    } catch (err) {
+      this.log.warn(`webchat: reading ${sessionKey} to place its content failed: ${formatErr(err)}`)
+      return false
+    }
+  }
+
   private async dispatchRelayOp(msg: RdMsgWebchat, chat: (event: RdChatEvent) => void): Promise<RdAck> {
     const sink: WebchatSink = {
       output: (o) => chat({ kind: 'output', output: o }),
@@ -9067,6 +9639,16 @@ export class Daemon {
     }
     const op = msg.payload
     const key = (): string => this.webchatTransport.webchatSessionKey(msg.chatId, msg.agentId)
+    // The conversation's content is another member's, and this one has none of it: opening a fresh
+    // session under the same conversation would answer the user without the transcript they see (#2218).
+    if ((op.op === 'turn' || op.op === 'context') && (await this.webchatContentIsElsewhere(msg, key()))) {
+      return {
+        msgId: msg.msgId,
+        accepted: false,
+        reason: 'content_elsewhere',
+        detail: 'this conversation ran on another machine of the group, which no longer serves the agent'
+      }
+    }
     // Session-targeted continuation: `turn` dispatches onto the target session's
     // own coordinates; runtime-set ops are refused (this ingress adds human
     // input, never session-global administration); a context copy is a no-op
@@ -9252,9 +9834,43 @@ export class Daemon {
    *  transcript growth to threads with live work — without it, a thread that ever
    *  held a session would record forever (no session-`closed` lifecycle yet). */
   private async recordUnrouted(msg: NormalizedMessage): Promise<void> {
-    // Preserve the established default transcript shape until the rollout flag is
-    // enabled; the new observer folds attachment mentions into context prompts.
+    // A conversation that appends has no session at the thread this message arrived in, so
+    // an unrouted row filed there is invisible to the session that should catch up on it —
+    // and the recency and in-flight probes, which look for the SESSION, would drop it
+    // outright. §6.2: one row per agent holding a live append session here. Read-only: a
+    // message that routed to nobody must not create a conversation by being observed.
+    // Preserve the established default transcript shape until the rollout flag is enabled;
+    // the new observer folds attachment mentions into context prompts. UNCONDITIONAL: a
+    // channel may hold both modes, and this is the only row a `createNew` agent's in-flight
+    // turn can catch up on.
     await this.recordObservedInbound(msg, undefined, this.cfg.features.turnFinalContextRefresh)
+    // Plus one row per agent whose session here belongs to no thread, which the row above
+    // cannot reach (§6.2).
+    for (const { agentId, coordinate } of await this.appendAgentsIn(msg))
+      await this.recordObservedInbound(
+        { ...msg, sessionThread: coordinate },
+        agentId,
+        this.cfg.features.turnFinalContextRefresh
+      )
+  }
+
+  /** Agents already holding an append session in this conversation, with the coordinate it
+   *  keys on. Empty for every conversation on `createNew`, which is the common case. */
+  private async appendAgentsIn(msg: NormalizedMessage): Promise<{ agentId: string; coordinate: string }[]> {
+    const out: { agentId: string; coordinate: string }[] = []
+    for (const [agentId, agent] of this.agents) {
+      const int = agent.integrations?.find(
+        (candidate) =>
+          candidate.platform === msg.platform && conversationSessionMode(candidate, msg.channel) === 'append'
+      )
+      if (!int) continue
+      // The coordinate is per transport scope, so an integration on another physical bot
+      // answers a different conversation even at the same channel id.
+      if ((this.transportScopeForIntegrationIds([int.id]) ?? '') !== (msg.transportScope ?? '')) continue
+      const coordinate = await this.store.currentAppendCoordinate(agentId, msg.channel, msg.transportScope)
+      if (coordinate !== undefined) out.push({ agentId, coordinate })
+    }
+    return out
   }
 
   /** Persist one conversational ingress for a live physical thread before routing
@@ -9275,8 +9891,11 @@ export class Daemon {
     const sinceTs = Date.now() - this.cfg.limits.agentIdleTimeoutMs
     const recentlyActive =
       (await this.store.activeSessionCountSince(msg.channel, thread, sinceTs, msg.transportScope)) > 0
+    // Compared against the SESSION coordinate `transcriptCoords` just returned, not the
+    // chrome target: in a conversation whose session belongs to no thread the two differ,
+    // and matching on `statusThread` would miss the very turn this row is catch-up for.
     const inFlightAgent = [...this.pending.values()].find(
-      (p) => p.plan.transcriptChannel === transcriptChannel && p.plan.statusThread === thread
+      (p) => p.plan.transcriptChannel === transcriptChannel && p.plan.sessionThread === thread
     )?.plan.agentId
     const initializingAgent = [...this.activeGateEntries.values()].find((entry) => {
       const coords = transcriptCoords(entry.msg)
@@ -9424,7 +10043,7 @@ export class Daemon {
         completeness: readState.truncated ? 'observed-only' : 'authoritative',
         events: history.map((event) => ({
           channel: pending.plan.transcriptChannel,
-          thread: pending.plan.statusThread,
+          thread: pending.plan.sessionThread,
           ts: event.ts,
           sender: event.sender,
           kind: 'text' as const,
@@ -9442,11 +10061,16 @@ export class Daemon {
     includeProviderSnapshot: boolean
   ): Promise<ContextRefresh> {
     const startedAt = this.clock.now()
-    const snapshot = includeProviderSnapshot ? this.finalThreadSnapshot(pending, providerCheckpoint) : undefined
+    // No provider snapshot for a session whose coordinate is synthetic (§6.3): it spans
+    // many threads, so there is no thread to fetch and importing one would misrepresent the
+    // conversation — and the fetch itself would address `append:…` as a platform ts.
+    const physical = !isAppendCoordinate(pending.plan.sessionThread)
+    const snapshot =
+      includeProviderSnapshot && physical ? this.finalThreadSnapshot(pending, providerCheckpoint) : undefined
     const refresh = await this.threadContext.refresh({
       agentId: pending.plan.agentId,
       transcriptChannel: pending.plan.transcriptChannel,
-      thread: pending.plan.statusThread,
+      thread: pending.plan.sessionThread,
       afterRevision,
       // Pairwise a2a threads are shared storage but private conversations:
       // scope the refresh to this agent's own rows (#967).
@@ -9476,13 +10100,13 @@ export class Daemon {
         // turn — a sibling's private delivery is not its context (#967).
         await this.store.transcriptSinceRevisionForAgent(
           pending.plan.transcriptChannel,
-          pending.plan.statusThread,
+          pending.plan.sessionThread,
           afterRevision,
           pending.plan.agentId
         )
       : await this.store.transcriptSinceRevision(
           pending.plan.transcriptChannel,
-          pending.plan.statusThread,
+          pending.plan.sessionThread,
           afterRevision,
           pending.plan.agentId
         )
@@ -10050,10 +10674,19 @@ export class Daemon {
       integrationIdForSessionTransport: (agentId, platform, scope) =>
         this.integrationIdForSessionTransport(agentId, platform, scope),
       servesAgent: (agentId) => this.servesAgent(agentId),
-      dispatch: (agentId, msg, integrationId, webchat, callMeta, opts) =>
-        this.dispatch(agentId, msg, integrationId, webchat, callMeta, opts),
+      dispatch: (agentId, msg, integrationId, webchat, callMeta, opts, codeHostReply) =>
+        this.dispatch(agentId, msg, integrationId, webchat, callMeta, opts, codeHostReply),
       webchatTransport: () => this.webchatTransport,
-      externalOriginForSession: (agentId, sessionKey) => this.externalOriginForSession(agentId, sessionKey)
+      externalOriginForSession: (agentId, sessionKey) => this.externalOriginForSession(agentId, sessionKey),
+      // The integration the wake actually selected, not any same-platform one: an agent can
+      // hold two integrations whose channel ids collide, and the other one's mode is not
+      // this conversation's.
+      targetSessionCoordinate: async (agentId, integrationId, channel, transportScope) => {
+        if (integrationId === undefined) return undefined
+        const int = this.agents.get(agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
+        if (!int || conversationSessionMode(int, channel) !== 'append') return undefined
+        return await this.store.resolveAppendCoordinate(agentId, channel, transportScope)
+      }
     }
   }
 
@@ -10100,6 +10733,8 @@ export class Daemon {
       drainSessionPurges: () => this.drainSessionPurges(),
       replayGainedSessionMetadata: (agentIds) => this.sessionMetadataOutbox.replayGainedSessionMetadata(agentIds),
       pendingInboxReplayAgents: () => this.pendingInboxReplayAgents,
+      // After the registry write, not at the grant: admission is asynchronous and a grant is not held until it settles.
+      servedAgentsChanged: () => this.refreshHostedCountIfHosting(),
       raceDeadline: (work, ms) => this.raceDeadline(work, ms),
       sleepUntil: (at) => this.sleepUntil(at),
       activeDispatchCount: (agentId) => this.activeDispatchesByAgent.get(agentId)?.size ?? 0,
@@ -10253,6 +10888,8 @@ export class Daemon {
       transcriptChannel: string
       thread?: string
       statusThread?: string
+      /** Session coordinate for transcript rows; `statusThread` above is the chrome target. */
+      sessionThread?: string
     }
   ): Promise<void> {
     // turnFailureReason digs the runtime's own message out of an ACP RequestError's
@@ -10292,7 +10929,10 @@ export class Daemon {
     if (ctx.statusThread) {
       await this.store.appendTranscript({
         channel: ctx.transcriptChannel,
-        thread: ctx.statusThread,
+        // Falls back to the chrome target so a caller that knows only that coordinate still
+        // records the notice: gating the WRITE on the session coordinate would drop it
+        // silently wherever it is not supplied, which is every failure path but one.
+        thread: ctx.sessionThread ?? ctx.statusThread,
         ts: monotonicTs(),
         sender: ctx.agentId,
         kind: 'text',
@@ -10317,6 +10957,7 @@ export class Daemon {
    * platform gets for free by owning its reply connection.
    */
   private readonly platformTurnEgress = new Map<string, (integrationId?: string) => PlatformConnection | undefined>([
+    ['qq', (id) => (id ? this.QQConnByIntegration.get(id) : undefined)],
     ['linear', (integrationId) => (integrationId ? this.lnConnByIntegration.get(integrationId) : undefined)]
   ])
 
@@ -10365,6 +11006,8 @@ export class Daemon {
       transcriptChannel: string
       thread?: string
       statusThread: string
+      /** Session coordinate for transcript rows; `statusThread` above is the chrome target. */
+      sessionThread: string
     }
   ): Promise<void> {
     const notices = this.pendingSpawnNotices.get(agentId)
@@ -10378,7 +11021,7 @@ export class Daemon {
     }
     await this.store.appendTranscript({
       channel: ctx.transcriptChannel,
-      thread: ctx.statusThread,
+      thread: ctx.sessionThread,
       ts: monotonicTs(),
       sender: agentId,
       kind: 'text',
@@ -10402,6 +11045,7 @@ export class Daemon {
       integrationId: entry.integrationId ?? null,
       callMeta: entry.callMeta ? JSON.stringify(entry.callMeta) : null,
       hookContext: entry.hookContext ? JSON.stringify(entry.hookContext) : null,
+      codeHostReplyTarget: entry.githubReply ? JSON.stringify(entry.githubReply) : null,
       posterPublishState: entry.posterPublishState ?? null,
       isQueueCmd: entry.isQueueCmd ? 1 : null,
       // persistInbox runs only after a successful admission. New rows are born
@@ -10443,7 +11087,7 @@ export class Daemon {
     posterPublishState?: QueueEntry['posterPublishState'],
     required = false
   ): Promise<void> {
-    if (!entry.inboxId || !entry.hookContext) {
+    if (!entry.inboxId || (!entry.hookContext && !entry.githubReply)) {
       if (required) throw new Error('hook state has no durable inbox row')
       return
     }
@@ -10451,7 +11095,7 @@ export class Daemon {
     try {
       const updated = await this.store.updateInboxHookState(
         entry.inboxId,
-        JSON.stringify(entry.hookContext),
+        entry.hookContext ? JSON.stringify(entry.hookContext) : null,
         posterPublishState
       )
       if (!updated) throw new Error('durable inbox row is missing')
@@ -10945,7 +11589,7 @@ export class Daemon {
     // THIS promise, not vanish as an unhandled rejection while the caller waits forever.
     return new Promise<string | null>((resolve, reject) => {
       void (async () => {
-        const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
+        const key = sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), agentId, msg.transportScope)
         const reviewLane = reviewSubjectLane(hookContext, hookCoordinates(agentId, msg, integrationId))
         const safetyDrainByKey = this.safetyDrainAdmissionKeys.get(agentId)?.has(key) === true
         let admissionSettled = false
@@ -10954,6 +11598,7 @@ export class Daemon {
           reason?: string
           duplicate?: boolean
           steered?: boolean
+          queued?: boolean
         }): Promise<void> => {
           if (admissionSettled) return
           admissionSettled = true
@@ -10981,7 +11626,7 @@ export class Daemon {
             if (result.accepted) {
               await this.store.admitActivation(
                 activationKey,
-                sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
+                sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), agentId, msg.transportScope)
               )
             } else {
               // Never admitted ⇒ give the claim back, so a retry is a first attempt rather
@@ -10990,6 +11635,40 @@ export class Daemon {
             }
           }
           await opts?.onAdmission?.(result)
+          const surface = this.turnSurfaces.exact(msg.platform)
+          if (
+            result.accepted &&
+            !result.duplicate &&
+            surface?.onAdmission &&
+            !opts?.replay &&
+            !opts?.isQueueCmd &&
+            !msg.headless &&
+            msg.source === 'user' &&
+            !webchat &&
+            callMeta?.initializeOnly !== true
+          ) {
+            try {
+              const agent = this.agents.get(agentId)
+              const mode = (await this.store.getOutputModeOverride(key)) ?? agent?.output.mode ?? 'none'
+              const egress = this.commandConnFor(agentId, integrationId)
+              if (mode !== 'none' && egress && !entry.initAbort.signal.aborted) {
+                const release = this.holdReplyConnection(egress)
+                // Enqueue before execution begins, but never hold admission on a provider response.
+                void Promise.resolve()
+                  .then(() =>
+                    surface.onAdmission!(
+                      { message: msg, isDm: msg.isDm, mode, showFooter: agent?.output.showFooter ?? false, egress },
+                      result.steered ? 'steered' : result.queued ? 'queued' : 'processing',
+                      entry.initAbort.signal
+                    )
+                  )
+                  .catch(() => this.log.warn('platform admission feedback failed'))
+                  .finally(release)
+              }
+            } catch {
+              this.log.warn('platform admission feedback unavailable')
+            }
+          }
         }
         // Drain gate for the dispatch entry itself — covers cron fires and `!queue`
         // that bypass onInbound's gate (§5.3: a draining unit starts no turn). Applied
@@ -11229,7 +11908,7 @@ export class Daemon {
                 await settleAdmission({ accepted: true })
                 return
               }
-              await settleAdmission({ accepted: true })
+              await settleAdmission({ accepted: true, queued: !reclaimedGate })
               settleHold('run')
             } catch (error) {
               // Rejecting the caller while its entry stays runnable would run a turn nobody owns.
@@ -12109,6 +12788,8 @@ export class Daemon {
     const persistedSessionId = persisted?.acpSessionId
     // §11: this session's OWN isolation, learned here because the model-session host below claims its pod before `sessions.handle` records the row — its row, else this turn's explicit choice, else the agent's default, which is the order SessionManager decides it in.
     this.sessionIsolation.set(key, persisted?.workspaceIsolation ?? effectiveSessionIsolation(agent, webchatIsolation))
+    // …and WHERE it runs, which the host key below reads: decided once at birth, recorded, and kept for the session's life (session-executors.md §7).
+    await this.placeSessionOnExecutor(agent, key)
     let remoteMcpServer: import('@agentclientprotocol/sdk').McpServer | undefined
     try {
       const reviewWorkspace = await this.githubReviews.prepareGithubReviewWorkspace(entry, key, agent)
@@ -12208,7 +12889,8 @@ export class Daemon {
             sessionKey: plan.sessionKey,
             transcriptChannel: plan.transcriptChannel,
             thread: msg.thread,
-            statusThread: plan.statusThread
+            statusThread: plan.statusThread,
+            sessionThread: plan.sessionThread
           })
       } finally {
         releaseReplyConn()
@@ -12268,7 +12950,8 @@ export class Daemon {
       channel: msg.channel,
       transcriptChannel: plan.transcriptChannel,
       thread: msg.thread,
-      statusThread: plan.statusThread
+      statusThread: plan.statusThread,
+      sessionThread: plan.sessionThread
     })
     if (created) {
       // Classify for session visibility BEFORE the first milestone: the CP's
@@ -12278,6 +12961,8 @@ export class Daemon {
       // after a restart, when `msg` is long gone — still carry the same facts.
       await this.classifyNewSession(agentId, key, sessionId, msg, callMeta, hookContext, webchat?.evaluation === true)
     }
+    // The row exists now, so the birth verdict this turn reached lands before the milestone that reports it (§7).
+    await this.flushSessionExecutorVerdict(key)
     // Turn-start metadata snapshot — EVERY turn, not only `created`. The row is
     // already `prompting` (sessions.handle), and the CP-stored state is the only
     // active-turn signal a console watching a platform session has: the end-of-turn
@@ -12291,7 +12976,7 @@ export class Daemon {
       phase: 'start',
       platform: msg.platform,
       channel: msg.channel,
-      thread: plan.statusThread
+      thread: plan.sessionThread
     })
     if (
       created &&
@@ -12510,6 +13195,14 @@ export class Daemon {
   }> {
     const { entry, key, plan } = run
     const { agentId, callMeta } = entry
+    // Bind the child's first parent snapshot once; active calls keep their own targets in CallMeta.
+    if (callMeta?.originSessionId && callMeta.originCodeHostReplyTarget !== undefined) {
+      await this.store.bindSessionOriginReplyTarget(
+        key,
+        callMeta.originSessionId,
+        JSON.stringify(callMeta.originCodeHostReplyTarget)
+      )
+    }
     // session/new|load may emit title/usage metadata before the local row exists.
     // Replay only after Pending owns the live sink so persisted and streamed state
     // converge in the same turn instead of requiring a browser refresh.
@@ -12803,9 +13496,9 @@ export class Daemon {
     let finalCaptureInput = handled.captureInput ?? msg.text
     let baseRevision =
       handled.contextRevision ??
-      (await this.store.threadTranscriptRevision(p.plan.transcriptChannel, p.plan.statusThread, p.plan.agentId))
+      (await this.store.threadTranscriptRevision(p.plan.transcriptChannel, p.plan.sessionThread, p.plan.agentId))
     let providerCheckpoint = handled.providerCheckpoint
-    if (p.plan.stageAnswer || p.plan.webchatRefresh) {
+    if (p.plan.refreshBeforePrompt) {
       // Queue entries remain untouched until every gate above has succeeded.
       const initialRefresh = await this.refreshTurnContext(p, baseRevision, providerCheckpoint, false)
       // Webchat: a co-hosted participant's recipient-delivery bump can re-surface
@@ -12836,7 +13529,7 @@ export class Daemon {
       await this.coalesceQueuedContext(key, sessionId, representedEventTs)
       baseRevision = await this.store.threadTranscriptRevision(
         p.plan.transcriptChannel,
-        p.plan.statusThread,
+        p.plan.sessionThread,
         p.plan.agentId
       )
       providerCheckpoint = initialRefresh.providerCheckpoint ?? providerCheckpoint
@@ -13019,7 +13712,7 @@ export class Daemon {
         .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
       const finalRevision = await this.store.threadTranscriptRevision(
         p.plan.transcriptChannel,
-        p.plan.statusThread,
+        p.plan.sessionThread,
         p.plan.agentId
       )
 
@@ -13127,7 +13820,7 @@ export class Daemon {
       await this.coalesceQueuedContext(key, sessionId, eventTs)
       baseRevision = await this.store.threadTranscriptRevision(
         p.plan.transcriptChannel,
-        p.plan.statusThread,
+        p.plan.sessionThread,
         p.plan.agentId
       )
       generation += 1
@@ -13320,7 +14013,7 @@ export class Daemon {
     const { rec, sessionId, handled, memoryCaptureTarget } = turn
     const { stopReason, usage, finalCaptureInput } = turn.outcome
     // …and any trailing reasoning the agent emitted after its last reply.
-    for (const ev of rec.onFinal()) await this.recordEvent(agentId, plan.transcriptChannel, plan.statusThread, ev)
+    for (const ev of rec.onFinal()) await this.recordEvent(agentId, plan.transcriptChannel, plan.sessionThread, ev)
     // The turn is over, so nothing more will supersede a coalesced tool body: make the last
     // state of every streamed tool call durable now rather than on the buffer's own timer.
     await this.store.flushToolCallWrites()
@@ -13475,7 +14168,8 @@ export class Daemon {
         sessionKey: plan.sessionKey,
         transcriptChannel: plan.transcriptChannel,
         thread: msg.thread,
-        statusThread: plan.statusThread
+        statusThread: plan.statusThread,
+        sessionThread: plan.sessionThread
       })
       if (p.webchat.replyText.trim() && !isNoResponseBody(p.webchat.replyText.trim())) {
         const partialPostId = randomUUID()
@@ -13718,7 +14412,7 @@ export class Daemon {
         phase: settlement.finalPhase,
         platform: msg.platform,
         channel: msg.channel,
-        thread: plan.statusThread
+        thread: plan.sessionThread
       })
       p.signals.resolveDone()
     } else if (!settlement.propagatingTurnError) {
@@ -13958,7 +14652,7 @@ export class Daemon {
     if (!anchor) return
     const coords =
       'plan' in anchor
-        ? { channel: anchor.plan.transcriptChannel, thread: anchor.plan.statusThread }
+        ? { channel: anchor.plan.transcriptChannel, thread: anchor.plan.sessionThread }
         : {
             channel: transcriptChannelKey(anchor.msg.channel, anchor.msg.transportScope),
             thread: transcriptCoords(anchor.msg).thread
@@ -14115,7 +14809,7 @@ export class Daemon {
   private async recordReplySegment(p: Pending, text: string): Promise<void> {
     await this.store.appendTranscript({
       channel: p.plan.transcriptChannel,
-      thread: p.plan.statusThread,
+      thread: p.plan.sessionThread,
       ts: monotonicTs(),
       sender: p.plan.agentId,
       kind: 'text',
@@ -14348,7 +15042,7 @@ export class Daemon {
     if (!posted.shown) return
     const row: AppRow = {
       channel: p.plan.transcriptChannel,
-      thread: p.plan.statusThread,
+      thread: p.plan.sessionThread,
       ts: monotonicTs(),
       sender: p.plan.agentId,
       appId,
@@ -14431,7 +15125,7 @@ export class Daemon {
       const row: AppRow | undefined = p
         ? {
             channel: p.plan.transcriptChannel,
-            thread: p.plan.statusThread,
+            thread: p.plan.sessionThread,
             // The monotonic internal-event clock, as every other non-conversational row uses: it
             // keeps the card where it was opened and cannot collide with a second card's row.
             ts: monotonicTs(),
@@ -15453,7 +16147,8 @@ export class Daemon {
     if (!conn) return
     const release = this.holdReplyConnection(conn)
     try {
-      await conn.setTitle(rec.channel, rec.thread, title)
+      // Slack titles a THREAD; a session that belongs to none has nothing to title.
+      if (!isAppendCoordinate(rec.thread)) await conn.setTitle(rec.channel, rec.thread, title)
     } catch (err) {
       // SlackConnection.setTitle is already failure-degrading; keep this boundary
       // defensive for test doubles and future gateway implementations.
@@ -15721,7 +16416,7 @@ export class Daemon {
     }
     // Full activity log (tool/reasoning), recorded regardless of output mode.
     for (const ev of p.rec.onUpdate(update))
-      await this.recordEvent(p.plan.agentId, p.plan.transcriptChannel, p.plan.statusThread, ev)
+      await this.recordEvent(p.plan.agentId, p.plan.transcriptChannel, p.plan.sessionThread, ev)
   }
 
   /** Persist one internal activity event (tool/reasoning/plan). Ordered by row `seq`, so its
@@ -15895,11 +16590,20 @@ export class Daemon {
       )
       if (!this.usesMicrosandbox(agent))
         await withStartupPhase('runtime', () => this.ensureRuntimeInstalled(agent.runtime, true))
+      // Clones off this disk are listed where they are, since the launch cannot read them itself; no answer grants nothing.
+      const boundKey = bound && hostKeySessionKey(key)
+      const listing = boundKey ? this.workspaces.offDiskSessionGitDirs(agent, boundKey) : undefined
+      const sessionGitDirs = listing
+        ? await listing.catch((err: unknown) => {
+            this.log.warn(`acp: could not list the clones of "${label}" where it runs: ${formatErr(err)}`)
+            return []
+          })
+        : undefined
       if (this.hostStartGeneration.get(key) !== generation) {
         throw new Error(`host start superseded for ${label}`)
       }
       // Constructs + memoizes into this.hosts, in the session directory for a session-bound host.
-      const host = this.ensureHost(key, this.cfg, bound ? (bound.cwd ?? prepared) : undefined)
+      const host = this.ensureHost(key, this.cfg, bound ? (bound.cwd ?? prepared) : undefined, sessionGitDirs)
       try {
         await withStartupPhase('runtime', () => host.start())
         if (this.hostStartGeneration.get(key) !== generation) {
@@ -16437,7 +17141,11 @@ export class Daemon {
       source: 'system',
       platform: session.platform,
       channel: session.channel,
-      ...(session.thread ? { thread: session.thread } : {}),
+      ...(isAppendCoordinate(session.thread)
+        ? { sessionThread: session.thread }
+        : session.thread
+          ? { thread: session.thread }
+          : {}),
       ...(session.transportScope ? { transportScope: session.transportScope } : {}),
       sender: { id: 'github', name: 'GitHub', isBot: true },
       text,
@@ -16503,6 +17211,7 @@ export class Daemon {
     for (const [id, c] of this.tgConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.dcConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.fsConnByIntegration) if (c === conn) out.push(id)
+    for (const [id, c] of this.QQConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.lnConnByIntegration) if (c === conn) out.push(id)
     return out
   }
@@ -16759,7 +17468,11 @@ export class Daemon {
   /** The live connection serving `integrationId` on ANY platform — the reply-capable registry
    *  plus Linear, whose connection renders chrome and serves its session tools itself. */
   private anyConnForIntegration(integrationId: string): PlatformConnection | undefined {
-    return this.connForIntegration(integrationId) ?? this.lnConnByIntegration.get(integrationId)
+    return (
+      this.connForIntegration(integrationId) ??
+      this.lnConnByIntegration.get(integrationId) ??
+      this.QQConnByIntegration.get(integrationId)
+    )
   }
 
   /** CP-owned cron ids currently held in memory. */
@@ -17196,7 +17909,10 @@ export class Daemon {
         const sections = splitIntoSections(text)
         let lastTs: string | undefined
         for (const [i, section] of sections.entries()) {
-          lastTs = await (conn as SlackConnection).postMessage(rec.channel, section, rec.thread || undefined, {
+          // A synthetic coordinate is no platform thread: narrate at the channel root rather
+          // than handing Slack `append:…` as a thread ts, which it would reject.
+          const narrationThread = isAppendCoordinate(rec.thread) ? undefined : rec.thread || undefined
+          lastTs = await (conn as SlackConnection).postMessage(rec.channel, section, narrationThread, {
             ...options,
             ...(footer && i === sections.length - 1 ? { trailingBlocks: footer.blocks } : {})
           })
@@ -17209,7 +17925,8 @@ export class Daemon {
           this.lastFooterReply.set(rec.key, { channel: rec.channel, ts: lastTs, text: sections.at(-1) ?? text })
         } else if (footer) this.lastFooterReply.delete(rec.key)
       } else {
-        await conn.postMessage(rec.channel, text, rec.thread || undefined)
+        // Same guard as the Slack branch above: a synthetic coordinate is no reply target.
+        await conn.postMessage(rec.channel, text, isAppendCoordinate(rec.thread) ? undefined : rec.thread || undefined)
       }
     }
     // Claimed only past the post: a throwing post above leaves no stamp, so the wake still
@@ -17489,7 +18206,7 @@ export class Daemon {
       source: 'agent',
       platform,
       channel: rec.channel,
-      ...(rec.thread ? { thread: rec.thread } : {}),
+      ...(isAppendCoordinate(rec.thread) ? { sessionThread: rec.thread } : rec.thread ? { thread: rec.thread } : {}),
       ...(rec.transportScope ? { transportScope: rec.transportScope } : {}),
       sender: { id: `background-task:${taskId}`, isBot: true },
       text:
@@ -17566,6 +18283,27 @@ export class Daemon {
     }
   }
 
+  /** Whether this process holds a turn of `key`: admitted, dispatching, or waiting in the gate. */
+  private turnRunsHere(key: string): boolean {
+    return (
+      this.inflight.has(key) ||
+      this.activeDispatchDoneByKey.has(key) ||
+      [...this.pending.values()].some((p) => p.plan.sessionKey === key)
+    )
+  }
+
+  /** #2245: a row a dead process left mid-turn goes back to `idle` here, never at boot — on a shared store a peer may be running it. */
+  private async releaseAbandonedTurns(now: number): Promise<void> {
+    const rows = await this.store.listAbandonedTurnSessions(now - this.cfg.limits.agentMaxLifetimeMs)
+    let released = 0
+    for (const row of rows) {
+      // A Dream runs off the chat-turn queue, and its runner owns its row and its crash recovery.
+      if (row.platform === 'dream' || !this.servesAgent(row.agentId) || this.turnRunsHere(row.key)) continue
+      if (await this.store.releaseAbandonedTurnSession(row.key, row.state, row.updatedAt)) released += 1
+    }
+    if (released) this.log.warn(`idle: released ${released} session(s) an earlier process left mid-turn`)
+  }
+
   /** Session-retention GC (#485): delete sessions untouched (sessions.updatedAt)
    *  for longer than `cfg.sessions.retention`, removing each one's per-session
    *  worktree first. Runs at startup and hourly on the idle sweep. Auto-deletion
@@ -17588,9 +18326,7 @@ export class Daemon {
     return (
       !this.servesAgent(rec.agentId) ||
       this.drainingAgents.has(rec.agentId) ||
-      this.inflight.has(rec.key) ||
-      this.activeDispatchDoneByKey.has(rec.key) ||
-      [...this.pending.values()].some((p) => p.plan.sessionKey === rec.key) ||
+      this.turnRunsHere(rec.key) ||
       (await this.store.sessionHasPendingInboxRows(rec.key)) ||
       !this.sessionSdkQuiescent(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId)
     )
@@ -18027,7 +18763,8 @@ export class Daemon {
       sessionKey,
       transcriptChannel: p.plan.transcriptChannel,
       thread: msg.thread,
-      statusThread: p.plan.statusThread
+      statusThread: p.plan.statusThread,
+      sessionThread: p.plan.sessionThread
     })
   }
 
@@ -18067,6 +18804,10 @@ export class Daemon {
       // Backstop for receipts this member came to own without a sweep of its own (a lapsed peer's).
       void this.drainSessionPurges()
     }
+    // Before the TTL close, so a released row closes in this same pass.
+    await this.releaseAbandonedTurns(now).catch((err) =>
+      this.log.warn(`idle: releasing sessions left mid-turn failed (${formatErr(err)})`)
+    )
     const ttl = this.cfg.limits.agentIdleTimeoutMs
     const maxLifetime = this.cfg.limits.agentMaxLifetimeMs
     // §7.3 idle→closed: a thread untouched past the TTL stops catching up — UNLESS it
@@ -18119,6 +18860,7 @@ export class Daemon {
         thread: row.thread
       })
     }
+    this.refreshHostedCountIfHosting()
     // Config-file secrets: delete the materialized files once the agent has gone
     // quiet — same quiescence predicates as host reclaim below (no in-flight turn,
     // no live background work, no recent activity) but a much shorter window. The
@@ -18213,6 +18955,8 @@ export class Daemon {
    */
   private async sweepIdleSandboxes(now: number, ttl: number): Promise<void> {
     await this.microsandbox?.suspendIdle(now - ttl)
+    // A spread session's environment is judged by the same rule: closing its pipe drops the launch with it, so the next turn prepares again (§7).
+    if (this.executorPlane) await this.sweepIdleRemoteSessions(now, ttl, this.executorPlane)
     const plane = this.k8sPlane
     if (!plane) return
     for (const { subject, agentId, since } of plane.launched()) {
@@ -18264,6 +19008,33 @@ export class Daemon {
     }
   }
 
+  /**
+   * The same judgement for a session placed on another machine (§7): its pipe closes and its launch
+   * goes with it, so the executor's own linger stops the environment and the next turn's new launch
+   * id prepares it again. The environment's directories stay; only the holder's retirement removes them.
+   */
+  private async sweepIdleRemoteSessions(now: number, ttl: number, plane: ExecutorPlane): Promise<void> {
+    for (const { subject, agentId, since } of plane.launched()) {
+      // Idle is the holder's decision: an ex-holder must not close a pipe its successor is using.
+      if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(agentId)) continue
+      const sessionKey = plane.sessionKeyFor(subject)
+      if (sessionKey === undefined) continue
+      const hostKey = sessionHostKey(agentId, sessionKey)
+      if (this.hosts.has(hostKey) || this.hostStarts.has(hostKey)) continue
+      if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
+      if ([...this.pending.values()].some((p) => p.plan.agentId === agentId && p.plan.sessionKey === sessionKey))
+        continue
+      const activity = await this.store.sessionLastActivityTs(sessionKey)
+      if (now - Math.max(activity ?? 0, since) <= ttl) continue
+      // A console page watching this session's files would lose them to a closed pipe; the hold lapses on its own.
+      if (this.sandboxHolds.holds(subject)) continue
+      const outcome = await plane.suspendIdle(subject)
+      if (outcome === 'suspended') {
+        this.log.info(`idle: closed the pipe to the executor of session ${subject} — its next turn prepares it again`)
+      }
+    }
+  }
+
   /** Cluster only: take over the sandbox of an agent this member just started serving, from the cluster. */
   // So a Running pod nobody here launched (a rollout, a moved duty) has a holder that can suspend it.
   // Behind any teardown still settling for the agent, so a lose-then-regain cannot forget the adoption.
@@ -18285,6 +19056,8 @@ export class Daemon {
   /** Cluster only: the sandbox half of "no longer served here"; the claim and volume stay. */
   private releaseClusterSandbox(agentId: string): void {
     this.k8sPlane?.releaseAgent(agentId)
+    // The same for a spread session: this holder drops its launches, and the successor attaches to the environments they left (§7).
+    this.executorPlane?.releaseAgent(agentId)
   }
 
   /**
@@ -18340,6 +19113,8 @@ export class Daemon {
   private async discardSessionSandbox(agentId: string, sessionKey: string): Promise<void> {
     const key = sessionHostKey(agentId, sessionKey)
     const leaf = hostKeyDirName(key)
+    // A session on another machine is retired by naming the launch this holder prepared; what it cannot name, that executor's backstop collects (§7).
+    await this.executorPlane?.retire(agentId, sessionKey)
     if (this.microsandbox) {
       if (this.legacyMicrosandboxSessions.has(key)) {
         if ([...this.legacyMicrosandboxSessions].some((other) => other !== key && hostKeyAgentId(other) === agentId))
@@ -18402,7 +19177,7 @@ export class Daemon {
       return (
         p.plan.platform === k.platform &&
         p.plan.channel === k.channel &&
-        (k.thread === undefined || p.plan.statusThread === k.thread)
+        (k.thread === undefined || p.plan.sessionThread === k.thread)
       )
     }
     if (scope.kind === 'daemon') this.draining = true
@@ -18983,10 +19758,18 @@ export class Daemon {
       let msg: NormalizedMessage
       let callMeta: CallMeta | undefined
       let hookContext: HookDispatchContext | undefined
+      let codeHostReply: CodeHostReplyTarget | undefined
       try {
         msg = JSON.parse(row.msg) as NormalizedMessage
         callMeta = row.callMeta ? (JSON.parse(row.callMeta) as CallMeta) : undefined
         hookContext = row.hookContext ? (JSON.parse(row.hookContext) as HookDispatchContext) : undefined
+        codeHostReply = row.codeHostReplyTarget
+          ? (JSON.parse(row.codeHostReplyTarget) as CodeHostReplyTarget)
+          : hookContext?.githubReply
+        // Restore legacy instance pins before dispatch constructs any provider lease or poster.
+        if (codeHostReply && hookContext) {
+          codeHostReply = { ...codeHostReply, ...turnFinalFor(codeHostReply).replyTarget(hookContext) }
+        }
       } catch (err) {
         this.log.warn(`durable inbox: skipping corrupt row ${row.id}: ${(err as Error).message}`)
         continue
@@ -19001,7 +19784,7 @@ export class Daemon {
       const cleanup = codeHostThreadWorktreeCleanup(hookContext)
       const deleted = githubDeletedHookEvent(hookContext)
       if (hookContext && (cleanup || deleted)) {
-        const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, row.agentId, msg.transportScope)
+        const key = sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), row.agentId, msg.transportScope)
         const owner: HookCompletionOwner = { inboxId: row.id }
         this.liveInboxIds.add(row.id)
         if (cleanup) void this.githubReviews.completeGithubThreadWorktreeCleanup(hookContext, key, cleanup, owner)
@@ -19057,7 +19840,7 @@ export class Daemon {
       const posterPublishState =
         row.posterPublishState === 'in_flight' || row.posterPublishState === 'settled'
           ? row.posterPublishState
-          : hookContext?.githubReply
+          : codeHostReply
             ? 'not_started'
             : undefined
       // Re-admit through the same gate. The turn's own dispatch() promise is unobserved here
@@ -19087,9 +19870,9 @@ export class Daemon {
           replay: row.loopGuardCounted === 1,
           adoptExistingInbox: true,
           onAdmission: () => settleReplayAdmission(),
-          ...(hookContext ? { requireDurable: true } : {})
+          ...(hookContext || codeHostReply ? { requireDurable: true } : {})
         },
-        hookContext?.githubReply,
+        codeHostReply,
         hookContext,
         posterPublishState
       )
@@ -19383,7 +20166,12 @@ export class Daemon {
     label: string,
     safetyReviewLane?: string
   ): Promise<AnchorTriggerResult> {
-    const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
+    // A cron firing into a conversation is "equivalent to a user posting the trigger
+    // in-channel", so it joins the same session a user's message would — resolved before
+    // the key below, which the gate and every later step read.
+    const anchorCoordinate = await this.sessionCoordinateFor(agentId, target?.integrationId, msg)
+    if (anchorCoordinate !== undefined) msg.sessionThread = anchorCoordinate
+    const key = sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), agentId, msg.transportScope)
     // Gate BEFORE the anchor side effect. Cron scheduling remains registered while an
     // agent is paused, but a paused/draining/safety-stopping agent must publish nothing
     // and start no turn.
@@ -20360,6 +21148,9 @@ export class Daemon {
     // The drain above already stopped every hosted shim; this closes the listener and whatever a late launch left.
     await this.executorFacet?.stop().catch((error: unknown) => errors.push(error))
     this.executorFacet = undefined
+    // The environments stay: they survive a restart as directories, and the next launch prepares them again (§9).
+    await this.executorPlane?.stop().catch(() => undefined)
+    this.executorPlane = undefined
     await this.k8sPlane?.stop().catch(() => undefined)
     await this.readiness?.stop().catch(() => undefined)
     this.readiness = undefined

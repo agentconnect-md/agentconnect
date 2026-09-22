@@ -1780,6 +1780,80 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     await daemon.stop()
   })
 
+  // #2218: a turn that reached a member which cannot see the transcript or reach the runtime must refuse.
+  const RECORDER = 'd1111111-1111-4111-8111-111111111111'
+  const SELF = 'd2222222-2222-4222-8222-222222222222'
+  const EXECUTOR = 'd3333333-3333-4333-8333-333333333333'
+  const seedRow = async (daemon: unknown, executorDaemonId?: string): Promise<void> => {
+    const d = daemon as any
+    const key = d.webchatTransport.webchatSessionKey(CONV, AGENT_ID)
+    await d.store.upsertSession({
+      key,
+      agentId: AGENT_ID,
+      platform: 'webchat',
+      channel: CONV,
+      thread: `webchat:${CONV}`,
+      acpSessionId: null,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    if (executorDaemonId) await d.store.setSessionExecutor(key, { executorDaemonId })
+  }
+
+  it('refuses a turn whose conversation was recorded by another member, and keeps serving one it has', async () => {
+    const { factory } = streamingHost([text('hi')])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+    ;(daemon as any).cfg.daemonId = SELF
+
+    const turn = { op: 'turn', text: 'go', user: 'ada', turnId: '77777777-7777-4777-8777-777777777777' } as const
+    const refused = await (daemon as any).handleRelayMsg(rd(turn, { recordedDaemonId: RECORDER }), () => {})
+    expect(refused).toMatchObject({ accepted: false, reason: 'content_elsewhere' })
+    expect(refused.detail).toContain('another machine')
+
+    // A shared store (#2188) puts the row here too, but a session that ran on its holder left its runtime there.
+    await seedRow(daemon)
+    const homeRun = await (daemon as any).handleRelayMsg(
+      rd(turn, { recordedDaemonId: RECORDER, msgId: 'm-2' }),
+      () => {}
+    )
+    expect(homeRun).toMatchObject({ accepted: false, reason: 'content_elsewhere' })
+    // A pool member reaches every session's runtime in its sandbox pod, so the row alone is enough there.
+    const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
+    ;(daemon as any).k8s = true
+    expect(await (daemon as any).webchatContentIsElsewhere(rd(turn, { recordedDaemonId: RECORDER }), key)).toBe(false)
+    ;(daemon as any).k8s = false
+
+    // A session placed on an executor is still where it was, so this member serves the same turn.
+    await seedRow(daemon, EXECUTOR)
+    const served = await (daemon as any).handleRelayMsg(
+      rd(turn, { recordedDaemonId: RECORDER, msgId: 'm-5' }),
+      () => {}
+    )
+    expect(served).toMatchObject({ accepted: true })
+    await daemon.stop()
+  })
+
+  it('serves a conversation this member recorded, and one from a relay that names no recorder', async () => {
+    const { factory } = streamingHost([text('hi')])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+    ;(daemon as any).cfg.daemonId = SELF
+
+    const turn = { op: 'turn', text: 'go', user: 'ada', turnId: '77777777-7777-4777-8777-777777777777' } as const
+    expect(
+      await (daemon as any).handleRelayMsg(rd(turn, { recordedDaemonId: SELF, msgId: 'm-3' }), () => {})
+    ).toMatchObject({ accepted: true })
+    // A relay that predates the field says nothing about content: the fence stays out of the way
+    // (this second turn lands on a busy agent, which is a different refusal).
+    const older = await (daemon as any).handleRelayMsg(rd(turn, { msgId: 'm-4' }), () => {})
+    expect(older.reason).not.toBe('content_elsewhere')
+    await daemon.stop()
+  })
+
   it('a turn op preserves the browser turnId and streams rd/chat output→done', async () => {
     const { factory } = streamingHost([text('hi from agent')])
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })

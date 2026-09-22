@@ -10,7 +10,7 @@
  * Prefixes: Slack reserves `/xxx` for its own slash commands (the bot never
  * receives them), so the Slack-facing alias is `!`. `/` is parsed too so the same
  * vocabulary works on platforms where bots *do* receive slash commands (Telegram,
- * Discord) — there `/status`, `/stop`, `/cancel`, `/resume`, `/fast`, `/queue` are the user's
+ * Discord) — there `/status`, `/stop`, `/cancel`, `/resume`, `/new`, `/fast`, `/queue` are the user's
  * primary control surface (Telegram has no persistent status bar). The command word
  * must follow the prefix immediately (no space).
  *
@@ -29,6 +29,10 @@ export type AgentCommand =
   /** `!resume` — explicitly reset a latched conversation loop guard (and clear a
    *  standing thread mute). Purged loop messages are never replayed. */
   | { kind: 'resume' }
+  /** `!new` — start over here. In a conversation that appends, the next message opens a
+   *  successor session; in one that keys by thread, this thread's session keeps its
+   *  identity and loses its context (channel-session-mode.md §7). */
+  | { kind: 'new' }
   /** `!queue <text>` — buffer <text> and dispatch it once the agent goes idle. */
   | { kind: 'queue'; text: string }
   /** `/status` — reply with the session's current model / context / tokens (the
@@ -54,12 +58,24 @@ export const COMMAND_PREFIXES = ['!', '/'] as const
 const STOP_WORDS = new Set(['stop'])
 const CANCEL_WORDS = new Set(['cancel'])
 const RESUME_WORDS = new Set(['resume'])
+const NEW_WORDS = new Set(['new'])
 const QUEUE_WORDS = new Set(['queue'])
 const STATUS_WORDS = new Set(['status'])
 const FAST_WORDS = new Set(['fast'])
 const MODEL_WORDS = new Set(['model', 'models'])
 const EFFORT_WORDS = new Set(['effort'])
 const PERMISSION_WORDS = new Set(['permission', 'permissions', 'perm'])
+
+/**
+ * Commands that may only come from a real person: they are destructive or reset a durable
+ * safety latch, so a bot echo or a wrapper that reports no actor must not be able to forge
+ * them. Lives beside the parser because EVERY ingress path that parses a command has to ask
+ * the same question — the gate drifting between direct and relay ingress is the failure this
+ * exists to prevent.
+ */
+export function requiresTrustedActor(kind: AgentCommand['kind']): boolean {
+  return kind === 'resume' || kind === 'new'
+}
 
 /**
  * Parse a leading control command from a message's text. Returns `null` when the
@@ -80,6 +96,7 @@ export function parseCommand(raw: string): AgentCommand | null {
   if (STOP_WORDS.has(word)) return { kind: 'stop' }
   if (CANCEL_WORDS.has(word)) return { kind: 'cancel' }
   if (RESUME_WORDS.has(word)) return { kind: 'resume' }
+  if (NEW_WORDS.has(word)) return { kind: 'new' }
   if (QUEUE_WORDS.has(word)) return { kind: 'queue', text: arg }
   if (STATUS_WORDS.has(word)) return { kind: 'status' }
   if (FAST_WORDS.has(word)) {

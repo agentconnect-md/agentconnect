@@ -48,6 +48,7 @@ const mockDaemon = (id: string, name: string, op?: DaemonRow['lifecycleOp']): Da
   runtimeModels: [],
   mcpServers: [],
   activeSessions: '0',
+  hostedSessions: null,
   conns: '1',
   uptime: '1d',
   createdBy: 'user1',

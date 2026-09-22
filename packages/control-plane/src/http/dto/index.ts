@@ -28,6 +28,7 @@ import {
   HOOK_KINDS,
   RepoSubdirError,
   SessionImageAttachment,
+  SessionStayedHomeReason,
   MAX_WORKSPACE_COMMIT_MESSAGE,
   MAX_WORKSPACE_EDIT_BYTES,
   MAX_WORKSPACE_LOG_COMMITS,
@@ -88,13 +89,31 @@ export const SetAgentCallPolicyBody = z
 export type SetAgentCallPolicyBodyT = z.infer<typeof SetAgentCallPolicyBody>
 
 // ── daemons (read model) ──────────────────────────────────────────────────
+
+/** What a daemon offers the sessions of its group (session-executors.md §5, §10). Each strategy is
+ *  named after `sandbox.backend` and carries the reason it cannot run here when it cannot. The
+ *  listener's address is NOT here: it is topology, and nothing configures or shows one. */
+export const DaemonExecutorDto = z.object({
+  enabled: z.boolean(),
+  strategies: z
+    .record(
+      z.string(),
+      z.union([z.object({ available: z.literal(true) }), z.object({ available: z.literal(false), reason: z.string() })])
+    )
+    .optional(),
+  /** The daemon's own session ceiling (`limits.maxConcurrentSessions`). */
+  capacity: z.number().int().min(0).optional()
+})
+
 export const DaemonCapabilitiesDto = z.object({
   platforms: z.array(z.string()),
   runtimes: z.array(z.string()),
   acp: z.boolean(),
   features: z.array(z.string()),
   /** Why a sandbox this daemon HAS is unusable right now; `features` still lists `sandbox`, because it refuses launches rather than running them unconfined. */
-  sandboxUnavailable: z.string().optional()
+  sandboxUnavailable: z.string().optional(),
+  /** What this daemon offers the group's sessions (session-executors.md §10); absent while its executor facet is off. */
+  executor: DaemonExecutorDto.optional()
 })
 export const DaemonLoadDto = z.object({ cpu: z.number(), mem: z.number(), agents: z.number() })
 
@@ -228,6 +247,9 @@ export const DaemonViewDto = z.object({
   sessionEpoch: z.number(),
   maxAgents: z.number().int(),
   activeSessions: z.number().int(),
+  /** Session environments live on this machine, whoever holds them — its own plus any it hosts for
+   *  the group (session-executors.md §6). Null until the daemon reports one. */
+  hostedSessions: z.number().int().nullable(),
   lastSeenAt: z.string().nullable(),
   createdAt: z.string(), // ISO-8601
   createdBy: z.string().nullable(), // creator's userId (web resolves to a name / "You"); null for CLI/self-registered
@@ -839,6 +861,8 @@ export const AgentDto = z.object({
    *  `set` placement it is "some live member could serve this", which is the question the console
    *  was answering with a dead Pod's id (#987). */
   placementReady: z.boolean(),
+  // A group agent's confirmed duty holder: the member its next turn reaches, so a session recorded there can resume. Absent for a daemon or pool placement.
+  holderDaemonId: z.string().nullable().optional(),
   workspace: AgentWorkspaceBody,
   /** Rename-proof numeric identity of the GitHub workspace repository. Null
    * for scratch/anonymous or legacy rows that have not been repaired yet. */
@@ -1822,10 +1846,18 @@ export const LeaveIntegrationConversationBody = z.object({
   ])
 })
 
-/** `PATCH /bots/:id` — flip the shared-bot opt-in (shared-bot-relay.md §4.1). */
-export const UpdateBotBody = z.object({
-  shareable: z.boolean()
-})
+/** `PATCH /bots/:id` — flip the shared-bot opt-in (shared-bot-relay.md §4.1) and/or the
+ *  join-public-channels switch; at least one of the two. */
+export const UpdateBotBody = z
+  .object({
+    shareable: z.boolean().optional(),
+    /** May the bot enter a PUBLIC channel on first use (Slack `conversations.join`)? Refused
+     *  on a platform whose manifest declares no `publicChannelJoin`. */
+    joinPublicChannels: z.boolean().optional()
+  })
+  .refine((body) => body.shareable !== undefined || body.joinPublicChannels !== undefined, {
+    message: 'nothing to update: pass `shareable` and/or `joinPublicChannels`'
+  })
 
 /** Console view of a bot identity — metadata only, NEVER the tokens. */
 export const BotDto = z.object({
@@ -1845,6 +1877,10 @@ export const BotDto = z.object({
   /** Shared-bot (multi-agent) opt-in (§4.1): when true the bot may serve many agents
    *  at once. Only meaningful for `transport: 'http'`. */
   shareable: z.boolean(),
+  /** May the bot enter a PUBLIC channel on first use (Slack `conversations.join`) instead of
+   *  waiting to be invited? Only editable on a platform whose manifest declares
+   *  `publicChannelJoin`; true everywhere else, where nothing reads it. */
+  joinPublicChannels: z.boolean(),
   /** Slack inbound transport (slack-http-mode): 'http' ⇒ relay-pool Events API
    *  ingress; 'socket' ⇒ classic daemon Socket Mode. Immutable post-create. */
   transport: z.enum(['socket', 'http']),
@@ -3109,6 +3145,10 @@ export const SessionDetailDto = z.object({
   /** The shared-store pool set holding this session's rows (`domain/session-content.ts`); null ⇒ the recorder's private store. */
   contentSetId: z.string().nullable(),
   workspaceIsolation: z.enum(['shared', 'session']).nullable(),
+  /** The group member executing this session (session-executors.md §7); null ⇒ its holder runs it. */
+  executorDaemonId: z.string().nullable(),
+  /** Why it stayed with its holder — recorded at birth, so "everything still runs on one machine" has an answer. Null once an executor took it, and on a session born before the feature. */
+  stayedHomeReason: SessionStayedHomeReason.nullable(),
   activityState: z.string(),
   // ── session visibility (docs/designs/session-visibility.md) ──
   visibility: SessionVisibilityEnum,

@@ -79,6 +79,7 @@ import {
   PgRelayRepo,
   PgAgentRepo,
   PgAgentSecretStore,
+  PgProviderKeyStore,
   PgAgentConfigWriter,
   PgMemoryConnectionWriter,
   PgAssignmentRepo,
@@ -265,6 +266,8 @@ import { codeHostProviders } from './codehost/registry.js'
 import { CodeHostTrustedActorService } from './codehost/trusted-actor.service.js'
 import { botIdentityProjector } from './platforms/bot-identity.js'
 import { buildPendingInstallReapers, platformBackgroundLoops } from './platforms/lifecycle.js'
+import { createQQCpProvider } from './platforms/qq/provider.js'
+import { QQCredentialRoutes } from './platforms/qq/routes.js'
 import { createTelegramCpProvider } from './platforms/telegram/provider.js'
 import { createDiscordCpProvider } from './platforms/discord/provider.js'
 import { createSlackCpProvider, createSlackToolingCredentials } from './platforms/slack/provider.js'
@@ -442,6 +445,7 @@ export function buildContainer(
     // Owns its transaction: install/revoke each write two tables behind the
     // credential-generation fence, and serialize on the bot row (§5.3).
     botCredential: new PgBotCredentialWriter(prisma, secretCipher),
+    providerKey: new PgProviderKeyStore(prisma, secretCipher),
     agentSecret: new PgAgentSecretStore(prisma, secretCipher),
     agentConfig: new PgAgentConfigWriter(prisma, secretCipher),
     mcpProvider: new PgMcpProviderRepo(prisma),
@@ -1694,6 +1698,7 @@ export function buildContainer(
       bot: repos.bot,
       botSecret: repos.botSecret,
       botCredential: repos.botCredential,
+      providerKey: repos.providerKey,
       agentSecret: repos.agentSecret,
       agentConfig: repos.agentConfig,
       mcpProvider: repos.mcpProvider,
@@ -2096,6 +2101,7 @@ export function buildContainer(
   // core ASKS is answered by the registry, and what tests INJECT is the seams
   // above.
   composedPlatforms = buildCpPlatformRegistry([
+    createQQCpProvider(undefined, [QQCredentialRoutes(httpDeps)]),
     createTelegramCpProvider({
       verifyBot: verifyTelegramBot,
       syncBotIcon: syncTelegramBotIcon,

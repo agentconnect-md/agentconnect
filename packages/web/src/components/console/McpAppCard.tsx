@@ -34,7 +34,10 @@ import {
 } from '@/lib/mcp-app-frame'
 
 /** How a settled frame reads once its bridge has stopped answering. */
-const APP_OUTCOME: Record<string, { icon: string; color: string; labelKey: string }> = {
+const APP_OUTCOME: Record<
+  string,
+  { icon: string; color: string; labelKey: 'completed' | 'closed' | 'superseded' | 'expired' }
+> = {
   completed: { icon: 'check', color: 'var(--text-secondary)', labelKey: 'completed' },
   closed: { icon: 'x', color: 'var(--text-tertiary)', labelKey: 'closed' },
   superseded: { icon: 'refresh-cw', color: 'var(--text-tertiary)', labelKey: 'superseded' },
@@ -286,7 +289,7 @@ function SandboxedMcpAppCard({ step, onRpc, onClose }: McpAppCardProps) {
           {settled && !shows ? (
             <span className="flex min-w-0 items-center gap-[7px] px-[14px] py-[11px] font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
               <Icon name={settled.icon} size={13} color={settled.color} />
-              <span className="min-w-0 truncate">{settled.label}</span>
+              <span className="min-w-0 truncate">{settledLabel}</span>
             </span>
           ) : shows ? (
             <iframe

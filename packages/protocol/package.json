@@ -23,6 +23,18 @@
       "import": "./dist/decimal-amount.js",
       "default": "./dist/decimal-amount.js"
     },
+    "./decision": {
+      "development": "./src/decision.ts",
+      "types": "./dist/decision.d.ts",
+      "import": "./dist/decision.js",
+      "default": "./dist/decision.js"
+    },
+    "./decision-api": {
+      "development": "./src/decision-api.ts",
+      "types": "./dist/decision-api.d.ts",
+      "import": "./dist/decision-api.js",
+      "default": "./dist/decision-api.js"
+    },
     "./slack-app-manifest": {
       "development": "./src/slack-app-manifest.ts",
       "types": "./dist/slack-app-manifest.d.ts",

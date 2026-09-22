@@ -116,6 +116,19 @@ export function sessionGitDirsIn(sessionDir: string): string[] {
     .filter(isRealDir)
 }
 
+/** {@link sessionGitDirsIn} asked of the filesystem that HOLDS the directory; its `stat` follows no symlink, so a linked `.git` is refused there too. */
+export async function sessionGitDirsUnder(
+  fs: Pick<WorkspaceFs, 'stat' | 'readdir'>,
+  sessionDir: string
+): Promise<string[]> {
+  const gitDirs: string[] = []
+  for (const clone of await sessionClonesUnder(fs, sessionDir)) {
+    const gitDir = join(clone.path, '.git')
+    if ((await fs.stat(gitDir)) === 'dir') gitDirs.push(gitDir)
+  }
+  return gitDirs
+}
+
 /** Whether `path` is a directory in its own right — never a symlink to one. */
 export function isRealDir(path: string): boolean {
   try {

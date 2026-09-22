@@ -44,6 +44,10 @@ Normalization remains pure in the message package. Registration may span
 packages; QQ-specific policies must not become core branches. This transport
 requires no relay module.
 
+The console offers QQ only where the deployment turns on the `qq` feature flag
+(the chart's `features.qq`, on by default); the Control Plane and daemon serve
+it either way.
+
 ```mermaid
 flowchart LR
     Q[QQ group or DM] -->|Official events| X[QQ adapter]
@@ -65,10 +69,16 @@ flowchart LR
 
 ### Conversations and activation
 
-Scope identity to AppID and distinguish group and DM addresses. Use a stable
+Scope user identity to AppID plus OpenID; `user_openid` and `member_openid`
+normalize into the same identity when their values match. Distinguish group and DM addresses. Use a stable
 logical session key per group, independent of the sender or quoted message;
 retain each sender's identity. Secret rotation must not change session identity.
-Do not equate group-member and DM OpenIDs or merge people by nickname.
+Never merge people by nickname.
+
+When an event supplies `author.username`, cache it under that app-scoped
+identity so later group and DM messages share the confirmed name. A nameless
+event never replaces a cached name. Derive the avatar URL from AppID plus OpenID
+inside the QQ module; do not call an external profile service.
 
 After admission checks, match pending answers before treating a message as a
 prompt. QQ group tasks require an explicit mention: the whole-group session key

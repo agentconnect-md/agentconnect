@@ -51,6 +51,7 @@ import {
 import { consolidateDiscord, discordConnKey, DiscordConnection, type DiscordDeps } from '../discord/connection.js'
 import { consolidateFeishu, feishuConnKey, FeishuConnection } from '../feishu/connection.js'
 import { consolidateLinear, linearConnKey, LinearConnection } from './linear/connection.js'
+import { QQConnection, consolidateQQ, QQConnKey } from './qq/connection.js'
 import type { ObservedChat } from './observed-channels.js'
 import { ConnectionPool, type ConnectionKey } from './registry.js'
 
@@ -60,7 +61,7 @@ const LINEAR_TEAM_LIST_MS = 5_000
 
 /** Any live platform client this lifecycle opens, prunes or binds. */
 export type PlatformConnection =
-  SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection | LinearConnection
+  SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection | LinearConnection | QQConnection
 
 /**
  * The UI-action callbacks every platform connection is constructed with — a status-bar tap,
@@ -121,6 +122,7 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
     discord: ReadonlyMap<string, DiscordConnection>
     feishu: ReadonlyMap<string, FeishuConnection>
     linear: ReadonlyMap<string, LinearConnection>
+    qq?: ReadonlyMap<string, QQConnection>
   }
   /** Point an integration at a live connection and record the identity mention-routing
    *  matches — the bot user id on Slack/Discord, the @username on Telegram, the open_id on
@@ -129,6 +131,7 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   bindTelegram(integrationId: string, conn: TelegramConnection, botUsername: string): void
   bindDiscord(integrationId: string, conn: DiscordConnection, botUserId: string): void
   bindFeishu(integrationId: string, conn: FeishuConnection, botOpenId: string): void
+  bindQQ?(integrationId: string, conn: QQConnection, botUserId: string): void
   /** Linear's app user IS the bot identity — the id the ingress self-echo guard matches (§7.2). */
   bindLinear(integrationId: string, conn: LinearConnection, appUserId: string): void
   /** Drop an integration's connection binding, bot identity and channel snapshot together. */
@@ -165,6 +168,39 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
 }
 
 export class ConnectionReconciler {
+  readonly QQPool = new ConnectionPool<QQConnection>('qq', (conn) => QQConnKey(conn.group))
+
+  async reconcileQQConnections(): Promise<void> {
+    for (const [key, group] of consolidateQQ(this.host.transportAgents())) {
+      let conn = this.QQPool.find(key)
+      if (!conn) {
+        if (!this.QQPool.beginConnect(key)) continue
+        conn = new QQConnection(group, {
+          log: this.log,
+          onMessage: (msg) => {
+            if (conn) this.host.channelNameResolver()?.noteMessage(conn, msg)
+            this.host.onInbound(msg, this.host.srcIntegrationIds(conn))
+          }
+        })
+        try {
+          await conn.start()
+          if (this.host.draining() || !consolidateQQ(this.host.transportAgents()).has(key)) {
+            await conn.stop()
+            continue
+          }
+          this.QQPool.add(conn)
+        } catch {
+          await conn.stop()
+          this.log.warn('qq: could not start bot connection; retry on next reconcile')
+          continue
+        } finally {
+          this.QQPool.endConnect(key)
+        }
+      }
+      for (const { integrationId } of group.integrations) this.host.bindQQ?.(integrationId, conn, conn.botUserId)
+    }
+  }
+
   // §7.5 connection pools — one per (platform, MODE), each keyed by the platform's
   // own opaque identity function. The pool owns the live set AND the in-flight
   // connect guard: a key is claimed BEFORE `await conn.start()` and released when
@@ -197,7 +233,15 @@ export class ConnectionReconciler {
 
   /** Every pool, for the whole-set pass at shutdown. */
   private pools(): { all(): PlatformConnection[] }[] {
-    return [this.slackPool, this.slackSharedPool, this.telegramPool, this.discordPool, this.feishuPool, this.linearPool]
+    return [
+      this.slackPool,
+      this.slackSharedPool,
+      this.telegramPool,
+      this.discordPool,
+      this.feishuPool,
+      this.linearPool,
+      this.QQPool
+    ]
   }
 
   /** The deps every Slack SOCKET shares — the action sink, the name-resolver hand-off and
@@ -311,7 +355,12 @@ export class ConnectionReconciler {
     for (const group of linear.values())
       for (const { integrationId } of group.integrations) linearByIntegration.set(integrationId, group.key)
 
+    const QQGroups = consolidateQQ(agents)
+    const QQByIntegration = new Map<string, string>()
+    for (const [key, group] of QQGroups)
+      for (const { integrationId } of group.integrations) QQByIntegration.set(integrationId, key)
     const allDesiredIds = new Set([
+      ...QQByIntegration.keys(),
       ...directByIntegration.keys(),
       ...sharedByIntegration.keys(),
       ...telegramByIntegration.keys(),
@@ -321,6 +370,9 @@ export class ConnectionReconciler {
     ])
     const evaluation = this.host.evaluationIntegrationIds()
     const bindings = this.host.bindings()
+    for (const [id, conn] of bindings.qq ?? []) {
+      if (QQConnKey(conn.group) !== QQByIntegration.get(id)) this.host.unbindIntegration(id)
+    }
     // Unbinding drops the connection mapping, the bot identity and the channel
     // snapshot together — the three indexes an evicted integration must leave behind.
     for (const integrationId of this.host.boundIntegrationIds())
@@ -388,6 +440,7 @@ export class ConnectionReconciler {
     await this.prunePool(this.telegramPool, new Set([...telegram.values()].map(telegramConnKey)))
     await this.prunePool(this.discordPool, new Set([...discord.values()].map(discordConnKey)))
     await this.prunePool(this.feishuPool, new Set([...feishu.values()].map(feishuConnKey)))
+    await this.prunePool(this.QQPool, new Set(QQGroups.keys()))
     await this.prunePool(this.linearPool, new Set([...linear.values()].map((group) => group.key)))
   }
 
@@ -428,6 +481,8 @@ export class ConnectionReconciler {
     for (const group of groups.values()) {
       const existing = this.slackPool.find(slackSocketKey(group))
       if (existing) {
+        // The bot-level switches travel with the desired group; the open socket is kept.
+        existing.setJoinPublicChannels(group.joinPublicChannels !== false)
         // Already-open appToken: bind any integrationId not yet pointing at this conn
         // (tier 1). Covers both a brand-new integrationId AND one that was re-pointed
         // from a different appToken onto this already-open one — without the
@@ -523,6 +578,8 @@ export class ConnectionReconciler {
           continue
         }
       }
+      // A reused client picks up a flipped bot-level switch here; a new one carried it in its group.
+      conn.setJoinPublicChannels(group.joinPublicChannels !== false)
       for (const { integrationId } of group.integrations) {
         if (this.host.bindings().slack.get(integrationId) !== conn) bound = true
         this.host.bindSlack(integrationId, conn, conn.botUserId)

@@ -19,6 +19,7 @@ import { Button, Icon } from '@/components/ui'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
 import { GiteaReviewSettings } from '@/components/console/GiteaReviewSettings'
 import { GitlabReviewSettings } from '@/components/console/GitlabReviewSettings'
+import { IntegrationPlatformGroups } from '@/components/console/IntegrationPlatformGroups'
 import {
   GithubPrivateReposNotice,
   GiteaNoRepositoriesNotice,
@@ -50,7 +51,7 @@ import {
   platformSharingFixed,
   platformSupportsSharing
 } from '@/components/console/platforms/registry'
-import { BOT_PLATFORMS, PLATFORMS, isCoreTriggerKind } from '@/components/console/platforms/host-projections'
+import { BOT_PLATFORMS, isCoreTriggerKind, platformOffered } from '@/components/console/platforms/host-projections'
 import { agentCapabilitySource, agentLabel, MOCK_MODE, workspaceSourceOf, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
@@ -685,23 +686,20 @@ export default function AddIntegrationModal({
     onFailed?.(message)
   }
 
-  // A bot integration is runnable only where the PLACEMENT reported that adapter on register — resolved as a
-  // placement, since a set names no member and an id lookup found none, offering a pool agent every platform.
-  // Not `maxAgents`: that is a concurrency ceiling, while `caps.platforms` is the adapter-capability declaration.
-  // No caps source at all keeps the bot platforms selectable — the platform "Add to Slack" card and the funnel
-  // mint CP-side rows whose delivery converges at placement, and the server backstops what needs a daemon.
+  // Bot platforms need the placement's advertised adapter; with no caps source every offered one stays selectable.
   const daemon = agentCapabilitySource(agent, daemons, memberSets)
   const capsUnknown = !daemon
+  const offeredBotPlatforms = BOT_PLATFORMS.filter((p) => platformOffered(p.key))
   const supportedBotPlatforms =
-    daemonsLoading || capsUnknown ? BOT_PLATFORMS : BOT_PLATFORMS.filter((p) => daemon.caps.platforms.includes(p.key))
+    daemonsLoading || capsUnknown
+      ? offeredBotPlatforms
+      : offeredBotPlatforms.filter((p) => daemon.caps.platforms.includes(p.key))
   const firstSupportedBotPlatform = supportedBotPlatforms[0]?.key
   // webhook + github are relay/CP-backed triggers — always available, never
   // gated by the daemon's adapter capabilities.
   const isPlatformAvailable = (candidate: Platform) =>
     isCoreTriggerKind(candidate) || supportedBotPlatforms.some((supported) => supported.key === candidate)
   const selectedBotPlatformSupported = isPlatformAvailable(platform)
-
-  const platformTiles = PLATFORMS
 
   // The active platform module — undefined for the core trigger sections.
   const activeModule = platformRegistry.get(platform)
@@ -1433,60 +1431,47 @@ export default function AddIntegrationModal({
             </div>
           </div>
         )}
-        <div className="fldlbl mb-2">{t('platform')}</div>
-        {/* One column per offered tile — complete literal strings, so every tile shares
-            the one row (the flagged GitLab tile widens it rather than wrapping below). */}
-        <div
-          className={`mb-[18px] grid grid-cols-2 gap-2 ${
-            platformTiles.length > 8
-              ? 'desktop:grid-cols-9'
-              : platformTiles.length > 7
-                ? 'desktop:grid-cols-8'
-                : platformTiles.length > 6
-                  ? 'desktop:grid-cols-7'
-                  : 'desktop:grid-cols-6'
-          }`}
-        >
-          {platformTiles.map((candidate) => {
-            const available = isPlatformAvailable(candidate.key)
-            const on = available && platform === candidate.key
-            return (
-              <div
-                key={candidate.key}
-                className={`${on ? 'ptile on' : 'ptile'} desktop:flex-col desktop:justify-center desktop:gap-[5px] desktop:px-1.5 desktop:py-[9px] desktop:text-center ${
-                  available ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
-                }`}
-                aria-disabled={!available}
-                title={available ? undefined : t('notSupportedByDaemon')}
-                onClick={available ? () => pickPlatform(candidate.key) : undefined}
-              >
-                {candidate.key === 'github' ? (
-                  <span className="flex h-[22px] w-[22px] flex-none items-center justify-center [&>svg]:h-full [&>svg]:w-full">
-                    <GithubMark />
-                  </span>
-                ) : (
-                  <span className="flex h-[22px] w-[22px] flex-none items-center justify-center">
-                    <PlatformMark platform={candidate.key} fillPct={100} />
-                  </span>
-                )}
-                {candidate.key === 'feishu' ? (
-                  <LarkFeishuSwitcher
-                    value={feishuRegion}
-                    // `regionLocked`: the active fragment has a started,
-                    // region-bound flow (a pending Feishu registration), which
-                    // a switch here would silently relabel as the other cloud.
-                    disabled={!available || !!createdHook || regionLocked}
-                    onSwitch={(next) => {
-                      if (platform !== 'feishu') pickPlatform('feishu')
-                      setFeishuRegion(next)
-                    }}
-                  />
-                ) : (
-                  <span className="font-sans text-[12px] font-semibold leading-normal">{candidate.label}</span>
-                )}
-              </div>
-            )
-          })}
+        <div className="mb-[18px]">
+          <IntegrationPlatformGroups
+            renderTile={(candidate) => {
+              const available = isPlatformAvailable(candidate.key)
+              const on = available && platform === candidate.key
+              return (
+                <div
+                  key={candidate.key}
+                  className={`${on ? 'ptile on' : 'ptile'} w-[66px] flex-none flex-col justify-center gap-[5px] px-1.5 py-[9px] text-center ${
+                    available ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
+                  }`}
+                  aria-disabled={!available}
+                  title={available ? undefined : t('notSupportedByDaemon')}
+                  onClick={available ? () => pickPlatform(candidate.key) : undefined}
+                >
+                  {candidate.key === 'github' ? (
+                    <span className="flex h-[22px] w-[22px] flex-none items-center justify-center [&>svg]:h-full [&>svg]:w-full">
+                      <GithubMark />
+                    </span>
+                  ) : (
+                    <span className="flex h-[22px] w-[22px] flex-none items-center justify-center">
+                      <PlatformMark platform={candidate.key} fillPct={100} />
+                    </span>
+                  )}
+                  {candidate.key === 'feishu' ? (
+                    <LarkFeishuSwitcher
+                      value={feishuRegion}
+                      // A pending registration locks the region so the picker cannot relabel its cloud.
+                      disabled={!available || !!createdHook || regionLocked}
+                      onSwitch={(next) => {
+                        if (platform !== 'feishu') pickPlatform('feishu')
+                        setFeishuRegion(next)
+                      }}
+                    />
+                  ) : (
+                    <span className="font-sans text-[12px] font-semibold leading-normal">{candidate.label}</span>
+                  )}
+                </div>
+              )
+            }}
+          />
         </div>
         {platform === 'webhook' && !createdHook && (
           <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">

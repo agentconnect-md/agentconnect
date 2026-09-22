@@ -36,9 +36,17 @@ const workspaces = new WorkspaceManager()
 // The credential pointers a github-app root's clone carries. Nothing executes the helper here: the
 // fixture remotes are local paths, so git never asks for a credential.
 const SHIM = join(mkdtempSync(join(tmpdir(), 'ac-secondary-shim-')), 'git-credential-helper.sh')
+/** Every credential pre-warm in order: `<reason> <provider>:<id> <path>` for a named repository, `<reason> workspace` otherwise. */
+const preWarms: string[] = []
+/** Refuse a repo-less pre-warm the way the CP does for a scratch agent, which has no workspace credential to mint. */
+let refuseWorkspacePreWarm = false
 initGitInjection({
   targetFor: () => daemonGitCredentialTarget({ shimPath: SHIM, runDir: join(SHIM, '..') }),
-  preWarm: async () => undefined,
+  preWarm: async (_agentId, reason, repository) => {
+    const target = repository ? `${repository.provider}:${repository.repoId} ${repository.repoFullName}` : 'workspace'
+    preWarms.push(`${reason} ${target}`)
+    if (repository === undefined && refuseWorkspacePreWarm) throw new Error('agent has no default github repository')
+  },
   capabilityFor: (agentId) => `cap-${agentId}`
 })
 
@@ -54,6 +62,8 @@ afterAll(() => {
 afterEach(() => {
   workspaces.setPlaneResolver(undefined)
   remotes.clear()
+  preWarms.length = 0
+  refuseWorkspacePreWarm = false
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -574,6 +584,32 @@ describe('secondary root materialization', () => {
     expect(second).toBe(first)
     expect((await workspaces.readySecondaryRoots(agent)).map((root) => root.repoFullName)).toEqual(['acme/infra'])
   })
+
+  it('warms each root’s own credential, so a scratch agent with none of its own still materializes them', async () => {
+    const agent = agentFixture(
+      [
+        { repoFullName: 'acme/infra', repoId: '42' },
+        { repoFullName: 'example-group/sub/example-project', repoId: '4455667', provider: 'gitlab' }
+      ],
+      { mode: 'from-scratch' }
+    )
+    serveAll(agent, { 'acme/infra': 'trunk', 'example-group/sub/example-project': 'develop' })
+    refuseWorkspacePreWarm = true
+
+    await workspaces.prepareWorkspace(agent)
+
+    // The remote HEAD lookup and the clone each warm the repository they reach, never the workspace.
+    expect(preWarms).toEqual([
+      'clone github:42 acme/infra',
+      'clone github:42 acme/infra',
+      'clone gitlab:4455667 example-group/sub/example-project',
+      'clone gitlab:4455667 example-group/sub/example-project'
+    ])
+    expect((await workspaces.readySecondaryRoots(agent)).map((root) => [root.repoFullName, root.branch])).toEqual([
+      ['acme/infra', 'trunk'],
+      ['example-group/sub/example-project', 'develop']
+    ])
+  })
 })
 
 describe('submodule roots (decision 11)', () => {
@@ -900,6 +936,22 @@ describe('review of a secondary root (decisions 5, 6 and 11)', () => {
 
     expect(resumedCwd).toBe(cwd)
     expect(git(resumedCwd, ['rev-parse', 'HEAD']).trim()).toBe(pull.merge)
+  })
+
+  it('fetches a scratch agent’s review with the reviewed repository’s own credential', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }], { mode: 'from-scratch' })
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    const pull = seedPullRequest(remoteOf('acme/infra'), 'trunk', 23)
+    refuseWorkspacePreWarm = true
+
+    const cwd = await workspaces.prepareSessionWorkspace(
+      agent,
+      reviewRequest('session-scratch-review', 'acme/infra', 23, pull)
+    )
+
+    expect(cwd).toBe(realpathSync(worktreeOf(agent, 'acme/infra', 'session-scratch-review')))
+    expect(git(cwd, ['rev-parse', 'HEAD']).trim()).toBe(pull.merge)
+    expect(preWarms).toEqual(['clone github:42 acme/infra', 'clone github:42 acme/infra', 'pull github:42 acme/infra'])
   })
 
   it('drops the attestation when the session degrades to a revision-only workspace', async () => {

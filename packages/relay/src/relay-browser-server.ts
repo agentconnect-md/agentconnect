@@ -106,7 +106,11 @@ export function createRelayBrowserServer(app: FastifyInstance, deps: RelayBrowse
       // reply's context fan-out must survive the browser closing mid-turn.
       deps.router.rememberRoster(
         conversationId,
-        participants.map((p) => ({ agentId: p.agentId, ...(p.daemonId ? { daemonId: p.daemonId } : {}) }))
+        participants.map((p) => ({
+          agentId: p.agentId,
+          ...(p.daemonId ? { daemonId: p.daemonId } : {}),
+          ...(p.recordedDaemonId ? { recordedDaemonId: p.recordedDaemonId } : {})
+        }))
       )
 
       wss.handleUpgrade(req, socket, head, (raw: WebSocket) => {

@@ -54,6 +54,8 @@ export type LeaveGranularity = 'conversation' | 'space'
 export interface PlatformManifest {
   /** Diagnostic label; never parsed. */
   readonly platform: string
+  /** Read before issuing console continuation tokens or dispatching a mirrored turn. */
+  readonly consoleContinuation: boolean
   readonly membershipEnumeration: MembershipEnumeration
   /** Channel ids syntactically recognizable as DIRECT MESSAGES, for ingress whose
    *  wire event omits the conversation type (Slack `app_mention` may omit
@@ -86,6 +88,13 @@ export interface PlatformManifest {
    *  Fail-closed: an unknown platform serves one agent per bot, so a flag no
    *  install path honors can never be set. */
   readonly multiAgentShareable: boolean
+  /** Whether a bot here can ENTER a public conversation by itself (Slack's
+   *  `conversations.join`) — what makes "join public channels on demand" an operator
+   *  choice worth offering (`Bot.platformConfig.joinPublicChannels`). A PRE-DISPATCH
+   *  read: `PATCH /bots/:id` refuses the flag on any other platform and the console
+   *  renders no switch there. Fail-closed: an unknown platform has no self-join, so
+   *  the flag can never be set for it. */
+  readonly publicChannelJoin: boolean
   /** Whether a conversation row's OWNER here is a per-conversation DEFAULT rather than an
    *  ownership claim — a connected Linear workspace, where every event already addresses the
    *  app (linear-integration.md §4.3, §6.2). ONE PRE-DISPATCH read, in the HTTP-bot compile:
@@ -101,6 +110,7 @@ export interface PlatformManifest {
 
 /** The conservative arm of every axis — see the fail-closed note above. */
 export const DEFAULT_MANIFEST: Omit<PlatformManifest, 'platform'> = {
+  consoleContinuation: false,
   membershipEnumeration: 'observed',
   botSenderRouting: false,
   // The arm the retired branch took for every non-Discord id: an unknown
@@ -109,6 +119,8 @@ export const DEFAULT_MANIFEST: Omit<PlatformManifest, 'platform'> = {
   leaveGranularity: 'conversation',
   // The arm the retired Slack-only predicate took for every other id: one agent per bot.
   multiAgentShareable: false,
+  // No platform but Slack lets a bot enter a conversation on its own.
+  publicChannelJoin: false,
   // The arm every shipped platform takes: an owner is an ownership route, not a default.
   ownerAsDefault: false
 }
@@ -120,6 +132,7 @@ export const DEFAULT_MANIFEST: Omit<PlatformManifest, 'platform'> = {
  * axes — a fail-OPEN hole in the exact guarantee this module sells.
  */
 const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
+  ['qq', { ...DEFAULT_MANIFEST, dmChannelPattern: /^dm:/ }],
   // Slack is the only platform with an authoritative membership snapshot — which
   // is why the branches this replaces read "Slack does X, everyone else does Y".
   // It is also the only platform whose normalizer attributes bot authorship AND
@@ -127,21 +140,25 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
   [
     'slack',
     {
+      consoleContinuation: true,
       membershipEnumeration: 'authoritative',
       dmChannelPattern: /^D/,
       botSenderRouting: true,
       leaveGranularity: 'conversation',
       multiAgentShareable: true,
+      publicChannelJoin: true,
       ownerAsDefault: false
     }
   ],
   [
     'telegram',
     {
+      consoleContinuation: true,
       membershipEnumeration: 'observed',
       botSenderRouting: false,
       leaveGranularity: 'conversation',
       multiAgentShareable: false,
+      publicChannelJoin: false,
       ownerAsDefault: false
     }
   ],
@@ -150,20 +167,24 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
   [
     'discord',
     {
+      consoleContinuation: true,
       membershipEnumeration: 'observed',
       botSenderRouting: false,
       leaveGranularity: 'space',
       multiAgentShareable: false,
+      publicChannelJoin: false,
       ownerAsDefault: false
     }
   ],
   [
     'feishu',
     {
+      consoleContinuation: true,
       membershipEnumeration: 'observed',
       botSenderRouting: false,
       leaveGranularity: 'conversation',
       multiAgentShareable: false,
+      publicChannelJoin: false,
       ownerAsDefault: false
     }
   ],
@@ -172,10 +193,12 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
   [
     'linear',
     {
+      consoleContinuation: false,
       membershipEnumeration: 'observed',
       botSenderRouting: false,
       leaveGranularity: 'conversation',
       multiAgentShareable: true,
+      publicChannelJoin: false,
       // Every Linear event addresses the app, so a team row's owner is its dispatch default (§6.2).
       ownerAsDefault: true
     }

@@ -355,8 +355,9 @@ is never posted as a separate Slack message.
 ### What `sendMessage` is for
 
 `sendMessage` covers what the ordinary reply cannot do: a different conversation, a
-direct message, a postless agent call, or a reply into the parent session. It has **no
-visible in-thread form** — every visible send lands at the channel **root**:
+direct message, a postless agent call, an update in a thread the agent is not answering,
+or a reply into the parent session. Every visible send lands at the channel **root**
+except the update form, which is the one branch that names an existing thread:
 
 - `toAgent` **direct form** (`{"toAgent":"<agent id>","message":"..."}`, no `channel`) —
   a postless wake: nothing is posted to any channel and nothing is recorded in a shared
@@ -378,7 +379,19 @@ visible in-thread form** — every visible send lands at the channel **root**:
   `"toUser":["U1","U2"]`; an array never means group DM.
 - `channel` **bare post** (`{"channel":"<channel id>","message":"..."}`, optionally
   `platform`) — publishes a visible message at the channel root without waking an agent
-  or addressing a human, as in case 2a / case 3.
+  or addressing a human, as in case 2a / case 3. It wakes nobody because the thread it
+  creates has no participants yet, not because root posts are exempt from routing.
+- `channel` + `thread` **update** (`{"channel":"<channel id>","thread":"<root id>","message":"..."}`)
+  — places a message in an EXISTING conversation the agent is not answering, so an agent
+  can act everywhere it can already read: the status update for a request crossposted to
+  three channels belongs in each of those threads, not at three channel roots. It routes
+  like any other agent-authored message (the thread's participants, author excluded),
+  inherits the posting turn's hop rather than starting a fresh chain, obeys the thread's
+  `!stop` mute without being able to lift it, and joins the author to that thread —
+  seeding a session there whose origin is the posting session, so a reply has a parent to
+  resume. A non-root thread, a platform that cannot address one, and the caller's own
+  thread are refused rather than posted at the root. See
+  [send-message-routing-rework.md](designs/send-message-routing-rework.md) §2.4.
 
 The visible post is suppressed when the wake would be refused for a locally-decidable
 reason (capability disabled, invalid target id, a postless self-call, hop limit, or a local target that
@@ -1295,8 +1308,8 @@ existing host probe; this switch does not add another probe sweep.
 Installation and login are independent. Each view shows an installed runtime even
 without a stored login, with **Login required** in that case. A stored login, or
 provider credentials Claude Code accepts without that login (an API key, auth
-token, or OAuth token in host env or `settings.json` env), keeps a missing runtime
-visible with **Binary not installed on host** or **Binary not installed in image**,
+token, or OAuth token in host env or `settings.json` env), or `GEMINI_API_KEY` in
+the daemon environment for Gemini CLI, keeps a missing runtime visible with **Binary not installed on host** or **Binary not installed in image**,
 according to the selected view. Only a runtime with neither an installation in that
 environment nor credentials is hidden. Missing binaries take precedence over login
 warnings. Enumerating models does not prove that the runtime is signed in; expired
@@ -1328,3 +1341,16 @@ in that mode is an accepted, documented trade-off, closed later by per-runtime
 credential brokering, not by refusing to run. Independent, sandbox-agnostic
 mitigations (for example excluding an agent's tool credentials from a dream's
 environment entirely) still apply in both modes.
+
+## Model selection for runtimes without an ACP model selector
+
+Some runtimes offer no model selector over ACP. Gemini CLI is the first: it reads
+its model from `GEMINI_MODEL` when its process starts. For such a runtime the
+console's model list comes from a native catalog driver rather than the ACP
+selector (for Gemini CLI, the Gemini API's own model list, read with the daemon's
+`GEMINI_API_KEY`), and the agent's configured model is applied when the runtime is
+launched for a session. Changing the model on such an agent takes effect on its
+next session; a session that is already running keeps the model it started with.
+This is the same contract `ultracode` effort already follows, applying only when a
+session is created or resumed. A runtime that advertises an ACP model selector is
+unchanged: its model switches live within a running session.

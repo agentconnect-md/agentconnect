@@ -359,7 +359,12 @@ describe('Daemon.reconcileSlackConnections', () => {
     const { daemon } = makeStubDaemon(root)
     await daemon.start()
 
-    const shared = { botToken: 'xoxb-shared', botUserId: 'U_SHARED', stop: vi.fn().mockResolvedValue(undefined) }
+    const shared = {
+      botToken: 'xoxb-shared',
+      botUserId: 'U_SHARED',
+      setJoinPublicChannels: vi.fn(),
+      stop: vi.fn().mockResolvedValue(undefined)
+    }
     ;(daemon as any).connections.slackSharedPool.add(shared)
     ;(daemon as any).agents = new Map([
       [
@@ -474,6 +479,7 @@ describe('Daemon.reconcileSlackConnections', () => {
     const conn = (botToken: string, appToken?: string) => ({
       botToken,
       appToken,
+      setJoinPublicChannels: vi.fn(),
       stop: vi.fn().mockResolvedValue(undefined)
     })
     const sharedLive = conn('xoxb-live', '')

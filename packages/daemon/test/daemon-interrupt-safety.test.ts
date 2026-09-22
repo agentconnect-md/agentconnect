@@ -278,6 +278,7 @@ describe('Daemon interrupt safety gates', () => {
         isDm: false,
         channel: 'C2',
         thread: 'T2',
+        deliveryThread: 'T2',
         tools: []
       }
       await expect(executeTool(t2Context, 'readMemory', {}, (daemon as any).mcp.deps)).resolves.toMatchObject({

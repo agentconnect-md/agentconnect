@@ -398,6 +398,7 @@ describe('webchat session-targeted continuation — hook origin', () => {
       externalResourceKind: 'repository',
       externalResourceKey: '42'
     })
+    const makeReply = vi.spyOn((daemon as any).githubReviews, 'makeCodeHostReply')
     const events: RdChatEvent[] = []
 
     const ack = await d.handleRelayMsg(turn('look at the diff again', { targetSessionId: HOOK_ACP }), (e) =>
@@ -408,6 +409,7 @@ describe('webchat session-targeted continuation — hook origin', () => {
 
     // The PR thread never sees the console turn — there is no mirror and no platform post.
     expect(postMessage).not.toHaveBeenCalled()
+    expect(makeReply).not.toHaveBeenCalled()
     // The turn entered the hook session itself, not a fresh webchat sibling.
     expect(prompts).toHaveLength(1)
     expect(prompts[0]!.text).toContain('look at the diff again')

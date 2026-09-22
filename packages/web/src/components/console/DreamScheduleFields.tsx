@@ -36,7 +36,7 @@ const MODES: ReadonlyArray<{ value: CronMode; label: string }> = [
   { value: 'custom', label: 'Custom' }
 ]
 
-const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+const WEEKDAYS = [0, 1, 2, 3, 4, 5, 6] as const
 
 const FIELD =
   'rounded-sm border border-(--border-subtle) bg-(--surface-card) px-2 py-1 font-sans text-[12px] leading-normal text-(--text-primary)'
@@ -132,9 +132,9 @@ export function DreamScheduleFields({
                 onChange={(e) => emit('weekly', parsed.hour, parsed.minute, Number(e.target.value))}
                 className={FIELD}
               >
-                {WEEKDAYS.map((day, i) => (
-                  <option key={day} value={i}>
-                    {t(`weekdays.${i}`)}
+                {WEEKDAYS.map((day) => (
+                  <option key={day} value={day}>
+                    {t(`weekdays.${day}`)}
                   </option>
                 ))}
               </select>
@@ -201,7 +201,7 @@ export function DreamScheduleFields({
               : timezone && !zoneKnown
                 ? t('unknownTimezone', { human, timezone })
                 : zoneKnown
-                  ? t('nextRun', { human, next, timezone })
+                  ? t('nextRun', { human, next: next ?? '—', timezone })
                   : t('daemonTimezone', { human })}
           </span>
         </div>

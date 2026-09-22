@@ -4,6 +4,7 @@ import {
   MEMORY_CONTINUATION_MAX_BYTES
 } from '../memory/entries/state.js'
 import { randomUUID } from 'node:crypto'
+import { appendCoordinate, isAppendCoordinate, nextAppendCoordinate } from '../session/append-coordinate.js'
 import type { SQLInputValue } from 'node:sqlite'
 import { chmodSync, mkdirSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -213,7 +214,7 @@ export interface SessionRecord {
   platform: string
   channel: string
   thread: string
-  /** Opaque physical-bot scope for transcript/session lookup isolation. */
+  /** Identity boundary for transcript/session isolation: a physical chat account or a code-host repository. */
   transportScope?: string | null
   /** What the RUNTIME knows this session by, used on the ACP hop alone (§1.1). Null until it exists. */
   acpSessionId: string | null
@@ -270,6 +271,8 @@ export interface SessionRecord {
   // it authorizes this session's SessionTarget replies back to the parent on EVERY turn, not just
   // the waking one — a human-triggered follow-up turn carries no per-turn CallMeta. NULL for roots.
   originSessionId?: string | null
+  /** The first parent link's output snapshot; JSON null records an explicitly private return route. */
+  originCodeHostReplyTarget?: string | null
   // Outcome of the LAST completed turn of this session: 'done' when the turn ended cleanly,
   // 'failed' when it ended in a problem phase (agent start failure, ACP/prompt rejection, loop
   // protection). NULL until the session has completed a turn. `state` still decides whether a
@@ -576,6 +579,8 @@ export interface InboxRow {
   /** JSON.stringify(HookDispatchContext), or null for ordinary turns. This is
    * daemon-private trusted metadata; prompt excerpts remain in `msg`. */
   hookContext?: string | null
+  /** The admitted turn's code-host output target, independent of hook lifecycle state. */
+  codeHostReplyTarget?: string | null
   /** Single-attempt GitHub final-poster state, durable across daemon restart. */
   posterPublishState?: 'not_started' | 'in_flight' | 'settled' | null
   /** A redacted, metadata-only HookReport retained as the durable dedup receipt
@@ -945,6 +950,22 @@ const THREAD_PARTICIPATION_SCHEMA = `
       CREATE INDEX IF NOT EXISTS thread_participation_session ON thread_participation (sessionKey);
 `
 
+// The coordinate in force for an `append` conversation (channel-session-mode.md §3.3). It
+// is the authoritative source, read on its own and never checked against the sessions table:
+// a reservation legitimately has no session during the window between resolve and the first
+// turn, so inferring staleness from a missing row would split two simultaneous first
+// deliveries — the exact case the reservation exists to join.
+const APPEND_RESERVATION_SCHEMA = `
+      CREATE TABLE IF NOT EXISTS append_reservation (
+        agentId TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        transportScope TEXT NOT NULL DEFAULT '',
+        coordinate TEXT NOT NULL,
+        updatedAt INTEGER,
+        PRIMARY KEY (agentId, channel, transportScope)
+      );
+`
+
 // Seeds affinity from the sessions that predate the table. It must START with the INSERT:
 // the PostgreSQL rewrite converts `INSERT OR IGNORE` only when it opens the statement, so
 // folding this into the CREATE above would ship SQLite syntax to a pool store. The NOT NULL
@@ -956,7 +977,7 @@ export const THREAD_PARTICIPATION_BACKFILL = `
       WHERE channel IS NOT NULL AND thread IS NOT NULL AND agentId IS NOT NULL
 `
 
-const SCHEMA_VERSION = 21
+export const SCHEMA_VERSION = 23
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1150,6 +1171,13 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<v
     // it STARTS the statement, so folding this into the CREATE would ship SQLite syntax.
     await db.exec(THREAD_PARTICIPATION_SCHEMA)
     await db.exec(THREAD_PARTICIPATION_BACKFILL)
+  },
+  // Append reservations are minted when a conversation first receives a message in append mode.
+  async (db) => await db.exec(APPEND_RESERVATION_SCHEMA),
+  // Parent replies retain output coordinates without replaying a completed hook run.
+  async (db) => {
+    await db.exec('ALTER TABLE sessions ADD COLUMN originCodeHostReplyTarget TEXT')
+    await db.exec('ALTER TABLE inbox ADD COLUMN codeHostReplyTarget TEXT')
   }
 ]
 
@@ -1252,7 +1280,7 @@ export class LocalStore {
       ${MEMORY_CONTINUATION_SCHEMA}
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
-        transportScope TEXT, acpSessionId TEXT, sessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
+        transportScope TEXT, originCodeHostReplyTarget TEXT, acpSessionId TEXT, sessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
         usage TEXT, muted INTEGER, triggeredBy TEXT, title TEXT, threadUrl TEXT, modelOverride TEXT,
         observedModel TEXT, observedModelSet INTEGER NOT NULL DEFAULT 0,
         effortOverride TEXT, permissionModeOverride TEXT, fastModeOverride INTEGER,
@@ -1294,6 +1322,7 @@ export class LocalStore {
         PRIMARY KEY (agentId, sessionKey)
       );
       ${THREAD_PARTICIPATION_SCHEMA}
+      ${APPEND_RESERVATION_SCHEMA}
       -- Latest-wins session metadata awaiting a correlated CP persistence ACK.
       -- This is deliberately separate from sessions: an upgrade starts with an
       -- empty outbox and never treats historical session rows as pending work.
@@ -1486,6 +1515,7 @@ export class LocalStore {
         integrationId TEXT,
         callMeta TEXT,
         hookContext TEXT,
+        codeHostReplyTarget TEXT,
         posterPublishState TEXT,
         terminalReport TEXT,
         reportOwnerId TEXT,
@@ -1886,6 +1916,14 @@ export class LocalStore {
 
   async getSession(key: string): Promise<SessionRecord | undefined> {
     return (await this.db.prepare('SELECT * FROM sessions WHERE key = ?').get(key)) as SessionRecord | undefined
+  }
+
+  async bindSessionOriginReplyTarget(key: string, originSessionId: string, target: string): Promise<void> {
+    await this.db
+      .prepare(
+        'UPDATE sessions SET originCodeHostReplyTarget = ? WHERE key = ? AND originSessionId = ? AND originCodeHostReplyTarget IS NULL'
+      )
+      .run(target, key, originSessionId)
   }
 
   /**
@@ -2646,10 +2684,13 @@ export class LocalStore {
         needsParentReply: rec.needsParentReply === 1 ? 1 : null,
         platformStanding: rec.platformStanding ?? null
       })
-    // The session's coordinate IS its physical thread today, so recording affinity from the
-    // row just written is equivalent to the `sessions` lookup this replaces, for every writer.
-    // Not in one transaction with it: this is the hot path, and a failure between the two
-    // costs an unmentioned follow-up its routing only until the next upsert repairs it.
+    // Affinity is the PHYSICAL thread's. Where the session's coordinate IS one — every
+    // conversation on `createNew` — deriving it from the row just written is equivalent to
+    // the `sessions` lookup this replaces, for every writer. Where it is synthetic the
+    // session manager records the delivery thread instead, and a row here would name a
+    // thread nobody can post in. Not in one transaction with the row: this is the hot path,
+    // and a failure between the two costs a follow-up its routing until the next upsert.
+    if (isAppendCoordinate(rec.thread)) return
     await this.recordThreadParticipation({
       channel: rec.channel,
       thread: rec.thread,
@@ -2658,6 +2699,132 @@ export class LocalStore {
       transportScope: rec.transportScope ?? null,
       updatedAt: rec.updatedAt
     })
+  }
+
+  /**
+   * The append coordinate in force for a conversation, minting one when there is none
+   * (channel-session-mode.md §3.3).
+   *
+   * `INSERT OR IGNORE` then read back, the shape `mintOutwardId` already uses: every
+   * concurrent caller converges on whichever insert won, and nobody trusts the value it
+   * proposed. Without that, two messages arriving together into a conversation with no
+   * append session would both read nothing and both mint — two coordinates, two sessions,
+   * for one conversation.
+   */
+  async resolveAppendCoordinate(
+    agentId: string,
+    channel: string,
+    transportScope?: string | null,
+    now = Date.now()
+  ): Promise<string> {
+    const scope = transportScope ?? ''
+    await this.db
+      .prepare(
+        `INSERT OR IGNORE INTO append_reservation (agentId, channel, transportScope, coordinate, updatedAt)
+         VALUES (?, ?, ?, ?, ?)`
+      )
+      .run(agentId, channel, scope, appendCoordinate(now), now)
+    const row = (await this.db
+      .prepare('SELECT coordinate FROM append_reservation WHERE agentId = ? AND channel = ? AND transportScope = ?')
+      .get(agentId, channel, scope)) as { coordinate: string } | undefined
+    // The read cannot miss: the insert either created the row or lost to one that exists.
+    return row?.coordinate ?? appendCoordinate(now)
+  }
+
+  /** The coordinate in force, WITHOUT minting one. For readers that must not create a
+   *  conversation by asking about it — a command typed before anyone spoke, or the observer
+   *  recording traffic that routed to nobody. */
+  async currentAppendCoordinate(
+    agentId: string,
+    channel: string,
+    transportScope?: string | null
+  ): Promise<string | undefined> {
+    const row = (await this.db
+      .prepare('SELECT coordinate FROM append_reservation WHERE agentId = ? AND channel = ? AND transportScope = ?')
+      .get(agentId, channel, transportScope ?? '')) as { coordinate: string } | undefined
+    return row?.coordinate
+  }
+
+  /**
+   * Rotate a conversation onto its next coordinate (`!new`), from the one the caller read.
+   *
+   * A caller that loses the compare-and-set does NOT advance again: it re-reads, finds a
+   * coordinate minted after its own, and concludes the rotation it wanted already happened.
+   * So two `!new` commands issued simultaneously rotate once while two issued in sequence
+   * rotate twice — which is what each pair of users meant. Retrying would rotate a second
+   * time and leave a coordinate nobody ever posts into.
+   */
+  async advanceAppendCoordinate(
+    agentId: string,
+    channel: string,
+    from: string,
+    transportScope?: string | null,
+    now = Date.now()
+  ): Promise<string> {
+    const scope = transportScope ?? ''
+    const minted = nextAppendCoordinate(from, now)
+    const res = await this.db
+      .prepare(
+        `UPDATE append_reservation SET coordinate = ?, updatedAt = ?
+         WHERE agentId = ? AND channel = ? AND transportScope = ? AND coordinate = ?`
+      )
+      .run(minted, now, agentId, channel, scope, from)
+    if (Number(res.changes) > 0) return minted
+    // Lost the CAS, or there was no reservation to rotate. Either way the current value is
+    // the answer — a rotation someone else just performed, or a freshly minted coordinate.
+    return await this.resolveAppendCoordinate(agentId, channel, scope, now)
+  }
+
+  /**
+   * Clear a session's CONTEXT while it keeps its identity (channel-session-mode.md §7.2).
+   *
+   * The same two fields the memory-provider and workspace-isolation resets already write on
+   * an existing row, with one deliberate difference: those null `lastDeliveredTs`, which
+   * makes the next prompt replay the whole thread as catch-up — that RESTORES context. Here
+   * the cursor is set to the moment the clear ran, so the replay window starts there and the
+   * session resumes with nothing before it.
+   *
+   * The row keeps its key, coordinate, outward id and workspace, so the console entry and
+   * everything holding the session's identity survive. A TTL-`closed` session stays closed,
+   * as the two sibling resets leave it: clearing context is not a reason to read as live
+   * again. Returns false when the row is gone.
+   */
+  async clearSessionContext(
+    key: string,
+    cursorTs: string,
+    at: number,
+    expectAcpSessionId?: string | null
+  ): Promise<boolean> {
+    // Pinned on the runtime id the caller read, which narrows the check-then-act above it:
+    // a turn admitted in the window that MINTED a new id loses here. It does not cover a turn
+    // that kept the same id — that one has already read the row and its end-of-turn write
+    // restores what this clears — so the caller re-checks the gate afterwards and reports
+    // rather than claiming a success the user will not get.
+    const res = await this.db
+      .prepare(
+        `UPDATE sessions SET acpSessionId = NULL, lastDeliveredTs = ?,
+           state = CASE WHEN state = 'closed' THEN 'closed' ELSE 'idle' END, updatedAt = ?
+         WHERE key = ? AND acpSessionId IS ?`
+      )
+      .run(cursorTs, at, key, expectAcpSessionId ?? null)
+    return Number(res.changes) > 0
+  }
+
+  /** Drop a conversation's reservation, but only while it still names `coordinate` — a
+   *  reservation a concurrent `!new` has already rotated is left alone. */
+  private async clearAppendReservation(
+    tx: StoreAccess,
+    agentId: string,
+    channel: string,
+    transportScope: string | null | undefined,
+    coordinate: string
+  ): Promise<void> {
+    await tx
+      .prepare(
+        `DELETE FROM append_reservation
+         WHERE agentId = ? AND channel = ? AND transportScope = ? AND coordinate = ?`
+      )
+      .run(agentId, channel, transportScope ?? '', coordinate)
   }
 
   /** Note that an agent is active in a PHYSICAL thread (channel-session-mode.md §6.4). */
@@ -2717,6 +2884,21 @@ export class LocalStore {
       .get(key)) as { executorDaemonId: string | null; stayedHomeReason: SessionStayedHomeReason | null } | undefined
     if (row?.executorDaemonId) return { executorDaemonId: row.executorDaemonId }
     return row?.stayedHomeReason ? { stayedHomeReason: row.stayedHomeReason } : undefined
+  }
+
+  /** Open `session`-isolated sessions of `agentIds` that execute here (session-executors.md §6): a placed one is its executor's to count. */
+  async listOwnIsolatedSessions(
+    agentIds: string[],
+    exceptKey?: string
+  ): Promise<Array<{ key: string; agentId: string; acpSessionId: string | null }>> {
+    const unique = [...new Set(agentIds)]
+    if (unique.length === 0) return []
+    return (await this.db
+      .prepare(
+        `SELECT key, agentId, acpSessionId FROM sessions WHERE state != 'closed' AND workspaceIsolation = 'session'
+         AND executorDaemonId IS NULL AND key != ? AND agentId IN (${unique.map(() => '?').join(',')})`
+      )
+      .all(exceptKey ?? '', ...unique)) as Array<{ key: string; agentId: string; acpSessionId: string | null }>
   }
 
   /** Targeted state transition for an existing session (§7.3), stamping `updatedAt`
@@ -3265,6 +3447,31 @@ export class LocalStore {
     return closed
   }
 
+  /** Rows left mid-turn and untouched since `before` (#2245): candidates only — the caller proves no turn runs them. */
+  async listAbandonedTurnSessions(
+    before: number
+  ): Promise<{ key: string; agentId: string; platform: string; state: SessionRecord['state']; updatedAt: number }[]> {
+    return (await this.db
+      .prepare(
+        "SELECT key, agentId, platform, state, updatedAt FROM sessions WHERE state IN ('prompting', 'resuming', 'cancelling') AND updatedAt < ?"
+      )
+      .all(before)) as {
+      key: string
+      agentId: string
+      platform: string
+      state: SessionRecord['state']
+      updatedAt: number
+    }[]
+  }
+
+  /** Put an abandoned row back to `idle` only while it is still the row that was read; `updatedAt` stays its last activity. */
+  async releaseAbandonedTurnSession(key: string, state: SessionRecord['state'], updatedAt: number): Promise<boolean> {
+    const res = await this.db
+      .prepare("UPDATE sessions SET state = 'idle' WHERE key = ? AND state = ? AND updatedAt = ?")
+      .run(key, state, updatedAt)
+    return Number(res.changes) > 0
+  }
+
   /** Retention-GC candidates (#485): sessions whose last activity (`updatedAt`)
    *  is older than `cutoff` and that are not mid-turn. Unlike listSessions this
    *  includes rows with no ACP id — a session that never bound one can still own
@@ -3341,6 +3548,11 @@ export class LocalStore {
       await tx.prepare('DELETE FROM session_mutes WHERE key = ?').run(key)
       // The affinity record outlives nothing: its whole meaning is the session it names.
       await tx.prepare('DELETE FROM thread_participation WHERE sessionKey = ?').run(key)
+      // A reservation that survived its session would hand the next message a coordinate
+      // whose transcript is still on disk — the inheritance the timestamp exists to prevent.
+      // Conditional, so a reservation a concurrent `!new` already rotated is left alone.
+      if (isAppendCoordinate(rec.thread))
+        await this.clearAppendReservation(tx, rec.agentId, rec.channel, rec.transportScope, rec.thread)
       await tx.prepare('DELETE FROM inbox WHERE sessionKey = ? AND terminalReport IS NULL').run(key)
       if (rec.acpSessionId) {
         // Once the local session content is gone, creating a new CP metadata row
@@ -5330,10 +5542,10 @@ export class LocalStore {
     const inserted = await this.db
       .prepare(
         `INSERT OR IGNORE INTO inbox
-          (id, sessionKey, agentId, msg, integrationId, callMeta, hookContext, posterPublishState,
+          (id, sessionKey, agentId, msg, integrationId, callMeta, hookContext, codeHostReplyTarget, posterPublishState,
             terminalReport, completedAt, isQueueCmd, loopGuardCounted, enqueuedAt)
          VALUES
-           (@id, @sessionKey, @agentId, @msg, @integrationId, @callMeta, @hookContext, @posterPublishState,
+           (@id, @sessionKey, @agentId, @msg, @integrationId, @callMeta, @hookContext, @codeHostReplyTarget, @posterPublishState,
             @terminalReport, @completedAt, @isQueueCmd, @loopGuardCounted, @enqueuedAt)`
       )
       .run({
@@ -5344,6 +5556,7 @@ export class LocalStore {
         integrationId: row.integrationId ?? null,
         callMeta: row.callMeta ?? null,
         hookContext: row.hookContext ?? null,
+        codeHostReplyTarget: row.codeHostReplyTarget ?? null,
         posterPublishState: row.posterPublishState ?? null,
         terminalReport: row.terminalReport ?? null,
         completedAt: row.completedAt ?? null,
@@ -5382,10 +5595,10 @@ export class LocalStore {
         tx
           .prepare(
             `INSERT OR IGNORE INTO inbox
-              (id, sessionKey, agentId, msg, integrationId, callMeta, hookContext, posterPublishState,
+              (id, sessionKey, agentId, msg, integrationId, callMeta, hookContext, codeHostReplyTarget, posterPublishState,
                 terminalReport, completedAt, isQueueCmd, loopGuardCounted, enqueuedAt)
              VALUES
-               (@id, @sessionKey, @agentId, @msg, @integrationId, @callMeta, @hookContext, @posterPublishState,
+               (@id, @sessionKey, @agentId, @msg, @integrationId, @callMeta, @hookContext, @codeHostReplyTarget, @posterPublishState,
                 @terminalReport, @completedAt, @isQueueCmd, @loopGuardCounted, @enqueuedAt)`
           )
           .run({
@@ -5396,6 +5609,7 @@ export class LocalStore {
             integrationId: r.integrationId ?? null,
             callMeta: r.callMeta ?? null,
             hookContext: r.hookContext ?? null,
+            codeHostReplyTarget: r.codeHostReplyTarget ?? null,
             posterPublishState: r.posterPublishState ?? null,
             terminalReport: r.terminalReport ?? null,
             completedAt: r.completedAt ?? null,
@@ -5421,7 +5635,7 @@ export class LocalStore {
 
   async updateInboxHookState(
     id: string,
-    hookContext: string,
+    hookContext: string | null,
     posterPublishState?: 'not_started' | 'in_flight' | 'settled'
   ): Promise<boolean> {
     const result = await this.db
@@ -5508,7 +5722,7 @@ export class LocalStore {
     const result = await this.db
       .prepare(
         `UPDATE inbox
-         SET msg = '{}', integrationId = NULL, callMeta = NULL, hookContext = NULL,
+         SET msg = '{}', integrationId = NULL, callMeta = NULL, hookContext = NULL, codeHostReplyTarget = NULL,
              posterPublishState = 'settled', terminalReport = @terminalReport,
              reportOwnerId = @ownerId, reportClaimedAt = @completedAt,
              completedAt = @completedAt, isQueueCmd = NULL

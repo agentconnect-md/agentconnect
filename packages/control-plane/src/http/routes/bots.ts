@@ -20,6 +20,9 @@ import { orgOf, denyViewerWrite } from '../rbac.js'
 import { BotDto, BotListDto, UpdateBotBody, ErrorDto, IdParam, type BotDtoT } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
 import { multiAgentUnsupportedMessage } from '../../platforms/sharing.js'
+import { botJoinsPublicChannels } from '../../platforms/slack/provider.js'
+import { integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js'
+import { NoConnection } from '../../orchestrator/outbound.js'
 import { deleteBotIdentity } from '../uninstall.js'
 
 function toDto(b: BotRecord): BotDtoT {
@@ -36,6 +39,7 @@ function toDto(b: BotRecord): BotDtoT {
     // non-human creator ⇒ null (the console shows the prebuilt/"—" fallback).
     createdBy: b.createdBy && !isSyntheticEmail(b.createdBy.email) ? b.createdBy.userId : null,
     shareable: b.shareable,
+    joinPublicChannels: botJoinsPublicChannels(b),
     transport: b.transport,
     inUseByAgentId: b.inUseByAgentId,
     agentIds: b.agentIds,
@@ -135,6 +139,40 @@ export function botRoutes(deps: HttpDeps) {
     // place either way. Enabling needs BOTH a platform whose manifest declares
     // `multiAgentShareable` (the same precondition the shareable install checks)
     // and the http transport; disabling is refused while >1 agent uses the bot.
+    /**
+     * Re-deliver every integration of `bot` with its re-projected config, after a bot-level
+     * setting the daemon reads changed. An HTTP bot's send-only specs ride `syncBot` (the
+     * relay assignment is re-broadcast too, harmlessly); a socket bot's integrations are
+     * re-pushed to their owning daemons one by one, the way the channel PATCH does it.
+     */
+    const pushBotConfig = async (bot: BotRecord): Promise<void> => {
+      if (bot.transport === 'http') {
+        await deps.httpBot.syncBot(bot.id)
+        return
+      }
+      const [secret, integrations] = await Promise.all([
+        deps.repos.botSecret.get(bot.orgId, bot.id),
+        deps.repos.integration.listForBot(bot.id)
+      ])
+      if (!secret) return
+      for (const integration of integrations) {
+        const [channels, owner] = await Promise.all([
+          deps.repos.integrationChannel.listForIntegration(integration.id),
+          deps.repos.agent.get(bot.orgId, integration.agentId)
+        ])
+        if (!owner) continue
+        const spec = await integrationToSpec(deps.platforms, integration, bot, secret, channels, isGatedAgent(owner))
+        if (!spec) continue
+        await deps.agentDelivery.integrationUpsert(owner, spec, (err, target) => {
+          if (!(err instanceof NoConnection)) throw err
+          app.log.debug(
+            { integrationId: integration.id, daemonId: target },
+            'integration/upsert skipped: daemon offline'
+          )
+        })
+      }
+    }
+
     r.patch(
       '/bots/:id',
       {
@@ -142,7 +180,7 @@ export function botRoutes(deps: HttpDeps) {
           tags: [Tag.Bots],
           summary: 'Update a bot',
           description:
-            'Allow or disallow this HTTP bot from serving multiple agents. Allowing requires a platform that supports multi-agent bots; relay ingress is unchanged either way.',
+            'Allow or disallow this HTTP bot from serving multiple agents (allowing requires a platform that supports multi-agent bots; relay ingress is unchanged either way), and/or let the bot join public channels on demand where the platform supports it.',
           operationId: 'updateBot',
           params: IdParam,
           body: UpdateBotBody,
@@ -155,7 +193,25 @@ export function botRoutes(deps: HttpDeps) {
         if (!bot) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
         }
-        if (req.body.shareable === bot.shareable) return toDto(bot) // no-op
+        // The join switch is a plain per-bot setting: no membership to recount, so no
+        // mutation lease. Gated on the manifest FIRST, like `shareable` below — a flag no
+        // daemon reads must not sit on the row as a promise.
+        if (req.body.joinPublicChannels !== undefined) {
+          if (!manifestFor(bot.platform).publicChannelJoin) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: `${bot.platform} bots cannot join channels by themselves`
+            })
+          }
+          if (req.body.joinPublicChannels !== botJoinsPublicChannels(bot)) {
+            await deps.repos.bot.update(bot.orgId, bot.id, { joinPublicChannels: req.body.joinPublicChannels })
+            bot = (await deps.repos.bot.get(bot.orgId, bot.id)) ?? bot
+            await pushBotConfig(bot)
+          }
+          if (req.body.shareable === undefined) return toDto(bot)
+        }
+        if (req.body.shareable === undefined || req.body.shareable === bot.shareable) return toDto(bot) // no-op
         // Multi-agent bots are a per-PLATFORM capability, and this route used to
         // check only the transport — so any HTTP-transport bot on a platform the
         // install path refuses (`validateShareableInstall`) could be flipped

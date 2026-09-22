@@ -75,6 +75,9 @@ export interface BrowserConnParticipant {
   /** Current placement; absent ⇒ unplaced / daemon not READY at verify (turns
    *  targeting it are refused with `no_agent`). */
   daemonId?: string
+  /** Where this participant's content is (#2218). Unlike `daemonId` it is never healed: a member
+   *  the turn reaches another way needs the RECORDER to decide whether it may take it. */
+  recordedDaemonId?: string
   primary?: boolean
 }
 
@@ -406,6 +409,7 @@ export class RelayBrowserConnection implements ChatSink {
           msgId: randomUUID(),
           chatId: this.deps.chatId,
           ...(this.deps.targetSessionId ? { targetSessionId: this.deps.targetSessionId } : {}),
+          ...(p.recordedDaemonId ? { recordedDaemonId: p.recordedDaemonId } : {}),
           payload: { op: 'context', post: contextPost }
         })
         .catch((error) => {
@@ -469,6 +473,7 @@ export class RelayBrowserConnection implements ChatSink {
       msgId: randomUUID(),
       chatId: this.deps.chatId,
       ...(this.deps.targetSessionId ? { targetSessionId: this.deps.targetSessionId } : {}),
+      ...(participant?.recordedDaemonId ? { recordedDaemonId: participant.recordedDaemonId } : {}),
       ...(this.remoteMcp ? { remoteMcp: this.remoteMcp } : {}),
       payload: op
     }

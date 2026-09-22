@@ -60,3 +60,24 @@ export const CodeHostRepoRef = z.object({
   path: z.string().min(1).optional()
 })
 export type CodeHostRepoRef = z.infer<typeof CodeHostRepoRef>
+
+/** Trusted ordinary reply coordinates; these carry no hook-run or formal-review authority. */
+export const CodeHostReplyTarget = z.object({
+  hookId: z.string().min(1),
+  provider: CodeHostProviderString,
+  // Pin a configurable provider's instance across delayed replies.
+  host: z.string().url().optional(),
+  subjectKind: z.enum(['issue', 'merge_request']).optional(),
+  // GitHub uses owner/repo; GitLab and Gitea use the numeric scope of the effect lease.
+  repo: z.string().min(1),
+  // Gitea's REST path, distinct from the numeric lease scope.
+  repoPath: z.string().min(1).optional(),
+  number: z.number().int().positive(),
+  reviewCommentId: z.string().min(1).optional(),
+  // Acknowledge the triggering comment; publish the answer on the stable thread root below.
+  triggerComment: z
+    .object({ kind: z.enum(['issue_comment', 'review_comment', 'note']), id: z.string().min(1) })
+    .optional(),
+  reviewThreadRootCommentId: z.string().min(1).optional()
+})
+export type CodeHostReplyTarget = z.infer<typeof CodeHostReplyTarget>

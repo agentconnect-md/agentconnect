@@ -148,6 +148,34 @@ export function sessionTriggerKind(
   return agentIds.has(trigger) ? 'agent' : 'person'
 }
 
+/**
+ * The mint time an `append:<epochMs>` session coordinate carries, or undefined when the
+ * thread is an ordinary platform id (channel-session-mode.md §3.2).
+ *
+ * The console needs it because such a session belongs to a ROOM, not to a person: its
+ * `triggeredBy` is frozen first-wins on the daemon, so a conversation that runs for months
+ * would otherwise be credited forever to whoever happened to speak first.
+ */
+export function appendSessionStartedAt(thread: string | undefined): Date | undefined {
+  if (thread === undefined || !thread.startsWith('append:')) return undefined
+  const payload = thread.slice('append:'.length)
+  if (!/^\d+$/.test(payload)) return undefined
+  const ms = Number(payload)
+  return Number.isSafeInteger(ms) ? new Date(ms) : undefined
+}
+
+/** How an append session names itself in a list: the stretch it covers, not a person. The
+ *  room is already the row's channel, so this is the half that tells two generations apart. */
+export function appendSessionLabel(startedAt: Date, now = new Date()): string {
+  // Same rule the session list's timestamps follow: a date outside the current year carries
+  // it, or a conversation started fourteen months ago reads like one started this spring.
+  const sameYear = startedAt.getFullYear() === now.getFullYear()
+  const opts: Intl.DateTimeFormatOptions = sameYear
+    ? { month: 'short', day: 'numeric' }
+    : { month: 'short', day: 'numeric', year: 'numeric' }
+  return `Since ${startedAt.toLocaleDateString(undefined, opts)}`
+}
+
 export function sessionSenderLabel(
   sender: string | null | undefined,
   fallback: string | undefined,

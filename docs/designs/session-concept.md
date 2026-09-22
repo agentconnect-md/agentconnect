@@ -250,7 +250,9 @@ a peer agent) and `toUser` (reach one or more humans) — each with **two delive
 selected by the presence of `channel` (direct / channel root) — plus a bare
 `channel`-only post (no recipient) and the separate `sessionId` reply branch.
 
-There is **no visible in-thread form**. To address an agent or a human in the thread the
+The only visible in-thread form is the **update**: a bare `channel` post carrying
+`thread`, which places a message in an existing conversation the agent is NOT answering
+(send-message-routing-rework.md §2.4). To address an agent or a human in the thread the
 agent is already in, it writes an ordinary turn reply containing the platform-native
 `@mention`; that reply already carries the right coordinates, streaming lifecycle, and
 sender identity, so a second sending path into the same thread would compete with it.
@@ -273,9 +275,11 @@ type UserTarget = {
   integrationId?: string     // pick a specific bot when the agent has several on the platform
 }
 
-// Bare post — publish a visible message without waking an agent or addressing a human.
+// Bare post — publish a visible message without waking an agent or addressing a human,
+// at the channel root or, with `thread`, as an update inside an existing conversation.
 type ChannelTarget = {
-  channel: string            // always the channel ROOT
+  channel: string            // the channel ROOT unless `thread` names a conversation in it
+  thread?: string            // an EXISTING thread's root id — the update form (§2.4)
   platform?: 'slack' | 'telegram' | 'discord' | 'feishu' | ... // defaults to current session
   integrationId?: string
 }
@@ -288,10 +292,10 @@ recipient modes the form is decided by the presence of `channel`:
 | ---------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `toAgent`        | `{"toAgent":"A","message":"…"}` — postless wake, nothing posted | `{"toAgent":"A","channel":"C","message":"…"}` — visible root post that @-mentions A, plus the wake |
 | `toUser`         | `{"toUser":"U","message":"…"}` — Slack DM to one person         | `{"toUser":["U1","U2"],"channel":"C","message":"…"}` — one root post mentioning all listed users   |
-| `channel` (bare) | —                                                               | `{"channel":"C","message":"…"}` — root post, no recipient                                          |
+| `channel` (bare) | —                                                               | `{"channel":"C","message":"…"}` — root post, no recipient; with `thread`, an update in that thread |
 
-No branch accepts `thread`; supplying one is rejected rather than silently posted at the
-root.
+Only the bare `channel` branch accepts `thread`; supplying one on `toAgent`, `toUser`, or
+`sessionId` is rejected rather than silently posted at the root.
 
 - The target must identify an action: `toAgent`, `toUser`, or `channel`. The
   daemon rejects an empty action and rejects mixing `toAgent` with `toUser` in

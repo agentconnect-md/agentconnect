@@ -8,7 +8,8 @@ import {
   RevokeKeyResponse,
   keyGrantViolation,
   type IssueKeyRequest,
-  type IssueKeyResponse
+  type IssueKeyResponse,
+  type KeyServerErrorCode
 } from '@agentconnect.md/protocol'
 
 // Requested credential lifetime, which the issuer may only narrow. A hundred years: a continuously busy session never reaches a refresh, so any finite window breaks the sessions that matter most — key-server.md §3 has the reasoning and what it costs. Overridable per deployment.
@@ -27,7 +28,8 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
 export class KeyServerError extends Error {
   constructor(
     message: string,
-    readonly code: 'org_suspended' | 'quota_denied' | 'unauthorized' | 'unavailable',
+    // The contract's type, not a copy of its members: a hand-written union silently stops covering the enum the day one is added.
+    readonly code: KeyServerErrorCode,
     readonly status?: number
   ) {
     super(message)

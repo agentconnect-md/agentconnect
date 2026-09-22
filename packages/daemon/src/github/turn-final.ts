@@ -1,8 +1,8 @@
 /** GitHub's implementation of the daemon turn-final contract (§6.5, §14.1): the issue/PR
  *  comment target, its repo-targeted mint, and the pull-request lifecycle pairing. */
-import type { RdMsgHook } from '@agentconnect.md/protocol'
 import type {
   CodeHostDelivery,
+  CodeHostReplySource,
   CodeHostEffectLease,
   CodeHostFinalPoster,
   CodeHostFinalPosterDeps,
@@ -22,7 +22,7 @@ export interface GithubTurnFinalHost {
   invalidatePost(agentId: string, repo: string, presentedToken?: string): void
 }
 
-function replyTarget(msg: RdMsgHook): CodeHostReplyTarget | undefined {
+function replyTarget(msg: CodeHostReplySource): CodeHostReplyTarget | undefined {
   const github = msg.github
   // Inline coordinates and their PR target are one body-free trusted unit.
   if (

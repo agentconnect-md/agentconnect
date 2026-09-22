@@ -36,6 +36,9 @@
 
 import type { ElicitCardFacet } from './elicit-card.js'
 import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
+import type { ImageUploader } from '../mcp/ops/context.js'
+
+export type TurnAdmissionStatus = 'processing' | 'queued' | 'steered'
 
 /** Platform inputs and narrow rendering capabilities; core turn state stays inside the daemon. */
 export interface TurnOutputContext<TMessage> {
@@ -79,6 +82,12 @@ export interface TurnOutputContext<TMessage> {
 export interface TurnOutputSurface<TTurn, TAction, TConv, TMessage> {
   /** Diagnostic label; never parsed. */
   readonly platform: string
+  // Best-effort admission feedback before runtime startup; the caller never awaits provider I/O.
+  onAdmission?(ctx: TurnOutputContext<TMessage>, status: TurnAdmissionStatus, signal: AbortSignal): Promise<void>
+  // Live delivery skips final-context regeneration; absence preserves staged chat delivery.
+  answerDelivery?(ctx: TurnOutputContext<TMessage>): 'staged' | 'live'
+  // Optional image sender bound to this turn's leased transport and provider reply anchor.
+  imageUploader?(turn: TTurn): ImageUploader | undefined
   /** How this surface COLLECTS an elicitation answer — the in-chat card, its reduction, and the
    *  rewrite that settles it. Absent ⇒ the surface has no such control and the ask is declined
    *  with a notice. Reached via {@link TurnOutputRegistry.exact}, like {@link onSuppress}: a

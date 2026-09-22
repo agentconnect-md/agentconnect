@@ -12,7 +12,7 @@
  * spelled the answer as a platform name:
  *
  *  - which agent-facing attachment tool to inject (`platform === 'slack'` →
- *    `readSlackFile`, `=== 'telegram'` → `readTelegramFile`) — decided at
+ *    `readSlackFile`, `=== 'telegram'` → `readTelegramFile`, …) — decided at
  *    `session/new` from the agent's CONFIGURED integrations, long before any
  *    connection is resolved;
  *  - which platform a `toUser` direct message defaults to (`?? 'slack'`);
@@ -42,6 +42,7 @@ import type { SessionContext } from '../mcp/ops/context.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import type { ToolDescriptor } from '../tool-schema/descriptor.js'
 import { LINEAR_SESSION_TOOLS } from './linear/agent-tools.js'
+import { QQ_ATTACHMENT_TOOL } from './qq/attachments.js'
 import { SLACK_ATTACHMENT_TOOL } from './slack/attachments.js'
 import { TELEGRAM_ATTACHMENT_TOOL } from './telegram/attachments.js'
 
@@ -109,12 +110,19 @@ export interface PlatformReadPorts {
   readonly threadHistory?: boolean
   /** `addReaction` / `getReactions`: arbitrary emoji, not just the turn-chrome intent. */
   readonly reactions?: boolean
+  /** `deleteMessage`: the bot may retire a message, agent-callable rather than chrome cleanup. */
+  readonly messageDelete?: boolean
   /** `searchPublicMessages`: the platform offers a workspace search this bot identity may run. */
   readonly publicMessageSearch?: boolean
   /** `createConversation`: the bot may create a channel or open a group conversation. */
   readonly conversationCreate?: boolean
   /** `scheduleMessage`: the platform accepts a message for later delivery. */
   readonly scheduledMessages?: boolean
+  /** Cross-conversation reach is PUBLIC-ONLY: the connection enters any public channel on
+   *  demand, so `getChannelHistory`, `getThreadHistory` and `sendMessage` may name one — while
+   *  a private channel, DM or group DM is reachable only as the session's own conversation
+   *  (`mcp/ops/channel-reach.ts`). */
+  readonly publicChannelReach?: boolean
   /** `createCanvas` / `readCanvas` / `updateCanvas`: a platform-hosted rich-text page. */
   readonly canvas?: boolean
   /** `listBookmarks` / `addBookmark` / `removeBookmark`: the platform pins links in a channel. */
@@ -155,6 +163,7 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       reactions: true,
       conversationCreate: true,
       publicMessageSearch: true,
+      publicChannelReach: true,
       scheduledMessages: true,
       canvas: true,
       bookmarks: true,
@@ -167,7 +176,16 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
     {
       platform: 'telegram',
       label: 'Telegram',
+      messageDelete: true,
       attachmentReadTool: TELEGRAM_ATTACHMENT_TOOL
+    }
+  ],
+  [
+    'qq',
+    {
+      platform: 'qq',
+      label: 'QQ',
+      attachmentReadTool: QQ_ATTACHMENT_TOOL
     }
   ],
   [
@@ -231,6 +249,12 @@ export function directMessagePlatformFor(sessionPlatform: string): string {
   return sessionPlatform
 }
 
+/** Does `platform` confine what a tool may reach beyond the session's own conversation to
+ *  PUBLIC channels? Undeclared ⇒ no gate: the bot reaches whatever it is already in. */
+export function reachesPublicChannelsOnly(platform: string): boolean {
+  return READ_PORTS.get(platform)?.publicChannelReach === true
+}
+
 /** The DM-capable platforms, rendered for an error message ("Slack",
  *  "Slack or Telegram"). Empty when no platform declares the port. */
 export function directMessagePlatformList(): string {
@@ -259,6 +283,7 @@ export type PlatformToolPort =
   | 'channelHistory'
   | 'threadHistory'
   | 'reactions'
+  | 'messageDelete'
   | 'conversationCreate'
   | 'publicMessageSearch'
   | 'scheduledMessages'

@@ -492,23 +492,30 @@ export interface GitCredentialTarget {
   socketPath?: string
 }
 
+/** An additional repository as its own credential ask names it: the path its helper reads, on the host that numbers `repoId`. */
+export interface GitCredRepository {
+  repoFullName: string
+  provider: CodeHostProvider
+  repoId: string
+}
+
 /** Module-level init (workspace-manager is functional; mirrors cloneInFlight). */
-let targetFor: ((agentId: string) => GitCredentialTarget) | undefined
+let targetFor: ((agentId: string, cwd?: string) => GitCredentialTarget) | undefined
 let daemonTarget: GitCredentialTarget | undefined
-let preWarm: ((agentId: string, reason: 'clone' | 'pull') => Promise<void>) | undefined
+let preWarm: ((agentId: string, reason: 'clone' | 'pull', repository?: GitCredRepository) => Promise<void>) | undefined
 let capabilityFor: ((agentId: string) => string) | undefined
 
 export function initGitInjection(opts: {
-  /** Resolves the filesystem an agent's git runs in, on the SAME predicate the execution plane's `gitRunnerFor` answers with — a remote runner running with daemon-local pointers is exactly the bug this seam exists to remove. */
-  targetFor: (agentId: string) => GitCredentialTarget
+  /** Resolves the filesystem an agent's git runs in, on the SAME predicate the execution plane's `gitRunnerFor` answers with — a remote runner running with daemon-local pointers is exactly the bug this seam exists to remove. The path narrows it where one agent's sessions run in different filesystems (session-executors.md §5). */
+  targetFor: (agentId: string, cwd?: string) => GitCredentialTarget
   /**
    * This daemon's OWN filesystem, for git the daemon itself runs regardless of where the agent's
    * workspace git runs (skill-source acquisition, shared-skills.md §6). Absent ⇒ `targetFor`
    * answers for those too, which is only right for a daemon that never sandboxes.
    */
   daemonTarget?: GitCredentialTarget
-  /** Warm the daemon credential cache BEFORE a timed git op (never inside its budget). */
-  preWarm: (agentId: string, reason: 'clone' | 'pull') => Promise<void>
+  /** Warm the daemon credential cache BEFORE a timed git op (never inside its budget): the named repository's own credential, else the workspace's. */
+  preWarm: (agentId: string, reason: 'clone' | 'pull', repository?: GitCredRepository) => Promise<void>
   /** Runtime-only local socket capability. Never written to a config file. */
   capabilityFor: (agentId: string) => string
 }): void {
@@ -528,9 +535,9 @@ export function daemonGitCredentialTarget(opts: { shimPath: string; runDir: stri
   }
 }
 
-/** A sandbox: the image's fixed helper path, and the Git config and tunnel socket under its runtime root (default: the image's). */
-export function sandboxGitCredentialTarget(runtimeRoot?: string): GitCredentialTarget {
-  const paths = shimPaths(runtimeRoot)
+/** A sandbox: the helper under its helper root and the Git config and tunnel socket under its runtime root; both default to the image's, which is what a pod has (session-executors.md §5). */
+export function sandboxGitCredentialTarget(runtimeRoot?: string, helperRoot?: string): GitCredentialTarget {
+  const paths = shimPaths(runtimeRoot, helperRoot)
   return {
     kind: 'sandbox',
     helper: paths.gitCredentialHelper,
@@ -539,9 +546,9 @@ export function sandboxGitCredentialTarget(runtimeRoot?: string): GitCredentialT
   }
 }
 
-function targetOf(agentId: string): GitCredentialTarget {
+function targetOf(agentId: string, cwd?: string): GitCredentialTarget {
   if (!targetFor) throw new Error('git credential injection is not initialized')
-  return targetFor(agentId)
+  return targetFor(agentId, cwd)
 }
 
 /** Auth for helper subprocesses. Keep separate from the persisted config pointers.
@@ -594,9 +601,11 @@ function credentialConfigPairs(
 export function cloneGitEnv(
   agentId: string,
   repository?: string,
-  scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE
+  scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE,
+  /** Where this git will run, for an agent whose sessions do not all run in the same filesystem (§5). */
+  cwd?: string
 ): Record<string, string> {
-  return gitEnvFor(agentId, targetOf(agentId), repository, scope)
+  return gitEnvFor(agentId, targetOf(agentId, cwd), repository, scope)
 }
 
 /**
@@ -733,10 +742,14 @@ export async function writeRepoHelperConfig(
   await git.raw(['config', `credential.${base}.useHttpPath`, 'true'])
 }
 
-/** Pre-warm hook for workspace-manager (no-op until initialized). */
-export async function preWarmGitCred(agentId: string, reason: 'clone' | 'pull'): Promise<void> {
+/** Pre-warm hook for workspace-manager (no-op until initialized); `repository` absent ⇒ the workspace's own credential. */
+export async function preWarmGitCred(
+  agentId: string,
+  reason: 'clone' | 'pull',
+  repository?: GitCredRepository
+): Promise<void> {
   if (!preWarm) return
-  await preWarm(agentId, reason)
+  await preWarm(agentId, reason, repository)
 }
 
 // The session channel (GIT_CONFIG_GLOBAL) needs git ≥ 2.32 and DEGRADES

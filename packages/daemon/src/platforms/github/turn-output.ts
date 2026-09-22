@@ -66,6 +66,7 @@ export interface GithubTurn {
   resolveFileLink?: WorkspaceFileLinkResolver
   plan: {
     statusThread: string
+    sessionThread: string
     transcriptChannel: string
     agentId: string
     platform: string
@@ -143,7 +144,7 @@ export async function finalizeGithubTurn<TTurn extends GithubTurn>(
   if (state.deferredFinalTranscript && final?.trim()) {
     await host.appendTranscript({
       channel: turn.plan.transcriptChannel,
-      thread: turn.plan.statusThread,
+      thread: turn.plan.sessionThread,
       ts: host.monotonicTs(),
       sender: turn.plan.agentId,
       kind: 'text',

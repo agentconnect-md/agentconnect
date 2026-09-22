@@ -144,3 +144,22 @@ describe('AddIntegrationModal, platform tiles by placement', () => {
     expect(tiles['Telegram']).toBe(true)
   })
 })
+
+describe('AddIntegrationModal, flag-gated platform tiles', () => {
+  afterEach(() => {
+    window.__AC_ENV = {}
+  })
+
+  it('leaves the QQ tile out where the qq flag is off', async () => {
+    window.__AC_ENV = {}
+    await render({ daemon: '—', placementKind: 'daemon' })
+    expect(tileStates()).not.toHaveProperty('QQ')
+    expect(tileStates()).toHaveProperty('Slack')
+  })
+
+  it('offers the QQ tile where the qq flag is on', async () => {
+    window.__AC_ENV = { FEATURE_FLAGS: 'qq' }
+    await render({ daemon: '—', placementKind: 'daemon' })
+    expect(tileStates()['QQ']).toBe(false)
+  })
+})

@@ -87,6 +87,7 @@ function TelegramPrivacyStatus({
  */
 export function TelegramWizardBody({ agent, host }: { agent: Agent; host: WizardHost }) {
   const t = useTranslations('Platforms.telegram')
+  const tokenT = useTranslations('Platforms.chrome.token')
   const [botToken, setBotToken] = useState('')
   const [showErrors, setShowErrors] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -171,12 +172,20 @@ export function TelegramWizardBody({ agent, host }: { agent: Agent; host: Wizard
       linkLabel={t('guide.link')}
       steps={telegramWalkthroughSteps(t)}
       walkthroughLabel={t('guide.walkthroughLabel')}
-      tokenPlaceholder={t('guide.tokenPlaceholder')}
-      tokenValue={botToken}
-      tokenInvalid={
-        (showErrors && !telegramOk) || check === 'privacy_enabled' || check === 'invalid' || check === 'unreachable'
-      }
-      onTokenChange={setBotToken}
+      step2={tokenT('prompt')}
+      fields={[
+        {
+          label: tokenT('label'),
+          placeholder: t('guide.tokenPlaceholder'),
+          value: botToken,
+          invalid:
+            (showErrors && !telegramOk) ||
+            check === 'privacy_enabled' ||
+            check === 'invalid' ||
+            check === 'unreachable',
+          onChange: setBotToken
+        }
+      ]}
     >
       <TelegramPrivacyStatus
         status={check}

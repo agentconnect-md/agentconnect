@@ -4,7 +4,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { NoteProjectionRow } from '../src/gitlab/note-projection.js'
-import { LocalStore, sessionKey, type StoreDatabase } from '../src/store/local-store.js'
+import {
+  LocalStore,
+  sessionKey,
+  type SessionRecord,
+  type StoreDatabase,
+  SCHEMA_VERSION
+} from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { memoryStoreDatabase, openTestStore, usingPostgresStore } from './store-support.js'
 
@@ -49,6 +55,12 @@ const dropBirthVerdict = (db: DatabaseSync): void => {
   db.exec('ALTER TABLE sessions DROP COLUMN stayedHomeReason')
 }
 
+/** A pre-v23 store has no durable code-host output target. */
+const dropCodeHostReplyTarget = (db: DatabaseSync): void => {
+  db.exec('ALTER TABLE sessions DROP COLUMN originCodeHostReplyTarget')
+  db.exec('ALTER TABLE inbox DROP COLUMN codeHostReplyTarget')
+}
+
 /** Undo the v17 gate re-key, so a fixture's session_gates looks like the one an older daemon wrote. */
 const revertSessionGateKey = (db: DatabaseSync): void => {
   db.exec('DROP TABLE session_gates')
@@ -81,6 +93,48 @@ const dropTranscriptOrg = (db: DatabaseSync): void => {
   `)
 }
 
+it('binds the first parent reply target once and carries a separate publication fence in the report inbox', async () => {
+  const s = await store()
+  const parent = {
+    key: 'parent',
+    agentId: 'bot-a',
+    platform: 'hook',
+    channel: 'github:123',
+    thread: '42',
+    acpSessionId: 'acp-parent',
+    state: 'idle' as const,
+    lastDeliveredTs: null,
+    updatedAt: 1,
+    originSessionId: 'origin'
+  }
+  await s.upsertSession(parent)
+  const target = JSON.stringify({ provider: 'github', hookId: 'hook-1', repo: 'acme/project', number: 42 })
+  await s.bindSessionOriginReplyTarget('parent', 'other-origin', target)
+  expect((await s.getSession('parent'))?.originCodeHostReplyTarget).toBeNull()
+  await s.bindSessionOriginReplyTarget('parent', 'origin', target)
+  await s.bindSessionOriginReplyTarget('parent', 'origin', 'null')
+  await s.upsertSession({ ...parent, updatedAt: 2 })
+  expect((await s.getSession('parent'))?.originCodeHostReplyTarget).toBe(target)
+  await s.upsertSession({ ...parent, key: 'private-child' })
+  await s.bindSessionOriginReplyTarget('private-child', 'origin', 'null')
+  await s.bindSessionOriginReplyTarget('private-child', 'origin', target)
+  expect((await s.getSession('private-child'))?.originCodeHostReplyTarget).toBe('null')
+  await s.appendInbox({
+    id: 'report',
+    sessionKey: 'parent',
+    agentId: 'bot-a',
+    msg: '{}',
+    enqueuedAt: '1',
+    codeHostReplyTarget: target,
+    posterPublishState: 'not_started'
+  })
+  expect(await s.updateInboxHookState('report', null, 'in_flight')).toBe(true)
+  expect(await s.listInboxBySessionKeyFifo()).toMatchObject([
+    { codeHostReplyTarget: target, hookContext: null, posterPublishState: 'in_flight' }
+  ])
+  await s.close()
+})
+
 describe.skipIf(pg)('LocalStore schema versioning', () => {
   const userVersion = (path: string): number => {
     const db = new DatabaseSync(path)
@@ -110,6 +164,39 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect(userVersion(path)).toBe(stamped)
   })
 
+  it('upgrades v22 sessions without inventing code-host authority and preserves a newly bound target on reopen', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v22-')), 'local.sqlite')
+    const initial = await LocalStore.open(path)
+    await initial.upsertSession({
+      key: 'parent',
+      agentId: 'bot-a',
+      platform: 'hook',
+      channel: 'github:123',
+      thread: '42',
+      transportScope: 'github:123',
+      acpSessionId: 'acp-parent',
+      originSessionId: 'origin',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+    await initial.close()
+    const legacy = new DatabaseSync(path)
+    dropCodeHostReplyTarget(legacy)
+    legacy.exec('PRAGMA user_version = 22')
+    legacy.close()
+    const upgraded = await LocalStore.open(path)
+    const parent = (await upgraded.getSession('parent'))!
+    expect(parent.originCodeHostReplyTarget).toBeNull()
+    const target = JSON.stringify({ provider: 'github', hookId: 'hook-1', repo: 'acme/project', number: 42 })
+    await upgraded.bindSessionOriginReplyTarget('parent', 'origin', target)
+    await upgraded.upsertSession({ ...parent, updatedAt: 2 })
+    await upgraded.close()
+    const restarted = await LocalStore.open(path)
+    expect((await restarted.getSession('parent'))?.originCodeHostReplyTarget).toBe(target)
+    await restarted.close()
+  })
+
   it('adds permission ownership, recovery ownership and per-owner routing when upgrading a v1 store', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v1-')), 'local.sqlite')
     await (await LocalStore.open(path)).close()
@@ -118,6 +205,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     dropApprovalDmColumns(old)
     dropPlatformStanding(old)
     dropBirthVerdict(old)
+    dropCodeHostReplyTarget(old)
     revertSessionGateKey(old)
     old.exec('DROP INDEX session_metadata_outbox_attempt')
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN failedAttempts')
@@ -165,7 +253,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect(cronColumns).toContain('definition')
     // Purge receipts are leased per pool member (#1032).
     expect(purgeColumns).toEqual(expect.arrayContaining(['ownerId', 'claimedAt']))
-    expect(userVersion(path)).toBe(21)
+    expect(userVersion(path)).toBe(SCHEMA_VERSION)
   })
 
   it.skipIf(pg)('never persists the CP routing map on a shared store, and still does on an owned one', async () => {
@@ -217,6 +305,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     dropApprovalDmColumns(old)
     dropPlatformStanding(old)
     dropBirthVerdict(old)
+    dropCodeHostReplyTarget(old)
     old.exec('PRAGMA user_version = 5')
     old.close()
 
@@ -232,7 +321,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect(await upgraded.isCaptureExcluded('bot-c', 'c')).toBe(true)
     await upgraded.close()
 
-    expect(userVersion(path)).toBe(21)
+    expect(userVersion(path)).toBe(SCHEMA_VERSION)
   })
 
   it('re-keys the runtime catalog cache on its owning member when upgrading a v7 store', async () => {
@@ -266,6 +355,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     dropApprovalDmColumns(old)
     dropPlatformStanding(old)
     dropBirthVerdict(old)
+    dropCodeHostReplyTarget(old)
     revertSessionGateKey(old)
     old.exec('PRAGMA user_version = 7')
     old.close()
@@ -288,7 +378,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
         .map((column) => column.name)
     expect(primaryKey(metaColumns)).toEqual(['ownerId', 'runtimeId'])
     expect(primaryKey(capColumns)).toEqual(['ownerId', 'runtimeId', 'modelId'])
-    expect(userVersion(path)).toBe(21)
+    expect(userVersion(path)).toBe(SCHEMA_VERSION)
   })
 
   it('backfills a v11 store with the outward id its sessions were already reported under', async () => {
@@ -305,6 +395,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     dropApprovalDmColumns(old)
     dropPlatformStanding(old)
     dropBirthVerdict(old)
+    dropCodeHostReplyTarget(old)
     revertSessionGateKey(old)
     old.exec('PRAGMA user_version = 11')
     old.close()
@@ -316,7 +407,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect((await upgraded.getSession('k2'))?.sessionId).toBeNull()
     expect(await upgraded.ensureOutwardSessionId('k2', 'bot-a')).toMatch(/^[0-9a-f-]{36}$/)
     await upgraded.close()
-    expect(userVersion(path)).toBe(21)
+    expect(userVersion(path)).toBe(SCHEMA_VERSION)
   })
 
   // The regression that made `directDestination` reachable on fresh databases only: the step was
@@ -332,6 +423,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     dropApprovalDmColumns(old)
     dropPlatformStanding(old)
     dropBirthVerdict(old)
+    dropCodeHostReplyTarget(old)
     revertSessionGateKey(old)
     old.exec('PRAGMA user_version = 12')
     old.close()
@@ -342,7 +434,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     await upgraded.setSessionClassification('k1', { sourceBindingKind: 'external', directDestination: true })
     expect(await upgraded.getSessionClassification('bot-a', 'acp-1')).toMatchObject({ directDestination: true })
     await upgraded.close()
-    expect(userVersion(path)).toBe(21)
+    expect(userVersion(path)).toBe(SCHEMA_VERSION)
   })
 
   it('refuses a store written by a newer daemon WITHOUT touching it first', async () => {
@@ -1446,7 +1538,7 @@ describe('LocalStore session/transcript read-back (session/list, session/history
 })
 
 describe('LocalStore session lifecycle (§7.3/#111/#118)', () => {
-  const seed = async (s: LocalStore, key: string, agentId: string, state: 'idle' | 'prompting', updatedAt: number) =>
+  const seed = async (s: LocalStore, key: string, agentId: string, state: SessionRecord['state'], updatedAt: number) =>
     await s.upsertSession({
       key,
       agentId,
@@ -1533,6 +1625,27 @@ describe('LocalStore session lifecycle (§7.3/#111/#118)', () => {
     expect((await s.getSession('old-idle'))?.state).toBe('closed')
     expect((await s.getSession('fresh-idle'))?.state).toBe('idle')
     expect((await s.getSession('old-prompting'))?.state).toBe('prompting')
+    await s.close()
+  })
+
+  it('lists rows left mid-turn, and releases one only while it is still the row that was read (#2245)', async () => {
+    const s = await store()
+    await seed(s, 'old-prompting', 'bot-a', 'prompting', 100)
+    await seed(s, 'old-resuming', 'bot-a', 'resuming', 100)
+    await seed(s, 'old-cancelling', 'bot-a', 'cancelling', 100)
+    await seed(s, 'fresh-prompting', 'bot-a', 'prompting', 900)
+    await seed(s, 'old-idle', 'bot-a', 'idle', 100)
+    const rows = await s.listAbandonedTurnSessions(500)
+    expect(rows.map((r) => r.key).sort()).toEqual(['old-cancelling', 'old-prompting', 'old-resuming'])
+    expect(rows.find((r) => r.key === 'old-prompting')?.platform).toBe('slack')
+    // A turn that took the row since it was read wins.
+    await s.setSessionState('old-resuming', 'prompting', 950)
+    expect(await s.releaseAbandonedTurnSession('old-resuming', 'resuming', 100)).toBe(false)
+    expect(await s.releaseAbandonedTurnSession('old-prompting', 'prompting', 100)).toBe(true)
+    const released = await s.getSession('old-prompting')
+    expect(released?.state).toBe('idle')
+    expect(Number(released?.updatedAt)).toBe(100)
+    expect((await s.getSession('old-resuming'))?.state).toBe('prompting')
     await s.close()
   })
 
@@ -2712,6 +2825,7 @@ describe.skipIf(pg)('transcript org migration from a v10 store', () => {
     dropApprovalDmColumns(old)
     dropPlatformStanding(old)
     dropBirthVerdict(old)
+    dropCodeHostReplyTarget(old)
     revertSessionGateKey(old)
     old.exec('PRAGMA user_version = 10')
     old.close()
@@ -2783,6 +2897,7 @@ it.skipIf(pg)('backfills thread affinity from the sessions a v20 store already h
 
   // Rewind to the shape a daemon without the table wrote.
   const legacy = new DatabaseSync(path)
+  dropCodeHostReplyTarget(legacy)
   legacy.exec('DROP TABLE thread_participation; PRAGMA user_version = 20;')
   legacy.close()
 
@@ -2797,7 +2912,7 @@ it.skipIf(pg)('backfills thread affinity from the sessions a v20 store already h
   await upgraded.close()
 })
 
-it.skipIf(pg)('lists both agents sharing one thread, which is what keeps it mention-gated', async () => {
+it('lists both agents sharing one thread, which is what keeps it mention-gated', async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'ac-affinity-two-')), 'local.sqlite')
   const s = await openTestStore(path)
   for (const agentId of ['bot-a', 'bot-b'])
@@ -2819,7 +2934,7 @@ it.skipIf(pg)('lists both agents sharing one thread, which is what keeps it ment
 // `upsertSession` rewrites a session's transportScope (hydration, the corruption fence),
 // and affinity is keyed by it — so the row left at the old scope has to be retired, or a
 // lookup there keeps naming this agent for the rest of the session's life.
-it.skipIf(pg)('retires the affinity row a session left at its previous transport scope', async () => {
+it('retires the affinity row a session left at its previous transport scope', async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'ac-affinity-scope-')), 'local.sqlite')
   const s = await openTestStore(path)
   const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
@@ -2847,7 +2962,174 @@ it.skipIf(pg)('retires the affinity row a session left at its previous transport
 // write and the retirement of the row at the old scope leaves one behind. The read fences
 // on the session's own scope so that row resolves nothing, rather than letting an
 // unmentioned message through the old bot keep reaching an agent that has moved.
-it.skipIf(pg)('ignores an affinity row whose scope the session no longer has', async () => {
+// The reservation (channel-session-mode.md §3.3) is the authoritative source for an
+// `append` conversation's coordinate. What matters is that concurrent callers converge on
+// ONE value, that a rotation is exactly once per intent, and that a purge does not leave a
+// coordinate behind whose transcript is still on disk.
+// §7.2: the clear keeps the session's identity and takes its context. The cursor is what
+// separates it from the two resets that already write these fields — those null it, which
+// makes the next prompt replay the whole thread, i.e. restore exactly what a clear removes.
+it('clears a session in place, keeping its identity and moving the replay cursor', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-clear-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
+  await s.upsertSession({
+    key,
+    agentId: 'bot-a',
+    platform: 'slack',
+    channel: 'C1',
+    thread: 'T1',
+    acpSessionId: 'acp-1',
+    state: 'idle',
+    lastDeliveredTs: '100.1',
+    updatedAt: 1
+  })
+  const before = await s.getSession(key)
+
+  // Pinned on the runtime id the caller read, so a turn that started meanwhile cannot be
+  // cleared out from under itself.
+  expect(await s.clearSessionContext(key, '200.0', 2, 'acp-1')).toBe(true)
+
+  const after = await s.getSession(key)
+  // Identity survives: same row, same key, same outward id — the console entry is the same.
+  expect(after?.key).toBe(key)
+  expect(after?.sessionId).toBe(before?.sessionId)
+  expect(after?.thread).toBe('T1')
+  // Context does not: the runtime session is detached and the cursor moved forward, so the
+  // next prompt replays from the clear rather than from the start of the thread.
+  expect(after?.acpSessionId).toBeNull()
+  expect(after?.lastDeliveredTs).toBe('200.0')
+  await s.close()
+})
+
+it('refuses a clear pinned on a runtime session the row no longer holds', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-clear-raced-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
+  await s.upsertSession({
+    key,
+    agentId: 'bot-a',
+    platform: 'slack',
+    channel: 'C1',
+    thread: 'T1',
+    acpSessionId: 'acp-2',
+    state: 'idle',
+    lastDeliveredTs: '100.1',
+    updatedAt: 1
+  })
+  // The command decided against `acp-1`; a turn admitted since moved the row to `acp-2`, and
+  // clearing now would cut that turn's identity out from under it.
+  expect(await s.clearSessionContext(key, '200.0', 2, 'acp-1')).toBe(false)
+  expect((await s.getSession(key))?.acpSessionId).toBe('acp-2')
+  await s.close()
+})
+
+it('reports a clear of a session that is gone rather than creating one', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-clear-missing-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  expect(await s.clearSessionContext(sessionKey('slack', 'C1', 'T1', 'bot-a'), '200.0', 2, 'acp-1')).toBe(false)
+  await s.close()
+})
+
+it('converges every concurrent resolver on one append coordinate', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-reservation-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  const resolved = await Promise.all(
+    Array.from({ length: 8 }, (_, i) => s.resolveAppendCoordinate('bot-a', 'C1', undefined, 1000 + i))
+  )
+  expect(new Set(resolved).size).toBe(1)
+  // And it stays that value for every later message, rather than drifting with the clock.
+  expect(await s.resolveAppendCoordinate('bot-a', 'C1', undefined, 9999)).toBe(resolved[0])
+  await s.close()
+})
+
+it('scopes the reservation to the agent, the channel and the transport', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-reservation-scope-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  const a = await s.resolveAppendCoordinate('bot-a', 'C1', undefined, 1000)
+  expect(await s.resolveAppendCoordinate('bot-b', 'C1', undefined, 2000)).not.toBe(a)
+  expect(await s.resolveAppendCoordinate('bot-a', 'C2', undefined, 3000)).not.toBe(a)
+  expect(await s.resolveAppendCoordinate('bot-a', 'C1', 'scope-x', 4000)).not.toBe(a)
+  await s.close()
+})
+
+it('rotates once for simultaneous !new commands and twice for sequential ones', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-reservation-advance-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  const first = await s.resolveAppendCoordinate('bot-a', 'C1', undefined, 1000)
+
+  // Two commands that both read `first` — the loser must not advance a second time.
+  const [x, y] = await Promise.all([
+    s.advanceAppendCoordinate('bot-a', 'C1', first, undefined, 2000),
+    s.advanceAppendCoordinate('bot-a', 'C1', first, undefined, 2001)
+  ])
+  expect(x).toBe(y)
+  expect(x).not.toBe(first)
+  expect(await s.resolveAppendCoordinate('bot-a', 'C1', undefined, 5000)).toBe(x)
+
+  // Sequential commands each read the coordinate in force, so each one rotates.
+  const third = await s.advanceAppendCoordinate('bot-a', 'C1', x!, undefined, 3000)
+  expect(third).not.toBe(x)
+  await s.close()
+})
+
+it('rotates above the coordinate in force even when the clock went backwards', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-reservation-clock-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  const first = await s.resolveAppendCoordinate('bot-a', 'C1', undefined, 5000)
+  const second = await s.advanceAppendCoordinate('bot-a', 'C1', first, undefined, 1000)
+  expect(second).toBe('append:5001')
+  await s.close()
+})
+
+// A reservation that outlived its session would rejoin a coordinate whose transcript
+// retention deliberately left behind — the inheritance the timestamp exists to prevent.
+it('drops the reservation with the session it named, and only then', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-reservation-purge-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  const coordinate = await s.resolveAppendCoordinate('bot-a', 'C1', undefined, 1000)
+  const key = sessionKey('slack', 'C1', coordinate, 'bot-a')
+  await s.upsertSession({
+    key,
+    agentId: 'bot-a',
+    platform: 'slack',
+    channel: 'C1',
+    thread: coordinate,
+    acpSessionId: 'acp-1',
+    state: 'idle',
+    lastDeliveredTs: null,
+    updatedAt: 1
+  })
+  await s.deleteSession(key)
+  expect(await s.resolveAppendCoordinate('bot-a', 'C1', undefined, 8000)).toBe('append:8000')
+  await s.close()
+})
+
+it('leaves a reservation a rotation already moved past when the old session is purged', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ac-reservation-purge-raced-')), 'local.sqlite')
+  const s = await openTestStore(path)
+  const first = await s.resolveAppendCoordinate('bot-a', 'C1', undefined, 1000)
+  const key = sessionKey('slack', 'C1', first, 'bot-a')
+  await s.upsertSession({
+    key,
+    agentId: 'bot-a',
+    platform: 'slack',
+    channel: 'C1',
+    thread: first,
+    acpSessionId: 'acp-1',
+    state: 'idle',
+    lastDeliveredTs: null,
+    updatedAt: 1
+  })
+  const rotated = await s.advanceAppendCoordinate('bot-a', 'C1', first, undefined, 2000)
+
+  // Retention purges the session the rotation retired; the live coordinate must survive.
+  await s.deleteSession(key)
+  expect(await s.resolveAppendCoordinate('bot-a', 'C1', undefined, 8000)).toBe(rotated)
+  await s.close()
+})
+
+it('ignores an affinity row whose scope the session no longer has', async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'ac-affinity-stale-')), 'local.sqlite')
   const s = await openTestStore(path)
   const key = sessionKey('slack', 'C1', 'T1', 'bot-a', 'scope-b')
@@ -2875,7 +3157,7 @@ it.skipIf(pg)('ignores an affinity row whose scope the session no longer has', a
   await s.close()
 })
 
-it.skipIf(pg)('reads thread affinity from the participation record, and drops it with the session', async () => {
+it('reads thread affinity from the participation record, and drops it with the session', async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'ac-affinity-')), 'local.sqlite')
   const s = await openTestStore(path)
   const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
@@ -2913,6 +3195,7 @@ it.skipIf(pg)('upgrades a v17 store to durable memory continuations without chan
   await initial.close()
   const legacy = new DatabaseSync(path)
   dropBirthVerdict(legacy)
+  dropCodeHostReplyTarget(legacy)
   legacy.exec('DROP TABLE memory_entry_continuation; PRAGMA user_version = 17;')
   legacy.close()
   const upgraded = await openTestStore(path)
@@ -2920,6 +3203,6 @@ it.skipIf(pg)('upgrades a v17 store to durable memory continuations without chan
   expect(await upgraded.getMemoryEntryContinuation('bot-a', token, 999)).toBe('{"page":2}')
   await upgraded.close()
   const check = new DatabaseSync(path)
-  expect(check.prepare('PRAGMA user_version').get()).toEqual({ user_version: 21 })
+  expect(check.prepare('PRAGMA user_version').get()).toEqual({ user_version: SCHEMA_VERSION })
   check.close()
 })

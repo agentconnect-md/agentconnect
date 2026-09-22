@@ -338,7 +338,8 @@ exact shape follows the documentation (§7).
 
 Every scope added later costs a reinstall of every installation, which is why
 `channels:join`, `team:read`, and `users:read.email` were declared ahead of a caller
-(`slack-app-manifest.ts:62-67`). If `code.channels:manage` is granted through the parent
+(`slack-app-manifest.ts:62-67`; `channels:join` has one now — the on-demand join in
+daemon-detailed-design.md §9.4 "Channel reach"). If `code.channels:manage` is granted through the parent
 `assistant:write` as the developer post suggests, existing installs need nothing. If it is
 a separate grant, it rides the next reinstall bundle rather than forcing its own. §7 Q2
 decides which.

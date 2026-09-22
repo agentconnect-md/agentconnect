@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { CodeHostReplyTarget } from '../code-host.js'
 import { ExternalSessionAudience } from './telemetry.js'
 import {
   NormalizedPlatformMessageSchema,
@@ -73,6 +74,9 @@ export const RELAY_DAEMON_WS_PATH = '/rd/ws'
  */
 export const RD_HEADLESS_AGENT_DELIVERY_V1 = 'headless-agent-delivery-v1'
 
+/** Both relay and daemon preserve immutable code-host reply targets across delegation and return. */
+export const RD_CODEHOST_REPLY_TARGET_V1 = 'codehost-reply-target-v1'
+
 /**
  * `agent-implicit-routing-v1`: this daemon understands {@link RdMsgIm.trustedRouteVia}
  * and applies its `!stop` thread mute to an implicitly-selected per-target delivery.
@@ -146,7 +150,8 @@ export type RdHello = z.infer<typeof RdHello>
 // as a misroute (close + backoff), never silently continue on the wrong
 // instance. Rejection is an `error` REP + close, not a reply.
 export const RdHelloOk = z.object({
-  relayId: z.string().uuid()
+  relayId: z.string().uuid(),
+  capabilities: z.array(z.string().min(1)).max(32).optional()
 })
 export type RdHelloOk = z.infer<typeof RdHelloOk>
 
@@ -307,6 +312,8 @@ export const RdMsgWebchat = z.object({
   // copied verbatim from the rc/verify verdict. Absent ⇒ today's behavior
   // (conversation-derived webchat session). Never originates in the browser.
   targetSessionId: z.string().min(1).optional(),
+  // The member that recorded this conversation's session for the target agent (#2218): a daemon that is neither it nor a holder of the store it wrote to refuses the op rather than opening a fresh session under the same conversation. Absent ⇒ no session yet, or a relay that predates the field.
+  recordedDaemonId: z.string().uuid().optional(),
   remoteMcp: WebchatRemoteMcpEntitlement.optional(),
   payload: RelayWebchatOp
 })
@@ -612,7 +619,8 @@ export type RdAck = z.infer<typeof RdAck>
 /**
  * What kind of delivery a cross-daemon agent message is
  * (send-message-routing-rework.md §8.3). It selects the target's AUTOMATIC-OUTPUT
- * behavior; it never changes authorization, which stays the caller/target policy pair.
+ * behavior. Ordinary wakes require directional call policy; parent replies require
+ * source-validated origin authority, authenticated same-org routing, and target-session ownership.
  *
  *  - `wake` — the ordinary postless `toAgent` call. The woken child is headless in the
  *    existing sense: nothing is posted to any channel on its behalf.
@@ -677,6 +685,8 @@ export const RdAgentMsg = z.object({
   // when the origin lives on another daemon (no sessionId→daemon registry on the relay).
   // Both optional — a root / self-introduce wake has no origin, and old daemons omit them.
   originSessionId: z.string().min(1).optional(),
+  // A null snapshot preserves a Console-only origin even when a later hook has a public target.
+  originCodeHostReplyTarget: CodeHostReplyTarget.nullable().optional(),
   originCoords: z
     .object({
       platform: Platform, // S1a open reader (route.ts policy)
@@ -699,6 +709,8 @@ export const RdAgentMsg = z.object({
   // reply (a channel-free origin's coordinate is not its key). Absent = ordinary
   // coordinate-keyed wake.
   lineageReplyTo: z.string().min(1).optional(),
+  // Echo the delegating turn's snapshot; never resolve the parent session's latest destination.
+  codeHostReplyTarget: CodeHostReplyTarget.nullable().optional(),
   // session-concept §5.4: the caller asked the woken session to report its outcome back into
   // `originSessionId` (`sendMessage`'s `toAgent.needsReply`). The target daemon turns this into a
   // standing directive on the child; it is never part of the delivered `text`. Meaningless without
@@ -723,8 +735,8 @@ export type RdAgentMsg = z.infer<typeof RdAgentMsg>
  * owning daemon, replacing the untrusted `claimedFromAgentId` with a TRUSTED caller
  * claim the relay minted after snapshot validation: `trustedFromAgentId` + the `orgId`
  * the caller's own directory entry places it in (never an org the frame asserted). The
- * target daemon TERMINAL-verifies this claim + both directional policies against its
- * LOCAL snapshot (defense in depth, §2.5 #4) before dispatching `source:'agent'`.
+ * target daemon verifies the same-org claim against its LOCAL snapshot, then checks
+ * directional policies for wakes or exact session ownership for origin-authorized replies.
  *
  * What `coords` is and is NOT: it is the ASSERTED delivery coordinate, not evidence of a
  * shared channel — A2A authorization is channel-free (postless delivery, #854), so caller and
@@ -780,6 +792,8 @@ export const RdAgentMsgFwd = z.object({
   // child may reply into. The relay forwards these opaquely — they are the caller's own
   // lineage, not a claim the relay mints or validates.
   originSessionId: z.string().min(1).optional(),
+  // A null snapshot preserves a Console-only origin even when a later hook has a public target.
+  originCodeHostReplyTarget: CodeHostReplyTarget.nullable().optional(),
   originCoords: z
     .object({
       platform: Platform, // S1a open reader (route.ts policy)
@@ -798,9 +812,11 @@ export const RdAgentMsgFwd = z.object({
   // membership gate for lineage replies: nothing is keyed or created from
   // `coords` on this path, so the aliasing threat that gate closes is absent,
   // and membership would wrongly reject a replier that does not share the
-  // origin's channel. Org + directional policy and the session capability
+  // origin's channel. Authenticated org routing and the origin session capability
   // (possession of the id + ownership by `toAgentId`) still gate delivery.
   lineageReplyTo: z.string().min(1).optional(),
+  // Echo the delegating turn's snapshot; never resolve the parent session's latest destination.
+  codeHostReplyTarget: CodeHostReplyTarget.nullable().optional(),
   // Forwarded verbatim from RdAgentMsg (session-concept §5.4): the caller's request that the woken
   // session report its outcome back into `originSessionId`. Opaque to the relay — it is the
   // caller's own instruction about its own lineage, not a claim the relay mints or validates.

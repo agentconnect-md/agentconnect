@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { materializeConfigFiles, materializeConfigFilesThrough, configFilesDir } from '../src/shim/config-file-env.js'
+import { clearSpawnDirs } from '../src/acp/spawn-driver.js'
+import { configFilesDir, configFilesForLaunch, materializeConfigFiles } from '../src/shim/config-file-env.js'
 import { LocalFileSink, applyFileSinkPayload, resolveSinkPath, FileSinkPayloadSchema } from '../src/shim/file-sink.js'
 import { ShimChannel, ShimFileSink } from '../src/shim/channels.js'
 import { SANDBOX_TUNNEL_PATHS, TunnelPayloadSchema } from '../src/shim/tunnel.js'
@@ -44,55 +45,72 @@ function fakeConnection(generation = 3): { connection: ShimConnection; sent: Shi
 afterEach(() => {})
 
 describe('file sink', () => {
-  it('produces the same result locally as the synchronous path it replaces', async () => {
-    // Parity is the point: which secrets become files is unchanged policy, and only the
-    // write moves. A divergence here would mean cloud and self-hosted agents see different
-    // env, which is exactly what the seam exists to prevent.
-    const env = { KUBECONFIG_DATA: 'apiVersion: v1\n', DOCKER_CONFIG_DATA: '{"auths":{}}' }
-    const legacy = agentDir()
-    const seamed = agentDir()
-    const before = materializeConfigFiles(legacy, env)
-    const after = await materializeConfigFilesThrough(seamed, env, new LocalFileSink())
+  /** Write a launch's config files the way a driver does, through a sink over the target's own disk. */
+  async function writeLaunchFiles(planned: ReturnType<typeof configFilesForLaunch>): Promise<void> {
+    const sink = new LocalFileSink()
+    await clearSpawnDirs(sink, [planned.dir])
+    for (const file of planned.files) await sink.write(file.root, file.relPath, file.content)
+  }
+
+  it('plans the same env for a launch elsewhere as for this disk, with the pointers in the runtime filesystem', async () => {
+    // Parity is the point: which secrets become files is one policy, and only where they are written moves.
+    const env = { KUBECONFIG_DATA: 'apiVersion: v1\n', DOCKER_AUTH_CONFIG: '{"auths":{}}' }
+    const local = agentDir()
+    const target = join(agentDir(), 'config-files')
+    const before = materializeConfigFiles(local, env)
+    const after = configFilesForLaunch(target, env)
 
     const normalize = (result: typeof before, dir: string) => ({
       env: Object.fromEntries(Object.entries(result.env).map(([k, v]) => [k, v.replace(dir, '<dir>')])),
       strip: [...result.strip].sort(),
       notices: result.notices
     })
-    expect(normalize(after, seamed)).toEqual(normalize(before, legacy))
-    expect(readFileSync(join(configFilesDir(seamed), 'kubeconfig'), 'utf8')).toBe('apiVersion: v1\n')
-    expect(readFileSync(join(configFilesDir(seamed), 'docker', 'config.json'), 'utf8')).toBe('{"auths":{}}')
+    expect(normalize(after, target)).toEqual(normalize(before, configFilesDir(local)))
+    expect(after.env).toEqual({ KUBECONFIG: `${target}/kubeconfig`, DOCKER_CONFIG: `${target}/docker` })
+    // Only planned: the files are the launch's to write, so nothing lands anywhere yet.
+    expect(existsSync(target)).toBe(false)
+    await writeLaunchFiles(after)
+    expect(readFileSync(join(target, 'kubeconfig'), 'utf8')).toBe('apiVersion: v1\n')
+    expect(readFileSync(join(target, 'docker', 'config.json'), 'utf8')).toBe('{"auths":{}}')
+  })
+
+  it("names POSIX paths whatever this daemon runs on, since they are the runtime filesystem's", () => {
+    const planned = configFilesForLaunch('/run/agentconnect/config-files', { DOCKER_CONFIG_DATA: '{}' })
+    expect(planned.env.DOCKER_CONFIG).toBe('/run/agentconnect/config-files/docker')
+    expect(planned.files).toEqual([
+      { root: '/run/agentconnect/config-files', relPath: ['docker', 'config.json'], content: '{}' }
+    ])
+    expect(planned.strip).toEqual(['DOCKER_CONFIG_DATA'])
+  })
+
+  it('leaves an explicitly set pointer alone and says so, carrying no file for it', () => {
+    const planned = configFilesForLaunch('/rt/config-files', { KUBECONFIG_DATA: 'x', KUBECONFIG: '/mine' })
+    expect(planned.files).toEqual([])
+    expect(planned.env).toEqual({})
+    expect(planned.strip).toEqual([])
+    expect(planned.notices.join(' ')).toMatch(/KUBECONFIG is set explicitly/)
   })
 
   it('writes secrets 0600 and their directories 0700', async () => {
-    const dir = agentDir()
-    await materializeConfigFilesThrough(dir, { KUBECONFIG_DATA: 'x' }, new LocalFileSink())
-    const file = join(configFilesDir(dir), 'kubeconfig')
-    expect(statSync(file).mode & 0o777).toBe(0o600)
-    expect(statSync(configFilesDir(dir)).mode & 0o777).toBe(0o700)
+    const target = join(agentDir(), 'config-files')
+    await writeLaunchFiles(configFilesForLaunch(target, { KUBECONFIG_DATA: 'x' }))
+    expect(statSync(join(target, 'kubeconfig')).mode & 0o777).toBe(0o600)
+    expect(statSync(target).mode & 0o777).toBe(0o700)
   })
 
-  it('replaces previous contents so a removed secret converges to deletion', async () => {
-    const dir = agentDir()
-    await materializeConfigFilesThrough(dir, { KUBECONFIG_DATA: 'first' }, new LocalFileSink())
-    const stale = join(configFilesDir(dir), 'leftover')
-    writeFileSync(stale, 'stale')
-    await materializeConfigFilesThrough(dir, { KUBECONFIG_DATA: 'second' }, new LocalFileSink())
-    expect(readFileSync(join(configFilesDir(dir), 'kubeconfig'), 'utf8')).toBe('second')
-    expect(() => readFileSync(stale, 'utf8')).toThrow()
+  it('empties the directory first, so a secret removed since the last launch goes with it', async () => {
+    const target = join(agentDir(), 'config-files')
+    await writeLaunchFiles(configFilesForLaunch(target, { KUBECONFIG_DATA: 'first', DOCKER_CONFIG_DATA: '{}' }))
+    await writeLaunchFiles(configFilesForLaunch(target, { KUBECONFIG_DATA: 'second' }))
+    expect(readFileSync(join(target, 'kubeconfig'), 'utf8')).toBe('second')
+    expect(existsSync(join(target, 'docker'))).toBe(false)
+    await writeLaunchFiles(configFilesForLaunch(target, {}))
+    expect(readdirSync(target)).toEqual([])
   })
 
-  it('leaves the secret as an env var when the write fails, rather than losing both', async () => {
-    const failing = {
-      clear: async () => undefined,
-      write: async () => {
-        throw new Error('read-only filesystem')
-      }
-    }
-    const result = await materializeConfigFilesThrough(agentDir(), { KUBECONFIG_DATA: 'x' }, failing)
-    expect(result.env.KUBECONFIG).toBeUndefined()
-    expect(result.strip).toEqual([])
-    expect(result.notices.join(' ')).toMatch(/could not be materialized/)
+  it('fails the launch when the directory cannot be emptied', async () => {
+    const refusing = { clear: async () => 'config files could not be cleared (read-only filesystem)' }
+    await expect(clearSpawnDirs(refusing, ['/rt/config-files'])).rejects.toThrow(/read-only filesystem/)
   })
 
   it('refuses a path that would escape its root, on whichever side runs it', () => {
@@ -173,14 +191,18 @@ describe('shim channel', () => {
       const frame = sent.at(-1) as Extract<ShimFrame, { type: 'shim/request' }>
       channel.accept(JSON.stringify({ type: 'shim/response', id: frame.id, ok: true }))
     }
-    const done = materializeConfigFilesThrough('/agent', { KUBECONFIG_DATA: 'apiVersion: v1\n' }, sink)
+    const planned = configFilesForLaunch('/rt/config-files', { KUBECONFIG_DATA: 'apiVersion: v1\n' })
+    const done = (async () => {
+      await clearSpawnDirs(sink, [planned.dir])
+      for (const file of planned.files) await sink.write(file.root, file.relPath, file.content)
+    })()
     await new Promise((resolve) => setTimeout(resolve, 5))
     answer() // clear
     await new Promise((resolve) => setTimeout(resolve, 5))
     answer() // write
-    const result = await done
-    expect(result.env.KUBECONFIG).toBe('/agent/run/config-files/kubeconfig')
-    expect(result.strip).toEqual(['KUBECONFIG_DATA'])
+    await done
+    expect(planned.env.KUBECONFIG).toBe('/rt/config-files/kubeconfig')
+    expect(planned.strip).toEqual(['KUBECONFIG_DATA'])
     const payloads = sent.map((frame) => (frame as Extract<ShimFrame, { type: 'shim/request' }>).payload)
     expect(payloads[0]).toMatchObject({ op: 'clear' })
     // The content crosses the channel because the daemon decided it; the shim only writes.
@@ -254,15 +276,14 @@ describe('materialization over a real daemon-and-shim pair', () => {
 
   it('writes a secret into the sandbox filesystem, decided by the daemon', async () => {
     const { channel, handled, sandboxRoot } = await pair(['materialize'])
-    const result = await materializeConfigFilesThrough(
-      sandboxRoot,
-      { KUBECONFIG_DATA: 'apiVersion: v1\n' },
-      new ShimFileSink(channel)
-    )
-    expect(result.env.KUBECONFIG).toBe(join(configFilesDir(sandboxRoot), 'kubeconfig'))
+    const planned = configFilesForLaunch(join(sandboxRoot, 'config-files'), { KUBECONFIG_DATA: 'apiVersion: v1\n' })
+    const sink = new ShimFileSink(channel)
+    await clearSpawnDirs(sink, [planned.dir])
+    for (const file of planned.files) await sink.write(file.root, file.relPath, file.content)
+    expect(planned.env.KUBECONFIG).toBe(join(sandboxRoot, 'config-files', 'kubeconfig'))
     // The file exists because the SHIM wrote it, over a real socket, after its own
     // validation — neither half of this is stubbed.
-    expect(readFileSync(join(configFilesDir(sandboxRoot), 'kubeconfig'), 'utf8')).toBe('apiVersion: v1\n')
+    expect(readFileSync(planned.env.KUBECONFIG!, 'utf8')).toBe('apiVersion: v1\n')
     expect(handled.map((entry) => entry.capability)).toEqual(['materialize', 'materialize'])
   })
 

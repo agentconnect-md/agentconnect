@@ -1,20 +1,22 @@
-import { materializeConfigFiles, type MaterializeResult } from '../shim/config-file-env.js'
+import { configFilesForLaunch, materializeConfigFiles, type MaterializeResult } from '../shim/config-file-env.js'
+import type { SpawnFile } from '../acp/spawn-driver.js'
 import { composeRuntimeLaunch, type ComposedRuntimeLaunch } from './compose.js'
 import type { SandboxMechanism } from '../acp/sandbox.js'
 import type { HostKey } from '../acp/host-key.js'
 import type { MemoryProviderKind } from '../memory/provider.js'
 import type { RuntimeDef, SandboxMount } from '../config/config-schema.js'
 
-/** Config-file materialization result plus the pre-strip env it was planned from
- * (the daemon snapshots that env so an idle sweep can re-write the files later). */
+/** The config-file plan plus the pre-strip env it came from, which the idle sweep re-materializes this disk's files from. */
 export interface AssembledConfigFiles extends MaterializeResult {
   sourceEnv: Record<string, string>
+  /** Set for a runtime on another filesystem: what its launch writes there and the directory it empties first; nothing was written here. */
+  launch?: { dir: string; files: SpawnFile[] }
 }
 
 export interface AssembledRuntimeLaunch extends ComposedRuntimeLaunch {
   /** The merged env handed to the launch (`runtimeEnv` under `agentEnv`), after materialization. */
   launchEnv: Record<string, string>
-  /** Undefined when `configFileDir` was omitted, i.e. materialization was skipped. */
+  /** Undefined when neither `configFileDir` nor `configFileLaunchDir` was given, i.e. config files were skipped. */
   configFiles?: AssembledConfigFiles
 }
 
@@ -37,6 +39,8 @@ export interface AssembleRuntimeLaunchOptions {
   agentEnv: Record<string, string>
   /** Agent dir receiving materialized config-file secrets; omit to skip materialization. */
   configFileDir?: string
+  /** Instead of `configFileDir`: a directory in the runtime's own filesystem (a pool pod, another machine), written by the launch's driver. */
+  configFileLaunchDir?: string
   /** Last mutation of the merged launch env before read roots and compose (k8s model credentials). */
   finalizeLaunchEnv?: (launchEnv: Record<string, string>) => void
   /** Daemon-owned code/socket/config carve-backs; a function receives the final launch env. */
@@ -58,29 +62,32 @@ export interface AssembleRuntimeLaunchOptions {
     trustedSessionDir?: string
     trustedMounts?: SandboxMount[]
   }
+  /** A session placed on another machine: its HOME in that machine's coordinates. */
+  executor?: { home: string }
+  /** A session whose clones are off this disk: their `.git` where they are (see prepareRuntimeLaunch). */
+  sessionGitDirs?: string[]
 }
 
-/**
- * The single launch-assembly entry: materialize config-file secrets, merge the
- * resulting child env, then compose the runtime launch from it.
- *
- * Config-file secrets (shim/config-file-env.ts) materialize `*_DATA` contents
- * under the agent dir and point the tool-native env vars (KUBECONFIG /
- * DOCKER_CONFIG) at the result; the raw values are stripped from the child env.
- * Detection spans the runtime-def env too, so an explicit pointer var configured
- * anywhere wins and skips materialization.
- */
+/** The single launch-assembly entry: turn `*_DATA` secrets (from either env, so an explicit pointer anywhere wins) into files and pointers, merge the child env, then compose the launch. */
 export function assembleRuntimeLaunch(opts: AssembleRuntimeLaunchOptions): AssembledRuntimeLaunch {
   let configFiles: AssembledConfigFiles | undefined
-  if (opts.configFileDir !== undefined) {
+  if (opts.configFileDir !== undefined || opts.configFileLaunchDir !== undefined) {
     const sourceEnv = { ...opts.runtimeEnv, ...opts.agentEnv }
-    const materialized = materializeConfigFiles(opts.configFileDir, sourceEnv)
-    for (const name of materialized.strip) {
+    const carried =
+      opts.configFileLaunchDir === undefined ? undefined : configFilesForLaunch(opts.configFileLaunchDir, sourceEnv)
+    const { env, strip, notices } = carried ?? materializeConfigFiles(opts.configFileDir!, sourceEnv)
+    for (const name of strip) {
       delete opts.agentEnv[name]
       delete opts.runtimeEnv[name]
     }
-    Object.assign(opts.agentEnv, materialized.env)
-    configFiles = { ...materialized, sourceEnv }
+    Object.assign(opts.agentEnv, env)
+    configFiles = {
+      env,
+      strip,
+      notices,
+      sourceEnv,
+      ...(carried ? { launch: { dir: carried.dir, files: carried.files } } : {})
+    }
   }
 
   const launchEnv = { ...opts.runtimeEnv, ...opts.agentEnv }
@@ -90,6 +97,8 @@ export function assembleRuntimeLaunch(opts: AssembleRuntimeLaunchOptions): Assem
 
   const composed = composeRuntimeLaunch({
     ...(opts.microsandbox ? { microsandbox: opts.microsandbox } : {}),
+    ...(opts.executor ? { executor: opts.executor } : {}),
+    ...(opts.sessionGitDirs ? { sessionGitDirs: opts.sessionGitDirs } : {}),
     runtimeId: opts.runtimeId,
     runtime: opts.runtime,
     provider: opts.provider,

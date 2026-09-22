@@ -532,6 +532,7 @@ describe('slack projection equivalence with the live integrationToSpec path (dir
       // and the ingress mode ride the core envelope, never the config payload.
       config: {
         shareable: false, // a socket bot is single-agent by construction
+        joinPublicChannels: true, // absent from the bag ⇒ the daemon's default
         botToken: 'xoxb-test-token',
         appToken: 'xapp-1-A0TESTAPP-123-abc' // Socket Mode carries the app-level token
       }
@@ -601,6 +602,7 @@ describe('slack projection equivalence with the live httpIntegrationToSpec path 
       core: { mode: 'shared', bindRules: [], mutedChannels: ['C2'], gated: false, sessionModes: [] },
       config: {
         shareable: true,
+        joinPublicChannels: true,
         botToken: 'xoxb-test-token',
         appId: 'A0TESTAPP'
       }
@@ -622,6 +624,18 @@ describe('slack projection equivalence with the live httpIntegrationToSpec path 
       expect(() => IntegrationSlackConfig.parse(spec.config)).not.toThrow()
     })
   }
+
+  it('carries the operator’s join-public-channels switch from the bot row on both arms', async () => {
+    // Absent from the bag ⇒ true (the behaviour bots predating the switch keep).
+    const socketOn = await integrationToSpec(PLATFORMS, INTEGRATION, bot(), SOCKET_SECRET, [], false)
+    expect(socketOn?.config).toMatchObject({ joinPublicChannels: true })
+    const off = { platformConfig: { joinPublicChannels: false } }
+    const socketOff = await integrationToSpec(PLATFORMS, INTEGRATION, { ...bot(), ...off }, SOCKET_SECRET, [], false)
+    expect(socketOff?.config).toMatchObject({ joinPublicChannels: false })
+    const httpBotOff = { ...bot({ transport: 'http', shareable: true, slackAppId: 'A0TESTAPP' }), ...off }
+    const httpOff = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, httpBotOff, HTTP_SECRET, [], false)
+    expect(httpOff?.config).toMatchObject({ joinPublicChannels: false })
+  })
 })
 
 // ── projectBotAssign equivalence against the LIVE rc/bot-assign frame ────────

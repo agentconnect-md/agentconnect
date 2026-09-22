@@ -588,7 +588,19 @@ Two scope rules:
     conversation acts on the post;
   - the `set_*` runtime ops are unchanged and carry no `agentId`: multi-agent
     conversations expose no runtime override (section 9.3), so these ops
-    occur only in single-agent conversations.
+    occur only in single-agent conversations;
+  - `recordedDaemonId`: the member that recorded this participant's current
+    session, from the verified roster. The relay stamps it on every op and
+    never heals it — a `not_holder` re-route and the rendezvous both move the
+    TARGET, and the point of this field is that the content did not move with
+    it. A daemon other than that member refuses `turn` and `context` with
+    `content_elsewhere` rather than opening a fresh session under the same
+    conversation, unless it can continue it: it has the session's row, and the
+    runtime is reachable from here — a pool member's sandbox pod, or the
+    executor a group placed the session on. A group member on a private store
+    has no row; one on a shared store (#2188) has the row, but a session that
+    ran on its old holder left its runtime there. Absent on a conversation with
+    no session yet, and on an older relay, which is the pre-field behavior.
 - New daemon → relay frame `rd/webchat-post { conversationId, agentId, post }`
   for a completed agent post, emitted at the same boundary that records
   `replyText` today (`daemon.ts:10394-10404`). The relay (a) delivers it to

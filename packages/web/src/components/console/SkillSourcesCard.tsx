@@ -299,6 +299,7 @@ export function CreateSkillSourceModal({
   onFailed?: (message: string) => void
 }) {
   const t = useTranslations('Tools.skills.create')
+  const formT = useTranslations('Tools.skillSourceForm')
   const { createSkillSource } = useConsoleData()
   const { me } = useProfile()
   const [name, setName] = useState('')
@@ -365,7 +366,7 @@ export function CreateSkillSourceModal({
             <span className="fldlbl">{t('source')}</span>
             <input
               className="inp mn"
-              placeholder={t('skillSourceForm.sourcePlaceholder')}
+              placeholder={formT('sourcePlaceholder')}
               value={source}
               onChange={(e) => setSource(e.target.value)}
               autoFocus
@@ -389,7 +390,7 @@ export function CreateSkillSourceModal({
               <span className="fldlbl">{t('refOptional')}</span>
               <input
                 className="inp mn"
-                placeholder={t('skillSourceForm.refPlaceholder')}
+                placeholder={formT('refPlaceholder')}
                 value={ref}
                 onChange={(e) => setRef(e.target.value)}
               />
@@ -398,7 +399,7 @@ export function CreateSkillSourceModal({
               <span className="fldlbl">{t('subdirOptional')}</span>
               <input
                 className="inp mn"
-                placeholder={t('skillSourceForm.subdirPlaceholder')}
+                placeholder={formT('subdirPlaceholder')}
                 value={subDir}
                 onChange={(e) => setSubDir(e.target.value)}
               />
@@ -438,6 +439,7 @@ export function CreateSkillSourceModal({
 
 function EditSkillSourceModal({ source: s, onClose }: { source: SkillSourceDto; onClose: () => void }) {
   const t = useTranslations('Tools.skills.edit')
+  const formT = useTranslations('Tools.skillSourceForm')
   const { updateSkillSource, saveSharing } = useConsoleData()
   const [source, setSource] = useState(s.source)
   const [ref, setRef] = useState(s.ref ?? '')
@@ -499,7 +501,7 @@ function EditSkillSourceModal({ source: s, onClose }: { source: SkillSourceDto; 
               <span className="fldlbl">{t('ref')}</span>
               <input
                 className="inp mn"
-                placeholder={t('skillSourceForm.editRefPlaceholder')}
+                placeholder={formT('editRefPlaceholder')}
                 value={ref}
                 onChange={(e) => setRef(e.target.value)}
               />

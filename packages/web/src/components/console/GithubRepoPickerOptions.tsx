@@ -30,7 +30,7 @@ export function GithubRepoPickerOptions({
   onPickInstalled: (repo: InstalledRepo) => void
   onPickPublic: (repo: GithubRepoDto) => void
 }) {
-  const t = useTranslations('Agents.workspaceEdit')
+  const t = useTranslations('Integrations.dialog')
   const { typedRepo, matches, installedExact, publicExact, exactState, publicMatches, searching } = lookup
   const is = (fullName: string) => selected.toLowerCase() === fullName.toLowerCase()
   return (
@@ -88,7 +88,7 @@ export function GithubRepoPickerOptions({
               {updatedTrail(repo)}
             </>
           }
-          badge="public"
+          badge={t('public')}
           onSelect={() => onPickPublic(repo)}
         />
       ))}

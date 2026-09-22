@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AGENT_WAKE_FEATURE, DAEMON_BOOTSTRAP_UPGRADE_FEATURE } from '@agentconnect.md/protocol'
@@ -9,20 +9,24 @@ import { wireWorkspacePlane } from '../src/execution/plane.js'
 import { sandboxSubjectFor } from '../src/k8s/sandbox-identity.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import { LocalStore } from '../src/store/local-store.js'
+import { DATA_PLANE_CONFIG_PATH } from '../src/store/postgres-config.js'
 import { mcpSocketPath, statePath } from '../src/paths.js'
 import { SANDBOX_TUNNEL_PATHS } from '../src/shim/sandbox-paths.js'
 
 /** The behavior matrix for `--k8s`: each assertion here is one row of the mode
  *  contract, so k8s and self-hosted behavior cannot drift apart unnoticed. */
 
-function root(opts: { declared?: unknown; requireSandbox?: boolean; cliEntry?: boolean } = {}): string {
+function root(
+  opts: { declared?: unknown; requireSandbox?: boolean; cliEntry?: boolean; store?: unknown; cp?: boolean } = {}
+): string {
   const path = mkdtempSync(join(tmpdir(), 'ac-k8s-mode-'))
   writeFileSync(
     join(path, 'config.json'),
     JSON.stringify({
       version: 1,
-      controlPlane: { enabled: false },
-      ...(opts.requireSandbox ? { security: { requireSandbox: true } } : {})
+      controlPlane: { enabled: opts.cp ?? false },
+      ...(opts.requireSandbox ? { security: { requireSandbox: true } } : {}),
+      ...(opts.store ? { store: opts.store } : {})
     })
   )
   if (opts.declared !== undefined) {
@@ -56,6 +60,24 @@ function catalog(): ResolvedRuntimeCatalog {
   }
 }
 
+/** A data plane over an in-memory store, so the rows about which store a daemon opens need no PostgreSQL. */
+async function fakeDataPlane(store?: LocalStore): Promise<never> {
+  return {
+    store: store ?? (await LocalStore.open(':memory:')),
+    transcripts: {
+      appendTranscript: () => {},
+      insertToolCall: () => {},
+      updateToolCall: () => {},
+      transcriptTailForAgent: async () => ({ rows: [], hasMore: false, cursor: 0 }),
+      transcriptPageForAgentByEventTime: async () => ({ rows: [], hasMore: false }),
+      transcriptPageForAgent: async () => ({ rows: [], hasMore: false }),
+      currentTranscriptRevision: async () => 0,
+      getToolBodyForAgent: async () => undefined
+    },
+    close: async () => {}
+  } as never
+}
+
 function daemon(opts: {
   root: string
   k8s: boolean
@@ -80,25 +102,7 @@ function daemon(opts: {
     // Stubbing it here keeps the refuse-to-boot-without-a-cluster behaviour real everywhere else.
     ...(opts.k8s
       ? {
-          ...(opts.dataPlane === false
-            ? {}
-            : {
-                openDataPlane: async () =>
-                  ({
-                    store: opts.store ?? (await LocalStore.open(':memory:')),
-                    transcripts: {
-                      appendTranscript: () => {},
-                      insertToolCall: () => {},
-                      updateToolCall: () => {},
-                      transcriptTailForAgent: async () => ({ rows: [], hasMore: false, cursor: 0 }),
-                      transcriptPageForAgentByEventTime: async () => ({ rows: [], hasMore: false }),
-                      transcriptPageForAgent: async () => ({ rows: [], hasMore: false }),
-                      currentTranscriptRevision: async () => 0,
-                      getToolBodyForAgent: async () => undefined
-                    },
-                    close: async () => {}
-                  }) as never
-              }),
+          ...(opts.dataPlane === false ? {} : { openDataPlane: () => fakeDataPlane(opts.store) }),
           startK8sPlane: async (options: any) => {
             opts.onPlaneStart?.(options)
             return {
@@ -263,6 +267,73 @@ describe('daemon --k8s mode', () => {
       expect(openDataPlane).not.toHaveBeenCalled()
     } finally {
       await local.stop()
+    }
+  })
+
+  it('opens a postgres store named by its file outside k8s mode, and keeps no SQLite database (#2188)', async () => {
+    const rootDir = root({ store: { backend: 'postgres', configFile: 'data-plane.json' }, cp: true })
+    const openDataPlane = vi.fn(() => fakeDataPlane())
+    const local = daemon({ root: rootDir, k8s: false, openDataPlane })
+    try {
+      await local.start()
+      expect(openDataPlane).toHaveBeenCalledWith(
+        expect.any(Function),
+        expect.any(Function),
+        join(rootDir, 'data-plane.json')
+      )
+      expect(existsSync(statePath(rootDir))).toBe(false)
+    } finally {
+      await local.stop()
+    }
+  })
+
+  it('serves no file-authored agent on a postgres store, since none has an organization to attribute rows to', async () => {
+    const rootDir = root({ store: { backend: 'postgres', configFile: 'data-plane.json' }, cp: true })
+    const agentDir = join(rootDir, 'agents', 'bot-local')
+    mkdirSync(agentDir, { recursive: true })
+    writeFileSync(
+      join(agentDir, 'agent.json'),
+      JSON.stringify({
+        id: 'bot-local',
+        name: 'bot-local',
+        status: 'active',
+        runtime: 'claude',
+        workspace: { mode: 'from-scratch', path: join(agentDir, 'workspace') },
+        integrations: []
+      })
+    )
+    const local = daemon({ root: rootDir, k8s: false, openDataPlane: vi.fn(() => fakeDataPlane()) })
+    try {
+      await local.start()
+      expect((local as any).agents.has('bot-local')).toBe(false)
+    } finally {
+      await local.stop()
+    }
+  })
+
+  it('refuses a postgres store on a daemon without the control plane', async () => {
+    const openDataPlane = vi.fn(() => fakeDataPlane())
+    const local = daemon({
+      root: root({ store: { backend: 'postgres', configFile: 'data-plane.json' } }),
+      k8s: false,
+      openDataPlane
+    })
+    await expect(local.start()).rejects.toThrow(/postgres store needs the control plane/)
+    expect(openDataPlane).not.toHaveBeenCalled()
+  })
+
+  it('reads the mounted configuration under --k8s whatever the store setting names', async () => {
+    const openDataPlane = vi.fn(() => fakeDataPlane())
+    const instance = daemon({
+      root: root({ store: { backend: 'postgres', configFile: 'data-plane.json' } }),
+      k8s: true,
+      openDataPlane
+    })
+    try {
+      await instance.start()
+      expect(openDataPlane).toHaveBeenCalledWith(expect.any(Function), expect.any(Function), DATA_PLANE_CONFIG_PATH)
+    } finally {
+      await instance.stop()
     }
   })
 

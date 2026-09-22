@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
 import { basename, dirname, join, win32 as windowsPath } from 'node:path'
 import { Readable, Writable } from 'node:stream'
-import { LocalFileSink } from '../shim/file-sink.js'
+import { LocalFileSink, type FileSink } from '../shim/file-sink.js'
 import { resolveCommandPath } from '../runtimes/probe.js'
 import { sandboxWrap, type SandboxMechanism } from './sandbox.js'
 import type { HostKey } from './host-key.js'
@@ -46,6 +46,8 @@ export interface SpawnRequest {
   /** Files env pointers reference (session gitconfig): the daemon decides the content, but only the
    *  driver knows whose filesystem the runtime reads, so the write travels with the launch. */
   files?: SpawnFile[]
+  /** Daemon-owned directories in the TARGET filesystem, emptied before `files` are written so a file the daemon stopped deciding goes too. */
+  clearDirs?: string[]
   /** Disposable probes suppress raw stderr so a harness cannot print credential
    *  material or host paths outside our sanitizer. */
   suppressChildStderr?: boolean
@@ -108,12 +110,24 @@ export function canonicalizeWindowsSpawnEnv(env: Record<string, string>, platfor
   }
 }
 
+/** Empty each directory a launch names before its files are written — fail-closed, so a secret removed since the last launch never outlives it there. */
+export async function clearSpawnDirs(
+  sink: Pick<FileSink, 'clear'>,
+  dirs: readonly string[] | undefined
+): Promise<void> {
+  for (const dir of dirs ?? []) {
+    const error = await sink.clear(dir)
+    if (error) throw new Error(error)
+  }
+}
+
 /** The ACP runtime as a child process of this daemon: today's only behavior. */
 export class LocalDriver implements SpawnDriver {
   constructor(private opts: { log?: Logger } = {}) {}
 
   async launch(request: SpawnRequest): Promise<SpawnedRuntime> {
     const sink = new LocalFileSink()
+    await clearSpawnDirs(sink, request.clearDirs)
     for (const file of request.files ?? []) await sink.write(file.root, file.relPath, file.content)
     const env = { ...request.env }
     canonicalizeWindowsSpawnEnv(env)

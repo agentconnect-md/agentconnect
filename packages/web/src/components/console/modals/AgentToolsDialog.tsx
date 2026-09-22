@@ -30,7 +30,7 @@ export default function AgentToolsDialog({
   onCompleted: NativeDialogReport
 }) {
   const { activeOrg } = useOrgs()
-  const t = useTranslations('Agents.toolsDialog')
+  const t = useTranslations('Agents.detail.toolsDialog')
   const { agents, daemons, loading } = useConsoleData()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')

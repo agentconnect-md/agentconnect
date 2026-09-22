@@ -14,13 +14,6 @@ import { MarkdownText } from './MessageText'
 import { platformTurnFacts } from './platforms/registry'
 import { FactRow, FactRows } from './turn-facts-rows'
 
-/** How a code-host delivery is answered, as a person would say it. */
-const REVIEW_LABEL: Record<NonNullable<CodehostFacts['review']>, string> = {
-  generation: 'generation',
-  inline: 'inline',
-  conversation: 'conversation'
-}
-
 /** GitHub and GitLab share one shape: who, which revision, how it is answered, then the body. */
 export function CodehostTurnFacts({ facts }: { facts: CodehostFacts }) {
   const t = useTranslations('Sessions.userTurnDetails')
@@ -56,7 +49,7 @@ export function CodehostTurnFacts({ facts }: { facts: CodehostFacts }) {
         <FactRow label={t('environment')}>{facts.environment ?? ''}</FactRow>
         <FactRow label={t('draft')}>{facts.draft === true ? t('yes') : ''}</FactRow>
         <FactRow label={t('labels')}>{facts.labels?.length ? facts.labels.join(', ') : ''}</FactRow>
-        <FactRow label={t('review')}>{facts.review ? t(`reviewValues.${REVIEW_LABEL[facts.review]}`) : ''}</FactRow>
+        <FactRow label={t('review')}>{facts.review ? t(`reviewValues.${facts.review}`) : ''}</FactRow>
       </FactRows>
       {facts.body && (
         <div className="mt-2">

@@ -159,6 +159,7 @@ function toDto(
     sessionEpoch: Number(view.sessionEpoch),
     maxAgents: view.maxAgents,
     activeSessions: view.activeSessions,
+    hostedSessions: view.hostedSessions ?? null,
     lastSeenAt: view.lastSeenAt ? view.lastSeenAt.toISOString() : null,
     createdAt: view.createdAt.toISOString(),
     // The creator's userId — the web resolves it to a display name (or "You"). A

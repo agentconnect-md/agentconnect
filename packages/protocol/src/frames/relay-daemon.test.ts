@@ -726,12 +726,19 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     expect(RdAgentMsgFwd.parse(fwd).externalOrigin).toEqual(externalOrigin)
   })
 
-  it('carries only the immutable GitHub repository audience through A2A wire legs', () => {
+  it('carries the immutable repository audience and origin reply snapshots through A2A wire legs', () => {
     const externalOrigin = {
       provider: 'github' as const,
       realmKey: 'github.com' as const,
       resourceKind: 'repository' as const,
       resourceKey: '123456789'
+    }
+    const originCodeHostReplyTarget = {
+      provider: 'github',
+      hookId: HOOK_ID,
+      repo: 'acme/infra',
+      number: 42,
+      reviewThreadRootCommentId: '101'
     }
     const msg = {
       claimedFromAgentId: AGENT_ID,
@@ -742,9 +749,12 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
       coords: { platform: 'slack' as const, channel: 'repo-session' },
       hopCount: 0,
       deliveryId: 'delivery-1',
-      externalOrigin
+      externalOrigin,
+      originCodeHostReplyTarget,
+      codeHostReplyTarget: null
     }
     expect(RdAgentMsg.parse(msg).externalOrigin).toEqual(externalOrigin)
+    expect(RdAgentMsg.parse(msg)).toMatchObject({ originCodeHostReplyTarget, codeHostReplyTarget: null })
     expect(
       RdAgentMsgFwd.parse({
         trustedFromAgentId: AGENT_ID,
@@ -754,9 +764,11 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
         coords: msg.coords,
         hopCount: 1,
         deliveryId: msg.deliveryId,
-        externalOrigin
-      }).externalOrigin
-    ).toEqual(externalOrigin)
+        externalOrigin,
+        originCodeHostReplyTarget,
+        codeHostReplyTarget: null
+      })
+    ).toMatchObject({ externalOrigin, originCodeHostReplyTarget, codeHostReplyTarget: null })
   })
 
   it('rd/chat streams webchat output and done events verbatim', () => {

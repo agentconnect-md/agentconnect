@@ -11,7 +11,8 @@ import {
   GENERIC_HOOK_KIND,
   type CodeHostProvider,
   type HookKind,
-  type Platform
+  type Platform,
+  type SessionStayedHomeReason
 } from '@agentconnect.md/protocol'
 import {
   Prisma,
@@ -86,6 +87,8 @@ function toRecord(s: SessionMeta): SessionMetaRecord {
     daemonId: s.daemonId ? DaemonId(s.daemonId) : null,
     contentSetId: s.contentSetId,
     workspaceIsolation: s.workspaceIsolation as 'shared' | 'session' | null,
+    executorDaemonId: s.executorDaemonId ? DaemonId(s.executorDaemonId) : null,
+    stayedHomeReason: (s.stayedHomeReason as SessionStayedHomeReason | null) ?? null,
     activityState: s.activityState as ActivityState,
     orgId: OrgId(s.orgId),
     visibility: s.visibility as SessionVisibility,

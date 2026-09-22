@@ -776,6 +776,7 @@ idle --(message/cron synthetic message)--> prompting (session/prompt)
 prompting --(streaming session/update)--> idle (turn ends with stopReason)
 idle --(cancel)--> cancelling (session/cancel, 30s forced backstop) --> idle
 prompting --(no runtime signal > turnStallTimeoutMs)--> cancelling (stall watchdog: ⚠️ notice, session/cancel, same backstop) --> idle
+prompting | resuming | cancelling --(no turn held by this process, untouched > agentMaxLifetimeMs)--> idle (a process died mid-turn)
 idle --(long inactivity / TTL)--> closed (metadata retained; body in Local Store)
 closed --(new thread message)--> resuming (session/load) --> idle
 ```
@@ -794,6 +795,18 @@ through the `!stop` path: `session/cancel`, the `cancelBackstopMs` force-stop
 if the runtime ignores it, and queued messages fail-stopped. A prompt the
 runtime rejects with "Session not found" also clears the row's `acpSessionId`,
 so the next message opens a fresh session instead of repeating the failure.
+
+**A turn a dead process left behind.** A daemon killed mid-turn leaves its row
+in `prompting`, `resuming` or `cancelling`, and none of its in-process repair
+paths ran, so the row would never close or be collected. The idle sweep puts
+it back to `idle` when this daemon serves the agent, holds no turn of that
+session, and the row has been untouched for longer than
+`limits.agentMaxLifetimeMs`; the TTL close in the same pass then closes it.
+The write is conditional on the row still being exactly what was read, so a
+turn that took it meanwhile wins. It is never done at startup: on a shared
+store another member may be running that turn (#2245). A Dream's row is
+exempt: a Dream runs off the chat-turn queue, stays `prompting` for its whole
+run, and its runner owns the row and its crash recovery.
 
 ### 7.4 Message-to-Execution Flow
 
@@ -1098,11 +1111,12 @@ A second group is gated by a **declared port** rather than by a platform name
 (`platforms/read-ports.ts`, §7.1 of
 [integration-plugin-architecture.md](integration-plugin-architecture.md)): the bounded reads
 `getChannelHistory` and `getThreadHistory`, the reactions `addReaction` / `getReactions`,
-`createConversation`, `scheduleMessage`, and the canvas trio `createCanvas` / `readCanvas` /
-`updateCanvas`. Slack declares all of them today and is the only platform that does. The gate
+`deleteMessage`, `createConversation`, `scheduleMessage`, and the canvas trio `createCanvas` /
+`readCanvas` / `updateCanvas`. Slack declares all of them but `deleteMessage`, which Telegram
+declares. The gate
 is the **session's** platform, not the agent's integration list: a session on a declaring
-platform is injected the tools, and the same agent answering on Telegram, Discord, Feishu, or
-webchat is injected none — so these tools carry no `platform` selector at all, only the
+platform is injected that platform's tools, and the same agent answering where the port is
+undeclared is injected none of them — so these tools carry no `platform` selector at all, only the
 `integrationId` that picks another of the agent's bots on the same platform. The
 platform-neutral reads (`listChannels`, `listChannelMembers`, `getUserProfile`,
 `listKnownUsers`) and `sendMessage` keep their cross-platform `platform` argument; a
@@ -1197,11 +1211,49 @@ column's TYPE, and Slack publishes no schema endpoint for a list. So the columns
 from the rows a read returns and handed back with them — the read is not a convenience before
 the write, it is the only source of the ids and types the write needs.
 
-Three scopes in that same change have NO caller and say so: `channels:join`, `team:read`, and
+Three scopes in that same change had NO caller and said so: `channels:join`, `team:read`, and
 `users:read.email`. That is a deliberate exception to the scope-arrives-with-its-feature rule,
 taken because one list means every scope addition costs a reinstall of every installation —
 batching the ones already in view is one reinstall instead of three. The exception is worth
 making once, with the reason recorded, and is not a precedent for declaring scopes speculatively.
+`channels:join` has since found its caller (channel reach, below); the two directory reads still wait.
+
+**Channel reach.** Slack requires bot membership for `conversations.history` / `.replies` and
+`chat.postMessage` even in a public channel, and a bot is a member only of the channels a human
+added it to — so for a long time `getChannelHistory` read the session's own channel only and
+`getThreadHistory` / `sendMessage` failed with `not_in_channel` anywhere else. Two pieces change
+that, and their split is the point. The **connection** joins a PUBLIC channel on demand
+(`joiningOnRefusal` in `slack/connection.ts`: a call refused with `not_in_channel` is retried
+exactly once after `conversations.join`, `channels:join`; the join cannot enter a private channel,
+DM or group DM, so there the original refusal surfaces). The **ops layer** decides what a tool may
+reach beyond the session's own conversation (`mcp/ops/channel-reach.ts`), on a platform that
+declares `publicChannelReach` in `read-ports.ts`: a public channel is open, while a private
+channel, DM or group DM is reachable only when it IS the conversation the agent was invoked in.
+Membership is not consent — a bot invited into a private channel for one purpose must not make
+that channel readable from every other conversation the same agent is in. The gate reads the
+platform's own description (`conversations.info`) rather than the id's shape, and FAILS CLOSED
+when that description cannot be obtained — the bot may be a member of the private channel behind
+the id, so a timeout or rate limit refuses rather than admits. Only the platform's own "no such
+conversation" (`channel_not_found`) is let through, because it proves the downstream call fails
+identically and its refusal is the more precise one.
+It sits in front of `getChannelHistory` (which gained `channel` / `integrationId` like
+`getThreadHistory`), `getThreadHistory`, and every `channel` form of `sendMessage`; the `toUser`
+DM form names a user, not a channel, and is not gated. Slack's `listChannels` enumerates every
+public channel of the workspace (`conversations.list`) plus the private channels the bot is in, so
+an agent can find the id of a channel it was never added to; the console's membership snapshot
+stays `listBotChannels`. Platforms that declare nothing keep their previous reach.
+
+The join is an **operator switch**, per bot: `Bot.platformConfig.joinPublicChannels` (the
+generic bag, so no migration), flipped by `PATCH /bots/:id` and rendered by the Slack module's
+`RowSettings` fragment in the console's expanded bot row. The control plane refuses the flag
+on any platform whose §5 manifest does not declare `publicChannelJoin` (Slack alone does), and
+re-projects the bot's integration specs on a flip — `syncBot` for an HTTP bot, an
+`integration/upsert` per socket integration — so the flag rides `IntegrationSlackConfig`
+(default true for an older control plane) into the daemon's consolidated group. The reconciler
+keys a Slack connection by its tokens, so it applies a flipped flag to the LIVE connection
+rather than opening another. Off, `joiningOnRefusal` rethrows the platform's own
+`not_in_channel` and the bot reaches only what it was invited to; the reach gate above is
+unchanged, and workspace search (`searchPublicMessages`) never depended on membership.
 
 The orchestration triple `startOrchestration` / `getOrchestration` /
 `cancelOrchestration` is **retired from the injected tool surface**: its send half

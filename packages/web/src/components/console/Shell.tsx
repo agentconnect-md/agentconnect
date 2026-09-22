@@ -24,6 +24,7 @@ import { detailCrumb, type CrumbSlot } from '@/lib/crumb'
 import { PlaygroundProvider } from './PlaygroundProvider'
 import { ModalProvider, useModal } from './ModalProvider'
 import { PendingActionsProvider } from './PendingActions'
+import { DecisionsPrototypeProvider } from '@/lib/decisions/provider'
 import ConnectAiModal from './ConnectAiModal'
 import GettingStarted, { openGettingStarted } from './GettingStarted'
 import { GlobalSearch } from './GlobalSearch'
@@ -42,12 +43,14 @@ import { NotificationBell, NotificationToastContainer } from './NotificationCent
 import { useDaemonNotifier } from '@/lib/daemon-notifications'
 import { useSessionAccessNotifier } from '@/lib/session-access-notifier'
 import { useApprovalNotifier } from '@/lib/approval-notifier'
-import { MOBILE_NAV, MORE_ROWS, NAV_GROUPS, SECTIONS, navVisible } from './nav'
+import { MOBILE_NAV, MORE_ROWS, NAV_GROUPS, NAV_LABEL_KEYS, SECTIONS, SHEET_LABEL_KEYS, navVisible } from './nav'
 
 // Top-level routes own the tab-bar + list app bar (no back button, bottom nav shown);
 // every other route is a "push" screen (back-button app bar, no bottom nav) on mobile.
 // Home is a top-level surface (the default landing), not a push screen.
 const LIST_ROUTES = ['/home', '/agents', '/sessions', '/crons', '/daemons']
+// Push sections that still own nested detail routes, so Back from a deep link lands on them, not Home.
+const NESTED_PARENTS = ['/knowledge']
 const CONSOLE_SWR_CONFIG = {
   dedupingInterval: 2_000,
   focusThrottleInterval: 5_000,
@@ -166,7 +169,11 @@ export default function ConsoleShell({ children }: { children: ReactNode }) {
               for the same reason: the cards that register live under a route, the banner that
               names them is the route's own chrome, and one registry outlives both. */}
               <PendingActionsProvider>
-                <ShellChrome>{children}</ShellChrome>
+                {/* One Decisions prototype outlives every route: a decision created on the
+                    editor is still there when a channel row binds it (lib/decisions/provider). */}
+                <DecisionsPrototypeProvider>
+                  <ShellChrome>{children}</ShellChrome>
+                </DecisionsPrototypeProvider>
               </PendingActionsProvider>
             </ModalProvider>
           </PlaygroundProvider>
@@ -338,35 +345,8 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
   const { orgPath, orgs, activeOrg, setActiveOrg, loading: orgsLoading, error: orgsError } = useOrgs()
   const { openModal } = useModal()
   const navLabel = (href: string, fallback: string) => {
-    switch (href) {
-      case '/home':
-        return t('navigation.home')
-      case '/agents':
-        return t('navigation.agents')
-      case '/sessions':
-      case '/conversations':
-        return t('navigation.sessions')
-      case '/crons':
-        return t('navigation.schedules')
-      case '/tools':
-        return t('navigation.tools')
-      case '/integrations':
-        return t('navigation.integrations')
-      case '/knowledge':
-        return t('navigation.knowledge')
-      case '/daemons':
-        return t('navigation.infra')
-      case '/usage':
-        return t('navigation.analytics')
-      case '/billing':
-        return t('navigation.billing')
-      case '/settings':
-        return t('navigation.settings')
-      case '/profile':
-        return t('navigation.profile')
-      default:
-        return fallback
-    }
+    const key = NAV_LABEL_KEYS[href]
+    return key ? t(`navigation.${key}`) : fallback
   }
   const {
     daemons,
@@ -646,7 +626,8 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
 
   // Back from a push screen: pop in-app history when there is any, else (deep-link /
   // hard refresh — no history) route to the parent list so "back" never leaves the app.
-  const hasParentList = LIST_ROUTES.includes(`/${seg[0] ?? ''}`)
+  const hasParentList =
+    LIST_ROUTES.includes(`/${seg[0] ?? ''}`) || (seg.length > 1 && NESTED_PARENTS.includes(`/${seg[0]}`))
   const parentList = hasParentList ? `/${seg[0]}` : '/home'
   const parentListHref = orgPath(parentList + (seg[0] === 'sessions' ? sessionFilterSearch(locationSearch) : ''))
   const goBack = () => {
@@ -1225,25 +1206,10 @@ function MobileSheets({
 }) {
   const t = useTranslations('Shell')
   const navLabel = (href: string, fallback: string) => {
-    switch (href) {
-      case '/tools':
-        return t('navigation.tools')
-      case '/integrations':
-        return t('navigation.integrations')
-      case '/knowledge':
-        return t('navigation.knowledge')
-      case '/daemons':
-        return t('navigation.infra')
-      case '/usage':
-        return t('navigation.analytics')
-      case '/billing':
-        return t('navigation.billing')
-      case '/settings':
-        return t('navigation.organizationSettings')
-      default:
-        return fallback
-    }
+    const key = SHEET_LABEL_KEYS[href]
+    return key ? t(`navigation.${key}`) : fallback
   }
+
   const square = (o: OrgDto) => (
     <OrgIconView
       icon={o.icon}

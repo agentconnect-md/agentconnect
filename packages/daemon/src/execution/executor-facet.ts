@@ -14,13 +14,14 @@ import {
 import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DEFAULT_BACKOFF_CAP_MS, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
-import type {
-  ExecutorFacts,
-  ExecutorPrepareRefusal,
-  ExecutorPrepareReq,
-  ExecutorPrepareResult,
-  ExecutorReleaseReq,
-  ExecutorReleaseResult
+import {
+  ExecutorRuntimeLaunch,
+  type ExecutorFacts,
+  type ExecutorPrepareRefusal,
+  type ExecutorPrepareReq,
+  type ExecutorPrepareResult,
+  type ExecutorReleaseReq,
+  type ExecutorReleaseResult
 } from '@agentconnect.md/protocol'
 import { sessionKeyDirName } from '../acp/host-key.js'
 import type { RuntimeDef } from '../config/config-schema.js'
@@ -29,8 +30,15 @@ import type { Logger } from '../log.js'
 import { prepareSharedRuntimeCredentials } from '../runtimes/runtime-credentials.js'
 import { prepareRuntimeHome } from '../runtimes/runtime-home.js'
 import { PIPE_KEY_BYTES, startPipeListener, type PipeListener, type PipeListenerOptions } from './executor-pipe.js'
-import { startHostShim, sweepStaleHostShims, type HostShim } from './host-shim.js'
-import type { ExecutionStrategy, StrategyAvailability } from './strategies.js'
+import { sweepStaleHostShims } from './host-shim.js'
+import {
+  EXECUTION_STRATEGIES,
+  type ExecutionStrategy,
+  type SessionEnvironment,
+  type SessionSeed,
+  type StrategyAvailability,
+  type StrategyLauncher
+} from './strategies.js'
 
 /** No admitted pipe for this long stops an environment: two of the holder dialer's capped reconnect delays, so a blip it is still retrying through never reads as idle. */
 export const IDLE_LINGER_MS = 2 * DEFAULT_BACKOFF_CAP_MS
@@ -50,13 +58,13 @@ interface EnvironmentRecord {
   preparedAt: number
   /** Last prepare or admitted dial. Persisted so a restart does not reset the retention clock. */
   lastUsedAt: number
+  /** What prepared it, so a restart still knows whose `discard` removes a VM and its disks. */
+  strategy: ExecutionStrategy
 }
-
-type RunningShim = Pick<HostShim, 'socketPath' | 'runtimeRoot' | 'helperRoot' | 'missingHelpers' | 'exited' | 'stop'>
 
 interface Environment extends EnvironmentRecord {
   leaf: string
-  shim?: RunningShim
+  shim?: SessionEnvironment
   /** Admits dials while set; minted per launch and never written anywhere. */
   key?: Buffer
   /** The applied generation's answer, for as long as that launch lives here. */
@@ -72,6 +80,8 @@ export interface ExecutorFacetDeps {
   /** `sandbox.share`, the machine owner's consent: off, this machine is nobody's candidate and creates nothing. */
   share: boolean
   strategies: () => Record<ExecutionStrategy, StrategyAvailability>
+  /** How each strategy starts one session's environment (§5); a strategy with no launcher here is one this facet cannot prepare. */
+  launchers: Partial<Record<ExecutionStrategy, StrategyLauncher>>
   /** `limits.maxConcurrentSessions`, read per request because `config/push` may move it. */
   capacity: () => number
   /** This machine's own live isolated sessions: part of the load a holder compares, never refused themselves. */
@@ -79,16 +89,17 @@ export interface ExecutorFacetDeps {
   draining: () => boolean
   /** The local address the control connection leaves from, which is where a LAN peer reaches this machine (§13). */
   endpointHost: () => string | undefined
-  /** Seed a session HOME from this machine's runtime sign-in (§8). */
-  seedHome: (home: string) => void
+  /** Seed a session HOME from this machine's runtime sign-in (§8), answering what on this machine that seed points a runtime at. */
+  seedHome: (home: string) => SessionSeed | void
+  /** How an environment of this strategy starts a runtime a holder names: this machine's install, or its image's (§8); undefined when it has none. */
+  runtimeLaunch?: (runtimeId: string, strategy: ExecutionStrategy) => Promise<ExecutorRuntimeLaunch | undefined>
   /** The CP's `agent/exists`; a throw is "cannot answer". */
   agentsExist: (agentIds: string[]) => Promise<Set<string>>
   /** This machine's `sessions.retention` as a window; null ⇒ `never`, and an environment nobody uses is kept forever. */
   retentionMs: () => number | null
   log: Logger
   clock?: Clock
-  /** Test seams: a stub in place of the Linux-only launcher, and the listener's bind address and handshake budget. */
-  startShim?: (input: { daemonRoot: string; sessionLeaf: string; log: Logger }) => Promise<RunningShim>
+  /** Test seam: the listener's bind address and handshake budget. */
   listen?: Pick<PipeListenerOptions, 'host' | 'handshakeTimeoutMs'>
 }
 
@@ -110,6 +121,8 @@ export interface ExecutorFacet {
 
 const refused = (reason: ExecutorPrepareRefusal): ExecutorPrepareResult => ({ status: 'refused', reason })
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error))
+const reasonOf = (availability: StrategyAvailability): string =>
+  availability.available ? 'available' : availability.reason
 
 /** An environment's record fields alone — never the live half, whose `key` must not reach the disk. */
 const applied = (env: Environment): EnvironmentRecord => ({
@@ -117,26 +130,34 @@ const applied = (env: Environment): EnvironmentRecord => ({
   generation: env.generation,
   launchId: env.launchId,
   preparedAt: env.preparedAt,
-  lastUsedAt: env.lastUsedAt
+  lastUsedAt: env.lastUsedAt,
+  strategy: env.strategy
 })
 
-/** Seed a session HOME the way the local confined tier does, for every runtime this machine admits: the `prepare` names none. */
+/** Seed a session HOME the way the local confined tier does, for every runtime this machine admits: the `prepare` names none. Answers where a shared sign-in the HOME only points at lives on this machine. */
 export function seedSessionHome(
   home: string,
   runtimes: Record<string, RuntimeDef>,
   log: Pick<Logger, 'warn'>,
   hostEnv: NodeJS.ProcessEnv = process.env
-): void {
+): SessionSeed {
+  const seed: SessionSeed = { env: {}, paths: [] }
   for (const [runtimeId, runtime] of Object.entries(runtimes)) {
     try {
       const credentials = prepareSharedRuntimeCredentials({ runtimeId, runtime, hostEnv })
       prepareRuntimeHome(runtimeId, home, hostEnv, home, credentials?.seedExclusions)
       credentials?.preparePrivateHome(home)
+      // A holder cannot name these: they are paths on this machine, as a local launch's credential env is.
+      Object.assign(seed.env, credentials?.env)
+      // Read after the HOME is prepared, which can move a sign-in to its shared place and add that place here.
+      seed.paths.push(...(credentials?.writablePaths ?? []))
     } catch (error) {
       // One runtime's conflicting sign-in must not cost a session that runs another.
       log.warn(`executor: could not seed the ${runtimeId} sign-in into a session HOME (${message(error)})`)
     }
   }
+  // Runtimes sharing one sign-in name the same place, which a VM may mount only once.
+  return { env: seed.env, paths: [...new Set(seed.paths)] }
 }
 
 function syncPath(path: string): void {
@@ -189,7 +210,9 @@ function loadRecords(dir: string, log: Pick<Logger, 'warn'>): Map<string, Enviro
         generation: raw.generation!,
         launchId: raw.launchId,
         preparedAt: raw.preparedAt!,
-        lastUsedAt: raw.lastUsedAt!
+        lastUsedAt: raw.lastUsedAt!,
+        // The only strategy an earlier version of this record could describe.
+        strategy: raw.strategy === 'microsandbox' ? 'microsandbox' : 'host'
       })
     } catch {
       unreadable += 1
@@ -225,7 +248,7 @@ class Facet implements ExecutorFacet {
     await this.startGate
     for (const [leaf, record] of loadRecords(this.sessionsDir, deps.log))
       this.environments.set(leaf, { leaf, ...record })
-    const host = deps.strategies().host
+    const offered = EXECUTION_STRATEGIES.filter((strategy) => this.offered(strategy).available)
     if (!deps.share) {
       // The default, so it is said quietly unless an earlier run left something behind.
       const left = this.environments.size
@@ -234,24 +257,23 @@ class Facet implements ExecutorFacet {
         deps.log.info(
           `executor: sandbox.share is off — ${left} environment(s) of an earlier run stay until their sessions retire`
         )
-    } else if (!host.available) {
-      deps.log.warn(
-        `executor: sandbox.share is on but the facet stays off — no strategy can run here (host: ${host.reason})`
-      )
+    } else if (offered.length === 0) {
+      const why = EXECUTION_STRATEGIES.map((strategy) => `${strategy}: ${reasonOf(this.offered(strategy))}`).join('; ')
+      deps.log.warn(`executor: sandbox.share is on but the facet stays off — no strategy can run here (${why})`)
     } else {
       try {
         this.listener = await startPipeListener({
           ...deps.listen,
           admission: (identity) => {
             const env = this.environments.get(identity)
-            return env?.key && env.shim ? { key: env.key, socketPath: env.shim.socketPath } : undefined
+            return env?.key && env.shim ? { key: env.key, connect: env.shim.connect } : undefined
           },
           onPipe: (identity, open) => this.onPipe(identity, open),
           maxPending: () => Math.max(MIN_PENDING_HANDSHAKES, 2 * this.capacity()),
           log: deps.log
         })
         deps.log.info(
-          `executor: hosting sessions of this machine's group — TLS-PSK listener on port ${this.listener.port}`
+          `executor: hosting sessions of this machine's group with ${offered.join(', ')} — TLS-PSK listener on port ${this.listener.port}`
         )
       } catch (error) {
         deps.log.warn(
@@ -267,14 +289,19 @@ class Facet implements ExecutorFacet {
     const host = this.deps.endpointHost()
     return {
       enabled: true,
-      strategies: {
-        host: this.deps.strategies().host,
-        // Offered once this facet can prepare one; until then a holder reads why not.
-        microsandbox: { available: false, reason: 'the executor facet does not prepare microsandbox environments yet' }
-      },
+      strategies: { host: this.offered('host'), microsandbox: this.offered('microsandbox') },
       ...(host ? { endpoint: { host, port: this.listener.port } } : {}),
       capacity: this.capacity()
     }
+  }
+
+  /** What this facet offers: the effective table (§5), narrowed to the strategies it has a launcher for. */
+  private offered(strategy: ExecutionStrategy): StrategyAvailability {
+    const effective = this.deps.strategies()[strategy]
+    if (!effective.available) return effective
+    return this.deps.launchers[strategy]
+      ? { available: true }
+      : { available: false, reason: `the executor facet prepares no ${strategy} environments` }
   }
 
   hostedSessions(): number | undefined {
@@ -290,7 +317,10 @@ class Facet implements ExecutorFacet {
     if (known?.discarding) return refused('launch_retired')
     if (!this.listener) return refused('facet_off')
     if (this.stopped || this.deps.draining()) return refused('draining')
-    if (req.strategy !== 'host') return refused('strategy_unavailable')
+    // Which strategies may be asked for is the effective table narrowed to this facet's launchers, never a name written here.
+    const strategy = EXECUTION_STRATEGIES.find((name) => name === req.strategy)
+    const launcher = strategy && this.offered(strategy).available ? this.deps.launchers[strategy] : undefined
+    if (!strategy || !launcher) return refused('strategy_unavailable')
     if (known) {
       // The CP vouched that the asker holds `req.agentId`; that says nothing about another agent's environment.
       if (known.agentId !== req.agentId) return refused('not_holder')
@@ -307,13 +337,20 @@ class Facet implements ExecutorFacet {
     // The executor allocates the generation, because it is the single writer of this environment and knows what it last applied.
     const now = this.clock.now()
     const generation = (known?.generation ?? 0) + 1
-    const record = { agentId: req.agentId, generation, launchId: req.launchId, preparedAt: now, lastUsedAt: now }
+    const record = {
+      agentId: req.agentId,
+      generation,
+      launchId: req.launchId,
+      preparedAt: now,
+      lastUsedAt: now,
+      strategy
+    }
     writeRecord(this.sessionsDir, leaf, record)
     const env: Environment = Object.assign(known ?? { leaf }, record)
     this.environments.set(leaf, env)
     // Rotation is the fence (§6): the old key, its cached answer and the pipe it admitted go before the new launch starts.
     this.retire(env)
-    const launching = this.launch(env, generation)
+    const launching = this.launch(env, generation, launcher, req.runtime)
     env.launching = launching
     const settled = (): void => {
       if (env.launching !== launching) return
@@ -325,16 +362,22 @@ class Facet implements ExecutorFacet {
     return launching
   }
 
-  private async launch(env: Environment, generation: number): Promise<ExecutorPrepareResult> {
+  private async launch(
+    env: Environment,
+    generation: number,
+    launcher: StrategyLauncher,
+    runtimeId?: string
+  ): Promise<ExecutorPrepareResult> {
     await this.serializeStart(async () => {
       if (env.stopping) await env.stopping
       if (this.stopped) throw new Error('the executor facet is stopping')
       if (env.shim || env.generation !== generation) return
-      this.deps.seedHome(join(this.sessionsDir, env.leaf, 'home'))
-      const shim = await (this.deps.startShim ?? startHostShim)({
+      const seed = this.deps.seedHome(join(this.sessionsDir, env.leaf, 'home'))
+      const shim = await launcher.start({
         daemonRoot: this.deps.daemonRoot,
         sessionLeaf: env.leaf,
-        log: this.deps.log
+        log: this.deps.log,
+        ...(seed ? { seed } : {})
       })
       if (this.stopped) {
         await shim.stop()
@@ -343,6 +386,8 @@ class Facet implements ExecutorFacet {
       env.shim = shim
       void shim.exited.then(() => this.shimExited(env, shim))
     })
+    // Outside the start gate: a first install of the adapter may take a while, and it holds up no other environment.
+    const runtimeLaunch = runtimeId === undefined ? undefined : await this.runtimeLaunch(runtimeId, env.strategy)
     // A newer launch took the environment while this one was starting it, and owns the key now.
     if (env.generation !== generation || !env.shim || !this.listener) return refused('launch_retired')
     const host = this.deps.endpointHost()
@@ -354,11 +399,30 @@ class Facet implements ExecutorFacet {
       endpoint: { host, port: this.listener.port },
       psk: env.key.toString('base64url'),
       runtimeRoot: env.shim.runtimeRoot,
-      helperRoot: env.shim.helperRoot,
+      ...(env.shim.helperRoot === undefined ? {} : { helperRoot: env.shim.helperRoot }),
       ...(env.shim.missingHelpers.length > 0 ? { missingHelpers: env.shim.missingHelpers } : {}),
+      ...(runtimeLaunch ? { runtimeLaunch } : {}),
       liveCount: this.liveCount()
     }
     return env.reply
+  }
+
+  /** Where an environment of this strategy finds a runtime's install; never fatal, since a holder without the answer keeps its own launch. */
+  private async runtimeLaunch(
+    runtimeId: string,
+    strategy: ExecutionStrategy
+  ): Promise<ExecutorRuntimeLaunch | undefined> {
+    let answer: ExecutorRuntimeLaunch | undefined
+    try {
+      answer = await this.deps.runtimeLaunch?.(runtimeId, strategy)
+    } catch (error) {
+      this.deps.log.warn(`executor: cannot say how this machine starts runtime ${runtimeId} (${message(error)})`)
+      return undefined
+    }
+    // An answer the frame cannot carry would fail the whole reply at the relay, so it is dropped here instead.
+    if (answer === undefined || ExecutorRuntimeLaunch.safeParse(answer).success) return answer
+    this.deps.log.warn(`executor: how this machine starts runtime ${runtimeId} does not fit the prepare reply`)
+    return undefined
   }
 
   // One environment start at a time, as the microsandbox manager starts VMs, so the VM strategy inherits the rule.
@@ -443,7 +507,7 @@ class Facet implements ExecutorFacet {
       }))
   }
 
-  private shimExited(env: Environment, shim: RunningShim): void {
+  private shimExited(env: Environment, shim: SessionEnvironment): void {
     if (env.shim !== shim) return
     env.shim = undefined
     if (env.stopping) return
@@ -521,6 +585,8 @@ class Facet implements ExecutorFacet {
   // Dirtiness is never judged here: a holder's `release`, a removed agent or an expired retention is the only evidence acted on.
   private async discard(env: Environment, why: string): Promise<void> {
     try {
+      // What the strategy owns beyond the directory — a VM and its disposable disks — goes first; the directory is the facet's own.
+      await this.deps.launchers[env.strategy]?.discard?.(env.leaf)
       await rm(join(this.sessionsDir, env.leaf), { recursive: true, force: true })
       // The record goes last, so a discard cut short is finished by the next sweep rather than forgotten.
       rmSync(join(this.sessionsDir, `${env.leaf}.json`), { force: true })

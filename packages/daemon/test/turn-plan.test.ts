@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { MAX_AGENT_CALL_HOPS } from '@agentconnect.md/protocol'
 import { buildTurnPlan, type TurnPlanInput } from '../src/daemon/turn-plan.js'
+import { QQAnswerDelivery } from '../src/platforms/qq/turn-output.js'
 import { AGENT_CALL_HOP_LIMIT_NOTICE } from '../src/daemon/constants.js'
 import { transcriptChannelKey } from '../src/store/local-store.js'
 import { TurnOutputRegistry, type TurnOutputSurface } from '../src/platforms/turn-output.js'
@@ -27,6 +28,7 @@ const surfaces = new TurnOutputRegistry<Pending, DaemonRenderAction, DaemonConve
   surfaceFor('slack')
 )
 for (const platform of ['telegram', 'discord', 'feishu']) surfaces.register(surfaceFor(platform))
+surfaces.register({ ...surfaceFor('qq'), answerDelivery: QQAnswerDelivery })
 
 const message = (over: Partial<NormalizedMessage> = {}): NormalizedMessage =>
   ({
@@ -121,13 +123,58 @@ describe('buildTurnPlan', () => {
     const wc = planFor({
       entry: entryFor({ webchat: webchatCtx(), msg: message({ platform: 'webchat' }) })
     })
-    expect([wc.stageAnswer, wc.webchatRefresh]).toEqual([false, true])
+    expect(wc).toMatchObject({ stageAnswer: false, webchatRefresh: true, refreshBeforePrompt: true })
 
     const off = planFor({ features: { turnFinalContextRefresh: false } })
     expect([off.stageAnswer, off.webchatRefresh]).toEqual([false, false])
 
     const gh = planFor({ entry: entryFor({ githubReply: { owner: 'o' } as never }) })
-    expect([gh.stageAnswer, gh.webchatRefresh]).toEqual([false, false])
+    expect(gh).toMatchObject({ stageAnswer: false, webchatRefresh: false, refreshBeforePrompt: false })
+  })
+
+  it.each([true, false])('delivers QQ output during the turn while retaining pre-prompt refresh (isDm=%s)', (isDm) => {
+    const plan = planFor({ entry: entryFor({ msg: message({ platform: 'qq', isDm }) }), stickyOutputMode: 'high' })
+    expect(plan.stageAnswer).toBe(false)
+    expect(plan.refreshBeforePrompt).toBe(true)
+    expect(plan.webchatRefresh).toBe(false)
+  })
+
+  it('keeps staged delivery for QQ quiet groups, silent turns and headless turns', () => {
+    const cases = [
+      { entry: entryFor({ msg: message({ platform: 'qq', isDm: false }) }), stickyOutputMode: 'low' as const },
+      { entry: entryFor({ msg: message({ platform: 'qq', isDm: false }) }), stickyOutputMode: 'none' as const },
+      { entry: entryFor({ msg: message({ platform: 'qq', isDm: true }) }), stickyOutputMode: 'none' as const },
+      { entry: entryFor({ msg: message({ platform: 'qq', isDm: true, headless: true }) }) }
+    ]
+    for (const input of cases) {
+      const plan = planFor(input)
+      expect(plan.stageAnswer).toBe(true)
+      expect(plan.refreshBeforePrompt).toBe(true)
+    }
+  })
+
+  it.each(['slack', 'telegram', 'discord', 'feishu'])(
+    'preserves %s staging and its explicit global refresh opt-out',
+    (platform) => {
+      const entry = entryFor({ msg: message({ platform, isDm: true }) })
+      const plan = planFor({ entry })
+      expect([plan.refreshBeforePrompt, plan.stageAnswer, plan.webchatRefresh]).toEqual([true, true, false])
+      const off = planFor({ entry, features: { turnFinalContextRefresh: false } })
+      expect([off.refreshBeforePrompt, off.stageAnswer, off.webchatRefresh]).toEqual([false, false, false])
+    }
+  )
+
+  it('does not inherit live policy from a fallback renderer', () => {
+    const fallback = new TurnOutputRegistry<Pending, DaemonRenderAction, DaemonConverger, NormalizedMessage>({
+      ...surfaceFor('slack'),
+      answerDelivery: () => 'live'
+    })
+    const plan = planFor({
+      turnSurfaces: fallback,
+      entry: entryFor({ msg: message({ platform: 'telegram', isDm: true }) })
+    })
+    expect(plan.stageAnswer).toBe(true)
+    expect(plan.refreshBeforePrompt).toBe(true)
   })
 
   it('enables the attribution footer only where the platform has that chrome', () => {

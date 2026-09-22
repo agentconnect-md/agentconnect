@@ -418,7 +418,8 @@ jobs:
           test/skill-workspace-lock.test.ts
           test/skill-install-ledger.test.ts
 
-  # The microsandbox backend on a real VM, the one leg where the staged shim, the guest's `/run` and both helper tunnels meet a real kernel.
+  # The microsandbox backend on a real VM, the one leg where the staged shim, the guest's `/run`, both helper tunnels
+  # and the executor facet's VM strategy meet a real kernel.
   # Pull requests that reach that path only: it needs KVM and a registry pull, which a release gate should not wait on.
   sandbox-microsandbox:
     name: Sandbox (microsandbox VM)
@@ -439,7 +440,7 @@ jobs:
           skip() { echo 'changed=false' >> "$GITHUB_OUTPUT"; exit 0; }
           [ "${{ github.event_name }}" = 'pull_request' ] || skip
           files=$(git diff --name-only "$BASE...$HEAD") || skip
-          if grep -qE '^(packages/daemon/(src/(microsandbox|shim|remote)/|scripts/smoke-microsandbox-runtime\.mts$)|packages/connection/src/|\.github/workflows/test\.yaml$)' <<<"$files"; then
+          if grep -qE '^(packages/daemon/(src/(execution|microsandbox|shim|remote)/|scripts/smoke-microsandbox-runtime\.mts$)|packages/connection/src/|\.github/workflows/test\.yaml$)' <<<"$files"; then
             echo 'changed=true' >> "$GITHUB_OUTPUT"
           else
             skip
@@ -477,7 +478,7 @@ jobs:
         env:
           pnpm_config_enable_pre_post_scripts: false
         run: pnpm --filter @agentconnect.md/daemon build
-      - name: Runtime and helper tunnels through the shim, in a real VM
+      - name: Runtime, helper tunnels and a hosted session through the shim, in a real VM
         if: ${{ steps.filter.outputs.changed == 'true' }}
         run: >
           pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-microsandbox-runtime.mts

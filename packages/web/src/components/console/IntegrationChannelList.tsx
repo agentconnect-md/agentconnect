@@ -10,6 +10,9 @@ import { AgentIconView } from '@/components/marks'
 import { channelListSemantics } from '@/components/console/platforms/registry'
 import { TriggerSelect, type TriggerOption } from '@/components/console/TriggerSelect'
 import { useOwnerChangeGuard } from '@/components/console/OwnerChangeGuard'
+import { DecisionBindingStrip } from '@/components/console/decisions/DecisionBindingStrip'
+import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
+import { featureFlagEnabled } from '@/lib/feature-flags'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { chatPlatformName } from '@/lib/platform-labels'
 import type { WebChannelListMessage } from '@/components/console/platforms/contract'
@@ -38,6 +41,10 @@ function resolveMessage(
   return t(message.key, { ...message.values, ...values })
 }
 
+/** The row's trigger choice. `by decision` is prototype-only: the CP's conversation DTO has
+ *  no such value yet, so picking it writes a prototype gate instead of a channel PATCH. */
+type RowTrigger = IntegrationChannelRow['trigger'] | 'decision'
+
 /** The per-conversation trigger dropdown: channels take "off" / "any message" / "@-mention" (the
  *  default, so it sits last), DM rows are binary off/on, and shared bots project that state across
  *  every membership row. Every choice carries hover copy. */
@@ -45,6 +52,8 @@ function TriggerToggle({
   channel,
   platform,
   disabled,
+  value,
+  allowDecision,
   onChange
 }: {
   channel: IntegrationChannelRow
@@ -52,13 +61,17 @@ function TriggerToggle({
   platform?: string
   /** Demo rows (no live integration id) render the control inert. */
   disabled: boolean
-  onChange: (trigger: IntegrationChannelRow['trigger']) => void
+  /** The row's effective choice, which is the memory trigger unless a gate overrides it. */
+  value: RowTrigger
+  /** Whether `by decision` is offered here at all — the flag, a group room, and a non-shared bot. */
+  allowDecision: boolean
+  onChange: (trigger: RowTrigger) => void
 }) {
   const t = useTranslations('Integrations.channelList')
   const translate: ChannelListTranslator = (key, values) => t(key as never, values as never)
   const [saving, setSaving] = useState(false)
-  const pick = (trigger: IntegrationChannelRow['trigger']) => {
-    if (disabled || saving || trigger === channel.trigger) return
+  const pick = (trigger: RowTrigger) => {
+    if (disabled || saving || trigger === value) return
     setSaving(true)
     Promise.resolve(onChange(trigger)).finally(() => setSaving(false))
   }
@@ -71,29 +84,91 @@ function TriggerToggle({
   const here = translate('thisRoom', { noun })
   // The room's vocabulary is the platform's: nothing matches "any message" where no unaddressed traffic exists.
   const allowed = channelListSemantics(platform).triggers
-  const roomOptions: TriggerOption<IntegrationChannelRow['trigger']>[] = [
+  const roomOptions: TriggerOption<RowTrigger>[] = [
     { value: 'off', label: translate('trigger.off'), hint: translate('trigger.offHint', { room: here }) },
     { value: 'any', label: translate('trigger.anyMessage'), hint: translate('trigger.anyMessageHint', { room: here }) },
     {
       value: 'mention',
       label: translate('trigger.mention'),
       hint: translate('trigger.mentionHint')
+    },
+    {
+      value: 'decision',
+      label: translate('trigger.decision'),
+      hint: translate('trigger.decisionHint', { room: here })
     }
   ]
-  const options: TriggerOption<IntegrationChannelRow['trigger']>[] =
+  const options: TriggerOption<RowTrigger>[] =
     channel.kind === 'im'
       ? [
           { value: 'off', label: translate('trigger.off'), hint: translate('trigger.dmOffHint') },
           { value: 'any', label: translate('trigger.on'), hint: translate('trigger.dmOnHint') }
         ]
-      : roomOptions.filter((o) => !allowed || allowed.includes(o.value))
+      : roomOptions.filter((o) => (o.value === 'decision' ? allowDecision : !allowed || allowed.includes(o.value)))
   return (
     <TriggerSelect
       options={options}
-      value={channel.trigger}
+      value={value}
       onChange={pick}
       ariaLabel={translate('trigger.ariaLabel', { name: rowLabel(channel) })}
       hint={translate('trigger.hint')}
+      disabled={disabled}
+      busy={saving}
+      className="max-desktop:w-full"
+    />
+  )
+}
+
+/** The per-conversation session-mode dropdown: which session a message here joins. It sits
+ *  beside the trigger because the two are the room's only per-conversation choices, and it
+ *  answers a different question — the trigger decides WHETHER the agent responds, this
+ *  decides which session it responds in.
+ *
+ *  Channel rows only. A direct conversation is one continuous exchange already, so the
+ *  choice would name a distinction that does not exist there. */
+function SessionModeToggle({
+  channel,
+  platform,
+  disabled,
+  onChange
+}: {
+  channel: IntegrationChannelRow
+  platform?: string
+  disabled: boolean
+  onChange: (mode: NonNullable<IntegrationChannelRow['sessionMode']>) => void
+}) {
+  const t = useTranslations('Integrations.channelList')
+  const translate: ChannelListTranslator = (key, values) => t(key as never, values as never)
+  const [saving, setSaving] = useState(false)
+  const current = channel.sessionMode ?? 'createNew'
+  const allowed = channelListSemantics(platform).sessionModes
+  const here = translate('thisRoom', { noun: localNoun(translate, rowNoun(channel.kind, platform)) })
+  const options: TriggerOption<NonNullable<IntegrationChannelRow['sessionMode']>>[] = [
+    {
+      value: 'createNew',
+      label: t('sessionMode.createNew'),
+      hint: t('sessionMode.createNewHint', { room: here })
+    },
+    {
+      value: 'append',
+      label: t('sessionMode.append'),
+      hint: t('sessionMode.appendHint', { room: here })
+    }
+  ]
+  const offered = allowed ? options.filter((o) => allowed.includes(o.value)) : options
+  if (offered.length < 2) return null
+  const pick = (mode: NonNullable<IntegrationChannelRow['sessionMode']>) => {
+    if (disabled || saving || mode === current) return
+    setSaving(true)
+    Promise.resolve(onChange(mode)).finally(() => setSaving(false))
+  }
+  return (
+    <TriggerSelect
+      options={offered}
+      value={current}
+      onChange={pick}
+      ariaLabel={t('sessionMode.ariaLabel', { name: rowLabel(channel) })}
+      hint={t('sessionMode.hint')}
       disabled={disabled}
       busy={saving}
       className="max-desktop:w-full"
@@ -608,8 +683,16 @@ export function IntegrationChannelList({
 }) {
   const t = useTranslations('Integrations.channelList')
   const translate: ChannelListTranslator = (key, values) => t(key as never, values as never)
-  const { setChannelTrigger, setChannelAgent, forgetChannel, leaveConversation, bots, agents, integrations } =
-    useConsoleData()
+  const {
+    setChannelTrigger,
+    setChannelSessionMode,
+    setChannelAgent,
+    forgetChannel,
+    leaveConversation,
+    bots,
+    agents,
+    integrations
+  } = useConsoleData()
   const ownerGuard = useOwnerChangeGuard()
   // A derived roster is the platform's own list — nothing is observed into it, and nothing is dropped from here.
   const derivedRoster = channelListSemantics(platform).roster === 'derived'
@@ -658,6 +741,29 @@ export function IntegrationChannelList({
   // bot-wide just like channels.
   const dmRows = channels.filter((c) => isDirectConversation(c.kind))
   const grouped = groupBySpace(channelRows)
+  // Rows switched to `by decision` this session, plus every saved gate.
+  const decisions = useOptionalDecisionsPrototype()
+  const decisionsOffered = featureFlagEnabled('decisions') && !!decisions
+  const [pickedDecision, setPickedDecision] = useState<Record<string, boolean>>({})
+  // The store composes the identity (organization + bot + conversation); without it there are
+  // no gates at all and the choice is hidden, so a bare channel id is only a map key.
+  const bindingKey = (c: IntegrationChannelRow) => decisions?.gateKeyFor(botId, c.channelId) ?? c.channelId
+  const rowTrigger = (c: IntegrationChannelRow): RowTrigger => {
+    const key = bindingKey(c)
+    return pickedDecision[key] || decisions?.gates[key] ? 'decision' : c.trigger
+  }
+  const pickTrigger = (c: IntegrationChannelRow, trigger: RowTrigger) => {
+    const key = bindingKey(c)
+    if (trigger === 'decision') {
+      setPickedDecision((current) => ({ ...current, [key]: true }))
+      return
+    }
+    setPickedDecision((current) => Object.fromEntries(Object.entries(current).filter(([entry]) => entry !== key)))
+    decisions?.clearGate(key)
+    // The CP trigger word is unchanged by a gate, so a row that never had one has nothing to write.
+    if (trigger === c.trigger) return
+    return setChannelTrigger(integrationId!, c.channelId, trigger)
+  }
   /**
    * Leaving, for a platform that has no per-conversation membership to leave. A
    * Discord bot is in a SERVER, so the action belongs to the band that names one —
@@ -702,67 +808,99 @@ export function IntegrationChannelList({
     const def = dispatchable ? defaultAgent(c) : undefined
     const label = rowLabelParts(c, platform)
     const Name = rowName(c.kind, platform)
+    const trigger = rowTrigger(c)
     return (
-      <div
-        key={c.channelId}
-        className="flex flex-wrap items-center gap-x-[10px] gap-y-2 border-t border-(--border-subtle) bg-(--surface-app)"
-        style={{ padding: `10px ${padX}px` }}
-      >
-        <span className="font-mono text-[14px] font-medium leading-normal text-(--text-tertiary)">
-          {roomGlyph(c.kind, platform)}
-        </span>
-        <span className="mono flex min-w-0 flex-1 items-baseline gap-[6px] truncate text-[13px] text-(--text-primary)">
-          {Name ? (
-            <Name name={label.name} channelKey={c.key} url={c.url} />
-          ) : (
-            <span className="min-w-0 truncate">{label.name}</span>
-          )}
-          {label.hint && <span className="flex-none text-(--text-tertiary)">{label.hint}</span>}
-        </span>
-        <div className="ml-auto flex items-center gap-[10px] max-desktop:ml-0 max-desktop:w-full max-desktop:flex-col max-desktop:items-start">
-          {def && (
-            <>
-              {/* The PATCH goes through THIS agent's integration on purpose:
+      <Fragment key={c.channelId}>
+        <div
+          className="flex flex-wrap items-center gap-x-[10px] gap-y-2 border-t border-(--border-subtle) bg-(--surface-app)"
+          style={{ padding: `10px ${padX}px` }}
+        >
+          <span className="font-mono text-[14px] font-medium leading-normal text-(--text-tertiary)">
+            {roomGlyph(c.kind, platform)}
+          </span>
+          <span className="mono flex min-w-0 flex-1 items-baseline gap-[6px] truncate text-[13px] text-(--text-primary)">
+            {Name ? (
+              <Name name={label.name} channelKey={c.key} url={c.url} />
+            ) : (
+              <span className="min-w-0 truncate">{label.name}</span>
+            )}
+            {label.hint && <span className="flex-none text-(--text-tertiary)">{label.hint}</span>}
+          </span>
+          <div className="ml-auto flex items-center gap-[10px] max-desktop:ml-0 max-desktop:w-full max-desktop:flex-col max-desktop:items-start">
+            {def && (
+              <>
+                {/* The PATCH goes through THIS agent's integration on purpose:
                   ownership of a shared (http) conversation is bot-scoped server-side —
                   the route resolves the effective owner across every install,
                   fences on it (`expectedOwnerAgentId`) and hands the write to
                   `httpBot.updateConversation`, so exactly one row stays canonical no
                   matter which install the console patched. */}
-              <DefaultAgentPicker
-                current={def}
-                viewer={viewer}
-                disabled={!integrationId}
-                onClaim={(id) =>
-                  ownerGuard.guard({ platform, from: def, toId: id, room: rowLabel(c) }, () =>
-                    setChannelAgent(integrationId!, c.channelId, id)
-                  )
-                }
-              />
-              {/* The design separates the two controls with a hairline — default
+                <DefaultAgentPicker
+                  current={def}
+                  viewer={viewer}
+                  disabled={!integrationId}
+                  onClaim={(id) =>
+                    ownerGuard.guard({ platform, from: def, toId: id, room: rowLabel(c) }, () =>
+                      setChannelAgent(integrationId!, c.channelId, id)
+                    )
+                  }
+                />
+                {/* The design separates the two controls with a hairline — default
                   dispatch and trigger are different decisions, not one bar. */}
-              <span className="hidden h-[18px] w-px flex-none bg-(--border-subtle) desktop:block" />
-            </>
-          )}
-          <TriggerToggle
-            channel={c}
-            platform={platform}
-            disabled={!integrationId}
-            onChange={(trigger) => setChannelTrigger(integrationId!, c.channelId, trigger)}
-          />
-          {/* Demo rows carry no button rather than an inert one, and a derived roster none at all — the
-              platform owns the list. Which of the two callbacks a row spends is `rowMenuAction`'s call. */}
-          {integrationId && !derivedRoster && (
-            <RowAction
+                <span className="hidden h-[18px] w-px flex-none bg-(--border-subtle) desktop:block" />
+              </>
+            )}
+            {/* Channel rows only — see SessionModeToggle. It renders nothing where the platform
+              offers one mode, so no branch on a platform name is needed here. */}
+            {!isDirectConversation(c.kind) && (
+              <SessionModeToggle
+                channel={c}
+                platform={platform}
+                disabled={!integrationId}
+                onChange={(mode) => setChannelSessionMode(integrationId!, c.channelId, mode)}
+              />
+            )}
+            <TriggerToggle
               channel={c}
               platform={platform}
-              onForget={() => act(() => forgetChannel(integrationId, c.channelId))}
-              onLeave={() =>
-                act(() => leaveConversation(integrationId, { kind: 'conversation', channel: c.channelId }))
-              }
+              disabled={!integrationId}
+              value={trigger}
+              // A shared bot's consumer is its own routing rules (§3.2), not a per-channel gate,
+              // and that router is not implemented — so the choice is withheld there.
+              allowDecision={decisionsOffered && !shareable}
+              onChange={(next) => pickTrigger(c, next)}
             />
-          )}
+            {/* Demo rows carry no button rather than an inert one, and a derived roster none at all — the
+              platform owns the list. Which of the two callbacks a row spends is `rowMenuAction`'s call. */}
+            {integrationId && !derivedRoster && (
+              <RowAction
+                channel={c}
+                platform={platform}
+                onForget={() => act(() => forgetChannel(integrationId, c.channelId))}
+                onLeave={() =>
+                  act(() => leaveConversation(integrationId, { kind: 'conversation', channel: c.channelId }))
+                }
+              />
+            )}
+          </div>
         </div>
-      </div>
+        {trigger === 'decision' && decisions && !shareable && (
+          <DecisionBindingStrip
+            bindingKey={bindingKey(c)}
+            channelName={rowLabel(c)}
+            canWrite={!!integrationId}
+            // The same owner the row's dispatch picker shows — for a shared bot, a sibling install's.
+            agentName={(defaultAgent(c) ?? (agentId ? member(agentId) : undefined))?.label ?? ''}
+            padX={padX}
+            onAbandon={() => {
+              const key = bindingKey(c)
+              setPickedDecision((current) =>
+                Object.fromEntries(Object.entries(current).filter(([entry]) => entry !== key))
+              )
+            }}
+          />
+        )}
+      </Fragment>
     )
   }
   return (

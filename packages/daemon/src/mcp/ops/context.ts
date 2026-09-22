@@ -72,6 +72,12 @@ export type UploadOutcome =
    *  a report that omits what the platform actually said cannot be acted on. */
   | { ok: false; reason: UploadFailReason; detail?: string }
 
+// A turn-bound image sender; its destination and reply anchor are captured by the platform.
+export type ImageUploader = (
+  file: { bytes: Buffer; name: string; mimeType: string },
+  caption?: string
+) => Promise<UploadOutcome>
+
 export interface MessageGateway {
   /** Layer-1 `openDirectMessage`: resolve one platform user to the app's real
    *  direct-message conversation. Optional because it is a declared read port,
@@ -103,6 +109,8 @@ export interface MessageGateway {
   /** Arbitrary reactions — the agent-callable pair, not the turn-chrome `react` intent. */
   addReaction?(channel: string, messageTs: string, emoji: string): Promise<void>
   getReactions?(channel: string, messageTs: string): Promise<PlatformReactionSummary[]>
+  /** Retire one message — the agent-callable port, not the chrome cleanup core runs itself. */
+  deleteMessage?(channel: string, ts: string): Promise<boolean>
   /** Create a channel, or open the direct conversation with a set of users. */
   createConversation?(spec: PlatformConversationSpec): Promise<PlatformChannelInfo>
   listBookmarks?(channel: string): Promise<PlatformBookmark[]>
@@ -187,7 +195,13 @@ export interface SessionContext {
    *  thread titles are valid only for app-DM sessions. */
   isDm: boolean
   channel: string
+  /** The SESSION's coordinate — session-key lookups and transcript rows read this. It is
+   *  NOT a platform thread where the conversation appends (channel-session-mode.md §3.1). */
   thread: string
+  /** Where a tool that POSTS defaults to, as of the turn that OPENED this session. The
+   *  bridge is registered once per session, so a later turn in another physical thread needs
+   *  `deliveryThreadNow()` instead; this is the fallback when no turn is live. */
+  deliveryThread: string
   tools: ToolDescriptor[]
   /**
    * Binds the shared memory tools to THIS trigger's store (#41). Every path that

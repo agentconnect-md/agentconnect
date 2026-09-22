@@ -208,6 +208,12 @@ export class SessionMetadataOutbox {
     else if (permissionMode !== undefined) event.permissionMode = permissionMode
     const outputMode = (storeKey ? await store.getOutputModeOverride(storeKey) : undefined) ?? agent?.output?.mode
     if (outputMode !== undefined) event.outputMode = outputMode
+    // The birth verdict (session-executors.md §7), read from the row so every re-emit carries it: the
+    // daemon executing the session, or the reason it stayed with its holder. Whichever was recorded
+    // replaces the other, and a row with neither says nothing.
+    const verdict = storeKey ? await store.getSessionExecutor(storeKey) : undefined
+    if (verdict && 'executorDaemonId' in verdict) event.executorDaemonId = verdict.executorDaemonId
+    else if (verdict) event.stayedHomeReason = verdict.stayedHomeReason
 
     const snapshot = await this.convergedPendingSessionMetadataSnapshot(event)
     let pending = false

@@ -6,6 +6,22 @@ import type { MessageGateway, SessionContext } from './context.js'
 export interface GatewayDeps extends AskDeps {
   /** Resolve the live platform connection that owns this integration (may rotate). */
   gatewayFor: (integrationId: string) => MessageGateway | undefined
+  /**
+   * The physical thread the CURRENT turn arrived in, for a tool that posts.
+   *
+   * The bridge is registered once per session, so `ctx.deliveryThread` is frozen at the
+   * turn that opened it. That is the same value for every turn of a session that IS a
+   * thread, and the wrong one as soon as a session spans several — a conversation on
+   * `append` receives its next message in another thread entirely
+   * (channel-session-mode.md §3.1). Absent, or undefined between turns, ⇒ the frozen value.
+   */
+  deliveryThreadNow?: (ctx: {
+    agentId: string
+    platform: string
+    channel: string
+    thread: string
+    transportScope?: string
+  }) => string | undefined
 }
 
 /** Returned by the history-backed reads when the agent has several bots on the target platform, NONE of them this session's, and the host could not be asked which one to read: observed history belongs to one bot at a time, and a chat reached via one bot is not reachable by another. */

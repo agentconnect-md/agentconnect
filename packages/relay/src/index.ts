@@ -354,6 +354,7 @@ async function main(): Promise<void> {
             sessionKey: post.conversationId,
             msgId: randomUUID(),
             chatId: post.conversationId,
+            ...(p.recordedDaemonId ? { recordedDaemonId: p.recordedDaemonId } : {}),
             payload: { op: 'context', post: bound.post.post }
           })
           .catch((err) => log.warn(`relay: webchat post context fan-out failed: ${(err as Error).message}`))

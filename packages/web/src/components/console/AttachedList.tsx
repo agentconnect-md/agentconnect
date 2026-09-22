@@ -42,7 +42,6 @@ export function AttachedRow({
   /** Full-bleed panel below the row (the skills card's per-skill list). */
   children?: ReactNode
 }) {
-  const t = useTranslations('Common.attachedList')
   return (
     <div className={`border-b border-(--border-subtle) last:border-b-0 ${dimmed ? 'opacity-60' : ''}`}>
       <div className="flex items-center gap-[11px] px-4 py-3">
@@ -115,6 +114,7 @@ export function AttachMenu({
   actions: AttachAction[]
   disabled?: boolean
 }) {
+  const t = useTranslations('Common.attachedList')
   const rows = groups.reduce((n, g) => n + Math.max(1, Math.min(g.options.length, 6)), 0)
   return (
     <AnchoredFlyout

@@ -12,6 +12,7 @@ import { rewrapAllSecrets } from '../../src/secrets/rewrap.js'
 import {
   PgBotSecretStore,
   PgAgentSecretStore,
+  PgProviderKeyStore,
   PgOrganizationEnvironmentSecretStore
 } from '../../src/persistence/index.js'
 import {
@@ -150,6 +151,12 @@ async function seedAllSecretTables(): Promise<void> {
     data: { orgId: DEFAULT_ORG_ID, key: 'ORG_API_KEY', kind: 'secret', audience: 'all' }
   })
   await prisma.organizationEnvironmentSecret.create({ data: { entryId: entry.id, value: 'org-secret-plain' } })
+  await prisma.providerKey.create({
+    data: { orgId: DEFAULT_ORG_ID, provider: 'typesafe', value: 'example-provider-key' }
+  })
+  await prisma.providerKeyHeader.create({
+    data: { orgId: DEFAULT_ORG_ID, provider: 'typesafe', name: 'x-extra-key', value: 'example-header-value' }
+  })
 }
 
 describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (real Postgres)', () => {
@@ -157,7 +164,17 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
     await seedAllSecretTables()
     const cipher = new PrefixCipher()
 
+    const providerUpdatedAt = (await prisma.providerKey.findFirstOrThrow()).updatedAt
     const stats = await rewrapAllSecrets(prisma, cipher)
+    const providerKey = await prisma.providerKey.findFirstOrThrow()
+    expect(providerKey.value).toBe('sealed:example-provider-key')
+    expect(providerKey.updatedAt).toEqual(providerUpdatedAt)
+    expect(await new PgProviderKeyStore(prisma, cipher).get(OrgId(DEFAULT_ORG_ID), 'typesafe')).toEqual({
+      apiKey: 'example-provider-key',
+      endpoint: null,
+      headers: { 'x-extra-key': 'example-header-value' }
+    })
+    expect((await prisma.providerKeyHeader.findFirstOrThrow()).value).toBe('sealed:example-header-value')
     expect(stats.map((s) => s.table).sort()).toEqual([
       'agent_secret',
       'bot_secret',
@@ -169,6 +186,8 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
       'mcp_grant',
       'mcp_provider_secret',
       'organization_environment_secret',
+      'provider_key',
+      'provider_key_header',
       'slack_install',
       'slack_user_config'
     ])
@@ -244,6 +263,28 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
     expect(again.find((s) => s.table === 'bot_secret')!.rows).toBe(1)
     const bot2 = await prisma.botSecret.findUniqueOrThrow({ where: { botId: BOT } })
     expect(bot2.botToken).toBe('sealed:xoxb-plain')
+  })
+
+  it('preserves the timestamp of a concurrent same-key save with the identity cipher', async () => {
+    const where = { orgId_provider: { orgId: DEFAULT_ORG_ID, provider: 'typesafe' } }
+    const updatedAt = new Date('2026-02-01T00:00:00Z')
+    await prisma.providerKey.create({
+      data: {
+        orgId: DEFAULT_ORG_ID,
+        provider: 'typesafe',
+        value: 'example-key',
+        updatedAt: new Date('2026-01-01T00:00:00Z')
+      }
+    })
+    const stats = await rewrapAllSecrets(prisma, {
+      open: async (value) => value,
+      seal: async (value) => {
+        await prisma.providerKey.update({ where, data: { value, updatedAt } })
+        return value
+      }
+    })
+    expect(stats.find((s) => s.table === 'provider_key')).toMatchObject({ rows: 0, skipped: 1 })
+    expect((await prisma.providerKey.findUniqueOrThrow({ where })).updatedAt).toEqual(updatedAt)
   })
 
   it('SKIPS a row a live CP updated between snapshot and write — never reverts the newer credential', async () => {

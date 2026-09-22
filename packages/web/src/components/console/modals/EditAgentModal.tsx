@@ -527,7 +527,8 @@ export default function EditAgentModal({
       : effortChoices
   const fastModeAvailable = fastModeAvailableFor(runtime, capability)
   const permissionChoices = permissionModeChoicesFor(runtime, modelCatalog)
-  const showPermission = !!modelCatalog?.permissionModes?.length || runtimeSupportsModes
+  // Visibility follows the resolved vocabulary, which is empty for a runtime without permission modes.
+  const showPermission = permissionChoices.length > 0
   const permissionModeOptions =
     modelCatalog?.permissionModes?.length && !permissionChoices.some((o) => o.v === permissionMode)
       ? [

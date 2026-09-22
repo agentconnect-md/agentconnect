@@ -5,7 +5,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
-import { seedAgent, seedDaemon, seedSessionMeta } from '../fixtures/seed.js'
+import { seedAgent, seedDaemon, seedDutyGroup, seedSessionMeta } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PullRequestViewService } from '../../src/github/pull-request-view.service.js'
 import { SessionPullRequestLinkService } from '../../src/github/session-pull-request-link.service.js'
@@ -181,7 +181,7 @@ const EDGE_CAPABILITIES = {
  *  reads it back. In-memory here exactly as it is at the real edge — there is no row to fake. */
 function fakeEdge(opts: { fail?: Error; placement?: 'sandbox' | 'daemon' } = {}) {
   const armed = new Map<string, { waitingOn?: string }>()
-  const calls: Array<{ op: 'set' | 'state'; enabled?: boolean }> = []
+  const calls: Array<{ op: 'set' | 'state'; enabled?: boolean; daemonId?: string }> = []
   const state = (repoFullName: string, prNumber: number) => {
     const held = armed.get(`${repoFullName}#${prNumber}`)
     return {
@@ -194,19 +194,19 @@ function fakeEdge(opts: { fail?: Error; placement?: 'sandbox' | 'daemon' } = {})
   }
   const control = {
     autoMergeSet: async (
-      _daemonId: string,
+      daemonId: string,
       _orgId: string,
       req: { repoFullName: string; prNumber: number; enabled: boolean }
     ) => {
-      calls.push({ op: 'set', enabled: req.enabled })
+      calls.push({ op: 'set', enabled: req.enabled, daemonId })
       if (opts.fail) throw opts.fail
       const key = `${req.repoFullName}#${req.prNumber}`
       if (req.enabled) armed.set(key, {})
       else armed.delete(key)
       return state(req.repoFullName, req.prNumber)
     },
-    autoMergeState: async (_daemonId: string, _orgId: string, req: { repoFullName: string; prNumber: number }) => {
-      calls.push({ op: 'state' })
+    autoMergeState: async (daemonId: string, _orgId: string, req: { repoFullName: string; prNumber: number }) => {
+      calls.push({ op: 'state', daemonId })
       if (opts.fail) throw opts.fail
       return state(req.repoFullName, req.prNumber)
     }
@@ -558,7 +558,7 @@ describe('POST /sessions/:id/pull-request/auto-merge', () => {
     expect(res.json()).toEqual({ armed: true, placement: 'sandbox', waitingOn: 'checks running: unit', error: null })
     // The arm is a relay, not a mutation: nothing was asked of GitHub.
     expect(github.calls).toHaveLength(0)
-    expect(edge.calls).toEqual([{ op: 'set', enabled: true }])
+    expect(edge.calls).toMatchObject([{ op: 'set', enabled: true }])
 
     // And the panel's read carries the edge's own verdict, which GitHub auto-merge never gave.
     const read = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${session}/pull-request` })
@@ -569,6 +569,29 @@ describe('POST /sessions/:id/pull-request/auto-merge', () => {
       autoMergeWaitingOn: 'checks running: unit',
       autoMergeError: null
     })
+  })
+
+  // #2199: a set placement names no machine, so the watcher lives on the member serving the agent.
+  it('arms a group-placed agent through the member holding its duty', async () => {
+    const HOLDER = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+    await seedDaemon(prisma, DAEMON, { capabilities: EDGE_CAPABILITIES })
+    await seedDaemon(prisma, HOLDER, { capabilities: EDGE_CAPABILITIES })
+    const setId = randomUUID()
+    await prisma.memberSet.create({ data: { id: setId, orgId: DEFAULT_ORG_ID, name: 'lab' } })
+    await prisma.memberSetMember.createMany({
+      data: [DAEMON, HOLDER].map((daemonId) => ({ setId, daemonId }))
+    })
+    await seedAgent(prisma, AGENT, { setId })
+    await seedDutyGroup(prisma, randomUUID(), HOLDER, [AGENT], { confirmed: true })
+    const session = await seedSessionMeta(prisma, randomUUID(), AGENT, { daemonId: HOLDER })
+    await seedPullRequestRun(session)
+    const edge = fakeEdge()
+    const running = app(githubStub([graphqlOk(fullAnswer())]).view, undefined, fakeGithub(), undefined, edge.control)
+
+    const res = await post(running, session)
+    expect(res.statusCode, res.body).toBe(200)
+    expect(res.json()).toMatchObject({ armed: true })
+    expect(edge.calls).toEqual([{ op: 'set', enabled: true, daemonId: HOLDER }])
   })
 
   it('disarms, and the next read reports an unarmed box', async () => {
@@ -1037,7 +1060,7 @@ describe('GET /sessions/:id/pull-request — the head-branch link', () => {
     expect(res.statusCode).toBe(200)
     expect(res.json()).toMatchObject({ armed: true })
     // The branch arm reaches the edge too, and asks GitHub for nothing.
-    expect(edge.calls).toEqual([{ op: 'set', enabled: true }])
+    expect(edge.calls).toMatchObject([{ op: 'set', enabled: true }])
     expect(github.calls).toHaveLength(0)
   })
 })

@@ -1,3 +1,4 @@
+import { messageOrderingFor } from '../src/platforms/message-ordering.js'
 import { describe, it, expect, vi } from 'vitest'
 import { createHash } from 'node:crypto'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
@@ -91,6 +92,17 @@ function blockingHost() {
     stop: vi.fn(async () => {})
   }
   return { host, prompts, release: () => release() }
+}
+
+/** A host whose turns simply finish — for the cases that need a settled session row. */
+function idleHost() {
+  return {
+    start: vi.fn(async () => {}),
+    newSession: vi.fn(async () => 'acp-1'),
+    prompt: vi.fn(async () => 'end_turn'),
+    cancel: vi.fn(async () => {}),
+    stop: vi.fn(async () => {})
+  }
 }
 
 /** Make bot-a routable for DMs + explicit @mention and wire a fake reply connection. */
@@ -538,6 +550,35 @@ describe('Daemon in-conversation commands', () => {
 
     blocked.release()
     await turn
+    await daemon.stop()
+  })
+
+  // channel-session-mode.md §7.2. The failure this pins is subtle and silent: the replay
+  // cursor lives in the PLATFORM's id space, so a wall-clock stamp is an id Slack never
+  // issued — the replay path discards such a cursor and catches up from scratch, which
+  // restores exactly what the clear removed. The command then reports success and does
+  // nothing, on the one platform `!` exists for.
+  it('!new clears the thread session with a cursor Slack can actually order', async () => {
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => idleHost() as any
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    const store = (daemon as any).store
+
+    await (daemon as any).dispatch('bot-a', dm('100.100', 'the old thing'), 'int-a')
+    await vi.waitFor(async () => expect(await store.getSession(SESSION_KEY)).toBeDefined(), WAIT)
+
+    await (daemon as any).onInboundOutcome(dm('100.500', '!new'))
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Cleared'), 'T1', CHROME_REPLY)
+
+    const row = await store.getSession(SESSION_KEY)
+    // Identity kept, runtime detached — and the cursor is a Slack ts, not a wall clock.
+    expect(row?.acpSessionId).toBeNull()
+    expect(row?.lastDeliveredTs).toBe('100.500')
+    expect(messageOrderingFor('slack')?.coordinate(row!.lastDeliveredTs!)).not.toBeNull()
     await daemon.stop()
   })
 

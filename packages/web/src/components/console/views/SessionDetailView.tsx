@@ -48,6 +48,7 @@ import {
   type SessionStep
 } from '@/lib/data'
 import { agentSessionIsolationLabel } from '@/lib/session-isolation'
+import { stayedHomeReasonKey } from '@/lib/session-executor'
 import {
   ApiError,
   fetchConversationByKey,
@@ -72,6 +73,7 @@ import { useProfile } from '@/lib/profile'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
 import { AgentIconView, LoadingState, ModelMark, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
+import { platformSenderFallback } from '../platforms/registry'
 import { McpAppCard, type McpAppCardProps } from '@/components/console/McpAppCard'
 import { UserTurnDetails } from '../UserTurnDetails'
 import { parseUserTurnBody } from '@/lib/user-turn-body'
@@ -3707,12 +3709,12 @@ export default function SessionDetailView() {
       continuationReason === 'daemon_offline' ||
       continuationReason === 'unavailable')
   const isLive = isPg || isWebchat || isContinuable || continuationBlocked
-  // Where each agent runs NOW: a machine for a `daemon` placement, the set otherwise (matched to the session's `contentSetId`, never a member id).
+  // Where each agent runs NOW: a machine for a `daemon` placement, the set otherwise (a pool matched by `contentSetId`, a group by its holder).
   const placementByAgent = new Map(
     agents.map((agent) => [
       agent.id,
       isSetPlacementKind(agent.placementKind)
-        ? { setId: agent.setId }
+        ? { setId: agent.setId, holderDaemonId: agent.holderDaemonId }
         : { daemonId: agent.daemon === '—' ? undefined : agent.daemon }
     ])
   )
@@ -4210,7 +4212,13 @@ export default function SessionDetailView() {
           ? speaker('@you')
           : speaker(
               senderAgentName ?? m.sender,
-              cron?.name ?? (cron ? 'Schedule' : senderLabel(m.sender, m.senderName ?? hookFallback))
+              cron?.name ??
+                (cron
+                  ? 'Schedule'
+                  : senderLabel(
+                      m.sender,
+                      m.senderName ?? hookFallback ?? platformSenderFallback(rowPlatform, m.sender)
+                    ))
             )
         pushUserTurn(senderAgent?.id ?? m.sender, {
           kind: 'user',
@@ -4265,7 +4273,10 @@ export default function SessionDetailView() {
         }
         const participant = self
           ? speaker('@you')
-          : speaker(senderAgentName ?? who, cron?.name ?? (cron ? 'Schedule' : senderAgentName))
+          : speaker(
+              senderAgentName ?? who,
+              cron?.name ?? (cron ? 'Schedule' : (senderAgentName ?? platformSenderFallback(session.platform, who)))
+            )
         pushUserTurn(senderAgent?.id ?? who, {
           kind: 'user',
           key: `u:${liveAnchor(stp)}`,
@@ -4449,6 +4460,20 @@ export default function SessionDetailView() {
   // Match the glyph to what the name says: a resolved machine is a server, an unresolved
   // placement takes its target's own icon (pool / group / daemon).
   const focusedDaemonIcon = !focusedDaemon && focusedAgent ? agentPlacementIcon(focusedAgent, memberSets) : 'server'
+  // Where this session's turns actually execute (session-executors.md §7). An isolated session of a
+  // grouped agent can be born on a member other than its holder; one that stayed with its holder
+  // records WHY, and the reason is the only answer to "why is everything still running on one
+  // machine". Detail-only, so it appears a round trip after the row it sits beside — the executor
+  // id and the verdict are the session's own facts, and the list carries neither.
+  const executorDaemonId = focusedSessionDetail?.executorDaemonId
+  const stayedHomeKey = stayedHomeReasonKey(focusedSessionDetail?.stayedHomeReason)
+  const stayedHomePhrase = stayedHomeKey ? t(`stayedHome.${stayedHomeKey}`) : ''
+  const runsOn = executorDaemonId
+    ? // Same rule as the Daemon row above: a name, never a raw id or a hostname.
+      (daemons.find((d) => d.daemonId === executorDaemonId)?.name ?? executorDaemonId.slice(0, 8))
+    : stayedHomePhrase && focusedDaemonName
+      ? `${focusedDaemonName} · ${stayedHomePhrase}`
+      : stayedHomePhrase
   // A cron-triggered session carries `user === "cron:<scheduleId>"`. When that's the
   // shown participant, render the chip as a link back to the owning schedule
   // (name-first once the crons list resolves it; the raw `cron:<id>` still links if
@@ -4630,6 +4655,7 @@ export default function SessionDetailView() {
     { icon: 'wrench', label: t('toolCalls'), value: String(displayToolCount) }
   ]
   if (focusedDaemonName) headerFacts.push({ icon: focusedDaemonIcon, label: t('daemon'), value: focusedDaemonName })
+  if (runsOn) headerFacts.push({ icon: 'server', label: t('runsOn'), value: runsOn })
   if (focusedAgentRuntime)
     headerFacts.push({
       icon: 'cpu',

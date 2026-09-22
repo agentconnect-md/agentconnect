@@ -1663,6 +1663,41 @@ describe('bot sharing capability (PATCH /bots/:id)', () => {
     expect((await prisma.bot.findUniqueOrThrow({ where: { id: botId } })).shareable).toBe(false)
   })
 
+  it('flips the join-public-channels switch on a Slack bot and refuses it elsewhere', async () => {
+    const { app } = withSpy()
+    const slack = await seedBot({ platform: 'slack', transport: 'socket' })
+    const feishu = await seedBot({ platform: 'feishu', transport: 'http' })
+
+    // Absent from the row ⇒ on: the daemon's default, reported as such.
+    const before = await app.app.inject({ method: 'GET', url: `${ORG}/bots` })
+    expect((before.json() as { id: string; joinPublicChannels: boolean }[]).find((b) => b.id === slack)).toMatchObject({
+      joinPublicChannels: true
+    })
+
+    const off = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/bots/${slack}`,
+      payload: { joinPublicChannels: false }
+    })
+    expect(off.statusCode).toBe(200)
+    expect(off.json()).toMatchObject({ joinPublicChannels: false, shareable: false })
+    // Stored in the generic bag, so no migration — and merged, not replaced.
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: slack } })).platformConfig).toEqual({
+      joinPublicChannels: false
+    })
+
+    const refused = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/bots/${feishu}`,
+      payload: { joinPublicChannels: false }
+    })
+    expect(refused.statusCode).toBe(409)
+    expect((refused.json() as { message: string }).message).toBe('feishu bots cannot join channels by themselves')
+
+    const empty = await app.app.inject({ method: 'PATCH', url: `${ORG}/bots/${slack}`, payload: {} })
+    expect(empty.statusCode).toBe(400)
+  })
+
   it('leaves Slack’s HTTP bots shareable, and its socket bots refused on transport', async () => {
     const { app } = withSpy()
     const http = await seedBot({ platform: 'slack', transport: 'http' })

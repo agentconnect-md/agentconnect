@@ -74,6 +74,7 @@ export const ExecutorPrepareReq = z.object({
   executorDaemonId: z.string().uuid(),
   launchId: z.string().uuid(), // minted by the holder per launch: a resend carries the same one, a new launch a new one
   strategy: ExecutorStrategyName,
+  runtime: z.string().min(1).max(128).optional(), // the runtime id this session starts, so the executor can name its own install of it
   // The two below matter to the `microsandbox` strategy only.
   resources: z
     .object({
@@ -100,6 +101,13 @@ export const ExecutorPrepareRefusal = z.enum([
 ])
 export type ExecutorPrepareRefusal = z.infer<typeof ExecutorPrepareRefusal>
 
+/** The command and arguments an executor starts a runtime with: its own adapter install, in its own filesystem (§8). */
+export const ExecutorRuntimeLaunch = z.object({
+  command: z.string().min(1).max(4096),
+  args: z.array(z.string().max(4096)).max(64)
+})
+export type ExecutorRuntimeLaunch = z.infer<typeof ExecutorRuntimeLaunch>
+
 /** REP to `executor/prepare`. `ready` carries the pipe's pre-shared key — NEVER log or persist this frame. `offline` is the CP's own record of an executor whose control connection is down. */
 export const ExecutorPrepareResult = z.discriminatedUnion('status', [
   z.object({
@@ -110,6 +118,7 @@ export const ExecutorPrepareResult = z.discriminatedUnion('status', [
     runtimeRoot: z.string().min(1).max(4096),
     helperRoot: z.string().min(1).max(4096).optional(), // a `host` executor's own bundle; absent ⇒ the image's default
     missingHelpers: z.array(z.string().min(1).max(64)).optional(), // `shimPaths` keys the executor has nothing at
+    runtimeLaunch: ExecutorRuntimeLaunch.optional(), // how this machine starts the runtime `prepare` named; absent ⇒ not asked, or it has none
     liveCount: z.number().int().min(0) // environments live on the executor now, this one included
   }),
   z.object({ status: z.literal('full'), liveCount: z.number().int().min(0).optional() }),

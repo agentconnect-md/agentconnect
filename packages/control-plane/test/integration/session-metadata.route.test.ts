@@ -219,6 +219,34 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
     expect(listBody.sessions[0]!.usage?.reportedAt).toBe('2026-07-05T00:00:01.000Z')
   })
 
+  // session-executors.md §7: the birth verdict is what the console reads to answer "where does this
+  // run" and, for a session that did not spread, "why is everything still on one machine".
+  it('serves the executor a session went to, and the reason another stayed with its holder', async () => {
+    const executor = 'e0e0e0e0-eeee-4eee-8eee-eeeeeeeeeeee'
+    const homebound = '5c5c5c5c-cccc-4ccc-8ccc-cccccccccccc'
+    await seedDaemon(prisma, DAEMON)
+    await seedDaemon(prisma, executor)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    running = buildHttpApp(prisma)
+
+    const base = { agentId: AGENT, phase: 'start', platform: 'slack', channel: 'C1', workspaceIsolation: 'session' }
+    await reportSession({ ...base, sessionId: SESSION, executorDaemonId: executor, ts: '2026-07-05T00:00:00.000Z' })
+    await reportSession({
+      ...base,
+      sessionId: homebound,
+      stayedHomeReason: 'holder_least_loaded',
+      ts: '2026-07-05T00:00:01.000Z'
+    })
+
+    type Verdict = { executorDaemonId: string | null; stayedHomeReason: string | null }
+    const spread = (await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}` })).json() as Verdict
+    expect(spread).toMatchObject({ executorDaemonId: executor, stayedHomeReason: null })
+
+    const stayed = (await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${homebound}` })).json() as Verdict
+    // Not an error state: the holder simply hosted the fewest sessions, so the rule kept it here.
+    expect(stayed).toMatchObject({ executorDaemonId: null, stayedHomeReason: 'holder_least_loaded' })
+  })
+
   it('is idempotent — a later milestone advances the same session row', async () => {
     await seedDaemon(prisma, DAEMON)
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })

@@ -10,8 +10,16 @@
  *
  * Transport-free and Prisma-free: depends only on repository ports + a `Clock`.
  */
+import { ExecutorFacts } from '@agentconnect.md/protocol'
 import type { RegisterReq, Heartbeat, FactsRuntimeProfile, FactsMcpServer } from '@agentconnect.md/protocol'
-import type { DaemonRegistry, DaemonView, DaemonCapabilities, DaemonLoad, DaemonRuntimeProfile } from '../ports.js'
+import type {
+  DaemonRegistry,
+  DaemonView,
+  DaemonCapabilities,
+  DaemonExecutorFacts,
+  DaemonLoad,
+  DaemonRuntimeProfile
+} from '../ports.js'
 import type {
   DaemonRepo,
   DaemonRecord,
@@ -24,10 +32,19 @@ import type {
 import type { AgentId, DaemonId, OrgId } from '../domain/ids.js'
 import type { Clock } from '../domain/clock.js'
 
+/** The stored executor facts, minus the endpoint: an address is topology and the console neither configures nor shows one (§10). */
+function normExecutor(raw: unknown): DaemonExecutorFacts | undefined {
+  const parsed = ExecutorFacts.safeParse(raw)
+  if (!parsed.success) return undefined
+  const { enabled, strategies, capacity } = parsed.data
+  return { enabled, ...(strategies ? { strategies } : {}), ...(capacity !== undefined ? { capacity } : {}) }
+}
+
 /** Coerce the stored `capabilities` JSON (defaults to `{}`) into the typed shape. */
 function normCapabilities(raw: unknown): DaemonCapabilities {
   const c = (raw ?? {}) as Record<string, unknown>
   const arr = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
+  const executor = normExecutor(c.executor)
   return {
     platforms: arr(c.platforms),
     runtimes: arr(c.runtimes),
@@ -35,7 +52,8 @@ function normCapabilities(raw: unknown): DaemonCapabilities {
     features: arr(c.features),
     ...(typeof c.sandboxUnavailable === 'string' && c.sandboxUnavailable
       ? { sandboxUnavailable: c.sandboxUnavailable }
-      : {})
+      : {}),
+    ...(executor ? { executor } : {})
   }
 }
 

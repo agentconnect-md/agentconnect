@@ -2398,10 +2398,12 @@ describe('Daemon rd/msg hook fires', () => {
       AGENT_ID,
       {
         hookId: HOOK_ID,
+        provider: 'github',
         repo: 'acme/infra',
         number: 42,
         reviewCommentId: '3565656411',
-        reviewThreadRootCommentId: '3565283658'
+        reviewThreadRootCommentId: '3565283658',
+        triggerComment: { kind: 'review_comment', id: '3565656411' }
       },
       'acp-hook-1'
     )

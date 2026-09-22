@@ -23,6 +23,13 @@ const telegramInt: Integration = {
   config: { botToken: '123456:ABC' }
 }
 
+const qqInt: Integration = {
+  id: 'int-qq',
+  platform: 'qq',
+  core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
+  config: { appId: '100', appSecret: 'secret' }
+}
+
 // Connected platforms that declare NO credentialed-attachment read port — the
 // arm the file-tool matrix below would never exercise with Slack/Telegram alone.
 const discordInt: Integration = {
@@ -200,7 +207,14 @@ describe('toolsForIntegrations', () => {
       (tool) => tool.name === 'getChannelHistory'
     )!
     const historyProps = props(historyTool)
-    expect(Object.keys(historyProps).sort()).toEqual(['cursor', 'latest', 'limit', 'oldest'])
+    expect(Object.keys(historyProps).sort()).toEqual([
+      'channel',
+      'cursor',
+      'integrationId',
+      'latest',
+      'limit',
+      'oldest'
+    ])
     expect(props(readTool([slackInt, telegramInt], 'listKnownUsers'))).not.toHaveProperty('integrationId')
   })
 
@@ -228,10 +242,11 @@ describe('toolsForIntegrations', () => {
     expect(fileTools([])).toEqual([])
     expect(fileTools([slackInt])).toEqual(['readSlackFile'])
     expect(fileTools([telegramInt])).toEqual(['readTelegramFile'])
-    expect(fileTools([slackInt, telegramInt])).toEqual(['readSlackFile', 'readTelegramFile'])
+    expect(fileTools([qqInt])).toEqual(['readQQFile'])
+    expect(fileTools([slackInt, telegramInt, qqInt])).toEqual(['readSlackFile', 'readTelegramFile', 'readQQFile'])
     // Registry order, not integration order — a stored-the-other-way-round agent
     // must not see its tool list reshuffle.
-    expect(fileTools([telegramInt, slackInt])).toEqual(['readSlackFile', 'readTelegramFile'])
+    expect(fileTools([qqInt, telegramInt, slackInt])).toEqual(['readSlackFile', 'readTelegramFile', 'readQQFile'])
     // A connected platform that declares no such port contributes no tool, alone…
     expect(fileTools([discordInt])).toEqual([])
     expect(fileTools([feishuInt])).toEqual([])
@@ -245,16 +260,19 @@ describe('toolsForIntegrations', () => {
     )
   })
 
-  it('exposes NO `thread` property in any send branch, on any integration set', () => {
-    // send-message-routing-rework.md §2.2 / §10 case 1. This is the schema-level statement
-    // of "there is no visible in-thread form": speaking in the current thread is the
-    // ordinary turn reply's job (§2.1), and a second delivery path into the same thread
-    // would compete with it. Asserted across integration sets because the branch union is
-    // built per-agent — a `thread` reappearing on only the Telegram shape would be just as
-    // wrong and much easier to miss.
+  it('exposes `thread` on the bare-channel branch ONLY, on any integration set', () => {
+    // send-message-routing-rework.md §2.2 / §10 case 1. The schema-level statement of where a
+    // visible in-thread form exists: the update (§2.4) carries `thread` on the bare-`channel`
+    // branch, and nowhere else. A `toAgent` wake anchors to the post the daemon just created,
+    // an existing thread offers it no anchor; and speaking in the CURRENT thread stays the
+    // ordinary turn reply's job (§2.1). Asserted across integration sets because the branch
+    // union is built per-agent — a `thread` reappearing on only the Telegram shape would be
+    // just as wrong and much easier to miss.
     for (const ints of [[slackInt], [telegramInt], [slackInt, telegramInt]]) {
       for (const branch of sendSchema(ints).oneOf!) {
-        expect(Object.keys(branch.properties)).not.toContain('thread')
+        const keys = Object.keys(branch.properties)
+        const isBareChannel = keys.includes('channel') && !keys.includes('toAgent') && !keys.includes('toUser')
+        expect(keys.includes('thread')).toBe(isBareChannel)
       }
     }
   })
@@ -294,7 +312,14 @@ describe('toolsForIntegrations', () => {
     const channel = sendTargetBranch([slackInt], 'channel')
     expect(channel.required).toEqual(['channel', 'message'])
     expect(channel.additionalProperties).toBe(false)
-    expect(Object.keys(channel.properties)).toEqual(['channel', 'platform', 'integrationId', 'attachment', 'message'])
+    expect(Object.keys(channel.properties)).toEqual([
+      'channel',
+      'thread',
+      'platform',
+      'integrationId',
+      'attachment',
+      'message'
+    ])
     expect(channel.description).toContain('without waking an agent or @-mentioning a human')
 
     const session = sendTargetBranch([slackInt], 'sessionId')

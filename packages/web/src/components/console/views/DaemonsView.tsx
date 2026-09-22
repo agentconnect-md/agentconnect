@@ -23,6 +23,7 @@ import { DaemonLifecycleBadge } from '@/components/console/DaemonLifecycleBadge'
 import { KubernetesMark, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
+import ProviderKeysSection from '../ProviderKeysSection'
 import { useTranslations } from 'next-intl'
 
 export default function DaemonsView() {
@@ -144,6 +145,7 @@ export default function DaemonsView() {
           {showGroups && <GroupsSection groups={memberSets} daemons={daemons} />}
         </>
       )}
+      <ProviderKeysSection />
     </div>
   )
 }

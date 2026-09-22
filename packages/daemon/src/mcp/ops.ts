@@ -74,6 +74,8 @@ import {
   UPDATE_LIST_ITEM_ARGS,
   createConversation,
   CREATE_CONVERSATION_ARGS,
+  deleteMessage,
+  DELETE_MESSAGE_ARGS,
   getReactions,
   GET_REACTIONS_ARGS,
   readCanvas,
@@ -269,6 +271,7 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['getThreadHistory', getThreadHistory],
   ['addReaction', addReaction],
   ['getReactions', getReactions],
+  ['deleteMessage', deleteMessage],
   ['listBookmarks', listBookmarks],
   ['addBookmark', addBookmark],
   ['removeBookmark', removeBookmark],
@@ -333,6 +336,7 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['getThreadHistory', GET_THREAD_HISTORY_ARGS],
   ['addReaction', ADD_REACTION_ARGS],
   ['getReactions', GET_REACTIONS_ARGS],
+  ['deleteMessage', DELETE_MESSAGE_ARGS],
   ['listBookmarks', LIST_BOOKMARKS_ARGS],
   ['addBookmark', ADD_BOOKMARK_ARGS],
   ['removeBookmark', REMOVE_BOOKMARK_ARGS],
@@ -457,14 +461,19 @@ async function executeRegisteredTool(
     })
   }
 
-  // Past this point are the session-bound read tools — they need the session's message
-  // gateway (bound to the integration that triggered this session). A memory-only
-  // session has no `integrationId` and never carries these tools, so this only fires
-  // if a read tool is called without a live connection.
+  if (isAttachmentReadTool(name)) {
+    const reader = ctx.integrationId
+      ? (deps.attachmentReaderFor?.(ctx.integrationId) ?? deps.gatewayFor(ctx.integrationId))
+      : undefined
+    if (!reader) throw new Error(`no live attachment connection for integration ${ctx.integrationId ?? '(none)'}`)
+    return await readAttachment(ctx, args, deps, reader)
+  }
+
+  // The remaining session-bound read tools need the session's generic message gateway.
   const gw = ctx.integrationId ? deps.gatewayFor(ctx.integrationId) : undefined
   if (!gw) throw new Error(`no live platform connection for integration ${ctx.integrationId ?? '(none)'}`)
 
-  if (isAttachmentReadTool(name)) return await readAttachment(ctx, args, deps, gw)
-  if (name === 'getCurrentChannel') return await getCurrentChannel(ctx, gw)
+  if (name === 'getCurrentChannel')
+    return await getCurrentChannel(ctx, gw, deps.deliveryThreadNow?.(ctx) ?? ctx.deliveryThread)
   throw new Error(`unknown tool: ${name}`)
 }

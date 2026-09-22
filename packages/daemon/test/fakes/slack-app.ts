@@ -62,6 +62,7 @@ export function fakeSlackAppFactory(identity: FakeSlackIdentity = {}): SlackAppF
           canvases: { create: async () => ({ canvas_id: 'F_FAKE_CANVAS' }) },
           members: async () => ({ members: [] }),
           leave: ok,
+          join: ok,
           list: async () => ({ channels: [] }),
           replies: async () => ({ messages: [] }),
           history: async () => ({ messages: [] })
@@ -81,7 +82,7 @@ export function fakeSlackAppFactory(identity: FakeSlackIdentity = {}): SlackAppF
           items: { list: async () => ({ items: [] }), create: async () => ({ item: {} }), update: ok }
         },
         agents: { sessions: { setStatus: ok, rename: ok } },
-        assistant: { search: { context: async () => ({ results: { messages: [] } }) } }
+        apiCall: async () => ({ results: { messages: [] } })
       },
       start: async () => {},
       stop: async () => {}

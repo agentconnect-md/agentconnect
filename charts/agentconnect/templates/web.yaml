@@ -80,6 +80,7 @@ spec:
             {{- if .Values.features.managed }}{{- $flags = append $flags "managed" }}{{- end }}
             {{- if .Values.features.billing }}{{- $flags = append $flags "billing" }}{{- end }}
             {{- if .Values.features.gitUrl }}{{- $flags = append $flags "git-url" }}{{- end }}
+            {{- if .Values.features.qq }}{{- $flags = append $flags "qq" }}{{- end }}
             {{- with $flags }}
             # Assembled from the features block — the values file flips one knob per feature
             # and never spells flag ids.

@@ -59,13 +59,16 @@ export const SLACK_BOT_SCOPES = [
   'bookmarks:write',
   'lists:read',
   'lists:write',
+  // `channels:join` was RESERVED here ahead of a caller; the daemon now uses it
+  // (`conversations.join` in the Slack connection's `joiningOnRefusal`) to enter a PUBLIC channel
+  // the first time an agent reads or posts there instead of waiting to be invited. It cannot
+  // enter a private channel, which is what keeps those invitation-only.
+  'channels:join',
   // RESERVED — declared deliberately ahead of a caller, which the rule above otherwise forbids.
   // Every scope added later costs a reinstall of every installation, so the ones we know are
-  // coming ride along with these and cost nothing extra: `channels:join` lets a future agent
-  // add itself to a channel instead of waiting to be invited, and the two directory reads are
-  // for console-side operator screens. Nothing calls them yet; that is the point of naming them
+  // coming ride along with these and cost nothing extra: the two directory reads are for
+  // console-side operator screens. Nothing calls them yet; that is the point of naming them
   // here rather than discovering them one reinstall at a time.
-  'channels:join',
   'team:read',
   'users:read.email',
   // `search:read.*` arrives HERE, with `searchPublicMessages` — the rule this list states, that a

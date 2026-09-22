@@ -16,9 +16,20 @@ import type {
   PlacementKindValue
 } from '@/lib/data'
 import { isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf, poolLabel } from '@/lib/data'
-import type { HookKind } from '@agentconnect.md/protocol'
+import type {
+  HookKind,
+  SessionStayedHomeReason,
+  ProviderKeyProvider,
+  ProviderKeyStatus,
+  SetProviderKeyInput
+} from '@agentconnect.md/protocol'
 import type { CodeHostProvider } from '@agentconnect.md/protocol/code-host'
-import { hookKindFromIntegration, hookSourceLabel } from '@/lib/session-trigger'
+import {
+  appendSessionLabel,
+  appendSessionStartedAt,
+  hookKindFromIntegration,
+  hookSourceLabel
+} from '@/lib/session-trigger'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { withIconUrl } from '@/lib/agent-icon'
 import {
@@ -328,6 +339,8 @@ export interface AgentDto {
   // Placement is a TARGET: `set` names a member set through `setId` and carries no member id.
   placementKind?: PlacementKindValue
   placementReady?: boolean
+  // A group agent's confirmed duty holder; absent for a daemon or pool placement and from an older CP.
+  holderDaemonId?: string | null
   daemonId: string | null
   daemonName: string | null
   setId?: string | null
@@ -582,6 +595,10 @@ export interface SessionDetailDto {
   /** The shared-store pool set holding the rows; null ⇒ the recorder's private store. Absent on older CPs. */
   contentSetId?: string | null
   workspaceIsolation?: 'shared' | 'session' | null
+  /** Birth verdict (session-executors.md §7): the group member executing this session, or the
+   *  reason it stayed with its holder. At most one is set; both absent on an older CP. */
+  executorDaemonId?: string | null
+  stayedHomeReason?: SessionStayedHomeReason | null
   // Session visibility (docs/designs/session-visibility.md §5/§6). All three are
   // absent on a CP that predates the feature. `visibilityState` is the §5.1
   // tighten cutover: 'pending' until every affected daemon acked the change,
@@ -755,6 +772,7 @@ export type CreateIntegrationInput =
       transport: 'socket' | 'http'
       slack?: { botToken: string; appToken: string } | { botToken: string; signingSecret: string }
     })
+  | (CreateIntegrationBase & { platform: 'qq'; qq?: { appId: string; appSecret: string } })
   | (CreateIntegrationBase & { platform: 'telegram'; telegram?: { botToken: string } })
   | (CreateIntegrationBase & { platform: 'discord'; discord?: { botToken: string } })
   | (CreateIntegrationBase & {
@@ -877,6 +895,11 @@ export interface SlackConfigInput {
 // gating for restricted agents), only when @-mentioned, or on any message.
 export type ChannelTrigger = 'off' | 'mention' | 'any'
 
+/** Which session an activation in a conversation joins (channel-session-mode.md). Orthogonal
+ *  to the trigger: that decides WHETHER the agent responds, this decides which session it
+ *  responds in. */
+export type ChannelSessionMode = 'createNew' | 'append'
+
 // One conversation the integration's bot is in (daemon-reported) + its trigger
 // choice. kind 'im' rows are DM conversations and 'mpim' rows are Slack group DMs;
 // both are observed rather than enumerable and appear for every agent visibility.
@@ -892,6 +915,7 @@ export interface IntegrationChannelDto {
   isPrivate: boolean
   kind: 'channel' | 'im' | 'mpim'
   trigger: ChannelTrigger
+  sessionMode: ChannelSessionMode
   agentId: string | null // effective shared-conversation owner; null before convergence / when not applicable
 }
 
@@ -925,6 +949,7 @@ export interface BotDto {
   // callbacks. Only a Slack http bot may be shared. Missing (older CP) ⇒ socket.
   transport: 'socket' | 'http'
   shareable: boolean // shared-bot opt-in — when true it may serve many agents at once
+  joinPublicChannels?: boolean // Slack: the bot may enter a PUBLIC channel on first use; missing (older CP) ⇒ true
   inUseByAgentId: string | null // classic-bot occupancy; ALWAYS null for a shareable bot
   agentIds: string[] // every agent currently installed on the bot (a shared bot may have many)
   lastUsedAt: string | null // ISO-8601; stamped when last freed; null ⇒ never used
@@ -1124,6 +1149,9 @@ export interface DaemonViewDto {
   sessionEpoch: number
   maxAgents: number
   activeSessions: number
+  /** Session environments live on this machine, its own plus any it hosts for the group
+   *  (session-executors.md §6). Null until it reports one; absent on an older CP. */
+  hostedSessions?: number | null
   lastSeenAt: string | null
   createdAt: string // ISO-8601
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for CLI/self-registered
@@ -1305,7 +1333,7 @@ export function setApiOrgId(orgId: string | null): void {
 
 /** The active org's API prefix. Org-scoped calls before the org resolves are a
  *  programming error (data pulls wait for the org context) — fail loudly. */
-function orgBase(orgId?: string): string {
+export function orgBase(orgId?: string): string {
   const resolved = orgId ?? apiOrgId
   if (!resolved) throw new ApiError('no active organization', 0)
   return `/orgs/${encodeURIComponent(resolved)}`
@@ -1651,7 +1679,7 @@ async function apiPatch<T>(path: string, body: unknown): Promise<T> {
   return (await res.json()) as T
 }
 
-async function apiPut<T>(path: string, body?: unknown): Promise<T> {
+export async function apiPut<T>(path: string, body?: unknown): Promise<T> {
   const res = await authenticatedFetch(
     path,
     {
@@ -1945,6 +1973,7 @@ export function agentFromDto(d: AgentDto): Agent {
     // The set id rides along: `daemon` alone cannot tell the pool from one of the org's own groups,
     // and only a caller holding the org's set list can (daemon-groups.md §2).
     setId: d.setId ?? null,
+    ...(d.holderDaemonId ? { holderDaemonId: d.holderDaemonId } : {}),
     daemon: placementValueOf(d) ?? PLACEHOLDER,
     ...(d.daemonName ? { daemonName: d.daemonName } : {}),
     region: PLACEHOLDER,
@@ -2052,6 +2081,9 @@ export function sessionFromDto(d: SessionDto): Session {
   const isHook = platform === 'hook'
   const isDream = platform === 'dream'
   const channel = sessionChannelLabel(platform, rawChannel, d.channelName, d.triggeredByName, d.hookKind)
+  // A session that carries a whole conversation belongs to the room, not to whoever spoke
+  // first — and `triggeredBy` is frozen first-wins, so it would credit them for months.
+  const appendStartedAt = appendSessionStartedAt(d.sessionKey.thread)
   const isSlackDm = platform === 'slack' && /^D/.test(rawChannel)
   const dmFallback = isSlackDm ? (d.triggeredByName ? `@${d.triggeredByName}` : 'DM') : null
   const user = isDream
@@ -2060,7 +2092,8 @@ export function sessionFromDto(d: SessionDto): Session {
       : d.triggeredBy === 'auto'
         ? 'Automatic'
         : 'Manual'
-    : d.triggeredByName ||
+    : (appendStartedAt && appendSessionLabel(appendStartedAt)) ||
+      d.triggeredByName ||
       (isHook && d.triggeredBy?.startsWith('hook:') ? hookSourceLabel(d.hookKind) : d.triggeredBy) ||
       PLACEHOLDER
   return {
@@ -2267,6 +2300,7 @@ export function daemonFromDto(
     })),
     mcpServers: d.mcpServers ?? [],
     activeSessions: String(d.activeSessions),
+    hostedSessions: d.hostedSessions ?? null,
     conns: String(d.maxAgents),
     uptime: fmtSeen(d.lastSeenAt),
     createdBy: d.createdBy ?? '', // creator userId; creatorLabel resolves it to a name / "You" at render
@@ -4203,7 +4237,7 @@ export async function fetchHookRuns(id: string, orgId?: string): Promise<HookRun
 export async function updateIntegrationChannel(
   integrationId: string,
   channelId: string,
-  patch: { trigger?: ChannelTrigger; agentId?: string },
+  patch: { trigger?: ChannelTrigger; sessionMode?: ChannelSessionMode; agentId?: string },
   orgId?: string
 ): Promise<IntegrationChannelDto> {
   return apiPatch<IntegrationChannelDto>(
@@ -4232,8 +4266,11 @@ export async function leaveIntegrationConversation(
 }
 
 /** Flip a bot's shared-bot opt-in (PATCH /bots/:id). */
-export async function updateBot(id: string, shareable: boolean): Promise<BotDto> {
-  return apiPatch<BotDto>(`${orgBase()}/bots/${encodeURIComponent(id)}`, { shareable })
+export async function updateBot(
+  id: string,
+  patch: { shareable?: boolean; joinPublicChannels?: boolean }
+): Promise<BotDto> {
+  return apiPatch<BotDto>(`${orgBase()}/bots/${encodeURIComponent(id)}`, patch)
 }
 
 /** Sync one user-managed Slack app's manifest and re-check the scopes granted to
@@ -4848,6 +4885,9 @@ export interface MemberSetDto {
   memberDaemonIds: string[]
   /** Agents placed on the set — the count shown beside Cloud's and a cluster's. */
   agentCount: number
+  /** Whether the set's agents may run their isolated sessions on members other than their holder
+   *  (session-executors.md §10). Off by default; absent on a CP that predates the switch. */
+  spreadSessions?: boolean
 }
 
 export async function fetchMemberSets(orgId?: string): Promise<MemberSetDto[]> {
@@ -4860,6 +4900,12 @@ export async function createMemberSet(name: string): Promise<MemberSetDto> {
 
 export async function renameMemberSet(setId: string, name: string): Promise<MemberSetDto> {
   return apiPatch<MemberSetDto>(`${orgBase()}/member-sets/${encodeURIComponent(setId)}`, { name })
+}
+
+/** The group admin's half of the two consents: may the set's agents run their isolated sessions on
+ *  members other than their holder. Each machine's own `sandbox.share` is the other half. */
+export async function setMemberSetSpreadSessions(setId: string, enabled: boolean): Promise<MemberSetDto> {
+  return apiPut<MemberSetDto>(`${orgBase()}/member-sets/${encodeURIComponent(setId)}/spread-sessions`, { enabled })
 }
 
 export async function deleteMemberSet(setId: string): Promise<void> {
@@ -6099,6 +6145,10 @@ export function listOrganizationKnowledge(includeArchived = false): Promise<Orga
   )
 }
 
+export function getOrganizationKnowledge(id: string): Promise<OrganizationKnowledgeDto> {
+  return apiGet<OrganizationKnowledgeDto>(`${orgBase()}/knowledge/${encodeURIComponent(id)}`)
+}
+
 export function listOrganizationKnowledgeRevisions(id: string): Promise<OrganizationKnowledgeRevisionDto[]> {
   return apiGet<OrganizationKnowledgeRevisionDto[]>(`${orgBase()}/knowledge/${encodeURIComponent(id)}/revisions`)
 }
@@ -6244,4 +6294,21 @@ export function deleteAgentMemoryEntry(
     memoryEntryUrl(agentId, 'entries', channelKey),
     request
   )
+}
+
+// Provider key requests capture the organization explicitly, including mutations.
+export function fetchProviderKeys(orgId: string): Promise<ProviderKeyStatus[]> {
+  return apiGet<ProviderKeyStatus[]>(`${orgBase(orgId)}/provider-keys`)
+}
+
+export function setProviderKey(
+  orgId: string,
+  provider: ProviderKeyProvider,
+  input: SetProviderKeyInput
+): Promise<ProviderKeyStatus> {
+  return apiPut<ProviderKeyStatus>(`${orgBase(orgId)}/provider-keys/${encodeURIComponent(provider)}`, input)
+}
+
+export function deleteProviderKey(orgId: string, provider: ProviderKeyProvider): Promise<void> {
+  return apiDelete<void>(`${orgBase(orgId)}/provider-keys/${encodeURIComponent(provider)}`)
 }

@@ -1,3 +1,4 @@
+import { isAppendCoordinate } from './append-coordinate.js'
 import { createMemoryEntryService } from '../memory/entries/factory.js'
 import { memoryActivationContext } from '../memory/entries/activation.js'
 import type { ContentBlock, McpServer } from '@agentclientprotocol/sdk'
@@ -14,7 +15,7 @@ import { recallQueryFromBlocks } from '../memory/recall.js'
 import type { AcpHost } from '../acp/acp-host.js'
 import type { Agent } from '../agents/agent-schema.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
-import { stableTurnId, type Attachment, type NormalizedMessage } from '../messages/normalized.js'
+import { stableTurnId, type Attachment, type NormalizedMessage, sessionThreadOf } from '../messages/normalized.js'
 import { messageOrderingFor } from '../platforms/message-ordering.js'
 import { attachmentMention, buildAttachmentBlocks } from './attachment-block.js'
 import { DIRECT_AGENT_CALL_REMINDER, EXPLICIT_MENTION_REMINDER, NO_RESPONSE_REMINDER } from './no-response.js'
@@ -242,17 +243,22 @@ export class SessionManager {
         agent: Agent
         platform: string
         channel: string
+        /** The SESSION's coordinate — for key lookups, never for a post. */
         thread: string
+        /** Where a tool that posts should default to: the thread this turn arrived in. */
+        deliveryThread: string
         integrationId?: string
         transportScope?: string
         isDm: boolean
+        /** The logical session: its runtime may execute somewhere this agent's others do not (session-executors.md §5). */
+        sessionKey: string
       }) => McpServer[]
       /**
        * Download an inbound attachment's bytes (§9.2) — resolved by the daemon
-       * to the owning SlackConnection's bot-token fetch. Omitted in the `chat`
+       * to the ingress integration's platform connection. Omitted in the `chat`
        * CLI / tests, where attachments degrade to baseline resource_link blocks.
        */
-      downloadAttachment?: (agentId: string, att: Attachment) => Promise<Buffer | null>
+      downloadAttachment?: (agentId: string, att: Attachment, integrationId?: string) => Promise<Buffer | null>
       /** Inline cap (bytes) for attachments; files over it become resource_link. */
       attachmentMaxBytes?: number
       /**
@@ -395,6 +401,19 @@ export class SessionManager {
     const key = sessionKey(msg.platform, msg.channel, thread, agentId, transportScope)
     let rec = await this.deps.store.getSession(key)
     const transcriptChannel = transcriptChannelKey(msg.channel, transportScope)
+    // Affinity is the PHYSICAL thread's (channel-session-mode.md §6.4), which is what the
+    // routing ladder looks this agent up by — `upsertSession` can only derive the session's
+    // own coordinate, and in a conversation that appends the two are different things.
+    const deliveryThread = msg.thread ?? msg.msgId
+    if (deliveryThread !== thread)
+      await this.deps.store.recordThreadParticipation({
+        channel: msg.channel,
+        thread: deliveryThread,
+        agentId,
+        sessionKey: key,
+        transportScope: transportScope ?? null,
+        updatedAt: Date.now()
+      })
 
     // Hydrate the inbound image and record the triggering message (turn/transcript-ingest.ts);
     // it returns the ts the row actually landed on (webchat slot probe) and the hydrated
@@ -406,7 +425,7 @@ export class SessionManager {
       transcriptChannel,
       thread,
       ts,
-      download: (att) => this.deps.downloadAttachment?.(agentId, att) ?? Promise.resolve(null),
+      download: (att) => this.deps.downloadAttachment?.(agentId, att, integrationId) ?? Promise.resolve(null),
       ...(this.deps.attachmentMaxBytes !== undefined ? { attachmentMaxBytes: this.deps.attachmentMaxBytes } : {})
     })
     ts = ingested.ts
@@ -670,9 +689,15 @@ export class SessionManager {
           platform: msg.platform,
           channel: msg.channel,
           thread,
+          // `thread` above is the SESSION's coordinate, which the bridge's session-key
+          // lookups want and which a delivery must never use — it is no platform thread
+          // where the conversation appends. Tools that POST resolve their default target
+          // from this one instead (channel-session-mode.md §3.1).
+          deliveryThread,
           ...(integrationId !== undefined ? { integrationId } : {}),
           ...(transportScope !== undefined ? { transportScope } : {}),
-          isDm: msg.isDm
+          isDm: msg.isDm,
+          sessionKey: key
         }) ?? [],
       ...(options.additionalMcpServers !== undefined ? { additionalMcpServers: options.additionalMcpServers } : {}),
       // The sticky per-session effort override rides session `_meta` on new/load so the
@@ -730,7 +755,11 @@ export class SessionManager {
     const firstPromptAfterOwnRootInitialization = markerBefore === null && rec.triggeredBy === agentId
     // The warm-thread provider snapshot (§8.4/§8.5) lives in turn/thread-backfill.ts;
     // handle() only supplies the coordinates and consumes the stable window it returns.
-    const fetchThreadHistory = this.deps.fetchThreadHistory
+    // §6.3: an append session spans many threads and its coordinate is no thread's, so
+    // there is no provider history to fetch — and the fetch would address `append:…` as a
+    // platform ts. Withholding the reader is what makes the backfill degrade rather than
+    // mint a snapshot window for a snapshot that never happened.
+    const fetchThreadHistory = isAppendCoordinate(thread) ? undefined : this.deps.fetchThreadHistory
     const { snapshotCutoffTs, withinSnapshot } = await backfillThreadHistory({
       platform: msg.platform,
       agentId,
@@ -840,7 +869,7 @@ export class SessionManager {
       const attBlocks = await abortable(
         () =>
           buildAttachmentBlocks(ingested.attachments!, {
-            download: (att) => this.deps.downloadAttachment?.(agentId, att) ?? Promise.resolve(null),
+            download: (att) => this.deps.downloadAttachment?.(agentId, att, integrationId) ?? Promise.resolve(null),
             supports: (kind) => host.promptSupports?.(kind) ?? false,
             ...(this.deps.attachmentMaxBytes !== undefined ? { maxBytes: this.deps.attachmentMaxBytes } : {})
           }),
@@ -976,7 +1005,9 @@ export class SessionManager {
  *  recorded from either site lands on the same (thread, ts) PK and dedups via
  *  INSERT OR IGNORE — never a divergent double row. */
 export function transcriptCoords(msg: NormalizedMessage): { thread: string; ts: string } {
-  const thread = msg.thread ?? msg.msgId
+  // The carried SESSION coordinate wins where one was resolved (channel-session-mode.md
+  // §3.1); everything session-side moves with it, while delivery keeps reading `thread`.
+  const thread = sessionThreadOf(msg)
   if (msg.transcriptTs) return { thread, ts: msg.transcriptTs }
   // NormalizedMessage.msgId is `slack:<channel>:<ts>`; recover the ts.
   const parts = msg.msgId.split(':')

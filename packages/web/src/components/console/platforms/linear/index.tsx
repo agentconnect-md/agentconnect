@@ -20,6 +20,7 @@ const TEAM_LABEL_SEPARATOR = ' / '
 
 export const linearModule: WebPlatformModule<LinearApi> = {
   platformId: 'linear',
+  integrationGroup: 'workflow',
   Mark: LinearMark,
   wizard: {
     Body: LinearWizardBody,
@@ -60,6 +61,9 @@ export const linearModule: WebPlatformModule<LinearApi> = {
     roster: 'derived',
     // No `any`: every Linear event is addressed by construction (§6.1), so nothing would match it.
     triggers: ['off', 'mention'],
+    // A Linear row is a TEAM, and every issue in it is its own thread — appending would pool
+    // the whole team into one session, which is not what this setting means anywhere else.
+    sessionModes: ['createNew'],
     // §4.3: a gated member acts in a team only as its default, so enabling the row is half the gate.
     gatedNote: { key: 'linearGatedNote' },
     // The daemon stores a team as "<Workspace name> / <Team name>" (§4.5), because a session list

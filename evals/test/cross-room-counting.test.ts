@@ -152,22 +152,24 @@ describe('cross-room counting referee (§10.2)', () => {
  * as an incorrect handoff, because the destination conversation is a thread
  * (`S-GAME-001`) and a root post starts a different one.
  *
- * The routing rework (#503) removed `thread` from EVERY `sendMessage` target:
- * `packages/daemon/src/mcp/ops.ts` (§2.2) states that a visible send is either
- * a direct message or a channel-ROOT post, and `assertOnlyKeys` rejects a
- * supplied `thread` loudly rather than silently posting at the root. Addressing
- * the CURRENT thread is the ordinary turn reply's job.
+ * The routing rework (#503) removed `thread` from EVERY `sendMessage` target
+ * (§2.2). The update form (§2.4) has since brought it back for the bare channel
+ * target — but only for a thread that ALREADY exists at the destination, whose
+ * root the send names; a reply id, or a thread the destination never had, is
+ * refused loudly rather than silently posted at the root. Addressing the CURRENT
+ * thread is still the ordinary turn reply's job.
  *
- * So the §10.2 handoff is no longer expressible against a threaded destination:
- * the only send the product accepts is exactly the one §10.2 scores as
- * incorrect. This test pins that boundary as a MEASUREMENT — the origin segment
+ * So the §10.2 handoff is still not expressible against this destination: the
+ * thread it names exists in no room the bridge can reach, and the only send the
+ * product accepts is exactly the one §10.2 scores as incorrect. This test pins
+ * that boundary as a MEASUREMENT — the origin segment
  * plays out fully and the game stalls at the handoff, on the product's refusal,
  * with the bridge's own turn carrying the reason. It is deliberately not an
  * expected-fail: nothing here is broken, the milestone is blocked on a product
  * capability that does not exist.
  */
 describe('cross-room counting end to end — the §10.2 handoff against the landed sendMessage', () => {
-  it('counts the origin segment, then stalls because a fully-addressed handoff is refused (#503 §2.2)', async () => {
+  it('counts the origin segment, then stalls because a fully-addressed handoff is refused (#503 §2.4)', async () => {
     const artifactDir = join(scratch(), 'run')
     const result = await runCrossRoomCounting({ seed: 42, boundary: 6, target: 12, artifactDir, timeoutMs: 150_000 })
     expect(result.error).toBeUndefined()
@@ -205,7 +207,8 @@ describe('cross-room counting end to end — the §10.2 handoff against the land
     expect(worldEvents.find((event) => event.type === 'completion_report')).toBeUndefined()
 
     // The refusal is the product's, surfaced through the bridge's own turn: the
-    // order carried `thread`, and the channel target does not accept it.
+    // order carried `thread`, which the channel target accepts only for a thread
+    // that already exists at the destination (§2.4) — and none does.
     const order = worldEvents.find(
       (event) => event.type === 'referee.room_event' && String(event.text).includes('ORDER assignee=bridge-x')
     )
@@ -214,7 +217,6 @@ describe('cross-room counting end to end — the §10.2 handoff against the land
       (event) => event.type === 'outbound.delivered' && String(event.text).startsWith('order failed:')
     )
     expect(refusal.agentAlias).toBe('bridge-x')
-    expect(String(refusal.text)).toContain('channel target allows only')
-    expect(String(refusal.text)).toContain('unexpected `thread`')
+    expect(String(refusal.text)).toContain('is not a thread root')
   }, 180_000)
 })

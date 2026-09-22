@@ -37,7 +37,7 @@ describe('daemon platform registry (audit F16)', () => {
     // The pin on today's true set. A new platform makes this fail — deliberately: the
     // reviewer should confirm the CP/console gating is what they intended, not discover
     // it from a failed install.
-    expect(platformIds()).toEqual(['slack', 'telegram', 'discord', 'feishu', 'linear'])
+    expect(platformIds()).toEqual(['slack', 'telegram', 'discord', 'feishu', 'linear', 'qq'])
   })
 
   it('sends the derived list, not a copy, in the CP registration handshake', () => {
@@ -64,6 +64,7 @@ describe('daemon platform registry (audit F16)', () => {
       daemon.connections.telegramPool,
       daemon.connections.discordPool,
       daemon.connections.feishuPool,
+      daemon.connections.QQPool,
       daemon.connections.linearPool
     ].map((pool: { name: string }) => pool.name.split('/')[0]!)
     expect(sorted([...new Set(poolPlatforms)])).toEqual(composed)
@@ -71,8 +72,7 @@ describe('daemon platform registry (audit F16)', () => {
 
   it('pins which surfaces declare an elicitation card, and lets no other origin inherit one', () => {
     // #1794 gap 6: the facet is OPTIONAL, so this is not a drift check against `platformIds()` —
-    // it is the pin on today's true set, which is now EVERY chat platform. A new one arriving
-    // without a card must fail here rather than silently declining every ask.
+    // it pins the platforms that opt in; QQ intentionally has no elicitation card.
     const daemon = new Daemon({ root: bareRoot() }) as any
     const withCards = platformIds().filter((id: string) => daemon.turnSurfaces.exact(id)?.elicitCards)
     expect(withCards).toEqual(['slack', 'telegram', 'discord', 'feishu'])
@@ -86,7 +86,7 @@ describe('daemon platform registry (audit F16)', () => {
 
 describe('observed-membership platforms (audit F17)', () => {
   it('is the registry filtered by the manifest, not a hand list', () => {
-    expect([...observedMembershipPlatforms()]).toEqual(['telegram', 'discord', 'feishu', 'linear'])
+    expect([...observedMembershipPlatforms()]).toEqual(['telegram', 'discord', 'feishu', 'linear', 'qq'])
     for (const platform of platformIds()) {
       expect(observedMembershipPlatforms().includes(platform)).toBe(
         manifestFor(platform).membershipEnumeration === 'observed'

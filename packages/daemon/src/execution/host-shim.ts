@@ -66,14 +66,17 @@ export interface HostShimInput {
   sessionLeaf: string
   /** The machine environment the runtimes inherit from; only `INHERITED_ENV` is read. */
   env?: Record<string, string | undefined>
+  /** What seeding the session HOME points a runtime at on this machine; the shim fills it in under a holder's env. */
+  seedEnv?: Record<string, string>
   log?: Logger
   /** Test seam: the shim entry and how to run it; the default is this daemon's built bundle. */
   entry?: { execArgv: string[]; path: string }
 }
 
-/** The shim's launch environment: its own sockets and roots, and the machine facts above — never the complete-env flag, which is a holder's claim about ITS machine. */
+/** The shim's launch environment: its own sockets and roots, the machine facts above and what the HOME seed points at — never the complete-env flag, which is a holder's claim about ITS machine. */
 export function hostShimEnv(input: {
   machineEnv: Record<string, string | undefined>
+  seedEnv?: Record<string, string>
   home: string
   socketPath: string
   runtimeRoot: string
@@ -86,6 +89,8 @@ export function hostShimEnv(input: {
     const value = input.machineEnv[name]
     if (value) env[name] = value
   }
+  // Before the shim's own variables, so a seed can name no socket, root or HOME.
+  Object.assign(env, input.seedEnv)
   env.HOME = input.home
   env[SHIM_LISTEN_SOCKET_ENV] = input.socketPath
   env[SHIM_RUNTIME_ROOT_ENV] = input.runtimeRoot
@@ -158,6 +163,7 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
     cwd: workspaceRoot,
     env: hostShimEnv({
       machineEnv: input.env ?? process.env,
+      ...(input.seedEnv ? { seedEnv: input.seedEnv } : {}),
       home,
       socketPath,
       runtimeRoot,

@@ -6,6 +6,7 @@ import {
   GITLAB_COM_V1_FEATURE,
   GITLAB_INSTANCE_V1_FEATURE,
   RD_HEADLESS_AGENT_DELIVERY_V1,
+  RD_CODEHOST_REPLY_TARGET_V1,
   RD_AGENT_IMPLICIT_ROUTING_V1,
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
   RD_WEBCHAT_ATTACH_V1,
@@ -92,13 +93,14 @@ function make(
 async function toReady(
   client: RelayClient,
   transports: FakeTransport[],
-  relayIdEcho = RELAY_ID
+  relayIdEcho = RELAY_ID,
+  capabilities?: string[]
 ): Promise<FakeTransport> {
   client.start()
   await flush()
   const t = transports[transports.length - 1]!
   const hello = t.lastReq('rd/hello')!
-  t.inject(buildRelayDaemonFrame('rd/hello/ok', { relayId: relayIdEcho }, { corr: hello.id }))
+  t.inject(buildRelayDaemonFrame('rd/hello/ok', { relayId: relayIdEcho, capabilities }, { corr: hello.id }))
   await flush()
   return t
 }
@@ -115,6 +117,7 @@ describe('RelayClient (daemon → one relay)', () => {
       daemonId: DAEMON_ID,
       capabilities: [
         RD_HEADLESS_AGENT_DELIVERY_V1,
+        RD_CODEHOST_REPLY_TARGET_V1,
         RD_AGENT_IMPLICIT_ROUTING_V1,
         RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
         RD_WEBCHAT_ATTACH_V1,
@@ -126,6 +129,33 @@ describe('RelayClient (daemon → one relay)', () => {
     })
     expect(client.state).toBe('READY')
     expect(client.isReady()).toBe(true)
+  })
+
+  it('refuses an old relay that would drop origin snapshots, and preserves them through a capable relay', async () => {
+    const { client, transports } = make()
+    const payload = {
+      claimedFromAgentId: 'parent',
+      toAgentId: 'child',
+      text: 'Inspect this.',
+      coords: { platform: 'dream' as const, channel: 'a2a:parent' },
+      hopCount: 0,
+      deliveryId: 'snapshot',
+      originCodeHostReplyTarget: null,
+      codeHostReplyTarget: { provider: 'github', hookId: 'hook-1', repo: 'acme/project', number: 42 }
+    }
+    const legacy = await toReady(client, transports)
+    expect(await client.sendAgentMsg(payload)).toMatchObject({ delivered: false, reason: 'unsupported' })
+    expect(legacy.lastReq('rd/agentmsg')).toBeUndefined()
+    await client.stop()
+    const current = await toReady(client, transports, RELAY_ID, [RD_CODEHOST_REPLY_TARGET_V1])
+    const result = client.sendAgentMsg(payload)
+    const request = current.lastReq('rd/agentmsg')!
+    expect(request.payload).toEqual(payload)
+    current.inject(
+      buildRelayDaemonFrame('rd/agentmsg/ack', { deliveryId: 'snapshot', delivered: true }, { corr: request.id })
+    )
+    expect(await result).toMatchObject({ delivered: true })
+    await client.stop()
   })
 
   it('presents the projected token instead of a key when this daemon has one', async () => {

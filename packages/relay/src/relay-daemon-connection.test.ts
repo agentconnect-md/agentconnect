@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   buildRelayDaemonFrame,
   RELAY_DAEMON_SUBPROTOCOL,
+  RD_CODEHOST_REPLY_TARGET_V1,
   type RelayDaemonFrame,
   type RcVerifyResult
 } from '@agentconnect.md/protocol'
@@ -70,7 +71,10 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
     await Promise.resolve()
     await Promise.resolve()
     expect(verify).toHaveBeenCalledWith('daemon-key', 'the-key', DAEMON_ID)
-    expect(transport.lastRep('rd/hello/ok')!.payload).toEqual({ relayId: RELAY_ID })
+    expect(transport.lastRep('rd/hello/ok')!.payload).toEqual({
+      relayId: RELAY_ID,
+      capabilities: [RD_CODEHOST_REPLY_TARGET_V1]
+    })
     expect(conn.state).toBe('READY')
     expect(conn.daemonId).toBe(DAEMON_ID)
     expect(onReady).toHaveBeenCalledWith(DAEMON_ID, conn)

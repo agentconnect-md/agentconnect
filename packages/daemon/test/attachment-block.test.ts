@@ -69,6 +69,16 @@ describe('attachmentToBlock', () => {
       uri: 'https://files/F1'
     })
   })
+
+  it('points provider-backed files at the platform attachment reader', () => {
+    const block = attachmentToBlock(
+      att({ name: 'invoice.pdf', mimeType: 'application/pdf', readerToolName: 'readQQFile' }),
+      null,
+      supportsAll
+    ) as Record<string, unknown>
+    expect(block).toMatchObject({ type: 'resource_link', name: 'invoice.pdf' })
+    expect(String(block.description)).toContain('readQQFile')
+  })
 })
 
 describe('buildAttachmentBlocks', () => {
@@ -89,6 +99,16 @@ describe('buildAttachmentBlocks', () => {
     const blocks = await buildAttachmentBlocks([att({ size: 3 })], { download, supports: supportsAll, maxBytes: 1024 })
     expect(download).toHaveBeenCalledOnce()
     expect(blocks[0]).toMatchObject({ type: 'image', data: bytes.toString('base64') })
+  })
+
+  it('leaves a tool-readable binary as a resource link for workspace materialization', async () => {
+    const download = vi.fn(async () => Buffer.from('SHOULD NOT HAPPEN'))
+    const blocks = await buildAttachmentBlocks(
+      [att({ name: 'invoice.pdf', mimeType: 'application/pdf', readerToolName: 'readQQFile' })],
+      { download, supports: supportsAll }
+    )
+    expect(download).not.toHaveBeenCalled()
+    expect(blocks[0]).toMatchObject({ type: 'resource_link', name: 'invoice.pdf' })
   })
 
   it('uses inline webchat bytes without calling a platform downloader', async () => {

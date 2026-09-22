@@ -135,6 +135,15 @@ export const SlackCpEnvSchema = {
 } satisfies ZodRawShape
 
 /**
+ * The operator's "join public channels on demand" switch for one bot (`PATCH /bots/:id`),
+ * read from the generic `platformConfig` bag where the update wrote it. Absent ⇒ true: a bot
+ * that predates the switch keeps joining, which is the behaviour the daemon shipped with.
+ */
+export function botJoinsPublicChannels(bot: Pick<BotRecord, 'platformConfig'>): boolean {
+  return bot.platformConfig?.joinPublicChannels !== false
+}
+
+/**
  * The §6.4 opaque `IntegrationSpec.config` payload for a DIRECT (socket) Slack
  * integration — the body of `integrationToSpec`'s slack arm
  * (`orchestrator/placement.ts`), extracted so the live placement path and the
@@ -145,10 +154,12 @@ export const SlackCpEnvSchema = {
  * payload (§6.4 final shape). Token-bearing — NEVER log the result.
  */
 export function slackIntegrationConfig(
-  secret: Pick<BotSecretMaterial, 'botToken' | 'appToken'>
+  secret: Pick<BotSecretMaterial, 'botToken' | 'appToken'>,
+  joinPublicChannels = true
 ): IntegrationSlackConfig {
   return {
     shareable: false,
+    joinPublicChannels,
     botToken: secret.botToken,
     appToken: secret.appToken ?? ''
   }
@@ -166,10 +177,12 @@ export function slackIntegrationConfig(
 export function slackSharedIntegrationConfig(
   secret: Pick<BotSecretMaterial, 'botToken'>,
   shareable: boolean,
-  providerAppId?: string
+  providerAppId?: string,
+  joinPublicChannels = true
 ): IntegrationSlackConfig {
   return {
     shareable,
+    joinPublicChannels,
     botToken: secret.botToken,
     ...(providerAppId ? { appId: providerAppId } : {})
   }
@@ -569,8 +582,8 @@ export function createSlackCpProvider(deps: SlackCpProviderDeps): CpPlatformProv
     // maintains no additional secret store to load from. Token-bearing — NEVER log.
     async projectIntegrationConfig(integration, bot, _core, secrets) {
       return bot.transport === 'http'
-        ? slackSharedIntegrationConfig(secrets, bot.shareable, bot.slackAppId ?? undefined)
-        : slackIntegrationConfig(secrets)
+        ? slackSharedIntegrationConfig(secrets, bot.shareable, bot.slackAppId ?? undefined, botJoinsPublicChannels(bot))
+        : slackIntegrationConfig(secrets, botJoinsPublicChannels(bot))
     },
 
     // §6.7 projection: same body as the live `buildAssign` slack fork (both

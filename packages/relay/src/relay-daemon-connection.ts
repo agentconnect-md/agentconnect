@@ -17,8 +17,10 @@
 import {
   buildRelayDaemonFrame,
   decodeRelayDaemonFrame,
+  RD_CODEHOST_REPLY_TARGET_V1,
   type RelayDaemonFrame,
   type RdHello,
+  type RdHelloOk,
   type RdMsg,
   type RdAck,
   type RdAgentMsg,
@@ -267,11 +269,11 @@ export class RelayDaemonConnection {
     this.credentialKind = presented.kind
     this.capabilities = new Set(hello.capabilities ?? [])
     this.state = 'READY'
-    this.reply(frame, 'rd/hello/ok', { relayId })
+    this.reply(frame, 'rd/hello/ok', { relayId, capabilities: [RD_CODEHOST_REPLY_TARGET_V1] })
     this.deps.onReady(this.daemonId, this)
   }
 
-  private reply(req: RelayDaemonFrame, type: 'rd/hello/ok', payload: { relayId: string }): void {
+  private reply(req: RelayDaemonFrame, type: 'rd/hello/ok', payload: RdHelloOk): void {
     this.transport.send(JSON.stringify(buildRelayDaemonFrame(type, payload, { corr: req.id })))
   }
 

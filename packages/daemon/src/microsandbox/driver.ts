@@ -18,7 +18,7 @@ import { SANDBOX_MCP_BRIDGE_ENTRY } from '../shim/sandbox-paths.js'
 import { assertKvmAvailable } from './kvm.js'
 import { overlayMounts, OVERLAY_BASE_ROOT, OVERLAY_STATE_ROOT, prepareOverlayMounts } from './overlay.js'
 import type { MicrosandboxSecret } from './secrets.js'
-import { startMicrosandboxShim, type MicrosandboxShim } from './shim.js'
+import { startGuestShim, startMicrosandboxShim, type GuestShim, type MicrosandboxShim } from './shim.js'
 import {
   MICROSANDBOX_NODE,
   imageEnv,
@@ -61,6 +61,8 @@ export interface MicrosandboxEnvironment {
   mounts: SandboxMount[]
   workspaceRoot: string
   secrets?: MicrosandboxSecret[]
+  /** A session this machine hosts for another member of its group: its shim is EXPOSED for the executor's pipe, never bound here (session-executors.md §6), and started with what the HOME seed points a runtime at. Absent on every ordinary environment, whose spec is therefore unchanged. */
+  hosted?: { env: Record<string, string> }
 }
 
 export type MicrosandboxExecOptions = MicrosandboxExecuteOptions
@@ -141,6 +143,8 @@ export class MicrosandboxManager {
   private readonly environments = new Map<string, EnvironmentState>()
   // One per running VM, up before anything runs in it: the runtime, its two helper tunnels and the workspace channels all ride it.
   private readonly shims = new Map<string, MicrosandboxShim>()
+  // The same, for a hosted environment: started and left for the executor facet's pipe, with nothing bound here.
+  private readonly guests = new Map<string, GuestShim>()
   private preparation?: Promise<K8sRuntimeTable>
   private closed = false
   private startGate: Promise<void> = Promise.resolve()
@@ -292,12 +296,19 @@ export class MicrosandboxManager {
     return this.environments.get(id)?.environment
   }
 
+  /** The exposed shim of a hosted environment, which the executor facet pipes a remote holder to (§6). */
+  guestShim(id: string): GuestShim | undefined {
+    return this.guests.get(id)
+  }
+
   async environmentIds(): Promise<string[]> {
     return [...new Set([...this.environments.keys(), ...(await this.persistedIds())])]
   }
 
   async suspendIdle(idleBefore: number): Promise<void> {
     for (const [id, state] of this.environments) {
+      // A hosted environment's idle judge is the executor facet's linger, not this machine's session ttl (§7).
+      if (state.environment.hosted) continue
       if (!state.closing && state.active === 0 && state.lastUsed <= idleBefore) await this.suspend(id)
     }
   }
@@ -839,9 +850,7 @@ export class MicrosandboxManager {
       }
       await this.writeBinding(next)
     } catch (error) {
-      const shim = this.shims.get(environment.id)
-      this.shims.delete(environment.id)
-      await shim?.stop().catch(() => {})
+      await this.stopShims(environment.id).catch(() => {})
       await sandbox?.stopWithTimeout(STOP_TIMEOUT_MS).catch(() => {})
       await sandbox?.detach().catch(() => {})
       await this.cleanReplacement(binding).catch((cleanup: unknown) =>
@@ -867,9 +876,40 @@ export class MicrosandboxManager {
     }
   }
 
+  /** End whichever shim an environment has: the one bound here, or the exposed one a hosted environment keeps. */
+  private async stopShims(id: string): Promise<void> {
+    const shim = this.shims.get(id)
+    this.shims.delete(id)
+    const guest = this.guests.get(id)
+    this.guests.delete(id)
+    await shim?.stop()
+    await guest?.stop()
+  }
+
   // Runs inside the VM's start, so nothing can launch into a VM whose shim or helper tunnels are missing.
   private async startShim(environment: MicrosandboxEnvironment, sandbox: Sandbox): Promise<void> {
     const id = environment.id
+    if (environment.hosted) {
+      // No binding and no complete environment here: the daemon that drives this session is on another machine (§6).
+      this.guests.set(
+        id,
+        await startGuestShim({
+          sdk: this.options.sdk,
+          sandbox,
+          workspaceRoot: environment.workspaceRoot,
+          completeEnv: false,
+          seedEnv: environment.hosted.env,
+          runtimeStderr: (text) => this.options.log?.debug(`microsandbox ${id}: ${text.trimEnd()}`),
+          failed: (error) => {
+            this.options.log?.error(`microsandbox: the hosted shim of ${id} ended — ${error.message}`)
+            // Fenced as a bound shim's loss is: the VM stops, and the executor facet's next prepare starts it again.
+            this.stopFailedEnvironment(id)
+          },
+          ...(this.options.log ? { log: this.options.log } : {})
+        })
+      )
+      return
+    }
     if (!this.options.nextShimGeneration) throw new Error('microsandbox shim generation allocator is unavailable')
     const shim = await (this.options.startShim ?? startMicrosandboxShim)({
       sdk: this.options.sdk,
@@ -1081,11 +1121,7 @@ export class MicrosandboxManager {
           await Promise.all([...state.processes].map((process) => process.stop(STOP_TIMEOUT_MS)))
         }
         const binding = await this.readBinding(id)
-        const shim = this.shims.get(id)
-        if (shim) {
-          this.shims.delete(id)
-          await shim.stop()
-        }
+        await this.stopShims(id)
         if (binding) await this.cleanReplacement(binding)
         const handle = await this.find(this.sandboxName(id, binding))
         if (handle) {

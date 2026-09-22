@@ -87,6 +87,13 @@ import type {
 import {
   AGENT_EXISTS_FEATURE,
   AGENT_EXISTS_MAX,
+  ExecutorCandidatesResult,
+  ExecutorPrepareResult,
+  ExecutorReleaseResult,
+  SESSION_EXECUTORS_V1_FEATURE,
+  type ExecutorCandidatesReq,
+  type ExecutorPrepareReq,
+  type ExecutorReleaseReq,
   buildEnvelope,
   decodeCpEnvelope,
   encode,
@@ -1092,6 +1099,41 @@ export class CpClient {
       for (const id of (rep.payload as AgentExistsOk).existing) existing.add(id)
     }
     return existing
+  }
+
+  /**
+   * The three executor requests (session-executors.md §6). `candidates` answers facts a holder
+   * places from; `prepare` and `release` are relayed to the executor after the CP's ledger check.
+   *
+   * An older Control Plane answers none of them, and a holder that cannot ask does not spread —
+   * which is why the missing feature refuses here rather than waiting out an `UNKNOWN_FRAME`.
+   */
+  async executorCandidates(payload: ExecutorCandidatesReq, orgId?: string): Promise<ExecutorCandidatesResult> {
+    const rep = await this.executorRequest('executor/candidates', payload, orgId)
+    return ExecutorCandidatesResult.parse(rep.payload)
+  }
+
+  /** NEVER log this reply: its `ready` arm carries the pipe's pre-shared key. */
+  async executorPrepare(payload: ExecutorPrepareReq, orgId?: string): Promise<ExecutorPrepareResult> {
+    const rep = await this.executorRequest('executor/prepare', payload, orgId)
+    return ExecutorPrepareResult.parse(rep.payload)
+  }
+
+  async executorRelease(payload: ExecutorReleaseReq, orgId?: string): Promise<ExecutorReleaseResult> {
+    const rep = await this.executorRequest('executor/release', payload, orgId)
+    return ExecutorReleaseResult.parse(rep.payload)
+  }
+
+  private async executorRequest(type: string, payload: unknown, orgId?: string): Promise<AnyFrame> {
+    this.requireReady(type)
+    if (!this.serverFeatures.has(SESSION_EXECUTORS_V1_FEATURE)) {
+      throw new WireError('UNKNOWN_FRAME', `this control plane does not answer ${type}`, false)
+    }
+    const rep = await this.request(type, payload, orgId)
+    if (rep.type !== `${type}/result`) {
+      throw new WireError('INTERNAL', `expected ${type}/result, got ${rep.type}`, false)
+    }
+    return rep
   }
 
   /** The local address this control connection leaves from — where a LAN peer reaches this machine (session-executors.md §13). */

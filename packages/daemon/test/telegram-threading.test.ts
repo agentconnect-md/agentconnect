@@ -726,6 +726,7 @@ describe('continue-the-topic hint delivery', () => {
         channel: '-100',
         transcriptChannel: '-100',
         statusThread: 'tg:100',
+        sessionThread: 'tg:100',
         thread: 'tg:100',
         approvalSurfaceSuppressed: false
       },

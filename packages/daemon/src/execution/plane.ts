@@ -29,8 +29,8 @@ export interface ExecutionPlane {
   spawnFor: (launch: PlaneLaunch) => PlaneSpawn
   /** A git runner where the path lives; undefined keeps the caller on its local runner. */
   gitRunnerFor: (agentId: string, cwd?: string, abort?: AbortSignal) => GitRunner | undefined
-  /** The filesystem and mount the agent's workspace files live in; undefined keeps the caller on this daemon's disk. */
-  workspaceFsFor: (agentId: string) => WorkspacePlacement | undefined
+  /** The filesystem and mount the agent's workspace files live in; undefined keeps the caller on this daemon's disk. The scope narrows it where one plane holds a session apart from its agent, and a plane that places every scope alike ignores it. */
+  workspaceFsFor: (agentId: string, scope?: Omit<PlaneScope, 'agentId'>) => WorkspacePlacement | undefined
   /** Empty a directory no `rmSync` here can reach, answering why not instead of throwing; absent where the files are on this daemon's disk. */
   clearPath?: (agentId: string, root: string) => Promise<string | undefined>
   /** Retire every session sandbox of the agent but the leaf named: a replaced workspace leaves them holding the old repository (§11). */

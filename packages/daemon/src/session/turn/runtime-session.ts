@@ -197,7 +197,12 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
       transportScope: identity.transportScope,
       acpSessionId,
       state: 'idle',
-      lastDeliveredTs: null,
+      // A row that already exists keeps its read cursor: this branch also serves a session
+      // whose runtime was DETACHED rather than never created — `!new`'s in-place clear
+      // (channel-session-mode.md §7.2) sets the cursor to the moment it ran, and nulling it
+      // here would replay the whole thread as catch-up, restoring exactly what was cleared.
+      // A genuinely new session has no row and starts at null, as before.
+      lastDeliveredTs: rec?.lastDeliveredTs ?? null,
       updatedAt: Date.now(),
       // The source that created the session (first-wins in the store; read back
       // as `session/list`'s triggeredBy). Hook routing identity remains separate

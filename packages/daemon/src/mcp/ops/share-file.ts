@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { SendIdentity, SessionContext, UploadFailReason } from './context.js'
+import type { ImageUploader, SendIdentity, SessionContext, UploadFailReason } from './context.js'
 import type { GatewayDeps } from './gateway.js'
 import { parseArgs, requiredString } from './args.js'
 import { platformLabel } from '../../platforms/read-ports.js'
@@ -59,6 +59,8 @@ export type ShareReadResult =
     }
 
 export interface ShareFileDeps extends GatewayDeps {
+  // Platforms with turn-bound egress can reuse the image tool without a legacy message gateway.
+  imageUploaderFor?: (ctx: SessionContext) => ImageUploader | undefined
   /** The active turn's trusted post target — absent outside a live daemon. */
   shareTarget?: (ctx: SessionContext) => ShareTargetResult
   /** Resolve + fence + read + sniff a workspace-relative path (docs §4): single-shot read,
@@ -132,9 +134,10 @@ export async function shareFile(
 
   // Port-probe the platform BEFORE reading the file, so a webchat/fileless session costs no I/O.
   const integrationId = target.integrationId ?? ctx.integrationId
+  const uploader = deps.imageUploaderFor?.(ctx)
   const gw = integrationId ? deps.gatewayFor(integrationId) : undefined
-  if (!gw) throw new Error(`no live platform connection for integration ${integrationId ?? '(none)'}`)
-  if (!gw.uploadFile) {
+  if (!uploader && !gw) throw new Error(`no live platform connection for integration ${integrationId ?? '(none)'}`)
+  if (!uploader && !gw?.uploadFile) {
     throw new Error(
       `shareFile: this conversation's platform (${platformLabel(target.platform)}) cannot host files yet.`
     )
@@ -155,16 +158,18 @@ export async function shareFile(
     agentAuthorId: ctx.agentId
   }
   const escaped = caption ? escapeCaptionMentions(caption) : undefined
-  const outcome = await gw.uploadFile(
-    target.channel,
-    { bytes: read.bytes, name: read.name, mimeType: read.mimeType },
-    escaped,
-    {
-      ...(target.thread !== undefined ? { thread: target.thread } : {}),
-      ...(target.replyTo !== undefined ? { replyTo: target.replyTo } : {})
-    },
-    identity
-  )
+  const outcome = uploader
+    ? await uploader(read, escaped)
+    : await gw!.uploadFile!(
+        target.channel,
+        { bytes: read.bytes, name: read.name, mimeType: read.mimeType },
+        escaped,
+        {
+          ...(target.thread !== undefined ? { thread: target.thread } : {}),
+          ...(target.replyTo !== undefined ? { replyTo: target.replyTo } : {})
+        },
+        identity
+      )
   if (!outcome.ok) {
     charge.release()
     if (outcome.reason === 'indeterminate') {

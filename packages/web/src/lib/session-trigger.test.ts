@@ -9,6 +9,8 @@ import {
 } from './api'
 import { isSelfSender, platName, sessionPlatform } from './data'
 import {
+  appendSessionLabel,
+  appendSessionStartedAt,
   githubRepoIdFromSessionTriggerFilter,
   sessionAttributionAgentAuthors,
   sessionAttributionAgentId,
@@ -494,5 +496,27 @@ describe('hook-kind taxonomy', () => {
     // Negative control: both cells named the generic endpoint before the fix.
     expect(row.channel).toBe('GitLab')
     expect(row.user).toBe('GitLab')
+  })
+})
+
+// channel-session-mode.md §8. A session that carries a whole conversation is identified by
+// the room and the stretch it covers, because `triggeredBy` is frozen first-wins on the
+// daemon — a months-long channel session would otherwise be credited to whoever spoke first.
+describe('append session labelling', () => {
+  it('reads the mint time out of the coordinate', () => {
+    expect(appendSessionStartedAt('append:1700000000000')?.getTime()).toBe(1700000000000)
+  })
+
+  it('reads an ordinary platform thread as no append session', () => {
+    for (const thread of ['1700000000.123456', '1419283746152738291', 'tg:42', 'dm', undefined])
+      expect(appendSessionStartedAt(thread)).toBeUndefined()
+  })
+
+  it('refuses a malformed payload rather than reading it as the epoch', () => {
+    for (const bad of ['append:', 'append:abc', 'append:-1']) expect(appendSessionStartedAt(bad)).toBeUndefined()
+  })
+
+  it('names the stretch, not a person', () => {
+    expect(appendSessionLabel(new Date(1700000000000))).toMatch(/^Since /)
   })
 })

@@ -700,6 +700,7 @@ describe('applySlackAction — chrome stream actions', () => {
         channel: 'C1',
         thread: 'T1',
         statusThread: 'T1',
+        sessionThread: 'T1',
         transcriptChannel: 'C1',
         agentId: 'bot-a',
         agentName: 'Bot A',

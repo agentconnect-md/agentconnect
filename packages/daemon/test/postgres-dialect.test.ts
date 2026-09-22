@@ -239,3 +239,19 @@ describe('thread-participation backfill', () => {
     expect(out).toMatch(/ON CONFLICT DO NOTHING/)
   })
 })
+
+// A null-safe comparison against a BOUND value: `!new` pins its clear on the runtime session
+// id it read, which may legitimately be null. SQLite writes `IS ?`; PostgreSQL rejects a
+// parameter after `IS`, so both directions need the explicit spelling.
+describe('null-safe parameter comparison', () => {
+  it('rewrites both directions of IS against a parameter', () => {
+    expect(rewrite('UPDATE sessions SET x = $1 WHERE key = $2 AND acpSessionId IS $3')).toContain(
+      'acpSessionId IS NOT DISTINCT FROM $3'
+    )
+    expect(rewrite('SELECT 1 FROM sessions WHERE acpSessionId IS NOT $1')).toContain('acpSessionId IS DISTINCT FROM $1')
+  })
+
+  it('leaves a literal IS NULL alone', () => {
+    expect(rewrite('SELECT 1 FROM sessions WHERE acpSessionId IS NULL')).toContain('acpSessionId IS NULL')
+  })
+})

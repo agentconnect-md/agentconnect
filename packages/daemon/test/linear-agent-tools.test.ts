@@ -24,6 +24,7 @@ const ctx: SessionContext = {
   isDm: false,
   channel: 'org-uuid',
   thread: 'session-uuid',
+  deliveryThread: 'session-uuid',
   agentName: 'atlas',
   tools: []
 }

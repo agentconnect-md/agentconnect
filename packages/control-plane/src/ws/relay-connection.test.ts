@@ -839,6 +839,47 @@ describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2
     { agentId: AgentId(MEMBER_AGENT_ID), role: 'member' as const }
   ]
 
+  // #2218: the roster says where each participant's content is, so a member the turn reaches
+  // another way can refuse it. A participant with no session yet names nobody.
+  it('names the member that recorded each participant’s current session', async () => {
+    const RECORDER = '99999999-9999-4999-8999-999999999999'
+    const h = buildWebchatVerifier({
+      participants: [
+        { agentId: AgentId(WEBCHAT_AGENT_ID), role: 'primary' as const, currentSessionId: 'sess-primary' },
+        { agentId: AgentId(MEMBER_AGENT_ID), role: 'member' as const, currentSessionId: null }
+      ],
+      agentById: {
+        [MEMBER_AGENT_ID]: {
+          id: MEMBER_AGENT_ID,
+          orgId: 'org-1',
+          placementKind: 'daemon',
+          setId: null,
+          daemonId: MEMBER_DAEMON_ID
+        }
+      },
+      daemonById: { [MEMBER_DAEMON_ID]: { state: 'READY' } },
+      sessionById: {
+        'sess-primary': {
+          orgId: 'org-1',
+          agentId: WEBCHAT_AGENT_ID,
+          platform: 'webchat',
+          daemonId: RECORDER,
+          contentSetId: null,
+          visibility: 'org',
+          ownerIdentity: null,
+          contentPurgedAt: null
+        }
+      }
+    })
+
+    const result = await h.verifier('browser-credential')
+
+    expect(result.participants).toEqual([
+      { agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, recordedDaemonId: RECORDER, primary: true },
+      { agentId: MEMBER_AGENT_ID, daemonId: MEMBER_DAEMON_ID }
+    ])
+  })
+
   it('returns the roster primary-first with member placements and suppresses remote-MCP', async () => {
     const h = buildWebchatVerifier({
       participants: ROSTER,

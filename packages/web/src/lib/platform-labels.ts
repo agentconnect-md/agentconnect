@@ -42,6 +42,7 @@ export interface PlatformLabel {
  *  string that is not an `Object.prototype` key. */
 const LABELS = new Map<string, PlatformLabel>([
   ['slack', { name: 'Slack', picker: 'Slack', sigil: '#' }],
+  ['qq', { name: 'QQ', picker: 'QQ', sigil: '' }],
   ['telegram', { name: 'Telegram', picker: 'Telegram', sigil: '' }],
   ['discord', { name: 'Discord', picker: 'Discord', sigil: '#' }],
   // One platform id, two clouds. Prose picks the international brand; the picker

@@ -26,7 +26,11 @@ import { DaemonId, OrgId } from '../../src/domain/ids.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import { retryArm } from '../../src/http/routes/daemons.js'
-import { DAEMON_BOOTSTRAP_UPGRADE_FEATURE, type DaemonControlAck } from '@agentconnect.md/protocol'
+import {
+  DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
+  SESSION_EXECUTORS_V1_FEATURE,
+  type DaemonControlAck
+} from '@agentconnect.md/protocol'
 
 // Console routes are org-scoped: /orgs/:orgId/… (devAuth = seeded owner of the default org).
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -70,6 +74,39 @@ async function seedDaemon(features = ['worktree-iso']) {
   )
 }
 
+/** The reserved example name a sharing daemon registers its listener on — never served back. */
+const EXECUTOR_ENDPOINT_HOST = 'executor.example.test'
+
+/** Seed a daemon whose owner turned `sandbox.share` on: an effective strategy table, a ceiling, and
+ *  the listener address the read model must drop. */
+async function seedSharingDaemon() {
+  const repo = new PgDaemonRepo(prisma)
+  await repo.upsertOnAuth({ daemonId: DaemonId(DAEMON), orgId: OrgId(DEFAULT_ORG_ID), agentVersion: '0.4.2' })
+  await repo.applyRegister(
+    DaemonId(DAEMON),
+    {
+      host: 'macbook-pro',
+      capabilities: {
+        platforms: [],
+        runtimes: ['claude'],
+        acp: true,
+        features: [SESSION_EXECUTORS_V1_FEATURE],
+        executor: {
+          enabled: true,
+          strategies: {
+            host: { available: true },
+            microsandbox: { available: false, reason: 'no backend on this host' }
+          },
+          endpoint: { host: EXECUTOR_ENDPOINT_HOST, port: 7443 },
+          capacity: 8
+        }
+      },
+      maxAgents: 3
+    },
+    new Date()
+  )
+}
+
 type DaemonDto = {
   daemonId: string
   host: string | null
@@ -80,7 +117,18 @@ type DaemonDto = {
   createdBy: string | null
   lastModifiedAt: string
   lastModifiedBy: string | null
-  capabilities: { platforms: string[]; runtimes: string[]; acp: boolean; features: string[] }
+  hostedSessions: number | null
+  capabilities: {
+    platforms: string[]
+    runtimes: string[]
+    acp: boolean
+    features: string[]
+    executor?: {
+      enabled: boolean
+      strategies?: Record<string, { available: true } | { available: false; reason: string }>
+      capacity?: number
+    }
+  }
   runtimeProfiles: {
     runtime: string
     version: string
@@ -483,6 +531,40 @@ describe('GET /daemons — live-status overlay', () => {
     running = buildHttpApp(prisma)
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/daemons/${randomUUID()}` })
     expect(res.statusCode).toBe(404)
+  })
+
+  // session-executors.md §10: what a sharing machine lends its group is a console fact; where its
+  // listener is, is not — that address is topology, configured nowhere and shown nowhere.
+  it('carries what a sharing daemon offers, its hosted count, and never its listener address', async () => {
+    await seedSharingDaemon()
+    await new PgDaemonRepo(prisma).setHostedSessions(DaemonId(DAEMON), 2)
+    running = buildHttpApp(prisma)
+
+    // The count moves with every launch, so it rides the liveness half the console polls.
+    const fleet = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons` })).json() as DaemonDto[]
+    expect(fleet.find((r) => r.daemonId === DAEMON)!.hostedSessions).toBe(2)
+
+    // The table and the ceiling move when the machine is reconfigured, so they ride capability.
+    const caps = (await listCapabilities()).find((r) => r.daemonId === DAEMON)!
+    expect(caps.capabilities.executor).toEqual({
+      enabled: true,
+      strategies: { host: { available: true }, microsandbox: { available: false, reason: 'no backend on this host' } },
+      capacity: 8
+    })
+    expect(JSON.stringify(caps)).not.toContain(EXECUTOR_ENDPOINT_HOST)
+    const one = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons/${DAEMON}` })).json() as DaemonDto
+    expect(JSON.stringify(one)).not.toContain(EXECUTOR_ENDPOINT_HOST)
+  })
+
+  it('reports no executor and an unknown hosted count for a daemon that shares nothing', async () => {
+    await seedDaemon()
+    running = buildHttpApp(prisma)
+
+    const fleet = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons` })).json() as DaemonDto[]
+    // Null, not 0: "it has reported no count" and "it hosts nothing" are different answers, and the
+    // console reads a capacity from the executor facts rather than inventing one here.
+    expect(fleet.find((r) => r.daemonId === DAEMON)!.hostedSessions).toBeNull()
+    expect((await listCapabilities()).find((r) => r.daemonId === DAEMON)!.capabilities.executor).toBeUndefined()
   })
 })
 

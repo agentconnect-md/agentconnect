@@ -40,6 +40,7 @@ export function attachmentToBlock(
     // over `data`, breaking auth-gated URLs despite having bytes. Remove via #52.
     return { type: 'image', data: bytes.toString('base64'), mimeType: att.mimeType }
   }
+  if (isImage && att.unavailableText) return { type: 'text', text: att.unavailableText }
   if (bytes && supports('embeddedContext')) {
     const uri = att.sourceUrl ?? `attachment://webchat/${encodeURIComponent(att.id)}`
     if (att.mimeType.startsWith('text/')) {
@@ -66,7 +67,9 @@ export function attachmentToBlock(
     name: att.name,
     uri: att.sourceUrl,
     mimeType: att.mimeType,
-    description: `Slack file. You cannot fetch this URL directly — call the readSlackFile tool with this uri (mimeType: ${att.mimeType}) to view its contents (a non-image binary is saved into uploads/ in your workspace).`,
+    description: att.readerToolName
+      ? `You cannot fetch this provider URL directly — call the ${att.readerToolName} tool with this uri (mimeType: ${att.mimeType}) to access it; a non-image binary is saved into uploads/ in your workspace.`
+      : `Slack file. You cannot fetch this URL directly — call the readSlackFile tool with this uri (mimeType: ${att.mimeType}) to view its contents (a non-image binary is saved into uploads/ in your workspace).`,
     ...(typeof att.size === 'number' ? { size: att.size } : {})
   }
 }
@@ -79,7 +82,8 @@ export async function buildAttachmentBlocks(attachments: Attachment[], deps: Att
   return Promise.all(
     attachments.map(async (att) => {
       const overCap = typeof att.size === 'number' && att.size > cap
-      const bytes = overCap ? null : (att.inlineData ?? (await deps.download(att).catch(() => null)))
+      const readThroughTool = !att.mimeType.startsWith('image/') && att.readerToolName
+      const bytes = overCap || readThroughTool ? null : (att.inlineData ?? (await deps.download(att).catch(() => null)))
       return attachmentToBlock(att, bytes, deps.supports)
     })
   )

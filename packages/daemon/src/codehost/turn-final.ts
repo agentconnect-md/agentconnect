@@ -62,6 +62,9 @@ export interface CodeHostPromptSupplementDeps {
 /** A delivery's trusted members plus the normalized event — the pair a lifecycle cleanup is fenced on. */
 export type CodeHostDelivery = CodeHostHookMembers & { event?: string }
 
+/** Trusted coordinates available both at ingress and when replaying a retained hook. */
+export type CodeHostReplySource = CodeHostHookMembers & Pick<RdMsgHook, 'hookId' | 'context'>
+
 export type CodeHostThreadWorktreeCleanup = 'pull_request_merged' | 'issue_closed' | 'issue_deleted'
 
 /** What the daemon lends these members; each provider declares only the part it reads. */
@@ -71,7 +74,7 @@ export type CodeHostTurnFinalHost = GithubTurnFinalHost & GitlabTurnFinalHost & 
 export interface CodeHostTurnFinal<P extends CodeHostProvider = CodeHostProvider> {
   readonly provider: P
   /** This delivery's one reply target, or undefined when it owns no public reply (a push, a subject it cannot address). */
-  replyTarget(msg: RdMsgHook): CodeHostReplyTarget | undefined
+  replyTarget(msg: CodeHostReplySource): CodeHostReplyTarget | undefined
   /** The named refusal a turn-start instance disagreement takes, or undefined when this provider pins no instance. */
   hostFence(msg: RdMsgHook, host: CodeHostTurnFinalHost): string | undefined
   /** The lifecycle pairing that retires the per-thread checkout, read off the normalized event and trusted metadata. */

@@ -31,9 +31,8 @@ export const SANDBOX_PROVIDER_ENV: Readonly<Record<'claude' | 'codex' | 'deepsee
     deepseek: { AC_DEEPSEEK_BASE_URL: 'DEEPSEEK_BASE_URL', AC_DEEPSEEK_API_KEY: 'DEEPSEEK_API_KEY' }
   }
 
-/** Filesystem and locale facts only the pod knows. HOME is the load-bearing one: the runtime
- *  writes its state there, and the daemon cannot name a path on a machine it is not on. */
-const POD_BASE_ENV = ['HOME', 'PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'TZ'] as const
+/** Filesystem and locale facts only the runtime's own machine knows: HOME above all, and where a host executor's HOME seed left the Claude sign-in. */
+const POD_BASE_ENV = ['HOME', 'PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'TZ', 'CLAUDE_SECURESTORAGE_CONFIG_DIR'] as const
 
 function podBaseEnv(podEnv: Record<string, string | undefined>): Record<string, string> {
   const env: Record<string, string> = {}

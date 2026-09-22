@@ -1,9 +1,32 @@
 import { describe, it, expect } from 'vitest'
 import { parseCommand } from '../src/commands/commands.js'
 
+import { requiresTrustedActor } from '../src/commands/commands.js'
+
+// One predicate, asked by every ingress path that parses a command. The failure it exists to
+// prevent is a gate applied on direct ingress but not on relay — which is where the HTTP
+// callbacks that can carry no actor at all arrive.
+describe('requiresTrustedActor', () => {
+  it('covers the commands that cannot be undone or that reset a safety latch', () => {
+    expect(requiresTrustedActor('new')).toBe(true)
+    expect(requiresTrustedActor('resume')).toBe(true)
+  })
+
+  it('leaves the reversible and read-only ones open', () => {
+    for (const kind of ['stop', 'cancel', 'queue', 'status', 'fast', 'model', 'effort', 'permission'] as const)
+      expect(requiresTrustedActor(kind)).toBe(false)
+  })
+})
+
 describe('parseCommand', () => {
   it('parses !stop, !cancel, and !resume as distinct commands', () => {
     expect(parseCommand('!stop')).toEqual({ kind: 'stop' })
+    expect(parseCommand('!new')).toEqual({ kind: 'new' })
+    expect(parseCommand('/new')).toEqual({ kind: 'new' })
+    // Telegram group addressing, and the word must not match a prefix of ordinary text.
+    expect(parseCommand('/new@mybot')).toEqual({ kind: 'new' })
+    expect(parseCommand('!newsletter')).toBeNull()
+    expect(parseCommand('new session please')).toBeNull()
     expect(parseCommand('!cancel')).toEqual({ kind: 'cancel' })
     expect(parseCommand('/cancel')).toEqual({ kind: 'cancel' })
     expect(parseCommand('!resume')).toEqual({ kind: 'resume' })

@@ -27,7 +27,6 @@ const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), 
 const keyOf = (prefix: string, f: WorkspaceFile) => (prefix ? `${prefix}/${f.name}` : f.name)
 
 export function WorkspaceFilesMock({ files }: { files: WorkspaceFile[] }) {
-  const t = useTranslations('Agents.workspaceFiles')
   // Default-select the project guide (CLAUDE.md / README.md) so the preview isn't
   // empty on entry; else the first file with content anywhere in the tree.
   const flat = useMemo(() => flattenFiles(files), [files])
@@ -128,6 +127,7 @@ function MockPreview({
   resolveLink: (href: string) => MarkdownLinkResolution | undefined
   onBack?: () => void
 }) {
+  const t = useTranslations('Agents.workspaceFiles')
   const isMd = MARKDOWN_FILE_RE.test(file.name)
   const [mode, setMode] = useState<'preview' | 'code'>('preview')
 

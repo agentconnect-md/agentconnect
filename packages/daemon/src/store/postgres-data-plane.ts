@@ -68,9 +68,11 @@ export class PostgresDataPlane {
   }
 }
 
-export async function openMountedPostgresDataPlane(
+/** The shared store a credentials file names — the pool's mount by default, or a self-hosted `postgres` store's file (#2188). */
+export async function openPostgresDataPlane(
   orgForAgent: OrgForAgent,
-  onFailure?: (error: Error) => void
+  onFailure?: (error: Error) => void,
+  configPath?: string
 ): Promise<PostgresDataPlane> {
-  return PostgresDataPlane.open(readDataPlaneConfig(), orgForAgent, onFailure)
+  return PostgresDataPlane.open(readDataPlaneConfig(configPath), orgForAgent, onFailure)
 }

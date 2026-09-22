@@ -165,6 +165,9 @@ AGENTS.override.md
 .claude/worktrees/
 CLAUDE.local.md
 .superpowers/
+# Written by `next dev` when it detects an AI agent; the root CLAUDE.md is the project's guidance.
+packages/web/AGENTS.md
+packages/web/CLAUDE.md
 
 # JetBrains IDE
 .idea/

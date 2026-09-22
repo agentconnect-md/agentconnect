@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { manifestFor } from '../platform-manifest.js'
 
 /**
  * Routing & orchestration (C→D control) — protocol §5.
@@ -28,7 +29,7 @@ import { z } from 'zod'
 //   - `event/session` — store the value verbatim (session rows are text).
 //   - `rd/msg` — decode succeeds; the daemon may refuse the ITEM on semantic
 //     grounds (fail-closed coordinate checks), but never the socket.
-export const KNOWN_PLATFORMS = ['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'dream'] as const
+export const KNOWN_PLATFORMS = ['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'dream', 'qq'] as const
 export type KnownPlatform = (typeof KNOWN_PLATFORMS)[number]
 export function isKnownPlatform(p: string): p is KnownPlatform {
   return (KNOWN_PLATFORMS as readonly string[]).includes(p)
@@ -63,13 +64,13 @@ export function originKindOf(p: string): OriginKind | undefined {
 }
 
 /** The origin kinds a console composer may continue (webchat-cross-integration-continuation.md
- *  §2.2, §9): a chat thread, whose human turn is mirrored back to the platform, and a hook
+ *  §2.2, §9): a supported chat thread, whose human turn is mirrored back to the platform, and a hook
  *  session — a code-host event or a generic webhook — whose only human surface IS the console.
  *  `webchat` continues in place and `dream` is not a conversation; an id this build cannot
  *  classify stays refused, like every other fail-closed coordinate check. */
 export function continuableOrigin(platform: string): boolean {
   const kind = originKindOf(platform)
-  return kind === 'chat' || kind === 'hook'
+  return kind === 'hook' || (kind === 'chat' && manifestFor(platform).consoleContinuation)
 }
 export const Platform = z.string().min(1)
 export type Platform = z.infer<typeof Platform>

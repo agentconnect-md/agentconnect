@@ -4,7 +4,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { LocalStore, sessionKey, type SessionRecord } from '../src/store/local-store.js'
+import { LocalStore, sessionKey, type SessionRecord, SCHEMA_VERSION } from '../src/store/local-store.js'
 import { openTestStore, usingPostgresStore } from './store-support.js'
 
 const EXECUTOR = 'd2222222-2222-4222-8222-222222222222'
@@ -69,6 +69,48 @@ describe('LocalStore session executor', () => {
     await store.close()
   })
 
+  it('lists the open isolated sessions of the given agents, and none that execute elsewhere', async () => {
+    const store = await openTestStore()
+    const held = `bot-${crypto.randomUUID()}`
+    const other = `bot-${crypto.randomUUID()}`
+    const row = async (over: Partial<SessionRecord> = {}): Promise<SessionRecord> => {
+      const rec: SessionRecord = {
+        ...session(`t-${crypto.randomUUID()}`),
+        agentId: held,
+        acpSessionId: `acp-${crypto.randomUUID()}`,
+        workspaceIsolation: 'session',
+        ...over
+      }
+      await store.upsertSession(rec)
+      return rec
+    }
+    const worktree = await row()
+    const prompting = await row({ state: 'prompting' })
+    const stayedHome = await row()
+    await store.setSessionExecutor(stayedHome.key, { stayedHomeReason: 'holder_least_loaded' })
+    await row({ workspaceIsolation: 'shared' })
+    await row({ state: 'closed' })
+    // Its executor counts it; the holder's host for it is a pipe.
+    const placed = await row()
+    await store.setSessionExecutor(placed.key, { executorDaemonId: EXECUTOR })
+    const elsewhere = await row({ agentId: other })
+
+    const keys = async (agentIds: string[], exceptKey?: string) =>
+      (await store.listOwnIsolatedSessions(agentIds, exceptKey)).map((r) => r.key).sort()
+    expect(await keys([held])).toEqual([worktree.key, prompting.key, stayedHome.key].sort())
+    expect(await keys([held], worktree.key)).toEqual([prompting.key, stayedHome.key].sort())
+    expect(await keys([held, other])).toEqual([worktree.key, prompting.key, stayedHome.key, elsewhere.key].sort())
+    expect(await keys([])).toEqual([])
+    // The ACP id rides along: it is how a shared agent host says which of these it has loaded.
+    const listed = await store.listOwnIsolatedSessions([held])
+    expect(listed.find((r) => r.key === worktree.key)).toEqual({
+      key: worktree.key,
+      agentId: held,
+      acpSessionId: worktree.acpSessionId
+    })
+    await store.close()
+  })
+
   // The SQLite in the pinned Node drops a LAST column by cutting back to the nearest comma BYTE, so a comment holding one there corrupts the table; a newer SQLite hides that.
   it.skipIf(usingPostgresStore())(
     'keeps nothing but whitespace between each column and the comma before it',
@@ -92,6 +134,8 @@ describe('LocalStore session executor', () => {
     const old = new DatabaseSync(path)
     old.exec('ALTER TABLE sessions DROP COLUMN executorDaemonId')
     old.exec('ALTER TABLE sessions DROP COLUMN stayedHomeReason')
+    old.exec('ALTER TABLE sessions DROP COLUMN originCodeHostReplyTarget')
+    old.exec('ALTER TABLE inbox DROP COLUMN codeHostReplyTarget')
     old.exec(`INSERT INTO sessions (key, agentId, platform, channel, thread, acpSessionId, state, updatedAt)
       VALUES ('k1', 'bot-a', 'slack', 'C1', 'T1', 'acp-1', 'idle', 100)`)
     old.exec('PRAGMA user_version = 19')
@@ -106,6 +150,6 @@ describe('LocalStore session executor', () => {
     const after = new DatabaseSync(path)
     const version = (after.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
     after.close()
-    expect(version).toBe(21)
+    expect(version).toBe(SCHEMA_VERSION)
   })
 })

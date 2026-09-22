@@ -23,6 +23,7 @@
  * its own words.
  */
 import type { z, ZodType } from 'zod'
+import { IntegrationQQConfig } from '@agentconnect.md/protocol'
 import type { BindRuleConfig, Integration } from '../agents/agent-schema.js'
 import type { IntegrationSessionMode } from '@agentconnect.md/protocol'
 import {
@@ -41,7 +42,8 @@ const CONFIG_SCHEMAS = {
   telegram: TelegramConfigSchema,
   discord: DiscordConfigSchema,
   feishu: FeishuConfigSchema,
-  linear: LinearConfigSchema
+  linear: LinearConfigSchema,
+  qq: IntegrationQQConfig
 } as const
 
 /** The union of every platform's validated config, derived from the registry

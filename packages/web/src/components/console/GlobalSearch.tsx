@@ -76,25 +76,26 @@ type TypeFilter = 'all' | SearchKind
 // label so a wider match set is still discoverable).
 const CAP = 3
 
-const SEARCH_PAGE_LABEL_KEYS: Record<string, string> = {
-  '/home': 'home',
-  '/agents': 'agents',
-  '/sessions': 'sessions',
-  '/crons': 'schedules',
-  '/tools': 'tools',
-  '/integrations': 'integrations',
-  '/knowledge': 'knowledge',
-  '/daemons': 'infra',
-  '/usage': 'analytics',
-  '/billing': 'billing',
-  '/settings#organization': 'organization',
-  '/settings#agent-visibility': 'defaultAgentVisibility',
-  '/settings#session-access': 'sessionAccess',
-  '/settings#environment': 'variablesSecrets',
-  '/settings#members': 'membersRoles',
-  '/settings#invite-links': 'inviteLinks',
-  '/profile': 'profile'
-}
+const SEARCH_PAGE_LABEL_KEYS: Record<string, Parameters<ReturnType<typeof useTranslations<'Shell.globalSearch'>>>[0]> =
+  {
+    '/home': 'pages.home',
+    '/agents': 'pages.agents',
+    '/sessions': 'pages.sessions',
+    '/crons': 'pages.schedules',
+    '/tools': 'pages.tools',
+    '/integrations': 'pages.integrations',
+    '/knowledge': 'pages.knowledge',
+    '/daemons': 'pages.infra',
+    '/usage': 'pages.analytics',
+    '/billing': 'pages.billing',
+    '/settings#organization': 'settings.organization',
+    '/settings#agent-visibility': 'settings.defaultAgentVisibility',
+    '/settings#session-access': 'settings.sessionAccess',
+    '/settings#environment': 'settings.variablesSecrets',
+    '/settings#members': 'settings.membersRoles',
+    '/settings#invite-links': 'settings.inviteLinks',
+    '/profile': 'settings.profile'
+  }
 
 // Icon-well glyph for every non-agent kind (agents render their avatar instead). Pages, settings
 // and the three infra entities carry their own glyph on the item; the rest are fixed per kind.
@@ -269,8 +270,10 @@ export function GlobalSearch({
 
     // Console pages and settings — the static SEARCH_PAGES index. Matches on the
     // label or any keyword (route aliases + the settings that live on the page).
-    const pageLabel = (p: ConsolePage) =>
-      t(`${p.kind === 'page' ? 'pages' : 'settings'}.${SEARCH_PAGE_LABEL_KEYS[p.href] ?? 'unknown'}`)
+    const pageLabel = (p: ConsolePage) => {
+      const key = SEARCH_PAGE_LABEL_KEYS[p.href]
+      return key ? t(key) : p.label
+    }
     const pageHit = (p: ConsolePage) => hit(p.label) || hit(pageLabel(p)) || (p.keywords ?? []).some(hit)
     const toItem = (p: ConsolePage): SearchItem => ({
       key: `${p.kind}:${p.href}`,

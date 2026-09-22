@@ -4,6 +4,7 @@
 import { GITEA_DEFAULT_BASE_URL, type RdMsgHook } from '@agentconnect.md/protocol'
 import type {
   CodeHostDelivery,
+  CodeHostReplySource,
   CodeHostEffectLease,
   CodeHostFinalPoster,
   CodeHostFinalPosterDeps,
@@ -34,12 +35,13 @@ const REVIEW_LOOKUP_TIMEOUT_MS = 10_000
 
 /** §10.1 rides the same pipe as GitHub: `repo` is the numeric repository id (the lease scope), `repoPath` the
  *  current owner/repo the REST paths address, and `number` the subject index; pushes have no thread and stay silent. */
-function replyTarget(msg: RdMsgHook): CodeHostReplyTarget | undefined {
+function replyTarget(msg: CodeHostReplySource): CodeHostReplyTarget | undefined {
   const gitea = msg.gitea
   if (!gitea || gitea.target.kind === 'push') return undefined
   return {
     hookId: msg.hookId,
     provider: 'gitea',
+    host: gitea.host ?? GITEA_DEFAULT_BASE_URL,
     // The product's subject vocabulary: a pull request answers on the merge-request family; both post through issues.
     subjectKind: gitea.target.kind === 'pull' ? 'merge_request' : 'issue',
     repo: gitea.repoId,
@@ -71,10 +73,15 @@ function worktreeCleanup(delivery: CodeHostDelivery): CodeHostThreadWorktreeClea
 
 function effectLease(agentId: string, target: CodeHostReplyTarget, host: GiteaTurnFinalHost): CodeHostEffectLease {
   return {
-    token: async () => (await host.getGiteaPostToken(agentId, target.repo, target.hookId)).token,
+    token: async () => {
+      if (target.host && target.host !== (host.giteaHostFor(agentId) ?? GITEA_DEFAULT_BASE_URL)) {
+        throw new Error(GITEA_HOST_MISMATCH_REASON)
+      }
+      return (await host.getGiteaPostToken(agentId, target.repo, target.hookId)).token
+    },
     invalidateToken: (presented) => host.invalidateGiteaPost(agentId, target.repo, presented),
     // §11: the instance this agent's spec names, read when the comment is actually posted.
-    apiBaseUrl: () => giteaApiBaseUrl(host.giteaHostFor(agentId))
+    apiBaseUrl: () => giteaApiBaseUrl(target.host ?? host.giteaHostFor(agentId))
   }
 }
 

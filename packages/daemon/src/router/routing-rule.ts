@@ -10,7 +10,7 @@
 import type { Agent, BindMatch, BindRuleConfig, Integration } from '../agents/agent-schema.js'
 import { configuredBotSelfId, integrationCore } from '../platforms/integration-config.js'
 import type { ActivationRule } from '@agentconnect.md/activation-policy'
-import type { RouteAssign, RouteUpdate } from '@agentconnect.md/protocol'
+import type { ChannelSessionMode, RouteAssign, RouteUpdate } from '@agentconnect.md/protocol'
 
 export type RoutingMatch = BindMatch
 
@@ -44,6 +44,13 @@ export function integrationRouting(int: Integration): {
 } {
   const { bindRules, mutedChannels, gated } = integrationCore(int)
   return { staticBotUserId: configuredBotSelfId(int), bindRules, mutedChannels, gated }
+}
+
+/** How this integration keys sessions in one conversation (channel-session-mode.md §4).
+ *  Absent from the sparse wire list ⇒ `createNew`, which is what every conversation had
+ *  before the setting existed and what an older CP's spec still means. */
+export function conversationSessionMode(int: Integration, channel: string): ChannelSessionMode {
+  return integrationCore(int).sessionModes.find((entry) => entry.channel === channel)?.mode ?? 'createNew'
 }
 
 /**

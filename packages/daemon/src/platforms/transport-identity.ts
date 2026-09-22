@@ -34,6 +34,7 @@ function telegramBotId(botToken: string): string | undefined {
 }
 
 const CONNECTION_IDENTITY = new Map<string, (integration: Integration) => string | undefined>([
+  ['qq', (int) => platformIntegrationConfig('qq', int)?.appId],
   // A shared bot has no app token to key on; a socket integration keys on it.
   [
     'slack',
@@ -83,6 +84,7 @@ export interface TenantScopeHost {
 }
 
 const TENANT_SCOPE = new Map<string, (host: TenantScopeHost, integration: Integration) => Promise<string | undefined>>([
+  ['qq', async (_host, int) => platformIntegrationConfig('qq', int)?.appId],
   // The workspace id from auth.test, surfaced by the live connection. A
   // not-yet-authenticated (or test-substituted) connection may not expose it —
   // fall back to the minted scope rather than throw.

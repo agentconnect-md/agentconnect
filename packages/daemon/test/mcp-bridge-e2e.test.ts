@@ -110,6 +110,7 @@ describe('mcp-bridge end-to-end (real stdio MCP handshake)', () => {
       isDm: false,
       channel: 'C9',
       thread: '5.5',
+      deliveryThread: '5.5',
       tools
     })
 
@@ -169,6 +170,7 @@ describe('mcp-bridge end-to-end (real stdio MCP handshake)', () => {
         isDm: false,
         channel: 'C9',
         thread: '5.5',
+        deliveryThread: '5.5',
         tools: [...tools, askStubDescriptor]
       })
       const [spec] = buildMcpServers({ socketPath: path, token, cliEntry })

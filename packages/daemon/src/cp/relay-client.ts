@@ -16,6 +16,7 @@ import {
   decodeRelayDaemonFrame,
   NIL_UUID,
   RD_HEADLESS_AGENT_DELIVERY_V1,
+  RD_CODEHOST_REPLY_TARGET_V1,
   RD_AGENT_IMPLICIT_ROUTING_V1,
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
   RD_WEBCHAT_ATTACH_V1,
@@ -48,6 +49,7 @@ const CLOSE_AUTH_FAILED = 4401
  */
 const DAEMON_RD_CAPABILITIES: readonly string[] = [
   RD_HEADLESS_AGENT_DELIVERY_V1,
+  RD_CODEHOST_REPLY_TARGET_V1,
   RD_AGENT_IMPLICIT_ROUTING_V1,
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
   // The relay refuses the webchat `attach` probe for daemons without this.
@@ -100,6 +102,7 @@ export class RelayClient {
   private stopped = false
   private fatal = false // 4401 — never redial this relay
   private reconnectTimer?: TimerHandle
+  private relayCapabilities = new Set<string>()
   private readonly seqByChat = new Map<string, number>() // per-chat monotonic rd/chat seq
 
   constructor(
@@ -140,6 +143,12 @@ export class RelayClient {
    */
   async sendAgentMsg(payload: RdAgentMsg): Promise<RdAgentMsgAck> {
     if (this.state !== 'READY') throw new WireError('INTERNAL', `rd link not ready (${this.state})`, true)
+    if (
+      (payload.originCodeHostReplyTarget !== undefined || payload.codeHostReplyTarget !== undefined) &&
+      !this.relayCapabilities.has(RD_CODEHOST_REPLY_TARGET_V1)
+    ) {
+      return { deliveryId: payload.deliveryId, delivered: false, reason: 'unsupported' }
+    }
     const rep = await this.sendRequest(buildRelayDaemonFrame('rd/agentmsg', payload))
     if (rep.type !== 'rd/agentmsg/ack') {
       throw new WireError('INTERNAL', `expected rd/agentmsg/ack, got ${rep.type}`, false)
@@ -198,6 +207,7 @@ export class RelayClient {
       // path. Deployment error — retry (the operator must fix per-instance routing).
       throw new WireError('INTERNAL', `relay misroute: dialed ${this.relayId}, reached ${ok.relayId}`, true)
     }
+    this.relayCapabilities = new Set(ok.capabilities ?? [])
     this.state = 'READY'
     this.deps.log.info(`relay(${this.relayId}): rd/* connected`)
   }

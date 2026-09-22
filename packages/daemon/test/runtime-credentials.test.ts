@@ -42,6 +42,23 @@ function settings(path: string): { filesystem: { allowWrite: string[] } } {
   return JSON.parse(readFileSync(path, 'utf8')) as { filesystem: { allowWrite: string[] } }
 }
 
+describe('gemini API-key credentials', () => {
+  it('counts GEMINI_API_KEY in the daemon environment as a configured google credential', () => {
+    const { hostHome } = fixture()
+    // No login file and no key: the runtime is installed but unauthenticated.
+    expect(discoverRuntimeCredentials('gemini', undefined, { HOME: hostHome })).toEqual({ paths: [], providers: [] })
+    expect(runtimeCredentialsConfigured('gemini', undefined, { HOME: hostHome })).toBe(false)
+    // A blank value is not a credential.
+    expect(runtimeCredentialsConfigured('gemini', undefined, { HOME: hostHome, GEMINI_API_KEY: '  ' })).toBe(false)
+
+    const keyed = { HOME: hostHome, GEMINI_API_KEY: 'synthetic-gemini-key' }
+    expect(discoverRuntimeCredentials('gemini', undefined, keyed)).toEqual({ paths: [], providers: ['google'] })
+    expect(runtimeCredentialsConfigured('gemini', undefined, keyed)).toBe(true)
+    // GOOGLE_API_KEY alone selects no headless auth mode in gemini-cli, so it does not count.
+    expect(runtimeCredentialsConfigured('gemini', undefined, { HOME: hostHome, GOOGLE_API_KEY: 'x' })).toBe(false)
+  })
+})
+
 describe('stored runtime credential discovery', () => {
   it('finds only stored OMP provider records in the configured database, including expired login', () => {
     const { hostHome } = fixture()

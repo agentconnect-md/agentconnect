@@ -229,6 +229,9 @@ export interface MemberSetRow {
   memberDaemonIds: string[]
   /** Agents placed on the group — the same count Cloud shows. */
   agentCount: number
+  /** Whether the group's agents may run their isolated sessions on members other than their holder
+   *  (session-executors.md §10). The group admin's consent; each machine's `sandbox.share` is its owner's. */
+  spreadSessions: boolean
 }
 
 /** One status for a group: online while any of its members is serving — the same rule the pool
@@ -593,6 +596,8 @@ export interface Agent {
   /** Server-computed: can a session start right now? For a set placement that is "some member is
    *  live", which is the question the console used to answer with a dead member's liveness. */
   placementReady?: boolean
+  /** A group agent's confirmed duty holder: the member its next turn reaches, whose store holds what can resume. */
+  holderDaemonId?: string
   daemon: string
   /** Display name projected with the Agent; available even when the daemon itself is not visible. */
   daemonName?: string
@@ -1019,14 +1024,14 @@ export function resolveEffortForModel(
   return ''
 }
 
-/** Permission modes for the runtime: the catalog's runtime-level list when
- *  present (labels resolved like effortChoicesFor), else the static table. */
+/** Permission modes: the catalog's list (labeled like effortChoicesFor), else the static table until a catalog arrives. */
 export function permissionModeChoicesFor(
   runtime: string,
   catalog: RuntimeModelCatalog | undefined
 ): { v: string; l: string; description?: string }[] {
   const modes = catalog?.permissionModes
-  if (!modes?.length) return permissionModeOptions(runtime)
+  // A reported catalog without modes ⇒ no selector; before one arrives, supportsModes gates the static table.
+  if (!modes?.length) return catalog || !supportsModes(runtime) ? [] : permissionModeOptions(runtime)
   const staticLabels = new Map(permissionModeOptions(runtime).map((o) => [o.v, o.l]))
   const labels = stripSharedLabelChrome(modes.map((m) => m.name ?? staticLabels.get(m.value) ?? capitalize(m.value)))
   return modes.map((m, i) => ({
@@ -2145,6 +2150,10 @@ export interface IntegrationChannelRow {
   /** 'im' = a DM conversation row, 'mpim' = a Slack group DM; absent = channel. */
   kind?: 'channel' | 'im' | 'mpim'
   trigger: 'off' | 'mention' | 'any'
+  /** Which session a message here joins: a new one per thread, or the conversation's one
+   *  ongoing session. Channel rows only — a direct conversation is not a place this choice
+   *  means anything. */
+  sessionMode?: 'createNew' | 'append'
   /** Effective per-conversation owner for a shared bot. */
   agentId?: string | null
 }
@@ -2227,6 +2236,16 @@ export interface DaemonCaps {
   features: string[]
   /** Why a sandbox this daemon HAS is unusable right now; `features` still lists `sandbox`, since it refuses such a session rather than running it unconfined. */
   sandboxUnavailable?: string
+  /** What this daemon offers the group's sessions (session-executors.md §10); absent while its executor facet is off. */
+  executor?: DaemonExecutor
+}
+
+/** A sharing daemon's effective strategy table and session ceiling. No address: an executor's is topology, never configured or shown. */
+export interface DaemonExecutor {
+  enabled: boolean
+  /** Keyed by strategy — the `sandbox.backend` name — with the reason a strategy cannot run here. */
+  strategies?: Record<string, { available: true } | { available: false; reason: string }>
+  capacity?: number
 }
 
 /** One daemon-configured MCP server (protocol `FactsMcpServer`) — name +
@@ -2319,6 +2338,9 @@ export interface DaemonRow {
   mcpServers: McpServerInfo[]
   /** Active session count — NOT the hosted-agent count (derive that by filtering the agents list by daemon). */
   activeSessions: string
+  /** Session environments live on this machine, its own plus any it hosts for its group
+   *  (session-executors.md §6) — the numerator against `caps.executor.capacity`. Null until it reports one. */
+  hostedSessions: number | null
   conns: string
   uptime: string
   /** Creator's userId — resolved to a name / "You" at render via creatorLabel; '' for CLI/self-registered. */
@@ -2522,7 +2544,7 @@ export function pgPrompts(agentId: string): string[] {
 
 export interface ApiEvent {
   name: string
-  descKey: string
+  descKey: 'ready' | 'ack' | 'output' | 'done' | 'error'
 }
 
 export const API_EVENTS: ApiEvent[] = [

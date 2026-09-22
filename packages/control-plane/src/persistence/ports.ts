@@ -1,4 +1,3 @@
-import type { MemoryTransactionReq, MemoryTransactionResult } from '@agentconnect.md/protocol'
 /**
  * Repository ports — the Red-Green seam (design §3.14 / §2.3).
  *
@@ -13,6 +12,10 @@ import type { MemoryTransactionReq, MemoryTransactionResult } from '@agentconnec
 import type { MemoryHomeUpdate } from '../agent-memory/home.js'
 import type {
   AuthReq,
+  ProviderKeyProvider,
+  SetProviderKeyInput,
+  MemoryTransactionReq,
+  MemoryTransactionResult,
   DaemonLifecyclePhase,
   DaemonLifecycleProgress,
   RegisterReq,
@@ -1232,6 +1235,10 @@ export interface SessionMetaRecord {
    *  private one. Session-bound provenance that outlives `daemonId` (domain/session-content.ts). */
   contentSetId: string | null
   workspaceIsolation: 'shared' | 'session' | null
+  /** Birth verdict (session-executors.md §7): the group member executing this session, or the reason
+   *  it stayed with its holder. At most one is ever set; both null on a session born before the feature. */
+  executorDaemonId: DaemonId | null
+  stayedHomeReason: SessionStayedHomeReason | null
   activityState: ActivityState
   // ── session visibility (session-visibility.md §3) ──
   orgId: OrgId // denormalized from agent.orgId at ingest
@@ -1581,6 +1588,8 @@ export interface WebchatConversationBinding {
 
 /** One roster row of a (possibly multi-agent) webchat conversation, in pick order. */
 export interface WebchatParticipant {
+  /** The session this participant currently stands on, whose recorder holds its content. */
+  currentSessionId?: string | null
   agentId: AgentId
   role: 'primary' | 'member'
 }
@@ -3193,6 +3202,9 @@ export interface BotRecord {
 export interface BotUpdate {
   /** Shared-bot (multi-agent) opt-in; `false` is recounted under the row lock. */
   shareable?: boolean
+  /** May the bot enter a PUBLIC channel on first use (Slack `conversations.join`)? Kept in
+   *  the `platformConfig` bag (merged under the same lock), absent ⇒ true. */
+  joinPublicChannels?: boolean
 }
 
 export interface BotRepo {
@@ -7114,6 +7126,8 @@ export interface DutyGroupRepo {
   /** {@link DutyGroupRepo.holdersOf} restricted to CONFIRMED holds — who INGRESS may be addressed
    *  at. A holder that is still installing is a live lease and not yet a route. */
   confirmedHoldersOf(agentId: AgentId, now: Date): Promise<DaemonId[]>
+  /** {@link DutyGroupRepo.confirmedHoldersOf} for a page of agents in one read; an agent nobody holds is absent. */
+  confirmedHoldersOfMany(agentIds: readonly AgentId[], now: Date): Promise<Map<AgentId, DaemonId[]>>
   /** Every member currently holding an unexpired lease on a group covering this
    *  agent — the delivery half of {@link DutyGroupRepo.holdsAgent}, so a live
    *  update reaches whoever serves the agent rather than only where it is placed
@@ -7128,4 +7142,25 @@ export interface DutyGroupRepo {
 // Atomic publication of a prepared topic/index batch in the existing CP memory home.
 export interface AgentMemoryTransactionRepo {
   apply(agentId: AgentId, orgId: OrgId, request: MemoryTransactionReq, now: Date): Promise<MemoryTransactionResult>
+}
+
+// Organization-wide default keys; only internal credential delivery may read the secret value.
+export interface ProviderKeyMetadata {
+  provider: ProviderKeyProvider
+  endpoint: string | null
+  headerNames: string[]
+  updatedAt: Date
+}
+
+export interface ProviderCredentials {
+  apiKey: string
+  endpoint: string | null
+  headers: Record<string, string>
+}
+
+export interface ProviderKeyStore {
+  list(orgId: OrgId): Promise<ProviderKeyMetadata[]>
+  put(orgId: OrgId, provider: ProviderKeyProvider, input: SetProviderKeyInput): Promise<ProviderKeyMetadata | null>
+  get(orgId: OrgId, provider: ProviderKeyProvider): Promise<ProviderCredentials | null>
+  delete(orgId: OrgId, provider: ProviderKeyProvider): Promise<void>
 }

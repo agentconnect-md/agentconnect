@@ -9,6 +9,7 @@
  * all; a DM is one continuous conversation) and nothing about how the daemon
  * dispatches. Core keeps only the call.
  */
+import { isAppendCoordinate } from '../../session/append-coordinate.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
 
 /** The one host capability Telegram threading needs: resolving which session a
@@ -65,7 +66,11 @@ export async function canonicalizeTelegramThread(
     return
   }
   if (msg.replyTo) {
-    msg.thread = (await host.threadForMessage(transcriptChannel, msg.replyTo)) ?? `tg:${msg.replyTo}`
+    // The row this looks up may be filed under a SESSION coordinate rather than a platform
+    // thread (channel-session-mode.md §6.2), and `thread` here is the DELIVERY coordinate —
+    // adopting it would make the reply target, and everything reported to the CP, synthetic.
+    const recorded = await host.threadForMessage(transcriptChannel, msg.replyTo)
+    msg.thread = recorded !== undefined && !isAppendCoordinate(recorded) ? recorded : `tg:${msg.replyTo}`
     return
   }
   msg.thread = `tg:${telegramMessageId(msg)}`

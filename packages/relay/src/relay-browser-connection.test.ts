@@ -713,7 +713,7 @@ describe('webchat rendezvous fallback (rollout replaced the recorded daemon)', (
     new RelayBrowserConnection(transport, {
       chatId: CHAT,
       agentId: AGENT,
-      participants: [{ agentId: AGENT, daemonId: DAEMON, primary: true }],
+      participants: [{ agentId: AGENT, daemonId: DAEMON, recordedDaemonId: DAEMON, primary: true }],
       user: USER,
       daemonConnFor: connFor,
       rendezvousDaemonConn: rendezvous,
@@ -741,6 +741,28 @@ describe('webchat rendezvous fallback (rollout replaced the recorded daemon)', (
     await tick()
     expect(calls.map((c) => c.daemonId)).toEqual([DAEMON2, DAEMON2])
     expect(rendezvous).toHaveBeenCalledTimes(1)
+  })
+
+  // #2218: the member that recorded the conversation rides every op, and no re-route rewrites it —
+  // whoever the turn reaches decides whether it holds that content.
+  it('carries the recorded member on each op, through a rendezvous and a not_holder re-route', async () => {
+    const { transport, calls } = buildRouted({
+      conns: {
+        [DAEMON2]: { msgId: 'x', accepted: false, reason: 'not_holder', holderDaemonId: DAEMON3 },
+        [DAEMON3]: 'accept'
+      },
+      rendezvous: DAEMON2
+    })
+    transport.feed({ text: 'hi' })
+    await tick()
+
+    expect(calls.map((c) => c.daemonId)).toEqual([DAEMON2, DAEMON3])
+    expect(calls.map((c) => c.msg.recordedDaemonId)).toEqual([DAEMON, DAEMON])
+    // The placement heals to the holder; the recorded member does not.
+    transport.feed({ text: 'again' })
+    await tick()
+    expect(calls.map((c) => c.daemonId)).toEqual([DAEMON2, DAEMON3, DAEMON3])
+    expect(calls.at(-1)!.msg.recordedDaemonId).toBe(DAEMON)
   })
 
   it('keeps the offline error when no same-org member is connected', async () => {

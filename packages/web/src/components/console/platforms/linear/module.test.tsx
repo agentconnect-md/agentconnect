@@ -30,9 +30,9 @@ const module = () => {
 }
 
 describe('the linear registry row', () => {
-  it('registers the module once, last in picker order', () => {
+  it('registers the module once in picker order', () => {
     expect(module()).toBe(linearModule)
-    expect(platformRegistry.ids().at(-1)).toBe('linear')
+    expect(platformRegistry.ids()).toContain('linear')
     expect(PLATFORM_MARK_IDS).toContain('linear')
   })
 

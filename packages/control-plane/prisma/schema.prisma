@@ -97,6 +97,7 @@ model Org {
   hooks                     HookDef[]
   codeHostRepositories      CodeHostRepository[]
   codeHostTrustedActors     CodeHostTrustedActor[]
+  providerKeys              ProviderKey[]
   apiKeys                   ApiKey[]
   integrations              Integration[]
   bots                      Bot[]
@@ -131,6 +132,31 @@ model Org {
 
   @@index([createdByUserId])
   @@map("org")
+}
+
+// Organization default provider credentials; values use SecretCipher and never enter public DTOs.
+model ProviderKey {
+  orgId     String
+  provider  String
+  value     String
+  endpoint  String?
+  headers   ProviderKeyHeader[]
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+  org       Org      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@id([orgId, provider])
+  @@map("provider_key")
+}
+
+model ProviderKeyHeader {
+  orgId      String
+  provider   String
+  name       String
+  value      String
+  connection ProviderKey @relation(fields: [orgId, provider], references: [orgId, provider], onDelete: Cascade)
+
+  @@id([orgId, provider, name])
+  @@map("provider_key_header")
 }
 
 model User {

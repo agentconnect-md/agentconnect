@@ -81,6 +81,14 @@ cluster's audit log attributes each action to the agent's own identity.
 - The files are rewritten on every agent (re)start and removed when the secret
   is deleted. Editing a secret respawns the agent, so rotation takes effect on
   the next session.
+- When the agent runs in a sandbox pod of a daemon pool, or a session runs on
+  another machine of its daemon group, the files are written where the agent
+  runs instead: under that sandbox's runtime directory
+  (`/run/agentconnect/config-files` in a pod), each time the agent process
+  starts there. The pointer vars name that path, and nothing is written on the
+  daemon host. The directory is emptied before each write, so a deleted secret
+  leaves no file behind, and it goes away with the pod or the session's
+  environment.
 - If the pointer var (`KUBECONFIG` / `DOCKER_CONFIG`) is also set explicitly on
   the agent, the explicit value wins: the secret is left as a plain env var and
   the daemon posts a warning into the session.

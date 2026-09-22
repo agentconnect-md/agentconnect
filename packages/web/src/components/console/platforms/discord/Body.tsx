@@ -19,6 +19,7 @@ import { discordWalkthroughSteps } from './steps'
  */
 export function DiscordWizardBody({ agent, host }: { agent: Agent; host: WizardHost }) {
   const t = useTranslations('Platforms.discord')
+  const tokenT = useTranslations('Platforms.chrome.token')
   const [botToken, setBotToken] = useState('')
   const [showErrors, setShowErrors] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -62,10 +63,16 @@ export function DiscordWizardBody({ agent, host }: { agent: Agent; host: WizardH
       linkLabel={t('guide.link')}
       steps={discordWalkthroughSteps(t)}
       walkthroughLabel={t('guide.walkthroughLabel')}
-      tokenPlaceholder={t('guide.tokenPlaceholder')}
-      tokenValue={botToken}
-      tokenInvalid={showErrors && !valid}
-      onTokenChange={setBotToken}
+      step2={tokenT('prompt')}
+      fields={[
+        {
+          label: tokenT('label'),
+          placeholder: t('guide.tokenPlaceholder'),
+          value: botToken,
+          invalid: showErrors && !valid,
+          onChange: setBotToken
+        }
+      ]}
     >
       {appId ? (
         <>

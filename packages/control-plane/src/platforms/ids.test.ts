@@ -19,6 +19,7 @@ import { describe, it, expect } from 'vitest'
 import type { Platform as ProtocolPlatform } from '@agentconnect.md/protocol'
 import { CP_PLATFORM_IDS } from './ids.js'
 import { buildCpPlatformRegistry } from './registry.js'
+import { createQQCpProvider } from './qq/provider.js'
 import { createTelegramCpProvider } from './telegram/provider.js'
 import { createDiscordCpProvider } from './discord/provider.js'
 import { createSlackCpProvider } from './slack/provider.js'
@@ -32,6 +33,7 @@ import { findTool } from '../http/mcp/tools.js'
  *  construction `env.test.ts` uses to read declarations off the real provider
  *  objects. */
 const productionRegistry = buildCpPlatformRegistry([
+  createQQCpProvider(),
   createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
   createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
   createSlackCpProvider({}),

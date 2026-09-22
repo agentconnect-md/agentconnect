@@ -61,6 +61,7 @@ import {
   fetchMemberSets,
   createMemberSet,
   renameMemberSet,
+  setMemberSetSpreadSessions,
   deleteMemberSet,
   enrollDaemonInMemberSet,
   withdrawDaemonFromMemberSet,
@@ -115,6 +116,7 @@ import {
   type UpdateAgentInput,
   type CreateIntegrationInput,
   type ChannelTrigger,
+  type ChannelSessionMode,
   type IntegrationDto,
   type CreatedHookDto,
   type CreateHookInput,
@@ -180,6 +182,8 @@ interface ConsoleData {
   orgSetIds: ReadonlySet<string>
   createGroup: (name: string) => Promise<MemberSetRow>
   renameGroup: (setId: string, name: string) => Promise<void>
+  /** Let the group's agents run their isolated sessions on members other than their holder. */
+  setGroupSpreadSessions: (setId: string, enabled: boolean) => Promise<void>
   /** Delete an EMPTY group (409 while it has members or placed agents), then re-pull. */
   deleteGroup: (setId: string) => Promise<void>
   /** Enroll a daemon — agents pinned to it move onto the group with it. 409 when the machine
@@ -252,6 +256,7 @@ interface ConsoleData {
   deleteHook: (id: string, agentId?: string | null) => Promise<void>
   /** Per-conversation trigger choice (PATCH), applied to the local row on success. */
   setChannelTrigger: (integrationId: string, channelId: string, trigger: ChannelTrigger) => Promise<void>
+  setChannelSessionMode: (integrationId: string, channelId: string, sessionMode: ChannelSessionMode) => Promise<void>
   /** Per-conversation default agent for a shared bot (PATCH), applied locally. */
   setChannelAgent: (integrationId: string, channelId: string, agentId: string) => Promise<void>
   /** Forget a conversation row without touching the platform. */
@@ -263,6 +268,8 @@ interface ConsoleData {
   ) => Promise<void>
   /** Flip a bot's shared-bot opt-in (PATCH /bots/:id), then re-pull. */
   setBotShareable: (botId: string, shareable: boolean) => Promise<void>
+  /** Flip a Slack bot's "join public channels on demand" switch (`PATCH /bots/:id`). */
+  setBotJoinPublicChannels: (botId: string, enabled: boolean) => Promise<void>
   /** Create-or-update a cron (PUT upsert; null id ⇒ mint a fresh UUID), then re-pull. */
   saveCron: (id: string | null, body: UpsertCronInput) => Promise<void>
   /** Delete a cron, then re-pull. */
@@ -318,10 +325,18 @@ function settleInBackground(...tasks: Promise<unknown>[]): void {
   void Promise.allSettled(tasks)
 }
 
+/** A group DTO as the console holds it. The one default: a CP that predates the switch spreads nothing. */
+function groupRow(s: MemberSetDto): MemberSetRow {
+  return { ...s, spreadSessions: s.spreadSessions ?? false }
+}
+
 // Map a live integration DTO to the richer UI row, resolving the holding daemon
 // via the owning agent. `channels` is the daemon-reported membership snapshot with
 // each channel's trigger choice (@-mention vs any message), set per channel.
-function integrationRowFromDto(
+/** The DTO → row projection. Exported for its test: every per-conversation field the console
+ *  renders has to survive this map, and a field silently missing here reads as its default
+ *  forever — the control then shows a state the server does not have. */
+export function integrationRowFromDto(
   d: IntegrationDto,
   agentsById: Map<string, Agent>,
   botsById: Map<string, BotDto>
@@ -352,6 +367,7 @@ function integrationRowFromDto(
       ...(c.url ? { url: c.url } : {}),
       kind: c.kind,
       trigger: c.trigger,
+      sessionMode: c.sessionMode,
       agentId: c.agentId
     }))
   }
@@ -1107,7 +1123,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   )
   // The DTO IS the row here: a group has no derived state of its own, so projecting it would only
   // create a second shape to keep in step with the first.
-  const groups = useMemo<MemberSetRow[]>(() => memberSets.map((s) => ({ ...s })), [memberSets])
+  const groups = useMemo<MemberSetRow[]>(() => memberSets.map(groupRow), [memberSets])
   const orgSetIds = useMemo(() => new Set(groups.map((g) => g.setId)), [groups])
 
   // integrations: live rows (daemon resolved via the owning agent), plus the demo
@@ -1344,7 +1360,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     async (name: string): Promise<MemberSetRow> => {
       const created = await createMemberSet(name)
       settleGroupWrite()
-      return created
+      return groupRow(created)
     },
     [settleGroupWrite]
   )
@@ -1352,6 +1368,14 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const renameGroup = useCallback(
     async (setId: string, name: string) => {
       await renameMemberSet(setId, name)
+      settleGroupWrite()
+    },
+    [settleGroupWrite]
+  )
+
+  const setGroupSpreadSessions = useCallback(
+    async (setId: string, enabled: boolean) => {
+      await setMemberSetSpreadSessions(setId, enabled)
       settleGroupWrite()
     },
     [settleGroupWrite]
@@ -1408,6 +1432,35 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
 
   // Flip one conversation's trigger. Shared bots project it bot-wide. Avoid a full
   // re-pull so the toggle does not flash.
+  const setChannelSessionMode = useCallback(
+    async (integrationId: string, channelId: string, sessionMode: ChannelSessionMode) => {
+      await apiUpdateIntegrationChannel(integrationId, channelId, { sessionMode })
+      settleInBackground(
+        mutateIntegrations(
+          (rows) => {
+            const source = rows?.find((row) => row.id === integrationId)
+            if (!rows || !source) return rows
+            // A shared bot's conversation is bot-scoped: the CP replicates the choice across
+            // every sibling install, so the optimistic view has to move with it.
+            const botWide = realBots.some((bot) => bot.id === source.botId && bot.shareable)
+            return rows.map((row) =>
+              (botWide ? row.botId === source.botId : row.id === integrationId)
+                ? {
+                    ...row,
+                    channels: row.channels.map((channel) =>
+                      channel.channelId === channelId ? { ...channel, sessionMode } : channel
+                    )
+                  }
+                : row
+            )
+          },
+          { revalidate: false }
+        )
+      )
+    },
+    [mutateIntegrations, realBots]
+  )
+
   const setChannelTrigger = useCallback(
     async (integrationId: string, channelId: string, trigger: ChannelTrigger) => {
       await apiUpdateIntegrationChannel(integrationId, channelId, { trigger })
@@ -1527,10 +1580,19 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   // relay placement across every view that shows the bot / its integrations).
   const setBotShareable = useCallback(
     async (botId: string, shareable: boolean) => {
-      await apiUpdateBot(botId, shareable)
+      await apiUpdateBot(botId, { shareable })
       settleInBackground(mutateBots(), mutateIntegrations())
     },
     [mutateBots, mutateIntegrations]
+  )
+
+  // A bot-level switch the daemon reads; only the bot row shows it, so only bots re-pull.
+  const setBotJoinPublicChannels = useCallback(
+    async (botId: string, enabled: boolean) => {
+      await apiUpdateBot(botId, { joinPublicChannels: enabled })
+      settleInBackground(mutateBots())
+    },
+    [mutateBots]
   )
 
   // Create-or-update a cron. PUT /crons/:id is an idempotent upsert, so a create
@@ -1665,6 +1727,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       orgSetIds,
       createGroup,
       renameGroup,
+      setGroupSpreadSessions,
       deleteGroup,
       enrollInGroup,
       withdrawFromGroup,
@@ -1695,10 +1758,12 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       deleteHook,
       deleteBot,
       setChannelTrigger,
+      setChannelSessionMode,
       forgetChannel,
       leaveConversation,
       setChannelAgent,
       setBotShareable,
+      setBotJoinPublicChannels,
       saveCron,
       deleteCron,
       provisionDaemon,
@@ -1748,6 +1813,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       orgSetIds,
       createGroup,
       renameGroup,
+      setGroupSpreadSessions,
       deleteGroup,
       enrollInGroup,
       withdrawFromGroup,
@@ -1780,6 +1846,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       setChannelTrigger,
       setChannelAgent,
       setBotShareable,
+      setBotJoinPublicChannels,
       saveCron,
       deleteCron,
       provisionDaemon,

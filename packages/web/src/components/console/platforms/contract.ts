@@ -97,6 +97,7 @@ import type { IdentityCardKey, InviteHint } from './wizard-chrome'
 import type { ComponentType, ReactNode } from 'react'
 import type { BotDto, CreateIntegrationInput, SessionMessageDto } from '@/lib/api'
 import type { Agent, IntegrationRow } from '@/lib/data'
+import type { FeatureFlagId } from '@/lib/feature-flags'
 
 /** Inbound transport chosen in the wizard — same value set the create DTOs
  *  carry (api.ts:654-672) and the CP persists. */
@@ -471,6 +472,13 @@ export interface WebBotSettingsFragments {
      *  Lark console per region (:71-74, :1338-1345). */
     RowLinks?: ComponentType<{ bot: BotDto }>
     /**
+     * Bot-level settings the module owns, rendered at the top of the EXPANDED row
+     * (above the channel roster) — Slack's "join public channels on demand" switch.
+     * The host renders none for a platform that declares none, which is how the
+     * control stays off every row where the server would refuse it.
+     */
+    RowSettings?: ComponentType<{ bot: BotDto; canWrite: boolean }>
+    /**
      * The delete dialog's "what AgentConnect cannot delete for you" block —
      * the provider sentence plus its deep link (DeleteBotModal.tsx:51-71).
      * A member of its own rather than a reuse of {@link RowLinks}: the row
@@ -565,6 +573,10 @@ export interface WebChannelListSemantics {
    * `any`, because nothing would ever match it. DM rows keep their binary control.
    */
   triggers?: readonly ('off' | 'mention' | 'any')[]
+  /** Session modes this platform's channel rows offer. Absent ⇒ both, which is every
+   *  platform that has channels. A platform opts out by omitting one rather than core
+   *  branching on a platform name. */
+  sessionModes?: readonly ('createNew' | 'append')[]
   /**
    * Confirmation shown before a row's default dispatch moves OFF a RESTRICTED agent.
    * Where an owner compiles to a per-conversation default rather than an ownership
@@ -653,6 +665,12 @@ export interface WebAgentIntegrationCardFacet {
 export interface WebPlatformModule<TApi = unknown> {
   /** Platform id (§6.1 vocabulary). Never parsed. */
   readonly platformId: string
+  /** The integration picker's display group; chat is the default for platform modules. */
+  readonly integrationGroup?: 'chat' | 'workflow'
+  /** Feature flag a deployment must turn on before the console offers installing this platform. Absent ⇒ always offered. */
+  readonly requires?: FeatureFlagId
+  /** Display-only label for an unresolved human sender; stored identities and known names take precedence. */
+  senderFallback?(senderId: string): string | undefined
   /**
    * The platform's brand mark, sized by its box like today's `fillPct`
    * convention (marks.tsx:207-216). Replaces the chat arms of

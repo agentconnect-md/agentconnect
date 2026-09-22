@@ -8,10 +8,11 @@ export interface SessionResumeMember {
   contentSetId?: string | null
 }
 
-/** Where a participant agent is placed NOW — the one machine of a `daemon` placement, or the set. */
+/** Where a participant agent is placed NOW — the one machine of a `daemon` placement, or the set and, for an org's own group, the member holding it. */
 export interface SessionResumePlacement {
   daemonId?: string | null
   setId?: string | null
+  holderDaemonId?: string | null
 }
 
 /**
@@ -32,7 +33,7 @@ export function sessionResumeMembers(
   return currentSession ? [currentSession] : null
 }
 
-/** Resumable only while every participant's CURRENT placement still reaches its content: a `daemon` placement must be the recorder (moves copy nothing), a pool placement needs the content in the pool's shared store (`contentSetId`) — no member id survives a rollout. `null` members = still loading; anything missing fails closed. */
+/** Resumable only while every participant's CURRENT placement still reaches its content: a `daemon` placement or a group's holder must be the recorder (moves copy nothing), a pool placement needs the content in the pool's shared store (`contentSetId`) — no member id survives a rollout. `null` members = still loading; anything missing fails closed. */
 export function sessionResumeState(
   members: readonly SessionResumeMember[] | null,
   placementByAgent: ReadonlyMap<string, SessionResumePlacement | undefined>
@@ -42,7 +43,7 @@ export function sessionResumeState(
   return members.every((member) => {
     const placement = placementByAgent.get(member.agentId)
     if (!placement) return false
-    if (member.daemonId && placement.daemonId === member.daemonId) return true
+    if (member.daemonId && (placement.daemonId ?? placement.holderDaemonId) === member.daemonId) return true
     return Boolean(member.contentSetId) && placement.setId === member.contentSetId
   })
     ? 'available'

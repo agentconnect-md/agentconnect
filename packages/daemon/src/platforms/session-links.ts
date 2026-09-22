@@ -1,3 +1,4 @@
+import { isAppendCoordinate } from '../session/append-coordinate.js'
 import type { SessionRecord } from '../store/local-store.js'
 import { slackThreadUrl } from './slack/permalink.js'
 import type { PlatformConnection } from './contract.js'
@@ -24,5 +25,9 @@ const STRATEGIES = new Map<string, SessionLinkStrategy>([
 /** No registered strategy means the platform must have persisted an ingress URL
  * (or has no addressable source); core never guesses a Slack-shaped fallback. */
 export function sessionThreadUrlFor(session: SessionRecord, connection?: SessionLinkConnection): string | undefined {
+  // A session whose coordinate is synthetic belongs to no platform thread, so there is
+  // nothing to link: every strategy here builds a URL out of `session.thread`, and doing
+  // that with an append coordinate yields a permalink to a message that does not exist.
+  if (isAppendCoordinate(session.thread)) return undefined
   return STRATEGIES.get(session.platform)?.(connection, session)
 }

@@ -100,6 +100,34 @@ describe('sandbox spawn environment', () => {
     await runner.close(1_000).catch(() => {})
   })
 
+  // A host executor's HOME seed leaves the Claude sign-in where only that machine can name it (session-executors.md §8).
+  it("fills in where this machine's HOME seed left the Claude sign-in, under whatever the daemon sent", async () => {
+    const seen: Array<Record<string, string>> = []
+    const runnerOf = () =>
+      new AcpRunner({
+        emit: () => {},
+        podEnv: { HOME: '/d/sessions/s/home', PATH: '/usr/bin', CLAUDE_SECURESTORAGE_CONFIG_DIR: '/home/op/.claude' },
+        resolveCommand: ((command, env) => {
+          seen.push({ ...env })
+          return command
+        }) satisfies ResolveCommand,
+        log: { info: () => {}, warn: () => {} }
+      } as never)
+    const seeded = runnerOf()
+    await openOf(seeded)({ op: 'open', command: 'true', args: [], env: {} }).catch(() => {})
+    expect(seen.at(-1)?.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe('/home/op/.claude')
+    await seeded.close(1_000).catch(() => {})
+    const sent = runnerOf()
+    await openOf(sent)({
+      op: 'open',
+      command: 'true',
+      args: [],
+      env: { CLAUDE_SECURESTORAGE_CONFIG_DIR: '/sent/by/daemon' }
+    }).catch(() => {})
+    expect(seen.at(-1)?.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe('/sent/by/daemon')
+    await sent.close(1_000).catch(() => {})
+  })
+
   // A local VM's shim is started by the daemon on the same machine: that launch environment is whole, and a pod's
   // fill-ins would change it — an inherited OpenAI key would become codex's login in place of the one the user has.
   it('adds nothing but resolved hints when the driving daemon sends the whole environment', async () => {

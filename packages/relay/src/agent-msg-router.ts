@@ -42,6 +42,7 @@ import {
   isRetryableAgentMsgAck,
   RD_AGENTMSG_NOT_READY,
   RD_HEADLESS_AGENT_DELIVERY_V1,
+  RD_CODEHOST_REPLY_TARGET_V1,
   type RdAgentMsg,
   type RdAgentMsgAck,
   type RdAgentMsgReason
@@ -123,7 +124,7 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
     // named by the high-entropy id and terminally validates possession + ownership — so the
     // aliasing threat the gate closes is absent, and membership would wrongly reject a
     // replier that does not share the origin's channel (an explicitly supported org-scoped
-    // case). Org membership (c), directional policy (d), and the hop cap (e) still apply.
+    // case). Org membership (c) and the hop cap (e) still apply.
     if (
       msg.lineageReplyTo === undefined &&
       router.coordsDecision(orgId, msg.coords.platform, msg.coords.channel, msg.claimedFromAgentId).verdict === 'reject'
@@ -140,17 +141,14 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
     const target = router.agent(msg.toAgentId)
     if (!target || target.orgId !== orgId) return nak(msg.deliveryId, 'not_found')
 
-    // (d) Directional policy: A→B requires caller A to admit B and target B to
-    // admit A. A guessed/stale target id therefore cannot bypass the directory.
-    // Kept as two explicit checks rather than router.admits() so each denial keeps its
-    // own log line (the reason an operator can tell the two directions apart).
-    if (!outboundAdmits(caller, msg.toAgentId)) {
+    // (d) Ordinary calls need both directional grants; parent replies use source-checked origin authority.
+    if (msg.lineageReplyTo === undefined && !outboundAdmits(caller, msg.toAgentId)) {
       deps.log.info(
         `relay: rd/agentmsg not_allowed — ${msg.claimedFromAgentId} outbound policy excludes ${msg.toAgentId}`
       )
       return nak(msg.deliveryId, 'not_allowed')
     }
-    if (!inboundAdmits(target, msg.claimedFromAgentId)) {
+    if (msg.lineageReplyTo === undefined && !inboundAdmits(target, msg.claimedFromAgentId)) {
       deps.log.info(`relay: rd/agentmsg not_allowed — ${msg.claimedFromAgentId} → ${msg.toAgentId} (target selected)`)
       return nak(msg.deliveryId, 'not_allowed')
     }
@@ -167,6 +165,14 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
     }
     const conn = deps.daemons()?.get(target.daemonId)
     if (!conn) return nak(msg.deliveryId, 'offline')
+
+    // Losing either a reply target or explicit private origin would change the caller's output audience.
+    if (
+      (msg.originCodeHostReplyTarget !== undefined || msg.codeHostReplyTarget !== undefined) &&
+      !conn.supports(RD_CODEHOST_REPLY_TARGET_V1)
+    ) {
+      return nak(msg.deliveryId, 'unsupported')
+    }
 
     // (f0) send-message-routing-rework.md §8.4 — capability gate for `session-reply`. A
     // daemon that never advertised this predates the delivery kind entirely: it would key
@@ -206,6 +212,10 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
         // Origin lineage (session-concept §5.3) is the caller's own, forwarded opaquely —
         // the relay neither mints nor validates it; it only lets the woken child reply back.
         ...(msg.originSessionId !== undefined ? { originSessionId: msg.originSessionId } : {}),
+        ...(msg.originCodeHostReplyTarget !== undefined
+          ? { originCodeHostReplyTarget: msg.originCodeHostReplyTarget }
+          : {}),
+        ...(msg.codeHostReplyTarget !== undefined ? { codeHostReplyTarget: msg.codeHostReplyTarget } : {}),
         ...(msg.originCoords !== undefined ? { originCoords: msg.originCoords } : {}),
         ...(msg.externalOrigin !== undefined ? { externalOrigin: msg.externalOrigin } : {}),
         // §5.3 lineage reply target — opaque to the relay; the TARGET daemon terminally

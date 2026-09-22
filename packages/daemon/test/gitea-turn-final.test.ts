@@ -69,6 +69,7 @@ describe('reply target (§10.1)', () => {
     expect(codeHostReplyTarget(fire())).toEqual({
       hookId: HOOK,
       provider: 'gitea',
+      host: GITEA_DEFAULT_BASE_URL,
       subjectKind: 'merge_request',
       repo: REPO,
       repoPath: PATH,
@@ -144,7 +145,7 @@ describe('maintenance pairing (§8)', () => {
 describe('effect lease and poster (§10.1)', () => {
   it('mints the hook-reply lease for the numeric repository and addresses the spec instance', async () => {
     const h = host({ giteaHost: INSTANCE })
-    const target = codeHostReplyTarget(fire())!
+    const target = codeHostReplyTarget(fire({ gitea: { ...fire().gitea!, host: INSTANCE } }))!
     const turnFinal = turnFinalFor(target)
     expect(turnFinal.provider).toBe('gitea')
     expect(turnFinal.reportsAbsentOutput).toBe(true)
@@ -154,9 +155,11 @@ describe('effect lease and poster (§10.1)', () => {
     lease.invalidateToken('gitea-token')
     expect(h.invalidateGiteaPost).toHaveBeenCalledWith(AGENT, REPO, 'gitea-token')
     expect(lease.apiBaseUrl()).toBe(`${INSTANCE}/api/v1`)
-    expect(turnFinalFor(target).effectLease(AGENT, target, host().turnFinalHost).apiBaseUrl()).toBe(
-      'https://gitea.com/api/v1'
+    const changedHost = host()
+    await expect(turnFinalFor(target).effectLease(AGENT, target, changedHost.turnFinalHost).token()).rejects.toThrow(
+      'gitea_host_mismatch'
     )
+    expect(changedHost.getGiteaPostToken).not.toHaveBeenCalled()
   })
 
   it('builds the Gitea poster on the issue-comments path of the current repository path', async () => {
@@ -210,7 +213,7 @@ describe('prompt supplement (§8)', () => {
       return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
     }) as unknown as typeof fetch
     const h = host({ giteaHost: INSTANCE })
-    const target = codeHostReplyTarget(reviewFire())!
+    const target = codeHostReplyTarget(reviewFire({ gitea: { ...fire().gitea!, host: INSTANCE } }))!
     const lease = turnFinalFor(target).effectLease(AGENT, target, h.turnFinalHost)
     const supplement = await turnFinalFor(target).promptSupplement!(reviewFire(), {
       token: lease.token,

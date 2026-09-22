@@ -132,6 +132,7 @@ describe('TelegramConnection.start', () => {
       'stop',
       'cancel',
       'resume',
+      'new',
       'fast',
       'models',
       'effort',

@@ -664,6 +664,8 @@ export class AcpHost {
       env?: Record<string, string>
       /** Files `env` points at, written by the driver in the runtime's own filesystem before start. */
       files?: SpawnFile[]
+      /** Directories the driver empties there before writing `files`. */
+      clearDirs?: string[]
       /** Disposable compatibility probes suppress raw child stderr so a harness
        * cannot print credential material or host paths outside our sanitizer. */
       suppressChildStderr?: boolean
@@ -752,6 +754,7 @@ export class AcpHost {
       // Resolving a hint belongs to the driver: only it knows the filesystem the runtime sees.
       ...(hints.length > 0 ? { hints } : {}),
       ...(this.opts.files?.length ? { files: this.opts.files } : {}),
+      ...(this.opts.clearDirs?.length ? { clearDirs: this.opts.clearDirs } : {}),
       ...(this.opts.suppressChildStderr !== undefined ? { suppressChildStderr: this.opts.suppressChildStderr } : {}),
       ...(this.opts.sandbox ? { sandbox: this.opts.sandbox } : {}),
       ...(this.opts.hostKey ? { hostKey: this.opts.hostKey } : {})

@@ -335,6 +335,31 @@ describe('shim handshake', () => {
     expect(review.reviewToken).toHaveBeenCalledWith('projected-token', [SHIM_TOKEN_AUDIENCE])
   })
 
+  it('proves an executor environment from the pipe the dial crossed, and a pod from its token (session-executors.md §6)', async () => {
+    const clock = new VirtualClock()
+    // The pod variant's verifier is still injected, and an executor peer must not reach it: what
+    // replaces a TokenReview here is that the executor admitted this dial under a key it minted
+    // for exactly this session, so the shim has nothing further to present.
+    const review = verifier({ authenticated: false, error: 'no pod to review' })
+    const { dialer } = scriptedDialer({ answer: presents(), verifier: review, clock })
+    const executor = record({
+      peer: 'executor',
+      subject: 'agent-a/session-abc',
+      podName: 'session-abc',
+      sandboxUid: 'launch-7'
+    })
+    const connection = await runVirtual(clock, dialer.connect(SCRIPTED_ENDPOINT, executor, 500))
+    expect(review.reviewToken).not.toHaveBeenCalled()
+    // The launch is what the binding is fenced on, as it is for a pod.
+    expect(connection.binding).toMatchObject({ podName: 'session-abc', podUid: 'launch-7', generation: 3 })
+
+    // The same dialer still refuses a pod its verifier does not vouch for.
+    await expect(runVirtual(clock, dialer.connect(SCRIPTED_ENDPOINT, record(), 500))).rejects.toThrow(
+      /could not connect to sandbox shim/
+    )
+    expect(review.reviewToken).toHaveBeenCalledWith('projected-token', [SHIM_TOKEN_AUDIENCE])
+  })
+
   it('discloses nothing about the launch in either refusal it sends', async () => {
     // The refusal a half-trusted pod reads must not become a description of what the daemon
     // launched. The reason is coarse by design and the message carries no identifier at all.

@@ -100,6 +100,7 @@ export interface LinearTurn {
     /** The console transcript coordinates the settling answer is recorded under. */
     transcriptChannel?: string
     statusThread?: string
+    sessionThread?: string
   }
 }
 
@@ -756,11 +757,12 @@ export async function applyLinearAction<TTurn extends LinearTurn>(
   // The transcript is core's, not Linear's: the answer is recorded under the session's
   // coordinates whether or not a Linear port exists — the feed chrome stays Linear's own.
   if (action.kind === 'transcript') {
-    const { transcriptChannel, statusThread } = turn.plan
+    const { transcriptChannel, statusThread, sessionThread } = turn.plan
     if (!host || !transcriptChannel || !statusThread) return
     await host.appendTranscript({
       channel: transcriptChannel,
-      thread: statusThread,
+      // A transcript row is the SESSION's; `statusThread` above is the chrome target.
+      thread: sessionThread ?? statusThread,
       ts: host.monotonicTs(),
       sender: turn.plan.agentId,
       kind: 'text',

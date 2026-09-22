@@ -167,6 +167,33 @@ export function effectiveRunInSandbox(
   return requireSandbox || (requested && mechanism !== undefined && runtime?.externalExecution !== true)
 }
 
+/** A session placed on another machine (session-executors.md §7, §8): HOME, XDG and runtime state under the HOME it seeded, and none of this machine's env, sign-in or sandbox. */
+function prepareExecutorLaunch(
+  opts: {
+    runtimeId: string
+    runtime?: RuntimeDef
+    explicitEnv?: Record<string, string>
+    sessionGitDirs?: string[]
+  },
+  home: string,
+  allowModelToolUnixSockets: boolean
+): PreparedRuntimeLaunch {
+  // An empty host env: this daemon's own variables describe a machine the runtime is not on.
+  const env = runtimeHomeEnvironment(opts.runtimeId, home, opts.explicitEnv, {})
+  if (sharedCredentialProfile(opts.runtimeId, opts.runtime) !== 'codex') {
+    return { env, inheritProcessEnv: false, runtimeHome: home, gitMetadataWriteRoots: [] }
+  }
+  // The private-HOME profile of an unconfined launch, and the clones' `.git` as its caller found them on that machine.
+  const gitMetadataWriteRoots = [...(opts.sessionGitDirs ?? [])]
+  applyCodexPermissionProfile(env, {
+    protectedRoots: [join(home, '.codex')],
+    sessionGitMetadataRoots: gitMetadataWriteRoots,
+    sessionHomeRoot: home,
+    allowModelToolUnixSockets
+  })
+  return { env, inheritProcessEnv: false, runtimeHome: home, gitMetadataWriteRoots }
+}
+
 /** Prepare one ACP adapter launch. A private HOME is normally part of sandbox
  * isolation, but security probes and runtimes with generated private policy may
  * request the same environment isolation without an OS sandbox. */
@@ -218,7 +245,12 @@ export function prepareRuntimeLaunch(opts: {
     trustedSessionDir?: string
     trustedMounts?: SandboxMount[]
   }
+  /** A session placed on another machine: its HOME there, which that machine's strategy — never this one's sandbox — confines. */
+  executor?: { home: string }
+  /** A session whose clones are off this disk (a pool pod, an executor): their `.git`, found where they are as `sessionGitDirsIn` finds this disk's. */
+  sessionGitDirs?: string[]
 }): PreparedRuntimeLaunch {
+  if (opts.executor) return prepareExecutorLaunch(opts, opts.executor.home, opts.allowModelToolUnixSockets === true)
   if (opts.runInSandbox && opts.microsandbox) {
     return prepareMicrosandboxLaunch({ ...opts, ...opts.microsandbox })
   }
@@ -230,9 +262,10 @@ export function prepareRuntimeLaunch(opts: {
   if (!opts.runInSandbox && !opts.isolateHome) {
     const env = { ...(opts.explicitEnv ?? {}) }
     // No outer boundary here: the Codex profile must both reopen the Git metadata and close hooks/config.
+    // A session whose clones are off this disk (a pool pod's) comes with their `.git` as its caller found them there.
     const gitMetadataWriteRoots =
       credentialProfile === 'codex'
-        ? runtimeGitMetadataRoots(opts.scopeDir, opts.trustedPrimaryCheckout, sessionDir)
+        ? [...(opts.sessionGitDirs ?? runtimeGitMetadataRoots(opts.scopeDir, opts.trustedPrimaryCheckout, sessionDir))]
         : []
     if (credentialProfile === 'codex') {
       applyCodexPermissionProfile(
@@ -240,7 +273,7 @@ export function prepareRuntimeLaunch(opts: {
         {
           protectedRoots: [],
           // A session's clones take the exact per-clone entries; an owner checkout's `.git` takes the worktree ones.
-          ...(sessionDir === undefined
+          ...(sessionDir === undefined && opts.sessionGitDirs === undefined
             ? { writableGitMetadataRoots: gitMetadataWriteRoots }
             : { sessionGitMetadataRoots: gitMetadataWriteRoots }),
           allowModelToolUnixSockets: opts.allowModelToolUnixSockets === true

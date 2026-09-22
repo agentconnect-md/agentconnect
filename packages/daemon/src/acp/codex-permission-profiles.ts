@@ -113,14 +113,24 @@ export function codexPermissionProfileConfig(
     agentFilesystemEntries.length > 0
       ? [`permissions.${PROFILE_IDS.agent}.filesystem=${tomlInlineTable(agentFilesystemEntries)}`]
       : []
-  const fullAccess = tomlInlineTable([
-    [':root', 'write'],
-    ['/.git', 'write'],
-    ['/.agents', 'write'],
-    ['/.codex', 'write'],
-    ...sharedWriteRoots.map((root): [string, string] => [root, 'write']),
-    ...protectedRoots.map((root): [string, string] => [root, 'deny'])
-  ])
+  // A writable `:root` beside a deny takes Codex's restricted Linux sandbox, whose root rebind remounts `/dev` nodev (openai/codex#16451), so with a deny full access keeps the workspace profile's writes.
+  const fullAccessFilesystem =
+    protectedRoots.length > 0
+      ? [
+          `permissions.${PROFILE_IDS['agent-full-access']}.extends=":workspace"`,
+          ...(agentFilesystemEntries.length > 0
+            ? [`permissions.${PROFILE_IDS['agent-full-access']}.filesystem=${tomlInlineTable(agentFilesystemEntries)}`]
+            : [])
+        ]
+      : [
+          `permissions.${PROFILE_IDS['agent-full-access']}.filesystem=${tomlInlineTable([
+            [':root', 'write'],
+            ['/.git', 'write'],
+            ['/.agents', 'write'],
+            ['/.codex', 'write'],
+            ...sharedWriteRoots.map((root): [string, string] => [root, 'write'])
+          ])}`
+        ]
   // On Linux Codex's restricted network seccomp permits AF_UNIX socket()
   // creation but rejects connect(). Enable the inner network layer only when
   // the daemon deliberately provides the agent-scoped GitHub credential
@@ -144,7 +154,7 @@ export function codexPermissionProfileConfig(
       // Temporary until the bundled Codex includes the openai/codex#34115 fix:
       // Guardian approval can otherwise hide the canonical unified-exec process.
       ...(opts.disableUnifiedExec ? ['features.unified_exec=false'] : []),
-      `permissions.${PROFILE_IDS['agent-full-access']}.filesystem=${fullAccess}`,
+      ...fullAccessFilesystem,
       `permissions.${PROFILE_IDS['agent-full-access']}.network.enabled=true`,
       `permissions.${PROFILE_IDS['agent-full-access']}.network.allow_local_binding=true`,
       `permissions.${PROFILE_IDS['agent-full-access']}.network.dangerously_allow_all_unix_sockets=true`

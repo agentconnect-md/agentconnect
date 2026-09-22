@@ -133,6 +133,7 @@ export interface SlackTurnPlan {
   channel: string
   thread?: string
   statusThread: string
+  sessionThread: string
   transcriptChannel: string
   agentId: string
   agentName: string
@@ -511,7 +512,7 @@ export async function applySlackAction<TTurn extends SlackTurn>(
     if (action.kind === 'post') {
       await host.appendTranscript({
         channel: p.plan.transcriptChannel,
-        thread: p.plan.statusThread,
+        thread: p.plan.sessionThread,
         ts: host.monotonicTs(),
         sender: p.plan.agentId,
         kind: 'text',
@@ -549,7 +550,7 @@ export async function applySlackAction<TTurn extends SlackTurn>(
       const ts = await postSlackReply(host, conn, p, state, action.text, trackReply, action.terminal === true)
       await host.appendTranscript({
         channel: p.plan.transcriptChannel,
-        thread: p.plan.statusThread,
+        thread: p.plan.sessionThread,
         ts: ts ?? `local-${Date.now()}`,
         sender: p.plan.agentId,
         kind: 'text',

@@ -420,8 +420,10 @@ describe('§6.1 origin-kind classification on the wire', () => {
   })
 
   // The console composer's platform gate (webchat-cross-integration-continuation.md §9).
-  it('continuableOrigin admits chat and hook, and nothing it cannot classify', () => {
+  it('continuableOrigin admits supported chat mirrors and hook, but keeps QQ read-only', () => {
     for (const chat of ['slack', 'telegram', 'discord', 'feishu']) expect(continuableOrigin(chat)).toBe(true)
+    expect(originKindOf('qq')).toBe('chat')
+    expect(continuableOrigin('qq')).toBe(false)
     expect(continuableOrigin('hook')).toBe(true)
     // webchat continues in place, dream is not a conversation, and an unknown id fails closed.
     expect(continuableOrigin('webchat')).toBe(false)
@@ -431,8 +433,8 @@ describe('§6.1 origin-kind classification on the wire', () => {
 })
 
 describe('writer-side vocabulary stays closed until the fleet gate (S1b)', () => {
-  it('KNOWN_PLATFORMS is exactly the legacy seven', () => {
-    expect([...KNOWN_PLATFORMS]).toEqual(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'dream'])
+  it('KNOWN_PLATFORMS includes the shipped QQ integration', () => {
+    expect([...KNOWN_PLATFORMS]).toEqual(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'dream', 'qq'])
   })
 
   it('isKnownPlatform narrows known ids and refuses unknown ones', () => {

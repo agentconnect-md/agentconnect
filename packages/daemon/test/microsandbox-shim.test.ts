@@ -6,7 +6,7 @@ import { Backoff } from '@agentconnect.md/connection'
 import { decode, encode } from 'cborg'
 import type { Sandbox } from 'microsandbox'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { startMicrosandboxShim, type MicrosandboxShim } from '../src/microsandbox/shim.js'
+import { startGuestShim, startMicrosandboxShim, type MicrosandboxShim } from '../src/microsandbox/shim.js'
 import { createRemoteRuntime } from '../src/remote/remote-runtime.js'
 import { ShimClient } from '../src/shim/client.js'
 import { resolveCommandInPath } from '../src/shim/path-resolve.js'
@@ -264,6 +264,31 @@ describe('microsandbox shim', () => {
       (capability) => shim.session.hasCapability(capability)
     )
     expect(granted).toEqual(['acp', 'tunnel', 'read', 'skills'])
+  })
+
+  // A hosted session's shim (session-executors.md §6): its holder is on another machine, and this one binds nothing.
+  it('starts a hosted shim unbound, without the complete-env claim, with the seed beneath its own variables', async () => {
+    const { vm } = await fixture()
+    const guest = await startGuestShim({
+      sdk: vm.sdk,
+      sandbox: vm.sandbox,
+      workspaceRoot: '/workspace',
+      completeEnv: false,
+      seedEnv: { CLAUDE_SECURESTORAGE_CONFIG_DIR: '/home/op/.claude', AC_SHIM_WORKSPACE_ROOT: '/elsewhere' },
+      runtimeStderr: () => {},
+      artifacts: async () => JSON.stringify({ 'index.js': Buffer.from('// shim bundle').toString('base64') })
+    })
+    closers.push(() => guest.stop())
+    const run = vm.execs[1]!
+    expect(run.env).toEqual(
+      expect.arrayContaining(['AC_SHIM_WORKSPACE_ROOT=/workspace', 'CLAUDE_SECURESTORAGE_CONFIG_DIR=/home/op/.claude'])
+    )
+    expect(run.env).not.toContain('AC_SHIM_WORKSPACE_ROOT=/elsewhere')
+    expect(run.env.filter((entry) => entry.startsWith('AC_SHIM_COMPLETE_ENV'))).toEqual([])
+    // What the executor's pipe connects to: agentd's TCP stream to the shim's guest port, which the fake asserts.
+    const socket = await guest.connect()
+    closers.push(() => void socket.destroy())
+    expect(socket.destroyed).toBe(false)
   })
 
   it('serves both helper endpoints in the guest, each reaching only its own daemon socket', async () => {

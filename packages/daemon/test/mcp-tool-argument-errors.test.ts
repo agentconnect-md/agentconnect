@@ -14,6 +14,7 @@ const ctx: SessionContext = {
   isDm: false,
   channel: 'C1',
   thread: '1.1',
+  deliveryThread: '1.1',
   tools: MEMORY_TOOLS
 }
 

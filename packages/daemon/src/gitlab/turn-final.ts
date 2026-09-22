@@ -3,6 +3,7 @@
 import { GITLAB_DEFAULT_BASE_URL, type RdMsgHook } from '@agentconnect.md/protocol'
 import type {
   CodeHostDelivery,
+  CodeHostReplySource,
   CodeHostEffectLease,
   CodeHostFinalPoster,
   CodeHostFinalPosterDeps,
@@ -25,12 +26,13 @@ export interface GitlabTurnFinalHost {
 }
 
 /** §14.1 rides the same pipe as GitHub: `repo` is the numeric project id and `number` the subject IID; pushes have no thread and stay silent. */
-function replyTarget(msg: RdMsgHook): CodeHostReplyTarget | undefined {
+function replyTarget(msg: CodeHostReplySource): CodeHostReplyTarget | undefined {
   const gitlab = msg.gitlab
   if (!gitlab || gitlab.target.kind === 'push') return undefined
   return {
     hookId: msg.hookId,
     provider: 'gitlab',
+    host: gitlab.host ?? GITLAB_DEFAULT_BASE_URL,
     subjectKind: gitlab.target.kind,
     repo: gitlab.projectId,
     number: gitlab.target.iid,
@@ -65,10 +67,15 @@ function worktreeCleanup(delivery: CodeHostDelivery): CodeHostThreadWorktreeClea
 
 function effectLease(agentId: string, target: CodeHostReplyTarget, host: GitlabTurnFinalHost): CodeHostEffectLease {
   return {
-    token: async () => (await host.getGitlabPostToken(agentId, target.repo, target.hookId)).token,
+    token: async () => {
+      if (target.host && target.host !== (host.gitlabHostFor(agentId) ?? GITLAB_DEFAULT_BASE_URL)) {
+        throw new Error(GITLAB_HOST_MISMATCH_REASON)
+      }
+      return (await host.getGitlabPostToken(agentId, target.repo, target.hookId)).token
+    },
     invalidateToken: (presented) => host.invalidateGitlabPost(agentId, target.repo, presented),
-    // §24.4: the instance this agent's spec names, read when the note is actually posted.
-    apiBaseUrl: () => gitlabApiBaseUrl(host.gitlabHostFor(agentId))
+    // Keep a persisted parent's destination pinned even if its spec changes during the lease request.
+    apiBaseUrl: () => gitlabApiBaseUrl(target.host ?? host.gitlabHostFor(agentId))
   }
 }
 

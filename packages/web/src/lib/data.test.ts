@@ -338,11 +338,19 @@ describe('fastModeAvailableFor', () => {
 })
 
 describe('permissionModeChoicesFor', () => {
-  it('falls back to the static table when the catalog carries no modes', () => {
+  it('falls back to the static table only while NO catalog has arrived', () => {
     expect(permissionModeChoicesFor('codex', undefined)).toEqual(permissionModeOptions('codex'))
-    expect(permissionModeChoicesFor('claude', catalog({ permissionModes: [] }))).toEqual(
-      permissionModeOptions('claude')
-    )
+    expect(permissionModeChoicesFor('claude', undefined)).toEqual(permissionModeOptions('claude'))
+  })
+
+  it('offers no static fallback for a runtime that has no permission modes', () => {
+    expect(permissionModeChoicesFor('opencode', undefined)).toEqual([])
+  })
+
+  it('offers nothing when a REPORTED catalog carries no modes (the runtime has no mode selector)', () => {
+    // Gemini CLI's shape: the static table would offer Claude's modes, which the daemon silently drops.
+    expect(permissionModeChoicesFor('gemini', catalog({ permissionModes: [] }))).toEqual([])
+    expect(permissionModeChoicesFor('gemini', catalog({}))).toEqual([])
   })
 
   it('labels catalog modes by name → static table → capitalized value', () => {

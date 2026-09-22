@@ -109,6 +109,16 @@ describe('loadConfig', () => {
     expect(() => ConfigSchema.parse({ version: 1, sandbox: { share: 'yes' } })).toThrow()
   })
 
+  it('keeps the store in SQLite unless the owner names a PostgreSQL credentials file (#2188)', () => {
+    expect(ConfigSchema.parse({ version: 1 }).store).toEqual({ backend: 'sqlite' })
+    expect(ConfigSchema.parse({ version: 1, store: { backend: 'postgres', configFile: 'pg.json' } }).store).toEqual({
+      backend: 'postgres',
+      configFile: 'pg.json'
+    })
+    expect(() => ConfigSchema.parse({ version: 1, store: { backend: 'postgres' } })).toThrow()
+    expect(() => ConfigSchema.parse({ version: 1, store: { backend: 'mysql' } })).toThrow()
+  })
+
   it('rejects an unimplemented sandbox backend', () => {
     expect(() => ConfigSchema.parse({ version: 1, sandbox: { backend: 'docker' } })).toThrow()
   })

@@ -1,6 +1,9 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import type { ShimCapability } from './protocol.js'
 
+/** How the dialed peer proves it is the one this launch expects: a pod's TokenReview identity, or the TLS-PSK pipe an executor admitted the dial on (session-executors.md §6). */
+export type PeerProof = 'pod' | 'executor'
+
 /** What the daemon knows about a sandbox it launched before dialing its shim. */
 export interface SpawnRecord {
   agentId: string
@@ -12,8 +15,10 @@ export interface SpawnRecord {
   generation: number
   /** Capabilities this launch may exercise, decided by the daemon at spawn time. */
   grants: ShimCapability[]
-  /** The pod backing this launch, matched exactly against the dialed shim's TokenReview identity. */
+  /** The peer backing this launch, matched exactly against the identity its proof reports — a pod's name, or the session leaf an executor pipes to. */
   podName: string
+  /** Which proof that match is made against; absent ⇒ `pod`, the only variant before session executors. */
+  peer?: PeerProof
 }
 
 /** A bound shim connection: the pod that proved its identity plus what it may do. */
