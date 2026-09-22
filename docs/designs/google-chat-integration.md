@@ -10,23 +10,27 @@ Related: [issue #2262](https://github.com/agentconnect-md/agentconnect/issues/22
 ## 1. Decision and scope
 
 Add a native `googlechat` platform. One operator-owned Google Chat app serves one
-AgentConnect agent across its DMs and Spaces. The daemon receives interaction
-events through a Google Cloud Pub/Sub pull subscription and sends replies through
-the Google Chat REST API. This follows the same broad pattern as a Slack bot with
-Socket Mode: an outbound event connection plus a separate API for replies.
+AgentConnect agent across its DMs and Spaces. Google sends HTTPS interaction
+callbacks to the existing relay, which verifies and forwards them to the owning
+daemon. The daemon sends replies through the Google Chat REST API. This follows
+the existing Slack HTTP ingress pattern.
+
+Use HTTPS relay ingress for the first version. Google Cloud Pub/Sub is an
+alternative for installations without a public relay, not a prerequisite or a
+second transport to implement in the initial contribution.
 
 Google Chat integration does not depend on deciding the external-adapter protocol
 proposed in #2262. It uses the current first-party module contracts; external
 adapters remain a separate discussion.
 
-| Capability       | First version                                                                                               |
-| ---------------- | ----------------------------------------------------------------------------------------------------------- |
-| Installation     | Operator configures a Chat app, Pub/Sub subscription, and service account; Console assigns it to one agent. |
-| Conversations    | Ordinary text in a 1:1 DM; explicit app mentions in a named Space, with replies in the originating thread.  |
-| Output           | Text, supported Markdown, coalesced message edits, and final replies.                                       |
-| Session behavior | Existing conversation gates, session modes, steering, queuing, and text control commands.                   |
-| Approvals        | Existing Console approval queue for authorized agent editors; no Google Chat approval buttons.              |
-| Context          | Messages delivered to this app and the daemon's retained session history.                                   |
+| Capability       | First version                                                                                              |
+| ---------------- | ---------------------------------------------------------------------------------------------------------- |
+| Installation     | Operator configures a Chat app's HTTPS endpoint and service account; Console assigns it to one agent.      |
+| Conversations    | Ordinary text in a 1:1 DM; explicit app mentions in a named Space, with replies in the originating thread. |
+| Output           | Text, supported Markdown, coalesced message edits, and final replies.                                      |
+| Session behavior | Existing conversation gates, session modes, steering, queuing, and text control commands.                  |
+| Approvals        | Existing Console approval queue for authorized agent editors; no Google Chat approval buttons.             |
+| Context          | Messages delivered to this app and the daemon's retained session history.                                  |
 
 Ambient Space history, unmentioned thread follow-ups, group DMs, attachments,
 cards, dialogs, app-home surfaces, Google-native commands, shared bots, Google
@@ -47,74 +51,82 @@ and [testing visibility](https://developers.google.com/workspace/chat/test-inter
 
 ```mermaid
 flowchart LR
-    G[Google Chat] -->|Interaction events| P[Pub/Sub topic and pull subscription]
-    P -->|Event delivery| I
+    G[Google Chat] -->|HTTPS interaction event| L[Relay: verify and resolve app]
+    L -->|Pre-addressed message over daemon connection| R
     subgraph D[AgentConnect daemon]
-        I[Google Chat connection] -->|Normalized message| R[Routing and durable admission]
+        R[Routing and durable admission]
         R --> A[Agent runtime over ACP]
         A --> O[Google Chat renderer and send queue]
-        R -->|Admission result| I
     end
-    I -->|Outbound StreamingPull and admission ACKs| P
+    R -->|Admission result| L
+    L -->|HTTP acknowledgement| G
     O -->|Chat REST API| G
-    C[Control Plane] -.->|Assignment, credentials, and control| I
+    C[Control Plane] -.->|Assignment and verification metadata| L
+    C -.->|Assignment and credentials| D
 ```
 
 All event payloads, transcripts, output, and ACP traffic stay on the data plane.
 The Control Plane stores installation metadata and encrypted credentials and
-projects configuration to the assigned daemon. Existing authorized, bounded
-Console reads may proxy daemon content without persisting it. This transport
-needs no relay module, public callback URL, or new `rd/*` frame.
+projects configuration to the assigned daemon. The relay forwards content without
+persisting it. Existing authorized, bounded Console reads may proxy daemon content
+without persisting it in the Control Plane.
 
-Use the supported Pub/Sub client library for StreamingPull, reconnection, flow
-control, and acknowledgement lease extension; use app authentication for Chat
-REST calls. The [Pub/Sub Chat quickstart](https://developers.google.com/workspace/chat/quickstart/pub-sub)
-supports asynchronous replies and excludes dialogs. Its endpoint-specific
-limitations govern this design; synchronous HTTP response examples do not apply.
+Add a Google Chat `RelayPlatformIngressPlugin` using the existing route,
+assignment, verification, arbitration, and relay-to-daemon contracts. Reply text
+does not return through the Control Plane or require relay-side Chat credentials.
+The daemon can remain behind NAT because it already opens its relay connection.
+Google calls this a Chat app HTTP endpoint; its separate incoming-webhook feature
+only posts into Chat and is insufficient for receiving user interactions. See
+Google's [connection architecture](https://developers.google.com/workspace/chat/structure).
 
-Pub/Sub is Google's managed service: operators create cloud resources, not a
-self-hosted message broker. It adds Google Cloud configuration and usage billing.
-An HTTPS interaction endpoint is a viable alternative when a stable public
-callback is already available; it would need a relay ingress module and request
-verification. Prefer pull for this version so a daemon can operate behind NAT
-without another public service. See Google's [connection architecture](https://developers.google.com/workspace/chat/structure).
+Keep relay assignments and daemon output bound to the current app, integration,
+agent placement, and credential generation. Reassignment uses the existing routing
+and duty-holder fences. Revocation removes the relay's verification/demux entry
+and prevents stale callbacks or delayed sends from reaching a replacement app.
+Credential replacement drains old output connections using existing egress leases.
 
-Only the daemon currently assigned to serve the agent starts the subscriber.
-Register its routing binding before enabling delivery. Assignment loss or removal
-stops intake, releases unadmitted messages for redelivery, and fences output with
-the existing connection generation and egress leases. Credential replacement
-drains the old connection before releasing it.
+### Verify the app before routing
 
-Consumers on one pull subscription compete for messages. Sharing it with another
-application instance would silently split traffic. Setup must require a dedicated
-subscription and warn operators to stop an older consumer before moving an app
-between independent AgentConnect installations. The local registry cannot enforce
-ownership in another installation.
+Use one module-owned HTTPS route with Google's **Project Number** authentication
+audience. A decoded token audience is only a candidate lookup key. Before any
+discovery or forwarding, verify the signature using Google's published Chat
+certificates, the Chat issuer, token validity, and the exact assigned project
+number. Reject failed verification with 401 and keep certificate refresh bounded.
+Do not use an unverified body field, header, or URL parameter as an authority.
+
+Google also supports URL-audience OIDC tokens. Project-number verification makes
+the intended app explicit on a shared relay endpoint. Google documents both modes
+in [request verification](https://developers.google.com/workspace/chat/verify-requests-from-chat).
+Bind the verified project number to the installed bot, then apply
+[ingress tenant fencing](ingress-tenant-fence.md). The token proves the Google app
+context; it does not grant the message sender AgentConnect editor privileges.
 
 ## 3. Installation, credentials, and readiness
 
-The Console wizard guides the operator through Google's setup, then collects
-these values through the existing integration and secret APIs:
+The Console wizard collects credentials and shows the derived installation
+metadata through the existing integration and secret APIs:
 
-| Value                           | Storage and meaning                                                                                          |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Google Cloud project ID         | Non-secret app identity in platform configuration; this is not a Workspace tenant ID.                        |
-| Full subscription resource name | Non-secret platform configuration; validate its project and attached topic.                                  |
-| Service-account key JSON        | Write-only credential in the existing encrypted bot secret store.                                            |
-| Verified Chat app user identity | Provider identity metadata for mention matching and bot attribution; obtain from Google, not a display name. |
+| Value                           | Storage and meaning                                                                                           |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Google Cloud project ID         | Non-secret app identity in platform configuration; this is not a Workspace tenant ID.                         |
+| Verified project number         | Canonical numeric app identity and expected token audience; resolve and verify against the declared project.  |
+| HTTPS callback URL              | Generated from the configured relay origin and the Google Chat module route; copy into Google's app settings. |
+| Service-account key JSON        | Write-only credential in the existing encrypted bot secret store.                                             |
+| Verified Chat app user identity | Provider identity metadata for mention matching and bot attribution; obtain from Google, not a display name.  |
 
-Keep the app, topic, subscription, and service account in one project for the first
-version. Configure Chat API interaction events with a Pub/Sub endpoint, leaving
-the Workspace add-on option, native commands, and link previews disabled. Enable
-DMs and joining Spaces. Follow Google's prerequisite API, billing, and visibility
-steps; AgentConnect does not provision cloud resources.
+Keep the app and service account in one project for the first version. Configure
+Chat API interaction events with an HTTPS endpoint and **Project Number** audience,
+leaving the Workspace add-on option, native commands, and link previews disabled.
+Enable DMs and joining Spaces. Follow Google's API and visibility requirements;
+AgentConnect does not provision cloud resources. No Pub/Sub API, topic,
+subscription, or Pub/Sub IAM grant is required for this path.
 
-Grant Google's documented Chat publishing principal access to the dedicated topic.
-Grant the service account subscription consumption and the metadata-read
-permission needed to validate that subscription. Request `chat.bot` for Chat API
-calls; do not request user impersonation or domain-wide delegation. Topic IAM is
-the ingress trust boundary: any other publisher could inject events, so event
-fields alone are not proof of Google origin.
+Request `chat.bot` for asynchronous Chat API calls. Do not request user
+impersonation or domain-wide delegation. Validate the app project's canonical
+identity and its relationship to the credential before creating the relay
+assignment; user-entered project metadata alone must not claim another app.
+The relay receives only public verification metadata, not the service-account
+private key.
 
 Accept only the supported service-account credential shape. Reject arbitrary
 credential-provider configurations and endpoint overrides; use Google's fixed
@@ -125,47 +137,40 @@ Workload identity and ambient application-default credentials are future options
 
 Use the existing external app identity and uniqueness contract to prevent binding
 the same app to multiple agents. Preserve the installation's transport scope
-across key rotation; neither a private-key hash nor a subscription delivery ID
-defines a person's or session's identity. Changing the app project requires a new
+across key rotation; neither a private-key hash nor a callback attempt ID defines
+a person's or session's identity. Changing the app project requires a new
 installation. The app's Google `users/...` identity must be verified in the live
 probe before mention matching is finalized; do not synthesize it from a project
 ID or assume the service-account email is the bot user.
 
-Validation checks credential structure, subscription metadata, and a bounded Chat
-API read with app authentication. It must not consume messages or send a test
-message from the Control Plane. A saved configuration is not proof of a working
-subscriber. Report connection readiness from the daemon, distinguish permission,
-subscription, and connectivity failures, and provide an explicit DM/mention test
-to verify the complete round trip.
+Validation checks credential structure, project identity, and a bounded Chat API
+read with app authentication. It must not send a test message from the Control
+Plane. A saved configuration is not proof of working ingress. Combine relay
+assignment and daemon readiness, distinguish authentication and connectivity
+failures, and provide an explicit DM/mention test to verify the complete round
+trip. A Google credential passing validation does not prove the operator copied
+the endpoint and audience settings correctly.
 
 ### Operating cost
 
-The operator's Google Cloud billing account pays for Pub/Sub. As checked on
-September 23, 2026, standard publishing and delivery share a 10 GiB monthly free
-allowance per billing account; additional throughput costs $40 per TiB. Internet
-egress to a daemon outside Google Cloud and retained messages can incur separate
-charges. The free allowance is not dedicated to this integration. See
-[Pub/Sub pricing](https://cloud.google.com/pubsub/pricing).
-
-For small text-only workloads, messaging charges should be low; this is an
-estimate, not a zero-cost guarantee. Setup should expose the billing requirement,
-link pricing, and document retention defaults. Do not enable acknowledged-message
-retention or snapshots by default. Workspace licensing, daemon hosting, and model
-usage remain separate costs.
+The HTTPS design has no Pub/Sub charge and reuses existing relay hosting. Relay
+traffic and capacity, Workspace licensing, daemon hosting, and model usage remain
+separate costs. It does not require hosting the callback on Google Cloud; the
+Google Cloud project still configures the Chat app and its credentials.
 
 ## 4. Ingress, routing, and durable acknowledgement
 
 ### Event coverage and normalization
 
-Consume Chat interaction `Event` JSON from the Pub/Sub message data, not the
+Consume Chat interaction `Event` JSON from the verified HTTPS callback, not the
 CloudEvent schema used by the separate Google Workspace Events API. Google's
 [`EventType` reference](https://developers.google.com/workspace/chat/api/reference/rest/v1/EventType)
 documents `MESSAGE` for DMs and app invocations in Spaces. The first version
 requires a fresh app mention on each Space input, including thread replies. It
 does not advertise access to all Space messages.
 
-Normalize in the pure message package. The connection supplies the installed app
-and integration scope; payloads cannot choose an AgentConnect organization,
+Normalize in the pure message package. The verified relay assignment supplies the
+installed app and integration scope; payloads cannot choose an AgentConnect organization,
 integration, agent, or session. Validate that nested message and thread resource
 names belong to the event's Space before routing or replying.
 
@@ -184,8 +189,8 @@ names belong to the event's Space before routing or replying.
 The [message resource](https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces.messages)
 provides message, thread, sender, and mention coordinates. `argumentText` strips
 all Chat app mentions, so it must not silently erase references to other bots.
-Pub/Sub's message ID remains useful for transport diagnostics but does not replace
-the Google message identity for deduplication.
+Callback attempts share the Google message identity for deduplication; do not
+generate a new delivery ID each time the relay receives the event.
 
 Ignore app-authored messages. `ADDED_TO_SPACE` and `REMOVED_FROM_SPACE` update
 observed conversation membership without starting an agent turn; removal disables
@@ -203,42 +208,56 @@ steering or queuing; `!queue` and `!cancel` keep their shared meanings.
 
 ### ACK is an admission boundary
 
-The current direct-platform `onInbound` callback is fire-and-forget, and its
-in-memory seen-message set is not durable deduplication. Google Chat needs a small
-awaitable host admission seam through the same routing path. It must expose a
-settled disposition rather than ACK immediately or wait for the agent's answer.
+Google allows 30 seconds for a synchronous response and supports later replies
+through the Chat API. Failed HTTP deliveries might be retried a few times within
+a few minutes, but retries are not guaranteed. Return an empty successful
+interaction response after admission and send all visible output asynchronously.
+Do not hold the request open for an agent turn. See
+[interaction handling and retries](https://developers.google.com/workspace/chat/receive-respond-interactions).
 
-| Disposition                      | Subscriber action                                                                                                                   |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| Accepted                         | ACK only after durable inbox admission and its receipt have committed.                                                              |
-| Duplicate                        | ACK when the durable receipt proves prior admission or a terminal disposition.                                                      |
-| Intentionally ignored            | ACK after the routing/lifecycle decision completes; retain a terminal receipt for valid events so retry cannot change the decision. |
-| Retryable failure                | Do not ACK; release for redelivery with backoff. This includes unavailable storage, queue pressure, and assignment transitions.     |
-| Malformed or unsupported payload | Drop with a bounded diagnostic and ACK; never repeatedly feed it to the agent.                                                      |
+The current `RelayIngressHost.forward` result means the relay handled the message;
+it explicitly does not prove daemon admission. Extend that host seam to expose a
+strict admission disposition, using the existing `rd/msg` / `rd/ack` path. A Google
+module must not convert the old `accepted` result into an HTTP success by default.
 
-Reuse the daemon's existing `requireDurable`, `receiptId`, `onAdmission`, and
-atomic inbox-with-receipt machinery. Thread this requirement through direct
-ingress without bypassing authorization or changing existing platform defaults.
-Check durable receipts before allowing the in-memory deduplication fast path to
-settle a delivery, and ensure a failed attempt can retry. The receipt must survive
-turn completion, steering, and inbox removal. Commands and membership events need
-their own completed disposition; a callback returning `void` is not one.
+| Disposition           | HTTP behavior                                                                         |
+| --------------------- | ------------------------------------------------------------------------------------- |
+| Accepted              | 200 with an empty response only after durable inbox admission and its receipt commit. |
+| Duplicate             | 200 when a durable receipt proves prior acceptance; do not run the message again.     |
+| Intentionally ignored | 200 after a completed gate or unsupported-event decision; no work is promised.        |
+| Retryable or unknown  | 503 for unavailable daemon/storage, queue pressure, or an admission timeout.          |
+| Invalid request       | 401 for failed authentication; 400 for malformed payloads; never route either.        |
 
-Scope receipt keys to the installed app and stable message identity; include the
-event kind for lifecycle events. When a lifecycle event has no message resource,
-use its scoped Pub/Sub message ID; repeated add/remove events must not collapse
-into a single lifetime event. Concurrent copies elect one admission in the store
-transaction. Admission covers queued and steered messages as well as new
-turns. An accepted control command must be tied to its original operation/turn so
-redelivery of `!cancel` cannot cancel later work.
+Use a bounded admission deadline inside the provider and relay request budgets.
+An HTTP timeout after a daemon commit is an unknown outcome, not a reason to
+erase that work: a retry must find the same receipt. The relay does not gain a
+durable message queue. If the daemon is unavailable beyond Google's retry window,
+delivery can be lost; report this limitation rather than promise offline recovery.
 
-Bound outstanding pulls and admission time. Let the SDK extend leases only while
-admission is pending, as described in [Pub/Sub lease management](https://docs.cloud.google.com/pubsub/docs/lease-management).
-Receipts must outlive the configured message retention and permitted replay
-window; setup and retention configuration must agree on that bound. Replays beyond
-it, loss of the durable store, or migration to an independent store are not covered
-by the duplicate-admission guarantee. This is not exactly-once agent execution:
-recovery of an interrupted runtime retains the existing replay semantics.
+Reuse the daemon's existing relay-ingress strategy, `requireDurable`, `receiptId`,
+`onAdmission`, and atomic inbox-with-receipt machinery. Preserve routing and
+authorization while distinguishing transient draining/placement failures from
+intentional gates. The current generic ACK mapping is insufficient for that
+distinction. Enable Google Chat only when both assigned hosts support the strict
+admission contract; mixed versions must not silently downgrade it. Changes to any
+shared wire fields must update and validate both consumers together.
+
+Scope receipts to the installed app and stable Google message identity.
+Concurrent copies elect one admission in the store transaction; receipts outlive
+turn completion, steering, and inbox removal. Check them before an in-memory dedup
+fast path can settle a delivery. A failed durable write remains retryable.
+
+Commands require a completed, replay-safe disposition too. Bind cancellation to
+its original operation/turn so a repeated callback cannot cancel later work.
+Lifecycle updates are idempotent observations: use event kind, Space, actor, and
+event time when no message resource exists, and confirm conflicting membership
+hints through provider reads. Do not collapse all add/remove events for a Space.
+
+Set a documented receipt retention bound exceeding Google's retry horizon; keep
+at least 24 hours for the HTTP path. Replays beyond the configured bound, loss of
+the durable store, or migration to an independent store are outside duplicate
+suppression guarantees. This is not exactly-once agent execution: interrupted
+runtime recovery keeps the existing replay semantics.
 
 ## 5. Reply placement, rendering, and retries
 
@@ -316,14 +335,15 @@ for private DM turns as part of the acceptance checks.
 
 ## 7. Implementation boundaries
 
-| Area                    | Required contribution                                                                                                   |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| Protocol and message    | Register the known platform, conservative manifest values, and pure Google event normalization.                         |
-| Daemon platform module  | Config schema, Pub/Sub connection, read port, renderer, turn output, and connection lifecycle registration.             |
-| Daemon admission        | Awaitable direct-ingress disposition backed by existing durable admission and receipts, including command dispositions. |
-| Daemon output           | Persist stable create intent/results and serialize Google sends through the platform output surface.                    |
-| Control Plane provider  | Credential validation/storage, app identity, uniqueness, secret rotation, and daemon spec projection.                   |
-| Console platform module | Chat picker, setup wizard, connection diagnostics, conversation semantics, and explicit scope limitations.              |
+| Area                    | Required contribution                                                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Protocol and message    | Register the known platform, conservative manifest values, and pure Google event normalization.                           |
+| Relay platform module   | HTTPS route, project-audience verification, demux, normalization, membership reports, and strict admission responses.     |
+| Daemon platform module  | Config schema, Chat REST connection/read port, relay ingress strategy, renderer, turn output, and lifecycle registration. |
+| Relay/daemon admission  | Expose durable acceptance through the existing forwarding contracts, including commands and transient refusals.           |
+| Daemon output           | Persist stable create intent/results and serialize Google sends through the platform output surface.                      |
+| Control Plane provider  | Credential validation/storage, app identity, uniqueness, secret rotation, daemon spec, and relay assignment projection.   |
+| Console platform module | Chat picker, setup wizard, connection diagnostics, conversation semantics, and explicit scope limitations.                |
 
 Start with observed membership discovery and no bot-sender routing or multi-agent
 sharing. Add manifest fields only when an actual pre-dispatch consumer requires
@@ -334,30 +354,59 @@ The current database stores platform IDs as strings and already provides platfor
 configuration and encrypted bot secrets. This design requires no new Control Plane
 database table or Google credential columns. Known-platform writers, capability
 reporting, API schemas, and registry consistency checks still need explicit
-registration. No feature flag, relay implementation, new public adapter protocol,
-or broad refactor is required.
+registration. Use the established four-host platform architecture. No feature
+flag, separate relay service, public adapter protocol, or broad refactor is
+required.
 
-## 8. Validation and unresolved provider details
+## 8. Pub/Sub alternative and cost
+
+Google Cloud Pub/Sub can deliver the same interaction events through an outbound
+pull connection when an installation has no public relay. It is Google's managed
+service: the operator creates a topic and subscription, not a self-hosted broker.
+This alternative adds cloud IAM, billing, subscriber lifecycle, and lease
+management. It is deferred from the first HTTP contribution. See the
+[Pub/Sub Chat quickstart](https://developers.google.com/workspace/chat/quickstart/pub-sub).
+
+A future pull module would share normalization, daemon routing, and Chat REST
+output. It must ACK after durable admission, use a dedicated subscription with one
+active owning consumer, and retain receipts for the configured Pub/Sub retention
+and replay window. Consumers on the same subscription compete; two transports
+must not be active for one app during a cutover. Pub/Sub supports asynchronous
+responses and does not support dialogs.
+
+As checked on September 23, 2026, standard publish and delivery throughput share a
+10 GiB monthly free allowance per billing account, then cost $40 per TiB.
+Internet egress and retained messages can incur additional charges. Small
+text-only workloads should cost little, but the allowance is shared and does not
+guarantee a zero bill. These Pub/Sub charges do not apply to the selected HTTPS
+path. See [Pub/Sub pricing](https://cloud.google.com/pubsub/pricing).
+
+## 9. Validation and unresolved provider details
 
 Before implementing the full module, run a small live probe with an operator-owned
-test app. Confirm DM and Space mention payloads, authoritative app-user identity,
-thread coordinates, Pub/Sub redelivery, and app-authenticated create/patch with
-Markdown and stable IDs. Record anonymized fixtures. Specifically test whether an
-unmentioned reply arrives, but keep it outside the supported contract unless a
+test app. Confirm canonical project/credential binding, authoritative app-user
+identity, signed HTTPS callbacks, DM and Space mention payloads, thread coordinates,
+and app-authenticated create/patch with Markdown and stable IDs. Record anonymized
+fixtures. Specifically test whether an unmentioned reply arrives, but keep it
+outside the supported contract unless a
 follow-up design deliberately expands event coverage.
 
 The implementation must then demonstrate:
 
-- One admitted message despite concurrent delivery, reconnect, restart, and late
+- Rejection of invalid signatures, expired tokens, wrong audiences, and spoofed
+  body app IDs before any conversation discovery or forwarding.
+- One admitted message despite concurrent callbacks, reconnect, restart, and late
   redelivery after completion; a failed durable write remains retryable.
-- Receipt correctness for ignored messages, steering, queue overflow, and a
-  redelivered cancellation after the original turn ends.
+- Correct dispositions for ignored messages and queue overflow; durable receipts
+  for steering and a redelivered cancellation after the original turn ends.
 - No cross-app, cross-Space, or cross-thread routing; no turn while a conversation
   is Off or a restricted conversation is not enabled.
 - Correct original-thread replies, Unicode/code-block splitting, ordered final
   patches, and recovery from an ambiguous create without a duplicate post.
-- Bounded queues and backoff under throttling; clean subscriber shutdown, key
-  rotation, removal, and assignment handover.
+- Bounded HTTP admission time, no success on transient failure, and recovery when
+  a response is lost after commit; no claim of guaranteed Google HTTP retries.
+- Bounded send queues and backoff under throttling; key rotation, removal, relay
+  revocation, and assignment handover without stale delivery.
 - Honest saved/connected/tested states, private DM visibility, authorized Console
   approvals, and explicit attachment/elicitation limitations.
 
