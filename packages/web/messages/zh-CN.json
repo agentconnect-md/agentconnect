@@ -2574,5 +2574,30 @@
       "applyAllBody": "这会将 {key} 分配给你可以管理的每个 Agent，以及之后配置的 Agent。你无法管理的 Agent 不受影响，现有分配会保留。",
       "replaceBody": "已分配 {key} 的 Agent 将收到新值。之前的值无法恢复。"
     }
+  },
+  "ProviderKeys": {
+    "title": "Provider keys",
+    "description": "组织全局的 Decision provider 凭据。每个 provider 保存一把默认 key。",
+    "ownerOnly": "只有组织 owner 可以添加、替换或移除 key。",
+    "configured": "已配置",
+    "notConfigured": "未配置",
+    "updated": "更新于 {date}",
+    "add": "添加 key",
+    "replace": "替换 key",
+    "remove": "移除 key",
+    "apiKey": "API key",
+    "replacementKey": "新的 API key",
+    "writeOnly": "已保存的 key 不会再次显示。替换后将更新此组织的默认 key。",
+    "statusNote": "已配置仅表示 key 已保存。保存不会向 provider 验证 key，也不会运行评估。",
+    "save": "保存 key",
+    "saving": "保存中…",
+    "cancel": "取消",
+    "retry": "重试",
+    "loadError": "无法加载 provider keys。",
+    "saveError": "无法保存 key，请重试。",
+    "deleteError": "无法移除 key，请重试。",
+    "deleteTitle": "移除 {provider} key？",
+    "deleteBody": "这会从此组织移除 key，不会在 provider 撤销它。依赖此 key 的评估需要配置新的 key。",
+    "removing": "移除中…"
   }
 }

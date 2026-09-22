@@ -34,6 +34,7 @@ import { webchatTokenRoutes } from './routes/webchat-token.js'
 import { webchatMcpOperationRoutes } from './routes/webchat-mcp-operations.js'
 import { integrationRoutes } from './routes/integrations.js'
 import { botRoutes } from './routes/bots.js'
+import { providerKeyRoutes } from './routes/provider-keys.js'
 import { mcpProviderRoutes } from './routes/mcp-providers.js'
 import { mcpProviderOauthPublicRoutes, mcpProviderOauthRoutes } from './routes/mcp-provider-oauth.js'
 import { skillSourceRoutes } from './routes/skill-sources.js'
@@ -328,6 +329,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           // credential surface (Slack's App Configuration token).
           for (const plugin of platformRoutes('org')) await scope.register(plugin)
           await scope.register(botRoutes(deps))
+          await scope.register(providerKeyRoutes(deps))
           await scope.register(mcpProviderRoutes(deps))
           await scope.register(mcpProviderOauthRoutes(deps))
           await scope.register(skillSourceRoutes(deps))

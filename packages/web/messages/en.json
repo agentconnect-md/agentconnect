@@ -2574,5 +2574,30 @@
       "applyAllBody": "This assigns {key} to every agent you can manage, and to agents you configure later. Agents you cannot manage are not affected, and existing assignments are kept.",
       "replaceBody": "Agents assigned {key} will receive the new value. The previous value cannot be recovered."
     }
+  },
+  "ProviderKeys": {
+    "title": "Provider keys",
+    "description": "Organization-wide credentials for decision providers. One default key per provider.",
+    "ownerOnly": "Only organization owners can add, replace, or remove keys.",
+    "configured": "Configured",
+    "notConfigured": "Not configured",
+    "updated": "Updated {date}",
+    "add": "Add key",
+    "replace": "Replace key",
+    "remove": "Remove key",
+    "apiKey": "API key",
+    "replacementKey": "New API key",
+    "writeOnly": "The saved key is never shown again. Replacing it updates the default key for this organization.",
+    "statusNote": "Configured means a key is saved. Saving does not validate it with the provider or run an evaluation.",
+    "save": "Save key",
+    "saving": "Saving…",
+    "cancel": "Cancel",
+    "retry": "Retry",
+    "loadError": "Could not load provider keys.",
+    "saveError": "Could not save the key. Try again.",
+    "deleteError": "Could not remove the key. Try again.",
+    "deleteTitle": "Remove {provider} key?",
+    "deleteBody": "This removes the key from this organization. It does not revoke it at the provider. Evaluations that require this key will need a replacement.",
+    "removing": "Removing…"
   }
 }

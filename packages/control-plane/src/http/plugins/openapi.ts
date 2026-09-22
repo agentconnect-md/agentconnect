@@ -61,6 +61,7 @@ export const Tag = {
   MemberSets: 'Member sets',
   DaemonKeys: 'Daemon keys',
   ApiKeys: 'API keys',
+  ProviderKeys: 'Provider keys',
   Agents: 'Agents',
   Workspace: 'Agent workspace',
   Sessions: 'Sessions',
@@ -95,6 +96,11 @@ const TAG_DESCRIPTIONS: ReadonlyArray<{ name: string; description: string }> = [
     description: 'Named sets of daemons an agent’s duty may be claimed within — the failover unit.'
   },
   { name: Tag.DaemonKeys, description: 'A daemon’s API keys (issue, list, revoke).' },
+  {
+    name: Tag.ProviderKeys,
+    description:
+      'Organization provider credentials. Owners may save or remove keys; all members may read configuration status. Values are write-only.'
+  },
   { name: Tag.ApiKeys, description: 'Your personal API keys — create, list, revoke.' },
   { name: Tag.Agents, description: 'Agent definitions — CRUD and connect/launch.' },
   { name: Tag.Workspace, description: 'Read an agent’s daemon-local workspace (files, git status/pull).' },

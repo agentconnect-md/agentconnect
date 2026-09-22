@@ -1,4 +1,3 @@
-import type { MemoryTransactionReq, MemoryTransactionResult } from '@agentconnect.md/protocol'
 /**
  * Repository ports — the Red-Green seam (design §3.14 / §2.3).
  *
@@ -13,6 +12,9 @@ import type { MemoryTransactionReq, MemoryTransactionResult } from '@agentconnec
 import type { MemoryHomeUpdate } from '../agent-memory/home.js'
 import type {
   AuthReq,
+  ProviderKeyProvider,
+  MemoryTransactionReq,
+  MemoryTransactionResult,
   DaemonLifecyclePhase,
   DaemonLifecycleProgress,
   RegisterReq,
@@ -7139,4 +7141,17 @@ export interface DutyGroupRepo {
 // Atomic publication of a prepared topic/index batch in the existing CP memory home.
 export interface AgentMemoryTransactionRepo {
   apply(agentId: AgentId, orgId: OrgId, request: MemoryTransactionReq, now: Date): Promise<MemoryTransactionResult>
+}
+
+// Organization-wide default keys; only internal credential delivery may read the secret value.
+export interface ProviderKeyMetadata {
+  provider: ProviderKeyProvider
+  updatedAt: Date
+}
+
+export interface ProviderKeyStore {
+  list(orgId: OrgId): Promise<ProviderKeyMetadata[]>
+  put(orgId: OrgId, provider: ProviderKeyProvider, apiKey: string): Promise<ProviderKeyMetadata>
+  get(orgId: OrgId, provider: ProviderKeyProvider): Promise<string | null>
+  delete(orgId: OrgId, provider: ProviderKeyProvider): Promise<void>
 }

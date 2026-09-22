@@ -16,7 +16,12 @@ import type {
   PlacementKindValue
 } from '@/lib/data'
 import { isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf, poolLabel } from '@/lib/data'
-import type { HookKind, SessionStayedHomeReason } from '@agentconnect.md/protocol'
+import type {
+  HookKind,
+  SessionStayedHomeReason,
+  ProviderKeyProvider,
+  ProviderKeyStatus
+} from '@agentconnect.md/protocol'
 import type { CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import {
   appendSessionLabel,
@@ -6288,4 +6293,21 @@ export function deleteAgentMemoryEntry(
     memoryEntryUrl(agentId, 'entries', channelKey),
     request
   )
+}
+
+// Provider key requests capture the organization explicitly, including mutations.
+export function fetchProviderKeys(orgId: string): Promise<ProviderKeyStatus[]> {
+  return apiGet<ProviderKeyStatus[]>(`${orgBase(orgId)}/provider-keys`)
+}
+
+export function setProviderKey(
+  orgId: string,
+  provider: ProviderKeyProvider,
+  apiKey: string
+): Promise<ProviderKeyStatus> {
+  return apiPut<ProviderKeyStatus>(`${orgBase(orgId)}/provider-keys/${encodeURIComponent(provider)}`, { apiKey })
+}
+
+export function deleteProviderKey(orgId: string, provider: ProviderKeyProvider): Promise<void> {
+  return apiDelete<void>(`${orgBase(orgId)}/provider-keys/${encodeURIComponent(provider)}`)
 }
