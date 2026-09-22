@@ -7,9 +7,11 @@
  * projections share one policy seam.
  *
  * Organization roles control what a visible resource may be used for:
- * viewers are read-only, while collaborators and owners may edit. A role never
- * widens visibility. Restricted resources are visible only to the current
- * organization members in their explicit `sharedWith` audience.
+ * viewers are read-only, while collaborators and owners may edit. Restricted
+ * resources are visible only to the current organization members in their
+ * explicit `sharedWith` audience, plus every organization owner: an owner
+ * governs the whole organization and therefore sees every resource in it
+ * (docs/designs/resource-visibility.md §1, "owner exception").
  */
 import type { SessionExternalAccessSnapshot, SessionVisibility, Shareable, ViewCtx } from '../persistence/ports.js'
 
@@ -65,7 +67,7 @@ export type AuthorizationRequest =
     }
 
 function resourceIsVisible(resource: Shareable, principal: ViewCtx): boolean {
-  return resource.visibility === 'org' || resource.sharedWith.includes(principal.userId)
+  return principal.role === 'owner' || resource.visibility === 'org' || resource.sharedWith.includes(principal.userId)
 }
 
 function resourceIsEditable(resource: Shareable, principal: ViewCtx): boolean {
@@ -220,11 +222,11 @@ export function canContinueSession(
  * Prisma list projection of `resource.view`.
  *
  * An undefined principal is reserved for internal daemon/orchestration reads
- * and remains deliberately unfiltered. Every human role, including owner, uses
- * the same resource-visibility predicate.
+ * and remains deliberately unfiltered. An owner sees every resource of the
+ * organization; every other human role uses the resource-visibility predicate.
  */
 export function visibilityWhere(principal?: ViewCtx) {
-  if (!principal) return {}
+  if (!principal || principal.role === 'owner') return {}
   return {
     OR: [{ visibility: 'org' as const }, { sharedWith: { has: principal.userId } }]
   }

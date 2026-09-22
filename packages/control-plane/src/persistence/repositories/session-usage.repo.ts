@@ -200,12 +200,14 @@ const CHECKPOINT_COUNTERS = {
 } as const
 
 function agentViewerSql(orgId: OrgId, viewer?: ViewCtx): Prisma.Sql {
-  const visible = viewer
-    ? Prisma.sql`(
+  // Mirrors `visibilityWhere`: an owner sees every agent of the organization.
+  const visible =
+    viewer && viewer.role !== 'owner'
+      ? Prisma.sql`(
         a."visibility" = 'org'::"ResourceVisibility"
         OR ${viewer.userId} = ANY(a."sharedWith")
       )`
-    : Prisma.sql`TRUE`
+      : Prisma.sql`TRUE`
   return Prisma.sql`a."orgId" = ${orgId} AND ${visible}`
 }
 
