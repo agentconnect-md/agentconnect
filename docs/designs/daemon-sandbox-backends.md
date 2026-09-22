@@ -265,34 +265,38 @@ using that VM until its last session retires. Resource and mount changes still
 require environment recreation. Image
 digest resolution and in-place disk migration remain proposed.
 
-Because each release pins its own image, an upgraded daemon would otherwise leave
-the previous release's image cached forever. Startup therefore collects the image
-cache before it pulls, keeping the configured image and every image a persisted
-binding still records, which a retained VM validates when it starts, and removing
-the rest one reference at a time. Whole-cache pruning is not used: it removes any
-image no sandbox has booted, which includes the image a daemon just pulled and
-has not started a session on. A removal the backend refuses because a sandbox
-still boots from that image's digest is kept and logged, and a cache that cannot
-be read is logged without failing startup, so collection never costs
-availability. A retained VM usually pins the previous release past startup, so a
-retention pass that discards at least one session VM runs the same collection
-again. That runtime pass also keeps every tag created after the daemon's own
-pull, because an upgrade pre-pulls the next release's image from a separate
-process while the old daemon still runs. Pulls and collections share one lock
-file under the microsandbox state directory, holding the owner's pid: a removal
-deletes layer files that a concurrent pull may already have chosen to reuse. A
-pull waits for the lock; a runtime collection skips its round; a lock whose pid
-is gone is reclaimed. Each collection also sweeps the flat rootfs store that
-v1.55 filled and the backend's own removal never touches: refs whose manifest is
-no longer cached, then blobs that no remaining ref names. The
-temporary preparation VM has a stable name and is reclaimed before it is
-recreated; a start interrupted before its teardown would otherwise leave a VM
-behind that pins a retired image. A create can also fail after microsandbox
-claimed the name: it writes the sandbox directory before the database row, so a
-full disk can stop it in between and leave the name taken by nothing a lookup
-finds. When a create collides and lookup confirms that no VM holds the name, the
-daemon repeats it as a replacing create, for the preparation VM and session VMs
-alike; a name a recorded VM holds is never replaced.
+Because each release pins its own image, an upgraded daemon would otherwise
+leave the previous release's image cached forever. Startup therefore collects
+the image cache before it pulls, keeping the configured image and every image a
+persisted binding still records, which a retained VM validates when it starts,
+and removing the rest one reference at a time. Whole-cache pruning is not used:
+it removes any image no sandbox has booted, which includes the image a daemon
+just pulled and has not started a session on. A removal the backend refuses
+because a sandbox still boots from that image's digest is kept and logged, and a
+cache that cannot be read is logged without failing startup, so collection never
+costs availability. A retained VM usually pins the previous release past
+startup, so a retention pass that discards at least one session VM runs the same
+collection again. An upgrade pre-pulls the next release's image from a separate
+process while the old daemon still runs, so every pull records the reference it
+fetched in a file under the microsandbox state directory, and the runtime pass
+keeps that reference. No cache timestamp can stand in for the record: re-pulling
+a tag that is already cached keeps its creation time, and every sandbox create
+refreshes its update time. Pulls and collections share one lock file in the same
+directory, holding the owner's pid, because a removal deletes layer files that a
+concurrent pull may already have chosen to reuse. A pull waits for the lock and
+fails after ten minutes instead of taking it; a runtime collection skips its
+round. A lock is reclaimed only when its holder is provably gone: no valid pid,
+a dead pid, or this process's own pid left by an earlier incarnation. Each
+collection also sweeps the flat rootfs store that v1.55 filled and the backend's
+own removal never touches: refs whose manifest is no longer cached, then blobs
+that no remaining ref names. The temporary preparation VM has a stable name and
+is reclaimed before it is recreated; a start interrupted before its teardown
+would otherwise leave a VM behind that pins a retired image. A create can also
+fail after microsandbox claimed the name: it writes the sandbox directory before
+the database row, so a full disk can stop it in between and leave the name taken
+by nothing a lookup finds. When a create collides and lookup confirms that no VM
+holds the name, the daemon repeats it as a replacing create, for the preparation
+VM and session VMs alike; a name a recorded VM holds is never replaced.
 
 Collection runs only on the microsandbox backend. A daemon switched to another
 backend keeps its microsandbox state, including stopped VMs and their disks, in

@@ -32,7 +32,7 @@ import {
 const runFile = promisify(execFile)
 const STOP_TIMEOUT_MS = 10_000
 const IMAGE_LOCK_POLL_MS = 250
-// Twice the pull timeout: a holder still alive past it is a reused pid, not a pull.
+// Twice the pull timeout; a reused pid reads as a live holder, so a waiter fails at this cap instead of racing it.
 const IMAGE_LOCK_WAIT_MS = 10 * 60_000
 // Image-cache lock files this process holds, whichever manager took them.
 const heldImageLocks = new Set<string>()
@@ -157,8 +157,7 @@ export class MicrosandboxManager {
   private closed = false
   private startGate: Promise<void> = Promise.resolve()
   private readonly imageIdentities = new Map<string, Promise<string | undefined>>()
-  // When this manager's own pull finished; a tag created later was pulled by another process.
-  private preparedAt?: number
+  private prepared = false
 
   constructor(private readonly options: MicrosandboxManagerOptions) {}
 
@@ -172,18 +171,25 @@ export class MicrosandboxManager {
 
   /** Collect what a retention pass unpinned; skips the round while another live process holds the image cache. */
   async collectImages(): Promise<void> {
-    const preparedAt = this.preparedAt
-    if (preparedAt === undefined || this.closed) return
+    if (!this.prepared || this.closed) return
     const collected = await this.withImageCache(false, async () => {
       const keep = await this.boundImages()
-      // An upgrade's pre-pull fetches the next release's tag while this daemon still runs.
-      await this.collect(
-        (image) => keep.has(image.reference) || image.createdAt === null || image.createdAt.getTime() >= preparedAt
-      )
+      // The last pull may be an upgrade's pre-pull of the next release, which runs while this daemon still does.
+      const pulled = await readFile(this.pulledImagePath(), 'utf8').catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+        throw error
+      })
+      if (pulled) keep.add(pulled)
+      await this.collect((image) => keep.has(image.reference))
     })
     if (!collected) this.options.log?.info('microsandbox: image collection skipped, another process holds the cache')
   }
 
+  private pulledImagePath(): string {
+    return join(this.options.root, 'microsandbox', 'pulled-image')
+  }
+
+  // Called only under the image-cache lock, so a collection never reads the record halfway through a pull.
   private async pullImage(): Promise<void> {
     const started = performance.now()
     const { command, args } = this.options.msbCommand
@@ -193,6 +199,8 @@ export class MicrosandboxManager {
       timeout: 5 * 60_000,
       maxBuffer: 1024 * 1024
     })
+    // No cache timestamp marks a pull: a same-digest re-pull keeps the tag's creation time, and every create refreshes its update time.
+    await writeFileAtomic(this.pulledImagePath(), this.options.config.image)
     this.options.log?.info(`microsandbox: image prepared in ${((performance.now() - started) / 1000).toFixed(1)}s`)
   }
 
@@ -492,7 +500,7 @@ export class MicrosandboxManager {
       const keep = await this.boundImages()
       await this.collect((image) => keep.has(image.reference))
       await this.pullImage()
-      this.preparedAt = Date.now()
+      this.prepared = true
     })
     this.imageIdentities.delete(this.options.config.image)
     let sandbox = await this.serializeStart(() => this.createReclaiming(name, () => this.builder(name, [])))
@@ -601,16 +609,22 @@ export class MicrosandboxManager {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 })
     const deadline = Date.now() + IMAGE_LOCK_WAIT_MS
     for (;;) {
+      let holder = process.pid
       if (!heldImageLocks.has(path)) {
         if (await createLock(path)) break
-        const holder = await lockHolderPid(path)
-        // This pid in the file without the in-process mark is an earlier incarnation's, as a container restart reuses it.
-        if (holder === undefined || holder === process.pid || !pidAlive(holder) || (wait && Date.now() >= deadline)) {
+        const pid = await lockHolderPid(path)
+        // Reclaimed only when provably gone; this pid without the in-process mark is an earlier incarnation's, as a restarted container reuses it.
+        if (pid === undefined || pid === process.pid || !pidAlive(pid)) {
           await rm(path, { force: true })
           continue
         }
+        holder = pid
       }
       if (!wait) return false
+      if (Date.now() >= deadline)
+        throw new Error(
+          `microsandbox image cache lock ${path} is still held by pid ${holder}; stop that process or remove the lock`
+        )
       await new Promise((resolve) => setTimeout(resolve, IMAGE_LOCK_POLL_MS))
     }
     heldImageLocks.add(path)
@@ -982,13 +996,7 @@ export class MicrosandboxManager {
   private async writeBinding(binding: Binding): Promise<void> {
     const path = this.bindingPath(binding.environmentId)
     await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-    const temporary = `${path}.${randomUUID()}.tmp`
-    try {
-      await writeFile(temporary, JSON.stringify(binding), { mode: 0o600, flag: 'wx' })
-      await rename(temporary, path)
-    } finally {
-      await rm(temporary, { force: true })
-    }
+    await writeFileAtomic(path, JSON.stringify(binding))
   }
 
   /** End whichever shim an environment has: the one bound here, or the exposed one a hosted environment keeps. */
@@ -1472,6 +1480,16 @@ function parseJson(text: string): unknown {
     return JSON.parse(text)
   } catch {
     return undefined
+  }
+}
+
+async function writeFileAtomic(path: string, data: string): Promise<void> {
+  const temporary = `${path}.${randomUUID()}.tmp`
+  try {
+    await writeFile(temporary, data, { mode: 0o600, flag: 'wx' })
+    await rename(temporary, path)
+  } finally {
+    await rm(temporary, { force: true })
   }
 }
 

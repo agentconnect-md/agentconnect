@@ -79,8 +79,6 @@ function fakeSdk() {
   let onRun: ((process: FakeExec) => void | Promise<void>) | undefined
   const images = new Map<string, number | null>([['test-image', 4_194_304]])
   const imageDigests = new Map<string, string>()
-  // When each tag was first pulled; one absent here was pulled long ago.
-  const imageCreated = new Map<string, Date>()
   const digestOf = (reference: string) =>
     imageDigests.get(reference) ?? `sha256:${createHash('sha256').update(reference).digest('hex')}`
   const imageCache = {
@@ -90,12 +88,7 @@ function fakeSdk() {
       architecture: 'amd64'
     })),
     list: vi.fn(async () =>
-      [...images].map(([reference, sizeBytes]) => ({
-        reference,
-        sizeBytes,
-        manifestDigest: digestOf(reference),
-        createdAt: imageCreated.get(reference) ?? new Date(0)
-      }))
+      [...images].map(([reference, sizeBytes]) => ({ reference, sizeBytes, manifestDigest: digestOf(reference) }))
     ),
     remove: vi.fn(async (reference: string) => {
       if (!images.has(reference)) throw new Error(`image not found: ${reference}`)
@@ -395,7 +388,6 @@ function fakeSdk() {
     volumes,
     images,
     imageDigests,
-    imageCreated,
     digestOf,
     imageCache,
     removeVolume,
@@ -1074,20 +1066,37 @@ describe('microsandbox process and VM ownership', () => {
     expect(imageCache.remove).not.toHaveBeenCalled()
   })
 
-  it('collects at runtime what a discarded VM unpinned, keeping a tag another process pulled since', async () => {
-    const { manager, options, environment, request, images, imageCreated } = await fixture()
+  it('collects at runtime what a discarded VM unpinned, keeping the tag an upgrade pre-pulled', async () => {
+    const { manager, options, environment, request, images } = await fixture()
     await (await manager.driverFor(environment).launch(request)).stop(0)
     await manager.stopAll()
     images.set('next-image', null)
     const upgraded = new MicrosandboxManager({ ...options, config: { ...options.config, image: 'next-image' } })
     await upgraded.prepare()
     expect([...images.keys()]).toEqual(['test-image', 'next-image'])
-    // The next release's pre-pull, which runs beside this daemon.
+    // The next release's pre-pull, which runs in its own process beside this daemon.
     images.set('pre-pulled-image', null)
-    imageCreated.set('pre-pulled-image', new Date())
+    await new MicrosandboxManager({
+      ...options,
+      config: { ...options.config, image: 'pre-pulled-image' }
+    }).prepareImage()
     await upgraded.discard(environment.id)
     await upgraded.collectImages()
     expect([...images.keys()]).toEqual(['next-image', 'pre-pulled-image'])
+  })
+
+  it('keeps a pre-pulled tag that was already cached before this daemon prepared', async () => {
+    const { manager, options, environment, request, images } = await fixture()
+    await (await manager.driverFor(environment).launch(request)).stop(0)
+    await manager.stopAll()
+    images.set('next-image', null)
+    const upgraded = new MicrosandboxManager({ ...options, config: { ...options.config, image: 'next-image' } })
+    await upgraded.prepare()
+    // A rollback pre-pulls the tag the retained VM still pins; msb keeps that tag's original creation time.
+    await new MicrosandboxManager(options).prepareImage()
+    await upgraded.discard(environment.id)
+    await upgraded.collectImages()
+    expect([...images.keys()]).toEqual(['test-image', 'next-image'])
   })
 
   it('sweeps the flat rootfs refs and blobs no cached image names', async () => {
@@ -1141,6 +1150,24 @@ describe('microsandbox process and VM ownership', () => {
     await pulling
     expect(await readFile(seen, 'utf8')).toBe(`${process.pid}\n`)
     await expect(readdir(dirname(lock))).resolves.not.toContain('image-cache.lock')
+  })
+
+  it('fails a pull that outwaits a live holder instead of taking its lock', async () => {
+    const { manager, options } = await fixture()
+    const lock = join(options.root, 'microsandbox', 'image-cache.lock')
+    await mkdir(dirname(lock), { recursive: true })
+    await writeFile(lock, `${process.ppid}\n`)
+    vi.useFakeTimers({ toFake: ['Date'] })
+    // Jump the clock past the wait cap on every real tick, whenever the waiter took its deadline.
+    const advancing = setInterval(() => vi.setSystemTime(Date.now() + 11 * 60_000), 50)
+    try {
+      await expect(manager.prepareImage()).rejects.toThrow(`still held by pid ${process.ppid}`)
+    } finally {
+      clearInterval(advancing)
+      vi.useRealTimers()
+    }
+    expect(await readFile(lock, 'utf8')).toBe(`${process.ppid}\n`)
+    await expect(readFile(join(options.root, 'microsandbox', 'pulled-image'), 'utf8')).rejects.toThrow()
   })
 
   it('reclaims an image cache lock whose holder is gone', async () => {
