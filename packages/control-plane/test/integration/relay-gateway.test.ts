@@ -26,7 +26,7 @@ import {
   type RcVerifyResult
 } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
-import { seedAgent, seedDutyGroup, seedSessionMeta } from '../fixtures/seed.js'
+import { seedAgent, seedDaemon, seedDutyGroup, seedSessionMeta } from '../fixtures/seed.js'
 import { joinPool } from '../fakes/member-set.js'
 import { buildApp, type App } from '../../src/app.js'
 import { AppConfigSchema, type AppConfig } from '../../src/config/env.js'
@@ -555,6 +555,46 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     // …and one private peer session is enough to keep it the owner's.
     await prisma.sessionMeta.update({ where: { id: peerSession }, data: { visibility: 'private' } })
     expect((await mintConversationToken(app, { conversationId: shared })).statusCode).toBe(404)
+  })
+
+  // A group keeps no shared store: a conversation resumes only where its session was recorded, checked at mint time
+  // so a console that read the holder before a failover cannot hand the next turn to a member without the transcript.
+  it('refuses to resume a group agent’s conversation once its duty failed over from the member that recorded it', async () => {
+    const { app } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    await seedAgent(prisma, AGENT)
+    const recorder = randomUUID()
+    const successor = randomUUID()
+    for (const id of [recorder, successor]) await seedDaemon(prisma, id)
+    const setId = randomUUID()
+    await prisma.memberSet.create({ data: { id: setId, orgId: DEFAULT_ORG_ID, name: 'lab' } })
+    await prisma.memberSetMember.createMany({ data: [recorder, successor].map((daemonId) => ({ setId, daemonId })) })
+    await prisma.agent.update({ where: { id: AGENT }, data: { placementKind: 'set', setId, daemonId: null } })
+    const conversationId = ((await mintWebchatToken(app, AGENT)).json() as { conversationId: string }).conversationId
+    const sessionId = `acp-group-${conversationId.slice(0, 8)}`
+    await seedSessionMeta(prisma, sessionId, AGENT, {
+      platform: 'webchat',
+      channel: conversationId,
+      daemonId: recorder
+    })
+    await prisma.webchatConversation.update({ where: { id: conversationId }, data: { currentSessionId: sessionId } })
+    await prisma.webchatConversationAgent.updateMany({
+      where: { conversationId },
+      data: { currentSessionId: sessionId }
+    })
+    const groupId = randomUUID()
+    await seedDutyGroup(prisma, groupId, recorder, [AGENT], { confirmed: true })
+
+    expect((await mintWebchatToken(app, AGENT, { conversationId })).statusCode).toBe(200)
+    expect((await mintConversationToken(app, { conversationId })).statusCode).toBe(200)
+
+    await prisma.dutyGroup.update({
+      where: { id: groupId },
+      data: { holder: successor, term: 2n, confirmedHolder: successor, confirmedTerm: 2n }
+    })
+    const moved = await mintWebchatToken(app, AGENT, { conversationId })
+    expect(moved.statusCode).toBe(409)
+    expect((moved.json() as { message: string }).message).toContain('moved')
+    expect((await mintConversationToken(app, { conversationId })).statusCode).toBe(409)
   })
 
   it('POST …/webchat/token → 503 when no relay pool is configured (PUBLIC_RELAY_URL unset)', async () => {

@@ -22,6 +22,7 @@ import type { ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { canContinueSession, canView } from '../../authorization/policy.js'
 import { makeSessionAccessResolver } from '../session-access.js'
 import { resolveContinuationHost } from '../session-continuation.js'
+import { servesSessionContent } from '../../domain/session-content.js'
 import { ctxOf, orgOf } from '../rbac.js'
 import { ErrorDto } from '../dto/index.js'
 import { resolveProfilePictureUrl } from '../../icons/icon-store.js'
@@ -116,10 +117,10 @@ export function webchatTokenRoutes(deps: HttpDeps) {
     const resumableBy = async (
       req: Parameters<typeof ctxOf>[0] & { principal?: { userId: string } },
       conversationId: string
-    ): Promise<{ primaryAgentId: AgentId } | null> => {
+    ): Promise<{ primaryAgentId: AgentId; currentSessionIds: Array<SessionId | null> } | null> => {
       const binding = await deps.repos.webchatConversation.resumeBinding(conversationId, orgOf(req))
       if (!binding) return null
-      const resumable = { primaryAgentId: binding.primaryAgentId }
+      const resumable = { primaryAgentId: binding.primaryAgentId, currentSessionIds: binding.currentSessionIds }
       if (binding.ownerUserId === req.principal!.userId) return resumable
       const ids = binding.currentSessionIds.filter((id): id is SessionId => id !== null)
       if (ids.length === 0 || ids.length !== binding.currentSessionIds.length) return null
@@ -131,6 +132,28 @@ export function webchatTokenRoutes(deps: HttpDeps) {
       return rows.every((s) => canContinueSession(s, ctx, access.identitySet, access.externalAccess)) ? resumable : null
     }
 
+    /** Mint-time content fence: each participant's current session must be served where its next turn goes, its recorder or a member of its shared store — a group keeps none, so after a failover the successor never takes a turn without the transcript. */
+    const everyTurnReachesItsContent = async (
+      orgId: OrgId,
+      currentSessionIds: Array<SessionId | null>
+    ): Promise<boolean> => {
+      for (const id of currentSessionIds) {
+        if (id === null) continue
+        const s = await deps.repos.session.get(orgId, id)
+        const agent = s ? await deps.repos.agent.get(orgId, AgentId(s.agentId)) : null
+        if (!s || !agent) continue
+        // Nobody to reach right now is an offline agent, not a moved one: the turn waits for a member.
+        const target = await deps.placementResolver.dispatchDaemon(agent)
+        if (!target) continue
+        const sharedStoreMembers = s.contentSetId
+          ? await deps.repos.memberSet.sharedStoreMemberIdsOf(s.contentSetId)
+          : []
+        if (!servesSessionContent({ recordedDaemonId: s.daemonId, sharedStoreMembers }, target)) return false
+      }
+      return true
+    }
+    const AGENT_MOVED = { error: 'Conflict', statusCode: 409, message: 'the agent moved since this conversation ran' }
+
     r.post(
       '/agents/:agentId/webchat/token',
       {
@@ -139,11 +162,11 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Mint a webchat token',
           description:
-            'Mints a short-lived token the browser presents to the relay pool to start or resume a playground webchat session with this agent. A resume is allowed for the conversation owner, and for any non-viewer member who may continue every session it currently stands on (org-visible sessions; private ones stay owner-only).',
+            'Mints a short-lived token the browser presents to the relay pool to start or resume a playground webchat session with this agent. A resume is allowed for the conversation owner, and for any non-viewer member who may continue every session it currently stands on (org-visible sessions; private ones stay owner-only). A resume answers 409 once an agent’s next turn would reach a machine that does not hold its session.',
           operationId: 'mintWebchatToken',
           params: Params,
           body: Body,
-          response: { 200: WebchatTokenDto, 404: ErrorDto, 503: ErrorDto }
+          response: { 200: WebchatTokenDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -169,6 +192,9 @@ export function webchatTokenRoutes(deps: HttpDeps) {
             !(await allParticipantsViewable(conversationId, agent.orgId, ctxOf(req)))
           ) {
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'conversation not found' })
+          }
+          if (!(await everyTurnReachesItsContent(agent.orgId, resumable.currentSessionIds))) {
+            return reply.code(409).send(AGENT_MOVED)
           }
         } else {
           await deps.repos.webchatConversation.create(binding)
@@ -273,7 +299,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Mint a conversation webchat token',
           description:
-            'Mints a short-lived token the browser presents to the relay pool. Pass `agentIds` (first entry is the primary) to create a conversation — the roster is fixed at creation — or `conversationId` to resume one — as its owner, or as any non-viewer member who may continue every session it currently stands on (org-visible sessions; private ones stay owner-only). Creating with more than one agent requires every selected agent to be placed on a daemon that supports multi-agent webchat.',
+            'Mints a short-lived token the browser presents to the relay pool. Pass `agentIds` (first entry is the primary) to create a conversation — the roster is fixed at creation — or `conversationId` to resume one — as its owner, or as any non-viewer member who may continue every session it currently stands on (org-visible sessions; private ones stay owner-only). A resume answers 409 once an agent’s next turn would reach a machine that does not hold its session. Creating with more than one agent requires every selected agent to be placed on a daemon that supports multi-agent webchat.',
           operationId: 'mintWebchatConversationToken',
           params: ConversationParams,
           body: ConversationBody,
@@ -307,6 +333,9 @@ export function webchatTokenRoutes(deps: HttpDeps) {
             !(await allParticipantsViewable(conversationId, orgId, ctxOf(req)))
           ) {
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'conversation not found' })
+          }
+          if (!(await everyTurnReachesItsContent(orgId, resumable.currentSessionIds))) {
+            return reply.code(409).send(AGENT_MOVED)
           }
           const token = await deps.webchatTokens.mint({
             userId,
