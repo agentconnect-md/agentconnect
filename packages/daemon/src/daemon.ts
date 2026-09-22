@@ -10646,6 +10646,8 @@ export class Daemon {
       drainSessionPurges: () => this.drainSessionPurges(),
       replayGainedSessionMetadata: (agentIds) => this.sessionMetadataOutbox.replayGainedSessionMetadata(agentIds),
       pendingInboxReplayAgents: () => this.pendingInboxReplayAgents,
+      // After the registry write, not at the grant: admission is asynchronous and a grant is not held until it settles.
+      servedAgentsChanged: () => this.refreshHostedCountIfHosting(),
       raceDeadline: (work, ms) => this.raceDeadline(work, ms),
       sleepUntil: (at) => this.sleepUntil(at),
       activeDispatchCount: (agentId) => this.activeDispatchesByAgent.get(agentId)?.size ?? 0,
@@ -19880,14 +19882,8 @@ export class Daemon {
       servesAgent: (agentId) => this.servesAgent(agentId),
       claimAgentDuty: (agentId, isCurrent) => this.dutyCoordinator.claimDutyForTrigger(agentId, isCurrent),
       closeUnusedPlatformConnections: () => this.connections.closeUnusedPlatformConnections(),
-      applyDutyGrant: (grants) => {
-        this.dutyCoordinator.applyDutyGrant(grants)
-        this.refreshHostedCountIfHosting()
-      },
-      applyDutyRevoke: (revocations) => {
-        this.dutyCoordinator.applyDutyRevoke(revocations)
-        this.refreshHostedCountIfHosting()
-      },
+      applyDutyGrant: (grants) => this.dutyCoordinator.applyDutyGrant(grants),
+      applyDutyRevoke: (revocations) => this.dutyCoordinator.applyDutyRevoke(revocations),
       decideEditorPermission: (req) => this.permissions.decideEditorPermission(req),
       leaveConversation: (leave) => this.connections.leaveConversation(leave),
       retractChannels: (integrationId, channelIds) =>

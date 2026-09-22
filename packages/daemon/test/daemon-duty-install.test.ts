@@ -430,6 +430,32 @@ describe('a group is not held until it is servable', () => {
     await daemon.stop()
   })
 
+  // The executor facet's hosted count reads the served set, so it must re-read once the grant lands, not when it arrives.
+  it('re-reads the served set only once the grant is held', async () => {
+    let releaseFetch!: () => void
+    const fetched = new Promise<void>((resolve) => {
+      releaseFetch = resolve
+    })
+    const fetchDutyAgent = vi.fn(async () => {
+      await fetched
+      return { bundle: bundle() }
+    })
+    const daemon = await boot({ fetchDutyAgent })
+    const heldAtRefresh: boolean[] = []
+    vi.spyOn(daemon as any, 'refreshHostedCountIfHosting').mockImplementation(() => {
+      heldAtRefresh.push(duties(daemon).holdsAgent(AGENT))
+    })
+
+    ;(daemon as any).dutyCoordinator.applyDutyGrant([grant()])
+    await vi.waitFor(() => expect(fetchDutyAgent).toHaveBeenCalled())
+    expect(heldAtRefresh).toEqual([])
+
+    releaseFetch()
+    await vi.waitFor(() => expect(heldAtRefresh).toContain(true))
+    expect(heldAtRefresh.every(Boolean)).toBe(true)
+    await daemon.stop()
+  })
+
   it('a failed fetch never applies the grant at all', async () => {
     const daemon = await boot({
       fetchDutyAgent: vi.fn(async () => {

@@ -98,6 +98,8 @@ export interface DutyConvergeHost {
   replayGainedSessionMetadata(agentIds: readonly string[]): Promise<void>
   /** Inbox rows a newly-gained duty owes, replayed once convergence is idle. */
   pendingInboxReplayAgents(): Set<string>
+  /** The served set just changed; anything counted per served agent re-reads it. */
+  servedAgentsChanged?(): void
 }
 
 /** Deadline primitives plus the in-flight-work reads the shutdown release waits on. */
@@ -658,6 +660,7 @@ export class DutyCoordinator {
    *  receiving platform traffic until its connection is actually closed. */
   async onDutyChanged(): Promise<void> {
     if (!this.dutyEnforced()) return
+    this.host.servedAgentsChanged?.()
     // Register the convergence in the caller's own tick: the schedule syncs below await the
     // store, and a drain that snapshots `connectionsRequested` in between would read this
     // duty change as already converged.
