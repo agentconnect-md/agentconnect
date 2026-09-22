@@ -2206,6 +2206,28 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     await daemon.stop()
   })
 
+  it('names a fault while admitting a turn instead of calling the agent busy', async () => {
+    const { factory } = streamingHost([])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+    // What SQLite throws on a full disk: the admission write of the user's message fails.
+    vi.spyOn((daemon as any).store, 'appendTranscript').mockRejectedValue(new Error('database or disk is full'))
+
+    const turnId = '88888888-8888-4888-8888-888888888888'
+    const ack = await (daemon as any).handleRelayMsg(
+      rd({ op: 'turn', text: 'hi', user: 'owner', turnId, post: { postId: turnId, at: 1_000 } }),
+      () => {}
+    )
+    expect(ack).toEqual({
+      msgId: 'm-1',
+      accepted: false,
+      reason: 'admission_failed',
+      detail: 'database or disk is full'
+    })
+    await daemon.stop()
+  })
+
   it('forgets a start failure once the agent is genuinely removed', async () => {
     const { factory } = streamingHost([])
     const root = scaffold()

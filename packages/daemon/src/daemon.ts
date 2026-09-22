@@ -8239,8 +8239,9 @@ export class Daemon {
     // joins the same in-flight ack instead of re-dispatching.
     const task = ack
       .catch((err): RdAck => {
-        this.log.error(`webchat continuation admission failed for ${dedupKey}: ${formatErr(err)}`)
-        return { msgId: msg.msgId, accepted: false, reason: 'busy' }
+        this.log.error(`relay: ${msg.source} admission failed for ${dedupKey}: ${formatErr(err)}`)
+        // A fault is not contention: `busy` would tell the reader to retry what cannot succeed (a full disk).
+        return { msgId: msg.msgId, accepted: false, reason: 'admission_failed', detail: startFailureDetail(err) }
       })
       .then((settled) => {
         this.pendingRelayMsgAcks.delete(dedupKey)

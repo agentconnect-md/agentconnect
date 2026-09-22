@@ -1447,11 +1447,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                         : // The machine this conversation ran on no longer serves the agent, and it took its transcript with it.
                           reason === 'content_elsewhere'
                           ? `⚠️ ${name ?? 'Agent'} moved to another machine, which does not have this conversation — start a new one to continue.`
-                          : // Its daemon is live; the runtime it launches is not. Say so, and name the
-                            // cause the daemon reported instead of blaming a daemon that answered.
+                          : // Its daemon is live but the runtime it launches is not: name the cause the daemon reported.
                             reason === 'start_failed'
                             ? `⚠️ ${name ?? 'Agent'} could not start${detail ? ` — ${detail}` : ' — check the daemon logs.'}`
-                            : `⚠️ ${name ?? 'Agent'} is unavailable — no live daemon is serving it.`
+                            : // The daemon answered but faulted taking the turn in (a full disk): a fault, not contention.
+                              reason === 'admission_failed'
+                              ? `⚠️ ${name ?? 'Agent'} could not take the message${detail ? ` — ${detail}` : ' — check the daemon logs.'}`
+                              : `⚠️ ${name ?? 'Agent'} is unavailable — no live daemon is serving it.`
               })
               if (lanesOf(id).length === 0) {
                 reconnectAttempts.current.delete(id)
