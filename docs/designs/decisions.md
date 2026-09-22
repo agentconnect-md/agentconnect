@@ -433,38 +433,62 @@ admission replay reuse a settled decision rather than creating another turn.
 ### Provider keys and credential resolution
 
 Users configure organization-wide credentials under **Infra → Provider keys**.
-The first provider is **TypeSafe (Jev)**, with one default key per organization.
-Owners can add, replace, and remove it; other members can read configuration
-status. Credentials are not per Decision or per daemon. A Decision keeps its
+The shared configuration catalog includes **TypeSafe (Jev)**, **OpenRouter**, and
+**Cloudflare AI Gateway**, with one default connection per provider per organization.
+This infrastructure resource can serve consumers beyond Decisions. Owners can
+edit or remove connections; members can read non-secret metadata. Credentials
+are not per Decision or per daemon. A Decision keeps its
 logical `providerId` (initially `typesafe`) and selected `model`; BYOK and AC credits
 are resolved credential sources, not separate choices in the Decision editor.
 
 **Implemented configuration surface:**
 
 - `GET /api/v1/orgs/:orgId/provider-keys` returns the supported provider catalog,
-  `configured`, and `updatedAt`. It selects no stored key material and performs no
-  decryption or upstream validation.
-- Owner-only `PUT /api/v1/orgs/:orgId/provider-keys/:provider` accepts `{ apiKey }`
-  and atomically creates or replaces the default. Blank values are invalid;
-  cancelling an edit leaves the saved key intact. Responses never contain a key,
-  prefix, suffix, or ciphertext.
+  default endpoint, required-field metadata, configured endpoint, header names,
+  `configured`, and `updatedAt`. It selects no stored secret values and performs
+  no decryption or upstream validation.
+- Owner-only `PUT /api/v1/orgs/:orgId/provider-keys/:provider` accepts
+  `{ apiKey?, endpoint?, headers? }` and saves the connection atomically. The first
+  save requires an API key; subsequent saves may omit it to preserve it. Omitted
+  endpoint/header fields are retained. An explicit `endpoint: null` restores the
+  provider default. Cloudflare requires a nonempty endpoint on every save.
+- `headers` is a per-name patch: a string sets/replaces a value, `null` removes
+  that header, and omission retains it. Header names are normalized to lowercase;
+  case-insensitive duplicates, malformed names, control characters in values, and
+  empty replacement secrets are rejected. At most 32 header changes fit in one
+  request. Responses never contain API-key or header values, prefixes, suffixes,
+  or ciphertext. Secrets are sealed before the transaction; the parent connection
+  write serializes concurrent key/endpoint/header edits without decrypting saved values.
+- Endpoints are HTTP(S) base URLs without embedded credentials, queries, or
+  fragments. Authentication belongs in the API key or secret headers. TypeSafe
+  and OpenRouter work with their provider defaults; Cloudflare needs the user's
+  account/gateway-specific address. The configuration service makes no requests
+  to these addresses. Future adapters own authentication-header placement and
+  request shape; saving an OpenRouter or Cloudflare connection does not claim
+  that a live Decision adapter for it already exists.
 - Owner-only `DELETE /api/v1/orgs/:orgId/provider-keys/:provider` is idempotent. It
-  removes this organization's copy, not the upstream credential itself.
+  removes this organization's key, endpoint, and headers, not upstream credentials.
 - `provider_key` is keyed by `(orgId, provider)`, cascades with organization
   deletion, and stores values through the existing organization-scoped
   `SecretCipher`. `SECRET_CIPHER=none` stores plaintext; an encrypting cipher must
-  be configured to encrypt at rest. The secret rewrap sweep includes this table
-  without changing the user-visible last-updated time.
+  be configured to encrypt at rest. Header names live in `provider_key_header`;
+  each value uses the same cipher and cascades with its connection. The secret
+  rewrap sweep includes both tables without changing the visible last-updated time.
 - The Console stores no credential in its cache or browser storage. Password
   input starts empty for replacement and is discarded on save, cancel, or an
-  organization/permission change. Failed writes do not clear the previous key.
+  organization/permission change. Saved header names remain visible while their
+  password inputs start empty. Failed writes preserve the complete previous connection.
+
+Provider references: [TypeSafe API](https://api.typesafe.ai/docs),
+[OpenRouter connection and headers](https://openrouter.ai/docs/quickstart), and
+[Cloudflare gateway endpoints](https://developers.cloudflare.com/ai-gateway/usage/chat-completion/).
 
 **Runtime integration to follow:** the daemon resolves credentials for the
 organization of the evaluation using this precedence:
 
 | Available configuration                                      | Credential source and egress                                                                                               |
 | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| Organization key is present                                  | Use that key for direct provider requests                                                                                  |
+| Organization key is present                                  | Use that connection's key, endpoint, and headers for provider or user-configured gateway egress                            |
 | No organization key; Cloud explicitly supports this provider | Request an evaluation-scoped token from the deployment Key Server, then call the configured Cloud Gateway using AC credits |
 | No organization key; no supported Cloud configuration        | Missing credentials                                                                                                        |
 
@@ -476,7 +500,7 @@ that organization's cached credential for subsequent evaluations; an in-flight
 request may already hold the previous value. No raw-key read route is exposed to
 Console users.
 
-The deployment owns the gateway address, issuer address, and daemon caller
+For the AC-credits fallback, the deployment owns the gateway address, issuer address, and daemon caller
 credentials. Cloud eligibility requires the authorized deployment configuration;
 Kubernetes placement or a Console feature flag alone does not grant credits. The
 daemon obtains tokens from the issuer, not from a fabricated agent session or a
@@ -616,7 +640,7 @@ automatic model upgrade or separate model resource.
 | Record                         | Proposed fields / responsibility                                                                                                                                             |
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Daemon provider catalog        | Non-secret logical provider ID, daemon ID, resolved source (`byok`, `ac_credits`, or `null`), supported models, readiness; reported metadata, not a credential CRUD resource |
-| `ProviderKey` (implemented)    | Organization and provider composite key, secret-cipher value, last-updated timestamp; metadata-only Console reads                                                            |
+| `ProviderKey` (implemented)    | Organization/provider composite key, sealed API key, optional endpoint, secret-header relation, last-updated timestamp; metadata-only Console reads                          |
 | `Decision`                     | ID, organization, name, logical provider ID, model, question JSON, normal ownership/visibility/timestamps                                                                    |
 | `IntegrationChannel`           | Add `decision` trigger and nullable `decisionBinding` JSON                                                                                                                   |
 | `BotDecisionRouting` (Stage 2) | Bot ID as unique owner, organization, enabled, Decision ID, ordered rules, Otherwise, normal timestamps                                                                      |

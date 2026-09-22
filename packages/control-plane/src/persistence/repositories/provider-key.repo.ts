@@ -1,14 +1,29 @@
-import { ProviderKeyProvider } from '@agentconnect.md/protocol'
+import { ProviderKeyProvider, type SetProviderKeyInput } from '@agentconnect.md/protocol'
 import type { OrgId } from '../../domain/ids.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
 import { orgScope } from '../../secrets/scope.js'
-import type { ProviderKeyMetadata, ProviderKeyStore } from '../ports.js'
-import type { PrismaLike } from '../prisma.js'
+import type { ProviderCredentials, ProviderKeyMetadata, ProviderKeyStore } from '../ports.js'
+import { withAmbientTx, type PrismaLike } from '../prisma.js'
 
-const metadataSelect = { provider: true, updatedAt: true } as const
+const metadataSelect = {
+  provider: true,
+  endpoint: true,
+  updatedAt: true,
+  headers: { select: { name: true }, orderBy: { name: 'asc' } }
+} as const
 
-function metadata(row: { provider: string; updatedAt: Date }): ProviderKeyMetadata {
-  return { provider: ProviderKeyProvider.parse(row.provider), updatedAt: row.updatedAt }
+function metadata(row: {
+  provider: string
+  endpoint: string | null
+  updatedAt: Date
+  headers: { name: string }[]
+}): ProviderKeyMetadata {
+  return {
+    provider: ProviderKeyProvider.parse(row.provider),
+    endpoint: row.endpoint,
+    headerNames: row.headers.map((header) => header.name),
+    updatedAt: row.updatedAt
+  }
 }
 
 export class PgProviderKeyStore implements ProviderKeyStore {
@@ -22,25 +37,64 @@ export class PgProviderKeyStore implements ProviderKeyStore {
     return rows.map(metadata)
   }
 
-  async put(orgId: OrgId, provider: ProviderKeyProvider, apiKey: string): Promise<ProviderKeyMetadata> {
-    // Seal before persistence; a failed replacement leaves the previous value intact.
-    const value = await this.cipher.seal(apiKey, orgScope(orgId))
-    const row = await this.db.providerKey.upsert({
-      where: { orgId_provider: { orgId, provider } },
-      create: { orgId, provider, value },
-      update: { value },
-      select: metadataSelect
+  async put(
+    orgId: OrgId,
+    provider: ProviderKeyProvider,
+    input: SetProviderKeyInput
+  ): Promise<ProviderKeyMetadata | null> {
+    // Seal before the transaction; omitted secrets remain stored without being decrypted.
+    const scope = orgScope(orgId)
+    const value = input.apiKey === undefined ? undefined : await this.cipher.seal(input.apiKey, scope)
+    const headers = await Promise.all(
+      Object.entries(input.headers ?? {}).map(async ([name, value]) => ({
+        name,
+        value: value === null ? null : await this.cipher.seal(value, scope)
+      }))
+    )
+    return withAmbientTx(this.db, async (tx) => {
+      const data = { updatedAt: new Date(), ...(input.endpoint !== undefined ? { endpoint: input.endpoint } : {}) }
+      const where = { orgId_provider: { orgId, provider } }
+      // The parent write locks this connection until its key, endpoint, and header patch all commit.
+      if (value === undefined) {
+        if ((await tx.providerKey.updateMany({ where: { orgId, provider }, data })).count === 0) return null
+      } else {
+        await tx.providerKey.upsert({
+          where,
+          create: { orgId, provider, value, ...data },
+          update: { value, ...data },
+          select: { provider: true }
+        })
+      }
+      for (const header of headers) {
+        if (header.value === null)
+          await tx.providerKeyHeader.deleteMany({ where: { orgId, provider, name: header.name } })
+        else
+          await tx.providerKeyHeader.upsert({
+            where: { orgId_provider_name: { orgId, provider, name: header.name } },
+            create: { orgId, provider, name: header.name, value: header.value },
+            update: { value: header.value },
+            select: { name: true }
+          })
+      }
+      return metadata(await tx.providerKey.findUniqueOrThrow({ where, select: metadataSelect }))
     })
-    return metadata(row)
   }
 
   // Internal credential delivery only: absence is null; decryption failure must never enable credit fallback.
-  async get(orgId: OrgId, provider: ProviderKeyProvider): Promise<string | null> {
+  async get(orgId: OrgId, provider: ProviderKeyProvider): Promise<ProviderCredentials | null> {
     const row = await this.db.providerKey.findUnique({
       where: { orgId_provider: { orgId, provider } },
-      select: { value: true }
+      select: { value: true, endpoint: true, headers: { select: { name: true, value: true } } }
     })
-    return row ? this.cipher.open(row.value, orgScope(orgId)) : null
+    if (!row) return null
+    const scope = orgScope(orgId)
+    return {
+      apiKey: await this.cipher.open(row.value, scope),
+      endpoint: row.endpoint,
+      headers: Object.fromEntries(
+        await Promise.all(row.headers.map(async (header) => [header.name, await this.cipher.open(header.value, scope)]))
+      )
+    }
   }
 
   async delete(orgId: OrgId, provider: ProviderKeyProvider): Promise<void> {

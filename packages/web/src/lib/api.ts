@@ -20,7 +20,8 @@ import type {
   HookKind,
   SessionStayedHomeReason,
   ProviderKeyProvider,
-  ProviderKeyStatus
+  ProviderKeyStatus,
+  SetProviderKeyInput
 } from '@agentconnect.md/protocol'
 import type { CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import {
@@ -6303,9 +6304,9 @@ export function fetchProviderKeys(orgId: string): Promise<ProviderKeyStatus[]> {
 export function setProviderKey(
   orgId: string,
   provider: ProviderKeyProvider,
-  apiKey: string
+  input: SetProviderKeyInput
 ): Promise<ProviderKeyStatus> {
-  return apiPut<ProviderKeyStatus>(`${orgBase(orgId)}/provider-keys/${encodeURIComponent(provider)}`, { apiKey })
+  return apiPut<ProviderKeyStatus>(`${orgBase(orgId)}/provider-keys/${encodeURIComponent(provider)}`, input)
 }
 
 export function deleteProviderKey(orgId: string, provider: ProviderKeyProvider): Promise<void> {

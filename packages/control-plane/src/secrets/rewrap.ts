@@ -153,6 +153,20 @@ export async function rewrapAllSecrets(
   }
 
   {
+    let rows = 0
+    let skipped = 0
+    for (const r of await prisma.providerKeyHeader.findMany()) {
+      const res = await prisma.providerKeyHeader.updateMany({
+        where: { orgId: r.orgId, provider: r.provider, name: r.name, value: r.value },
+        data: { value: await reseal(r.value, orgScope(OrgId(r.orgId))) }
+      })
+      if (res.count === 0) skipped += 1
+      else rows += 1
+    }
+    done('provider_key_header', rows, rows, skipped)
+  }
+
+  {
     // Organization-owned secret values (organization-secrets-and-variables.md §5).
     // Same seam discipline as agent_secret: one value per row, CAS on the sealed
     // bytes so a concurrent rotation (already sealed with the new key) wins.

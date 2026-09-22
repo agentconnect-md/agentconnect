@@ -1,6 +1,11 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { ProviderKeyProvider, ProviderKeyStatus, SetProviderKeyBody } from '@agentconnect.md/protocol'
+import {
+  PROVIDER_KEY_PROFILES,
+  ProviderKeyProvider,
+  ProviderKeyStatus,
+  SetProviderKeyBody
+} from '@agentconnect.md/protocol'
 import type { ProviderKeyMetadata } from '../../persistence/ports.js'
 import type { HttpDeps } from '../deps.js'
 import { ErrorDto } from '../dto/index.js'
@@ -9,10 +14,15 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import { denyNonOwner, orgOf } from '../rbac.js'
 
 const ProviderParam = z.object({ provider: ProviderKeyProvider })
-const names: Record<ProviderKeyProvider, string> = { typesafe: 'TypeSafe (Jev)' }
-
 function status(provider: ProviderKeyProvider, row?: ProviderKeyMetadata): ProviderKeyStatus {
-  return { provider, name: names[provider], configured: !!row, updatedAt: row?.updatedAt.toISOString() ?? null }
+  return {
+    provider,
+    ...PROVIDER_KEY_PROFILES[provider],
+    endpoint: row?.endpoint ?? null,
+    headerNames: row?.headerNames ?? [],
+    configured: !!row,
+    updatedAt: row?.updatedAt.toISOString() ?? null
+  }
 }
 
 export function providerKeyRoutes(deps: HttpDeps) {
@@ -27,7 +37,7 @@ export function providerKeyRoutes(deps: HttpDeps) {
           tags: [Tag.ProviderKeys],
           summary: 'List provider key status',
           description:
-            'Lists supported providers and organization key configuration status. Never returns key material or validates credentials upstream.',
+            'Lists provider profiles, configured endpoints, header names, and organization key status. Never returns secret values or validates credentials upstream.',
           operationId: 'listProviderKeys',
           response: { 200: z.array(ProviderKeyStatus) }
         }
@@ -50,17 +60,27 @@ export function providerKeyRoutes(deps: HttpDeps) {
           tags: [Tag.ProviderKeys],
           summary: 'Set an organization provider key',
           description:
-            'Owner-only. Creates or replaces the organization default key using the configured secret cipher. The key is write-only and is not injected into agent environments.',
+            'Owner-only. Saves an API key, endpoint, and a header patch atomically. The first save requires a key; omitted secrets are retained and null header values remove headers. Cloudflare requires an endpoint on each save. Key and header values are write-only and use the configured secret cipher.',
           operationId: 'setProviderKey',
           params: ProviderParam,
           body: SetProviderKeyBody,
-          response: { 200: ProviderKeyStatus, 403: ErrorDto, 503: ErrorDto }
+          response: { 200: ProviderKeyStatus, 400: ErrorDto, 403: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
+        if (PROVIDER_KEY_PROFILES[req.params.provider].endpointRequired && !req.body.endpoint) {
+          return reply
+            .code(400)
+            .send({ error: 'Bad Request', statusCode: 400, message: 'An endpoint is required for this provider.' })
+        }
         try {
-          return status(req.params.provider, await store.put(orgOf(req), req.params.provider, req.body.apiKey))
+          const saved = await store.put(orgOf(req), req.params.provider, req.body)
+          if (!saved)
+            return reply
+              .code(400)
+              .send({ error: 'Bad Request', statusCode: 400, message: 'An API key is required for the first save.' })
+          return status(req.params.provider, saved)
         } catch {
           // Cipher and database errors may embed the submitted value; never serialize or log them.
           return reply.code(503).send({

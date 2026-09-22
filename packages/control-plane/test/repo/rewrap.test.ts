@@ -154,6 +154,9 @@ async function seedAllSecretTables(): Promise<void> {
   await prisma.providerKey.create({
     data: { orgId: DEFAULT_ORG_ID, provider: 'typesafe', value: 'example-provider-key' }
   })
+  await prisma.providerKeyHeader.create({
+    data: { orgId: DEFAULT_ORG_ID, provider: 'typesafe', name: 'x-extra-key', value: 'example-header-value' }
+  })
 }
 
 describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (real Postgres)', () => {
@@ -166,9 +169,12 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
     const providerKey = await prisma.providerKey.findFirstOrThrow()
     expect(providerKey.value).toBe('sealed:example-provider-key')
     expect(providerKey.updatedAt).toEqual(providerUpdatedAt)
-    expect(await new PgProviderKeyStore(prisma, cipher).get(OrgId(DEFAULT_ORG_ID), 'typesafe')).toBe(
-      'example-provider-key'
-    )
+    expect(await new PgProviderKeyStore(prisma, cipher).get(OrgId(DEFAULT_ORG_ID), 'typesafe')).toEqual({
+      apiKey: 'example-provider-key',
+      endpoint: null,
+      headers: { 'x-extra-key': 'example-header-value' }
+    })
+    expect((await prisma.providerKeyHeader.findFirstOrThrow()).value).toBe('sealed:example-header-value')
     expect(stats.map((s) => s.table).sort()).toEqual([
       'agent_secret',
       'bot_secret',
@@ -181,6 +187,7 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
       'mcp_provider_secret',
       'organization_environment_secret',
       'provider_key',
+      'provider_key_header',
       'slack_install',
       'slack_user_config'
     ])

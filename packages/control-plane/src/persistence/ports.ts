@@ -13,6 +13,7 @@ import type { MemoryHomeUpdate } from '../agent-memory/home.js'
 import type {
   AuthReq,
   ProviderKeyProvider,
+  SetProviderKeyInput,
   MemoryTransactionReq,
   MemoryTransactionResult,
   DaemonLifecyclePhase,
@@ -7146,12 +7147,20 @@ export interface AgentMemoryTransactionRepo {
 // Organization-wide default keys; only internal credential delivery may read the secret value.
 export interface ProviderKeyMetadata {
   provider: ProviderKeyProvider
+  endpoint: string | null
+  headerNames: string[]
   updatedAt: Date
+}
+
+export interface ProviderCredentials {
+  apiKey: string
+  endpoint: string | null
+  headers: Record<string, string>
 }
 
 export interface ProviderKeyStore {
   list(orgId: OrgId): Promise<ProviderKeyMetadata[]>
-  put(orgId: OrgId, provider: ProviderKeyProvider, apiKey: string): Promise<ProviderKeyMetadata>
-  get(orgId: OrgId, provider: ProviderKeyProvider): Promise<string | null>
+  put(orgId: OrgId, provider: ProviderKeyProvider, input: SetProviderKeyInput): Promise<ProviderKeyMetadata | null>
+  get(orgId: OrgId, provider: ProviderKeyProvider): Promise<ProviderCredentials | null>
   delete(orgId: OrgId, provider: ProviderKeyProvider): Promise<void>
 }
