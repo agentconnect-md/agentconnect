@@ -136,6 +136,41 @@ describe('resolveApprovalRoute — route form', () => {
     expect(routed.target).toMatchObject({ userId: 'U0SECOND', consoleUserId: 'u-second' })
   })
 
+  it.each([
+    { requesterId: 'U0OWNER', ownerIdentity: null },
+    { requesterId: undefined, ownerIdentity: `slack:${TEAM_A}:U0OWNER` },
+    { requesterId: undefined, ownerIdentity: 'user:u-owner' }
+  ])(
+    'routes to an unselected organization owner through requester/session ownership: %j',
+    async ({ requesterId, ownerIdentity }) => {
+      const routed = await resolveApprovalRoute(
+        routeReq({ requesterId, sessionId: 'sess-1' }),
+        deps({
+          agent: { visibility: 'restricted', sharedWith: ['u-selected'] },
+          members: [{ userId: 'u-owner', role: 'owner' }, { userId: 'u-selected' }],
+          links: { 'u-owner': linked('U0OWNER'), 'u-selected': linked('U0SELECTED') },
+          session: { ownerIdentity }
+        })
+      )
+      expect(routed.target).toMatchObject({ userId: 'U0OWNER', consoleUserId: 'u-owner' })
+    }
+  )
+
+  it.each([true, false])(
+    'never uses an unrelated owner as a fallback (selected member linked: %s)',
+    async (selectedLinked) => {
+      const routed = await resolveApprovalRoute(
+        routeReq(),
+        deps({
+          agent: { visibility: 'restricted', sharedWith: ['u-selected'] },
+          members: [{ userId: 'u-owner', role: 'owner' }, { userId: 'u-selected' }],
+          links: { 'u-owner': linked('U0OWNER'), 'u-selected': selectedLinked ? linked('U0SELECTED') : null }
+        })
+      )
+      expect(routed.target?.consoleUserId).toBe(selectedLinked ? 'u-selected' : undefined)
+    }
+  )
+
   it('rung 4: the creator wins only as an ordinary editor', async () => {
     const world: World = {
       agent: { visibility: 'restricted', sharedWith: ['u-creator'], createdByUserId: 'u-creator' },
@@ -236,24 +271,33 @@ describe('resolveApprovalRoute — verify form', () => {
   const verifyReq = (consoleUserId = 'u-owner', userId = 'U0OWNER', teamId = TEAM_A) =>
     routeReq({ verify: { integrationId: INTEGRATION_A, teamId, userId, consoleUserId } })
 
-  it('allows a still-eligible editor whose link matches the actor pair', async () => {
-    const routed = await resolveApprovalRoute(
-      verifyReq(),
-      deps({ members: [{ userId: 'u-owner', displayName: 'Owner' }], links: { 'u-owner': linked('U0OWNER') } })
-    )
-    expect(routed).toMatchObject({ allowed: true, displayName: 'Owner' })
-  })
+  it.each(['collaborator', 'owner'] as const)(
+    'allows a still-eligible %s whose link matches the actor pair',
+    async (role) => {
+      const routed = await resolveApprovalRoute(
+        verifyReq(),
+        deps({
+          agent: { visibility: 'restricted', sharedWith: role === 'owner' ? ['u-selected'] : ['u-owner'] },
+          members: [{ userId: 'u-owner', role, displayName: 'Owner' }],
+          links: { 'u-owner': linked('U0OWNER') }
+        })
+      )
+      expect(routed).toMatchObject({ allowed: true, displayName: 'Owner' })
+    }
+  )
 
   it('refuses when the member left, was demoted, unlinked, or the pair moved', async () => {
     const worlds: World[] = [
       { members: [], links: { 'u-owner': linked('U0OWNER') } },
       { members: [{ userId: 'u-owner', role: 'viewer' }], links: { 'u-owner': linked('U0OWNER') } },
-      { members: [{ userId: 'u-owner' }], links: {} },
-      { members: [{ userId: 'u-owner' }], links: { 'u-owner': linked('U0OTHER') } },
-      { members: [{ userId: 'u-owner' }], links: { 'u-owner': linked('U0OWNER', TEAM_B) } }
+      { members: [{ userId: 'u-owner', role: 'collaborator' }], links: { 'u-owner': linked('U0OWNER') } },
+      { members: [{ userId: 'u-owner', role: 'owner' }], links: {} },
+      { members: [{ userId: 'u-owner', role: 'owner' }], links: { 'u-owner': linked('U0OTHER') } },
+      { members: [{ userId: 'u-owner', role: 'owner' }], links: { 'u-owner': linked('U0OWNER', TEAM_B) } }
     ]
     for (const world of worlds) {
-      expect((await resolveApprovalRoute(verifyReq(), deps(world))).allowed).toBe(false)
+      const current = deps({ ...world, agent: { visibility: 'restricted', sharedWith: ['u-selected'] } })
+      expect((await resolveApprovalRoute(verifyReq(), current)).allowed).toBe(false)
     }
   })
 

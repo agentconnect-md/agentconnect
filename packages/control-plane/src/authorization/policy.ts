@@ -1,18 +1,4 @@
-/**
- * OSS authorization policy for human Control Plane requests.
- *
- * Authentication, organization membership, credential scopes, and tenant
- * selection are resolved before this layer. This module owns the remaining
- * role and resource decisions so HTTP guards, point reads, and SQL list
- * projections share one policy seam.
- *
- * Organization roles control what a visible resource may be used for:
- * viewers are read-only, while collaborators and owners may edit. Restricted
- * resources are visible only to the current organization members in their
- * explicit `sharedWith` audience, plus every organization owner: an owner
- * governs the whole organization and therefore sees every resource in it
- * (docs/designs/resource-visibility.md §1, "owner exception").
- */
+// Human authorization after authentication and organization selection; see docs/designs/authorization-policy.md.
 import type { SessionExternalAccessSnapshot, SessionVisibility, Shareable, ViewCtx } from '../persistence/ports.js'
 
 export type { Shareable, ViewCtx } from '../persistence/ports.js'
@@ -21,6 +7,7 @@ export const AuthorizationAction = {
   OrganizationWrite: 'organization.write',
   OrganizationManage: 'organization.manage',
   OrganizationMembershipRemove: 'organization.membership.remove',
+  UsageAttributeAll: 'usage.attribute.all',
   ResourceView: 'resource.view',
   ResourceEdit: 'resource.edit',
   ResourceManageSharing: 'resource.sharing.manage',
@@ -43,7 +30,10 @@ export interface SessionViewable {
 
 export type AuthorizationRequest =
   | {
-      action: typeof AuthorizationAction.OrganizationWrite | typeof AuthorizationAction.OrganizationManage
+      action:
+        | typeof AuthorizationAction.OrganizationWrite
+        | typeof AuthorizationAction.OrganizationManage
+        | typeof AuthorizationAction.UsageAttributeAll
     }
   | {
       action: typeof AuthorizationAction.OrganizationMembershipRemove
@@ -101,18 +91,13 @@ function externalSessionIsVisible(
   return snapshot.allowedScopes.some((scope) => scope.id === resource.externalScopeId)
 }
 
-/**
- * The single in-memory authorization decision point.
- *
- * The action vocabulary is intentionally small because these are the distinct
- * OSS policies today. New OSS roles or capabilities can add finer-grained
- * actions without changing callers' principal/resource shapes.
- */
+// Shared in-memory decisions for role, resource, and session authority.
 export function can(principal: ViewCtx, request: AuthorizationRequest): boolean {
   switch (request.action) {
     case AuthorizationAction.OrganizationWrite:
       return principal.role !== 'viewer'
     case AuthorizationAction.OrganizationManage:
+    case AuthorizationAction.UsageAttributeAll:
       return principal.role === 'owner'
     case AuthorizationAction.OrganizationMembershipRemove:
       return principal.userId === request.targetUserId || principal.role === 'owner'

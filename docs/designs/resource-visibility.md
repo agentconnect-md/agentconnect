@@ -39,11 +39,11 @@ This design adds **per-resource visibility**:
 
 ### Decided policy semantics
 
-| Decision                                   | Choice                                                                                                                                                                                                                                                                                                              | Meaning                                                                                                               |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| How is the access level determined?        | **Visibility first, then organization role**                                                                                                                                                                                                                                                                        | Everyone/Selected controls who can see a resource. Existing roles determine editing. There is no per-grant edit flag. |
-| Does an owner have a governance exception? | **Yes**                                                                                                                                                                                                                                                                                                             | An organization owner sees, and may therefore edit, every resource of the organization, shared with them or not.      |
-| Which resource types carry visibility?     | **Agent, Daemon, Cron, MCP provider, and skill source carry Team visibility independently.** Session has a separate audience boundary. Integration derives from Agent; Usage intersects Agent visibility with Session audience; CronRun and daemon API keys derive from their parent. Bot is shared infrastructure. | See the taxonomy in section 2.                                                                                        |
+| Decision                                   | Choice                                                                                                                                                                                                                                                                                                                                                          | Meaning                                                                                                               |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| How is the access level determined?        | **Visibility first, then organization role**                                                                                                                                                                                                                                                                                                                    | Everyone/Selected controls who can see a resource. Existing roles determine editing. There is no per-grant edit flag. |
+| Does an owner have a governance exception? | **Yes**                                                                                                                                                                                                                                                                                                                                                         | An organization owner sees, and may therefore edit, every resource of the organization, shared with them or not.      |
+| Which resource types carry visibility?     | **Agent, Daemon, Cron, MCP provider, and skill source carry Team visibility independently.** Session has a separate audience boundary. Integration derives from Agent; Usage gives owners complete aggregate attribution and otherwise intersects Agent and Session access; CronRun and daemon API keys derive from their parent. Bot is shared infrastructure. | See the taxonomy in section 2.                                                                                        |
 
 ### Authoritative predicates
 
@@ -98,15 +98,15 @@ The sharing UI must disclose the owner exception wherever it presents Selected.
 
 ## 2. Resource taxonomy
 
-| Category                 | Resource                                                   | Own audience fields?                                        | Source                                               |
-| ------------------------ | ---------------------------------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------- |
-| **Visibility carrier**   | `Agent`, `Daemon`, `CronDef`, `McpProvider`, `SkillSource` | `ResourceVisibility` + `sharedWith`                         | Itself                                               |
-| **Independent audience** | `SessionMeta`                                              | `SessionVisibility` + owner/external scope; no `sharedWith` | Itself; see `session-visibility.md`                  |
-| **Derived**              | `Integration`                                              | No                                                          | Its `Agent`                                          |
-| **Derived intersection** | `SessionUsage`                                             | No                                                          | Its `Agent` and `SessionMeta`                        |
-| **Derived**              | `CronRun`                                                  | No                                                          | Its `CronDef`                                        |
-| **Derived**              | daemon `ApiKey`                                            | No                                                          | Its `Daemon`; key minting is a credential operation  |
-| **Infrastructure**       | `Bot`                                                      | No                                                          | Always organization-visible and cannot be restricted |
+| Category                 | Resource                                                   | Own audience fields?                                        | Source                                                 |
+| ------------------------ | ---------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------ |
+| **Visibility carrier**   | `Agent`, `Daemon`, `CronDef`, `McpProvider`, `SkillSource` | `ResourceVisibility` + `sharedWith`                         | Itself                                                 |
+| **Independent audience** | `SessionMeta`                                              | `SessionVisibility` + owner/external scope; no `sharedWith` | Itself; see `session-visibility.md`                    |
+| **Derived**              | `Integration`                                              | No                                                          | Its `Agent`                                            |
+| **Aggregate governance** | Usage aggregates                                           | No                                                          | Owner role; otherwise `Agent` and `SessionMeta` access |
+| **Derived**              | `CronRun`                                                  | No                                                          | Its `CronDef`                                          |
+| **Derived**              | daemon `ApiKey`                                            | No                                                          | Its `Daemon`; key minting is a credential operation    |
+| **Infrastructure**       | `Bot`                                                      | No                                                          | Always organization-visible and cannot be restricted   |
 
 **Agent and daemon visibility are independent.** An agent may be visible while
 its hosting daemon is not; see section 7.
@@ -281,21 +281,20 @@ the owning Agent for human reads. The current contract is authoritative in
 tool-body, relationships, and SSE all use the Session predicate plus the active
 organization boundary. A readable Session may project its owning Agent's name,
 but it does not make a restricted Agent resource, configuration, or workspace
-readable. Analytics remains resource-scoped and keeps the Agent intersection.
+readable. Usage attribution has its own governance permission (§5.6).
 
 ### 5.6 Usage: `usage.ts -> sessionUsage.aggregate`
 
-`usage.ts` passes viewer context into `sessionUsage.aggregate`; otherwise a
-restricted agent's tokens and spend would leak existence and cost through an
-organization aggregate.
+`usage.ts` authorizes organization owners through `usage.attribute.all` and
+omits attribution filters for them, as it does for verified settlement
+workloads. Both paths retain organization and time-window scoping. This
+includes private and external Session spend in agent, model, source, and
+time-series breakdowns without granting access to Session content or metadata.
 
-- Add `viewer?` to `SessionUsageRepo.aggregate(orgId, since, viewer?)` at
-  `session-usage.repo.ts:48` and pass `ctxOf(req)` from `usage.ts`. Every human
-  role uses the same visibility filter. Both internal queries, groupBy at `:51` and
-  distinct currency at `:91`, already organize by agent relation.
-- For performance, compute the visible agent ID set for the viewer once with
-  one indexed query by `orgId`, then pass `agentId IN (...)` to both queries.
-  Avoid placing a three-branch OR relation subquery into every groupBy.
+Collaborators and viewers pass resource and Session contexts to
+`sessionUsage.aggregate`. Their attribution intersects both policies, while
+totals and metering-source totals remain organization-wide and withheld spend goes into `unattributed`.
+All figures come from the same persisted spend timeline and its deltas.
 
 ### 5.7 CronRun
 
@@ -388,8 +387,9 @@ uses the predicate above.
   route-level `canView`.
 - **Session is independent from Agent Team visibility** for human reads and
   uses its own audience plus the active organization boundary.
-- **Usage is a resource-scoped intersection:** Agent visibility and the
-  corresponding Session audience both apply to session-backed aggregates.
+- **Usage has separate aggregate authority:** owners receive complete
+  organization attribution; other members' attribution intersects Agent and
+  Session access. Session content reads retain their own audience.
 - **CronRun derives from CronDef** through `getOrgCron` or a nested relation.
 - **Daemon API keys derive from Daemon** through `canView` and `canEdit` in
   `keys.ts`.

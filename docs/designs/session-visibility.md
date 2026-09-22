@@ -489,13 +489,13 @@ TTL.
 
 Session read surfaces use the Session predicate as their authorization boundary:
 
-| Surface                       | Where                                                                                     | Change                                                                                                                                                                                                                                                                                      |
-| ----------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| List + facets                 | `persistence/repositories/session.repo.ts` (`pageWhereSql` — raw SQL, not Prisma `where`) | enumerate the org's Agent ids only as a storage scope, then apply `AND (visibility = 'org' OR owner_identity = ANY(:identitySet))` to every viewer (no org-owner bypass)                                                                                                                    |
-| Detail / messages / tool-body | `http/routes/sessions.ts` `getOrgViewableSession`                                         | require the row's `orgId` plus `canViewSession`; fail as 404 without consulting Agent Team visibility                                                                                                                                                                                       |
-| Children                      | `session.repo.ts` `listChildren`                                                          | same predicate; an invisible parent renders `null`, while a visible child is retained even when its owning Agent is hidden                                                                                                                                                                  |
-| SSE                           | `http/routes/stream.ts`                                                                   | apply the predicate to every session-scoped envelope (`event/session` milestones and `event/session-activity` invalidations) and recheck live organization membership for each event                                                                                                        |
-| Usage                         | `http/routes/usage.ts`                                                                    | scope ATTRIBUTION, not the sums: the intersection (Agent visibility plus the Session predicate) decides which rows a caller may see attributed to an agent and scopes the spend series, while `totals` stay the org's and what is withheld is returned as one id-less `unattributed` rollup |
+| Surface                       | Where                                                                                     | Change                                                                                                                                                                                                                                                      |
+| ----------------------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| List + facets                 | `persistence/repositories/session.repo.ts` (`pageWhereSql` — raw SQL, not Prisma `where`) | enumerate the org's Agent ids only as a storage scope, then apply `AND (visibility = 'org' OR owner_identity = ANY(:identitySet))` to every viewer (no org-owner bypass)                                                                                    |
+| Detail / messages / tool-body | `http/routes/sessions.ts` `getOrgViewableSession`                                         | require the row's `orgId` plus `canViewSession`; fail as 404 without consulting Agent Team visibility                                                                                                                                                       |
+| Children                      | `session.repo.ts` `listChildren`                                                          | same predicate; an invisible parent renders `null`, while a visible child is retained even when its owning Agent is hidden                                                                                                                                  |
+| SSE                           | `http/routes/stream.ts`                                                                   | apply the predicate to every session-scoped envelope (`event/session` milestones and `event/session-activity` invalidations) and recheck live organization membership for each event                                                                        |
+| Usage aggregates              | `http/routes/usage.ts`                                                                    | owners receive complete organization attribution through `usage.attribute.all`; other members' agent/model breakdowns and series intersect Agent and Session access, with withheld spend in `unattributed`; totals and source totals stay organization-wide |
 
 Invariants preserved:
 
@@ -509,10 +509,15 @@ Invariants preserved:
   no message content ever flows because of visibility. The one daemon-facing
   addition is the §5.1 privacy bit pushed over the WS control channel — a
   capture gate, not an authorization check the daemon performs for readers.
-- Usage **totals** are the org's, not the reader's: the reader learns an amount,
-  never an identity. What is withheld comes back as one id-less `unattributed`
-  rollup, and it is withheld by EITHER predicate — a restricted Agent, or another
-  user's private Session on an Agent the reader can see — so it is unattributable
+- Usage **totals and source totals** are the org's for every member. Organization owners receive
+  complete aggregate attribution by Agent, model, source, and time, including
+  private and external Session spend. This separate governance permission
+  does not return Session IDs, titles, transcripts, or tool payloads, and never
+  widens Session list or content access. Owner aggregates need no external
+  audience refresh and remain available when those providers cannot answer.
+  For collaborators and viewers, withheld spend comes back as one id-less
+  `unattributed` rollup. Either the Agent or Session predicate can withhold a
+  row — so it is unattributable
   **usage**, not hidden Agents, and every surface naming it says so.
   `Σ agents + unattributed = totals` is an independently summed invariant — never
   `totals` minus the visible rows — so an attribution bug breaks it rather than
