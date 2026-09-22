@@ -283,6 +283,11 @@ finds. When a create collides and lookup confirms that no VM holds the name, the
 daemon repeats it as a replacing create, for the preparation VM and session VMs
 alike; a name a recorded VM holds is never replaced.
 
+Collection runs only on the microsandbox backend. A daemon switched to another
+backend keeps its microsandbox state, including stopped VMs and their disks, in
+case the backend is switched back, and logs a startup warning with the number of
+retained environments and how to reclaim the space.
+
 The ACP runtime, its two helper endpoints, workspace filesystem operations and
 skill publication use the same persistent Node shim and WebSocket protocol as
 Kubernetes, so a VM and a pool pod are driven the same way. The local driver

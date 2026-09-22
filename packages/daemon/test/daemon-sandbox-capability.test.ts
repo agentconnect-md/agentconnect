@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -120,5 +120,40 @@ describe('the sandbox a daemon reports', () => {
     })
     expect(report.features).not.toContain('sandbox')
     expect(report.unavailable).toBeUndefined()
+  })
+})
+
+describe('microsandbox state left by an earlier backend', () => {
+  async function startupWarnings(bindings?: string[], root = scaffold()): Promise<string[]> {
+    if (bindings) {
+      mkdirSync(join(root, 'microsandbox', 'bindings'), { recursive: true })
+      for (const file of bindings) writeFileSync(join(root, 'microsandbox', 'bindings', file), '{}')
+    }
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const daemon = new Daemon({
+      root,
+      hostFactory: () => ({ start: vi.fn(async () => {}), stop: vi.fn(async () => {}) }) as never
+    })
+    try {
+      await daemon.start()
+      return stderr.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('microsandbox state'))
+    } finally {
+      await daemon.stop().catch(() => {})
+      stderr.mockRestore()
+    }
+  }
+
+  it('warns once, with the environment count, and deletes nothing', async () => {
+    const root = scaffold()
+    const warnings = await startupWarnings(['msb-a.json', 'msb-b.json', 'msb-a.json.tmp'], root)
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain(`${join(root, 'microsandbox')} (2 environment(s))`)
+    expect(warnings[0]).toContain('remove that directory')
+    expect(readdirSync(join(root, 'microsandbox', 'bindings'))).toHaveLength(3)
+  })
+
+  it('stays silent when no binding remains', async () => {
+    expect(await startupWarnings()).toEqual([])
+    expect(await startupWarnings([])).toEqual([])
   })
 })
