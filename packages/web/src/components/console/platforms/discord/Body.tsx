@@ -60,10 +60,16 @@ export function DiscordWizardBody({ agent, host }: { agent: Agent; host: WizardH
       linkLabel="Create Discord app"
       steps={DISCORD_STEPS}
       walkthroughLabel="Discord bot setup steps"
-      tokenPlaceholder="Bot token from the Developer Portal"
-      tokenValue={botToken}
-      tokenInvalid={showErrors && !valid}
-      onTokenChange={setBotToken}
+      step2="Paste the bot token — required to connect"
+      fields={[
+        {
+          label: 'Bot token',
+          placeholder: 'Bot token from the Developer Portal',
+          value: botToken,
+          invalid: showErrors && !valid,
+          onChange: setBotToken
+        }
+      ]}
     >
       {appId ? (
         <>

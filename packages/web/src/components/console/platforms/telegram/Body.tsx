@@ -168,12 +168,20 @@ export function TelegramWizardBody({ agent, host }: { agent: Agent; host: Wizard
       linkLabel="Open @BotFather"
       steps={TG_STEPS}
       walkthroughLabel="Telegram bot setup steps"
-      tokenPlaceholder="123456789:AAE…"
-      tokenValue={botToken}
-      tokenInvalid={
-        (showErrors && !telegramOk) || check === 'privacy_enabled' || check === 'invalid' || check === 'unreachable'
-      }
-      onTokenChange={setBotToken}
+      step2="Paste the bot token — required to connect"
+      fields={[
+        {
+          label: 'Bot token',
+          placeholder: '123456789:AAE…',
+          value: botToken,
+          invalid:
+            (showErrors && !telegramOk) ||
+            check === 'privacy_enabled' ||
+            check === 'invalid' ||
+            check === 'unreachable',
+          onChange: setBotToken
+        }
+      ]}
     >
       <TelegramPrivacyStatus
         status={check}

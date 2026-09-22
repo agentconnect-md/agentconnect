@@ -201,13 +201,17 @@ export function BrowserBar({ url }: { url: string }) {
   )
 }
 
-/**
- * The "create a new bot" pane shape shared by the single-token platforms
- * (Telegram, Discord): an external portal link with its hover walkthrough, a
- * one-line setup instruction, optional setup warning, and one bot-token field.
- * `children` is the platform's own tail under the field — Telegram's Privacy
- * Mode status, Discord's ready-made invite.
- */
+/** One pasted credential in a {@link TokenGuidePane}; `secret` masks it. */
+export interface TokenGuideField {
+  label: string
+  placeholder: string
+  value: string
+  invalid: boolean
+  onChange: (next: string) => void
+  secret?: boolean
+}
+
+/** The paste-credentials "create a new bot" pane: portal link, one-line setup step, optional warning, then the fields; `children` is the platform's tail. */
 export function TokenGuidePane({
   mark,
   step1,
@@ -216,10 +220,8 @@ export function TokenGuidePane({
   linkLabel,
   steps,
   walkthroughLabel,
-  tokenPlaceholder,
-  tokenValue,
-  tokenInvalid,
-  onTokenChange,
+  step2,
+  fields,
   children
 }: {
   mark: React.ReactNode
@@ -227,12 +229,10 @@ export function TokenGuidePane({
   step1Warning?: string | undefined
   linkHref: string
   linkLabel: string
-  steps: WalkthroughStep[]
-  walkthroughLabel: string
-  tokenPlaceholder: string
-  tokenValue: string
-  tokenInvalid: boolean
-  onTokenChange: (next: string) => void
+  steps?: WalkthroughStep[]
+  walkthroughLabel?: string
+  step2: string
+  fields: TokenGuideField[]
   children?: React.ReactNode
 }) {
   return (
@@ -254,7 +254,7 @@ export function TokenGuidePane({
               {linkLabel}
               <Icon name="external-link" size={14} />
             </a>
-            <BotSetupWalkthrough steps={steps} label={walkthroughLabel} />
+            {steps && steps.length > 0 && <BotSetupWalkthrough steps={steps} label={walkthroughLabel ?? linkLabel} />}
           </div>
           {step1Warning && (
             <div className="mt-2 font-sans text-[12px] font-medium leading-[1.5] text-(--status-error)">
@@ -267,19 +267,22 @@ export function TokenGuidePane({
         <span className="mono flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
           2
         </span>
-        <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-          Paste the bot token — required to connect
-        </span>
+        <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">{step2}</span>
       </div>
       <div className="pl-[30px]">
-        <div className="fld">
-          <span className="fldlbl">Bot token</span>
-          <input
-            className={`inp mn ${tokenInvalid ? 'border-(--status-error)' : ''}`}
-            placeholder={tokenPlaceholder}
-            value={tokenValue}
-            onChange={(e) => onTokenChange(e.target.value)}
-          />
+        <div className={fields.length > 1 ? 'grid grid-cols-1 gap-[10px] min-[440px]:grid-cols-2' : undefined}>
+          {fields.map((field) => (
+            <div key={field.label} className="fld">
+              <span className="fldlbl">{field.label}</span>
+              <input
+                className={`inp mn ${field.invalid ? 'border-(--status-error)' : ''}`}
+                placeholder={field.placeholder}
+                value={field.value}
+                onChange={(e) => field.onChange(e.target.value)}
+                {...(field.secret ? { type: 'password', autoComplete: 'new-password' } : {})}
+              />
+            </div>
+          ))}
         </div>
         {children}
       </div>
