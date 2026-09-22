@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, readdir, readlink, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, posix } from 'node:path'
 import { promisify } from 'node:util'
-import type { Sandbox, SandboxHandle } from 'microsandbox'
+import type { Sandbox, SandboxBuilder, SandboxHandle } from 'microsandbox'
 import { z } from 'zod'
 import type { SpawnDriver, SpawnedRuntime, SpawnRequest } from '../acp/spawn-driver.js'
 import type { SandboxMount } from '../config/config-schema.js'
@@ -80,6 +80,7 @@ export interface MicrosandboxManagerOptions {
     typeof import('microsandbox'),
     | 'Sandbox'
     | 'SandboxNotFoundError'
+    | 'SandboxAlreadyExistsError'
     | 'AgentClient'
     | 'Volume'
     | 'VolumeNotFoundError'
@@ -465,7 +466,7 @@ export class MicrosandboxManager {
     await this.collectImages(keep)
     await this.prepareImage()
     this.imageIdentities.delete(this.options.config.image)
-    let sandbox = await this.serializeStart(() => this.builder(name, []).create())
+    let sandbox = await this.serializeStart(() => this.createReclaiming(name, () => this.builder(name, [])))
     try {
       const output = await sandbox.exec(MICROSANDBOX_NODE, [
         '-e',
@@ -550,6 +551,18 @@ export class MicrosandboxManager {
     } catch (error) {
       if (error instanceof this.options.sdk.SandboxNotFoundError) return undefined
       throw error
+    }
+  }
+
+  /** Create a fixed-name VM, taking back the name a failed create left claimed: msb writes its directory before the database row `get` reads. */
+  private async createReclaiming(name: string, build: () => SandboxBuilder): Promise<Sandbox> {
+    try {
+      return await build().create()
+    } catch (error) {
+      if (!(error instanceof this.options.sdk.SandboxAlreadyExistsError) || (await this.find(name))) throw error
+      this.options.log?.warn(`microsandbox: reclaiming ${name}, which a failed create left behind`)
+      // With no database row, replace refuses a live runtime and otherwise clears only the leftover directory.
+      return await build().replace().create()
     }
   }
 
@@ -739,7 +752,7 @@ export class MicrosandboxManager {
       }
     }
     const sandbox = await this.startVm(environment.id, () =>
-      this.builder(name, environment.mounts, environment.secrets).create()
+      this.createReclaiming(name, () => this.builder(name, environment.mounts, environment.secrets))
     )
     try {
       const persisted = await this.options.sdk.Sandbox.get(name)

@@ -276,7 +276,12 @@ still boots from that image is kept and logged, and a cache that cannot be read
 is logged without failing startup, so collection never costs availability. The
 temporary preparation VM has a stable name and is reclaimed before it is
 recreated; a start interrupted before its teardown would otherwise leave a VM
-behind that pins a retired image.
+behind that pins a retired image. A create can also fail after microsandbox
+claimed the name: it writes the sandbox directory before the database row, so a
+full disk can stop it in between and leave the name taken by nothing a lookup
+finds. When a create collides and lookup confirms that no VM holds the name, the
+daemon repeats it as a replacing create, for the preparation VM and session VMs
+alike; a name a recorded VM holds is never replaced.
 
 The ACP runtime, its two helper endpoints, workspace filesystem operations and
 skill publication use the same persistent Node shim and WebSocket protocol as
