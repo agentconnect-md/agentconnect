@@ -15,6 +15,7 @@ import type {
  * issued during an open transaction would otherwise silently join it.
  */
 export class SqliteAsyncDatabase implements StoreDatabase {
+  readonly dialect = 'sqlite' as const
   private readonly mutex = new AsyncMutex()
 
   private constructor(private readonly database: DatabaseSync) {}

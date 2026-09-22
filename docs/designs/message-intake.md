@@ -90,6 +90,13 @@ session by the thread, `append` still keys it by the per-agent reservation of
 channel-session-mode.md §3.3. What changes is that the transcript no longer has to be laid out along
 it.
 
+**Stage 1 keeps a coordinate disjunct, deliberately.** Until §5.2's admitted-history / background
+split exists, the only thing that feeds a `createNew` session the §8.5 cross-agent catch-up is the
+physical-thread partition — a peer's replies carry the _peer's_ admission, and "not admitted at all"
+is not the set they fall in. So the Stage 1 session scope is `thread = <coordinate> OR admitted into
+<sessionKey>`: exact for `append` (its coordinate is no thread) and unchanged-from-today for
+`createNew`. The disjunct is removed with the Stage 3 background block, which is what replaces it.
+
 **The two coordinates of channel-session-mode.md §3.1 stay split, and gain a third reader.** The
 delivery coordinate (`msg.thread`) says where an answer posts; the session coordinate says which
 session an admission joins; the channel record's `thread` says which physical thread the message was
@@ -106,14 +113,15 @@ All changes are to the daemon store, in both dialects, through `SCHEMA_MIGRATION
 
 ### 4.1 `transcript`
 
-| Change               | Detail                                                                                                                                                                                                                                                                                   |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `thread`             | The physical thread as the platform normalizes it (root = its own id). Never an `append:*` coordinate. Nullable: `NULL` means the thread was not recorded (only rows migrated from `append` coordinates, §10), and §9 reports it as unknown rather than as a root.                       |
-| `transcript_text_ts` | Unique on `(orgId, channel, ts) WHERE kind = 'text'`. One conversational message is one row per conversation. Internal rows (`tool`, `reasoning`, `app`) have no platform `ts` and are not deduplicated, as today.                                                                       |
-| `recipient`          | Retired from the visibility predicate. It stays as provenance of the first delivery; admissions are the authority.                                                                                                                                                                       |
-| Indexes              | `transcript_thread_seq`, `transcript_thread_event_time`, `transcript_thread_revision` lose `thread` from their leading columns and become `(orgId, channel, …)`; the physical thread is a filter, not a partition. `transcript_app_card` and `transcript_agent_tool_call` are unchanged. |
+| Change               | Detail                                                                                                                                                                                                                                                                                                                                                                             |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `thread`             | The physical thread as the platform normalizes it (root = its own id). Never an `append:*` coordinate. Nullable: `NULL` means the thread was not recorded (only rows migrated from `append` coordinates, §10), and §9 reports it as unknown rather than as a root.                                                                                                                 |
+| `transcript_text_ts` | Unique on `(orgId, channel, ts) WHERE kind = 'text'`. One conversational message is one row per conversation. Internal rows (`tool`, `reasoning`, `app`) have no platform `ts` and are not deduplicated, as today.                                                                                                                                                                 |
+| `recipient`          | Retired from the visibility predicate. It stays as provenance of the first delivery; admissions are the authority.                                                                                                                                                                                                                                                                 |
+| `sessionScope`       | The session a row with a `tool_call_id` belongs to (`sessions.key`), `''` on every other row. Internal rows moved from the session coordinate to the physical thread, and ACP tool ids are session-local, so without it a successor session at one thread cannot own a row for a tool id the retired session already used.                                                         |
+| Indexes              | `transcript_thread_seq`, `transcript_thread_event_time`, `transcript_thread_revision` lose `thread` from their leading columns and become `(orgId, channel, …)`; the physical thread is a filter, not a partition. `transcript_app_card` is unchanged; `transcript_agent_tool_call` gains `sessionScope`, becoming `(orgId, channel, thread, sender, sessionScope, tool_call_id)`. |
 
-Nothing is added to the row. Whether it was admitted, by whom, into what, is the next table's job.
+The row gains only that discriminator. Whether it was admitted, by whom, into what, is the next table's job.
 
 ### 4.2 `transcript_recipient` becomes the admission record
 
@@ -408,17 +416,34 @@ One `SCHEMA_MIGRATIONS` step, run in a transaction before the `CREATE` block:
    such rows as thread-unknown and marks the context partial while any is in the window, which a
    busy conversation outgrows within 100 messages. Participation for their real threads is already in
    `thread_participation`.
-5. Drop and recreate the transcript indexes with the new leading columns; the `CREATE` block emits
-   them.
+5. **Add `sessionScope`** (`''` on every existing row): a tool row written before this step belongs
+   to whatever session was live at its thread, and no column recorded which, so the old rows stay
+   unscoped and a scoped read falls back to them.
+6. Drop and recreate the transcript indexes with the new leading columns — `transcript_agent_tool_call`
+   included, since it gains `sessionScope`; the `CREATE` block emits them.
 
-**Downgrade** is refused by the existing `user_version` check. **Mixed versions on a shared
-PostgreSQL pool**: the pool rolls by surging and then draining old members slowly
-([k8s-daemon-pool.md](k8s-daemon-pool.md)), and the version check runs only at open, so an old member
-still draining writes old-shaped rows into the migrated table until it exits — `append:*` threads,
-no admission row, second-agent copies swallowed by the new unique index. This window is accepted
-without a mechanism: it is bounded by the drain, the affected rows are only the draining member's own
-session history, and the #1041 step set the precedent of treating shared-store transcript content as
-disposable across a shape change.
+**Downgrade** is refused by the existing `user_version` check.
+
+**Mixed versions on a shared PostgreSQL pool are NOT a soft window for this step, and the pool must
+roll by stop/start rather than by a slow drain.** The version check runs only at open, so a v23
+member keeps serving after a v24 member migrates the shared store — but it does not merely write
+old-shaped rows. v23's `transcript_recipient` is `(orgId, channel, thread, ts, agentId)` and those
+columns no longer exist, so from the instant the migration commits:
+
+- every v23 inbound turn fails before the prompt is built — `ingestInboundTranscript` always sets
+  `recipient`, which makes `appendTranscriptLocked` batch an insert into the dropped columns, and
+  `SessionManager.handle` awaits it un-caught;
+- every v23 agent-scoped transcript read fails too — its `AGENT_DELIVERY_SCOPE_SQL` joins
+  `tr.orgId/channel/thread/ts`.
+
+That is an outage on the old side lasting the whole drain, not a bounded loss of a few rows, so the
+[k8s-daemon-pool.md](k8s-daemon-pool.md) surge-and-drain roll is the wrong shape here: this version
+is rolled by taking the old members down first and bringing the new ones up after, and a Cloud
+install schedules it as a brief maintenance stop. (The alternative — keeping a
+`transcript_recipient_legacy` shim alive with the old columns through the window — is deliberately
+not taken: it would have to accept writes the new predicate cannot see, so it buys availability for
+turns whose rows are invisible to the agent anyway.) Within a single self-hosted daemon, which owns
+its SQLite store alone, none of this applies.
 
 ## 11. What this supersedes
 

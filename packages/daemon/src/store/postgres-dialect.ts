@@ -158,6 +158,7 @@ export const canonicalColumns = [
   'sessionKey',
   'sessionId',
   'sessionIds',
+  'sessionScope',
   'seededAt',
   'snapshotDigest',
   'snapshotWrites',

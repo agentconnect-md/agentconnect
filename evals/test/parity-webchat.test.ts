@@ -128,9 +128,15 @@ async function playRelayUserTurn(
 
 /** Reply rows a given sender committed into the shared conversation log. */
 async function transcriptRowsBy(leg: WebchatLeg, sender: string): Promise<unknown[]> {
+  // A whole-conversation read: every webchat row wears the conversation's physical thread, so the
+  // coordinate alone scopes it — no one session's admissions (message-intake.md §3).
   const rows = await (leg.daemon as any).store.transcriptSince(
-    transcriptChannelKey(CONV, undefined),
-    `webchat:${CONV}`,
+    {
+      transcriptChannel: transcriptChannelKey(CONV, undefined),
+      coordinate: `webchat:${CONV}`,
+      sessionKey: '',
+      agentId: ''
+    },
     null
   )
   return rows.filter((row: { sender: string }) => row.sender === sender)

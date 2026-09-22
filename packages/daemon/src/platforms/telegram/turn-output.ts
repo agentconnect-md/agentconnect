@@ -42,6 +42,7 @@ export interface TelegramTurn {
     thread?: string
     statusThread: string
     sessionThread: string
+    sessionKey: string
     transcriptChannel: string
     agentId: string
   }
@@ -67,6 +68,8 @@ export interface TelegramTurnHost<TTurn> {
   appendTranscript(row: {
     channel: string
     thread: string
+    /** The session the row is admitted into (message-intake.md §4.2). */
+    admission: { agentId: string; sessionKey: string }
     ts: string
     sender: string
     kind: 'text'
@@ -105,7 +108,8 @@ export async function applyTelegramAction<TTurn extends TelegramTurn>(
       if (id) state.lastBody = { id, text: sent }
       await host.appendTranscript({
         channel: turn.plan.transcriptChannel,
-        thread: turn.plan.sessionThread,
+        thread: turn.plan.statusThread,
+        admission: { agentId: turn.plan.agentId, sessionKey: turn.plan.sessionKey },
         ts: id ?? `local-${Date.now()}`,
         sender: turn.plan.agentId,
         kind: 'text',

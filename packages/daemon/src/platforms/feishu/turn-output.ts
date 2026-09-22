@@ -61,6 +61,8 @@ export interface FeishuTurnHost<TTurn> {
   appendTranscript(row: {
     channel: string
     thread: string
+    /** The session the row is admitted into (message-intake.md §4.2). */
+    admission: { agentId: string; sessionKey: string }
     ts: string
     sender: string
     kind: 'text'
@@ -123,7 +125,8 @@ export async function applyFeishuAction<TTurn extends FeishuTurn>(
       const id = await conn.postMessage(turn.plan.channel, action.text, turn.plan.thread)
       await host.appendTranscript({
         channel: turn.plan.transcriptChannel,
-        thread: turn.plan.sessionThread,
+        thread: turn.plan.statusThread,
+        admission: { agentId: turn.plan.agentId, sessionKey: turn.plan.sessionKey },
         ts: id ?? `local-${Date.now()}`,
         sender: turn.plan.agentId,
         kind: 'text',

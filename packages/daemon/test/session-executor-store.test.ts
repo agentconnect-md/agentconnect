@@ -138,6 +138,22 @@ describe('LocalStore session executor', () => {
     old.exec('ALTER TABLE inbox DROP COLUMN codeHostReplyTarget')
     old.exec(`INSERT INTO sessions (key, agentId, platform, channel, thread, acpSessionId, state, updatedAt)
       VALUES ('k1', 'bot-a', 'slack', 'C1', 'T1', 'acp-1', 'idle', 100)`)
+    // A pre-v24 store still carries the transcript's old shape (message-intake.md §10).
+    old.exec(`
+      DROP INDEX transcript_channel_seq;
+      DROP INDEX transcript_channel_event_time;
+      DROP INDEX transcript_channel_revision;
+      DROP INDEX transcript_recipient_session;
+      DROP TABLE transcript_recipient;
+      CREATE TABLE transcript_recipient (
+        orgId TEXT NOT NULL DEFAULT '',
+        channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT NOT NULL, agentId TEXT NOT NULL,
+        PRIMARY KEY (orgId, channel, thread, ts, agentId)
+      );
+      CREATE INDEX transcript_thread_seq ON transcript (orgId, channel, thread, seq);
+      CREATE INDEX transcript_thread_event_time ON transcript (orgId, channel, thread, eventTimeUs DESC, seq DESC);
+      CREATE INDEX transcript_thread_revision ON transcript (orgId, channel, thread, revision);
+    `)
     old.exec('PRAGMA user_version = 19')
     old.close()
 

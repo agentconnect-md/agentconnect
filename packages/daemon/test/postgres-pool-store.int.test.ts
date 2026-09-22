@@ -5,6 +5,24 @@ import { PostgresAsyncDatabase } from '../src/store/postgres-async-database.js'
 import type { LocalStore } from '../src/store/local-store.js'
 import { STORE_RETENTION_RULES, StoreRetentionSweeper } from '../src/store/retention.js'
 
+/** The admission a session-internal row (tool / plan / card) always carries — its own sender's
+ *  session, keyed exactly as {@link readScope} keys a `createNew` conversation. */
+export const admitted = <T extends { sender: string; channel: string; thread: string }>(
+  e: T
+): T & { admission: { agentId: string; sessionKey: string } } => ({
+  ...e,
+  admission: { agentId: e.sender, sessionKey: `k:${e.channel}:${e.thread}:${e.sender}` }
+})
+
+/** One session's transcript read scope. In a `createNew` conversation the coordinate IS the
+ *  physical thread, so a scope built this way reads exactly what `(channel, thread)` used to. */
+export const readScope = (
+  transcriptChannel: string,
+  coordinate: string,
+  agentId: string,
+  sessionKey = `k:${transcriptChannel}:${coordinate}:${agentId}`
+) => ({ transcriptChannel, coordinate, sessionKey, agentId })
+
 const databaseUrl = process.env.DATA_PLANE_TEST_DATABASE_URL
 
 describe.skipIf(!databaseUrl)('PostgreSQL pool member store', () => {
@@ -322,15 +340,17 @@ describe.skipIf(!databaseUrl)('PostgreSQL pool member store', () => {
     const config = { version: 1 as const, databaseUrl: databaseUrl!, maxConnections: 2 }
     const member = await PostgresDataPlane.open(config, (id) => (id === agentId ? `org-${suffix}` : undefined))
     try {
-      await member.store.insertToolCall({
-        channel,
-        thread,
-        ts: '1',
-        sender: agentId,
-        toolCallId: 'tc-1',
-        title: 'Bash',
-        body: '{"status":"pending"}'
-      })
+      await member.store.insertToolCall(
+        admitted({
+          channel,
+          thread,
+          ts: '1',
+          sender: agentId,
+          toolCallId: 'tc-1',
+          title: 'Bash',
+          body: '{"status":"pending"}'
+        })
+      )
       for (let chunk = 1; chunk <= 8; chunk++) {
         await member.store.updateToolCall(channel, thread, agentId, 'tc-1', {
           title: 'Bash',
@@ -343,7 +363,7 @@ describe.skipIf(!databaseUrl)('PostgreSQL pool member store', () => {
       expect(row?.body).toBe('{"status":"in_progress","chunk":8}')
       expect(Number(row?.revision)).toBeGreaterThan(0)
       // The read the CP's bounded tool-body fetch actually takes, drained by the same facade.
-      expect(await member.store.getToolBodyForAgent(channel, thread, agentId, 'tc-1')).toBe(
+      expect(await member.store.getToolBodyForAgent(readScope(channel, thread, agentId), 'tc-1')).toBe(
         '{"status":"in_progress","chunk":8}'
       )
     } finally {

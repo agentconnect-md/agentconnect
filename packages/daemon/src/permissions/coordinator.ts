@@ -280,7 +280,7 @@ type PendingElicit = PendingElicitSurface & {
 }
 
 /** One card's `elicit` transcript row: its coordinates, and the card the ask recorded there. */
-type ElicitRow = { channel: string; thread: string; ts: string; sender: string; card: ElicitCard }
+type ElicitRow = { channel: string; thread: string; sessionKey: string; ts: string; sender: string; card: ElicitCard }
 
 /** The turn's platform surfaces a permission or elicitation card renders through. */
 export interface PermissionSurfaceHost {
@@ -2354,6 +2354,7 @@ export class PermissionCoordinator {
     const row: ElicitRow = {
       channel: p.plan.transcriptChannel,
       thread: p.plan.statusThread,
+      sessionKey: p.plan.sessionKey,
       // The monotonic internal-event clock, as every other non-conversational row uses: it keeps
       // the card in the position it was asked and cannot collide with a second card's row.
       ts: monotonicTs(),
@@ -2373,6 +2374,7 @@ export class PermissionCoordinator {
         thread: row.thread,
         ts: row.ts,
         sender: row.sender,
+        admission: { agentId: row.sender, sessionKey: row.sessionKey },
         text: row.card.message,
         body: elicitRowBody(row.card, settled)
       })
@@ -2399,6 +2401,7 @@ export class PermissionCoordinator {
       {
         channel: p.plan.transcriptChannel,
         thread: p.plan.statusThread,
+        sessionKey: p.plan.sessionKey,
         ts: monotonicTs(),
         sender: p.plan.agentId,
         card

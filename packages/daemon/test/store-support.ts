@@ -30,6 +30,7 @@ export function usingPostgresStore(): boolean {
 /** A suite closes its store freely, so the worker-wide connection must survive that. */
 function borrowed(database: StoreDatabase): StoreDatabase {
   return {
+    ...(database.dialect ? { dialect: database.dialect } : {}),
     exec: (sql) => database.exec(sql),
     query: (sql, params) => database.query(sql, params),
     batch: (statements) => database.batch(statements),

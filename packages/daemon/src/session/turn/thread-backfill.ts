@@ -22,10 +22,14 @@ export type ThreadBackfillInput = {
   platform: string
   /** The agent whose turn this is; its own rows are never re-recorded. */
   agentId: string
+  /** `sessions.key` the imported rows are admitted into (message-intake.md §4.2). */
+  sessionKey: string
   /** Transcript-key channel the fetched rows are written under. */
   transcriptChannel: string
-  /** The thread root's id. */
+  /** The SESSION coordinate — the cutoff logic's own comparison, never a row's thread. */
   thread: string
+  /** The PHYSICAL platform thread the imported rows carry. */
+  deliveryThread: string
   /** The activating message's id. */
   ts: string
   /** The read cursor this turn started from, or `null` for a from-scratch catch-up. */
@@ -57,7 +61,7 @@ export type ThreadBackfillResult = {
  * so its target snapshots/catches up exactly like a human-triggered turn.
  */
 export async function backfillThreadHistory(input: ThreadBackfillInput): Promise<ThreadBackfillResult> {
-  const { agentId, transcriptChannel, thread, markerBefore, ordering, store, fetchHistory } = input
+  const { agentId, sessionKey, transcriptChannel, thread, markerBefore, ordering, store, fetchHistory } = input
   const snapshotCutoffTs =
     input.platform === 'slack' && thread !== input.ts && fetchHistory ? slackTsForWallClock(Date.now()) : undefined
   // Provider history and locally recorded rows share one test: an id the platform issued
@@ -83,11 +87,13 @@ export async function backfillThreadHistory(input: ThreadBackfillInput): Promise
     if (h.sender === agentId) continue
     await store.appendTranscript({
       channel: transcriptChannel,
-      thread,
+      thread: input.deliveryThread,
       ts: h.ts,
       sender: h.sender,
       ...(h.trustedAgentBot ? { trustedAgentBot: true } : {}),
-      // Snapshotted thread history is context THIS agent's turn receives.
+      // This session's own history: the turn's prompt is built from this window, so the row is
+      // admitted into it (message-intake.md §4.2/§5.2). `recipient` stays as provenance.
+      admission: { agentId, sessionKey },
       recipient: agentId,
       kind: 'text',
       text: h.text

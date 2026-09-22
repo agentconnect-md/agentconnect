@@ -62,7 +62,10 @@ export interface LiveApp {
 export interface AppRow {
   readonly nativeUi?: NativeMcpUi
   readonly channel: string
+  /** The PHYSICAL thread the card's row carries. */
   readonly thread: string
+  /** The session the card's row is admitted into. */
+  readonly sessionKey: string
   readonly ts: string
   readonly sender: string
   readonly appId: string
@@ -81,7 +84,7 @@ export interface AppRow {
 export function reviveAppRow(
   appId: string,
   conversationId: string,
-  stored: { channel: string; thread: string; ts: string; sender: string; body: string }
+  stored: { channel: string; thread: string; ts: string; sender: string; sessionKey: string; body: string }
 ): AppRow | undefined {
   let parsed
   try {
@@ -97,6 +100,7 @@ export function reviveAppRow(
   return {
     channel: stored.channel,
     thread: stored.thread,
+    sessionKey: stored.sessionKey,
     ts: stored.ts,
     sender: stored.sender,
     appId,

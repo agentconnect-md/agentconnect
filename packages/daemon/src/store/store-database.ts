@@ -26,6 +26,8 @@ export interface StoreTx {
 
 /** The async store seam: every method resolves only once its writes are durable. */
 export interface StoreDatabase extends StoreTx {
+  /** Which SQL dialect the backend really speaks — a migration step that cannot be written portably branches on it. */
+  readonly dialect?: 'sqlite' | 'postgres'
   /** Run `fn` inside one transaction, committing on return and rolling back on throw. */
   transaction<T>(fn: (tx: StoreTx) => Promise<T>): Promise<T>
   close(): Promise<void>

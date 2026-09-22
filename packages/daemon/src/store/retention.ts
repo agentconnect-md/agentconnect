@@ -27,6 +27,10 @@ import type { LocalStore } from './local-store.js'
  *   ever drain the row, and the daemon that does hold the agent now reads a different store. It
  *   rides the same dry-run flag.
  *
+ * The one exception is the transcript observation sweep (`LocalStore.sweepObservations`,
+ * message-intake.md §8 rule 2): a per-conversation count window with a cross-table `NOT EXISTS`,
+ * which no single-table horizon rule here can express.
+ *
  * Two callers, one table. The daemon's own hourly sweep runs the rules age-only against its
  * own store — a local single-daemon install keeps working exactly as it did, because
  * retention was never about ownership there. The pool's `reconcile --once` CronJob runs them

@@ -10,6 +10,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { LocalStore } from '../src/store/local-store.js'
 
+/** The admission a session-internal row (tool / plan / card) always carries — its own sender's
+ *  session, keyed exactly as {@link readScope} keys a `createNew` conversation. */
+export const admitted = <T extends { sender: string; channel: string; thread: string }>(
+  e: T
+): T & { admission: { agentId: string; sessionKey: string } } => ({
+  ...e,
+  admission: { agentId: e.sender, sessionKey: `k:${e.channel}:${e.thread}:${e.sender}` }
+})
+
 const mode = (p: string) => statSync(p).mode & 0o777
 
 describe.skipIf(process.platform === 'win32')('local store file permissions', () => {
@@ -18,15 +27,17 @@ describe.skipIf(process.platform === 'win32')('local store file permissions', ()
     const dbPath = join(root, 'state', 'local.sqlite')
     const store = await LocalStore.open(dbPath)
     // A write forces the WAL siblings into existence.
-    await store.insertToolCall({
-      channel: 'C1',
-      thread: 'T1',
-      ts: '1',
-      sender: 'agent-1',
-      toolCallId: 'tc-1',
-      title: 't',
-      body: '{}'
-    })
+    await store.insertToolCall(
+      admitted({
+        channel: 'C1',
+        thread: 'T1',
+        ts: '1',
+        sender: 'agent-1',
+        toolCallId: 'tc-1',
+        title: 't',
+        body: '{}'
+      })
+    )
 
     expect(mode(join(root, 'state'))).toBe(0o700)
     expect(mode(dbPath)).toBe(0o600)

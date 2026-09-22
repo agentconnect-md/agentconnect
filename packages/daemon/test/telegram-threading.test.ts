@@ -723,6 +723,7 @@ describe('continue-the-topic hint delivery', () => {
     const p = {
       plan: {
         agentId: 'bot-a',
+        sessionKey: 'telegram:-100:tg:100:bot-a',
         channel: '-100',
         transcriptChannel: '-100',
         statusThread: 'tg:100',

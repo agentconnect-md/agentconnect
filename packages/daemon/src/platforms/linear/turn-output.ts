@@ -109,6 +109,8 @@ export interface LinearTurnHost {
   appendTranscript(row: {
     channel: string
     thread: string
+    /** The session the row is admitted into (message-intake.md §4.2). */
+    admission: { agentId: string; sessionKey: string }
     ts: string
     sender: string
     kind: 'text'
@@ -761,8 +763,9 @@ export async function applyLinearAction<TTurn extends LinearTurn>(
     if (!host || !transcriptChannel || !statusThread) return
     await host.appendTranscript({
       channel: transcriptChannel,
-      // A transcript row is the SESSION's; `statusThread` above is the chrome target.
-      thread: sessionThread ?? statusThread,
+      // The row carries the PHYSICAL thread; the session rides the admission.
+      thread: statusThread,
+      admission: { agentId: turn.plan.agentId, sessionKey: turn.plan.sessionKey },
       ts: host.monotonicTs(),
       sender: turn.plan.agentId,
       kind: 'text',

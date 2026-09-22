@@ -273,7 +273,12 @@ describe('messageAgent: same-daemon delivery', () => {
     expect(callMeta).toMatchObject({ callFrom: 'bot-a' })
     expect(callMeta.deliveryId).toBe(msg.msgId.split(':').pop())
     // No shared-transcript row is recorded for the (now invisible) agent message.
-    expect(await (daemon as any).store.transcriptSince('C1', '100.1', null)).toEqual([])
+    expect(
+      await (daemon as any).store.transcriptSince(
+        { transcriptChannel: 'C1', coordinate: '100.1', sessionKey: 'k', agentId: 'bot-a' },
+        null
+      )
+    ).toEqual([])
 
     await daemon.stop()
   })
@@ -380,7 +385,12 @@ describe('messageAgent: same-daemon delivery', () => {
       expect(res).toMatchObject({ delivered: false, reason: 'invalid_target' })
       expect(postMessage).not.toHaveBeenCalled()
       expect(calls).toHaveLength(0)
-      expect(await (daemon as any).store.transcriptSince('C1', '100.1', null)).toEqual([])
+      expect(
+        await (daemon as any).store.transcriptSince(
+          { transcriptChannel: 'C1', coordinate: '100.1', sessionKey: 'k', agentId: 'bot-a' },
+          null
+        )
+      ).toEqual([])
       await daemon.stop()
     }
   )
@@ -445,7 +455,12 @@ describe('messageAgent: same-daemon delivery', () => {
     expect(result.post).toBeUndefined()
     expect(postMessage).not.toHaveBeenCalled()
     expect(calls).toHaveLength(0)
-    expect(await (daemon as any).store.transcriptSince('C1', '100.1', null)).toEqual([])
+    expect(
+      await (daemon as any).store.transcriptSince(
+        { transcriptChannel: 'C1', coordinate: '100.1', sessionKey: 'k', agentId: 'bot-a' },
+        null
+      )
+    ).toEqual([])
     await daemon.stop()
   })
 

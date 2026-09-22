@@ -17,6 +17,15 @@ import type { McpServer } from '@agentclientprotocol/sdk'
 import { writeWithSidecar } from './fixtures/memory-sidecar.js'
 import { localMemoryHome } from '../src/memory/home.js'
 
+/** One session's transcript read scope. In a `createNew` conversation the coordinate IS the
+ *  physical thread, so a scope built this way reads exactly what `(channel, thread)` used to. */
+export const readScope = (
+  transcriptChannel: string,
+  coordinate: string,
+  agentId: string,
+  sessionKey = `k:${transcriptChannel}:${coordinate}:${agentId}`
+) => ({ transcriptChannel, coordinate, sessionKey, agentId })
+
 const local = (dir: string) => new LocalMemoryFs(dir)
 
 async function newStore() {
@@ -102,30 +111,68 @@ describe('SessionManager', () => {
     await s.close()
   })
 
-  // §6.2: an append session's transcript must be ONE coherent read. The failure this pins
-  // is a split — the human turn filed at the coordinate while the agent's own reply lands
-  // under the thread it was posted to, leaving the session reading only half its own
-  // conversation and every revision fence blind to the agent's side.
+  // message-intake.md §4: an append session's transcript is ONE coherent read through its
+  // admissions. The rows themselves carry the PHYSICAL thread — the conversation they were in —
+  // and the coordinate lives only on the admission, so nothing is filed under `append:*`.
   it('keeps the human turn and the agent reply in one transcript for an append session', async () => {
     const store = await newStore()
     const sm = new SessionManager({ store, hostFor: async () => fakeHost(), agentById: () => agent, memory })
     const coordinate = 'append:1700000000000'
+    const key = sessionKey('slack', 'C1', coordinate, 'bot-a')
     await sm.handle('bot-a', msg({ ts: '100.1', text: 'first', sessionThread: coordinate }))
 
     const s = await store
-    // The reply recorder writes at the session coordinate, the way every turn-output does.
+    // The reply recorder writes at the DELIVERY thread with an admission into this session.
     await s.appendTranscript({
       channel: 'C1',
-      thread: coordinate,
+      thread: '100.1',
+      admission: { agentId: 'bot-a', sessionKey: key },
       ts: '100.2',
       sender: 'bot-a',
       kind: 'text',
       text: 'answer'
     })
-    const rows = await s.threadTranscript('C1', coordinate, 'bot-a')
-    expect(rows.map((r) => r.sender)).toEqual(['U1', 'bot-a'])
-    // Nothing is filed under the delivery thread, which is what splitting would look like.
-    expect(await s.threadTranscript('C1', '100.1', 'bot-a')).toEqual([])
+    const page = await s.transcriptPageForAgent(
+      { transcriptChannel: 'C1', coordinate, sessionKey: key, agentId: 'bot-a' },
+      null,
+      50
+    )
+    expect(page.rows.map((r) => r.sender).reverse()).toEqual(['U1', 'bot-a'])
+    // Both rows are in the conversation, under the thread the message actually arrived in.
+    expect((await s.threadTranscript('C1', '100.1', 'bot-a')).map((r) => r.sender)).toEqual(['U1', 'bot-a'])
+    expect(await s.threadTranscript('C1', coordinate, 'bot-a')).toEqual([])
+    await s.close()
+  })
+
+  // §12 Case A: two agents with DIFFERENT session modes in one conversation produce ONE row
+  // and two admissions, each at its own coordinate.
+  it('gives two agents in different session modes one row and one admission each', async () => {
+    const store = await newStore()
+    const sm = new SessionManager({ store, hostFor: async () => fakeHost(), agentById: () => agent, memory })
+    const coordinate = 'append:1700000000000'
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+    await sm.handle('bot-b', msg({ ts: '100.1', text: 'first', sessionThread: coordinate }))
+
+    const s = await store
+    expect((await s.threadTranscript('C1', '100.1')).filter((r) => r.kind === 'text').map((r) => r.text)).toEqual([
+      'first'
+    ])
+    for (const [agentId, coord] of [
+      ['bot-a', '100.1'],
+      ['bot-b', coordinate]
+    ] as const) {
+      const page = await s.transcriptPageForAgent(
+        {
+          transcriptChannel: 'C1',
+          coordinate: coord,
+          sessionKey: sessionKey('slack', 'C1', coord, agentId),
+          agentId
+        },
+        null,
+        50
+      )
+      expect(page.rows.map((r) => r.text)).toContain('first')
+    }
     await s.close()
   })
 
@@ -184,7 +231,7 @@ describe('SessionManager', () => {
     expect(texts(first.blocks)).toContain('[U1] Linear ENG-1 "x" — delegated by U1\nfull prompt')
     expect(texts(first.blocks)).not.toContain('Delegated ENG-1')
     // The row keeps the text and carries the body.
-    const rows = await (await store).transcriptSince('C1', '100.1', null, 'bot-a')
+    const rows = await (await store).transcriptSince(readScope('C1', '100.1', 'bot-a'), null)
     expect(rows.map((r) => [r.text, r.body && JSON.parse(r.body)])).toEqual([['Delegated ENG-1', turnBody]])
     // A runtime that cannot load the session replays the thread — from the prompt, not the text.
     const host2 = { newSession: vi.fn(async () => 'acp-2'), hasSession: () => false, loadSupported: () => false } as any
@@ -1809,7 +1856,21 @@ describe('SessionManager', () => {
     expect(joined).toContain('earlier human msg') // pulled history replayed as context
     expect(joined).toContain('another reply')
     expect(joined).toContain('BotA help') // current prompt last
-    await (await store).close()
+    // The backfilled rows are this session's HISTORY, so they carry its admission and stay
+    // visible through the agent-scoped read the console and the a2a refresh use.
+    const db = await store
+    const page = await db.transcriptPageForAgent(
+      {
+        transcriptChannel: 'C1',
+        coordinate: '100.1',
+        sessionKey: sessionKey('slack', 'C1', '100.1', 'bot-a'),
+        agentId: 'bot-a'
+      },
+      null,
+      20
+    )
+    expect(page.rows.map((r) => r.text)).toEqual(expect.arrayContaining(['earlier human msg', 'another reply']))
+    await db.close()
   })
 
   it('snapshots a warm Slack thread through turn start and delivers every unread message in timestamp order', async () => {
@@ -2027,7 +2088,9 @@ describe('SessionManager', () => {
     expect(res.skipped).not.toBe(true)
 
     // One deduped hand-off row (the post), not two.
-    const rows = (await (await store).transcriptSince('C1', '200.1', null, 'bot-b')).filter((r) => r.kind === 'text')
+    const rows = (await (await store).transcriptSince(readScope('C1', '200.1', 'bot-b'), null)).filter(
+      (r) => r.kind === 'text'
+    )
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ ts: '200.5' })
 
@@ -2157,11 +2220,11 @@ describe('SessionManager', () => {
 
     // The own message stays a SINGLE transcript row (the snapshot skipped it), while the
     // missed human message is still backfilled.
-    const own = (await (await store).transcriptSince('C1', '100.1', null, 'bot-a')).filter(
+    const own = (await (await store).transcriptSince(readScope('C1', '100.1', 'bot-a'), null)).filter(
       (r) => r.text === 'here is my answer'
     )
     expect(own).toHaveLength(1)
-    const human = (await (await store).transcriptSince('C1', '100.1', null, 'bot-a')).filter(
+    const human = (await (await store).transcriptSince(readScope('C1', '100.1', 'bot-a'), null)).filter(
       (r) => r.text === 'human follow-up'
     )
     expect(human).toHaveLength(1)

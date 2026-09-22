@@ -5,10 +5,11 @@
  */
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
-import { LocalStore, THREAD_PARTICIPATION_BACKFILL } from '../src/store/local-store.js'
+import { LocalStore, THREAD_PARTICIPATION_BACKFILL, TRANSCRIPT_ADMISSION_BACKFILL } from '../src/store/local-store.js'
 import { tempStorePath } from './store-support.js'
 import {
   bind,
+  canonicalColumns,
   changesOf,
   columnNames,
   emulate,
@@ -253,5 +254,25 @@ describe('null-safe parameter comparison', () => {
 
   it('leaves a literal IS NULL alone', () => {
     expect(rewrite('SELECT 1 FROM sessions WHERE acpSessionId IS NULL')).toContain('acpSessionId IS NULL')
+  })
+})
+
+// message-intake.md §10: the admission backfill has the same trap — and every camelCase
+// identifier it reads back has to be in `canonicalColumns`, which nothing else checks.
+describe('transcript admission backfill', () => {
+  it('rewrites to a conflict clause rather than reaching PostgreSQL as SQLite syntax', () => {
+    const out = rewrite(TRANSCRIPT_ADMISSION_BACKFILL)
+    expect(out).not.toMatch(/INSERT\s+OR\s+IGNORE/i)
+    expect(out).toMatch(/ON CONFLICT DO NOTHING$/)
+  })
+
+  it('names no camelCase column the canonical-case restore does not know', () => {
+    for (const column of ['agentId', 'sessionKey', 'orgId', 'transportScope'])
+      expect(canonicalColumns).toContain(column)
+  })
+
+  it('concatenates with CONCAT, which both dialects run', () => {
+    expect(TRANSCRIPT_ADMISSION_BACKFILL).toContain('CONCAT(')
+    expect(TRANSCRIPT_ADMISSION_BACKFILL).not.toContain(' || ')
   })
 })

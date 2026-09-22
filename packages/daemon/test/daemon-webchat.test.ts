@@ -1751,9 +1751,12 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     )
     expect(messages).toEqual([]) // the sentinel was held and dropped
     expect(sendWebchatPost).not.toHaveBeenCalled() // no canonical post fan-out
-    const replies = (await (daemon as any).store.transcriptSince(`${CONV}`, `webchat:${CONV}`, null)).filter(
-      (row: { sender: string }) => row.sender === AGENT_ID
-    )
+    const replies = (
+      await (daemon as any).store.transcriptSince(
+        { transcriptChannel: `${CONV}`, coordinate: `webchat:${CONV}`, sessionKey: 'webchat', agentId: 'bot-a' },
+        null
+      )
+    ).filter((row: { sender: string }) => row.sender === AGENT_ID)
     expect(replies).toEqual([]) // no transcript reply row
     await daemon.stop()
   })

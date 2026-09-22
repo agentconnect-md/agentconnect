@@ -1,6 +1,6 @@
 // Webchat output mapping and canonical transcript helpers used by the turn engine.
 import type { SessionImageAttachment, WebchatEvent } from '@agentconnect.md/protocol'
-import type { LocalStore } from '../store/local-store.js'
+import type { LocalStore, TranscriptAdmission } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { isNoResponsePrefix } from '../session/no-response.js'
 import { planEntriesOf } from '../session/plan-entries.js'
@@ -102,16 +102,10 @@ export function emitWebchatUpdate(
   }
 }
 
-/**
- * Append one webchat conversation text row at (or just after) `ts`. The
- * `(channel, thread, ts)` unique index dedups by timestamp alone, and two
- * daemons can mint the same millisecond for DISTINCT concurrent posts — an
- * unchecked `INSERT OR IGNORE` would silently drop the later one. Probe the
- * slot: an identical post dedups in place (the recipient delivery is still
- * recorded), a foreign occupant bumps the ts by 1 ms (bounded). Returns the
- * ts actually used, which becomes the post's canonical `at` when the caller
- * is the origin.
- */
+/** Append one webchat text row at (or just after) `ts`. The `(channel, ts)` unique index dedups by
+ *  timestamp alone and two daemons can mint one millisecond for DISTINCT posts, so probe the slot:
+ *  an identical post dedups in place (its admission is still recorded), a foreign occupant bumps
+ *  the ts by 1 ms (bounded). Returns the ts actually used — the post's canonical `at` at the origin. */
 export async function appendWebchatTextRow(
   store: LocalStore,
   channel: string,
@@ -120,6 +114,7 @@ export async function appendWebchatTextRow(
   entry: {
     sender: string
     recipient?: string
+    admission?: TranscriptAdmission
     text: string
     /** Canonical webchat post id — persisted on the row (§6). */
     postId?: string
@@ -129,7 +124,7 @@ export async function appendWebchatTextRow(
 ): Promise<string> {
   let slot = BigInt(ts)
   for (let attempt = 0; attempt < 32; attempt++) {
-    const existing = await store.transcriptTextAt(channel, thread, String(slot), entry)
+    const existing = await store.transcriptTextAt(channel, String(slot), entry)
     // Canonical identity decides slot reuse (§6): two DISTINCT posts can share
     // sender, text, AND millisecond (`at` minting is connection-local, so two
     // tabs can collide) — only a matching postId proves the occupant IS this

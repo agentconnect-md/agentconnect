@@ -146,7 +146,11 @@ const channelMsg = (ts: string, text: string) => ({ ...dm(ts, text), isDm: false
 const agentMsg = (ts: string, text: string) => ({ ...channelMsg(ts, text), source: 'agent' as const })
 
 async function transcript(daemon: Daemon): Promise<TranscriptEntry[]> {
-  return await (daemon as any).store.transcriptSince(TRANSCRIPT_CHANNEL, 'T1', null)
+  // A `createNew` conversation: the session coordinate IS the physical thread.
+  return await (daemon as any).store.transcriptSince(
+    { transcriptChannel: TRANSCRIPT_CHANNEL, coordinate: 'T1', sessionKey: 'slack:C1:T1:bot-a', agentId: 'bot-a' },
+    null
+  )
 }
 
 /** Full activity log (all kinds), insertion order — what the Web UI reads. */
@@ -1017,7 +1021,7 @@ describe('Daemon transcript captures the full activity log (mode-independent)', 
 
     // A *different* agent replaying the thread sees conversational text only — never
     // bot-a's tool calls or reasoning fed back as "context you may have missed".
-    const gap = await (daemon as any).store.transcriptSince(TRANSCRIPT_CHANNEL, 'T1', null)
+    const gap = await transcript(daemon)
     expect(gap.every((r: TranscriptEntry) => r.kind === 'text')).toBe(true)
     expect(gap.map((r: TranscriptEntry) => r.text)).toEqual(['go', 'here is the answer'])
     await daemon.stop()

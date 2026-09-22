@@ -52,9 +52,14 @@ export interface TranscriptIngestInput {
   /** The agent this activation runs for — the transcript row's recipient. */
   agentId: string
   msg: NormalizedMessage
-  /** Transcript primary-key coordinates already resolved by the caller. */
+  /** The conversation's transcript channel, already resolved by the caller. */
   transcriptChannel: string
+  /** The SESSION coordinate — it names the admission, never the row. */
   thread: string
+  /** The PHYSICAL platform thread the row itself carries. */
+  deliveryThread: string
+  /** `sessions.key` this delivery is admitted into. */
+  sessionKey: string
   ts: string
   /** Download an inbound attachment's bytes (§9.2); resolves null when unavailable. */
   download: (att: Attachment) => Promise<Buffer | null>
@@ -77,7 +82,7 @@ export interface TranscriptIngestResult {
  * by the prompt blocks the caller builds later.
  */
 export async function ingestInboundTranscript(input: TranscriptIngestInput): Promise<TranscriptIngestResult> {
-  const { store, agentId, msg, transcriptChannel, thread } = input
+  const { store, agentId, msg, transcriptChannel } = input
   await hydrateTranscriptImage(msg.attachments, {
     download: input.download,
     ...(input.attachmentMaxBytes !== undefined ? { maxBytes: input.attachmentMaxBytes } : {})
@@ -95,12 +100,13 @@ export async function ingestInboundTranscript(input: TranscriptIngestInput): Pro
             ...(msg.transcriptPostId ? { postId: msg.transcriptPostId } : {})
           },
           async (slot) =>
-            await store.transcriptTextAt(transcriptChannel, thread, slot, { sender: msg.sender.id, recipient: agentId })
+            await store.transcriptTextAt(transcriptChannel, slot, { sender: msg.sender.id, recipient: agentId })
         )
       : input.ts
   await store.appendTranscript({
     channel: transcriptChannel,
-    thread,
+    thread: input.deliveryThread,
+    admission: { agentId, sessionKey: input.sessionKey },
     ts,
     sender: msg.sender.id,
     // The canonical webchat post identity travels with the canonical ts —
@@ -110,8 +116,7 @@ export async function ingestInboundTranscript(input: TranscriptIngestInput): Pro
     // (Telegram/Feishu; Discord decodes its snowflake at normalization) — the
     // merged conversation view orders on this axis.
     ...(msg.platformTimeMs ? { eventTimeUs: msg.platformTimeMs * 1000 } : {}),
-    // This message was delivered TO this agent (handle() runs for `agentId`), so tag the
-    // recipient — the console session view scopes to what THIS agent received + produced.
+    // First-delivery provenance; the admission above is what the session's view reads.
     recipient: agentId,
     // A response finalization is the same Slack message as the post that opened it, so
     // it lands on that row and refreshes it to the completed text.

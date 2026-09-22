@@ -11,6 +11,24 @@ import { describe, expect, it } from 'vitest'
 import { sessionKey, type LocalStore } from '../src/store/local-store.js'
 import { openTestStore, tempStorePath } from './store-support.js'
 
+/** The admission a session-internal row (tool / plan / card) always carries — its own sender's
+ *  session, keyed exactly as {@link readScope} keys a `createNew` conversation. */
+export const admitted = <T extends { sender: string; channel: string; thread: string }>(
+  e: T
+): T & { admission: { agentId: string; sessionKey: string } } => ({
+  ...e,
+  admission: { agentId: e.sender, sessionKey: `k:${e.channel}:${e.thread}:${e.sender}` }
+})
+
+/** One session's transcript read scope. In a `createNew` conversation the coordinate IS the
+ *  physical thread, so a scope built this way reads exactly what `(channel, thread)` used to. */
+export const readScope = (
+  transcriptChannel: string,
+  coordinate: string,
+  agentId: string,
+  sessionKey = `k:${transcriptChannel}:${coordinate}:${agentId}`
+) => ({ transcriptChannel, coordinate, sessionKey, agentId })
+
 const seedSession = async (s: LocalStore, key: string, agentId: string, acpSessionId: string | null) =>
   await s.upsertSession({
     key,
@@ -48,15 +66,17 @@ describe('LocalStore under interleaved turns', () => {
     // tool update, all in flight at once against one thread.
     const turn = async (n: number) => {
       await s.appendTranscript({ channel, thread, ts: `${n}.100`, sender: `U${n}`, kind: 'text', text: `ask ${n}` })
-      await s.insertToolCall({
-        channel,
-        thread,
-        ts: `${n}.200`,
-        sender: 'bot-a',
-        toolCallId: `tc-${n}`,
-        title: 'Bash',
-        body: '{"status":"pending"}'
-      })
+      await s.insertToolCall(
+        admitted({
+          channel,
+          thread,
+          ts: `${n}.200`,
+          sender: 'bot-a',
+          toolCallId: `tc-${n}`,
+          title: 'Bash',
+          body: '{"status":"pending"}'
+        })
+      )
       await s.updateToolCall(channel, thread, 'bot-a', `tc-${n}`, {
         title: 'Bash',
         body: `{"status":"completed","turn":${n}}`
@@ -79,7 +99,7 @@ describe('LocalStore under interleaved turns', () => {
     const revisions = rows.map((row) => Number(row.revision))
     // No two rows share a revision, and the thread revision a reader polls is the highest one.
     expect(new Set(revisions).size).toBe(revisions.length)
-    expect(Math.max(...revisions)).toBe(await s.threadTranscriptRevision(channel, thread))
+    expect(Math.max(...revisions)).toBe(await s.threadTranscriptRevision(readScope(channel, thread, 'agent')))
     // Every tool row carries its own turn's final body: no flush wrote another turn's overlay.
     for (const row of rows.filter((entry) => entry.kind === 'tool')) {
       expect(row.body).toBe(`{"status":"completed","turn":${row.tool_call_id?.slice('tc-'.length)}}`)
@@ -128,15 +148,17 @@ describe('LocalStore under interleaved turns', () => {
     const thread = 'T-shutdown'
     try {
       await s.appendTranscript({ channel, thread, ts: '1.100', sender: 'U1', kind: 'text', text: 'ask' })
-      await s.insertToolCall({
-        channel,
-        thread,
-        ts: '1.200',
-        sender: 'bot-a',
-        toolCallId: 'tc-stop',
-        title: 'Bash',
-        body: '{"status":"pending"}'
-      })
+      await s.insertToolCall(
+        admitted({
+          channel,
+          thread,
+          ts: '1.200',
+          sender: 'bot-a',
+          toolCallId: 'tc-stop',
+          title: 'Bash',
+          body: '{"status":"pending"}'
+        })
+      )
       // Buffered, never flushed: only `close()` can still make this body durable.
       await s.updateToolCall(channel, thread, 'bot-a', 'tc-stop', {
         title: 'Bash',

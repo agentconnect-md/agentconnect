@@ -758,7 +758,15 @@ describe('Daemon in-conversation commands', () => {
     expect(await store.isSessionMuted(SESSION_KEY)).toBe(false)
     // The interrupt is recorded ONCE, naming who raised it — the chrome-marked reply above
     // never reaches the transcript, so the console's only row is this one.
-    const rows = await store.transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)
+    const rows = await store.transcriptSince(
+      {
+        transcriptChannel: transcriptChannelKey('C1', TRANSPORT_SCOPE),
+        coordinate: 'T1',
+        sessionKey: 'slack:C1:T1:bot-a',
+        agentId: 'bot-a'
+      },
+      null
+    )
     expect(rows.filter((row: any) => row.text.includes('Turn cancelled')).map((row: any) => row.text)).toEqual([
       '🛑 Turn cancelled by U1.'
     ])
@@ -861,9 +869,17 @@ describe('Daemon in-conversation commands', () => {
     expect(blocked.prompts).toHaveLength(1) // the follow-up was dropped, not dispatched (memory prefixes the 'hello' turn)
     expect(blocked.prompts[0]).toContain('hello')
     expect(
-      (await store.transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)).some(
-        (r: any) => r.text === 'humans talking amongst themselves'
-      )
+      (
+        await store.transcriptSince(
+          {
+            transcriptChannel: transcriptChannelKey('C1', TRANSPORT_SCOPE),
+            coordinate: 'T1',
+            sessionKey: 'slack:C1:T1:bot-a',
+            agentId: 'bot-a'
+          },
+          null
+        )
+      ).some((r: any) => r.text === 'humans talking amongst themselves')
     ).toBe(true)
 
     // explicit @mention clears the mute and dispatches (with the missed context replayed)
@@ -1295,7 +1311,15 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
       mentionedBots: ['UOTHER'],
       isDm: false
     })
-    const rows = await store.transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)
+    const rows = await store.transcriptSince(
+      {
+        transcriptChannel: transcriptChannelKey('C1', TRANSPORT_SCOPE),
+        coordinate: 'T1',
+        sessionKey: 'slack:C1:T1:bot-a',
+        agentId: 'bot-a'
+      },
+      null
+    )
     expect(rows.some((r: any) => r.text === 'beep from another bot' && r.sender === 'B999')).toBe(true)
 
     await daemon.stop()
@@ -1358,7 +1382,15 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
       'int-a'
     )
 
-    const rows = await (daemon as any).store.transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)
+    const rows = await (daemon as any).store.transcriptSince(
+      {
+        transcriptChannel: transcriptChannelKey('C1', TRANSPORT_SCOPE),
+        coordinate: 'T1',
+        sessionKey: 'slack:C1:T1:bot-a',
+        agentId: 'bot-a'
+      },
+      null
+    )
     const row = rows.find((r: any) => r.sender === 'U1')
     expect(row.text).toBe('look at this\n[attached: shot.png (image/png)]')
     expect(JSON.parse(row.attachmentsJson)).toEqual([
@@ -1477,9 +1509,17 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
       isDm: false
     })
     expect(
-      (await store.transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)).some(
-        (r: any) => r.text === 'mid-turn peer message'
-      )
+      (
+        await store.transcriptSince(
+          {
+            transcriptChannel: transcriptChannelKey('C1', TRANSPORT_SCOPE),
+            coordinate: 'T1',
+            sessionKey: 'slack:C1:T1:bot-a',
+            agentId: 'bot-a'
+          },
+          null
+        )
+      ).some((r: any) => r.text === 'mid-turn peer message')
     ).toBe(true)
 
     blocked.release()
@@ -1509,7 +1549,12 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
       mentionedBots: [],
       isDm: false
     })
-    expect(await store.transcriptSince('C9', 'T9', null)).toEqual([])
+    expect(
+      await store.transcriptSince(
+        { transcriptChannel: 'C9', coordinate: 'T9', sessionKey: 'k', agentId: 'bot-a' },
+        null
+      )
+    ).toEqual([])
 
     await daemon.stop()
   })
@@ -2555,7 +2600,15 @@ describe('Slack interactive status bar', () => {
     await (daemon as any).interruptTurn('bot-a', SESSION_KEY, 'stop', 'acp-1')
 
     const store = (daemon as any).store
-    const rows = await store.transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)
+    const rows = await store.transcriptSince(
+      {
+        transcriptChannel: transcriptChannelKey('C1', TRANSPORT_SCOPE),
+        coordinate: 'T1',
+        sessionKey: 'slack:C1:T1:bot-a',
+        agentId: 'bot-a'
+      },
+      null
+    )
     expect(rows.filter((row: any) => row.text.includes('Turn stopped'))).toEqual([])
 
     release()
@@ -2593,7 +2646,15 @@ describe('Slack interactive status bar', () => {
     })
     expect(host.cancel).toHaveBeenCalledWith('acp-1')
     expect(await store.isSessionMuted(key)).toBe(false)
-    const rows = await store.transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)
+    const rows = await store.transcriptSince(
+      {
+        transcriptChannel: transcriptChannelKey('C1', TRANSPORT_SCOPE),
+        coordinate: 'T1',
+        sessionKey: 'slack:C1:T1:bot-a',
+        agentId: 'bot-a'
+      },
+      null
+    )
     expect(rows.filter((row: any) => row.text.includes('Turn cancelled')).map((row: any) => row.text)).toEqual([
       '🛑 Turn cancelled by Ada.'
     ])

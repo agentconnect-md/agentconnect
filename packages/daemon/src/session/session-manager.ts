@@ -424,6 +424,8 @@ export class SessionManager {
       msg,
       transcriptChannel,
       thread,
+      deliveryThread,
+      sessionKey: key,
       ts,
       download: (att) => this.deps.downloadAttachment?.(agentId, att, integrationId) ?? Promise.resolve(null),
       ...(this.deps.attachmentMaxBytes !== undefined ? { attachmentMaxBytes: this.deps.attachmentMaxBytes } : {})
@@ -763,8 +765,10 @@ export class SessionManager {
     const { snapshotCutoffTs, withinSnapshot } = await backfillThreadHistory({
       platform: msg.platform,
       agentId,
+      sessionKey: key,
       transcriptChannel,
       thread,
+      deliveryThread,
       ts,
       markerBefore,
       ordering,
@@ -788,12 +792,15 @@ export class SessionManager {
     // a sibling must never see another child's role/task delivery or report.
     const blocks: ContentBlock[] = []
     let contextEvents: { ts: string; text?: string }[] = []
-    let contextRevision = await this.deps.store.threadTranscriptRevision(transcriptChannel, thread, agentId)
+    // The session's own read scope: the coordinate matches a createNew session's rows directly,
+    // the key matches every row admitted into it (message-intake.md §3).
+    const readScope = { transcriptChannel, coordinate: thread, sessionKey: key, agentId }
+    let contextRevision = await this.deps.store.threadTranscriptRevision(readScope)
     {
       const gap = (
         isSyntheticA2aChannel(transcriptChannel)
-          ? await this.deps.store.transcriptSinceForAgent(transcriptChannel, thread, markerBefore, agentId)
-          : await this.deps.store.transcriptSince(transcriptChannel, thread, markerBefore, agentId)
+          ? await this.deps.store.transcriptSinceForAgent(readScope, markerBefore)
+          : await this.deps.store.transcriptSince(readScope, markerBefore)
       ).filter((e) => withinSnapshot(e.ts))
       // The whole gap-replay decision lives in turn/replay-plan.ts; handle() only applies it.
       const plan = planReplay({
@@ -861,7 +868,7 @@ export class SessionManager {
         contextEvents = [...context.map((entry) => ({ ts: entry.ts, text: entry.text })), { ts, text: msg.text }]
       }
       rec.lastDeliveredTs = plan.deliveredThrough ?? ts
-      contextRevision = await this.deps.store.threadTranscriptRevision(transcriptChannel, thread, agentId)
+      contextRevision = await this.deps.store.threadTranscriptRevision(readScope)
     }
 
     // §9.2 attachments on the current message → image/resource/resource_link blocks.
@@ -1004,6 +1011,7 @@ export class SessionManager {
  *  BOTH the session manager and the daemon's unrouted-append path so a message
  *  recorded from either site lands on the same (thread, ts) PK and dedups via
  *  INSERT OR IGNORE — never a divergent double row. */
+/** The SESSION coordinate plus the dedup ts; the transcript row's own thread is the delivery thread. */
 export function transcriptCoords(msg: NormalizedMessage): { thread: string; ts: string } {
   // The carried SESSION coordinate wins where one was resolved (channel-session-mode.md
   // §3.1); everything session-side moves with it, while delivery keeps reading `thread`.
