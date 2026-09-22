@@ -4649,6 +4649,13 @@
         "joinPublicChannels": "自动加入公共频道",
         "joinPublicChannelsEnabled": "当 Agent 在此机器人尚未加入的公共频道中读取或发布消息时，机器人会自动加入并保持成员身份。Slack 会宣布此次加入，且成员身份适用于使用此机器人的所有 Agent。私人频道仍需要邀请。",
         "joinPublicChannelsDisabled": "Agent 只能在此机器人已加入的频道中读取和发布消息。"
+      },
+      "replaceToken": {
+        "title": "替换 Bot token",
+        "revoked": "使用新的 Bot token 重新连接",
+        "submit": "替换",
+        "submitting": "替换中…",
+        "cancel": "取消"
       }
     },
     "qq": {

@@ -45,6 +45,7 @@ import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from 
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './routes/slack-platform-install.js'
 import { feishuRegistrationRoutes } from './routes/feishu-registration.js'
 import { slackBotRefreshRoutes } from './routes/slack-bot-refresh.js'
+import { slackBotTokenRoutes } from './routes/slack-bot-token.js'
 import { telegramCheckRoutes } from './routes/telegram-check.js'
 import type { FeishuRouteSeams, LinearRouteSeams, SlackRouteSeams, TelegramRouteSeams } from './platform-route-seams.js'
 
@@ -71,6 +72,7 @@ const EXPECTED_MOUNTS: Record<CpRouteScope, Record<string, string[]>> = {
     // owning provider — the paths are unchanged, which is the whole point of
     // pinning them here (both core route sets register into this same scope).
     slackBotRefreshRoutesPlugin: ['POST /bots/:id/slack/refresh'],
+    slackBotTokenRoutesPlugin: ['POST /bots/:id/slack/token'],
     telegramCheckRoutesPlugin: ['POST /integrations/telegram/check'],
     feishuRegistrationRoutesPlugin: ['POST /integrations/feishu/app', 'GET /integrations/feishu/app/:id'],
     linearConnectRoutesPlugin: [
@@ -148,7 +150,8 @@ function productionPlatforms(deps: HttpDeps): CpPlatformRegistry {
           slackInstallRoutes(deps, SLACK_SEAMS),
           slackPlatformInstallRoutes(deps, SLACK_SEAMS),
           slackConfigRoutes(deps, SLACK_SEAMS),
-          slackBotRefreshRoutes(deps, SLACK_SEAMS)
+          slackBotRefreshRoutes(deps, SLACK_SEAMS),
+          slackBotTokenRoutes(deps, SLACK_SEAMS)
         ],
         publicCallback: [slackOauthCallbackRoutes(deps, SLACK_SEAMS), slackPlatformCallbackRoutes(deps, SLACK_SEAMS)]
       }

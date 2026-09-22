@@ -53,10 +53,8 @@ function PassThrough({ children }: { children: ReactNode }) {
   return <>{children}</>
 }
 
-// Design grid (`isSettings` Bots card): Bot | Sharable | Agents | Created by |
-// actions. The 100px action track fits refresh + platform link + delete and stays
-// identical across rows; below 480px "Created by" is dropped to preserve space.
-const BOT_GRID = 'grid-cols-[3fr_1.1fr_1fr_100px] min-[480px]:grid-cols-[2fr_0.9fr_1.5fr_1fr_100px]'
+// Bot | Sharable | Agents | Created by | actions: the track fits four 28px controls, three below 480px where "Created by" drops.
+const BOT_GRID = 'grid-cols-[3fr_1.1fr_1fr_100px] min-[480px]:grid-cols-[2fr_0.9fr_1.5fr_1fr_136px]'
 type BotRosterRow = { kind: 'workspace'; key: string; label: string } | { kind: 'bot'; key: string; bot: BotDto }
 
 // Preserve the server's bot order within each workspace. The heading is rendered
@@ -502,8 +500,7 @@ function BotsCard({
                 <span className="min-w-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) max-[479px]:hidden">
                   {b.createdBy ? creatorLabel(b.createdBy, me) : b.prebuilt ? t('agentConnect') : '—'}
                 </span>
-                {/* The 100px action track: the module's own controls (refresh, provider
-                  deep link) first, then the host's delete. */}
+                {/* The action track: the module's own controls and provider link first, then the host's delete. */}
                 <span className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
                   {RowActions && <RowActions bot={b} canWrite={canWrite} />}
                   {RowLinks && <RowLinks bot={b} />}

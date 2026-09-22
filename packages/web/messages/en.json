@@ -4649,6 +4649,13 @@
         "joinPublicChannels": "Automatically join public channels",
         "joinPublicChannelsEnabled": "When an agent reads or posts in a public channel this bot has not joined, the bot joins automatically and remains a member. Slack announces the join, and the membership applies to every agent using this bot. Private channels still require an invitation.",
         "joinPublicChannelsDisabled": "Agents can only read and post in channels this bot has already joined."
+      },
+      "replaceToken": {
+        "title": "Replace bot token",
+        "revoked": "Reconnect with a new bot token",
+        "submit": "Replace",
+        "submitting": "Replacing…",
+        "cancel": "Cancel"
       }
     },
     "qq": {

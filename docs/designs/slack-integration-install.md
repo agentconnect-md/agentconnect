@@ -214,6 +214,16 @@ Removing an integration:
 
 A bot cannot be deleted while active integrations reference it.
 
+A custom app's bot token is replaced in place (`POST /bots/:id/slack/token`),
+typically after the workspace reinstalls an app whose tokens were revoked. The
+new token must pass `auth.test` for the bot's own app and workspace. It is
+stored beside the bot's other credentials in one credential transition that
+advances the generation, clears the revocation marker, and restores the
+integrations revoked with the previous token, so their ids, conversation
+settings, and schedule targets survive; distribution then follows §5 and §6. A
+built-in app reconnects by reinstalling it instead
+([preset-agents.md](preset-agents.md) §5.3).
+
 Agent moves use the mutation gate and transfer the desired integration set from
 the old daemon to the new daemon. Reconciliation repairs any missed live event.
 

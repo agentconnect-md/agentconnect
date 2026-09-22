@@ -4271,6 +4271,11 @@ export async function refreshSlackBot(id: string): Promise<SlackBotRefreshDto> {
   return apiPost<SlackBotRefreshDto>(`${orgBase()}/bots/${encodeURIComponent(id)}/slack/refresh`, {})
 }
 
+/** Replace a custom Slack app's bot token in place (POST /bots/:id/slack/token); returns the updated bot. */
+export async function replaceSlackBotToken(id: string, botToken: string): Promise<BotDto> {
+  return apiPost<BotDto>(`${orgBase()}/bots/${encodeURIComponent(id)}/slack/token`, { botToken })
+}
+
 // ── members ───────────────────────────────────────────────────────────────────
 // The active org's members for the Settings page (GET /members).
 export async function fetchMembers(orgId?: string): Promise<MemberDto[]> {

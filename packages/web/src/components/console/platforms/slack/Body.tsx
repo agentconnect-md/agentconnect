@@ -21,6 +21,7 @@ import { useDeploymentConfig } from '../deployment-config'
 import { usePublishedFooter, usePublishedIdentityChrome } from '../publish'
 import { DeliveryLine } from '../wizard-chrome'
 import { slackApi } from './api'
+import { SlackBotTokenField, slackBotTokenOk } from './bot-token-field'
 import { SLACK_INSTALL_EXPIRED, slackMissingScopesFromError, slackPlatformInstallFailure } from './install-failure'
 import { SlackConfigTokenPreview, SlackManifestPreview } from './previews'
 
@@ -145,10 +146,9 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
     host.setTransport(next)
   }
 
-  // Slack: bot token (xoxb-) + either an app-level Socket Mode token (xapp-, socket)
-  // or a signing secret (http). Signing secrets are 32 hex chars; keep the guard lenient.
+  // Bot token plus an app-level token (socket) or a signing secret (http, 32 hex chars; the guard stays lenient).
   const tokenTrim = botToken.trim()
-  const botOk = tokenTrim.startsWith('xoxb-')
+  const botOk = slackBotTokenOk(botToken)
   const appOk = appToken.trim().startsWith('xapp-')
   const signingOk = signingSecret.trim().length >= 16
   const createValid = transport === 'http' ? botOk && signingOk : botOk && appOk
@@ -859,15 +859,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                   </div>
                   <div className="pl-[30px]">
                     <div className="grid grid-cols-1 gap-[10px] min-[440px]:grid-cols-2">
-                      <div className="fld">
-                        <span className="fldlbl">{t('tokens.botToken')}</span>
-                        <input
-                          className={`inp mn ${showErrors && !botOk ? 'border-(--status-error)' : ''}`}
-                          placeholder={t('tokens.botPlaceholder')}
-                          value={botToken}
-                          onChange={(e) => setBotToken(e.target.value)}
-                        />
-                      </div>
+                      <SlackBotTokenField value={botToken} onChange={setBotToken} invalid={showErrors && !botOk} />
                       {transport === 'http' ? (
                         <div className="fld">
                           <span className="fldlbl">{t('tokens.signingSecret')}</span>
