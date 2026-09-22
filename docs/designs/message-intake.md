@@ -301,15 +301,23 @@ first preference and completes with a fallback).
    their records of it are their own sessions' history.
 2. Runs Case A steps 2–4 with the candidate set the relay resolved (explicit mention, affinity,
    `auto` routes, participants) as the **target constraint** of decisions.md §3.2.
-3. Evaluates **once**, with the router as subject (§4.3), unless every constrained recipient already
-   participates in the message's physical thread — the same skip rule as Case A step 5. The single
-   answer is matched against the bot's routing rules; the settlement is the frozen target set: the
-   constrained recipients when there are any, otherwise the rules' selected agents deduplicated by
-   id, otherwise `skip`. No candidate is evaluated on its own, so one message costs one model call and
-   yields one answer, whatever the size of the target set.
-4. For each target in the frozen set on **this** daemon, resolves and admits (step 6) and records the
+3. Partitions the constraint. A constrained recipient that already **participates** in the message's
+   physical thread is an unconditional member of the frozen set — Case A step 5's rule, applied per
+   recipient, not to the set. Every other constrained recipient is decision-eligible. The relay marks
+   each constrained target it forwards as participant or not, from the participant set it already
+   holds (`rc/participant-assign`), because a host on its own SQLite store cannot see another
+   daemon's `thread_participation`.
+4. Evaluates **once**, with the router as subject (§4.3), if and only if there is no constraint (a new
+   unaddressed conversation) or at least one decision-eligible recipient. The single answer is
+   matched against the bot's routing rules and decides only the decision-eligible portion: with a
+   constraint, it keeps or drops the eligible recipients; without one, it selects the rules' agents
+   deduplicated by id. The frozen set is the participants plus whatever the answer kept; it is `skip`
+   only when there are no participants and the answer kept nobody. A thread whose every constrained
+   recipient participates settles its set with no model call. No candidate is evaluated on its own,
+   so one message costs at most one model call, whatever the size of the target set.
+5. For each target in the frozen set on **this** daemon, resolves and admits (step 6) and records the
    disposition on the selection.
-5. For each target on **another** daemon, forwards the message with the selection's evidence over the
+6. For each target on **another** daemon, forwards the message with the selection's evidence over the
    existing cross-daemon relay path (`rd/agentmsg`-style pre-addressed forwarding, the same transport
    the collaboration router uses). The target daemon runs step 6 for its own agent, does not
    evaluate, and acknowledges; the host records the disposition. One target's refusal does not
@@ -335,16 +343,20 @@ These reach the same code and keep today's behavior; they are listed so nobody l
 
 Two rules, in this order.
 
-1. **An admission lives as long as its session.** `deleteSession(key)` deletes
-   `transcript_recipient WHERE sessionKey = key` in the same transaction that removes the session
-   row and clears the append reservation. Nothing else deletes an admission.
+1. **An admission lives as long as its session, and so do the session's own rows.**
+   `deleteSession(key)` deletes `transcript_recipient WHERE sessionKey = key` and the `tool`,
+   `reasoning`, and `app` rows that admission set covers — they were produced by this session and
+   belong to no other — in the same transaction that removes the session row and clears the append
+   reservation. Conversational rows are left in place as observations. Nothing else deletes an
+   admission.
 2. **An unadmitted row lives while it is among the newest 100 conversational rows of its
    conversation, or while a verdict may still admit it.** After every insert, and periodically while
-   idle, delete `text` rows in `(orgId, channel)` that have no admission, whose `seq` is below the
-   100th-newest `text` row's, and that no `decision_verdict` in a non-terminal state (`reserved`,
-   `evaluating`, or settled but not yet released) references. The cutoff is counted over `text` rows
-   because those are what §9 reads; a tool-heavy turn's `tool`/`reasoning`/`app` rows all carry an
-   admission and neither count toward nor fall under the floor. The cap counts rows, not
+   idle, delete every row in `(orgId, channel)` — of any kind — that has no admission, whose `seq` is
+   below the 100th-newest `text` row's, and that no `decision_verdict` in a non-terminal state
+   (`reserved`, `evaluating`, or settled but not yet released) references. The cutoff is counted over
+   `text` rows because those are what §9 reads; a tool-heavy turn's internal rows carry an admission
+   while their session lives and do not count toward the floor, and any that rule 1 did not remove
+   are reclaimed here once they fall under it. The cap counts rows, not
    messages-per-agent, because there is one row per message.
 
 So a conversation with a long-lived `append` session keeps that session's rows for as long as the
@@ -379,7 +391,10 @@ is always fully resident; the two limits are separate constants.
 
 One `SCHEMA_MIGRATIONS` step, run in a transaction before the `CREATE` block:
 
-1. Add `sessionKey` and `seq` to `transcript_recipient` by rebuilding it, as the #1041 step did.
+1. Rebuild `transcript` so `thread` is nullable — SQLite cannot drop a `NOT NULL` in place, so it is
+   the copy-rename rebuild the #1041 step used for `transcript_recipient`; the PostgreSQL dialect may
+   use `ALTER COLUMN thread DROP NOT NULL`. Rebuild `transcript_recipient` with `seq` and
+   `sessionKey`.
 2. **Backfill admissions.** Every existing `text` row was written only while a session was live, so
    each is an admission. For each row, the agent set is `recipient` ∪ the old `transcript_recipient`
    rows ∪ `sender` where it is an agent id. The `sessionKey` comes from joining `sessions` on
@@ -425,7 +440,8 @@ record, the Decision resource, conditions, the Jev adapter, the console — stan
 
 ## 12. Testing
 
-- **Store, both dialects.** One row per `(orgId, channel, ts)` however many agents admit it; two
+- **Store, both dialects.** One row per `(orgId, channel, ts)` however many agents admit it;
+  `deleteSession` removes the session's internal rows and leaves its conversational rows; two
   concurrent admissions of one row both persist; `deleteSession` removes exactly that key's
   admissions; the sweep deletes only unadmitted rows below the 100th-newest and never a row with an
   admission; a session's rows are one index range on `(sessionKey, seq)`.
@@ -443,6 +459,9 @@ record, the Decision resource, conditions, the Jev adapter, the console — stan
 - **Retention.** A row whose verdict is `evaluating`, or settled behind an unreleased earlier
   candidate, survives 100 newer rows and is admitted afterwards with its row intact; 200 tool rows
   from one turn do not push a 50-row conversation's observations under the floor.
+- **Case B partition.** A thread reply constrained to participant A and newly mentioned B produces
+  one evaluation; a `skip` still admits A and drops only B; a reply constrained to participants only
+  produces no model call; a new unaddressed message with no constraint always evaluates.
 - **Case B.** CP projects `evaluationDaemonId` as the default agent's daemon, then as the
   earliest-created candidate daemon when the default is absent, and re-projects on a placement
   move; the relay forwards a By decision conversation's messages to that host and nowhere else; a new
