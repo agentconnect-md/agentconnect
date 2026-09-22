@@ -103,6 +103,51 @@ context; it does not grant the message sender AgentConnect editor privileges.
 
 ## 3. Installation, credentials, and readiness
 
+### Credential scope and setup experience
+
+Credentials belong to the Google Chat app, independently of its HTTP/Pub/Sub
+transport or the number of relay and daemon instances. Google requires a separate
+Cloud project for each Chat app. Under this design's one-bot/one-agent model,
+distinct bot identities therefore need distinct app/project configurations.
+An operator can preconfigure a dedicated app for an agent; this changes who
+performs setup, not the Google identity or the need to create that app first.
+See Google's [per-app project requirement](https://developers.google.com/workspace/chat/configure-chat-api).
+
+The initial experience is guided setup, not one-click app creation. Slack offers
+both manifest-prefilled creation links and `apps.manifest.create`, which our
+[Slack install flow](slack-install-smoothing.md) uses. The Google configuration
+documentation checked for this design does not establish an equivalent public
+creation link or API. Do not promise automatic provisioning based on the existence
+of Google Workspace add-on manifests: those still require Chat API configuration
+and use a different app model. See [Slack manifests](https://docs.slack.dev/app-manifests/configuring-apps-with-app-manifests/)
+and [Google add-on configuration](https://developers.google.com/workspace/marketplace/enable-configure-sdk).
+
+The wizard should present these concrete steps:
+
+1. Confirm a suitable Workspace account and permission to configure the app and
+   use the selected service-account credential method.
+2. Complete Google's Cloud project, API, and configuration prerequisites.
+3. Copy the generated app information, HTTPS callback, and audience setting into
+   Google Cloud Console; configure who can find and use the app.
+4. Create the service account, provide its credential through the secret form,
+   and validate it. Show an actionable setup error if organization policy prevents
+   creating a key; do not imply that ordinary Google sign-in supplies an app key.
+5. Add the configured app in Google Chat, then send a DM or Space mention to test
+   the complete path.
+
+Google documents organization-level [key-creation constraints](https://docs.cloud.google.com/iam/docs/best-practices-for-managing-service-account-keys#use_organization_policy_constraints_to_limit_which_projects_can_create_service_account_keys).
+Account and credential readiness therefore belong at the start of setup.
+
+Adding an already available app through Chat or Marketplace is a short user flow,
+but it installs that existing identity; it does not create a separate bot for the
+user. Organization-only testing does not require public Marketplace publication.
+Publishing to users outside the Workspace organization has additional review and
+distribution requirements. See [testing visibility](https://developers.google.com/workspace/chat/test-interactive-features),
+[adding an app](https://support.google.com/chat/answer/7655820?hl=en), and
+[Marketplace publication](https://developers.google.com/workspace/marketplace/how-to-publish).
+
+### Configuration and validation
+
 The Console wizard collects credentials and shows the derived installation
 metadata through the existing integration and secret APIs:
 
@@ -192,11 +237,19 @@ all Chat app mentions, so it must not silently erase references to other bots.
 Callback attempts share the Google message identity for deduplication; do not
 generate a new delivery ID each time the relay receives the event.
 
-Ignore app-authored messages. `ADDED_TO_SPACE` and `REMOVED_FROM_SPACE` update
-observed conversation membership without starting an agent turn; removal disables
-delivery there and does not attempt a farewell message. Reconcile membership hints
-with bounded provider reads when stale or conflicting. Unsupported event types do
-not activate an agent.
+Ignore app-authored messages. `ADDED_TO_SPACE` updates observed membership and can
+also carry the user's triggering message when an @mention adds the app. Pass that
+embedded message through the same normalization, gates, and durable admission as
+`MESSAGE`; use the same app-scoped message receipt regardless of event type.
+Only an add event without a message stops after the membership update. A repeated
+membership observation must not skip admission of its still-unaccepted message.
+Google documents this combined event in its
+[request mapping](https://developers.google.com/workspace/add-ons/chat/convert#request-mapping-by-use-case).
+
+`REMOVED_FROM_SPACE` updates membership and disables delivery there without
+starting a turn or attempting a farewell message. Reconcile stale or conflicting
+membership hints with bounded provider reads. Unsupported event types do not
+activate an agent.
 
 Run the existing discovery, conversation gate, trigger, command, session routing,
 and Decision checks. Off stays silent, including for commands. Restricted agents
@@ -252,6 +305,8 @@ its original operation/turn so a repeated callback cannot cancel later work.
 Lifecycle updates are idempotent observations: use event kind, Space, actor, and
 event time when no message resource exists, and confirm conflicting membership
 hints through provider reads. Do not collapse all add/remove events for a Space.
+For a message-bearing add event, the membership update alone is not acceptance:
+wait for the embedded message's admission disposition before acknowledging it.
 
 Set a documented receipt retention bound exceeding Google's retry horizon; keep
 at least 24 hours for the HTTP path. Replays beyond the configured bound, loss of
@@ -397,6 +452,8 @@ The implementation must then demonstrate:
   body app IDs before any conversation discovery or forwarding.
 - One admitted message despite concurrent callbacks, reconnect, restart, and late
   redelivery after completion; a failed durable write remains retryable.
+- A message-bearing add event admits its first prompt once, including redelivery
+  after membership was recorded; a message-less add starts no turn.
 - Correct dispositions for ignored messages and queue overflow; durable receipts
   for steering and a redelivered cancellation after the original turn ends.
 - No cross-app, cross-Space, or cross-thread routing; no turn while a conversation
