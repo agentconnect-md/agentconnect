@@ -46,7 +46,7 @@ import { OrphanReconciler, resolveOrphanReconcilerSettings } from '../k8s/orphan
 import { K8S_SANDBOX_NAMESPACE_ENV } from '../k8s/runtime-plane.js'
 import { readClusterIdentityToken } from '../cp/cluster-identity.js'
 import { DATA_PLANE_CONFIG_PATH } from '../store/postgres-config.js'
-import { openMountedPostgresDataPlane } from '../store/postgres-data-plane.js'
+import { openPostgresDataPlane } from '../store/postgres-data-plane.js'
 import { StoreRetentionSweeper, resolveStoreRetentionSettings } from '../store/retention.js'
 import type { RetentionCapableStore } from '../store/retention.js'
 import type { LocalStore } from '../store/local-store.js'
@@ -310,7 +310,7 @@ function liveSessionLeavesFrom(
 async function openSharedStore(): Promise<ReapableStore | undefined> {
   if (!existsSync(DATA_PLANE_CONFIG_PATH)) return undefined
   // The reaper reads and deletes outbox rows only; no transcript write needs an org resolver.
-  const plane = await openMountedPostgresDataPlane(() => undefined)
+  const plane = await openPostgresDataPlane(() => undefined)
   return { store: plane.store, close: () => plane.close() }
 }
 

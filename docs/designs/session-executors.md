@@ -1075,14 +1075,16 @@ reused as is. The shim, at twice the size of that whole path, is reused unchange
 - **Default for the group switch** (proposed: off, explicit opt-in).
 - **What a shared data-plane store would still buy.** Nothing here needs one any
   more, and a group that has one gains one thing: a successor holder inherits the
-  session's transcript and ACP resume state, instead of attaching to the environment
-  with the work in it but no history (§7). That is a property of the group, not of
-  spreading: a group without a shared store already loses a session's history when a
-  duty moves, spread or not. Making the daemon's store backend configurable is separate
-  ([#2188](https://github.com/agentconnect-md/agentconnect/issues/2188)): today a
-  daemon opens one store for all its agents and only does so under `--k8s`, which is
-  precisely why requiring it here would have put every ordinary agent on a lending
-  machine onto PostgreSQL (§15).
+  session's transcript, and for a session placed on an executor its ACP resume state
+  too, instead of attaching to the environment with the work in it but no history
+  (§7). A session that ran on its holder keeps its runtime state on that machine
+  either way. That is a property of the group, not of spreading: a group without a
+  shared store already loses a session's history when a duty moves, spread or not.
+  The store backend became a daemon setting in
+  [#2188](https://github.com/agentconnect-md/agentconnect/issues/2188)
+  ([cloud-data-plane-postgres.md](cloud-data-plane-postgres.md)); a daemon still
+  opens one store for all its agents, which is precisely why requiring it here would
+  have put every ordinary agent on a lending machine onto PostgreSQL (§15).
 
 ## 14. Non-goals
 
@@ -1095,10 +1097,8 @@ reused as is. The shim, at twice the size of that whole path, is reused unchange
 - Carrying a session's transcript or ACP resume state across holder failover. That
   needs the group's shared data-plane store, which this design deliberately does not
   require (§13); without one a successor attaches to the environment and its work,
-  and starts a fresh conversation over it.
-- Making the daemon's store backend configurable, so a group could have a shared
-  store without Kubernetes. Separate, and tracked as
-  [#2188](https://github.com/agentconnect-md/agentconnect/issues/2188).
+  and starts a fresh conversation over it. The store itself is a separate daemon
+  setting ([#2188](https://github.com/agentconnect-md/agentconnect/issues/2188)).
 - Adopting running VMs or detached shims across an executor restart (§9).
 - NAT traversal, relays, or an executor behind a firewall the holder cannot reach.
 - Changing `sandbox.backend`, `security.requireSandbox` or `runInSandbox`. §5 records
@@ -1214,9 +1214,8 @@ Removed by the 2026-09-21 revision:
 
 - **Allocating the launch's binding generation from the group's shared store.** It
   was the natural place — `LaunchRegistry.recordLaunch` already allocates per subject
-  there — but the daemon opens **one** store for all its agents, and only under
-  `--k8s`: `startClusterPlanes` is the sole caller, and `store/postgres-config.ts`
-  states outright that no CLI or environment credential surface exists. Requiring it
+  there — but the daemon opens **one** store for all its agents, and at the time only
+  under `--k8s` (#2188 has since made it a setting, still one store per daemon). Requiring it
   would have made a machine that merely lends compute run every one of its own
   agents on PostgreSQL, which is precisely the cost the requester of #2111 does not
   want and #2188 exists to remove. Allocating on the executor needs no store at all,

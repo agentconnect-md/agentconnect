@@ -71,7 +71,7 @@ import {
 } from '@agentconnect.md/protocol'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { basename, dirname, join, relative, sep } from 'node:path'
+import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { installMicrosandbox } from './microsandbox/install.js'
 import { microsandboxRuntimeHome, prepareMicrosandboxLaunch } from './microsandbox/launch.js'
 import type { MicrosandboxManager, MicrosandboxEnvironment } from './microsandbox/driver.js'
@@ -521,7 +521,8 @@ import { CpMemoryConnectionRegistry, type MemoryPluginConnector } from './cp/mem
 import { MemoryCaptureOutbox } from './memory-plugin/outbox.js'
 import { managedDistillCapture, withManagedDistill } from './memory/managed-distill-outbox.js'
 import { defaultMemoryPluginMetrics } from './memory-plugin/metrics.js'
-import { openMountedPostgresDataPlane, type PostgresDataPlane } from './store/postgres-data-plane.js'
+import { openPostgresDataPlane, type PostgresDataPlane } from './store/postgres-data-plane.js'
+import { DATA_PLANE_CONFIG_PATH } from './store/postgres-config.js'
 import type { EvaluationCapabilityProfile } from './evaluation/events.js'
 import { DaemonEvaluationHooks, type DaemonEvaluationHost } from './evaluation/daemon-hooks.js'
 import { SessionMetadataOutbox, type SessionMetadataHost } from './store/session-metadata-outbox.js'
@@ -1535,8 +1536,8 @@ export class Daemon {
        *  outcome the mode exists to prevent, so it must not be a fallback. Tests override this
        *  to exercise k8s-mode policy without a cluster. */
       startK8sPlane?: typeof startK8sRuntimePlane
-      /** Test seam only; production `--k8s` always reads the fixed Secret mount. */
-      openDataPlane?: typeof openMountedPostgresDataPlane
+      /** Test seam only; production reads the fixed Secret mount under `--k8s`, else the `postgres` store's file. */
+      openDataPlane?: typeof openPostgresDataPlane
       /** Test seam for the pool member startup barrier; production waits for CP register/ok. */
       startControlPlane?: (root: string) => Promise<void> | undefined
       /** Test seams for local catalog resolution and executable/state filtering. */
@@ -2111,18 +2112,26 @@ export class Daemon {
     }
   }
 
-  /** Phase 4 — under --k8s only: the shared data plane, then the execution plane the workspaces resolve through. */
+  /** Phase 4 — the shared data plane (under --k8s, or a `postgres` store), then under --k8s the execution plane the workspaces resolve through. */
   private async startClusterPlanes(root: string, cfg: Config): Promise<void> {
-    if (this.k8s) {
-      const openDataPlane = this.opts.openDataPlane ?? openMountedPostgresDataPlane
+    // `--k8s` needs the pool's shared store whatever the file says; any other daemon opens one only when its owner asked (#2188).
+    const dataPlaneConfig = this.k8s
+      ? DATA_PLANE_CONFIG_PATH
+      : cfg.store.backend === 'postgres'
+        ? resolve(root, cfg.store.configFile)
+        : undefined
+    if (dataPlaneConfig !== undefined) {
+      const openDataPlane = this.opts.openDataPlane ?? openPostgresDataPlane
       this.dataPlane = await openDataPlane(
         (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
         (error) => {
           this.log.error(`data-plane: PostgreSQL persistence failed — ${formatErr(error)}`)
           this.draining = true
           this.requestExit(1)
-        }
+        },
+        dataPlaneConfig
       )
+      if (!this.k8s) this.log.info('store: PostgreSQL (a shared store; this machine keeps no local session history)')
     }
     if (this.k8s) {
       // A pod's terminationGracePeriodSeconds must exceed this, or the kubelet SIGKILLs
@@ -9588,15 +9597,16 @@ export class Daemon {
   }
 
   /** The op-switch behind {@link handleRelayMsg} (dedup handled by the caller). */
-  /** Whether this daemon is neither the conversation's recorder nor a holder of the store it wrote to
-   *  (§7): the rows are the proof — a shared store puts them here too, a private one does not. A
-   *  conversation with no session yet, and a relay that sends no recorder, are served as before. */
+  /** Whether this daemon cannot continue a conversation another member recorded (#2218): it lacks the row, or has it without a reachable runtime (#2188). */
   private async webchatContentIsElsewhere(msg: RdMsgWebchat, sessionKey: string): Promise<boolean> {
     const recorded = msg.recordedDaemonId
     // A session-targeted continuation is fenced by the Control Plane at mint and at verify.
     if (!recorded || msg.targetSessionId !== undefined || recorded === this.cfg.daemonId) return false
     try {
-      return (await this.store.getSession(sessionKey)) === undefined
+      const row = await this.store.getSession(sessionKey)
+      if (row === undefined) return true
+      // The runtime of a session that ran on its holder stayed on that machine; a placed one's environment is still where it was.
+      return !this.k8s && !row.executorDaemonId
     } catch (err) {
       this.log.warn(`webchat: reading ${sessionKey} to place its content failed: ${formatErr(err)}`)
       return false

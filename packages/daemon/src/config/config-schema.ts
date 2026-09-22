@@ -184,6 +184,13 @@ export const ConfigSchema = z.object({
   // recorded locally, because session status, `session/list`, context/compaction
   // detection and the daemon's own bookkeeping all read it from there.
   usageReporting: z.object({ enabled: z.boolean().default(true) }).default({ enabled: true }),
+  // Where this daemon keeps its state (#2188): a file under its root, or PostgreSQL named by a credentials file in the pool mount's shape; `--k8s` always reads the mount.
+  store: z
+    .discriminatedUnion('backend', [
+      z.object({ backend: z.literal('sqlite') }),
+      z.object({ backend: z.literal('postgres'), configFile: z.string().min(1) })
+    ])
+    .default({ backend: 'sqlite' }),
   agentsDir: z.string().optional(), // resolved against root if absent
   runtimes: z.record(z.string(), RuntimeDefSchema).optional(),
   // MCP servers this daemon can attach to agent sessions (reported to the CP as
