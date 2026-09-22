@@ -1448,17 +1448,21 @@ export class WorkspaceManager {
           if (!(await fs.rmdir(clone.path))) return { outcome: 'retained', reason: 'dirty' }
           continue
         }
-        // A sandbox leaves empty mountpoints (`.git`, `.agents`, `.codex`) where it protected a clone that is not there: no file, no work (#2246).
-        if (await holdsNoFiles(fs, clone.path)) continue
         const git = this.runnerFor(agent.id, clone.path).withEnv(workspaceGitLocalEnv())
         // Fetched review refs mark the clone as a daemon-owned review snapshot, reset on every delivery.
         let snapshot: boolean | undefined
         // `show-ref` on the head ref rather than `for-each-ref` over the root: the sandbox admits the one and not the other, and a review that fetched anything fetched this ref.
         const isReviewSnapshot = async () =>
           (snapshot ??= (await git.raw(['show-ref', '--verify', reviewHeadRefFor(id)]).catch(() => '')).trim() !== '')
-        if ((await git.raw(['status', '--porcelain'])).trim() !== '' && !(await isReviewSnapshot())) {
-          return { outcome: 'retained', reason: 'dirty' }
+        let status: string
+        try {
+          status = await git.raw(['status', '--porcelain'])
+        } catch (err) {
+          // A sandbox leaves empty mountpoints (`.git`, `.agents`, `.codex`) where it protected a clone that is not there: git cannot read it, and no file means no work (#2246).
+          if (await holdsNoFiles(fs, clone.path)) continue
+          throw err
         }
+        if (status.trim() !== '' && !(await isReviewSnapshot())) return { outcome: 'retained', reason: 'dirty' }
         const unique = (
           await git.raw([
             'rev-list',
