@@ -8,11 +8,11 @@ export function IntegrationPlatformGroups({ renderTile }: { renderTile: (tile: P
   const tiles = PLATFORMS.filter((tile) => platformOffered(tile.key))
 
   return (
-    <div className="grid grid-cols-1 gap-5 desktop:grid-cols-2 desktop:gap-6">
+    <div className="flex flex-col gap-5">
       {(['chat', 'workflow'] as const).map((group) => (
         <section key={group} aria-label={t(group)} className="min-w-0">
           <h3 className="fldlbl mb-2">{t(group)}</h3>
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap gap-2">
             {tiles
               .filter((tile) => {
                 const module = platformRegistry.get(tile.key)

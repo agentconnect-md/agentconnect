@@ -1435,7 +1435,7 @@ export default function AddIntegrationModal({
               return (
                 <div
                   key={candidate.key}
-                  className={`${on ? 'ptile on' : 'ptile'} ${
+                  className={`${on ? 'ptile on' : 'ptile'} h-22 w-22 flex-none flex-col justify-center gap-[6px] p-2 text-center ${
                     available ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
                   }`}
                   aria-disabled={!available}
