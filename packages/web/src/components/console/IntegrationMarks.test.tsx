@@ -56,9 +56,9 @@ describe('IntegrationMarks', () => {
     }
   })
 
-  it('shows no hover title on any mark, hook kinds included', async () => {
+  it('shows no hover title on any mark, hook kinds and the revoked dot included', async () => {
     const node = await render(
-      <IntegrationMarks integrations={[{ id: 'i1', platform: 'slack' }]} hookKinds={[...HOOK_KINDS]} />
+      <IntegrationMarks integrations={[{ id: 'i1', platform: 'slack', revoked: true }]} hookKinds={[...HOOK_KINDS]} />
     )
 
     expect(node.querySelectorAll('[title]')).toHaveLength(0)
@@ -66,5 +66,40 @@ describe('IntegrationMarks', () => {
     // Three marks fit; the platform sits first and the hook kinds fill the rest.
     expect(node.querySelector('[data-mark="slack"]')).not.toBeNull()
     expect(node.querySelectorAll('[data-mark]')).toHaveLength(3)
+  })
+
+  it('dots a revoked integration’s mark, and only that one', async () => {
+    const node = await render(
+      <IntegrationMarks
+        integrations={[
+          { id: 'i1', platform: 'slack', revoked: false },
+          { id: 'i2', platform: 'discord', revoked: true }
+        ]}
+        hookKinds={[]}
+      />
+    )
+
+    const dots = node.querySelectorAll('[data-revoked-dot]')
+    expect(dots).toHaveLength(1)
+    expect(dots[0]!.parentElement!.querySelector('[data-mark="discord"]')).not.toBeNull()
+    expect(dots[0]!.className).toContain('bg-(--status-error)')
+  })
+
+  it('leads with a revoked mark, so the three-mark cap cannot hide it', async () => {
+    const node = await render(
+      <IntegrationMarks
+        integrations={[
+          { id: 'i1', platform: 'slack', revoked: false },
+          { id: 'i2', platform: 'telegram', revoked: false },
+          { id: 'i3', platform: 'lark', revoked: false },
+          { id: 'i4', platform: 'discord', revoked: true }
+        ]}
+        hookKinds={[]}
+      />
+    )
+
+    expect(node.querySelector('[data-mark]')?.getAttribute('data-mark')).toBe('discord')
+    expect(node.querySelectorAll('[data-revoked-dot]')).toHaveLength(1)
+    expect(node.textContent).toContain('+4')
   })
 })

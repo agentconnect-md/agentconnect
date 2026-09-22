@@ -114,6 +114,7 @@ function integration(over: Partial<IntegrationRow> = {}): IntegrationRow {
     workspace: 'Example Workspace',
     daemon: 'edge-1',
     status: 'online',
+    revoked: false,
     channels: TEAMS,
     ...over
   }
@@ -361,12 +362,15 @@ describe('the workspace’s repairs', () => {
     expect(text()).toContain('Approve the workspace in the Linear tab')
   })
 
-  it('warns on the row while the grant is dead', async () => {
+  it('halos the reconnect while the grant is dead, leaving the revoked badge to the host', async () => {
     mocks.bots = [bot({ revokedAt: '2026-02-01T00:00:00.000Z' })]
     await render()
 
-    expect(text()).toContain('grant expired')
-    expect(buttonWithLabel('Reconnect this workspace')?.className).toContain('border-(--status-error)')
+    const reconnect = buttonWithLabel('Reconnect this workspace')!
+    expect(reconnect.className).toContain('border-(--status-error)')
+    // The header actions are the button alone: the host's integration pill names the revocation.
+    expect(reconnect.parentElement).toBe(host)
+    expect(host.children[0]).toBe(reconnect)
   })
 
   it('surfaces a funnel that cannot start', async () => {

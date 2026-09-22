@@ -2,20 +2,15 @@ import { describe, expect, it } from 'vitest'
 import { integrationRowFromDto } from './data-context'
 import type { IntegrationDto } from './api'
 
-/**
- * The DTO → row projection. A per-conversation field that this map forgets does not fail
- * loudly: the row reads as its default, so the console shows a state the server does not
- * have and silently reverts a choice on the next refetch. That is exactly what happened to
- * `sessionMode`, and it survived tests that built the row object directly.
- */
-const dto = (over: Partial<IntegrationDto['channels'][number]> = {}): IntegrationDto =>
+/** A field the projection forgets reads as its default, so the console shows a state the server does not have. */
+const dto = (over: Partial<IntegrationDto['channels'][number]> = {}, status = 'active'): IntegrationDto =>
   ({
     id: 'int-1',
     agentId: 'agent-1',
     botId: 'bot-1',
     platform: 'slack',
     name: 'test',
-    status: 'active',
+    status,
     channels: [
       {
         channelId: 'C1',
@@ -50,5 +45,10 @@ describe('integrationRowFromDto', () => {
   it('still carries the trigger and the owner beside it', () => {
     const row = integrationRowFromDto(dto({ trigger: 'any', agentId: 'agent-2' }), new Map(), new Map())
     expect(row.channels[0]).toMatchObject({ trigger: 'any', agentId: 'agent-2' })
+  })
+
+  it('marks a revoked integration as revoked, and only that status', () => {
+    expect(integrationRowFromDto(dto({}, 'revoked'), new Map(), new Map()).revoked).toBe(true)
+    expect(integrationRowFromDto(dto({}, 'active'), new Map(), new Map()).revoked).toBe(false)
   })
 })

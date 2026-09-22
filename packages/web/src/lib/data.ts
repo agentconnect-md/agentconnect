@@ -2185,6 +2185,8 @@ export interface IntegrationRow {
   workspace: string
   daemon: string
   status: StatusKey
+  /** The backing bot's credential was revoked, so this integration cannot reach its platform. */
+  revoked: boolean
   channels: IntegrationChannelRow[]
 }
 
@@ -2197,6 +2199,7 @@ export const INTEGRATIONS: IntegrationRow[] = (
       workspace: 'acme.slack.com',
       daemon: 'edge-1',
       status: 'online',
+      revoked: false,
       channels: [
         { channelId: 'C-deploys', name: 'deploys', trigger: 'mention' },
         { channelId: 'C-pull-requests', name: 'pull-requests', trigger: 'mention' },
@@ -2210,6 +2213,7 @@ export const INTEGRATIONS: IntegrationRow[] = (
       workspace: 'acme guild',
       daemon: 'edge-1',
       status: 'online',
+      revoked: false,
       discordAppId: '900000000000000001',
       channels: [
         { channelId: 'C-ops', name: 'ops', trigger: 'mention' },
@@ -2223,6 +2227,7 @@ export const INTEGRATIONS: IntegrationRow[] = (
       workspace: '@acme_docs',
       daemon: 'edge-1',
       status: 'online',
+      revoked: false,
       channels: [{ channelId: 'acme_docs', name: 'acme_docs', trigger: 'mention' }]
     }
   ] satisfies IntegrationRow[]

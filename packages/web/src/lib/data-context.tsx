@@ -330,12 +330,7 @@ function groupRow(s: MemberSetDto): MemberSetRow {
   return { ...s, spreadSessions: s.spreadSessions ?? false }
 }
 
-// Map a live integration DTO to the richer UI row, resolving the holding daemon
-// via the owning agent. `channels` is the daemon-reported membership snapshot with
-// each channel's trigger choice (@-mention vs any message), set per channel.
-/** The DTO → row projection. Exported for its test: every per-conversation field the console
- *  renders has to survive this map, and a field silently missing here reads as its default
- *  forever — the control then shows a state the server does not have. */
+/** The live DTO → row projection, exported for its test: a field dropped here silently reads as its default. */
 export function integrationRowFromDto(
   d: IntegrationDto,
   agentsById: Map<string, Agent>,
@@ -356,6 +351,7 @@ export function integrationRowFromDto(
     workspace: '—',
     daemon: agent?.daemon ?? '—',
     status: d.status === 'active' ? 'online' : 'offline',
+    revoked: d.status === 'revoked',
     channels: d.channels.map((c) => ({
       channelId: c.channelId,
       name: c.name || c.channelId,

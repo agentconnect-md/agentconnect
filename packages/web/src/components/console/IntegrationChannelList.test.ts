@@ -54,6 +54,7 @@ describe('conversationOwners', () => {
     workspace: 'acme.example.test',
     daemon: 'edge-1',
     status: 'online',
+    revoked: false,
     channels
   })
   const chan = (channelId: string, agentId?: string | null): IntegrationChannelRow => ({

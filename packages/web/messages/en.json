@@ -2391,6 +2391,8 @@
         "add": "Add",
         "addIntegration": "Add integration",
         "connected": "connected",
+        "revoked": "revoked",
+        "offline": "offline",
         "approvalRequests": "Approval requests",
         "pendingRequests": "Pending requests",
         "pendingCount": "{count} pending",
@@ -4501,7 +4503,6 @@
       },
       "card": {
         "notSetUp": "Linear isn’t set up on this deployment.",
-        "grantExpired": "grant expired",
         "reconnect": "Reconnect this workspace",
         "waiting": "Waiting for Linear…",
         "approveTab": "Approve the workspace in the Linear tab — this card updates once it lands."

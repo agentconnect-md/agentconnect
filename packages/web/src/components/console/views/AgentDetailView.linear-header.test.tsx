@@ -1,7 +1,5 @@
 // @vitest-environment happy-dom
-// The mobile integration header keeps the workspace identity readable: its action
-// track is one group that wraps under a floored identity link, so a module that adds
-// controls (Linear's `grant expired` badge plus reconnect) cannot squeeze the name out.
+// The mobile integration header's action track wraps as one group under a floored identity link.
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { SWRConfig } from 'swr'
@@ -78,7 +76,8 @@ const linearIntegration = {
   platform: 'linear',
   name: 'Acme Engineering Workspace',
   channels: [],
-  shareable: true
+  shareable: true,
+  revoked: true
 } as unknown as Parameters<typeof Object.freeze>[0]
 
 const AgentDetailView = (await import('./AgentDetailView')).default
@@ -119,11 +118,11 @@ describe('the mobile integration header under a module that adds controls', () =
 
     // Every trailing control shares ONE flex-none track, so the row wraps it as a unit.
     expect(track.className).toContain('flex-none')
-    expect(track.textContent).toContain('connected')
+    expect(track.textContent).toContain('revoked')
+    expect(track.textContent).not.toContain('connected')
     expect([...track.querySelectorAll('[aria-label]')].map((e) => e.getAttribute('aria-label'))).toContain(
       'Reconnect this workspace'
     )
-    expect(track.textContent).toContain('grant expired')
 
     // …onto a second line, because the identity link keeps a floor instead of shrinking to nothing.
     expect(row.className).toContain('flex-wrap')

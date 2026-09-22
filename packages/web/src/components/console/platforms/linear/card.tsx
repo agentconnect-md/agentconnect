@@ -47,31 +47,26 @@ export function LinearWorkspaceCard({ integration, children }: { integration: In
   return <CardCtx.Provider value={value}>{children}</CardCtx.Provider>
 }
 
-/** The workspace's one repair, in the header's action track beside the host's unlink.
- *  Haloed while the grant is known dead — the same needs-attention shape Slack's refresh uses. */
+/** The workspace's one repair beside the host's unlink, haloed while the grant is known dead. */
 export function LinearWorkspaceHeaderActions() {
   const t = useTranslations('Platforms.linear.card')
   const card = useContext(CardCtx)
   if (!card) return null
   const reconnecting = card.flow.phase === 'authorizing'
+  // No badge of its own: the host's integration pill already says the grant is revoked.
   return (
-    <>
-      {card.dead && (
-        <span className="badge flex-none bg-(--status-error-soft) text-(--status-error)">{t('grantExpired')}</span>
-      )}
-      <button
-        type="button"
-        disabled={reconnecting}
-        title={reconnecting ? t('waiting') : t('reconnect')}
-        aria-label={t('reconnect')}
-        onClick={card.flow.start}
-        className={`iconbtn h-7 w-7 flex-none ${card.dead ? 'border-(--status-error) text-(--status-error)' : ''} ${
-          reconnecting ? 'cursor-default opacity-55' : 'cursor-pointer'
-        }`}
-      >
-        <Icon name={reconnecting ? 'loader' : 'refresh-cw'} size={13} className={reconnecting ? 'animate-spin' : ''} />
-      </button>
-    </>
+    <button
+      type="button"
+      disabled={reconnecting}
+      title={reconnecting ? t('waiting') : t('reconnect')}
+      aria-label={t('reconnect')}
+      onClick={card.flow.start}
+      className={`iconbtn h-7 w-7 flex-none ${card.dead ? 'border-(--status-error) text-(--status-error)' : ''} ${
+        reconnecting ? 'cursor-default opacity-55' : 'cursor-pointer'
+      }`}
+    >
+      <Icon name={reconnecting ? 'loader' : 'refresh-cw'} size={13} className={reconnecting ? 'animate-spin' : ''} />
+    </button>
   )
 }
 

@@ -19,7 +19,7 @@ import { creatorLabel, fmtCost, fmtCountCompact, memberDisplayName, type HookKin
 import { primaryHookKind } from '@/lib/session-trigger'
 import { amountToNumber } from '@/lib/amount'
 import { useConsoleData } from '@/lib/data-context'
-import { IntegrationMarks } from '@/components/console/IntegrationMarks'
+import { IntegrationMarks, RevokedMarkDot } from '@/components/console/IntegrationMarks'
 import { useModal } from '@/components/console/ModalProvider'
 import { AgentIconView, GiteaMark, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
 import { BuiltinBadge } from '@/components/console/BuiltinBadge'
@@ -411,7 +411,8 @@ export default function AgentsView() {
               const runtimeMeta = acpRuntime(acpRegistry, a.runtime)
               const s = status(effectiveAgentStatus(a, owning))
               const agentInts = integrations.filter((int) => int.agentId === a.id)
-              const first = agentInts[0]
+              // A revoked integration takes the one mark, as it leads the desktop cluster.
+              const first = agentInts.find((int) => int.revoked) ?? agentInts[0]
               const primaryKind = primaryHookKind(a.hookKinds ?? [])
               const n24 = sessions24h(a.id)
               return (
@@ -449,8 +450,9 @@ export default function AgentsView() {
                     <Icon name="triangle-alert" size={16} color="var(--amber-500)" className="flex-none" />
                   ) : null}
                   {first ? (
-                    <span className="flex h-4 w-4 flex-none items-center justify-center">
+                    <span className="relative isolate flex h-4 w-4 flex-none items-center justify-center">
                       <PlatformMark platform={first.platform} fillPct={100} />
+                      {first.revoked && <RevokedMarkDot />}
                     </span>
                   ) : primaryKind ? (
                     <span className="flex h-4 w-4 flex-none items-center justify-center">
