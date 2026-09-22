@@ -50,7 +50,8 @@ function SecretForm({ bot }: { bot: BotDto }) {
         void submit()
       }}
     >
-      <div className="fld">
+      {/* A label, not a div: wrapping the input is what names it for a screen reader. */}
+      <label className="fld">
         <span className="fldlbl">New AppSecret</span>
         <input
           className="inp mn"
@@ -60,7 +61,7 @@ function SecretForm({ bot }: { bot: BotDto }) {
           onChange={(event) => setSecret(event.target.value)}
           disabled={busy}
         />
-      </div>
+      </label>
       <div className="flex gap-2">
         <button className="dsbtn sm dsbtn-primary" disabled={busy || !secret.trim()} type="submit">
           {busy ? 'Checking…' : 'Save'}
