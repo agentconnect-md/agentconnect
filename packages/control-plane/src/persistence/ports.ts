@@ -5377,8 +5377,25 @@ export interface OrgMemberRecord {
   joinedAt: Date
 }
 
-/** The five resource kinds that carry a Selected member audience. */
-export type VisibilityResourceKind = 'agent' | 'daemon' | 'cron' | 'mcpProvider' | 'skillSource'
+// Reusable typed judgments; consumers own their bindings.
+export interface DecisionRepo {
+  list(orgId: OrgId, viewer: ViewCtx): Promise<import('@agentconnect.md/protocol').DecisionDefinition[]>
+  get(orgId: OrgId, id: string): Promise<import('@agentconnect.md/protocol').DecisionDefinition | null>
+  create(
+    orgId: OrgId,
+    draft: import('@agentconnect.md/protocol').DecisionDraft,
+    actor: ViewCtx
+  ): Promise<import('@agentconnect.md/protocol').DecisionDefinition>
+  update(
+    orgId: OrgId,
+    id: string,
+    draft: import('@agentconnect.md/protocol').DecisionDraftInput,
+    actor: ViewCtx
+  ): Promise<import('@agentconnect.md/protocol').DecisionDefinition | null>
+  delete(orgId: OrgId, id: string, actor: ViewCtx): Promise<void>
+}
+
+export type VisibilityResourceKind = 'agent' | 'daemon' | 'cron' | 'mcpProvider' | 'skillSource' | 'decision'
 
 /**
  * What removing one member would do, read before the fact (resource-visibility.md

@@ -1,24 +1,31 @@
 // @vitest-environment happy-dom
 
-// The editor validates before any write, and a question-type switch replaces the criteria
-// wholesale rather than leaving a mixed draft.
+// The editor validates writes and preserves sharing that the user did not change.
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { SWRConfig } from 'swr'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DecisionsPrototypeProvider } from '@/lib/decisions/provider'
+import { DecisionsPrototypeProvider, useDecisionsPrototype } from '@/lib/decisions/provider'
 
 const push = vi.fn()
 /** Per-test query string, so the `returnTo` guard can be exercised. */
 let searchParams = new URLSearchParams()
+let params: { id?: string } = {}
+let store: ReturnType<typeof useDecisionsPrototype>
+function StoreProbe() {
+  store = useDecisionsPrototype()
+  return null
+}
 
+vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ members: [] }) }))
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push, replace: vi.fn() }),
-  useParams: () => ({}),
+  useParams: () => params,
   usePathname: () => '/decisions/new',
   useSearchParams: () => searchParams
 }))
+vi.mock('@/lib/data', async (original) => ({ ...(await original<object>()), MOCK_MODE: true }))
 vi.mock('@/lib/feature-flags', () => ({ featureFlagEnabled: () => true }))
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'org-test' }, myRole: 'owner', orgPath: (path: string) => path })
@@ -38,6 +45,7 @@ afterEach(async () => {
   container = undefined
   push.mockClear()
   searchParams = new URLSearchParams()
+  params = {}
 })
 
 async function render() {
@@ -48,6 +56,7 @@ async function render() {
     root?.render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
         <DecisionsPrototypeProvider>
+          <StoreProbe />
           <DecisionEditorView />
         </DecisionsPrototypeProvider>
       </SWRConfig>
@@ -129,6 +138,33 @@ describe('DecisionEditorView', () => {
     await click(byText('Create'))
     await act(async () => {})
     expect(push).toHaveBeenCalledWith('/decisions')
+  })
+
+  it('preserves sharing changed elsewhere while the user edits only the question', async () => {
+    params = { id: 'support-category' }
+    await render()
+    const { name, providerId, model, question } = store.decisions.find((entry) => entry.id === params.id)!
+    await act(async () => {
+      await store.api.updateDecision(params.id!, {
+        name,
+        providerId,
+        model,
+        question,
+        visibility: 'restricted',
+        sharedWith: ['example-user']
+      })
+      await store.reload()
+    })
+    const update = vi.spyOn(store.api, 'updateDecision')
+    await type('input[placeholder="Request type"]', 0, 'Edited category')
+    await click(byText('Save'))
+    expect(update.mock.calls[0]?.[1]).not.toHaveProperty('visibility')
+    expect(update.mock.calls[0]?.[1]).not.toHaveProperty('sharedWith')
+    expect((await store.api.getDecision(params.id!)).decision).toMatchObject({
+      name: 'Edited category',
+      visibility: 'restricted',
+      sharedWith: ['example-user']
+    })
   })
 
   it('replaces the criteria wholesale when the question type changes', async () => {

@@ -86,6 +86,12 @@ import {
   ProviderCredentialsReply,
   ProviderCredentialsChanged
 } from './frames/provider-credentials.js'
+import {
+  DecisionCatalogRequest,
+  DecisionCatalogReply,
+  DecisionPreviewRequest,
+  DecisionPreviewReply
+} from './frames/decision.js'
 import { SecretsRequest, SecretsGrant, SecretsRenew, SecretsRevoke, ScopeAttestation } from './frames/secrets.js'
 import {
   SessionHistoryReq,
@@ -346,6 +352,10 @@ export const FRAME_SCHEMAS = {
   // ── Linear access-token broker (linear-integration.md §7.3; token-bearing — never log) ──
   'linearcred/request': LinearCredRequest,
   'linearcred/grant': LinearCredGrant,
+  'decision/catalog': DecisionCatalogRequest,
+  'decision/catalog/result': DecisionCatalogReply,
+  'decision/preview': DecisionPreviewRequest,
+  'decision/preview/result': DecisionPreviewReply,
   'provider-credentials/request': ProviderCredentialsRequest,
   'provider-credentials/reply': ProviderCredentialsReply,
   'provider-credentials/changed': ProviderCredentialsChanged,
@@ -655,6 +665,10 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('gitcred/grant', FRAME_SCHEMAS['gitcred/grant']),
   frame('linearcred/request', FRAME_SCHEMAS['linearcred/request']),
   frame('linearcred/grant', FRAME_SCHEMAS['linearcred/grant']),
+  frame('decision/catalog', FRAME_SCHEMAS['decision/catalog']),
+  frame('decision/catalog/result', FRAME_SCHEMAS['decision/catalog/result']),
+  frame('decision/preview', FRAME_SCHEMAS['decision/preview']),
+  frame('decision/preview/result', FRAME_SCHEMAS['decision/preview/result']),
   frame('provider-credentials/request', FRAME_SCHEMAS['provider-credentials/request']),
   frame('provider-credentials/reply', FRAME_SCHEMAS['provider-credentials/reply']),
   frame('provider-credentials/changed', FRAME_SCHEMAS['provider-credentials/changed']),

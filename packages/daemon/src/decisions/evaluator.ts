@@ -1,5 +1,8 @@
 import {
   DecisionQuestion,
+  DECISION_PROVIDER_PROFILES,
+  supportsDecision,
+  type DecisionCatalogReply,
   PROVIDER_KEY_PROFILES,
   ProviderEndpoint,
   type DecisionDraft,
@@ -35,6 +38,11 @@ export class DecisionEvaluator {
 
   constructor(private readonly deps: DecisionEvaluatorDeps) {}
 
+  catalog(): DecisionCatalogReply {
+    const cloudAvailable = !!this.deps.keyServer() && ProviderEndpoint.safeParse(this.deps.cloudBaseUrl).success
+    return { providers: DECISION_PROVIDER_PROFILES.map((profile) => ({ ...profile, cloudAvailable })) }
+  }
+
   close(): void {
     this.shutdown.abort()
   }
@@ -50,13 +58,13 @@ export class DecisionEvaluator {
       reason: Extract<DecisionEvaluation, { status: 'unavailable' }>['reason']
     ): DecisionEvaluation => ({ status: 'unavailable', reason })
     const { agentId, evaluationId, decision } = input
-    if (decision.providerId !== 'typesafe') return unavailable('unsupported_input')
     const orgId = this.deps.orgForAgent(agentId)
     if (!orgId) return unavailable('credentials')
     let body: string
     let question: DecisionQuestion
     try {
       question = DecisionQuestion.parse(decision.question)
+      if (!supportsDecision(decision)) return unavailable('unsupported_input')
       if (!evaluationId.trim() || evaluationId.length > 128 || !decision.model.trim() || decision.model.length > 128)
         return unavailable('unsupported_input')
       body = JSON.stringify({

@@ -1,3 +1,4 @@
+import type { DecisionControlDeps } from './control/decision.js'
 import {
   MEMORY_TRANSACTION_V1_FEATURE,
   PROVIDER_CREDENTIALS_V1_FEATURE,
@@ -168,6 +169,7 @@ interface RegisterControlBarrier {
 export interface CpClientDeps
   extends
     AgentControlDeps,
+    DecisionControlDeps,
     DreamControlDeps,
     ExecutorControlDeps,
     MemoryControlDeps,
@@ -348,6 +350,7 @@ export class CpClient {
       memoryEntriesRead: deps.memoryEntriesRead,
       memoryEntriesWrite: deps.memoryEntriesWrite,
       dreamReader: deps.dreamReader,
+      decisionEvaluator: deps.decisionEvaluator,
       localSkillsReader: deps.localSkillsReader,
       runtimeCommandsReader: deps.runtimeCommandsReader,
       gitMessagePasses: new GitMessagePasses(),

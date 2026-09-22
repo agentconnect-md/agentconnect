@@ -1,6 +1,6 @@
 # Decisions
 
-> Status: Partially implemented — shared contracts, an opt-in mock service, Provider keys, and a callable daemon Jev evaluator exist. Decision persistence, live message admission, and routing remain follow-up work.
+> Status: Partially implemented — Decision persistence, Console CRUD, daemon provider readiness, standalone live previews, Provider keys, and the Jev evaluator are implemented. Live message admission and routing remain follow-up work.
 > Storage, ordering, and the evaluation-host rule are superseded by [message-intake.md](message-intake.md); the sections it replaces say so inline.
 > Scope: reusable typed judgments, initially using TypeSafe Jev.
 > Delivery: Stage 1 adds the Decision resource and fixed-target activation; Stage 2 adds shared-bot routing.
@@ -13,7 +13,7 @@ uses without specifying their implementation. New names and defaults below are
 implementation proposals, not APIs that already exist.
 
 The [UI foundation guide](decision-ui-foundation.md) describes the implemented
-contracts, mock service, fixtures, and their limits. A mock supports both stages
+Console API, mock service, fixtures, and their limits. A mock supports both stages
 for design work; it does not advertise either runtime capability.
 
 ## 1. Purpose and delivery stages
@@ -543,10 +543,11 @@ support for the `typesafe` dialect and this attribution key must be configured t
 `Daemon.evaluateDecision({ agentId, evaluationId, decision, state }, signal?)` is
 the callable runtime boundary. `decision` supplies `providerId`, `model`, and
 `question`; callers supply bounded context and receive the normalized answer or
-an unavailable reason. This slice does not yet connect Decision CRUD, live channel
-bindings, observation history, durable admission, or the Console preview to that
-method. Those consumers must apply their own authorization, ordering, replay, and
-post-evaluation ownership fences before acting on an answer.
+an unavailable reason. The Console standalone preview calls this method through
+the organization-scoped `decision/preview` RPC, gated by `decision-preview-v1`.
+It creates no session and persists neither sample state nor results. Live channel
+bindings, observation history, and admission remain separate consumers that must
+apply their own authorization, ordering, replay, and ownership fences.
 
 A saved key reports
 **Configured**, not Ready or Validated. Neither saving a key nor this metadata API
@@ -681,7 +682,7 @@ automatic model upgrade or separate model resource.
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Daemon provider catalog        | Non-secret logical provider ID, daemon ID, resolved source (`byok`, `ac_credits`, or `null`), supported models, readiness; reported metadata, not a credential CRUD resource |
 | `ProviderKey` (implemented)    | Organization/provider composite key, sealed API key, optional endpoint, secret-header relation, last-updated timestamp; metadata-only Console reads                          |
-| `Decision`                     | ID, organization, name, logical provider ID, model, question JSON, normal ownership/visibility/timestamps                                                                    |
+| `Decision` (implemented)       | ID, organization, name, logical provider ID, model, question JSON, normal ownership/visibility/timestamps                                                                    |
 | `IntegrationChannel`           | Add `decision` trigger and nullable `decisionBinding` JSON                                                                                                                   |
 | `BotDecisionRouting` (Stage 2) | Bot ID as unique owner, organization, enabled, Decision ID, ordered rules, Otherwise, normal timestamps                                                                      |
 
@@ -713,14 +714,16 @@ Evaluation usage is its own category rather than a fabricated ACP turn.
 
 ### 6.3 Management and preview API
 
-These proposed routes extend the organization-scoped `/api/v1` API with normal
+These routes extend the organization-scoped `/api/v1` API with normal
 authentication, visibility, error DTOs, and OpenAPI metadata. The bot routing routes
-are Stage 2; the resource and gate routes are Stage 1. Usage lists identify the
+are Stage 2; the resource and gate routes are Stage 1. Decision CRUD, the provider
+catalog, and standalone preview are implemented; consumer routes remain proposed.
+Usage lists identify the
 consumer kind without restricting the reusable resource to gates and routers.
 
 | Method and route                                              | Input / result                                                                           |
 | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `GET /daemons/:id/decision-providers`                         | Authorized daemon's non-secret catalog, BYOK/AC credits source, models, and readiness    |
+| `GET /decisions/providers?daemonId=:id`                       | Authorized daemon's non-secret catalog, BYOK/AC credits source, models, and readiness    |
 | `GET /decisions`                                              | Visible definitions, model/type, visible consumer counts                                 |
 | `GET /decisions/:id`                                          | Definition and visible consumer usages                                                   |
 | `POST /decisions`                                             | DecisionDraft                                                                            |
@@ -1536,6 +1539,35 @@ The shared-foundation checks also apply when Stage 2 reuses or changes those pat
 Stage 2-specific evidence is not a release gate for Stage 1.
 
 ### 10.4 Rollout and remaining implementation work
+
+The current Console uses live organization-scoped CRUD and preview APIs whenever
+`NEXT_PUBLIC_MOCK` is off. The `decisions` feature flag controls visibility. Saving
+a definition needs no online daemon. The adapter catalog currently contains TypeSafe
+Jev's pinned model and aliases documented in [Models](https://docs.typesafe.ai/models);
+it is shipped with the adapter, not discovered using a secret or paid probe. Other
+provider connections may be saved in Infra but do not become Decision adapters.
+
+`GET /decisions/providers` projects each visible daemon's `decision/catalog` response,
+its supported models, and BYOK/Cloud readiness. Configured BYOK takes priority over
+Cloud; no upstream authentication or credit check is performed by this read. Offline,
+unsupported, and pending execution contexts are represented explicitly.
+
+Standalone preview selects a visible daemon and uses one currently served, visible
+agent in the same organization as the existing credential/token attribution identity.
+It does not run that agent or bind the Decision to it. A daemon with no authorized,
+currently served agent is not ready for preview. The server rechecks membership,
+daemon/agent visibility, and placement before dispatch and before returning the result.
+Viewers cannot run a paid preview. The sample request is limited to 32 KiB; the
+daemon keeps the existing concurrency and deadline limits. The RPC is sent once,
+without automatic evaluation retries. Transport failures return 503; provider outcomes
+remain typed `unavailable` results.
+
+The Decision table participates in the normal Selected-audience membership lock,
+member-removal repair, and identity-merge paths. Sharing omitted from an update is
+preserved, including an ordinary editor save that did not change Team visibility.
+Live consumer usages are empty until message bindings land. The prototype By decision
+channel option is therefore offered only in explicit mock mode; it cannot look like
+a saved production trigger. Stage 2 shared-bot routing is still unimplemented.
 
 Roll out each stage independently, starting with its additive CP/data-plane migrations
 and capable consumers, then its live configuration surfaces. Stage 1 does not create

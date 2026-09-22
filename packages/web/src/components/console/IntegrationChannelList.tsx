@@ -718,7 +718,7 @@ export function IntegrationChannelList({
   const grouped = groupBySpace(channelRows)
   // Rows switched to `by decision` this session, plus every saved gate.
   const decisions = useOptionalDecisionsPrototype()
-  const decisionsOffered = featureFlagEnabled('decisions') && !!decisions
+  const decisionsOffered = featureFlagEnabled('decisions') && decisions?.api.mode === 'mock'
   const [pickedDecision, setPickedDecision] = useState<Record<string, boolean>>({})
   // The store composes the identity (organization + bot + conversation); without it there are
   // no gates at all and the choice is hidden, so a bare channel id is only a map key.

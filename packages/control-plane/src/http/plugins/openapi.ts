@@ -62,6 +62,7 @@ export const Tag = {
   DaemonKeys: 'Daemon keys',
   ApiKeys: 'API keys',
   ProviderKeys: 'Provider keys',
+  Decisions: 'Decisions',
   Agents: 'Agents',
   Workspace: 'Agent workspace',
   Sessions: 'Sessions',
@@ -83,6 +84,7 @@ export const Tag = {
 
 /** Group order + blurbs for the docs sidebar (OpenAPI top-level `tags`). */
 const TAG_DESCRIPTIONS: ReadonlyArray<{ name: string; description: string }> = [
+  { name: Tag.Decisions, description: 'Reusable typed questions and daemon-owned previews.' },
   { name: Tag.Deployment, description: 'Secret-free runtime metadata for deployment clients.' },
   { name: Tag.Organizations, description: 'The caller’s organizations — list, create, rename, delete.' },
   { name: Tag.Profile, description: 'The signed-in user’s own profile.' },

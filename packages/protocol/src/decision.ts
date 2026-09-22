@@ -50,9 +50,39 @@ export type DecisionDraftInput = z.input<typeof DecisionDraft>
 export type DecisionDefinition = DecisionDraft & {
   id: string
   orgId: string
-  createdBy: string
+  createdBy: string | null
   createdAt: string
   updatedAt: string
+  canEdit?: boolean
+}
+
+// The adapter catalog is versioned with the application; credentials and readiness are resolved separately.
+export const DECISION_PROVIDER_PROFILES = [
+  {
+    id: 'typesafe',
+    name: 'TypeSafe',
+    kind: 'typesafe',
+    models: [
+      { id: 'jev-1.13.0', label: 'Jev 1.13', questionTypes: ['boolean', 'choice', 'score'] },
+      { id: 'jev-latest', label: 'Jev latest', questionTypes: ['boolean', 'choice', 'score'] },
+      { id: 'jev-preview', label: 'Jev preview', questionTypes: ['boolean', 'choice', 'score'] }
+    ]
+  }
+] satisfies Array<{
+  id: string
+  name: string
+  kind: string
+  models: Array<{ id: string; label: string; questionTypes: DecisionQuestion['type'][] }>
+}>
+
+export function supportsDecision(decision: Pick<DecisionDraft, 'providerId' | 'model' | 'question'>): boolean {
+  return DECISION_PROVIDER_PROFILES.some(
+    (provider) =>
+      provider.id === decision.providerId &&
+      provider.models.some(
+        (model) => model.id === decision.model && model.questionTypes.includes(decision.question.type)
+      )
+  )
 }
 
 export const DecisionCondition = z

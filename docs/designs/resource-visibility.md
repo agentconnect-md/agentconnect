@@ -7,7 +7,7 @@
 > [`authorization-policy.md`](authorization-policy.md). A Selected member list
 > records explicit sharing; organization owners also have access through their
 > role, while immutable creation attribution grants none. Normal member removal
-> prunes all five visibility carriers atomically
+> prunes all six visibility carriers atomically
 > and repairs only audiences that would otherwise become empty.
 > Section 14 (platform conversation gating) extends the same model to platform
 > ingress and is implemented.
@@ -39,11 +39,11 @@ This design adds **per-resource visibility**:
 
 ### Decided policy semantics
 
-| Decision                                   | Choice                                                                                                                                                                                                                                                                                                                                                          | Meaning                                                                                                               |
-| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| How is the access level determined?        | **Visibility first, then organization role**                                                                                                                                                                                                                                                                                                                    | Everyone/Selected controls who can see a resource. Existing roles determine editing. There is no per-grant edit flag. |
-| Does an owner have a governance exception? | **Yes**                                                                                                                                                                                                                                                                                                                                                         | An organization owner sees, and may therefore edit, every resource of the organization, shared with them or not.      |
-| Which resource types carry visibility?     | **Agent, Daemon, Cron, MCP provider, and skill source carry Team visibility independently.** Session has a separate audience boundary. Integration derives from Agent; Usage gives owners complete aggregate attribution and otherwise intersects Agent and Session access; CronRun and daemon API keys derive from their parent. Bot is shared infrastructure. | See the taxonomy in section 2.                                                                                        |
+| Decision                                   | Choice                                                                                                                                                                                                                                                                                                                                                                    | Meaning                                                                                                               |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| How is the access level determined?        | **Visibility first, then organization role**                                                                                                                                                                                                                                                                                                                              | Everyone/Selected controls who can see a resource. Existing roles determine editing. There is no per-grant edit flag. |
+| Does an owner have a governance exception? | **Yes**                                                                                                                                                                                                                                                                                                                                                                   | An organization owner sees, and may therefore edit, every resource of the organization, shared with them or not.      |
+| Which resource types carry visibility?     | **Agent, Daemon, Cron, MCP provider, skill source, and Decision carry Team visibility independently.** Session has a separate audience boundary. Integration derives from Agent; Usage gives owners complete aggregate attribution and otherwise intersects Agent and Session access; CronRun and daemon API keys derive from their parent. Bot is shared infrastructure. | See the taxonomy in section 2.                                                                                        |
 
 ### Authoritative predicates
 
@@ -98,15 +98,15 @@ The sharing UI must disclose the owner exception wherever it presents Selected.
 
 ## 2. Resource taxonomy
 
-| Category                 | Resource                                                   | Own audience fields?                                        | Source                                                 |
-| ------------------------ | ---------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------ |
-| **Visibility carrier**   | `Agent`, `Daemon`, `CronDef`, `McpProvider`, `SkillSource` | `ResourceVisibility` + `sharedWith`                         | Itself                                                 |
-| **Independent audience** | `SessionMeta`                                              | `SessionVisibility` + owner/external scope; no `sharedWith` | Itself; see `session-visibility.md`                    |
-| **Derived**              | `Integration`                                              | No                                                          | Its `Agent`                                            |
-| **Aggregate governance** | Usage aggregates                                           | No                                                          | Owner role; otherwise `Agent` and `SessionMeta` access |
-| **Derived**              | `CronRun`                                                  | No                                                          | Its `CronDef`                                          |
-| **Derived**              | daemon `ApiKey`                                            | No                                                          | Its `Daemon`; key minting is a credential operation    |
-| **Infrastructure**       | `Bot`                                                      | No                                                          | Always organization-visible and cannot be restricted   |
+| Category                 | Resource                                                               | Own audience fields?                                        | Source                                                 |
+| ------------------------ | ---------------------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------ |
+| **Visibility carrier**   | `Agent`, `Daemon`, `CronDef`, `McpProvider`, `SkillSource`, `Decision` | `ResourceVisibility` + `sharedWith`                         | Itself                                                 |
+| **Independent audience** | `SessionMeta`                                                          | `SessionVisibility` + owner/external scope; no `sharedWith` | Itself; see `session-visibility.md`                    |
+| **Derived**              | `Integration`                                                          | No                                                          | Its `Agent`                                            |
+| **Aggregate governance** | Usage aggregates                                                       | No                                                          | Owner role; otherwise `Agent` and `SessionMeta` access |
+| **Derived**              | `CronRun`                                                              | No                                                          | Its `CronDef`                                          |
+| **Derived**              | daemon `ApiKey`                                                        | No                                                          | Its `Daemon`; key minting is a credential operation    |
+| **Infrastructure**       | `Bot`                                                                  | No                                                          | Always organization-visible and cannot be restricted   |
 
 **Agent and daemon visibility are independent.** An agent may be visible while
 its hosting daemon is not; see section 7.
@@ -374,7 +374,7 @@ uses the predicate above.
   accelerate the three-column disjunction, and adds write amplification.
 - **Create GIN indexes immediately.** Array containment on `sharedWith` is on
   the default human-read path, not an edge case. Add
-  `CREATE INDEX ... USING GIN ("sharedWith")` to all five tables. Empty arrays
+  `CREATE INDEX ... USING GIN ("sharedWith")` to all six tables. Empty arrays
   are cheap, and the index removes a sequential scan from the default path.
 - Do **not** apply a second in-memory `.filter` at runtime. SQL WHERE is
   authoritative. Assert in tests that SQL rows equal
@@ -416,7 +416,7 @@ best-effort hygiene, a stale ID could survive a failure or skip and silently
 restore shared access upon reinvitation.
 
 **Pruning is a correctness dependency, not hygiene.** For Agent, Daemon,
-CronDef, McpProvider, and SkillSource, the transaction:
+CronDef, McpProvider, SkillSource, and Decision, the transaction:
 
 1. removes the departing ID from every `sharedWith` array;
 2. for a Selected resource that would otherwise have no current member, adds
@@ -446,10 +446,11 @@ commit order:
   fails, while a departed audience member is omitted.
 
 The Selected-audience migration folds every former resource owner into
-`sharedWith`, intersects all five arrays with current membership, deduplicates
+`sharedWith`, intersects the five original resource arrays with current membership, deduplicates
 them, and deterministically backfills a current member only for legacy
 Selected rows that would otherwise be empty. It then adds non-empty CHECK
 constraints and drops the obsolete ownership columns and indexes.
+Decision was added later with the same audience constraint and removal repair.
 
 This is a coordinated, **forward-only** deployment boundary. Older Control
 Plane binaries still read and write `ownerUserId`, so drain them before
@@ -654,7 +655,7 @@ edits; a shared viewer only views; and `visibilityWhere(owner)` equals
 8. After `migrate deploy`, existing rows have `visibility='org'` and
    `sharedWith=[]`.
 9. Unauthorized users get 404 from workspace `gitstatus` and `gitpull`.
-10. Removing a member repairs all five Selected audiences, preserves creator
+10. Removing a member repairs all six Selected audiences, preserves creator
     audit, and removes their ID from every `sharedWith` in the same transaction.
 11. `tool-body` returns 404 for both a cross-organization Session and a Session
     outside the caller's audience.

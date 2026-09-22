@@ -1,7 +1,6 @@
 'use client'
 
-// Decisions (`/decisions`): the organization's reusable judgements. The list is the
-// resource's only management surface — bindings live where they are consumed.
+// Manage reusable judgments; consumers own their bindings.
 
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -28,9 +27,15 @@ const TYPE_TONE: Record<string, string> = {
 }
 
 export default function DecisionsView() {
+  const { activeOrg } = useOrgs()
+  return <DecisionsList key={activeOrg?.id ?? ''} />
+}
+
+function DecisionsList() {
   const t = useTranslations('Decisions')
   const format = useFormatter()
-  const { orgPath } = useOrgs()
+  const { orgPath, myRole } = useOrgs()
+  const writable = myRole !== 'viewer'
   const router = useRouter()
   const { decisions, loading, error, reload, api, gateUsages } = useDecisionsPrototype()
   const { providers } = useDecisionProviders()
@@ -40,6 +45,7 @@ export default function DecisionsView() {
   )
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
 
   const needle = query.trim().toLowerCase()
@@ -47,8 +53,7 @@ export default function DecisionsView() {
     ? decisions.filter((entry) => entry.name.toLowerCase().includes(needle) || entry.question.type.includes(needle))
     : decisions
   const providerName = (providerId: string) => providers.find((entry) => entry.id === providerId)?.name ?? providerId
-  // A prototype gate is a consumer the mock service cannot see: it counts toward `Used by`
-  // and blocks deletion like a saved binding. The store resolves only this organization's gates.
+  // Local mock gates count toward this organization's usages and block deletion.
   const gatedIn = gateUsages
   const usageCount = (entry: DecisionSummary) => entry.usageCount + gatedIn(entry.id).length
   const usageNames = (entry: DecisionSummary, mockUsages: DecisionUsage[]) => [
@@ -89,6 +94,7 @@ export default function DecisionsView() {
 
   const duplicate = async (decision: DecisionSummary) => {
     setBusyId(decision.id)
+    setActionError(null)
     try {
       await api.createDecision({
         name: t('copyName', { name: decision.name }),
@@ -99,6 +105,8 @@ export default function DecisionsView() {
         sharedWith: decision.sharedWith
       })
       await reload()
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       setBusyId(null)
     }
@@ -120,12 +128,17 @@ export default function DecisionsView() {
             className="inp mn h-[34px] w-[210px] min-h-0 pl-[31px]"
           />
         </span>
-        <Button variant="primary" size="sm" onClick={() => router.push(orgPath('/decisions/new'))}>
+        <Button variant="primary" size="sm" disabled={!writable} onClick={() => router.push(orgPath('/decisions/new'))}>
           <Icon name="plus" size={14} />
           {t('createDecision')}
         </Button>
       </div>
 
+      {actionError && (
+        <p role="alert" className="mb-3 text-[13px] text-(--red-600)">
+          {actionError}
+        </p>
+      )}
       {loading ? (
         <div className="card">
           <LoadingState size={22} padding={30} />
@@ -148,6 +161,7 @@ export default function DecisionsView() {
             variant="primary"
             size="sm"
             className="mt-[10px]"
+            disabled={!writable}
             onClick={() => router.push(orgPath('/decisions/new'))}
           >
             <Icon name="plus" size={14} />
@@ -229,7 +243,7 @@ export default function DecisionsView() {
                         type="button"
                         role="menuitem"
                         className="fopt"
-                        disabled={busyId === entry.id}
+                        disabled={!writable || busyId === entry.id}
                         onClick={() => {
                           close()
                           void duplicate(entry)
@@ -242,6 +256,7 @@ export default function DecisionsView() {
                         type="button"
                         role="menuitem"
                         className="fopt text-(--red-600)"
+                        disabled={!writable || entry.canEdit === false}
                         onClick={() => {
                           close()
                           void askDelete(entry)

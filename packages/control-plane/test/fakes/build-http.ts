@@ -7,6 +7,7 @@
  * `buildHttpServer(deps)` production uses. The `humanAuth` plane runs the devAuth
  * stub (no `OIDC_ISSUER`). Tests drive it with `app.inject` — DB-backed, NO socket.
  */
+import { PgDecisionRepo } from '../../src/persistence/repositories/decision.repo.js'
 import type { FastifyInstance } from 'fastify'
 import type { PrismaClient } from '../../src/generated/prisma/client.js'
 import {
@@ -504,6 +505,7 @@ export function buildHttpApp(
       bot: botRepo,
       botSecret: botSecretStore,
       botCredential: botCredentialWriter,
+      decision: new PgDecisionRepo(prisma),
       providerKey: new PgProviderKeyStore(prisma, cipher),
       agentSecret: agentSecretStore,
       agentConfig: new PgAgentConfigWriter(prisma, cipher),

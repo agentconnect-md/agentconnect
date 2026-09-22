@@ -26,6 +26,7 @@ export interface DecisionReadiness {
 export interface DecisionProviderOption {
   id: string
   daemonId: string
+  daemonName?: string
   name: string
   kind: string
   source: 'byok' | 'ac_credits' | null
@@ -121,6 +122,7 @@ export interface DecisionPreviewResult {
 }
 
 export interface DecisionApi {
+  mode: 'mock' | 'live'
   listProviders(daemonId?: string): Promise<DecisionProviderOption[]>
   listDecisions(): Promise<DecisionSummary[]>
   getDecision(id: string): Promise<DecisionDetail>

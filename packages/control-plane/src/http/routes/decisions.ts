@@ -1,0 +1,338 @@
+import { randomUUID } from 'node:crypto'
+import type { FastifyInstance, FastifyRequest } from 'fastify'
+import { z } from 'zod'
+import {
+  DECISION_PREVIEW_V1_FEATURE,
+  DECISION_PROVIDER_PROFILES,
+  DecisionDraft,
+  DecisionEvaluation,
+  DecisionPreviewRequest,
+  supportsDecision,
+  type DecisionDefinition
+} from '@agentconnect.md/protocol'
+import { canEdit, canView } from '../../authorization/policy.js'
+import { AgentId, DaemonId } from '../../domain/ids.js'
+import type { HttpDeps } from '../deps.js'
+import { ErrorDto } from '../dto/index.js'
+import { Tag } from '../plugins/openapi.js'
+import type { ZodTypeProvider } from '../plugins/zod.js'
+import { ctxOf, denyViewerWrite, orgOf } from '../rbac.js'
+import { resolveShareSet } from '../sharing.js'
+
+const DefinitionDto = z.object({
+  ...DecisionDraft.shape,
+  id: z.string(),
+  orgId: z.string(),
+  createdBy: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  canEdit: z.boolean()
+})
+const IdParam = z.object({ id: z.string().uuid() })
+const UsageDto = z.object({ kind: z.enum(['gate', 'shared_bot_routing']), id: z.string(), label: z.string() })
+const ReadinessDto = z.object({
+  status: z.enum(['ready', 'pending_sync', 'missing_credentials', 'daemon_offline', 'unsupported'])
+})
+const ProviderDto = z.object({
+  id: z.string(),
+  name: z.string(),
+  kind: z.string(),
+  daemonId: z.string(),
+  daemonName: z.string(),
+  source: z.enum(['byok', 'ac_credits']).nullable(),
+  readiness: ReadinessDto,
+  models: z.array(
+    z.object({ id: z.string(), label: z.string(), questionTypes: z.array(z.enum(['boolean', 'choice', 'score'])) })
+  )
+})
+const UpdateBody = z.strictObject({
+  ...DecisionDraft.shape,
+  visibility: z.enum(['org', 'restricted']).optional(),
+  sharedWith: z.array(z.string().min(1).max(128)).max(1000).optional()
+})
+const PreviewBody = z.strictObject({
+  decision: DecisionDraft,
+  daemonId: z.string().uuid(),
+  state: z.record(z.string(), z.unknown()),
+  consumer: z.strictObject({ type: z.literal('none') })
+})
+const PreviewDto = z.object({
+  mode: z.literal('live'),
+  readiness: ReadinessDto,
+  evaluation: DecisionEvaluation,
+  consumer: z.null()
+})
+const notFound = { error: 'Not Found', statusCode: 404, message: 'Decision or execution resource not found.' }
+const unavailable = {
+  error: 'Service Unavailable',
+  statusCode: 503,
+  message: 'Decision preview is unavailable. Check the selected daemon and try again.'
+}
+const invalidModel = {
+  error: 'Bad Request',
+  statusCode: 400,
+  message: 'Unsupported Decision provider, model, or question type.'
+}
+const invalidAudience = {
+  error: 'Bad Request',
+  statusCode: 400,
+  message: 'Select at least one current organization member.'
+}
+
+export function decisionRoutes(deps: HttpDeps) {
+  return async function decisionRoutesPlugin(app: FastifyInstance): Promise<void> {
+    const r = app.withTypeProvider<ZodTypeProvider>()
+    const dto = (row: DecisionDefinition, req: FastifyRequest) => ({ ...row, canEdit: canEdit(row, ctxOf(req)) })
+    const visible = async (req: FastifyRequest, id: string) => {
+      const row = await deps.repos.decision.get(orgOf(req), id)
+      return row && canView(row, ctxOf(req)) ? row : null
+    }
+    // A preview borrows a visible placed agent's credential identity without executing that agent.
+    const executionAgent = async (req: FastifyRequest, daemonId: string) => {
+      const agents = await deps.repos.agent.list(orgOf(req), ctxOf(req))
+      for (const agent of agents) {
+        if ((await deps.placementResolver.routableDaemons(agent)).includes(daemonId)) return agent
+      }
+      return null
+    }
+    const catalog = async (req: FastifyRequest, selected?: string): Promise<z.infer<typeof ProviderDto>[]> => {
+      const daemons = (await deps.registry.listAvailable(orgOf(req), ctxOf(req))).filter(
+        (daemon) => !selected || daemon.daemonId === selected
+      )
+      const keys = await deps.repos.providerKey.list(orgOf(req))
+      const result: z.infer<typeof ProviderDto>[] = []
+      for (const daemon of daemons) {
+        const conn = deps.daemonConns.get(daemon.daemonId)
+        let status: 'ready' | 'daemon_offline' | 'unsupported' | 'pending_sync' =
+          conn?.state !== 'READY'
+            ? 'daemon_offline'
+            : conn.capabilities?.features.includes(DECISION_PREVIEW_V1_FEATURE)
+              ? 'ready'
+              : 'unsupported'
+        let profiles = DECISION_PROVIDER_PROFILES.map((profile) => ({ ...profile, cloudAvailable: false }))
+        if (status === 'ready') {
+          try {
+            profiles = (await deps.control.decisionCatalog(daemon.daemonId, orgOf(req))).providers
+          } catch {
+            status = 'daemon_offline'
+          }
+          if (status === 'ready' && !(await executionAgent(req, daemon.daemonId))) status = 'pending_sync'
+        }
+        for (const profile of profiles) {
+          const source = keys.some((key) => key.provider === profile.id)
+            ? 'byok'
+            : profile.cloudAvailable
+              ? 'ac_credits'
+              : null
+          result.push({
+            id: profile.id,
+            name: profile.name,
+            kind: profile.kind,
+            models: profile.models,
+            daemonId: daemon.daemonId,
+            daemonName: daemon.name ?? daemon.daemonId,
+            source,
+            readiness: { status: status === 'ready' && !source ? 'missing_credentials' : status }
+          })
+        }
+      }
+      return result
+    }
+
+    r.get(
+      '/decisions/providers',
+      {
+        schema: {
+          tags: [Tag.Decisions],
+          summary: 'List Decision providers',
+          operationId: 'listDecisionProviders',
+          description:
+            'Authorized daemon capabilities and organization credential readiness. Does not decrypt keys or make provider calls.',
+          querystring: z.object({ daemonId: z.string().uuid().optional() }),
+          response: { 200: z.array(ProviderDto) }
+        }
+      },
+      (req) => catalog(req, req.query.daemonId)
+    )
+
+    r.get(
+      '/decisions',
+      {
+        schema: {
+          tags: [Tag.Decisions],
+          summary: 'List Decisions',
+          operationId: 'listDecisions',
+          description:
+            'Lists reusable Decision definitions visible to the caller. Message consumers are not enabled by saving a definition.',
+          response: { 200: z.array(DefinitionDto.extend({ usageCount: z.number().int() })) }
+        }
+      },
+      async (req) =>
+        (await deps.repos.decision.list(orgOf(req), ctxOf(req))).map((row) => ({ ...dto(row, req), usageCount: 0 }))
+    )
+
+    r.get(
+      '/decisions/:id',
+      {
+        schema: {
+          tags: [Tag.Decisions],
+          summary: 'Get a Decision',
+          operationId: 'getDecision',
+          description: 'Returns a visible Decision and its visible consumers.',
+          params: IdParam,
+          response: { 200: z.object({ decision: DefinitionDto, usages: z.array(UsageDto) }), 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const row = await visible(req, req.params.id)
+        return row ? { decision: dto(row, req), usages: [] } : reply.code(404).send(notFound)
+      }
+    )
+
+    r.post(
+      '/decisions',
+      {
+        schema: {
+          tags: [Tag.Decisions],
+          summary: 'Create a Decision',
+          operationId: 'createDecision',
+          description: 'Saves a reusable typed question independently of daemon availability or message triggers.',
+          body: DecisionDraft,
+          response: { 201: DefinitionDto, 400: ErrorDto, 403: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        if (!supportsDecision(req.body)) return reply.code(400).send(invalidModel)
+        const sharedWith = await resolveShareSet(deps.repos.user, orgOf(req), req.body.sharedWith)
+        const draft = DecisionDraft.safeParse({ ...req.body, sharedWith })
+        if (!draft.success) return reply.code(400).send(invalidAudience)
+        return reply.code(201).send(dto(await deps.repos.decision.create(orgOf(req), draft.data, ctxOf(req)), req))
+      }
+    )
+
+    r.patch(
+      '/decisions/:id',
+      {
+        schema: {
+          tags: [Tag.Decisions],
+          summary: 'Update a Decision',
+          operationId: 'updateDecision',
+          description:
+            'Replaces the definition atomically. Omitted visibility and selected members preserve the current audience.',
+          params: IdParam,
+          body: UpdateBody,
+          response: { 200: DefinitionDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const existing = await visible(req, req.params.id)
+        if (!existing) return reply.code(404).send(notFound)
+        if (!supportsDecision(req.body)) return reply.code(400).send(invalidModel)
+        const input = {
+          ...req.body,
+          ...(req.body.sharedWith !== undefined
+            ? {
+                sharedWith: await resolveShareSet(deps.repos.user, orgOf(req), req.body.sharedWith)
+              }
+            : {})
+        }
+        const checked = DecisionDraft.safeParse({
+          ...input,
+          visibility: input.visibility ?? existing.visibility,
+          sharedWith: input.sharedWith ?? existing.sharedWith
+        })
+        if (!checked.success) return reply.code(400).send(invalidAudience)
+        const row = await deps.repos.decision.update(orgOf(req), req.params.id, input, ctxOf(req))
+        return row ? dto(row, req) : reply.code(404).send(notFound)
+      }
+    )
+
+    r.delete(
+      '/decisions/:id',
+      {
+        schema: {
+          tags: [Tag.Decisions],
+          summary: 'Delete a Decision',
+          operationId: 'deleteDecision',
+          description: 'Deletes a visible definition. Live message bindings are not yet supported.',
+          params: IdParam,
+          response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        if (!(await visible(req, req.params.id))) return reply.code(404).send(notFound)
+        await deps.repos.decision.delete(orgOf(req), req.params.id, ctxOf(req))
+        return reply.code(204).send(null)
+      }
+    )
+
+    r.post(
+      '/decisions/preview',
+      {
+        bodyLimit: 40 * 1024,
+        schema: {
+          tags: [Tag.Decisions],
+          summary: 'Try a Decision',
+          operationId: 'previewDecision',
+          description:
+            'Evaluates a draft and bounded sample state on an authorized daemon. Uses provider credentials or Cloud credits without creating a session or storing sample content.',
+          body: PreviewBody,
+          response: { 200: PreviewDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const { daemonId, decision, state } = req.body
+        if (!supportsDecision(decision)) return reply.code(400).send(invalidModel)
+        const daemon = await deps.registry.getAvailable(orgOf(req), DaemonId(daemonId))
+        if (!daemon || !canView(daemon, ctxOf(req))) return reply.code(404).send(notFound)
+        const agent = await executionAgent(req, daemonId)
+        if (!agent) return reply.code(503).send(unavailable)
+        const parsed = DecisionPreviewRequest.safeParse({
+          agentId: agent.id,
+          evaluationId: randomUUID(),
+          decision,
+          state
+        })
+        if (!parsed.success)
+          return reply
+            .code(400)
+            .send({ error: 'Bad Request', statusCode: 400, message: 'The preview must fit within 32 KiB.' })
+        const input = parsed.data
+        const authorized = async () => {
+          const role = await deps.repos.org.roleOf(orgOf(req), ctxOf(req).userId)
+          if (!role || role === 'viewer') return false
+          const viewer = { ...ctxOf(req), role }
+          const [currentAgent, currentDaemon] = await Promise.all([
+            deps.repos.agent.get(orgOf(req), AgentId(agent.id)),
+            deps.registry.getAvailable(orgOf(req), DaemonId(daemonId))
+          ])
+          return (
+            !!currentAgent &&
+            canView(currentAgent, viewer) &&
+            !!currentDaemon &&
+            canView(currentDaemon, viewer) &&
+            (await deps.placementResolver.routableDaemons(currentAgent)).includes(daemonId)
+          )
+        }
+        if (!(await authorized())) return reply.code(404).send(notFound)
+        let result
+        try {
+          result = await deps.control.decisionPreview(daemonId, orgOf(req), input)
+        } catch {
+          return reply.code(503).send(unavailable)
+        }
+        if (!(await authorized())) return reply.code(404).send(notFound)
+        return {
+          mode: 'live' as const,
+          readiness: { status: 'ready' as const },
+          evaluation: result.evaluation,
+          consumer: null
+        }
+      }
+    )
+  }
+}
