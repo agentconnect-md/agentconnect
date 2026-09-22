@@ -200,13 +200,8 @@ spec:
                   apiVersion: v1
                   fieldPath: metadata.name
             {{- if .Values.modelEgress.enabled }}
-            # The authoritative half of the same `modelEgress` contract the SandboxTemplate carries
-            # as a floor: the daemon writes each runtime's own provider variables when it spawns
-            # one, and what it writes wins over the pod's AC_* fill-in. Vendor-prefixed because the
-            # daemon keys them by runtime, not by provider — Claude Code appends /v1/messages to its
-            # base while Codex appends /responses, so one gateway is two different bases and each
-            # client's `baseUrl` must already be the exact string its runtime appends to.
-            {{- include "agentconnect.modelEgressEnv" (dict "ctx" . "prefixes" (dict "claude" "ANTHROPIC" "codex" "OPENAI" "deepseek" "DEEPSEEK") "urlSuffix" "_MODEL_BASE_URL" "keySuffix" "_MODEL_TOKEN") | nindent 12 }}
+            # The daemon consumes these endpoints and supplies runtime credentials at spawn.
+            {{- include "agentconnect.modelEgressEnv" (dict "ctx" . "target" "daemon") | nindent 12 }}
             {{- with (get .Values.modelEgress.clients "codex" | default dict).sessionConfig }}
             # The same codex session-config floor the SandboxTemplate carries, on the DAEMON: the
             # pod copy is a frozen snapshot that never reaches an agent whose sandbox predates the
@@ -264,7 +259,7 @@ spec:
             {{- end }}
             {{- $modelCredentials := .Values.daemonPool.modelCredentials.existingSecret }}
             {{- if $modelCredentials }}
-            {{- $modelVars := list "MODEL_TOKEN" "MODEL_BASE_URL" "ANTHROPIC_MODEL_TOKEN" "ANTHROPIC_MODEL_BASE_URL" "OPENAI_MODEL_TOKEN" "OPENAI_MODEL_BASE_URL" "DEEPSEEK_MODEL_TOKEN" "DEEPSEEK_MODEL_BASE_URL" }}
+            {{- $modelVars := list "MODEL_TOKEN" "MODEL_BASE_URL" "ANTHROPIC_MODEL_TOKEN" "ANTHROPIC_MODEL_BASE_URL" "OPENAI_MODEL_TOKEN" "OPENAI_MODEL_BASE_URL" "DEEPSEEK_MODEL_TOKEN" "DEEPSEEK_MODEL_BASE_URL" "TYPESAFE_MODEL_BASE_URL" }}
             {{- /* One source per install, because a HALF of a pair is worse than none: a Secret
                    holding only a token is a supported shape, and an entry it omits would fall
                    through to whatever another source left in that variable — a real provider key
