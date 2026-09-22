@@ -91,7 +91,7 @@ import { GITCRED_SOCKET_ENV } from './gitcred/env.js'
 import { IMPLICIT_CREDENTIAL_PROVIDER, parseManagedBaseUrl, stripHostPathPrefix } from './gitcred/managed-hosts.js'
 import { codeHostCredentials, credentialProviderOf, type ManagedWorkspaceRepo } from './codehost/credentials.js'
 import { tmpdir } from 'node:os'
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
 import { readCliEntry, runCliUpgrade } from './lifecycle/cli-upgrade.js'
@@ -2135,6 +2135,17 @@ export class Daemon {
         this.k8s
           ? 'daemon startup refused: security.requireSandbox is not supported with --k8s — a k8s runtime is isolated by its own pod, not by the in-process SRT mechanism'
           : 'daemon startup refused: security.requireSandbox is true but this host has no supported Linux SRT/bwrap mechanism'
+      )
+    }
+    // Another backend never constructs the manager that collects microsandbox state, so leftovers are only reported (#2282).
+    const leftover = join(root, 'microsandbox')
+    const environments = await readdir(join(leftover, 'bindings')).then(
+      (files) => files.filter((file) => file.endsWith('.json')).length,
+      () => 0
+    )
+    if (environments > 0) {
+      this.log.warn(
+        `sandbox: microsandbox state from an earlier backend remains under ${leftover} (${environments} environment(s)), kept in case the backend is switched back; to reclaim the space, switch sandbox.backend back to microsandbox so retention retires its VMs, or, once sure, stop the daemon and remove that directory`
       )
     }
   }
