@@ -71,9 +71,13 @@ export class PgWebchatConversationRepo implements WebchatConversationRepo {
     const rows = await this.db.webchatConversationAgent.findMany({
       where: { conversationId, conversation: { orgId } },
       orderBy: { ord: 'asc' },
-      select: { agentId: true, role: true }
+      select: { agentId: true, role: true, currentSessionId: true }
     })
-    return rows.map((r) => ({ agentId: AgentId(r.agentId), role: r.role === 'primary' ? 'primary' : 'member' }))
+    return rows.map((r) => ({
+      agentId: AgentId(r.agentId),
+      role: r.role === 'primary' ? 'primary' : 'member',
+      currentSessionId: r.currentSessionId
+    }))
   }
 
   async addParticipant(orgId: OrgId, conversationId: string, agentId: AgentId, addedByUserId: string): Promise<void> {

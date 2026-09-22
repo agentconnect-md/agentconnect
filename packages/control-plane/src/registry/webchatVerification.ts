@@ -25,7 +25,10 @@ export interface WebchatVerificationDeps {
   daemons: { get(daemonId: string): VerificationDaemon | undefined }
   /** Roster reads for multi-agent conversations (webchat-multi-agents.md §6.2). */
   conversations: {
-    participants(orgId: OrgId, conversationId: string): Promise<Array<{ agentId: AgentId; role: 'primary' | 'member' }>>
+    participants(
+      orgId: OrgId,
+      conversationId: string
+    ): Promise<Array<{ agentId: AgentId; role: 'primary' | 'member'; currentSessionId?: string | null }>>
     target(conversationId: string): Promise<{ targetSessionId: string | null } | null>
   }
   /** Session-targeted continuation re-checks (webchat-cross-integration-continuation.md §6.2). */
@@ -151,9 +154,20 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
     // Fenced on the org the signed token asserts (org-scoped-data-layer.md §3).
     const roster = await deps.conversations.participants(OrgId(claims.orgId), claims.conversationId)
     const participants: RcWebchatParticipant[] = []
+    // Where this participant's content is, so a member the turn reaches another way can refuse it (#2218).
+    const recordedBy = async (sessionId?: string | null): Promise<{ recordedDaemonId?: string }> => {
+      if (!sessionId) return {}
+      const session = await deps.sessions.getUnscoped(SessionId(sessionId))
+      return session?.daemonId ? { recordedDaemonId: session.daemonId } : {}
+    }
     for (const p of roster) {
       if (p.agentId === claims.agentId) {
-        participants.push({ agentId: p.agentId, daemonId: agentDaemonId, primary: true })
+        participants.push({
+          agentId: p.agentId,
+          daemonId: agentDaemonId,
+          ...(await recordedBy(p.currentSessionId)),
+          primary: true
+        })
         continue
       }
       const member = await deps.agents.getUnscoped(p.agentId)
@@ -163,6 +177,7 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
       participants.push({
         agentId: p.agentId,
         ...(memberDaemon?.state === 'READY' && memberDaemonId ? { daemonId: memberDaemonId } : {}),
+        ...(await recordedBy(p.currentSessionId)),
         ...(p.role === 'primary' ? { primary: true } : {})
       })
     }

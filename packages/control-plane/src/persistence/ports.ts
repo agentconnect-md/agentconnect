@@ -1585,6 +1585,8 @@ export interface WebchatConversationBinding {
 
 /** One roster row of a (possibly multi-agent) webchat conversation, in pick order. */
 export interface WebchatParticipant {
+  /** The session this participant currently stands on, whose recorder holds its content. */
+  currentSessionId?: string | null
   agentId: AgentId
   role: 'primary' | 'member'
 }

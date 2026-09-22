@@ -153,6 +153,8 @@ export type RcVerify = z.infer<typeof RcVerify>
 export const RcWebchatParticipant = z.object({
   agentId: z.string().uuid(),
   daemonId: z.string().uuid().optional(),
+  // The member that recorded this participant's current session, which is where its content is unless a shared store holds it. The relay carries it on every op so a member that reached the turn another way can refuse it (#2218).
+  recordedDaemonId: z.string().uuid().optional(),
   primary: z.boolean().optional()
 })
 export type RcWebchatParticipant = z.infer<typeof RcWebchatParticipant>

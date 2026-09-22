@@ -307,6 +307,8 @@ export const RdMsgWebchat = z.object({
   // copied verbatim from the rc/verify verdict. Absent ⇒ today's behavior
   // (conversation-derived webchat session). Never originates in the browser.
   targetSessionId: z.string().min(1).optional(),
+  // The member that recorded this conversation's session for the target agent (#2218): a daemon that is neither it nor a holder of the store it wrote to refuses the op rather than opening a fresh session under the same conversation. Absent ⇒ no session yet, or a relay that predates the field.
+  recordedDaemonId: z.string().uuid().optional(),
   remoteMcp: WebchatRemoteMcpEntitlement.optional(),
   payload: RelayWebchatOp
 })

@@ -9582,6 +9582,21 @@ export class Daemon {
   }
 
   /** The op-switch behind {@link handleRelayMsg} (dedup handled by the caller). */
+  /** Whether this daemon is neither the conversation's recorder nor a holder of the store it wrote to
+   *  (§7): the rows are the proof — a shared store puts them here too, a private one does not. A
+   *  conversation with no session yet, and a relay that sends no recorder, are served as before. */
+  private async webchatContentIsElsewhere(msg: RdMsgWebchat, sessionKey: string): Promise<boolean> {
+    const recorded = msg.recordedDaemonId
+    // A session-targeted continuation is fenced by the Control Plane at mint and at verify.
+    if (!recorded || msg.targetSessionId !== undefined || recorded === this.cfg.daemonId) return false
+    try {
+      return (await this.store.getSession(sessionKey)) === undefined
+    } catch (err) {
+      this.log.warn(`webchat: reading ${sessionKey} to place its content failed: ${formatErr(err)}`)
+      return false
+    }
+  }
+
   private async dispatchRelayOp(msg: RdMsgWebchat, chat: (event: RdChatEvent) => void): Promise<RdAck> {
     const sink: WebchatSink = {
       output: (o) => chat({ kind: 'output', output: o }),
@@ -9589,6 +9604,16 @@ export class Daemon {
     }
     const op = msg.payload
     const key = (): string => this.webchatTransport.webchatSessionKey(msg.chatId, msg.agentId)
+    // The conversation's content is another member's, and this one has none of it: opening a fresh
+    // session under the same conversation would answer the user without the transcript they see (#2218).
+    if ((op.op === 'turn' || op.op === 'context') && (await this.webchatContentIsElsewhere(msg, key()))) {
+      return {
+        msgId: msg.msgId,
+        accepted: false,
+        reason: 'content_elsewhere',
+        detail: 'this conversation ran on another machine of the group, which no longer serves the agent'
+      }
+    }
     // Session-targeted continuation: `turn` dispatches onto the target session's
     // own coordinates; runtime-set ops are refused (this ingress adds human
     // input, never session-global administration); a context copy is a no-op

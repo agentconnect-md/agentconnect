@@ -13,6 +13,8 @@ export interface ChatSink {
 export interface CachedParticipant {
   agentId: string
   daemonId?: string
+  /** The member holding this participant's content (#2218), which no re-route heals. */
+  recordedDaemonId?: string
 }
 
 // Bounded roster cache: entries are refreshed on every browser (re)connect and
