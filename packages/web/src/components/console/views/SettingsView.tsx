@@ -15,7 +15,6 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { Avatar, Button, Icon, Toggle } from '@/components/ui'
-import LanguageSwitcher from '@/components/LanguageSwitcher'
 import { AgentIconView, LoadingState, PlatformMark } from '@/components/marks'
 import { withIconUrl } from '@/lib/agent-icon'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
@@ -570,7 +569,6 @@ function InviteLinksCard({ orgId }: { orgId: string }) {
 
 export default function SettingsView() {
   const t = useTranslations('Settings')
-  const language = useTranslations('Common.language')
   const { activeOrg, myRole, refreshOrgs, updateOrg: updateOrgSettings, leaveOrg, error: orgError } = useOrgs()
   const { openModal } = useModal()
   // The organization-environment picker filters this to agents the viewer can manage.
@@ -674,12 +672,6 @@ export default function SettingsView() {
             </div>
             <div className="mono mt-[2px] text-[11.5px] text-(--text-tertiary)">{activeOrg?.slug ?? ''}</div>
           </div>
-        </div>
-        <div className="flex items-center gap-3 border-t border-(--border-subtle) px-4 py-[15px]">
-          <div className="min-w-0 flex-1">
-            <span className="font-sans text-[13px] font-medium leading-normal">{language('label')}</span>
-          </div>
-          <LanguageSwitcher showLabel={false} />
         </div>
       </div>
 
