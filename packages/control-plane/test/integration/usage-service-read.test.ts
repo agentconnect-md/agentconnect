@@ -16,6 +16,7 @@ import { buildHttpApp } from '../fakes/build-http.js'
 import { seedAgent, seedSessionMeta } from '../fixtures/seed.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { PgSessionUsageRepo } from '../../src/persistence/repositories/session-usage.repo.js'
+import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { AgentId } from '../../src/domain/ids.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -47,11 +48,13 @@ function fakeClusterIdentity(opts: { accepts?: string; throws?: boolean } = {}) 
 
 async function withApp(
   identity: ReturnType<typeof fakeClusterIdentity> | undefined,
-  run: (app: ReturnType<typeof buildHttpApp>['app']) => Promise<void>
+  run: (app: ReturnType<typeof buildHttpApp>['app']) => Promise<void>,
+  /** The console credential's principal; the seeded owner unless a test needs a narrower reader. */
+  humanUserId?: string
 ): Promise<void> {
   const { app, close } = buildHttpApp(
     prisma,
-    {},
+    humanUserId ? { DEFAULT_OWNER_ID: humanUserId } : {},
     undefined,
     undefined,
     identity ? { clusterWorkloadIdentity: identity } : {}
@@ -64,10 +67,21 @@ async function withApp(
 }
 
 /** One org, two agents: one visible to everyone, one restricted to a user the caller is
- *  not. Both spend, so "did visibility apply?" has a different answer per credential. */
-async function seedSpend(): Promise<void> {
+ *  not. Both spend, so "did visibility apply?" has a different answer per credential.
+ *  Returns a collaborator who is outside the restricted audience — the human reader
+ *  whose view differs from the workload's (an organization owner's would not: the owner
+ *  exception attributes every agent to them). */
+async function seedSpend(): Promise<string> {
   await seedAgent(prisma, OPEN_AGENT)
   await seedAgent(prisma, RESTRICTED_AGENT, { visibility: 'restricted', sharedWith: ['someone-else'] })
+  const users = new PgUserRepo(prisma)
+  const email = `usage-reader-${OPEN_AGENT.slice(0, 8)}-${Date.now()}@acme.dev`
+  const { userId: collaborator } = await users.provisionOidcUser({
+    oidcSubject: `usage-reader-${Date.now()}`,
+    email,
+    emailVerified: true
+  })
+  await users.addMemberByEmail(DEFAULT_ORG_ID, email, 'collaborator')
   const repo = new PgSessionUsageRepo(prisma)
   const at = new Date(Date.now() - 60_000)
   for (const [agentId, sessionId, costAmount] of [
@@ -83,6 +97,7 @@ async function seedSpend(): Promise<void> {
       usage: { totalTokens: 100, costAmount, costCurrency: 'USD' }
     })
   }
+  return collaborator
 }
 
 function windowQuery(extra: Record<string, string> = {}): string {
@@ -96,41 +111,45 @@ function windowQuery(extra: Record<string, string> = {}): string {
 
 describe('GET /usage — the workload credential', () => {
   it('attributes every row, where a human gets the same total as a residual', async () => {
-    await seedSpend()
+    const collaborator = await seedSpend()
     const token = workloadToken()
-    await withApp(fakeClusterIdentity({ accepts: token }), async (app) => {
-      const asService = await app.inject({
-        method: 'GET',
-        url: `${ORG}/usage?${windowQuery()}`,
-        headers: { authorization: `Bearer ${token}` }
-      })
-      expect(asService.statusCode).toBe(200)
-      type Read = {
-        totals: { costAmount: string }
-        agents: { agentId: string }[]
-        unattributed?: { costAmount: string }
-      }
-      const service = asService.json() as Read
+    await withApp(
+      fakeClusterIdentity({ accepts: token }),
+      async (app) => {
+        const asService = await app.inject({
+          method: 'GET',
+          url: `${ORG}/usage?${windowQuery()}`,
+          headers: { authorization: `Bearer ${token}` }
+        })
+        expect(asService.statusCode).toBe(200)
+        type Read = {
+          totals: { costAmount: string }
+          agents: { agentId: string }[]
+          unattributed?: { costAmount: string }
+        }
+        const service = asService.json() as Read
 
-      // The same window through the console's own credential (devAuth's seeded owner).
-      const asHuman = await app.inject({ method: 'GET', url: `${ORG}/usage?${windowQuery()}` })
-      expect(asHuman.statusCode).toBe(200)
-      const human = asHuman.json() as Read
+        // The same window through the console's own credential (devAuth as the collaborator).
+        const asHuman = await app.inject({ method: 'GET', url: `${ORG}/usage?${windowQuery()}` })
+        expect(asHuman.statusCode).toBe(200)
+        const human = asHuman.json() as Read
 
-      // A settlement total that omitted the sessions no human may read would undercharge —
-      // which is why the HUMAN's total is now the same figure. An org's spend is a fact
-      // about the org, so the two credentials cannot disagree about it.
-      expect(service.totals.costAmount).toBe('42')
-      expect(human.totals.costAmount).toBe('42')
+        // A settlement total that omitted the sessions no human may read would undercharge —
+        // which is why the HUMAN's total is now the same figure. An org's spend is a fact
+        // about the org, so the two credentials cannot disagree about it.
+        expect(service.totals.costAmount).toBe('42')
+        expect(human.totals.costAmount).toBe('42')
 
-      // What the credential buys is ATTRIBUTION. The workload names both agents and has
-      // nothing to withhold; the human gets one row plus an id-less residual.
-      expect(service.agents.map((a) => a.agentId).sort()).toEqual([OPEN_AGENT, RESTRICTED_AGENT].sort())
-      expect(service.unattributed).toBeUndefined()
-      expect(human.agents.map((a) => a.agentId)).toEqual([OPEN_AGENT])
-      expect(human.unattributed?.costAmount).toBe('32')
-      expect(JSON.stringify(human)).not.toContain(RESTRICTED_AGENT)
-    })
+        // What the credential buys is ATTRIBUTION. The workload names both agents and has
+        // nothing to withhold; the human gets one row plus an id-less residual.
+        expect(service.agents.map((a) => a.agentId).sort()).toEqual([OPEN_AGENT, RESTRICTED_AGENT].sort())
+        expect(service.unattributed).toBeUndefined()
+        expect(human.agents.map((a) => a.agentId)).toEqual([OPEN_AGENT])
+        expect(human.unattributed?.costAmount).toBe('32')
+        expect(JSON.stringify(human)).not.toContain(RESTRICTED_AGENT)
+      },
+      collaborator
+    )
   })
 
   it('refuses the COLLECTOR’s ServiceAccount — writing spend is not reading it', async () => {
@@ -191,18 +210,22 @@ describe('GET /usage — the workload credential', () => {
   })
 
   it('does not exist as a credential when no cluster surface is configured', async () => {
-    await seedSpend()
+    const collaborator = await seedSpend()
     const token = workloadToken()
-    await withApp(undefined, async (app) => {
-      const res = await app.inject({
-        method: 'GET',
-        url: `${ORG}/usage?${windowQuery()}`,
-        headers: { authorization: `Bearer ${token}` }
-      })
-      // Falls through to humanAuth, which is the devAuth stub here — the point is that
-      // the workload path never admitted it.
-      const body = res.json() as { agents?: { agentId: string }[] }
-      expect(body.agents?.map((a) => a.agentId) ?? []).not.toContain(RESTRICTED_AGENT)
-    })
+    await withApp(
+      undefined,
+      async (app) => {
+        const res = await app.inject({
+          method: 'GET',
+          url: `${ORG}/usage?${windowQuery()}`,
+          headers: { authorization: `Bearer ${token}` }
+        })
+        // Falls through to humanAuth, which is the devAuth stub here — the point is that
+        // the workload path never admitted it.
+        const body = res.json() as { agents?: { agentId: string }[] }
+        expect(body.agents?.map((a) => a.agentId) ?? []).not.toContain(RESTRICTED_AGENT)
+      },
+      collaborator
+    )
   })
 })

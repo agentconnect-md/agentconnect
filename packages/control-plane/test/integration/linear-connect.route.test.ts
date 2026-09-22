@@ -144,6 +144,8 @@ async function harness(
     relay?: boolean
     onAssign?: (payload: unknown) => void
     onFrame?: (type: string, payload: unknown) => void
+    /** The console principal; the seeded owner unless a test needs a narrower caller. */
+    userId?: string
   } = {}
 ): Promise<Harness> {
   const linear = new FakeLinear()
@@ -152,7 +154,8 @@ async function harness(
     prisma,
     {
       PUBLIC_RELAY_URL: 'https://relay.example.test',
-      PUBLIC_CP_URL: 'https://cp.example.test'
+      PUBLIC_CP_URL: 'https://cp.example.test',
+      ...(overrides.userId ? { DEFAULT_OWNER_ID: overrides.userId } : {})
     },
     undefined,
     control as unknown as ControlSender
@@ -1176,9 +1179,19 @@ describe('disconnect — the bot delete revokes only what nobody holds (§7.4)',
  * about, reporting a full disconnect over a half-unlinked workspace.
  */
 describe('workspace disconnect — the whole organization, not the caller’s view of it (§7.4)', () => {
-  /** A connected workspace with two members, the second on an agent the caller cannot see. */
+  /** A connected workspace with two members, the second on an agent the caller cannot see.
+   *  The caller is a collaborator: an organization owner sees every agent (owner exception),
+   *  so the piecewise premise below would not hold for one. */
   async function connectedWithHiddenMember(): Promise<{ h: Harness; botId: string; hiddenAgentId: string }> {
-    const h = await harness()
+    const users = new PgUserRepo(prisma)
+    const email = `linear-disconnect-collaborator-${randomUUID()}@acme.dev`
+    const { userId } = await users.provisionOidcUser({
+      oidcSubject: `linear-disconnect-collaborator-${randomUUID()}`,
+      email,
+      emailVerified: true
+    })
+    await users.addMemberByEmail(DEFAULT_ORG_ID, email, 'collaborator')
+    const h = await harness({ userId })
     const { id } = (await startConnect(h)).json() as { id: string }
     await callback(h, { code: 'the-code', state: id })
     const bot = await prisma.bot.findFirstOrThrow({ where: { platform: 'linear' } })
