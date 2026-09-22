@@ -3,8 +3,8 @@
  *
  * The invariants pinned here: a terminal section posted at finalization is BORN
  * `delivery_state: 'final'` (carrying the prepared recipients and addressed-anyone bit),
- * exactly one physical message of a split answer is terminal, a mid-stream post or settle
- * edit never earns the stamp, and `finalizeSlackResponse` re-edits only when no post
+ * exactly one physical message of a split answer is terminal, a mid-stream post never
+ * earns the stamp, and `finalizeSlackResponse` re-edits only when no post
  * already closed the response — because that chat.update marks the visible reply
  * "(edited)", it must remain the fallback, never the default.
  */
@@ -118,89 +118,6 @@ describe('born-final terminal posts (§5.5)', () => {
     )
     await apply({ kind: 'post', text: 'done', terminal: true })
     expect(turn.reply.finalStamped).toBeUndefined()
-  })
-
-  it('final-live-reply: a fresh single-section answer is born final', async () => {
-    const { apply, turn, posts } = fixture({ responseId: 'resp-1', finalRouting: ROUTING })
-    await apply({ kind: 'final-live-reply', text: 'the whole answer' })
-    expect(posts).toHaveLength(1)
-    expect(posts[0]?.options?.response).toMatchObject({ deliveryState: 'final', mentionedAgentIds: ['bot-b'] })
-    expect(turn.reply.finalStamped).toBe('ts-1')
-  })
-
-  it('final-live-reply: only the LAST overflow section carries the stamp', async () => {
-    // Three sections: each paragraph is close to Slack's one-block cap, so the splitter
-    // must cut at the paragraph boundaries.
-    const text = ['a'.repeat(11000), 'b'.repeat(11000), 'c'.repeat(11000)].join('\n\n')
-    const { apply, turn, posts } = fixture({ responseId: 'resp-1', finalRouting: ROUTING })
-    await apply({ kind: 'final-live-reply', text })
-    expect(posts).toHaveLength(3)
-    expect(posts.map((p) => p.options?.response?.deliveryState)).toEqual(['streaming', 'streaming', 'final'])
-    expect(turn.reply.finalStamped).toBe('ts-3')
-    expect(turn.reply.lastResponse?.ts).toBe('ts-3')
-  })
-
-  it('final-live-reply: the settle EDIT of an already-posted answer earns no stamp', async () => {
-    const { apply, turn, conn } = fixture({ responseId: 'resp-1', finalRouting: ROUTING })
-    turn.chrome.liveReplyTs = 'ts-live'
-    turn.chrome.liveReplyText = 'partial'
-    await apply({ kind: 'final-live-reply', text: 'partial, now complete' })
-    expect(conn.updateMessage).toHaveBeenCalled()
-    expect(conn.postMessage).not.toHaveBeenCalled()
-    expect(turn.reply.finalStamped).toBeUndefined()
-  })
-
-  it('final-live-reply: a rejected settle edit posts the answer fresh instead of dropping it (#1793)', async () => {
-    // The one way minimal mode drops a turn: the single in-place edit fails and nothing
-    // else delivers. The terminal settle must fall back to a new message.
-    const { apply, turn, conn, posts } = fixture(
-      { responseId: 'resp-1', finalRouting: ROUTING },
-      { updateMessage: vi.fn(async () => false) }
-    )
-    turn.chrome.liveReplyTs = 'ts-live'
-    turn.chrome.liveReplyText = 'partial'
-    await apply({ kind: 'final-live-reply', text: 'the complete answer' })
-    expect(conn.updateMessage).toHaveBeenCalled()
-    expect(posts).toHaveLength(1)
-    expect(posts[0]?.text).toBe('the complete answer')
-    // A single-section answer posted on the fallback is still the terminal section.
-    expect(posts[0]?.options?.response).toMatchObject({ deliveryState: 'final' })
-    expect(turn.chrome.liveReplyText).toBe('the complete answer')
-  })
-
-  it('final-live-reply: verbatim text already confirmed on the live message is not re-posted', async () => {
-    const { apply, turn, conn } = fixture({ responseId: 'resp-1', finalRouting: ROUTING })
-    turn.chrome.liveReplyTs = 'ts-live'
-    turn.chrome.liveReplyText = 'the answer'
-    await apply({ kind: 'final-live-reply', text: 'the answer' })
-    expect(conn.updateMessage).not.toHaveBeenCalled()
-    expect(conn.postMessage).not.toHaveBeenCalled()
-  })
-
-  it('live-reply: a dropped streaming edit does not advance liveReplyText (so the settle still delivers)', async () => {
-    // Path 1 of #1793: liveReplyText was set BEFORE the send, so a failed edit made the
-    // next terminal settle de-dupe against text that never reached Slack. Now the text
-    // only advances on a confirmed edit.
-    const { apply, turn, conn } = fixture(
-      { responseId: 'resp-1', finalRouting: ROUTING },
-      { updateMessage: vi.fn(async () => false) }
-    )
-    turn.chrome.liveReplyTs = 'ts-live'
-    turn.chrome.liveReplyText = 'old'
-    await apply({ kind: 'live-reply', text: 'streamed answer' })
-    expect(conn.updateMessage).toHaveBeenCalled()
-    expect(turn.chrome.liveReplyText).toBe('old')
-  })
-
-  it('live-reply: a failed first post does not advance liveReplyText', async () => {
-    const { apply, turn, conn } = fixture(
-      { responseId: 'resp-1', finalRouting: ROUTING },
-      { postMessage: vi.fn(async () => undefined) }
-    )
-    await apply({ kind: 'live-reply', text: 'answer' })
-    expect(conn.postMessage).toHaveBeenCalled()
-    expect(turn.chrome.liveReplyText).toBeUndefined()
-    expect(turn.chrome.liveReplyAttempted).toBe(true)
   })
 })
 

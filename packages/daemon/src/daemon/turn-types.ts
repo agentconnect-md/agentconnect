@@ -484,17 +484,11 @@ export interface TurnChromeCursors {
   /** ts of the single in-place reasoning "context block" message, once posted (high). */
   reasoningTs?: string
   reasoningAttempted?: boolean
-  /** ts of the single in-place agent reply message (minimal mode's `live-reply`), once posted. */
+  /** ts of the single in-place agent reply (Telegram / Discord minimal mode's `live-reply`), once posted. */
   liveReplyTs?: string
   liveReplyAttempted?: boolean
-  /** Text last written to the live-reply message — skip a chat.update when unchanged. */
+  /** Text last written to the live-reply message — skip an edit when unchanged. */
   liveReplyText?: string
-  /** Set after an interactive card that needs a human answer (permission / elicitation) is
-   *  posted: the current live reply is now ABOVE that card, so the NEXT live-reply action
-   *  starts a FRESH reply BELOW the card (leaving the old one frozen above) instead of
-   *  editing the one above in place. Consumed lazily by the next live-reply so an empty tail
-   *  keeps the old message (and its settled footer). */
-  liveReplyReanchor?: boolean
   /** ts of the session's interactive status-bar message, once known. Persisted in the
    *  session row so later turns update the first line instead of posting duplicates. */
   statusBarTs?: string

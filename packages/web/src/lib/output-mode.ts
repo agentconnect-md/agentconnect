@@ -15,7 +15,8 @@ export const OUTPUT_MODE_OPTIONS: readonly OutputModeOption[] = [
   {
     key: 'minimal',
     label: 'Minimal',
-    description: 'One live-updating reply that settles on the final answer; interstitial steps stay in the status.'
+    description:
+      'One reply that settles on the final answer; interim replies and steps stay folded away or in the status.'
   },
   {
     key: 'low',

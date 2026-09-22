@@ -68,9 +68,9 @@ const cards = (actions: SlackAction[]): SlackStreamChunk[] => appends(actions).f
 const kinds = (actions: SlackAction[]): string[] => actions.map((a) => a.kind)
 
 describe('OutputConverger streaming axis', () => {
-  it('takes the axis only on the rungs that have tool chrome at all', () => {
-    for (const mode of ['none', 'minimal', 'low'] as const) expect(streaming(mode).isStreaming()).toBe(false)
-    for (const mode of ['medium', 'high'] as const) expect(streaming(mode).isStreaming()).toBe(true)
+  it('takes the axis only on the rungs that put something on the stream', () => {
+    for (const mode of ['none', 'low'] as const) expect(streaming(mode).isStreaming()).toBe(false)
+    for (const mode of ['minimal', 'medium', 'high'] as const) expect(streaming(mode).isStreaming()).toBe(true)
   })
 
   it('leaves the BODY byte-identical to the legacy pipeline', () => {
@@ -653,6 +653,121 @@ describe('OutputConverger streaming axis', () => {
     const thinking = streaming('medium')
     thinking.onUpdate(think('weighing it up'))
     expect(thinking.streamUpdate().find((a) => a.kind === 'stream-append')).not.toHaveProperty('progressText')
+  })
+})
+
+describe('OutputConverger minimal mode — interim replies as history cards (§5.2)', () => {
+  it('turns each closed segment into one complete card, titled by its first line', () => {
+    const converger = streaming('minimal')
+    converger.onUpdate(chunk('**Checking the failing test**\n\nIt looks like a stale snapshot.'))
+    // Nothing reaches the stream until the segment closes — a body is write-once.
+    expect(converger.hasStreamingUpdate()).toBe(false)
+    converger.onUpdate(tool('t1', 'Read file'))
+    const first = converger.streamUpdate()
+    expect(kinds(first)).toEqual(['stream-start', 'stream-append'])
+    expect(cards(first)).toEqual([
+      {
+        type: 'task_update',
+        id: 'reply-1',
+        title: 'Checking the failing test',
+        status: 'complete',
+        // Without the first line — the title already shows it whole.
+        details: 'It looks like a stale snapshot.'
+      }
+    ])
+    expect(appends(first)).toContainEqual({ type: 'plan_update', title: 'Working…' })
+    // A single-line segment has nothing beyond its title.
+    converger.onUpdate(chunk('Second note'))
+    converger.onUpdate(tool('t2', 'Run tests'))
+    expect(cards(converger.streamUpdate())).toEqual([
+      { type: 'task_update', id: 'reply-2', title: 'Second note', status: 'complete' }
+    ])
+  })
+
+  it('keeps tools and thoughts off a minimal stream — they stay in the transient status', () => {
+    const converger = streaming('minimal')
+    expect(converger.onUpdate(think('**Weighing it up**'))).toEqual([{ kind: 'set-status', text: 'is thinking…' }])
+    // The tool label stays generic: no command or tool name leaks into minimal-mode chrome.
+    expect(converger.onUpdate(tool('t1', 'rm -rf build'))).toEqual([{ kind: 'set-status', text: 'is working…' }])
+    expect(converger.hasStreamingUpdate()).toBe(false)
+    expect(converger.streamUpdate()).toEqual([])
+  })
+
+  it('posts the final segment as the one visible reply, then settles the cards above it', () => {
+    const converger = streaming('minimal')
+    converger.onUpdate(chunk('Looking into it.'))
+    converger.onUpdate(tool('t1', 'Read file'))
+    converger.streamUpdate()
+    converger.onUpdate(chunk('Fixed: the snapshot was stale.'))
+    const final = converger.onFinal(attribution())
+    expect(kinds(final)).toEqual(['post', 'set-status', 'attribution', 'stream-stop'])
+    expect(final[0]).toEqual({ kind: 'post', text: 'Fixed: the snapshot was stale.', terminal: true })
+    // The answer never rides the stream; the settle only relabels the container by what it holds.
+    expect(cards(final)).toEqual([])
+    expect(appends(final)).toEqual([{ type: 'plan_update', title: '1 earlier reply' }])
+  })
+
+  it('counts the closing label in replies, not steps', () => {
+    const converger = streaming('minimal')
+    for (const n of [1, 2, 3]) {
+      converger.onUpdate(chunk(`note ${n}`))
+      converger.onUpdate(tool(`t${n}`, 'Read file'))
+    }
+    converger.onUpdate(chunk('done'))
+    expect(appends(converger.onFinal(attribution()))).toContainEqual({
+      type: 'plan_update',
+      title: '3 earlier replies'
+    })
+  })
+
+  it('opens no stream for a turn whose only reply is the final one', () => {
+    const converger = streaming('minimal')
+    converger.onUpdate(tool('t1', 'Read file'))
+    converger.onUpdate(chunk('Just the answer'))
+    expect(converger.streamUpdate()).toEqual([])
+    const final = converger.onFinal(attribution())
+    expect(final.some((a) => a.kind.startsWith('stream-'))).toBe(false)
+    expect(final[0]).toEqual({ kind: 'post', text: 'Just the answer', terminal: true })
+  })
+
+  it('records an interim segment in full while its card body takes the cap', () => {
+    const converger = streaming('minimal')
+    const long = 'a'.repeat(3000)
+    converger.onUpdate(chunk(`Long note\n${long}`))
+    expect(converger.onUpdate(tool('t1', 'Read file')).filter((a) => a.kind === 'post')).toEqual([
+      { kind: 'post', text: `Long note\n${long}`, recordOnly: true }
+    ])
+    const [card] = cards(converger.streamUpdate()) as Extract<SlackStreamChunk, { type: 'task_update' }>[]
+    expect(card).toMatchObject({ id: 'reply-1', title: 'Long note', status: 'complete' })
+    expect(card?.details).toHaveLength(2800)
+    expect(card?.details?.endsWith('…')).toBe(true)
+  })
+
+  it('falls back to a generic title for a segment that opens with a code fence', () => {
+    const converger = streaming('minimal')
+    converger.onUpdate(chunk('```sh\nnpm test\n```'))
+    converger.onUpdate(tool('t1', 'Run tests'))
+    expect(cards(converger.streamUpdate())).toEqual([
+      { type: 'task_update', id: 'reply-1', title: 'Reply', status: 'complete', details: '```sh\nnpm test\n```' }
+    ])
+  })
+
+  it('carries no legacy progress rendering — a degraded minimal turn keeps its interim replies to the transcript', () => {
+    const converger = streaming('minimal')
+    converger.onUpdate(chunk('note'))
+    converger.onUpdate(tool('t1', 'Read file'))
+    expect(converger.streamUpdate().find((a) => a.kind === 'stream-append')).not.toHaveProperty('progressText')
+  })
+
+  it('settles a cancelled minimal turn under Stopped, with its cards untouched', () => {
+    const converger = streaming('minimal')
+    converger.onUpdate(chunk('note'))
+    converger.onUpdate(tool('t1', 'Read file'))
+    converger.streamUpdate()
+    const stop = converger.settleStream('stopped')
+    // Reply cards are complete from birth, so a stop has nothing to flip to error.
+    expect(cards(stop)).toEqual([])
+    expect(appends(stop)).toEqual([{ type: 'plan_update', title: 'Stopped' }])
   })
 })
 
