@@ -71,6 +71,35 @@ helm install agentconnect oci://ghcr.io/agentconnect-md/charts/agentconnect \
 
 ## After installing
 
+### Cloud credits for Decisions
+
+A managed daemon can evaluate Decisions through a configured gateway when the
+organization has no TypeSafe key in **Infra → Provider keys**. Use the same
+Key Server as the other model clients and configure the gateway API root on the
+daemon:
+
+```yaml
+daemonPool:
+  keyServer:
+    url: http://keys.example.test:8080
+    tokenAudience: ac-key-server
+  extraEnv:
+    TYPESAFE_MODEL_BASE_URL: http://gateway.example.test:8084
+```
+
+The adapter appends `/v1/systemone`; omit that suffix from the configured base.
+The gateway must accept TypeSafe requests and the Key Server must issue a
+60-second `typesafe` credential using the daemon's projected caller token.
+Configure gateway pricing, usage collection, and credit enforcement before
+enabling this path. The endpoint stays on the daemon and does not belong in the
+sandbox runtime's `modelEgress.clients` configuration.
+
+An existing organization key takes precedence, including when it is invalid or
+exhausted. Only an absent key selects Cloud credits. See the
+[Decision credential contract](https://github.com/agentconnect-md/agentconnect/blob/main/docs/designs/decisions.md#provider-keys-and-credential-resolution).
+
+### Deployment administration
+
 The Setup Server is deliberately unrouted — bootstrap sign-in, provider apps, and
 deployment secrets over a port-forward:
 

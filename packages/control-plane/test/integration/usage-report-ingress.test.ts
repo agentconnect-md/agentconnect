@@ -129,8 +129,19 @@ describe('POST /internal/usage/reports — the gateway-source usage adapter', ()
   it('records an authenticated batch as `gateway`, and redelivery does not double-count', async () => {
     await seedAgent(prisma, AGENT_A)
     const at = new Date()
+    const decisionId = 'decision:example-evaluation'
     const payload = {
-      reports: [report('s-one', AGENT_A, '1.25', at), report('s-two', AGENT_A, '2.5', at)]
+      reports: [
+        report('s-one', AGENT_A, '1.25', at),
+        report('s-two', AGENT_A, '2.5', at),
+        {
+          sessionId: decisionId,
+          agentId: AGENT_A,
+          observedModel: 'jev-example',
+          lastActivityAt: at.toISOString(),
+          usage: { inputTokens: 100, outputTokens: 0, totalTokens: 100, costAmount: '0.0000042', costCurrency: 'USD' }
+        }
+      ]
     }
     await withApp(true, async (app) => {
       for (const _attempt of [1, 2]) {
@@ -148,16 +159,18 @@ describe('POST /internal/usage/reports — the gateway-source usage adapter', ()
       where: { agentId: AGENT_A },
       orderBy: { sessionId: 'asc' }
     })
-    // The reported decimal string is what landed — NUMERIC, not a float that read back
-    // as 1.2500000000000002.
-    expect(snapshots.map((row) => [row.sessionId, row.source, row.costAmount.toFixed(2)])).toEqual([
+    // Decimal costs remain exact, including evaluations smaller than one cent.
+    expect(snapshots.map((row) => [row.sessionId, row.source, row.costAmount.toString()])).toEqual([
+      [decisionId, 'gateway', '0.0000042'],
       ['s-one', 'gateway', '1.25'],
-      ['s-two', 'gateway', '2.50']
+      ['s-two', 'gateway', '2.5']
     ])
-    // Cumulative upserts: the second delivery converges onto the same checkpoints
-    // rather than appending a second one per session.
+    // Usage attribution does not create an agent session for a Decision.
+    expect(await prisma.sessionMeta.count({ where: { agentId: AGENT_A } })).toBe(0)
+    expect(snapshots[0]).toMatchObject({ platform: null, channel: null })
+    // Cumulative report retries converge onto the same checkpoints.
     const checkpoints = await prisma.sessionSpend.findMany({ where: { agentId: AGENT_A } })
-    expect(checkpoints).toHaveLength(2)
+    expect(checkpoints).toHaveLength(3)
     expect(checkpoints.every((row) => row.source === 'gateway')).toBe(true)
   })
 

@@ -528,6 +528,25 @@ configuration (`KEY_SERVER`, optionally `KEY_SERVER_TOKEN_PATH`) and the deploym
 `TYPESAFE_MODEL_BASE_URL`. The latter is the HTTP(S) API root or gateway provider
 prefix; the adapter appends `v1/systemone`. Kubernetes placement alone is insufficient.
 
+With the Helm chart, set the existing daemon-only environment override:
+
+```yaml
+daemonPool:
+  keyServer:
+    url: http://keys.example.test:8080
+    tokenAudience: ac-key-server
+  extraEnv:
+    TYPESAFE_MODEL_BASE_URL: http://gateway.example.test:8084
+```
+
+The chart mounts the projected caller token and sets `KEY_SERVER_TOKEN_PATH` from
+the Key Server configuration. The TypeSafe base belongs only to the daemon; it
+is not a `modelEgress.clients` runtime entry or a sandbox environment variable.
+Configure the gateway listener and its upstream credential before setting this
+base. With no organization key, a capable Cloud daemon then advertises
+`ac_credits`; an organization key still takes precedence. Self-hosted daemons
+continue to require the organization key.
+
 The evaluator reuses the same `KeyServerClient`, `IssueKey`, `RevokeKey`, and caller
 authentication as Claude and other model clients. It requests
 `{ orgId, agentId, sessionId: "decision:<evaluationId>", provider: "typesafe", ttlSeconds: 60 }`.
@@ -539,6 +558,18 @@ is sent only to the configured gateway, and is revoked best-effort after evaluat
 The short requested lifetime bounds a lost response or failed revocation. Issuer
 authorization, credit checks, and gateway metering remain deployment-side duties;
 support for the `typesafe` dialect and this attribution key must be configured there.
+
+The gateway meters each completed request under the issued organization, agent,
+and `decision:<evaluationId>` identity. Its collector submits cumulative usage
+through the existing authenticated usage-ingestion API. The usage store requires
+the real agent but not a matching `session_meta` row, so previews and skipped
+evaluations contribute to organization spend without creating a conversation.
+Replaying a cumulative usage report does not add the charge again. This is
+distinct from repeating the provider request, which performs another billable
+evaluation; live consumers still need durable evaluation and admission receipts.
+The gateway must have an effective TypeSafe price rule for the requested model
+and enforce the same allowance policy as other model requests. The evaluator
+does not emit a second daemon usage report for gateway-metered evaluations.
 
 `Daemon.evaluateDecision({ agentId, evaluationId, decision, state }, signal?)` is
 the callable runtime boundary. `decision` supplies `providerId`, `model`, and
