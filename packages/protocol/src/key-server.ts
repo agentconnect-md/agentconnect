@@ -27,7 +27,8 @@ export const KEY_SERVER_REVOKE_KEY_PATH = '/v1/revoke-key' as const
 export const KEY_SERVER_AUTH_HEADER = 'authorization' as const
 
 /** Provider API dialect the credential must speak. */
-export const KeyProvider = z.enum(['anthropic', 'openai', 'deepseek'])
+// `typesafe` has no runtime that selects it yet — `modelProviderTarget` maps none — so it is issuable but unreachable from a spawn until one does.
+export const KeyProvider = z.enum(['anthropic', 'openai', 'deepseek', 'typesafe'])
 export type KeyProvider = z.infer<typeof KeyProvider>
 
 // No `daemonId` field: caller identity belongs to the transport, and a server able to
@@ -87,7 +88,14 @@ export const RevokeKeyResponse = z.object({})
 export type RevokeKeyResponse = z.infer<typeof RevokeKeyResponse>
 
 /** Machine-readable denial reasons the daemon surfaces as attributable errors, never as internal faults. */
-export const KeyServerErrorCode = z.enum(['org_suspended', 'quota_denied', 'unauthorized', 'unavailable'])
+// The other four describe the ORG's standing, so a malformed request had no truthful code and issuers answered it as an internal fault — the one case this enum exists to prevent.
+export const KeyServerErrorCode = z.enum([
+  'org_suspended',
+  'quota_denied',
+  'unauthorized',
+  'unavailable',
+  'invalid_request'
+])
 export type KeyServerErrorCode = z.infer<typeof KeyServerErrorCode>
 
 export const KeyServerErrorBody = z

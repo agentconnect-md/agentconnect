@@ -62,7 +62,10 @@ hold to check it are decided together by the key server's own design and the
 deployment that installs both. This document stops at the header.
 
 `provider` names the API dialect the credential must speak (`anthropic` /
-`openai` / `deepseek`) and selects which key comes back. There is
+`openai` / `deepseek` / `typesafe`) and selects which key comes back. A dialect
+is listed here once an issuer can mint for it, which is not the same as a runtime
+being able to ask: `modelProviderTarget` selects none for `typesafe`, so today it
+is reachable only by a caller that speaks this contract directly. There is
 deliberately **no `model` parameter**: per-model usage attribution belongs to
 whatever observes actual requests (a gateway data path, or the runtime's own usage
 reports), and a spawn-time hint would invite implementations to treat it as truth
@@ -248,12 +251,19 @@ Errors are machine-readable (`KeyServerErrorBody`), and the daemon's obligation
 is to keep them attributable — a suspended org must surface as "organization
 suspended", never as a generic internal error:
 
-| Code            | HTTP | Daemon behavior                                                        |
-| --------------- | ---- | ---------------------------------------------------------------------- |
-| `org_suspended` | 403  | Surface as an org-level, user-visible condition; do not retry blindly. |
-| `quota_denied`  | 403  | Surface as a limit condition with the issuer's message.                |
-| `unauthorized`  | 401  | Credential problem between daemon and key server; operator-facing.     |
-| `unavailable`   | 503  | Enter the degradation window below; retry with backoff.                |
+| Code              | HTTP | Daemon behavior                                                           |
+| ----------------- | ---- | ------------------------------------------------------------------------- |
+| `org_suspended`   | 403  | Surface as an org-level, user-visible condition; do not retry blindly.    |
+| `quota_denied`    | 403  | Surface as a limit condition with the issuer's message.                   |
+| `unauthorized`    | 401  | Credential problem between daemon and key server; operator-facing.        |
+| `unavailable`     | 503  | Enter the degradation window below; retry with backoff.                   |
+| `invalid_request` | 400  | The request itself is malformed; a retry of the same body cannot succeed. |
+
+`invalid_request` exists because the other four describe the **org's standing**,
+so an issuer that rejected a malformed body had no truthful code to answer with.
+What it then reached for was an internal fault — the exact inversion the table
+above is here to prevent, and one that points an operator at the issuer's health
+rather than at the caller's request.
 
 **Degradation window.** An issued credential stays usable for its granted
 `expiresInSeconds` from the anchor of §3 — never longer, since that anchor
