@@ -18355,9 +18355,15 @@ export class Daemon {
     )
   }
 
-  /** Whether an agent that is not loaded yet still will be — its replica or file is here and no move or removal holds it back; the startup pass runs before the roster loads. */
+  /** Whether an agent that is not loaded yet still will be — its replica or file is here and no move, removal or roster drop holds it back; the startup pass runs before the roster loads. */
   private agentYetToLoad(agentId: string): boolean {
-    if (this.agents.has(agentId) || this.moveStagedAgents.has(agentId) || this.removedAgentTombstones.has(agentId)) {
+    if (
+      this.agents.has(agentId) ||
+      this.moveStagedAgents.has(agentId) ||
+      this.removedAgentTombstones.has(agentId) ||
+      // A move missed while offline arrives as a roster detach: the marker stays, the agent never loads here again.
+      this.cpDroppedAgents.has(agentId)
+    ) {
       return false
     }
     return this.fileAgents.has(agentId) || (this.cpAgents?.replicaIds().includes(agentId) ?? false)
