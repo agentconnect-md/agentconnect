@@ -686,14 +686,12 @@ export function IntegrationChannelList({
   // bot-wide just like channels.
   const dmRows = channels.filter((c) => isDirectConversation(c.kind))
   const grouped = groupBySpace(channelRows)
-  // Rows the operator switched to `by decision` this session, plus every saved gate: a gate
-  // outlives navigation, and the row must keep saying `by decision` while it exists.
+  // Rows switched to `by decision` this session, plus every saved gate.
   const decisions = useOptionalDecisionsPrototype()
   const decisionsOffered = featureFlagEnabled('decisions') && !!decisions
   const [pickedDecision, setPickedDecision] = useState<Record<string, boolean>>({})
-  // The binding's identity, not the row's: a platform channel coordinate repeats across bots,
-  // so the store composes organization + owning bot + conversation. Without the store there
-  // are no gates at all, and the choice is hidden — a bare channel id is then only a map key.
+  // The store composes the identity (organization + bot + conversation); without it there are
+  // no gates at all and the choice is hidden, so a bare channel id is only a map key.
   const bindingKey = (c: IntegrationChannelRow) => decisions?.gateKeyFor(botId, c.channelId) ?? c.channelId
   const rowTrigger = (c: IntegrationChannelRow): RowTrigger => {
     const key = bindingKey(c)
@@ -804,9 +802,8 @@ export function IntegrationChannelList({
               platform={platform}
               disabled={!integrationId}
               value={trigger}
-              // A shared bot's consumer is the bot's own routing rules, not a per-channel gate
-              // (docs/designs/decisions.md §3.2), and that router is not implemented yet — so the
-              // choice is withheld there rather than offering a gate the design says cannot apply.
+              // A shared bot's consumer is its own routing rules (§3.2), not a per-channel gate,
+              // and that router is not implemented — so the choice is withheld there.
               allowDecision={decisionsOffered && !shareable}
               onChange={(next) => pickTrigger(c, next)}
             />
@@ -829,8 +826,7 @@ export function IntegrationChannelList({
             bindingKey={bindingKey(c)}
             channelName={rowLabel(c)}
             canWrite={!!integrationId}
-            // The same effective owner the row's default-dispatch picker shows: for a shared bot
-            // that may be a sibling install's agent, not the agent whose page this is.
+            // The same owner the row's dispatch picker shows — for a shared bot, a sibling install's.
             agentName={(defaultAgent(c) ?? (agentId ? member(agentId) : undefined))?.label ?? ''}
             padX={padX}
             onAbandon={() => {

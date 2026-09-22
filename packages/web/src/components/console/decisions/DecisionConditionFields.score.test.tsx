@@ -1,8 +1,7 @@
 // @vitest-environment happy-dom
 
-// The score gate's condition control. The design collapsed the interval into one row and
-// dropped the rubric chips, so the only place the levels are still legible is the printed
-// inequality — which is why `intervalText` carries the meaning.
+// The score gate's control: the design collapsed the interval into one row and dropped the
+// rubric chips, so the printed inequality is the only place the levels stay legible.
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'

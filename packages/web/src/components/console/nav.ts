@@ -89,9 +89,7 @@ export const SECTIONS: { prefix: string; label: string }[] = [
 
 // ── Localized labels ─────────────────────────────────────────────────────────
 // Which catalog key words each destination, kept HERE beside the tables rather than in a
-// `switch` inside the shell: two switches had already drifted, so the rail fell back to a
-// raw English label while the mobile sheet translated the same route. `nav.test.ts` proves
-// every destination the rail, the tab bar, the sheet, or a crumb can name is covered.
+// `switch` in the shell: two switches had drifted, so the rail fell back to English.
 
 /** The `Shell.navigation` keys, spelled out so a template lookup still type-checks. */
 export type ShellNavKey =

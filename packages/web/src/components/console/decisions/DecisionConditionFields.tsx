@@ -1,8 +1,7 @@
 'use client'
 
-// "Trigger when" — the condition a consumer matches a returned answer against. One
-// control set per question type, shared by every surface that binds a decision so the
-// three of them can never describe the same condition differently.
+// "Trigger when" — the condition a consumer matches an answer against, one control set per
+// question type so no two surfaces can describe the same condition differently.
 
 import { useTranslations } from 'next-intl'
 import type { ReactNode } from 'react'

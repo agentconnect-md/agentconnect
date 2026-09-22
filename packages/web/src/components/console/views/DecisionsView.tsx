@@ -1,8 +1,7 @@
 'use client'
 
-// Decisions (`/decisions`): the organization's reusable judgements. A decision asks one
-// question about an incoming message; a channel decides what the answer does. The list
-// is the resource's only management surface — the bindings live where they are consumed.
+// Decisions (`/decisions`): the organization's reusable judgements. The list is the
+// resource's only management surface — bindings live where they are consumed.
 
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -19,8 +18,7 @@ import { DecisionsNotOffered } from '@/components/console/decisions/DecisionsNot
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import type { DecisionSummary, DecisionUsage } from '@agentconnect.md/protocol/decision-api'
 
-// Name/question lead at every width; the type moves under the name on mobile, where a
-// six-track grid would leave each column unreadable.
+// Name/question lead at every width; a six-track grid would be unreadable on mobile.
 const GRID = 'grid-cols-[minmax(0,1fr)_auto] gap-3 desktop:grid-cols-[2fr_.8fr_1.2fr_.8fr_.7fr_34px]'
 
 const TYPE_TONE: Record<string, string> = {
@@ -49,9 +47,8 @@ export default function DecisionsView() {
     ? decisions.filter((entry) => entry.name.toLowerCase().includes(needle) || entry.question.type.includes(needle))
     : decisions
   const providerName = (providerId: string) => providers.find((entry) => entry.id === providerId)?.name ?? providerId
-  // A prototype gate is a real consumer of this decision, even though the mock service cannot
-  // see it: it counts toward `Used by`, and it blocks deletion the same way a saved binding does.
-  // The store resolves only this organization's gates, so a sibling tenant cannot block a delete.
+  // A prototype gate is a consumer the mock service cannot see: it counts toward `Used by`
+  // and blocks deletion like a saved binding. The store resolves only this organization's gates.
   const gatedIn = gateUsages
   const usageCount = (entry: DecisionSummary) => entry.usageCount + gatedIn(entry.id).length
   const usageNames = (entry: DecisionSummary, mockUsages: DecisionUsage[]) => [
@@ -72,8 +69,7 @@ export default function DecisionsView() {
 
   const confirmDelete = async () => {
     if (!pendingDelete) return
-    // The mock service has no gate bindings, so a decision our own channels gate must be
-    // refused here rather than left dangling by a write the service would accept.
+    // The mock service would accept this delete, so a gate we hold has to refuse it here.
     if (gatedIn(pendingDelete.decision.id).length) {
       setDeleteError(t('errors.inUse'))
       return

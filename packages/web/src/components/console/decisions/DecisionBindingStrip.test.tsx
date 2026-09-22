@@ -1,8 +1,7 @@
 // @vitest-environment happy-dom
 
-// The `By decision` strip is the one place a conversation's gate is written. It must open
-// on a usable draft (never on an empty condition), refuse a condition the decision cannot
-// satisfy, and collapse to a summary the moment the gate is saved.
+// The `By decision` strip: it must open on a usable draft, refuse a condition the decision
+// cannot satisfy, and collapse to a summary once the gate is saved.
 
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -85,7 +84,6 @@ describe('DecisionBindingStrip', () => {
     )
     expect(findByText(view, 'Support category')).toBeTruthy()
     expect(findByText(view, 'Trigger when')).toBeTruthy()
-    // The fixture's choice decision declares billing/technical/sales.
     expect(view.querySelector('input[aria-label="Minimum probability for billing"]')).toBeTruthy()
     expect(view.querySelector('input[aria-label="Minimum probability for technical"]')).toBeTruthy()
   })
@@ -146,8 +144,7 @@ describe('DecisionBindingStrip', () => {
     expect(findByText(view, 'Cancel')).toBeUndefined()
   })
 
-  // A platform conversation coordinate is not an identity: two bots can both be installed in
-  // one Slack channel, and saving bot A's gate must not make bot B's row render it.
+  // Two bots can share one Slack channel id: saving A's gate must not reach B's row.
   it('keeps two bots’ gates in one conversation apart', async () => {
     const view = await render(
       <>

@@ -1,10 +1,8 @@
 'use client'
 
-// The console's prototype Decisions surface: ONE mock `DecisionApi` for the console's
-// lifetime, the visible decision list every reader shares, and the channel gate bindings
-// the Control Plane has no field for yet. Mounted inside the shell so a decision created
-// on one route is still there after a navigation. This is never a production API and
-// never a fallback for a failed request (docs/designs/decision-ui-foundation.md).
+// The console's prototype Decisions store: one mock `DecisionApi` per organization, the
+// visible decision list every reader shares, and the channel gate bindings the Control
+// Plane has no field for yet. Never a production API, never a failed-request fallback.
 
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
 import useSWR from 'swr'
@@ -31,7 +29,7 @@ export interface DecisionGateBinding {
   needsReview?: boolean
 }
 
-/** The stored form: the organization is stamped by the store, so a caller cannot get it wrong. */
+/** The stored form: the store stamps the organization, so a caller cannot misfile it. */
 type StoredGate = DecisionGateBinding & { orgId: string }
 
 /** One conversation a decision is bound to, for the editor's `Used by` card and delete guard. */
@@ -42,12 +40,8 @@ export interface DecisionGateUsage {
   needsReview: boolean
 }
 
-/**
- * The identity a gate is stored under. A platform conversation coordinate is NOT unique on
- * its own: two bots can both be installed in one Slack channel, and the shell-wide provider
- * survives an organization switch — so the organization and the owning bot belong in the key.
- * Sibling integrations of one bot deliberately share it, which is what converges the rows.
- */
+/** A gate's identity: organization, owning bot, conversation. A platform coordinate alone
+ *  is not unique — two bots share one channel — while a bot's sibling integrations share it. */
 export function gateKey(orgId: string | null | undefined, botId: string | null | undefined, channelId: string): string {
   return `${orgId ?? ''}|${botId ?? ''}|${channelId}`
 }
@@ -58,11 +52,11 @@ interface DecisionsPrototype {
   decisions: DecisionSummary[]
   loading: boolean
   error: string | null
-  /** Re-read after a write; a failed read is reported to the caller instead. */
+  /** Re-read the decision list after a write. */
   reload: () => Promise<unknown>
   /** Gate binding by {@link gateKey} — the conversation owns it, as on the CP. */
   gates: Readonly<Record<string, StoredGate>>
-  /** This store's identity for one conversation. The org is the store's, not the row's. */
+  /** This store's identity for one conversation, organization included. */
   gateKeyFor: (botId: string | null | undefined, channelId: string) => string
   setGate: (key: string, binding: DecisionGateBinding) => void
   clearGate: (key: string) => void
@@ -70,19 +64,16 @@ interface DecisionsPrototype {
   gateUsages: (decisionId: string) => DecisionGateUsage[]
   /** The organization this store is currently partitioned by. */
   orgId: string
-  /** Flag the gates an edit to this decision invalidated, before the caller re-reads. */
+  /** Flag the gates this edit invalidated, before the caller re-reads. */
   markGatesForReview: (decisionId: string, previous: DecisionQuestion, next: DecisionQuestion) => void
 }
 
 const DecisionsContext = createContext<DecisionsPrototype | null>(null)
 
 export function DecisionsPrototypeProvider({ children }: { children: ReactNode }) {
-  // The store sits inside OrgProvider, so it — not each conversation row — owns the tenant
-  // half of a binding's identity. A row that had to ask would depend on the org context.
+  // The store sits inside OrgProvider and outlives an org switch, so the tenant is its own
+  // state: the API partition, the cached read, and the gate usages all key off `activeOrg.id`.
   const { activeOrg } = useOrgs()
-  // The tenant is the store's, not a row's: this provider deliberately outlives an org switch,
-  // so the API partition, the cached read, and the gate usages all move together with
-  // `activeOrg.id` — the same way the real client is scoped by the caller's organization.
   const orgId = activeOrg?.id ?? ''
   const [apis] = useState(() => new Map<string, DecisionApi>())
   const api = useMemo(() => {
@@ -93,8 +84,7 @@ export function DecisionsPrototypeProvider({ children }: { children: ReactNode }
     return created
   }, [apis, orgId])
   const [gates, setGates] = useState<Record<string, StoredGate>>({})
-  // A null key while the flag is off is what keeps the mock opt-in: no page reads it
-  // unless a deployment asked for this surface.
+  // A null key while the flag is off keeps the mock opt-in: no page reads it otherwise.
   const { data, error, isLoading, mutate } = useSWR(
     featureFlagEnabled('decisions') ? ['decisions-prototype', orgId] : null,
     () => api.listDecisions()
@@ -104,8 +94,7 @@ export function DecisionsPrototypeProvider({ children }: { children: ReactNode }
     (botId: string | null | undefined, channelId: string) => gateKey(orgId, botId, channelId),
     [orgId]
   )
-  // The org is stamped here rather than accepted from a caller, so a binding can never be
-  // written into the wrong tenant's partition.
+  // The org is stamped here, so a binding cannot land in another tenant's partition.
   const setGate = useCallback(
     (key: string, binding: DecisionGateBinding) => {
       setGates((current) => ({ ...current, [key]: { ...binding, orgId } }))
@@ -116,9 +105,8 @@ export function DecisionsPrototypeProvider({ children }: { children: ReactNode }
   const clearGate = useCallback((key: string) => {
     setGates((current) => Object.fromEntries(Object.entries(current).filter(([entry]) => entry !== key)))
   }, [])
-  // The mock service cannot see these bindings, so the invalidation the CP would record has
-  // to be recorded here — including a Score rubric-length change, which leaves an interval
-  // that still fits but no longer means what it did (docs/designs/decisions.md §6.1).
+  // The mock service cannot see these bindings, so the invalidation the CP would record is
+  // recorded here — including a Score rubric change, whose old interval may still fit (§6.1).
   const markGatesForReview = useCallback(
     (decisionId: string, previous: DecisionQuestion, next: DecisionQuestion) => {
       setGates((current) =>
@@ -205,9 +193,7 @@ export function gateIssues(
   return decisionConditionIssues(decision.question, when)
 }
 
-/** One organization's conversations gated on one decision, in binding order so the list is stable.
- *  A decision id is only unique within its tenant, so the org is part of the query, not a filter
- *  the caller may forget. */
+/** The active organization's gates on one decision, in binding order. */
 export function gateUsagesIn(
   gates: Readonly<Record<string, StoredGate>>,
   orgId: string,
@@ -223,9 +209,8 @@ export function gateUsagesIn(
     }))
 }
 
-/** A condition matching the decision's question type, with the design's canonical defaults:
- *  every Choice key at 50%, both Boolean answers, the whole Score rubric. An untouched gate
- *  must not silently skip every No or activate a low-confidence answer. */
+/** The canonical fresh-gate defaults: every Choice key at 50%, both Booleans, the whole
+ *  Score rubric — an untouched gate must not silently skip every No. */
 export function defaultConditionFor(decision: DecisionDefinition): DecisionCondition {
   const question = decision.question
   if (question.type === 'boolean') return { type: 'boolean', values: [true, false] }

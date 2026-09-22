@@ -1,8 +1,7 @@
 'use client'
 
 // The `By decision` strip under one conversation row: the saved gate, or the editor that
-// writes one. It renders only while the row's trigger IS `by decision` — the row owns that
-// choice, this owns the binding the choice needs (docs/designs/decisions.md §3.1).
+// writes one, while the row's trigger IS `by decision` (docs/designs/decisions.md §3.1).
 
 import Link from 'next/link'
 import { usePathname, useSearchParams } from 'next/navigation'
@@ -161,8 +160,7 @@ export function DecisionBindingStrip({
     }
   }
 
-  // The trigger is `by decision` but nothing is bound yet: the editor is about to open, or
-  // the list is still in flight. Either way there is no summary to print.
+  // Nothing bound yet: the editor is about to open, or the list is still in flight.
   if (!draft || !decision) {
     if (saved && savedDecision) {
       return (

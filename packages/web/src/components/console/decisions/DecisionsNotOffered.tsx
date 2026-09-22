@@ -1,8 +1,7 @@
 'use client'
 
-// A deep link to a Decisions route on a console that never turned the surface on. Saying so
-// beats an empty page: the prototype reads a mock service, so nothing here is a real
-// organization resource until the flag is set (docs/designs/decision-ui-foundation.md).
+// A deep link to a Decisions route on a console that never turned the surface on: the
+// prototype reads a mock service, so there is no organization resource to show yet.
 
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'

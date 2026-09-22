@@ -1,8 +1,7 @@
 'use client'
 
 // One decision (`/decisions/new`, `/decisions/:id`): the question, its answer domain, and a
-// sandbox that runs the real matcher over canned model output. The condition an answer
-// activates lives where the decision is consumed, never here (docs/designs/decisions.md §2).
+// sandbox over canned model output. Its consumers' conditions live where they are used (§2).
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
@@ -135,8 +134,7 @@ export default function DecisionEditorView() {
   const router = useRouter()
   const search = useSearchParams()
   const { id } = useParams<{ id?: string }>()
-  // Only a console-relative target: `returnTo` is attacker-controllable, and an absolute
-  // URL here would turn our own editor into an open redirect.
+  // `returnTo` is attacker-controllable: only a console-relative target may be followed.
   const requested = search.get('returnTo')
   const returnTo = requested?.startsWith('/') && !requested.startsWith('//') ? requested : null
   const { decisions, loading, api, reload, gateUsages, markGatesForReview } = useDecisionsPrototype()
@@ -193,8 +191,7 @@ export default function DecisionEditorView() {
     }
   }, [api, id])
 
-  // The decision's own provider, not merely the first one in the catalog: a decision keeps
-  // its selection, and the model list has to come from the provider that owns it.
+  // The decision keeps its provider, so the model list comes from the provider that owns it.
   const provider = providers.find((entry) => entry.id === draft?.providerId) ?? firstProvider
   const models = useMemo(
     () => (provider?.models ?? []).filter((model) => model.questionTypes.includes(draft?.type ?? 'choice')),
@@ -202,8 +199,7 @@ export default function DecisionEditorView() {
   )
   const signature = draft ? JSON.stringify({ ...draft, criteria: draft.criteria }) : ''
   const stale = !!result && result.signature !== signature
-  // Conversations this decision is gated on. A save that changes the question can strand
-  // their saved conditions, which is the one consequence the editor must warn about first.
+  // Conversations gated on this decision: an edit can strand their saved conditions.
   const gated = id && definition ? gateUsages(id) : []
   const brokenGates =
     draft && definition
@@ -364,8 +360,7 @@ export default function DecisionEditorView() {
     try {
       if (id) {
         await api.updateDecision(id, parsed.data)
-        // The mock service has no gate bindings, so the Needs review state an edit causes is
-        // recorded against the prototype gates here, before the list re-reads.
+        // The mock service has no bindings, so the invalidation is recorded here (§6.1).
         if (definition) markGatesForReview(id, definition.question, parsed.data.question)
       } else await api.createDecision(parsed.data)
       await reload()

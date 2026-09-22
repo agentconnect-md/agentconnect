@@ -43,8 +43,7 @@ const score: DecisionDefinition = {
 }
 
 describe('defaultConditionFor', () => {
-  // docs/designs/decisions.md §2: Choice starts with all keys enabled at 0.5, so an untouched
-  // gate does not activate a low-confidence answer the model was unsure about.
+  // docs/designs/decisions.md §2: Choice starts with every key enabled at 0.5.
   it('enables every choice key at the 0.5 minimum', () => {
     expect(defaultConditionFor(choice)).toEqual({ type: 'choice', thresholds: { billing: 0.5, technical: 0.5 } })
   })
@@ -116,8 +115,8 @@ describe('gateIssues', () => {
 })
 
 describe('gateKey', () => {
-  // A platform coordinate is not an identity: two bots share a Slack channel id, and the
-  // shell-wide provider outlives an organization switch.
+  // A platform coordinate is not an identity: two bots share a channel id, and the store
+  // outlives an organization switch.
   it('separates two bots in one conversation, and one bot in two organizations', () => {
     const keys = new Set([
       gateKey('org-a', 'bot-a', 'C123'),

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
-// The Decisions list is the resource's only management surface: it reads the visible
-// definitions, filters them, and refuses to delete one a channel still evaluates.
+// The list reads the visible definitions, filters them, and refuses to delete one a channel
+// still evaluates.
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'

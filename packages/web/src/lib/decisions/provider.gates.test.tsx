@@ -1,12 +1,8 @@
 // @vitest-environment happy-dom
 
-// The store is deliberately shell-wide: it outlives a route change so a decision created on
-// the editor is still there when a conversation row binds it. That makes the ORGANIZATION
-// part of its state, not just of a row key — it must never let one tenant's decisions, or
-// its gates, reach another tenant's Used by, edit warnings, or delete guard.
-// The gates are also the one invalidation the mock service cannot record, so the store has
-// to: an edit that strands a saved condition must leave it flagged for review, including a
-// Score rubric-length change whose old interval still fits but no longer means the same.
+// The store outlives a route change AND an organization switch, so the organization is part
+// of its state: no tenant's decisions or gates may reach another's Used by, review warning,
+// or delete guard. It also records the gate invalidation the mock service cannot see.
 
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -124,8 +120,7 @@ describe('organization partition', () => {
     expect(read('org-key')).toBe('org-a|bot-a|C123')
   })
 
-  // A decision id is only unique inside its tenant, and one mount serves every tenant — so
-  // the definitions, the usages, and the row key all have to move together.
+  // A decision id is unique only inside its tenant, and one mount serves every tenant.
   it('keeps each organization’s decisions and gate usages in its own partition', async () => {
     await mount(<TenantProbe tick={0} />)
     const seeded = Number(read('decisions'))

@@ -11,7 +11,6 @@ describe('intervalText', () => {
     expect(intervalText({ type: 'score', min: 2.5, max: 3 }, 4)).toBe('2.5 ≤ score ≤ 3')
   })
 
-  // The design prints the inequalities rather than relying on a rounded value.
   it('keeps decimals as the model returned them', () => {
     expect(intervalText({ type: 'score', min: 0.5, max: 1.25 }, 4)).toBe('0.5 ≤ score < 1.25')
   })

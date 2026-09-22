@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
-// The editor owns the answer domain: it validates the resource before any write, and a
-// question-type switch replaces the criteria wholesale rather than leaving a mixed draft.
+// The editor validates before any write, and a question-type switch replaces the criteria
+// wholesale rather than leaving a mixed draft.
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -105,8 +105,7 @@ describe('DecisionEditorView', () => {
     expect(push).not.toHaveBeenCalled()
   })
 
-  // A preview parses the draft, so an unfinished question must not even offer to run — and a
-  // rejection must never escape as an unhandled promise.
+  // A preview parses the draft: an unfinished question must not offer to run at all.
   it('only offers to run once the question can be evaluated', async () => {
     await render()
     const run = () => [...document.body.querySelectorAll('button')].find((node) => node.textContent?.includes('Run'))

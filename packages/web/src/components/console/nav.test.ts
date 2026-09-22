@@ -51,8 +51,7 @@ describe('navVisible', () => {
     for (const hrefs of tables()) expect(hrefs).toContain('/billing')
   })
 
-  // Decisions reads an opt-in mock service, so a deployment that never asked for the
-  // surface must not be able to reach it from the rail, the More sheet, or search.
+  // The mock-backed surface must be unreachable from the rail, the sheet, and search alike.
   it('hides the Decisions surface everywhere until its flag is on', () => {
     const tables = () => [offered(NAV_GROUPS.flat()), offered(MORE_ROWS), offered(SEARCH_PAGES)]
 
@@ -70,9 +69,8 @@ describe('navVisible', () => {
   })
 })
 
-// The rail, the bottom tab bar, the More sheet, and the mobile crumb each name a
-// destination through one of these maps. A destination the map misses renders its raw
-// English label — it still shows, so nothing else in the suite notices.
+// A destination missing from these maps renders its raw English label and still shows,
+// so nothing else in the suite would notice.
 describe('localized destination labels', () => {
   const navigation = english.Shell.navigation as Record<string, string>
   const railHrefs = [
