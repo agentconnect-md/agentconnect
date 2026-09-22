@@ -774,9 +774,10 @@ describe('derived visibility — session bodies, usage', () => {
     }
   })
 
-  it('a restricted agent’s usage is absent from every unshared member’s aggregate, including owners', async () => {
+  it('a restricted agent’s usage is absent from an unshared collaborator’s aggregate', async () => {
+    // The owner side of this (an owner attributes every agent) is pinned by usage.route.test.ts
+    // against the spend timeline the aggregate actually reads.
     const other = await makeUser('u-other', 'collaborator')
-    const owner = await makeUser('u-owner', 'owner')
     const R = randomUUID()
     await seedAgent(prisma, R, { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] })
     await prisma.sessionUsage.create({
@@ -788,7 +789,6 @@ describe('derived visibility — session bodies, usage', () => {
       return (res.json() as { agents: Array<{ agentId: string }> }).agents.map((a) => a.agentId)
     }
     expect(await usageAgents(other)).not.toContain(R)
-    expect(await usageAgents(owner)).not.toContain(R)
   })
 })
 

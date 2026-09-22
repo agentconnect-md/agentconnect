@@ -41,9 +41,12 @@ export class PgWebchatMcpOperationRepo implements WebchatMcpOperationRepo {
           JOIN "agent" AS delegated_agent
             ON delegated_agent."id" = authority."agentId"
            AND delegated_agent."orgId" = authority."orgId"
+           -- resource.view for the conversation owner, mirroring authorization/policy.ts:
+           -- org-visible, selected, or an organization owner (the owner exception).
            AND (
              delegated_agent."visibility" = 'org'
              OR authority."userId" = ANY(delegated_agent."sharedWith")
+             OR member."role" = 'owner'
            )
           -- Current-session fence: only the conversation's transactionally
           -- maintained pointer identifies the installed ACP session ('endedAt'
@@ -186,9 +189,12 @@ export class PgWebchatMcpOperationRepo implements WebchatMcpOperationRepo {
           JOIN "agent" AS delegated_agent
             ON delegated_agent."id" = authority."agentId"
            AND delegated_agent."orgId" = authority."orgId"
+           -- resource.view for the conversation owner, mirroring authorization/policy.ts:
+           -- org-visible, selected, or an organization owner (the owner exception).
            AND (
              delegated_agent."visibility" = 'org'
              OR authority."userId" = ANY(delegated_agent."sharedWith")
+             OR member."role" = 'owner'
            )
           -- Same current-session fence as createOrReplay: the pointer, not
           -- endedAt ordering, names the installed session; the row locks below
