@@ -6307,21 +6307,21 @@ export function deleteProviderKey(orgId: string, provider: ProviderKeyProvider):
 
 // Every operation captures its organization; changing the active org cannot redirect an in-flight mutation.
 export function createDecisionApi(orgId: string): DecisionApi {
-  const base = `${orgBase(orgId)}/decisions`
-  const path = (id: string) => `${base}/${encodeURIComponent(id)}`
+  const base = () => `${orgBase(orgId)}/decisions`
+  const path = (id: string) => `${base()}/${encodeURIComponent(id)}`
   const unsupported = async (): Promise<never> => {
     throw new ApiError('Decision message triggers are not available yet.', 501)
   }
   return {
     mode: 'live',
     listProviders: (daemonId) =>
-      apiGet(`${base}/providers${daemonId ? `?daemonId=${encodeURIComponent(daemonId)}` : ''}`),
-    listDecisions: () => apiGet(base),
+      apiGet(`${base()}/providers${daemonId ? `?daemonId=${encodeURIComponent(daemonId)}` : ''}`),
+    listDecisions: () => apiGet(base()),
     getDecision: (id) => apiGet(path(id)),
-    createDecision: (draft) => apiPost(base, draft),
+    createDecision: (draft) => apiPost(base(), draft),
     updateDecision: (id, draft) => apiPatch(path(id), draft),
     deleteDecision: (id) => apiDelete(path(id)),
-    preview: (input) => apiPost(`${base}/preview`, input),
+    preview: (input) => apiPost(`${base()}/preview`, input),
     listBots: unsupported,
     listChannels: unsupported,
     saveChannel: unsupported,

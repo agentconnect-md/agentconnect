@@ -8,7 +8,8 @@ import { createDecisionApi, setApiOrgId } from '@/lib/api'
 
 vi.mock('@/lib/data', async (original) => ({ ...(await original<object>()), MOCK_MODE: false }))
 vi.mock('@/lib/feature-flags', () => ({ featureFlagEnabled: () => true }))
-vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: 'example-org' } }) }))
+const org = vi.hoisted(() => ({ id: 'example-org' as string | null }))
+vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: org.id ? { id: org.id } : null }) }))
 const auth = vi.hoisted(() => ({ getToken: async () => undefined, getIdTokenRaw: async () => undefined }))
 vi.mock('@/lib/auth', async (original) => ({ ...(await original<object>()), ...auth }))
 let root: Root | undefined
@@ -18,6 +19,7 @@ afterEach(async () => {
   if (root) await act(async () => root?.unmount())
   container?.remove()
   root = undefined
+  org.id = 'example-org'
   setApiOrgId(null)
   vi.unstubAllGlobals()
 })
@@ -50,6 +52,28 @@ it('uses the live API and surfaces a failed read without installing seeded decis
   await act(async () => {})
   expect(String(fetcher.mock.calls[0]?.[0])).toContain('/orgs/example-org/decisions')
   expect(container.textContent).toBe('live:Example service unavailable')
+})
+
+it('mounts while the organization is unresolved without requesting a different tenant', async () => {
+  org.id = null
+  setApiOrgId('previous-org')
+  const fetcher = vi.fn<typeof fetch>()
+  vi.stubGlobal('fetch', fetcher)
+  container = document.createElement('div')
+  root = createRoot(container)
+  await act(async () => {
+    root?.render(
+      <SWRConfig value={{ provider: () => new Map() }}>
+        <DecisionsPrototypeProvider>
+          <Probe />
+        </DecisionsPrototypeProvider>
+      </SWRConfig>
+    )
+  })
+  expect(container.textContent).toBe('live:')
+  expect(fetcher).not.toHaveBeenCalled()
+  expect(() => createDecisionApi('').listDecisions()).toThrow('no active organization')
+  expect(fetcher).not.toHaveBeenCalled()
 })
 
 it('keeps writes in the captured organization and propagates a failed preview', async () => {
