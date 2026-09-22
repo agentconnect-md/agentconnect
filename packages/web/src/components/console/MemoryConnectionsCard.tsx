@@ -45,6 +45,16 @@ function parseObjectJson(text: string, t: DialogTranslator): Record<string, unkn
   return value as Record<string, unknown>
 }
 
+/** Values for the fields that exist now: a field renamed or removed after Back keeps no hidden key. */
+function secretsFor(fields: MemoryPluginSecretHeaderDto[], values: Record<string, string>): Record<string, string> {
+  const secrets: Record<string, string> = {}
+  for (const field of fields) {
+    const value = values[field.name]
+    if (value) secrets[field.name] = value
+  }
+  return secrets
+}
+
 function statusClasses(status: ExternalMemoryConnectionDto['status']): string {
   if (status === 'ready') return 'bg-(--status-online-soft) text-(--status-online)'
   if (status === 'invalid') return 'bg-(--status-error-soft) text-(--status-error)'
@@ -132,7 +142,7 @@ export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
 
   const loading = installationsLoading || connectionsLoading
   return (
-    <div id="external-memory" className="card mt-[18px] overflow-hidden">
+    <div id="external-memory" className="card mt-[18px]">
       <div className="cardhead justify-between gap-2">
         <span className="inline-flex min-w-0 items-center gap-2">
           <span className="cardtitle">{t('title')}</span>
@@ -192,7 +202,7 @@ export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
       )}
 
       {canManage && unconnected.length > 0 && (
-        <div className="border-t border-(--border-subtle) bg-(--surface-sunken)">
+        <div className="border-t border-(--border-subtle) bg-(--surface-sunken) last:rounded-b-[10px]">
           {unconnected.map((installation) => (
             <div
               key={installation.id}
@@ -313,7 +323,7 @@ function ConnectionRow({
   const usage = agents.length ? t('usedByCount', { count: agents.length }) : t('usedByNone')
 
   return (
-    <div data-connection={connection.id} className="border-b border-(--border-subtle) last:border-b-0">
+    <div data-connection={connection.id} className="group border-b border-(--border-subtle) last:border-b-0">
       <div className="flex items-center gap-3 px-4 py-3">
         <button
           type="button"
@@ -397,7 +407,10 @@ function ConnectionRow({
       </div>
 
       {open && (
-        <div id={detailId} className="border-t border-(--border-subtle) bg-(--surface-sunken) px-4 py-3">
+        <div
+          id={detailId}
+          className="border-t border-(--border-subtle) bg-(--surface-sunken) px-4 py-3 group-last:rounded-b-[10px]"
+        >
           {connection.reasonCode && (
             <div className="mb-3 flex items-center gap-2 rounded-md bg-(--status-error-soft) px-3 py-2 font-sans text-[11.5px] font-normal leading-normal text-(--status-error)">
               <Icon name="triangle-alert" size={14} className="flex-none" />
@@ -665,8 +678,11 @@ function CreateMemoryConnectionModal({
         )
         target = createdInstallation
       }
-      const secrets = Object.fromEntries(Object.entries(secretValues).filter(([, value]) => value))
-      await createExternalMemoryConnection({ installationId: target.id, config, secrets })
+      await createExternalMemoryConnection({
+        installationId: target.id,
+        config,
+        secrets: secretsFor(fields, secretValues)
+      })
       await onSaved()
     } catch (cause) {
       if (createdInstallation) await deleteMemoryPluginInstallation(createdInstallation.id).catch(() => undefined)
@@ -874,7 +890,7 @@ function EditMemoryConnectionModal({
         const missing = fields.filter((field) => field.required && !secretValues[field.name])
         if (missing.length)
           throw new Error(t('errors.missingSecretValues', { names: missing.map((field) => field.name).join(', ') }))
-        secrets = Object.fromEntries(Object.entries(secretValues).filter(([, value]) => value))
+        secrets = secretsFor(fields, secretValues)
       }
       await updateExternalMemoryConnection(connection.id, { config, ...(secrets ? { secrets } : {}) })
       await onSaved()

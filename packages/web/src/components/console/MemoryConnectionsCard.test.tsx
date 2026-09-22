@@ -91,6 +91,19 @@ function button(scope: ParentNode, label: string): HTMLButtonElement {
   return found
 }
 
+async function type(element: HTMLInputElement | HTMLSelectElement, value: string): Promise<void> {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set?.call(element, value)
+    element.dispatchEvent(new Event(element instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true }))
+  })
+}
+
+function input(scope: ParentNode, selector: string): HTMLInputElement {
+  const found = scope.querySelector<HTMLInputElement>(selector)
+  if (!found) throw new Error(`input not found: ${selector}`)
+  return found
+}
+
 async function settle(done: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 20 && !done(); attempt += 1) {
     await act(async () => {
@@ -102,6 +115,13 @@ async function settle(done: () => boolean): Promise<void> {
 async function render(canManage = false, installations = [INSTALLATION]): Promise<void> {
   fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
+    if (init?.method === 'POST' && url.includes('/memory-plugin-installations')) {
+      const posted = JSON.parse(String(init.body)) as Partial<MemoryPluginInstallationDto>
+      return new Response(JSON.stringify({ ...SPARE_INSTALLATION, ...posted, id: 'inst-new' }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' }
+      })
+    }
     if (init?.method === 'POST' && url.includes('/external-memory-connections')) {
       return new Response(JSON.stringify({ ...connection('new-connection'), installationId: SPARE_INSTALLATION.id }), {
         status: 201,
@@ -217,5 +237,44 @@ describe('external-memory connection rows', () => {
     await act(async () => button(dialog, 'Create connection').click())
     expect(dialog.textContent).toContain('Enter the required credential(s): apiKey.')
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+  })
+
+  it('sends credentials only for the fields that still exist after they were edited in step one', async () => {
+    mocks.agents = []
+    await render(true, [INSTALLATION])
+    await act(async () => button(host, 'Add connection').click())
+    const dialog = host.querySelector('.modal')!
+    await type(dialog.querySelector('select')!, 'new')
+    await type(input(dialog, 'input[placeholder="ai.mem0.memory"]'), 'ai.new.memory')
+    await type(input(dialog, 'input[type="url"]'), 'https://new.example.test/mcp')
+    await act(async () => button(dialog, '+ Add credential field').click())
+    await type(input(dialog, 'input[aria-label="Name"]'), 'apiKey')
+    await type(input(dialog, 'input[aria-label="Header"]'), 'Authorization')
+    await act(async () => button(dialog, 'Next').click())
+    await type(input(dialog, 'input[type="password"]'), 'first-secret')
+
+    // Back, rename the field, forward again: the value entered under the old name must not travel.
+    await act(async () => button(dialog, 'Back').click())
+    await type(input(dialog, 'input[aria-label="Name"]'), 'token')
+    await act(async () => button(dialog, 'Next').click())
+    expect(dialog.textContent).toContain('token *')
+    await type(input(dialog, 'input[type="password"]'), 'second-secret')
+    await act(async () => button(dialog, 'Create connection').click())
+    await settle(() =>
+      fetchMock.mock.calls.some(
+        ([request, init]) => init?.method === 'POST' && String(request).includes('/external-memory-connections')
+      )
+    )
+
+    const posts = fetchMock.mock.calls
+      .filter(([, init]) => init?.method === 'POST')
+      .map(([request, init]) => [String(request), JSON.parse(String(init?.body))] as const)
+    const installation = posts.find(([url]) => url.includes('/memory-plugin-installations'))?.[1]
+    const connection = posts.find(([url]) => url.includes('/external-memory-connections'))?.[1]
+    expect(installation).toMatchObject({
+      pluginId: 'ai.new.memory',
+      secretHeaders: [{ name: 'token', header: 'Authorization', required: true }]
+    })
+    expect(connection).toMatchObject({ installationId: 'inst-new', secrets: { token: 'second-secret' } })
   })
 })
