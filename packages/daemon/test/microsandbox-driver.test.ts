@@ -58,6 +58,7 @@ class FakeExec {
 
 function fakeSdk() {
   class SandboxNotFoundError extends Error {}
+  class SandboxAlreadyExistsError extends Error {}
   class VolumeNotFoundError extends Error {}
   class InvalidConfigError extends Error {}
   class ImageInUseError extends Error {}
@@ -69,6 +70,9 @@ function fakeSdk() {
     volumes.delete(name)
   })
   const sandboxes = new Map<string, FakeSandbox>()
+  // Names a failed create claimed on disk before its database row: `get` misses them and a plain create collides.
+  const claimed = new Set<string>()
+  let nextCreateFailure: Error | undefined
   const created: FakeSandbox[] = []
   const processes: FakeExec[] = []
   let onRun: ((process: FakeExec) => void | Promise<void>) | undefined
@@ -195,6 +199,7 @@ function fakeSdk() {
 
   const sdk = {
     SandboxNotFoundError,
+    SandboxAlreadyExistsError,
     VolumeNotFoundError,
     InvalidConfigError,
     ImageInUseError,
@@ -250,9 +255,14 @@ function fakeSdk() {
         const secrets: FakeSandbox['spec']['secrets'] = {}
         const labels: Record<string, string> = {}
         let image = 'test-image'
+        let replace = false
         const builder = {
           image(value: string) {
             image = value
+            return builder
+          },
+          replace() {
+            replace = true
             return builder
           },
           label(key: string, value: string) {
@@ -340,6 +350,15 @@ function fakeSdk() {
             return builder
           },
           async create() {
+            if (replace && sandboxes.has(name)) throw new Error(`replace would destroy the tracked sandbox ${name}`)
+            if (claimed.has(name) && !replace) throw new SandboxAlreadyExistsError(`sandbox '${name}' already exists`)
+            claimed.delete(name)
+            if (nextCreateFailure) {
+              const failure = nextCreateFailure
+              nextCreateFailure = undefined
+              claimed.add(name)
+              throw failure
+            }
             for (const name of volumeNames) {
               if (volumes.has(name)) throw new Error('volume already exists')
               volumes.set(name, { attached: true })
@@ -366,6 +385,11 @@ function fakeSdk() {
     imageDigests,
     imageCache,
     removeVolume,
+    claimed,
+    /** Fail the next create after it claimed its name, as msb does when the disk fills mid-create. */
+    failNextCreate: (failure: Error) => {
+      nextCreateFailure = failure
+    },
     /** A VM this daemon does not know about: one an operator created, or one an interrupted start left behind. */
     leak: (name: string, image: string) => {
       const sandbox = new FakeSandbox(name)
@@ -1006,6 +1030,27 @@ describe('microsandbox process and VM ownership', () => {
     volumes.set(`${probe}-docker`, { attached: false })
     await expect(new MicrosandboxManager(options).prepare()).resolves.toBeDefined()
     expect(volumes.has(`${probe}-docker`)).toBe(false)
+  })
+
+  // A create that died between claiming the name and writing its row (a full disk) must not wedge that name for good.
+  it('takes back a VM name a failed create left claimed and starts the VM on the next attempt', async () => {
+    const { manager, environment, created, claimed, failNextCreate } = await fixture()
+    failNextCreate(new Error('No space left on device (os error 28)'))
+    await expect(manager.prepareEnvironment(environment)).rejects.toThrow('No space left on device')
+    expect(claimed.size).toBe(1)
+    await manager.prepareEnvironment(environment)
+    expect(created).toHaveLength(1)
+    expect(claimed.size).toBe(0)
+    await manager.discard(environment.id)
+  })
+
+  it('takes back the preparation VM name a failed create left claimed', async () => {
+    const { options, claimed, failNextCreate } = await fixture()
+    failNextCreate(new Error('No space left on device (os error 28)'))
+    await expect(new MicrosandboxManager(options).prepare()).rejects.toThrow('No space left on device')
+    expect(claimed.size).toBe(1)
+    await expect(new MicrosandboxManager(options).prepare()).resolves.toBeDefined()
+    expect(claimed.size).toBe(0)
   })
 
   it('starts when the image cache cannot be read', async () => {
