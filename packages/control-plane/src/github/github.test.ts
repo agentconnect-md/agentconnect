@@ -1223,7 +1223,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     return {
       id: 'ss-1',
       orgId: 'org-a' as never,
-      name: 'qargo-skills',
+      name: 'example-skills',
       source: 'acme/skills',
       githubRepoId: 555n,
       ref: null,
@@ -1242,12 +1242,12 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
   const CONTENTS: readonly GitCredCapability[] = ['contents'] // the git plane's ask
 
   describe('private skill sources (shared-skills.md §3)', () => {
-    const SKILLS_AGENT = { ...(SCRATCH_AGENT as object), skills: ['qargo-skills/*'] } as never
+    const SKILLS_AGENT = { ...(SCRATCH_AGENT as object), skills: ['example-skills/*'] } as never
 
     it('an enabled PRIVATE source mints a read-only token scoped to its numeric repo id', async () => {
       const { svc, mintBodies, repoLookups } = harness({
         rows: [],
-        skillSources: { 'qargo-skills': skillSourceRow() }
+        skillSources: { 'example-skills': skillSourceRow() }
       })
       const grant = await svc.mintForAgent(SKILLS_AGENT, [], CONTENTS, 'acme/Skills')
       expect(grant).toMatchObject({ repoFullName: 'acme/Skills', access: 'read' })
@@ -1256,7 +1256,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     })
 
     it('never widens: a requested write floor still clamps to read', async () => {
-      const { svc, mintBodies } = harness({ rows: [], skillSources: { 'qargo-skills': skillSourceRow() } })
+      const { svc, mintBodies } = harness({ rows: [], skillSources: { 'example-skills': skillSourceRow() } })
       await svc.mintForAgent(SKILLS_AGENT, [], ['contents', 'issues', 'pull_requests'], 'acme/skills', 'write')
       expect(mintBodies[0]).toMatchObject({
         repository_ids: [555],
@@ -1265,11 +1265,11 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     })
 
     it('a PUBLIC source is not a grant, and neither is a source the agent does not enable', async () => {
-      const publicOnly = harness({ rows: [], skillSources: { 'qargo-skills': skillSourceRow({ private: false }) } })
+      const publicOnly = harness({ rows: [], skillSources: { 'example-skills': skillSourceRow({ private: false }) } })
       await expect(publicOnly.svc.mintForAgent(SKILLS_AGENT, [], CONTENTS, 'acme/skills')).rejects.toMatchObject({
         code: 'SCOPE_DENIED'
       })
-      const notEnabled = harness({ rows: [], skillSources: { 'qargo-skills': skillSourceRow() } })
+      const notEnabled = harness({ rows: [], skillSources: { 'example-skills': skillSourceRow() } })
       await expect(
         notEnabled.svc.mintForAgent({ ...(SCRATCH_AGENT as object), skills: [] } as never, [], CONTENTS, 'acme/skills')
       ).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
@@ -1280,7 +1280,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     it('an explicit additional-repo grant outranks the implied read grant', async () => {
       const { svc, mintBodies } = harness({
         rows: [grantRow({ repoId: 555n, repoFullName: 'acme/skills', access: 'write' })],
-        skillSources: { 'qargo-skills': skillSourceRow() }
+        skillSources: { 'example-skills': skillSourceRow() }
       })
       const grant = await svc.mintForAgent(SKILLS_AGENT, [], CONTENTS, 'acme/skills')
       expect(grant).toMatchObject({ access: 'write' })
@@ -1288,11 +1288,10 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     })
 
     it('recognizes a renamed private skill repo by id under the registry’s old slug', async () => {
-      // The daemon asks under the name the registry still stores; GitHub already
-      // redirects that name to the renamed repository with the same id.
+      // The daemon asks under the registry's old slug, which GitHub redirects to the renamed repo with the same id.
       const { svc, mintBodies } = harness({
         rows: [],
-        skillSources: { 'qargo-skills': skillSourceRow({ source: 'acme/skills-old' }) },
+        skillSources: { 'example-skills': skillSourceRow({ source: 'acme/skills-old' }) },
         repoRefs: { 'acme/skills-old': { id: 555, full_name: 'acme/skills' } }
       })
       const grant = await svc.mintForAgent(SKILLS_AGENT, [], CONTENTS, 'acme/skills-old')
