@@ -60,8 +60,8 @@ turn of its own.
 Agent execution continues through the existing runtimes. Tool-approval hooks,
 outbound checks, multiple questions per definition, expression/script editors, and
 workflow composition are outside these two stages.
-AI-assisted configuration can later author the same definition through the
-management API.
+AI-assisted configuration and runtime Auto behavior remain exploratory directions
+in §11, alongside built-in templates and Decision composition.
 
 The existing behavior in [product conventions](../product-conventions.md) remains
 the implemented baseline until the feature lands. This proposal extends the
@@ -1414,6 +1414,32 @@ this host's measured budget, not to another application's defaults.
 
 These are exploratory uses of the same Decision resource, outside Stage 1 and
 Stage 2. They have no committed delivery order, configuration, API, or execution design.
+
+### Auto and built-in Decisions
+
+An optional **Auto** experience could reduce manual configuration and use Decisions
+for routine response, routing, and session choices. Directions to explore include:
+
+- **Description-based configuration:** use connected agents' descriptions to draft
+  the question and criteria, reducing the need to write every option manually.
+- **Runtime response and routing:** use the current message, relevant conversation
+  context, and available agents to judge whether a response is needed and which
+  agents should handle it.
+- **Session selection:** use eligible session candidates and recent context to
+  judge whether a message starts a new topic or continues an existing session.
+  This does not change the established-thread continuity specified for Stage 2.
+- **Built-in templates:** provide editable starting points for common judgments
+  that users can apply without creating a Decision from scratch.
+- **Decision composition:** explore successive judgments, such as checking for
+  spam before selecting recipients, without specifying a workflow engine here.
+
+AI-assisted authoring produces saved configuration. Runtime Auto would make choices
+for incoming messages using the candidates and context available at that time;
+these are separate capabilities. Their feasibility, routing and session accuracy,
+latency, and total evaluation cost need validation before committing to a design.
+None is required to complete Stage 1 or Stage 2.
+
+### Other possible consumers
 
 | Possible consumer                  | Potential judgment                                                                                      |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------- |
