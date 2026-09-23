@@ -75,6 +75,8 @@ export class WorkspaceConflictError extends Error {
 export interface WorkspaceLocation {
   root: string
   scratch: boolean
+  /** The isolated session whose own directory holds this root: where that session runs is where its files are read. */
+  sessionKey?: string
 }
 
 /**
@@ -91,6 +93,27 @@ export interface WorkspaceFiles {
    *  would be deciding policy from the half-trusted side. */
   write(root: string, scratch: boolean, req: WorkspaceWriteReq): Promise<WorkspaceWriteOk>
   delete(root: string, scratch: boolean, req: WorkspaceDeleteReq): Promise<WorkspaceDeleteOk>
+}
+
+/** The file operations over several filesystems: each call names its root, and the route picks the filesystem, or refuses, per call. */
+export class RoutedWorkspaceFiles implements WorkspaceFiles {
+  constructor(private readonly route: (root: string) => Promise<WorkspaceFiles>) {}
+
+  async list(root: string, req: WorkspaceListReq): Promise<WorkspaceListPage> {
+    return await (await this.route(root)).list(root, req)
+  }
+
+  async read(root: string, req: WorkspaceReadReq): Promise<WorkspaceReadContent> {
+    return await (await this.route(root)).read(root, req)
+  }
+
+  async write(root: string, scratch: boolean, req: WorkspaceWriteReq): Promise<WorkspaceWriteOk> {
+    return await (await this.route(root)).write(root, scratch, req)
+  }
+
+  async delete(root: string, scratch: boolean, req: WorkspaceDeleteReq): Promise<WorkspaceDeleteOk> {
+    return await (await this.route(root)).delete(root, scratch, req)
+  }
 }
 
 function isErrno(err: unknown, code: string): boolean {

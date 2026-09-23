@@ -26,7 +26,7 @@ import { ClientTransport, systemClock } from '@agentconnect.md/connection'
 import { CP_SUBPROTOCOL, CP_WS_PATH, type BootstrapUpgradeOutcome, type CpClient, type CpClientDeps } from './client.js'
 import type { ConfigApply } from './config-apply.js'
 import { createSessionReader } from './session-reader.js'
-import { createWorkspaceReader } from './workspace-reader.js'
+import { createWorkspaceReader, type WorkspaceFilesResolver } from './workspace-reader.js'
 import { createWorkspaceScope } from './workspace-scope.js'
 import { createWorkspaceGit, type CommitMessagePass } from './workspace-git.js'
 import { createAgentWaker, sessionPodOf } from './agent-wake.js'
@@ -159,7 +159,7 @@ export interface CpClientSeamHost {
   k8sPlane(): K8sRuntimePlane | undefined
   /** A cluster member's requested re-probe, or undefined where the deployment takes no requests. */
   runtimeProbeRequest(): (() => void) | undefined
-  workspaceFilesFor: K8sRuntimePlane['workspaceFilesFor']
+  workspaceFilesFor: WorkspaceFilesResolver
   workspaceSkillLedger: NonNullable<Parameters<typeof createLocalSkillsReader>[4]>
   verifyWorkspaceSkills: (id: string, roots: ClusterSkillLedger['roots'], cwd: string) => Promise<boolean[] | undefined>
   memory(): AgentMemoryAdminResolver & MemoryProvider
@@ -375,13 +375,12 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       }
       return host.dispatchPullRequestFeedback(req)
     },
-    // The third argument is what makes a cluster agent's files reachable at all: the operations
-    // run inside its pod, on the volume the root above names.
+    // The last argument is what makes a sandboxed root reachable at all: the operations run where the root's agent or session runs.
     workspaceRead: createWorkspaceReader(
       host.workspaces(),
       workspaceScope.location,
       (id, write) => host.withWorkspaceFileWrite(id, write),
-      (id) => host.workspaceFilesFor(id)
+      (id, scope) => host.workspaceFilesFor(id, scope)
     ),
     workspaceGit: {
       status: (id, sessionId, repo) => workspaceGit.status(id, sessionId, repo),

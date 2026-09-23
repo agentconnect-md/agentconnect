@@ -4736,7 +4736,10 @@ export class Daemon {
     return sessionKey === undefined ? undefined : this.executorPlane?.placementOf(sessionKey)
   }
 
-  private workspaceFilesFor(agentId: string) {
+  private workspaceFilesFor(agentId: string, scope?: Omit<PlaneScope, 'agentId'>) {
+    // A session placed on another machine is read there, over its own pipe; the agent's own roots stay on this holder (§7).
+    const placed = this.executorPlane?.workspaceFilesFor(agentId, scope)
+    if (placed) return placed
     const cluster = this.k8sPlane?.workspaceFilesFor(agentId)
     if (cluster) return cluster
     const agent = this.agents.get(agentId)
@@ -21412,7 +21415,7 @@ export class Daemon {
       k8sPlane: () => this.k8sPlane,
       // Before the start-up probe is scheduled a request has nothing to add: that probe is about to run.
       runtimeProbeRequest: () => (this.k8sProbeOnDemand ? () => this.k8sProbeSchedule?.request() : undefined),
-      workspaceFilesFor: (id) => this.workspaceFilesFor(id),
+      workspaceFilesFor: (id, scope) => this.workspaceFilesFor(id, scope),
       workspaceSkillLedger: (id, cwd) =>
         this.withWorkspaceSkillTarget(
           id,

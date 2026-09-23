@@ -28,6 +28,7 @@ import {
   type WorkspaceLocation
 } from '../workspace/workspace-files.js'
 import { WorkspaceManager } from '../workspace/workspace-manager.js'
+import type { PlaneScope } from '../execution/plane.js'
 
 // Re-exported rather than moved-and-chased: the error classes are what the CP dispatcher maps onto
 // wire frames, and the two path helpers are what the git seam contains its pathspecs with. Neither
@@ -49,13 +50,11 @@ export interface WorkspaceReader {
 
 export type WorkspaceWriteCoordinator = <T>(agentId: string, write: () => Promise<T>) => Promise<T>
 
-/**
- * Which filesystem an agent's workspace files live on; undefined ⇒ this daemon's.
- *
- * Registered like the git runner's resolver, and per-agent for the same reason: one daemon can serve
- * a cluster-backed agent beside a self-hosted one, and only the execution plane knows which is which.
- */
-export type WorkspaceFilesResolver = (agentId: string) => WorkspaceFiles | undefined
+/** Which filesystem a workspace root lives on, asked per agent and per session because only the execution plane knows where each runs; undefined ⇒ this daemon's. */
+export type WorkspaceFilesResolver = (
+  agentId: string,
+  scope?: Omit<PlaneScope, 'agentId'>
+) => WorkspaceFiles | undefined
 
 export function createWorkspaceReader(
   workspaces: WorkspaceManager,
@@ -70,10 +69,12 @@ export function createWorkspaceReader(
   }
 
   /** The filesystem this request runs on, resolved ONCE and held by the caller: the shim re-dials at half its credential TTL, so probing for a channel and resolving again to use it can answer `localWorkspaceFiles` against a root in the POD's coordinates — an off-disk root therefore has no fallback, and the one resolution's absence is the refusal. */
-  function filesOf(agentId: string, root: string): WorkspaceFiles {
-    const remote = filesFor(agentId)
+  function filesOf(agentId: string, { root, sessionKey }: WorkspaceLocation): WorkspaceFiles {
+    // Judged by the session's own scope, as its root was composed, never by whether its pipe still names that root.
+    const scope = { path: root, ...(sessionKey === undefined ? {} : { sessionKey }) }
+    const remote = filesFor(agentId, scope)
     if (remote) return remote
-    if (workspaces.offDisk({ agentId, path: root })) {
+    if (workspaces.offDisk({ agentId, ...scope })) {
       throw new WorkspaceViolationError(
         `agent "${agentId}" has no running sandbox, so its workspace cannot be reached`,
         'sandbox-unavailable'
@@ -84,13 +85,13 @@ export function createWorkspaceReader(
 
   return {
     async list(req) {
-      const root = (await locationFor(req.agentId, req.sessionId, req.repo)).root
-      return filesOf(req.agentId, root).list(root, req)
+      const location = await locationFor(req.agentId, req.sessionId, req.repo)
+      return filesOf(req.agentId, location).list(location.root, req)
     },
 
     async read(req) {
-      const root = (await locationFor(req.agentId, req.sessionId, req.repo)).root
-      return filesOf(req.agentId, root).read(root, req)
+      const location = await locationFor(req.agentId, req.sessionId, req.repo)
+      return filesOf(req.agentId, location).read(location.root, req)
     },
 
     async write(req) {
@@ -106,10 +107,9 @@ export function createWorkspaceReader(
       workspaceEditBytes(req)
 
       return coordinateWrite(req.agentId, async () => {
-        // Re-read inside the coordinator, as before: the agent's configuration can change while a
-        // write waits for quiescence, and the mode that governs is the one at mutation time.
+        // Re-read inside the coordinator: the configuration can change while a write waits, and the mode at mutation time governs.
         const location = await locationFor(req.agentId)
-        return filesOf(req.agentId, location.root).write(location.root, location.scratch, req)
+        return filesOf(req.agentId, location).write(location.root, location.scratch, req)
       })
     },
 
@@ -123,7 +123,7 @@ export function createWorkspaceReader(
 
       return coordinateWrite(req.agentId, async () => {
         const location = await locationFor(req.agentId)
-        return filesOf(req.agentId, location.root).delete(location.root, location.scratch, req)
+        return filesOf(req.agentId, location).delete(location.root, location.scratch, req)
       })
     }
   }

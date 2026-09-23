@@ -9,7 +9,7 @@ import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
 // One plane per test file — the isolation Vitest's per-file module registry used to give.
 const workspaces = new WorkspaceManager()
 import { localWorkspaceFiles, type WorkspaceFiles } from '../src/workspace/workspace-files.js'
-import { wireTestPlane } from './workspace-plane-support.js'
+import { testPlane, wireTestPlane } from './workspace-plane-support.js'
 
 /**
  * The routing half: the reader must ask the filesystem the agent's workspace is ON.
@@ -223,6 +223,39 @@ describe('an unreachable sandbox workspace', () => {
       () => filesAt(podSide)
     )
     expect((await reader.list({ agentId: AGENT, path: '', limit: 50 })).exists).toBe(true)
+  })
+})
+
+describe('a session that runs apart from its agent', () => {
+  // A session placed on another machine is known by its key; once its pipe closes, its root no longer names it (session-executors.md §7).
+  afterEach(() => workspaces.setPlaneResolver(undefined))
+  const KEY = 'slack:C1:1700000000.000100:bot-cluster'
+
+  it('hands the resolver the session its root belongs to, and refuses rather than read this disk', async () => {
+    const { daemonSide } = split()
+    const offDisk = testPlane({ workspacesOffDisk: true })
+    workspaces.setPlaneResolver((scope) => (scope.sessionKey === KEY ? offDisk : undefined))
+    const scopes: unknown[] = []
+    const reader = createWorkspaceReader(
+      workspaces,
+      async (_id, sessionId) =>
+        sessionId === undefined
+          ? { root: daemonSide, scratch: true }
+          : { root: daemonSide, scratch: false, sessionKey: KEY },
+      pass,
+      (_id, scope) => {
+        scopes.push(scope)
+        return undefined
+      }
+    )
+
+    await expect(reader.list({ agentId: AGENT, sessionId: 'outward-1', path: '', limit: 50 })).rejects.toMatchObject({
+      reason: 'sandbox-unavailable'
+    })
+    // The agent's own root is still this disk's, and was asked about by its path alone.
+    const page = await reader.list({ agentId: AGENT, path: '', limit: 50 })
+    expect(page.entries.map((entry) => entry.name)).toEqual(['STALE-DAEMON-COPY.txt'])
+    expect(scopes).toEqual([{ path: daemonSide, sessionKey: KEY }, { path: daemonSide }])
   })
 })
 
