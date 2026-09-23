@@ -4129,6 +4129,8 @@
     },
     "usedBy": {
       "title": "使用处",
+      "loading": "正在加载使用情况…",
+      "error": "无法获取使用情况",
       "kind": {
         "gate": "频道门控",
         "shared_bot_routing": "共享 Bot 路由",
@@ -4220,6 +4222,13 @@
       }
     },
     "breaksChannels": "这些频道绑定会失去触发条件：{names}。保存后它们会标记为“需要复核”；系统不会替你重新选择。",
+    "agentAnswerChange": {
+      "title": "请检查使用此决策的 Agent",
+      "body": "此决策已绑定到 Agent。更改决策类型或选项会改变 Agent 调用决策时收到的答案。如果 Agent 指令引用了旧答案，请在保存后更新指令。",
+      "confirm": "仍然保存",
+      "saving": "正在保存…",
+      "usageError": "无法检查此决策的使用情况，请重试保存。"
+    },
     "notOffered": {
       "title": "决策功能未启用",
       "body": "该控制台尚未开启决策功能。管理员可以通过 decisions 功能开关启用。"
