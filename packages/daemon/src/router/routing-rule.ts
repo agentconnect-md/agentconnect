@@ -34,7 +34,7 @@ export function integrationRouting(int: Integration): {
   gated: boolean
   /** The enabled By decision gate for a channel with its resolved definition, or undefined. */
   decisionBindingFor(channel: string): ResolvedDecisionGate | undefined
-  /** Whether the channel carries any By decision binding, enabled or not. */
+  /** Whether the channel is By decision: a bundle binding (enabled or not) or a decision bind rule covering it. */
   decisionBound(channel: string): boolean
 } {
   const { bindRules, mutedChannels, gated, decisions } = integrationCore(int)
@@ -45,7 +45,12 @@ export function integrationRouting(int: Integration): {
     mutedChannels,
     gated,
     decisionBindingFor: (channel) => bundle.gates.get(channel),
-    decisionBound: (channel) => bundle.bound.has(channel)
+    // A decision rule with no bundle entry is held, never Any: a hand-authored agent.json can carry one.
+    decisionBound: (channel) =>
+      bundle.bound.has(channel) ||
+      bindRules.some(
+        (rule) => rule.match.kind === 'decision' && (rule.channel === undefined || rule.channel === channel)
+      )
   }
 }
 

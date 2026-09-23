@@ -17390,7 +17390,9 @@ export class Daemon {
       return 'held'
     }
     const local = routing.decisionBindingFor(msg.channel)?.binding.decisionId
-    if (relayDecisionId !== undefined && relayDecisionId !== local)
+    if (local === undefined && relayDecisionId === undefined)
+      this.decisionHoldLog(integrationId, msg.channel, 'decision rule has no enabled binding')
+    else if (relayDecisionId !== undefined && relayDecisionId !== local)
       this.decisionHoldLog(integrationId, msg.channel, `relay decision ${relayDecisionId} is stale (pending sync)`)
     else this.decisionHoldLog(integrationId, msg.channel, 'gate not implemented yet')
     return 'held'

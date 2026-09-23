@@ -26,8 +26,8 @@ const definition = {
 
 interface AgentSpec {
   id: string
-  /** 'decision' binds C1 By decision with a bundle; 'auto' is an ordinary Any conversation. */
-  trigger: 'decision' | 'auto'
+  /** 'decision' binds C1 with a bundle; 'orphan' is an unscoped decision rule with no bundle; 'auto' is Any. */
+  trigger: 'decision' | 'auto' | 'orphan'
 }
 
 function scaffold(agents: AgentSpec[]): string {
@@ -56,7 +56,10 @@ function scaffold(agents: AgentSpec[]): string {
             id: `int-${a.id}`,
             platform: 'slack',
             core: {
-              bindRules: [{ match: { kind: 'mention' } }, { match: { kind: a.trigger }, channel: 'C1' }],
+              bindRules: [
+                { match: { kind: 'mention' } },
+                a.trigger === 'orphan' ? { match: { kind: 'decision' } } : { match: { kind: a.trigger }, channel: 'C1' }
+              ],
               ...(a.trigger === 'decision'
                 ? {
                     decisions: {
@@ -145,6 +148,16 @@ describe('Stage 3a By decision hold', () => {
     for (const outcome of [unaddressed, mention, reply]) expect(outcome).toEqual({ kind: 'rejected', reason: 'gated' })
     expect((await rowsOf(store, channel)).map((r) => r.text)).toEqual(['anyone?', '<@U_FAKE_BOT> help', 'follow-up'])
     expect(await admissionsOf(store, channel)).toEqual([])
+    expect(dispatch).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+
+  it('holds a decision rule whose bundle entry is missing, in every channel it covers', async () => {
+    const { daemon, store, channel, dispatch } = await boot([{ id: 'bot-a', trigger: 'orphan' }])
+    const here = await route(daemon, human({ text: 'no bundle' }), ['int-bot-a'])
+    const elsewhere = await route(daemon, human({ channel: 'C9', msgId: 'slack:C9:1720000000.000900' }), ['int-bot-a'])
+    for (const outcome of [here, elsewhere]) expect(outcome).toEqual({ kind: 'rejected', reason: 'gated' })
+    expect((await rowsOf(store, channel)).map((r) => r.text)).toEqual(['no bundle'])
     expect(dispatch).not.toHaveBeenCalled()
     await daemon.stop()
   })
