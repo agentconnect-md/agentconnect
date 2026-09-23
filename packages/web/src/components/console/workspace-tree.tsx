@@ -235,8 +235,8 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
   return { dirs, root: dirs[''], expanded, toggleDir, loadMoreDir, openPath }
 }
 
-/** What the scoped git status resolved to. `none` is a from-scratch workspace, `asleep` a cluster agent whose sandbox is not running, and `unavailable` an offline daemon or unplaced agent — a null status alone cannot tell the three apart. `asleep` is its own outcome because it is the only one that resolves itself: the workspace is there and reachable again on the agent's next turn, so the copy must not read as an outage or as an empty checkout. */
-export type WorkspaceGitOutcome = 'pending' | 'repo' | 'none' | 'asleep' | 'unavailable'
+/** What the scoped git status resolved to. `none` is a from-scratch workspace, `asleep` a cluster agent whose sandbox is not running, `removed` a session whose own sandbox is gone, and `unavailable` an offline daemon or unplaced agent — a null status alone cannot tell them apart. `asleep` is its own outcome because it is the only one that resolves itself: the workspace is there and reachable again on the agent's next turn, so the copy must not read as an outage or as an empty checkout. */
+export type WorkspaceGitOutcome = 'pending' | 'repo' | 'none' | 'asleep' | 'removed' | 'unavailable'
 
 /** The CP's code for "this agent's sandbox is not running". A 503 like an offline daemon — the code is the only thing that separates the two, and a plain 503 keeps the offline story. */
 export const SANDBOX_ASLEEP_CODE = 'WORKSPACE_SANDBOX_UNAVAILABLE'
@@ -264,6 +264,13 @@ export function workspaceRootReadState(root: WorkspaceDirState | undefined): San
   if (!root.err) return 'ready'
   if (root.errCode === SANDBOX_REMOVED_CODE) return 'removed'
   return root.errCode === SANDBOX_ASLEEP_CODE ? 'asleep' : 'failed'
+}
+
+/** The git status as the sandbox wake reads it, on the same terms as the root listing: a checkout and a non-repo workspace are both answers. */
+export function workspaceGitReadState(outcome: WorkspaceGitOutcome): SandboxReadState {
+  if (outcome === 'repo' || outcome === 'none') return 'ready'
+  if (outcome === 'unavailable') return 'failed'
+  return outcome
 }
 
 export interface WorkspaceGitRead {
@@ -299,7 +306,13 @@ export function useWorkspaceGitStatus(
       (e: unknown) => {
         if (!active) return
         setGit(null)
-        setOutcome(isSandboxAsleep(e) ? 'asleep' : 'unavailable')
+        setOutcome(
+          isSandboxAsleep(e)
+            ? 'asleep'
+            : e instanceof ApiError && e.code === SANDBOX_REMOVED_CODE
+              ? 'removed'
+              : 'unavailable'
+        )
         if (!sessionId) setPrimaryBranch(null)
       }
     )

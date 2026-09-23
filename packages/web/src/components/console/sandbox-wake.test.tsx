@@ -31,8 +31,9 @@ vi.mock('@/lib/api', () => {
   }
 })
 
-import { wakeAgent } from '@/lib/api'
+import { ApiError, wakeAgent } from '@/lib/api'
 import {
+  retryAfterWake,
   SANDBOX_REMOVED_CODE,
   SANDBOX_WAKE_BOUND_MS,
   SANDBOX_WAKE_POLL_MS,
@@ -267,5 +268,46 @@ describe('useSandboxWake for one session', () => {
     expect(vi.mocked(wakeAgent)).not.toHaveBeenCalled()
     expect(phase()).toBe('idle')
     expect(retries).toBe(0)
+  })
+})
+
+// A write refused as asleep takes the same one press and the same bounded poll, with the write itself as the read.
+describe('retryAfterWake', () => {
+  const refusal = new Error('asleep')
+  const isAsleep = (err: unknown) => err instanceof Error && err.message === 'asleep'
+  const live = () => new AbortController().signal
+  const starting = () => Promise.resolve({ state: 'starting' as const })
+  // Through the mock's own constructor, which takes the status first.
+  const refused = (status: number) => Promise.reject(new (ApiError as unknown as new (status: number) => Error)(status))
+
+  it('a refused press (403) ends on the refusal without re-sending; a 503 press still lets the write decide', async () => {
+    const action = vi.fn(() => Promise.resolve('armed'))
+    await expect(retryAfterWake(action, isAsleep, () => refused(403), refusal, live())).rejects.toBe(refusal)
+    expect(action).not.toHaveBeenCalled()
+
+    const raced = retryAfterWake(action, isAsleep, () => refused(503), refusal, live())
+    await vi.advanceTimersByTimeAsync(SANDBOX_WAKE_POLL_MS[0])
+    await expect(raced).resolves.toBe('armed')
+    expect(action).toHaveBeenCalledTimes(1)
+  })
+
+  it('ends on the first answer that is not the sandbox sleeping', async () => {
+    const other = new Error('already mergeable')
+    const action = vi.fn().mockRejectedValueOnce(new Error('asleep')).mockRejectedValueOnce(other)
+    const settled = retryAfterWake(action, isAsleep, starting, refusal, live()).catch((err: unknown) => err)
+    await vi.advanceTimersByTimeAsync(SANDBOX_WAKE_POLL_MS[0] + SANDBOX_WAKE_POLL_MS[1])
+    expect(await settled).toBe(other)
+    expect(action).toHaveBeenCalledTimes(2)
+  })
+
+  it('re-sends nothing once its caller aborts', async () => {
+    const action = vi.fn(() => Promise.resolve('armed'))
+    const caller = new AbortController()
+    const settled = retryAfterWake(action, isAsleep, starting, refusal, caller.signal).catch((err: unknown) => err)
+    await vi.advanceTimersByTimeAsync(0)
+    caller.abort()
+    await vi.advanceTimersByTimeAsync(SANDBOX_WAKE_BOUND_MS)
+    expect(await settled).toBe(caller.signal.reason)
+    expect(action).not.toHaveBeenCalled()
   })
 })

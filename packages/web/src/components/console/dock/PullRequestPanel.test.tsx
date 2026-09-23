@@ -15,6 +15,8 @@ const wire = vi.hoisted(() => ({
   // The auto-merge write seam: every POST recorded, failing with `mergeFailure` when set.
   mergeCalls: [] as Array<{ sessionId: string; enabled: boolean }>,
   mergeFailure: null as null | Error,
+  // Per-call answers ahead of `mergeFailure`: an Error rejects that one POST, null lets it succeed.
+  mergeAnswers: [] as Array<Error | null>,
   // The direct merge seam: every call recorded, failing with `mergeNowFailure` when set.
   mergeNowCalls: [] as string[],
   mergeNowFailure: null as null | Error
@@ -24,7 +26,8 @@ vi.mock('@/lib/api', () => {
   class ApiError extends Error {
     constructor(
       message: string,
-      readonly status: number
+      readonly status: number,
+      readonly code?: string
     ) {
       super(message)
       this.name = 'ApiError'
@@ -40,7 +43,8 @@ vi.mock('@/lib/api', () => {
     }),
     setSessionPullRequestAutoMerge: vi.fn((sessionId: string, enabled: boolean) => {
       wire.mergeCalls.push({ sessionId, enabled })
-      if (wire.mergeFailure) return Promise.reject(wire.mergeFailure)
+      const answer = wire.mergeAnswers.length > 0 ? wire.mergeAnswers.shift() : wire.mergeFailure
+      if (answer) return Promise.reject(answer)
       return Promise.resolve({ armed: enabled, placement: enabled ? 'daemon' : null, waitingOn: null, error: null })
     }),
     mergeSessionPullRequest: vi.fn((sessionId: string) => {
@@ -53,6 +57,7 @@ vi.mock('@/lib/api', () => {
 
 import { PR_POLL_MS } from './auto-refresh'
 import {
+  AUTO_MERGE_SANDBOX_ASLEEP_CODE,
   PR_LINK_RETRY_LADDER_MS,
   PullRequestPanel,
   createPullRequestInstruction,
@@ -61,7 +66,9 @@ import {
   pullRequestTabStatus,
   type PullRequestPanelVerdict
 } from './PullRequestPanel'
-import type { SessionPullRequestDto } from '@/lib/api'
+import { SANDBOX_REMOVED_CODE, SANDBOX_WAKE_BOUND_MS, SANDBOX_WAKE_POLL_MS } from '@/components/console/sandbox-wake'
+import { SESSION_SANDBOX_REMOVED_NOTICE } from '@/components/console/workspace-tree'
+import { ApiError, type AgentWakeDto, type SessionPullRequestDto } from '@/lib/api'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -179,6 +186,7 @@ beforeEach(() => {
   wire.hold = null
   wire.mergeCalls = []
   wire.mergeFailure = null
+  wire.mergeAnswers = []
   wire.mergeNowCalls = []
   wire.mergeNowFailure = null
   verdicts = []
@@ -697,6 +705,143 @@ describe('PullRequestPanel body', () => {
     expect(container?.querySelector('[data-pr-merge-now-error]')?.textContent).toContain('not mergeable')
     expect(container?.querySelector<HTMLButtonElement>('[data-pr-merge-now]')?.disabled).toBe(false)
     expect(wire.calls).toHaveLength(1) // no re-read: nothing changed behind the failed write
+  })
+})
+
+// An isolated session's watcher runs in its own pod, and a read never wakes one — so an arm refused because that pod sleeps presses its wake and is re-sent once the pod answers, bounded like a read's wake.
+describe('PullRequestPanel merge-when-ready wake', () => {
+  const asleep = () =>
+    new ApiError(
+      'this session’s sandbox is not running — start it, then arm merge-when-ready',
+      409,
+      AUTO_MERGE_SANDBOX_ASLEEP_CODE
+    )
+  const woken = (state: AgentWakeDto['state'] = 'starting') => vi.fn(() => Promise.resolve({ state }))
+  const armBox = () => container?.querySelector<HTMLInputElement>('[data-pr-automerge]')
+  const status = () => container?.querySelector('[data-pr-automerge-status]')?.textContent ?? ''
+  const mergeError = () => container?.querySelector('[data-pr-merge-error]')?.textContent ?? null
+  async function advance(ms: number) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms)
+    })
+  }
+
+  it('wakes the sleeping pod once and re-sends the arm when it answers, instead of dead-ending', async () => {
+    vi.useFakeTimers()
+    const wakeSandbox = woken()
+    wire.mergeAnswers = [asleep(), asleep()]
+    await render({ wakeSandbox })
+
+    await press('[data-pr-automerge]')
+    await advance(0)
+    expect(wakeSandbox).toHaveBeenCalledTimes(1)
+    expect(wire.mergeCalls).toHaveLength(1)
+    // One state line while it waits, in the box's own status slot — not the refusal in red.
+    expect(status()).toContain('Starting the agent’s sandbox')
+    expect(mergeError()).toBeNull()
+    expect(armBox()?.disabled).toBe(true)
+
+    // Still asleep on the first poll, so it waits out the next step of the backoff rather than giving up.
+    await advance(SANDBOX_WAKE_POLL_MS[0])
+    expect(wire.mergeCalls).toHaveLength(2)
+    expect(mergeError()).toBeNull()
+
+    wire.data = pr({ autoMergeArmed: true, autoMergePlacement: 'sandbox' })
+    await advance(SANDBOX_WAKE_POLL_MS[1])
+    expect(wire.mergeCalls).toEqual([
+      { sessionId: 'session-1', enabled: true },
+      { sessionId: 'session-1', enabled: true },
+      { sessionId: 'session-1', enabled: true }
+    ])
+    expect(armBox()?.checked).toBe(true)
+    expect(text()).toContain('Watching')
+    expect(status()).not.toContain('Starting the agent’s sandbox')
+    expect(mergeError()).toBeNull()
+    expect(wakeSandbox).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops at the bound with the refusal, and re-sends nothing after it', async () => {
+    vi.useFakeTimers()
+    const wakeSandbox = woken()
+    wire.mergeFailure = asleep()
+    await render({ wakeSandbox })
+
+    await press('[data-pr-automerge]')
+    await advance(SANDBOX_WAKE_BOUND_MS + 15_000)
+    expect(mergeError()).toContain('sandbox is not running')
+    expect(armBox()?.disabled).toBe(false)
+    const sent = wire.mergeCalls.length
+    // Bounded by the backoff, far below one re-send per second over the window.
+    expect(sent).toBeGreaterThan(2)
+    expect(sent).toBeLessThan(SANDBOX_WAKE_BOUND_MS / 1000 / 2)
+
+    await advance(10 * 60_000)
+    expect(wire.mergeCalls).toHaveLength(sent)
+    expect(wakeSandbox).toHaveBeenCalledTimes(1)
+  })
+
+  it('ends at once on a removed session sandbox: one press, no re-sent arm, the removed line', async () => {
+    vi.useFakeTimers()
+    const wakeSandbox = vi.fn(() =>
+      Promise.reject(new ApiError('removed', 404, SANDBOX_REMOVED_CODE))
+    ) as unknown as () => Promise<AgentWakeDto>
+    wire.mergeFailure = asleep()
+    await render({ wakeSandbox })
+
+    await press('[data-pr-automerge]')
+    await advance(0)
+    expect(mergeError()).toBe(SESSION_SANDBOX_REMOVED_NOTICE)
+    expect(status()).not.toContain('Starting the agent’s sandbox')
+
+    await advance(SANDBOX_WAKE_BOUND_MS * 2)
+    expect(wire.mergeCalls).toHaveLength(1)
+    expect(wakeSandbox).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the refusal when there is nothing to wake, or no press to make', async () => {
+    vi.useFakeTimers()
+    wire.mergeFailure = asleep()
+    // A session that is not isolated gets no press at all: the agent pod's refusal stands as before.
+    await render()
+    await press('[data-pr-automerge]')
+    await advance(SANDBOX_WAKE_BOUND_MS)
+    expect(mergeError()).toContain('sandbox is not running')
+    expect(wire.mergeCalls).toHaveLength(1)
+
+    // A daemon with nothing to wake answers `unsupported`, which ends it on the same refusal.
+    const unsupported = woken('unsupported')
+    await rerender({ sessionId: 'session-2', wakeSandbox: unsupported })
+    await press('[data-pr-automerge]')
+    await advance(SANDBOX_WAKE_BOUND_MS)
+    expect(unsupported).toHaveBeenCalledTimes(1)
+    expect(mergeError()).toContain('sandbox is not running')
+    expect(wire.mergeCalls).toHaveLength(2)
+  })
+
+  it('never wakes for a disarm, and drops a pending wake when the panel moves to another session', async () => {
+    vi.useFakeTimers()
+    const wakeSandbox = woken()
+    wire.data = pr({ autoMergeArmed: true })
+    wire.mergeAnswers = [asleep()]
+    await render({ wakeSandbox })
+    await press('[data-pr-automerge]')
+    await advance(SANDBOX_WAKE_BOUND_MS)
+    expect(wire.mergeCalls).toEqual([{ sessionId: 'session-1', enabled: false }])
+    expect(wakeSandbox).not.toHaveBeenCalled()
+
+    wire.data = pr()
+    wire.mergeFailure = asleep()
+    await rerender({ sessionId: 'session-2', wakeSandbox })
+    await advance(0)
+    await press('[data-pr-automerge]')
+    await advance(0)
+    expect(wakeSandbox).toHaveBeenCalledTimes(1)
+    // The reader moved on mid-wake: the old session's arm is never re-sent, and nothing lands on the new box.
+    await rerender({ sessionId: 'session-3', wakeSandbox })
+    await advance(SANDBOX_WAKE_BOUND_MS * 2)
+    expect(wire.mergeCalls.filter((call) => call.sessionId === 'session-2')).toHaveLength(1)
+    expect(mergeError()).toBeNull()
+    expect(status()).not.toContain('Starting the agent’s sandbox')
   })
 })
 

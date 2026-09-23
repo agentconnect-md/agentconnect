@@ -14,6 +14,10 @@ const wire = vi.hoisted(() => ({
   // A status read that fails with a CP code rather than a bare network error — the sleeping-sandbox
   // 503, which the panel must not draw as the offline story it shares a status with.
   gitFailure: null as null | { status: number; code?: string },
+  // The same for the primary checkout's own read, which the panel makes when it has no session scope.
+  primaryFailure: null as null | { status: number; code?: string },
+  // What the sandbox wake answers; the panel presses it when the status refuses as a sleeping sandbox on screen.
+  wake: 'starting' as 'running' | 'starting' | 'unsupported',
   log: null as unknown,
   logFailure: null as null | { status: number; code?: string },
   logCalls: [] as Array<{ limit?: number; sessionId?: string }>,
@@ -48,8 +52,12 @@ vi.mock('@/lib/api', () => {
         }
         return wire.gitFails ? Promise.reject(new Error('offline')) : Promise.resolve(wire.git)
       }
+      if (wire.primaryFailure) {
+        return Promise.reject(new ApiError('nope', wire.primaryFailure.status, wire.primaryFailure.code))
+      }
       return Promise.resolve(wire.primary)
     }),
+    wakeAgent: vi.fn(() => Promise.resolve({ state: wire.wake })),
     fetchWorkspaceGitLog: vi.fn((_agentId: string, opts: { limit?: number; sessionId?: string } = {}) => {
       wire.logCalls.push(opts)
       if (wire.logFailure) {
@@ -86,7 +94,9 @@ vi.mock('@/lib/api', () => {
 
 import { baseBranchOf, GitPanel, gitTabStatus, splitGitSections, type GitPanelVerdict } from './GitPanel'
 import { DOCK_POLL_MS } from './auto-refresh'
-import { commitWorkspace, draftWorkspaceCommitMessage, fetchWorkspaceGitLog } from '@/lib/api'
+import { SANDBOX_WAKE_POLL_MS } from '@/components/console/sandbox-wake'
+import { SESSION_SANDBOX_REMOVED_NOTICE } from '@/components/console/workspace-tree'
+import { commitWorkspace, draftWorkspaceCommitMessage, fetchWorkspaceGitLog, wakeAgent } from '@/lib/api'
 import type { WorkspaceGitFileDto, WorkspaceGitLogDto, WorkspaceGitStatusDto } from '@/lib/api'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -213,6 +223,8 @@ beforeEach(() => {
   wire.gitFails = false
   wire.log = gitLog()
   wire.gitFailure = null
+  wire.primaryFailure = null
+  wire.wake = 'starting'
   wire.logFailure = null
   wire.logCalls = []
   wire.statusCalls = 0
@@ -443,12 +455,16 @@ describe('GitPanel', () => {
     // suspended pod (drawn "Not a git checkout"), and the 503 it now sends is the same status an
     // offline daemon sends. Only the code separates them, so the code is what this asserts on.
     wire.gitFailure = { status: 503, code: 'WORKSPACE_SANDBOX_UNAVAILABLE' }
+    wire.wake = 'unsupported'
     await render()
 
+    // The refusal pressed the wake once, the session's own; a daemon with nothing to wake leaves the terminal copy, without Start.
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledExactlyOnceWith('agent-a', 'session-1')
     expect(text()).toContain('its pod is not running')
     expect(text()).toContain('Sandbox not running')
     expect(text()).not.toContain('daemon may be offline')
     expect(text()).not.toContain('Not a git checkout')
+    expect(text()).not.toContain('Start')
     // Still data: the tab settles and the panel stays mounted, like every other degraded answer.
     expect(verdicts.at(-1)).toEqual({ settled: true, changed: null, branch: null, tracking: null, base: null })
     expect(container?.querySelector('[data-git-panel]')).not.toBeNull()
@@ -459,6 +475,8 @@ describe('GitPanel', () => {
     await render()
     expect(text()).toContain('daemon may be offline')
     expect(text()).not.toContain('its pod is not running')
+    // Only the sleeping-sandbox code earns a press.
+    expect(vi.mocked(wakeAgent)).not.toHaveBeenCalled()
   })
 
   it('draws a clean tree as data', async () => {
@@ -898,6 +916,68 @@ describe('GitPanel — staging', () => {
 
     expect(container?.querySelector('[data-commit-box]')).toBeNull()
     expect(text()).toContain('not a git checkout')
+  })
+})
+
+// A read never wakes a pod, so a sleeping sandbox is the Files panel's story here too: one press while the tab is on screen, then the status polled until the checkout answers.
+describe('GitPanel sandbox wake', () => {
+  const asleep = { status: 503, code: 'WORKSPACE_SANDBOX_UNAVAILABLE' }
+
+  it('never presses from a hidden tab; selecting it presses the session’s own wake once', async () => {
+    // The dock keeps every panel mounted and this one polls behind other tabs, so opening a page must not start a pod.
+    wire.gitFailure = asleep
+    await render({ active: false })
+    expect(vi.mocked(wakeAgent)).not.toHaveBeenCalled()
+    expect(text()).toContain('its pod is not running')
+    expect(text()).toContain('Start')
+
+    await rerender({ active: true })
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledExactlyOnceWith('agent-a', 'session-1')
+    expect(text()).toContain('Starting the agent’s sandbox')
+    await rerender({ active: false })
+    await rerender({ active: true })
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(1)
+  })
+
+  it('says it is starting while the status is polled, and draws the checkout once the pod answers', async () => {
+    vi.useFakeTimers()
+    wire.gitFailure = asleep
+    await render()
+    expect(text()).toContain('Starting the agent’s sandbox')
+    expect(text()).not.toContain('its pod is not running')
+    const reads = wire.statusCalls
+
+    wire.gitFailure = null
+    wire.git = gitStatus({ clean: false, files: [file('src/app.ts', ' ', 'M')] })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SANDBOX_WAKE_POLL_MS[0])
+    })
+    expect(wire.statusCalls).toBe(reads + 1)
+    expect(rowPaths('changes')).toEqual(['src/app.ts'])
+    expect(text()).not.toContain('Starting the agent’s sandbox')
+    expect(verdicts.at(-1)).toMatchObject({ settled: true, changed: 1 })
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(1)
+  })
+
+  it("wakes the agent's sandbox for the primary checkout, which lives there", async () => {
+    wire.primaryFailure = asleep
+    await render({ sessionId: undefined })
+
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledExactlyOnceWith('agent-a')
+  })
+
+  it("says a session's removed sandbox in one line, with no Start and nothing pressed", async () => {
+    // Its claim is gone, so no press could bring it back; before, the agent pod being down made this read as asleep.
+    wire.gitFailure = { status: 404, code: 'WORKSPACE_SANDBOX_REMOVED' }
+    await render()
+
+    expect(text()).toContain(SESSION_SANDBOX_REMOVED_NOTICE)
+    expect(text()).not.toContain('Start')
+    expect(text()).not.toContain('its pod is not running')
+    expect(text()).not.toContain('Sandbox not running')
+    expect(text()).not.toContain('daemon may be offline')
+    expect(vi.mocked(wakeAgent)).not.toHaveBeenCalled()
+    expect(verdicts.at(-1)).toEqual({ settled: true, changed: null, branch: null, tracking: null, base: null })
   })
 })
 

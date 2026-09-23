@@ -522,7 +522,10 @@ describe('one pod per session on the plane (git-workspace-model §11)', () => {
     expect(plane.gitRunnerFor('agent-a', `/agent/sessions/${leaf}/workspace`)).toBeDefined()
     expect(plane.gitRunnerFor('agent-a', `/agent/sessions/${leaf}`)).toBeDefined()
     expect(plane.gitRunnerFor('agent-a', '/agent/checkout')).toBeUndefined()
-    expect(plane.gitRunnerFor('agent-a', `/agent/sessions/${leaf}-other/workspace`)).toBeUndefined()
+    // Another session's directory is its own pod's, which is not bound: its runner refuses rather than being served by this one.
+    await expect(
+      plane.gitRunnerFor('agent-a', `/agent/sessions/${leaf}-other/workspace`)!.raw(['status'])
+    ).rejects.toMatchObject({ name: 'WorkspaceViolationError', reason: 'sandbox-unavailable' })
     expect(plane.gitRunnerFor('agent-a')).toBeUndefined()
     const placement = plane.workspaceFsFor('agent-a')!
     expect(placement.mount).toBe('/agent')
@@ -683,21 +686,25 @@ describe('one pod per session on the plane (git-workspace-model §11)', () => {
     })
     await binding
     expect(await plane.suspendIdle(session)).toBe('suspended')
+    const resume = vi.spyOn(plane.driver, 'resumeBoundChannel')
 
     // No pod of this agent is bound: the file port still routes, and the session's root refuses as asleep, the reason the console wakes on.
     expect(plane.runsInSandbox('agent-a')).toBe(false)
     expect(plane.workspaceFsFor('agent-a')).toBeUndefined()
+    const asleep = { name: 'WorkspaceViolationError', reason: 'sandbox-unavailable' }
     await expect(
       plane.workspaceFilesFor('agent-a')!.list(sessionPath, { agentId: 'agent-a', path: '', limit: 50 })
-    ).rejects.toMatchObject({ name: 'WorkspaceViolationError', reason: 'sandbox-unavailable' })
-    expect(plane.gitRunnerFor('agent-a', sessionPath)).toBeUndefined()
+    ).rejects.toMatchObject(asleep)
+    // Git's runner refuses the same way when first used rather than being absent, so it can say removed too.
+    await expect(plane.gitRunnerFor('agent-a', sessionPath)!.raw(['status'])).rejects.toMatchObject(asleep)
     expect(await plane.clearPath('agent-a', sessionPath)).toMatch(/no bound sandbox channel/)
     // And nothing was woken behind the refusal: the claim is untouched and no launch was recorded.
+    expect(resume).not.toHaveBeenCalled()
     expect(plane.launched()).toEqual([])
     expect(cluster.claims.has(plane.driver.claimName(session))).toBe(true)
   })
 
-  it('tells a removed session sandbox apart from a sleeping one on a read, whether or not the agent pod is up', async () => {
+  it('tells a removed session sandbox apart from a sleeping one on a read and in git, whether or not the agent pod is up', async () => {
     const cluster = fakeCluster()
     const plane = await planeUnderTest(cluster as never)
     const port = shimPort(plane)
@@ -711,11 +718,21 @@ describe('one pod per session on the plane (git-workspace-model §11)', () => {
       (agentId) => plane.workspaceFilesFor(agentId)
     )
     const list = () => reader.list({ agentId: 'agent-a', path: '', limit: 50 }).catch((err: unknown) => err)
+    // The git status the dock's Git tab and the pull-request capture both send.
+    const workspaces = new WorkspaceManager()
+    wireWorkspacePlane(workspaces, plane)
+    const status = () =>
+      createWorkspaceGit(workspaces, async () => sessionPath)
+        .status('agent-a', 'outward-1')
+        .catch((err: unknown) => err)
+    const resume = vi.spyOn(plane.driver, 'resumeBoundChannel')
 
-    // Asleep: the claim stands, so the read refuses as the console wakes on, and wakes nothing.
+    // Asleep with the agent pod down: the claim stands, so the read and git refuse as the console wakes on, and wake nothing.
     await plane.driver.ensureSandbox(session)
     expect(await plane.suspendIdle(session)).toBe('suspended')
+    expect(plane.sandboxBound('agent-a')).toBe(false)
     expect(await list()).toMatchObject({ reason: 'sandbox-unavailable' })
+    expect(await status()).toMatchObject({ name: 'WorkspaceViolationError', reason: 'sandbox-unavailable' })
 
     // A workspace replacement retires the claim, its volume with it, while the session row stays.
     cluster.claims.delete(plane.driver.claimName(session))
@@ -726,24 +743,29 @@ describe('one pod per session on the plane (git-workspace-model §11)', () => {
     }
     const refusal = await list()
     expect(refusal).toMatchObject(removed)
-    // Beside a bound agent pod too, and git as well, whose runner asks when first used there.
+    // Git says so with the agent pod still down, asking the claim rather than refusing as asleep.
+    const gitRefusal = await status()
+    expect(gitRefusal).toMatchObject(removed)
+    // Beside a bound agent pod too, whose runner asks when first used there.
     const agentBinding = plane.driver.ensureBoundChannel('agent-a')
     shimAgainst(port, { workspaceRoot: '/agent', token: 'pod-agent', handle: async () => ({ ok: true, value: 'dir' }) })
     await agentBinding
     expect(await list()).toMatchObject(removed)
-    const workspaces = new WorkspaceManager()
-    wireWorkspacePlane(workspaces, plane)
-    await expect(
-      createWorkspaceGit(workspaces, async () => sessionPath).status('agent-a', 'outward-1')
-    ).rejects.toMatchObject(removed)
+    expect(await status()).toMatchObject(removed)
 
-    // It rides the wire under its own reason, never the asleep one the console would offer Start for.
-    const sendError = vi.fn()
-    workspaceError({ sendError, log: { warn: vi.fn() } } as unknown as ControlWire, 'req-1', 'workspace/list', refusal)
-    expect(sendError).toHaveBeenCalledWith('req-1', 'BAD_PAYLOAD', expect.any(String), false, {
-      reason: 'sandbox-removed'
-    })
-    // Nothing was created behind either refusal.
+    // Both ride the wire under their own reason, never the asleep one the console would offer Start for.
+    for (const [op, err] of [
+      ['workspace/list', refusal],
+      ['workspace/gitstatus', gitRefusal]
+    ] as const) {
+      const sendError = vi.fn()
+      workspaceError({ sendError, log: { warn: vi.fn() } } as unknown as ControlWire, 'req-1', op, err)
+      expect(sendError).toHaveBeenCalledWith('req-1', 'BAD_PAYLOAD', expect.any(String), false, {
+        reason: 'sandbox-removed'
+      })
+    }
+    // Nothing was resumed or created behind any refusal.
+    expect(resume).not.toHaveBeenCalled()
     expect([...cluster.claims.keys()]).toEqual(['agent-agent-a'])
     expect(plane.launched().map((launch) => launch.subject)).toEqual(['agent-a'])
   })

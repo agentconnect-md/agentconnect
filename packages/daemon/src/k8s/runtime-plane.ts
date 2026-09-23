@@ -158,7 +158,7 @@ export interface K8sRuntimePlane extends ExecutionPlane {
    *  probe reuse this pod instead of claiming a second one. A caller that arrives while a probe is
    *  already in flight awaits ITS table and its own sweep is skipped — the pod is gone by then. */
   probeRuntimes: (sweep?: ProbeSandboxSweep) => Promise<K8sRuntimeTable>
-  /** A git runner on the pod that owns the path, or undefined with no channel to it, which callers refuse; a sleeping session pod is never woken by one. */
+  /** A git runner on the pod that owns the path; an unbound session path gets one that refuses on first use as removed or asleep and wakes nothing, any other unbound path undefined, which callers refuse. */
   gitRunnerFor: (agentId: string, cwd?: string, abort?: AbortSignal) => GitRunner | undefined
   /** The console's file operations, each root on the pod that owns it and refused per call while that pod is unbound; separate from git because `read` and `exec` are separate capabilities. */
   workspaceFilesFor: (agentId: string) => WorkspaceFiles | undefined
@@ -312,18 +312,18 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     }
     return claimUid
   }
+  // Path-free: the message rides the wire to the Control Plane, and the subject already names the pod.
+  const unboundRefusal = (subject: SandboxSubject): WorkspaceViolationError =>
+    new WorkspaceViolationError(
+      `sandbox "${subject}" has no bound channel, so this workspace cannot be reached`,
+      'sandbox-unavailable'
+    )
   /** The bound session that owns `path`; a read never wakes a pod, so an unbound one refuses as `sandbox-removed` when its session claim is gone and otherwise as the `sandbox-unavailable` the console's session wake answers. */
   const sessionForPath = async (agentId: string, path: string): Promise<ShimSession> => {
     const subject = subjectForPath(agentId, path)
     const session = boundSession(subject)
     if (!session && sandboxSubjectSessionLeaf(subject) !== undefined) await sessionClaimOf(subject)
-    // Path-free: the message rides the wire to the Control Plane, and the subject already names the pod.
-    if (!session) {
-      throw new WorkspaceViolationError(
-        `sandbox "${subject}" has no bound channel, so this workspace cannot be reached`,
-        'sandbox-unavailable'
-      )
-    }
+    if (!session) throw unboundRefusal(subject)
     return session
   }
 
@@ -443,19 +443,22 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     // The driver claims the pod a host key names, so only a confined session's host hands it one; every other host shares the agent's pod (§11).
     spawnFor: ({ hostKey, confined }) => ({ driver, ...(confined() ? { hostKey } : {}) }),
     gitRunnerFor: (agentId, cwd, abort) => {
-      // No channel to the owning pod answers undefined, which the workspace manager refuses as `sandbox-unavailable`.
+      // No channel to the owning pod of a non-session path answers undefined, which the workspace manager refuses as `sandbox-unavailable`.
       const subject = subjectForPath(agentId, cwd)
       const session = boundSession(subject)
       if (session) return new ShimGitRunner(session, cwd, undefined, abort)
+      if (cwd === undefined || sandboxSubjectSessionLeaf(subject) === undefined) return undefined
       // A session directory whose pod is asleep, beside a bound agent pod: the runner is routed on first use as the path's read is, so a removed claim refuses as such, and it wakes nothing.
-      if (
-        cwd === undefined ||
-        sandboxSubjectSessionLeaf(subject) === undefined ||
-        !boundSession(agentSandboxSubject(agentId))
-      ) {
-        return undefined
+      if (boundSession(agentSandboxSubject(agentId))) {
+        return deferredGitRunner(
+          async () => new ShimGitRunner(await sessionForPath(agentId, cwd), cwd, undefined, abort)
+        )
       }
-      return deferredGitRunner(async () => new ShimGitRunner(await sessionForPath(agentId, cwd), cwd, undefined, abort))
+      // With the agent pod down too it still runs nothing, as before: it only asks the claim, so a removed session reads as removed rather than asleep, as a file read does.
+      return deferredGitRunner(async () => {
+        await sessionClaimOf(subject)
+        throw unboundRefusal(subject)
+      })
     },
     // Routed even with no pod bound, so each root refuses on its own terms: a session's can say its sandbox was removed.
     workspaceFilesFor: (agentId) =>
