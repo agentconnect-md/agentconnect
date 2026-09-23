@@ -19,10 +19,12 @@ import {
   runtimeCredentialsConfigured
 } from '../src/runtimes/runtime-credential-discovery.js'
 import { resolveQoderCredentialSources } from '../src/runtimes/runtime-credential-sources.js'
+import { fifoWriter, killFifoWriters, mkfifo, statsBeforeSwap } from './fifo-support.js'
 
 const roots: string[] = []
 
 afterEach(() => {
+  killFifoWriters()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -205,6 +207,63 @@ describe('stored runtime credential discovery', () => {
     })
   })
 
+  it.skipIf(process.platform === 'win32')(
+    'refuses a FIFO planted as Claude settings.json instead of reading what its writer sends',
+    () => {
+      const { daemonRoot, hostHome, scopeDir, cwd } = fixture()
+      const settingsPath = join(hostHome, '.claude', 'settings.json')
+      mkdirSync(join(hostHome, '.claude'))
+      mkfifo(settingsPath)
+      fifoWriter(settingsPath, JSON.stringify({ env: { ANTHROPIC_API_KEY: 'synthetic-planted' } }))
+      expect(discoverRuntimeCredentials('claude-acp', undefined, { HOME: hostHome })).toEqual({
+        paths: [],
+        providers: []
+      })
+
+      killFifoWriters()
+      fifoWriter(settingsPath, '{}')
+      expect(() =>
+        prepareRuntimeLaunch({
+          runtimeId: 'claude-acp',
+          scopeDir,
+          cwd,
+          daemonRoot,
+          runInSandbox: true,
+          sandboxMechanism: 'bwrap',
+          credentialPlatform: 'linux',
+          hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+        })
+      ).toThrow(/settings\.json is not a regular file/)
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'does not count a Claude login streamed through a FIFO swapped in after the check',
+    () => {
+      const { hostHome } = fixture()
+      const configDir = join(hostHome, '.claude')
+      mkdirSync(configDir)
+      const regular = join(hostHome, 'regular.json')
+      writeFileSync(regular, '{"theme":"dark"}')
+      // A runtime-created `.config.json` becomes the global config; the shared config dir is sandbox-writable on Linux.
+      const credential = join(configDir, '.credentials.json')
+      const legacy = join(configDir, '.config.json')
+      mkfifo(credential)
+      mkfifo(legacy)
+      fifoWriter(credential, JSON.stringify({ claudeAiOauth: { accessToken: 'synthetic-planted' } }))
+      fifoWriter(legacy, JSON.stringify({ primaryApiKey: 'synthetic-planted' }))
+      const restore = statsBeforeSwap([credential, legacy], regular)
+      try {
+        expect(discoverRuntimeCredentials('claude-acp', undefined, { HOME: hostHome })).toEqual({
+          paths: [],
+          providers: []
+        })
+      } finally {
+        restore()
+      }
+    }
+  )
+
   it('recognizes Codex file login and respects CODEX_HOME without falling back to another login', () => {
     const { hostHome } = fixture()
     const defaultDir = join(hostHome, '.codex')
@@ -366,6 +425,39 @@ describe('Linux shared runtime login', () => {
     expect(second.env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(sharedDir)
     expect(readFileSync(join(sharedDir, '.credentials.json'), 'utf8')).toContain('refreshed')
   })
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses a private Claude credential swapped for a FIFO after its lstat instead of comparing what it sends',
+    () => {
+      const { daemonRoot, hostHome, scopeDir, cwd } = fixture()
+      const hostClaude = join(hostHome, '.claude')
+      const privateClaude = join(scopeDir, 'home', '.claude')
+      mkdirSync(hostClaude)
+      mkdirSync(privateClaude, { recursive: true })
+      const login = '{"claudeAiOauth":{"expiresAt":1,"accessToken":"host"}}'
+      writeFileSync(join(hostClaude, '.credentials.json'), login)
+      const privateCredential = join(privateClaude, '.credentials.json')
+      mkfifo(privateCredential)
+      fifoWriter(privateCredential, login)
+      const restore = statsBeforeSwap([privateCredential], join(hostClaude, '.credentials.json'))
+      try {
+        expect(() =>
+          prepareRuntimeLaunch({
+            runtimeId: 'claude-acp',
+            scopeDir,
+            cwd,
+            daemonRoot,
+            runInSandbox: true,
+            sandboxMechanism: 'bwrap',
+            credentialPlatform: 'linux',
+            hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+          })
+        ).toThrow(/\.credentials\.json is not a regular file/)
+      } finally {
+        restore()
+      }
+    }
+  )
 
   it('follows a Claude settings secure-storage directory without moving the default credential', () => {
     const { daemonRoot, hostHome, scopeDir, cwd } = fixture()

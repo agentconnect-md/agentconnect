@@ -1,6 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync, symlinkSync, rmSync } from 'node:fs'
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+  symlinkSync,
+  rmSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
@@ -12,6 +22,7 @@ import {
   type WorkspaceWriteCoordinator
 } from '../src/cp/workspace-reader.js'
 import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
+import { fifoWriter, killFifoWriters, mkfifo, statsBeforeSwap } from './fifo-support.js'
 
 // One plane per test file — the isolation Vitest's per-file module registry used to give.
 const workspaces = new WorkspaceManager()
@@ -74,6 +85,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  killFifoWriters()
   rmSync(base, { recursive: true, force: true })
 })
 
@@ -284,6 +296,32 @@ describe('workspace read', () => {
         name: 'WorkspaceViolationError',
         reason: 'not-a-file'
       })
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses a FIFO swapped in after the lstat, on read and on edit, instead of waiting for its writer',
+    async () => {
+      const regular = join(outside, 'regular.txt')
+      writeFileSync(regular, 'hello')
+      const target = join(ws, 'notes.txt')
+      mkfifo(target)
+      fifoWriter(target, 'planted')
+      const restore = statsBeforeSwap([target], regular)
+      try {
+        await expect(reader.read(readReq('notes.txt'))).rejects.toMatchObject({
+          name: 'WorkspaceViolationError',
+          reason: 'not-a-file'
+        })
+        const mtime = statSync(regular).mtime.toISOString()
+        await expect(reader.write(writeReq('notes.txt', 'edited', mtime))).rejects.toMatchObject({
+          name: 'WorkspaceViolationError',
+          reason: 'not-a-file'
+        })
+      } finally {
+        restore()
+      }
+      expect(lstatSync(target).isFIFO()).toBe(true)
     }
   )
 

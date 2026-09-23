@@ -24,7 +24,8 @@ export class MissingPathError extends Error {
 }
 
 const DIR_FLAGS = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
-const FILE_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW
+// O_NONBLOCK: a FIFO planted after the caller's lstat opens at once and is refused, instead of parking the open.
+const FILE_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
 
 function errno(err: unknown): string | undefined {
   return (err as NodeJS.ErrnoException | null)?.code
@@ -106,14 +107,23 @@ export class DirHandle {
     return await this.childDir(name)
   }
 
-  /** Open one child file, refusing a symlink. The caller closes it. */
+  /** Open one child regular file, refusing a symlink, FIFO or device. The caller closes it. */
   async childFile(name: string): Promise<FileHandle> {
     assertComponent(name)
+    let handle: FileHandle
     try {
-      return await fs.open(join(this.fdPath(), name), FILE_FLAGS)
+      handle = await fs.open(join(this.fdPath(), name), FILE_FLAGS)
     } catch (err) {
       throw classify(err, `"${name}"`)
     }
+    let regular = false
+    try {
+      regular = (await handle.stat()).isFile()
+    } finally {
+      if (!regular) await handle.close().catch(() => undefined)
+    }
+    if (!regular) throw new UnsafePathError(`"${name}" is not a regular file`, 'EINVAL')
+    return handle
   }
 
   /**

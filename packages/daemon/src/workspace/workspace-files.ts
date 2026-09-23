@@ -45,6 +45,7 @@ import type {
 } from '@agentconnect.md/protocol'
 import { MAX_WORKSPACE_EDIT_BYTES } from '@agentconnect.md/protocol'
 import { REPLY_BUDGET, encodedBytes, utf8Boundary, fitToBudget } from '../wire-slice.js'
+import { openRegularFile, RegularFileError } from '../fs/regular-file.js'
 
 /** Bytes sniffed from the head of a file for binary (NUL byte) detection. */
 const SNIFF_BYTES = 8192
@@ -204,6 +205,16 @@ async function canonicalUnder(realRoot: string, abs: string): Promise<string> {
   return canon
 }
 
+/** Open a target a runtime may have swapped since its lstat; a FIFO, device or symlink is a violation, not a read. */
+async function openWorkspaceFile(target: string): ReturnType<typeof openRegularFile> {
+  try {
+    return await openRegularFile(target)
+  } catch (err) {
+    if (err instanceof RegularFileError) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
+    throw err
+  }
+}
+
 /** Create any missing parent directories one component at a time. Existing
  * components must be real directories; every step is re-canonicalised under
  * the workspace root before the next component is touched. */
@@ -358,9 +369,9 @@ export const localWorkspaceFiles: WorkspaceFiles = {
       }
     }
 
-    const size = st.size
-    const mtime = st.mtime.toISOString()
-    const fh = await fs.open(target, 'r')
+    const { handle: fh, stat: opened } = await openWorkspaceFile(target)
+    const size = opened.size
+    const mtime = opened.mtime.toISOString()
     try {
       // Binary detection: NUL byte anywhere in the first 8 KiB ⇒ no content.
       const sniffLen = Math.min(SNIFF_BYTES, size)
@@ -471,7 +482,7 @@ export const localWorkspaceFiles: WorkspaceFiles = {
 
     // Match the read path's binary guard. The editor never turns a binary file
     // into text merely because a caller bypassed the console UI.
-    const fh = await fs.open(target, 'r')
+    const { handle: fh } = await openWorkspaceFile(target)
     try {
       const sniffLen = Math.min(SNIFF_BYTES, initial.size)
       if (sniffLen > 0) {

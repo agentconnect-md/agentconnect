@@ -1,7 +1,8 @@
-import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve, sep } from 'node:path'
 import type { RuntimeDef } from '../config/config-schema.js'
+import { readRegularFileSync } from '../fs/regular-file.js'
 
 export type SharedCredentialProfile = 'claude' | 'codex' | 'qoder' | 'qoder-cn'
 
@@ -122,10 +123,19 @@ function object(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
 }
 
+const MAX_CREDENTIAL_FILE_BYTES = 2 * 1024 * 1024
+
 function claudeSettingsEnv(configDir: string): Record<string, unknown> | undefined {
   const settingsPath = join(configDir, 'settings.json')
-  if (!existsSync(settingsPath)) return undefined
-  const settings = JSON.parse(readFileSync(settingsPath, 'utf8')) as unknown
+  let raw: string
+  try {
+    // The config dir is a sandbox write root on Linux, so a runtime can put a FIFO here.
+    raw = readRegularFileSync(settingsPath, MAX_CREDENTIAL_FILE_BYTES, { followSymlinks: true }).toString('utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
+  }
+  const settings = JSON.parse(raw) as unknown
   if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
     throw new Error(`Claude settings must contain a JSON object: ${settingsPath}`)
   }
@@ -145,10 +155,10 @@ function hasText(value: unknown): boolean {
   return typeof value === 'string' && value.trim().length > 0
 }
 
-function credentialFilePresent(path: string, followSymlinks = true): boolean {
+function credentialFilePresent(path: string): boolean {
   try {
-    const stat = followSymlinks ? statSync(path) : lstatSync(path)
-    return stat.isFile() && stat.size > 0 && stat.size <= 2 * 1024 * 1024
+    const stat = statSync(path)
+    return stat.isFile() && stat.size > 0 && stat.size <= MAX_CREDENTIAL_FILE_BYTES
   } catch {
     return false
   }
@@ -156,7 +166,7 @@ function credentialFilePresent(path: string, followSymlinks = true): boolean {
 
 function credentialObject(path: string, followSymlinks = true): Record<string, unknown> {
   try {
-    return credentialFilePresent(path, followSymlinks) ? object(JSON.parse(readFileSync(path, 'utf8'))) : {}
+    return object(JSON.parse(readRegularFileSync(path, MAX_CREDENTIAL_FILE_BYTES, { followSymlinks }).toString('utf8')))
   } catch {
     return {}
   }

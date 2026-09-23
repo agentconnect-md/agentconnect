@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DirHandle, MissingPathError, UnsafePathError, withDescent } from '../src/shim/safe-descent.js'
+import { fifoWriter, killFifoWriters, mkfifo } from './fifo-support.js'
 
 /**
  * The descent that holds inodes instead of names.
@@ -28,6 +29,7 @@ const linux = process.platform === 'linux'
 const roots: string[] = []
 
 afterEach(() => {
+  killFifoWriters()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -97,6 +99,16 @@ describe.skipIf(!linux)('withDescent', () => {
     symlinkSync(join(mount, 'PROVIDER_SECRET.env'), join(checkout, 'sneaky.env'))
     await withDescent(mount, ['repo'], async (dir) => {
       await expect(dir.childFile('sneaky.env')).rejects.toMatchObject({ code: 'ELOOP' })
+    })
+  })
+
+  it('refuses a FIFO leaf at once, where a blocking open would wait for a writer and hand back the pipe', async () => {
+    const { mount, checkout } = volume()
+    // Planted after a caller's lstat saw a file; only the opened descriptor can tell.
+    mkfifo(join(checkout, 'notes.md'))
+    fifoWriter(join(checkout, 'notes.md'), 'planted')
+    await withDescent(mount, ['repo'], async (dir) => {
+      await expect(dir.childFile('notes.md')).rejects.toBeInstanceOf(UnsafePathError)
     })
   })
 

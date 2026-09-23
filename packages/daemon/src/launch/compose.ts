@@ -1,17 +1,10 @@
-import {
-  chmodSync,
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync
-} from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { prepareRuntimeLaunch, type PreparedRuntimeLaunch } from './prepare.js'
+import { readRegularFileSync } from '../fs/regular-file.js'
+import { MAX_SEED_FILE_BYTES } from '../runtimes/runtime-seeded-credentials.js'
 import type { SandboxMechanism } from '../acp/sandbox.js'
 import type { HostKey } from '../acp/host-key.js'
 import {
@@ -114,9 +107,16 @@ function sanitizeHermesConfig(scopeDir: string, launch: PreparedRuntimeLaunch): 
   const path = join(hermesHome, 'config.yaml')
   assertGeneratedDestination(scopeDir, path)
 
+  let raw: string | undefined
+  try {
+    // HERMES_HOME is inside the runtime HOME, which the runtime can write: refuse a FIFO rather than wait on it.
+    raw = readRegularFileSync(path, MAX_SEED_FILE_BYTES).toString('utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
   let config: Record<string, unknown> = {}
-  if (existsSync(path)) {
-    const parsed = parseYaml(readFileSync(path, 'utf8')) as unknown
+  if (raw !== undefined) {
+    const parsed = parseYaml(raw) as unknown
     if (parsed !== null && !isObject(parsed)) throw new Error('Hermes config.yaml must contain a YAML object')
     config = parsed ?? {}
   }

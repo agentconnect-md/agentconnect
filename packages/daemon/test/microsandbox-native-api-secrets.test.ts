@@ -3,6 +3,8 @@ import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, w
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { prepareMicrosandboxLaunch } from '../src/microsandbox/launch.js'
+import { prepareClaudeApiSecret } from '../src/microsandbox/native-api-secrets.js'
+import { fifoWriter, killFifoWriters, mkfifo, statsBeforeSwap } from './fifo-support.js'
 
 const roots: string[] = []
 const key = 'fixture-native-api-key'
@@ -32,8 +34,31 @@ function fixture(runtimeId: 'claude-acp' | 'codex-acp') {
 }
 
 afterEach(() => {
+  killFifoWriters()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
+
+it.skipIf(process.platform === 'win32')(
+  'refuses a Claude global config swapped for a FIFO after its stat instead of protecting what it sends',
+  () => {
+    const { hostHome } = fixture('claude-acp')
+    mkdirSync(join(hostHome, '.claude'))
+    const regular = join(hostHome, 'regular.json')
+    writeFileSync(regular, '{}')
+    // A runtime-created `.config.json` in the shared config dir becomes the global config.
+    const legacy = join(hostHome, '.claude', '.config.json')
+    mkfifo(legacy)
+    fifoWriter(legacy, JSON.stringify({ primaryApiKey: 'synthetic-planted' }))
+    const restore = statsBeforeSwap([legacy], regular)
+    try {
+      expect(() => prepareClaudeApiSecret({ HOME: hostHome }, {})).toThrow(
+        /Cannot read the host runtime API credential/
+      )
+    } finally {
+      restore()
+    }
+  }
+)
 
 describe.skipIf(process.platform !== 'linux')('microsandbox native file API credentials', () => {
   it.each(['default', 'relocated', 'legacy'])(

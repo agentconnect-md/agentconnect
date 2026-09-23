@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   chmodSync,
   existsSync,
@@ -25,6 +25,9 @@ import { runtimeMemoryCapabilities } from '../src/memory/runtime/capabilities.js
 import { MemoryProviderUnavailableError } from '../src/memory/provider.js'
 import { normalizeSandboxMounts } from '../src/runtimes/read-roots.js'
 import type { RuntimeDef } from '../src/config/config-schema.js'
+import { fifoWriter, killFifoWriters, mkfifo } from './fifo-support.js'
+
+afterEach(killFifoWriters)
 
 function fixture(): { scopeDir: string; cwd: string; hostHome: string } {
   const root = mkdtempSync(join(tmpdir(), 'ac-runtime-launch-'))
@@ -1396,6 +1399,26 @@ describe('composeRuntimeLaunch', () => {
       memory: { memory_enabled: false, user_profile_enabled: false, provider: '' }
     })
     expect(statSync(join(privateHermes, 'config.yaml')).mode & 0o777).toBe(0o600)
+  })
+
+  it('refuses a FIFO planted as the private Hermes config instead of merging what it sends', () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const config = join(scopeDir, 'home', '.hermes', 'config.yaml')
+    mkdirSync(dirname(config), { recursive: true })
+    mkfifo(config)
+    fifoWriter(config, 'model: planted\n')
+
+    expect(() =>
+      composeRuntimeLaunch({
+        runtimeId: 'hermes-agent',
+        runtime: runtime('hermes'),
+        provider: 'managed',
+        scopeDir,
+        cwd,
+        hostEnv: { HOME: hostHome, PATH: '/usr/bin' },
+        runInSandbox: false
+      })
+    ).toThrow(/config\.yaml is not a regular file/)
   })
 
   it('applies the Hermes policy to the legacy id even through an opaque wrapper', () => {
