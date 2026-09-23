@@ -15075,26 +15075,14 @@ export class Daemon {
     )
     // Fence every busy process before the first await, so a turn settling meanwhile cannot start a follow-up on it.
     const retirements = [...busy].map(([owner, turns]) => this.retireHostWhenIdle(agentId, owner, turns))
-    const idleConversations = this.webchatGrantConversations(agentId, (owner) => !busy.has(owner))
-    const busyModelSessions = new Set<string>()
-    for (const owner of busy.keys()) {
-      const sessionKey = hostKeySessionKey(owner)
-      if (sessionKey !== undefined && this.modelSessions.has(sessionKey)) busyModelSessions.add(sessionKey)
-    }
-    for (const key of this.hostKeysForAgent(agentId)) {
-      if (busy.has(key) || this.retiringHosts.has(key)) continue
-      try {
-        await this.stopHostByKey(key)
-      } catch (err) {
-        this.log.error(`reconcile: host teardown failed for "${agentId}" (${key}): ${formatErr(err)}`)
-      }
-    }
-    try {
-      await this.modelSessions.releaseForAgent(agentId, undefined, busyModelSessions)
-    } catch (err) {
-      this.log.error(`reconcile: model-session teardown failed for "${agentId}": ${formatErr(err)}`)
-    }
-    await this.webchatMcpRevocations.revokeRemoteWebchatConversations(idleConversations, 'agent_detached')
+    // Retiring from this change or an earlier one: each such process stops and revokes on its own retirement.
+    const retiring = new Set(this.retiringHosts.keys())
+    const idleConversations = this.webchatGrantConversations(agentId, (owner) => !retiring.has(owner))
+    const idleCleanup = this.stopIdleHosts(agentId, retiring, idleConversations)
+    // Hold an idle process's conversations until their grants are revoked, so no successor reuses a doomed grant.
+    for (const owner of new Set(idleConversations.map((id) => this.webchatGrantOwner(agentId, id))))
+      this.holdHostUntil(owner, idleCleanup)
+    await idleCleanup
     for (const key of starting) {
       await this.interruptTurn(agentId, key, 'stop', undefined, {
         dropQueued: true,
@@ -15107,10 +15095,49 @@ export class Daemon {
     })
   }
 
+  /** Stop the agent's processes outside `retiring`, then revoke the grants of `conversations`. Never throws. */
+  private async stopIdleHosts(agentId: string, retiring: ReadonlySet<HostKey>, conversations: string[]): Promise<void> {
+    const retiringModelSessions = new Set<string>()
+    for (const owner of retiring) {
+      const sessionKey = hostKeySessionKey(owner)
+      if (sessionKey !== undefined && this.modelSessions.has(sessionKey)) retiringModelSessions.add(sessionKey)
+    }
+    for (const key of this.hostKeysForAgent(agentId)) {
+      if (retiring.has(key)) continue
+      try {
+        await this.stopHostByKey(key)
+      } catch (err) {
+        this.log.error(`reconcile: host teardown failed for "${agentId}" (${key}): ${formatErr(err)}`)
+      }
+    }
+    try {
+      await this.modelSessions.releaseForAgent(agentId, undefined, retiringModelSessions)
+    } catch (err) {
+      this.log.error(`reconcile: model-session teardown failed for "${agentId}": ${formatErr(err)}`)
+    }
+    await this.webchatMcpRevocations.revokeRemoteWebchatConversations(conversations, 'agent_detached')
+  }
+
+  /** Hold turns bound for `owner` until `until` settles, as a retirement with no turns of its own. */
+  private holdHostUntil(owner: HostKey, until: Promise<void>): void {
+    const record: HostRetirement = {
+      entries: new Set(),
+      retired: until.finally(() => {
+        if (this.retiringHosts.get(owner) === record) this.retiringHosts.delete(owner)
+      })
+    }
+    this.retiringHosts.set(owner, record)
+  }
+
+  /** The runtime process that serves `conversationId`'s webchat session of `agentId`. */
+  private webchatGrantOwner(agentId: string, conversationId: string): HostKey {
+    return this.sessionOwnerKey(agentId, this.webchatTransport.webchatSessionKey(conversationId, agentId))
+  }
+
   /** Conversations holding a remote webchat grant of `agentId` whose runtime process `pick` selects. */
   private webchatGrantConversations(agentId: string, pick: (owner: HostKey) => boolean): string[] {
     return (this.remoteWebchatGrants?.conversationsForAgent(agentId) ?? []).filter((conversationId) =>
-      pick(this.sessionOwnerKey(agentId, this.webchatTransport.webchatSessionKey(conversationId, agentId)))
+      pick(this.webchatGrantOwner(agentId, conversationId))
     )
   }
 

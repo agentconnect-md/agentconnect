@@ -422,6 +422,105 @@ describe('config change respawn', () => {
     }
   })
 
+  it('keeps a process still retiring from an earlier change out of the idle cleanup of the next one', async () => {
+    const old = blockingHost('old')
+    const fresh = answeringHost('new')
+    const root = scaffold()
+    const daemon = await boot(root, [old.host, fresh.host])
+    vi.spyOn(daemon as any, 'hostKeyFor').mockImplementation((agentId: any, key: any) => sessionHostKey(agentId, key))
+    const revoked: string[] = []
+    ;(daemon as any).remoteWebchatGrants = {
+      conversationsForAgent: () => (revoked.includes(CONV) ? [] : [CONV]),
+      revokeConversation: vi.fn(async (id: string) => void revoked.push(id)),
+      revokeAll: vi.fn(async () => {})
+    }
+    const sink = { output: () => {}, done: () => {} }
+
+    try {
+      await (daemon as any).webchatTransport.dispatchWebchatTurn(
+        AGENT_ID,
+        CONV,
+        'long question',
+        { id: 'alice', name: 'alice' },
+        sink
+      )
+      await vi.waitFor(() => expect(old.host.prompt).toHaveBeenCalledTimes(1), WAIT)
+      updateAgent(root, { description: 'be terse' })
+      await daemon.reconcile()
+      // A second change lands while the first is still draining the same process.
+      updateAgent(root, { description: 'be brief' })
+      await daemon.reconcile()
+      expect(revoked).toEqual([])
+      expect(old.host.stop).not.toHaveBeenCalled()
+      expect(old.host.cancel).not.toHaveBeenCalled()
+
+      old.release()
+      await vi.waitFor(() => expect(old.host.stop).toHaveBeenCalledTimes(1), WAIT)
+      await vi.waitFor(() => expect(revoked).toEqual([CONV]), WAIT)
+    } finally {
+      old.release()
+      await daemon.stop()
+    }
+  })
+
+  it('holds a turn for an idle process until the grant of that process is revoked', async () => {
+    const busy = blockingHost('busy')
+    const idle = answeringHost('idle')
+    const fresh = answeringHost('new')
+    const root = scaffold()
+    const daemon = await boot(root, [busy.host, idle.host, fresh.host])
+    vi.spyOn(daemon as any, 'hostKeyFor').mockImplementation((agentId: any, key: any) => sessionHostKey(agentId, key))
+    let finishRevoke!: () => void
+    const revokeDone = new Promise<void>((resolve) => (finishRevoke = resolve))
+    ;(daemon as any).remoteWebchatGrants = {
+      conversationsForAgent: () => [CONV],
+      revokeConversation: vi.fn(() => revokeDone),
+      revokeAll: vi.fn(async () => {})
+    }
+    const dones: Array<{ stopReason?: string }> = []
+    const sink = { output: () => {}, done: (event: { stopReason?: string }) => dones.push(event) }
+    const running = (daemon as any).dispatch(AGENT_ID, msg('100', 'long question', 'T1'), 'int-a')
+
+    try {
+      await vi.waitFor(() => expect(busy.host.prompt).toHaveBeenCalledTimes(1), WAIT)
+      // An earlier conversation, answered and idle on a process of its own.
+      await (daemon as any).webchatTransport.dispatchWebchatTurn(
+        AGENT_ID,
+        CONV,
+        'first',
+        { id: 'alice', name: 'alice' },
+        sink
+      )
+      await vi.waitFor(() => expect(dones).toHaveLength(1), WAIT)
+
+      updateAgent(root, { description: 'be terse' })
+      const reconciled = daemon.reconcile()
+      await vi.waitFor(() => expect(idle.host.stop).toHaveBeenCalledTimes(1), WAIT)
+      await vi.waitFor(() => expect((daemon as any).remoteWebchatGrants.revokeConversation).toHaveBeenCalled(), WAIT)
+
+      // Its next message must not start before the old grant is gone.
+      await (daemon as any).webchatTransport.dispatchWebchatTurn(
+        AGENT_ID,
+        CONV,
+        'second',
+        { id: 'alice', name: 'alice' },
+        sink
+      )
+      await vi.waitFor(() => expect((daemon as any).respawnHeldEntries.size).toBe(1), WAIT)
+      expect(fresh.host.prompt).not.toHaveBeenCalled()
+
+      finishRevoke()
+      await reconciled
+      await vi.waitFor(() => expect(fresh.prompts).toEqual([expect.stringContaining('second')]), WAIT)
+      expect(busy.host.cancel).not.toHaveBeenCalled()
+    } finally {
+      finishRevoke()
+      busy.release()
+      await Promise.allSettled([running])
+      await daemon.stop()
+    }
+  })
+
   it('tells a turn cut while still starting up that it will be picked up again, and replays it', async () => {
     const stuck = stuckStartHost()
     const fresh = answeringHost('new')
