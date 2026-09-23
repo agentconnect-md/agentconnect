@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { delimiter } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { cliCommand, detectInvocation, setInvocation } from '../src/invocation.js'
 
 const ENTRY = '/opt/node/lib/node_modules/@agentconnect.md/cli/dist/index.js'
 const NPX_ENTRY = '/home/agent/.npm/_npx/0123abcd/node_modules/@agentconnect.md/cli/dist/index.js'
 
-/** A fake filesystem: each PATH bin maps to what it resolves to; the entry resolves to itself. */
+/** A fake filesystem keyed by host-flavored paths, as detection builds them with `node:path`; the entry resolves to itself. */
 const resolver = (bins: Record<string, string>) => (p: string) =>
   p in bins ? bins[p] : p === ENTRY ? ENTRY : undefined
 
@@ -17,7 +17,7 @@ describe('detectInvocation', () => {
   })
 
   it('suggests the bare bin when the PATH copy is this very CLI', () => {
-    const realpath = resolver({ '/opt/node/bin/agentconnect': ENTRY })
+    const realpath = resolver({ [join('/opt/node/bin', 'agentconnect')]: ENTRY })
     const path = ['/usr/bin', '/opt/node/bin'].join(delimiter)
     expect(detectInvocation({ cliEntry: ENTRY, version: '1.60.0', path, platform: 'linux', realpath })).toBe(
       'agentconnect'
@@ -25,7 +25,7 @@ describe('detectInvocation', () => {
   })
 
   it('names the entry when the first PATH agentconnect is a different install', () => {
-    const realpath = resolver({ '/usr/local/bin/agentconnect': '/usr/local/lib/other/dist/index.js' })
+    const realpath = resolver({ [join('/usr/local/bin', 'agentconnect')]: '/usr/local/lib/other/dist/index.js' })
     const path = ['/usr/local/bin', '/opt/node/bin'].join(delimiter)
     expect(detectInvocation({ cliEntry: ENTRY, version: '1.60.0', path, platform: 'linux', realpath })).toBe(
       `node ${ENTRY}`
