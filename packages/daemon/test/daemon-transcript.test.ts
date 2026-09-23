@@ -696,6 +696,10 @@ describe('Daemon transcript records the agent reply', () => {
     // The interim segment reached the stream as one complete card — on the coalesced append or
     // on the settle, whichever the timing chose — and the container closed on a reply count.
     await vi.waitFor(() => expect(streaming.settleAndStop).toHaveBeenCalledTimes(1), WAIT)
+    // The container was created BEFORE the answer posted, so it sits above the reply it precedes.
+    expect(streaming.startTurnStream.mock.invocationCallOrder[0]).toBeLessThan(
+      conn.postMessage.mock.invocationCallOrder[0] ?? Infinity
+    )
     const chunks = [
       ...streaming.appendTurnStream.mock.calls.flatMap((call) => call[1]),
       ...streaming.settleAndStop.mock.calls.flatMap((call) => call[1])

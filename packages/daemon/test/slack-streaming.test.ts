@@ -310,6 +310,28 @@ describe('OutputConverger streaming axis', () => {
     ])
   })
 
+  it('opens a late stream before the body it precedes, and settles an open one after it', () => {
+    // Same rule on medium/high: a tool that ran inside one coalescing window has no container yet
+    // when the answer is ready, so the settle that opens it goes first. An open stream keeps
+    // today's order — body, then the stop.
+    const late = streaming('medium')
+    late.onUpdate(toolDone('t1', 'Read file', 'read 42 lines'))
+    late.onUpdate(chunk('the answer'))
+    expect(kinds(late.onFinal(attribution()))).toEqual([
+      'stream-start',
+      'stream-stop',
+      'post',
+      'set-status',
+      'attribution'
+    ])
+
+    const open = streaming('medium')
+    open.onUpdate(toolDone('t1', 'Read file', 'read 42 lines'))
+    open.streamUpdate()
+    open.onUpdate(chunk('the answer'))
+    expect(kinds(open.onFinal(attribution()))).toEqual(['post', 'set-status', 'attribution', 'stream-stop'])
+  })
+
   it('settles exactly once per turn, whichever seam gets there first', () => {
     const converger = streaming('medium')
     converger.onUpdate(tool('t1', 'Read file'))
@@ -705,6 +727,31 @@ describe('OutputConverger minimal mode — interim replies as history cards (§5
     // The answer never rides the stream; the settle only relabels the container by what it holds.
     expect(cards(final)).toEqual([])
     expect(appends(final)).toEqual([{ type: 'plan_update', title: '1 earlier reply' }])
+  })
+
+  it('creates a history container that is still pending BEFORE the final post, so it lands above the answer', () => {
+    // A short narrated tool turn ends inside the 750 ms window: nothing was appended and no stream
+    // is open when the answer is ready. The late open must precede the post — Slack orders the
+    // thread by ts, so an answer posted first would sit above the history it is supposed to follow.
+    const converger = streaming('minimal')
+    converger.onUpdate(chunk('Looking into it.'))
+    converger.onUpdate(tool('t1', 'Read file'))
+    converger.onUpdate(chunk('Fixed.'))
+    const final = converger.onFinal(attribution())
+    expect(kinds(final)).toEqual(['stream-start', 'stream-stop', 'post', 'set-status', 'attribution'])
+    expect(final[1]).toEqual({
+      kind: 'stream-stop',
+      settle: [
+        { type: 'task_update', id: 'reply-1', title: 'Looking into it.', status: 'complete' },
+        { type: 'plan_update', title: '1 earlier reply' }
+      ]
+    })
+    // A crashed turn keeps the same order for its partial body.
+    const crashed = streaming('minimal')
+    crashed.onUpdate(chunk('Looking into it.'))
+    crashed.onUpdate(tool('t1', 'Read file'))
+    crashed.onUpdate(chunk('partial'))
+    expect(kinds(crashed.flushTerminal())).toEqual(['stream-start', 'stream-stop', 'post'])
   })
 
   it('counts the closing label in replies, not steps', () => {

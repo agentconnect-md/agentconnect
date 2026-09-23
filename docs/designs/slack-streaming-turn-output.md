@@ -66,7 +66,9 @@ turn that runs no tools never calls `chat.startStream` and produces exactly the 
 today — which is why this is safe without a flag: the population it can affect is exactly the
 population that would have seen a `progress` message. The terminal settle opens one too when the
 turn's only tool ran and finished inside a single coalescing window, or such a turn would end with
-no chrome at all.
+no chrome at all — and that late open is emitted BEFORE the final body post, so the container is
+created above the answer it precedes (Slack orders a thread by ts). A stream already open settles
+after the body, as the stop always did.
 
 **Cadence.** All calls ride the connection's single `PlatformSendQueue`, one enqueue each, never
 calling another from inside a queued task (Layer 0's `setStatus` → `setSessionLifecycle` comment is

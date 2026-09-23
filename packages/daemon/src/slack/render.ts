@@ -2549,7 +2549,10 @@ export class OutputConverger {
     // BECAUSE the turn died, so those cards are honestly `error` under a "Failed" label — while
     // steps that already finished keep their state, (failed)-prefixed ones included. The ⚠️
     // notice the caller appends still carries the reason in the body.
-    return [...this.drainReasoning(), ...this.flush(), ...this.settleStream('failed')]
+    const opensLate = !this.streamOpened
+    const settle = this.settleStream('failed')
+    const body = [...this.drainReasoning(), ...this.flush()]
+    return opensLate ? [...settle, ...body] : [...body, ...settle]
   }
 
   /** minimal: close an interim reply segment — a history card on the chrome stream for the
@@ -2888,13 +2891,12 @@ export class OutputConverger {
     // block posts above the reply — thinking precedes the answer (§9.1), so it must sit
     // above it, not below (only high mode ever has reasoning to drain).
     const reasoning = this.drainReasoning()
-    return [
-      ...reasoning,
-      ...this.markTerminalPost(this.flush()),
-      clear,
-      ...attribution,
-      ...this.settleStream('completed')
-    ]
+    // A settle that must still OPEN the stream goes before the body, so the container is created
+    // above the answer it precedes (§6); a stream already open settles after the body, as before.
+    const opensLate = !this.streamOpened
+    const settle = this.settleStream('completed')
+    const body = [...this.markTerminalPost(this.flush()), clear, ...attribution]
+    return opensLate ? [...reasoning, ...settle, ...body] : [...reasoning, ...body, ...settle]
   }
 
   /** onFinal only: flag the last delivered body section as this response's terminal post,
