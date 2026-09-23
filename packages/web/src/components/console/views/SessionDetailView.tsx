@@ -61,6 +61,7 @@ import {
   mergeSessionDetailUsage,
   sessionFromDto,
   sessionFromDetailDto,
+  wakeAgent,
   type SessionProfileProvider,
   type SessionDetailDto,
   type SessionMessageDto,
@@ -3059,6 +3060,12 @@ export default function SessionDetailView() {
     MOCK_MODE || !session || (syntheticPlayground && !session.realSessionId)
       ? null
       : (session.realSessionId ?? session.id)
+  // An isolated session's own wake, with its own agent; the panel presses it only when the read says this session's arm places the watcher.
+  const prSessionIsolation =
+    currentSessionDetail && currentSessionDetail.id === prSessionId
+      ? currentSessionDetail.workspaceIsolation
+      : session?.workspaceIsolation
+  const prWakeAgentId = prSessionId !== null && prSessionIsolation === 'session' ? session?.agentId : undefined
   // While this page is open and on screen, hold the agent's sandbox against the daemon's idle sweep —
   // but only for what the DAEMON finds worth holding (uncommitted files in this session's worktree, an
   // armed merge-when-ready watcher). A lease with nothing to release: closing the page stops the
@@ -6074,6 +6081,7 @@ export default function SessionDetailView() {
               // Both write actions ride the LIVE composer path (§5.2) behind the composer's OWN availability fence: a hook session has no composer, and a persisted webchat under `resumeDisabled` (agent moved, resume check pending) deliberately renders the composer inert — this callback must not exist as a way around that.
               // And NOT in a multi-agent conversation: this send carries no @mention, so the relay applies its all-participants default (see `onPgSend`) and every participant would run the turn — three agents each publishing their own worktree and opening their own pull request for one ask. The panel is session-keyed and holds no agent identity to narrow to, so the honest answer is to withhold both actions here; the composer's own mention chips are the surface for asking ONE agent.
               {...(isLive && !resumeDisabled && !multiLive ? { onPostTurn: (text: string) => onPgSend(text) } : {})}
+              {...(prWakeAgentId ? { wakeSandbox: () => wakeAgent(prWakeAgentId, prSessionId) } : {})}
               onVerdictChange={setPrVerdict}
             />
           ) : null}

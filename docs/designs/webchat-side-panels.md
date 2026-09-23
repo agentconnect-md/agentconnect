@@ -176,6 +176,12 @@ an automatic read while one of its OWN writes is in flight — that write answer
 with the fresh status, and a read racing it would land the pre-write tree over
 the reply.
 
+A sleeping sandbox is drawn by the Git tab the way the Files tab draws it. While
+the tab is on screen it presses the wake of the checkout it reads (a session's own
+for a session worktree) and says it is starting while its status is polled; a
+hidden Git tab keeps polling but never presses. A session whose own sandbox was
+removed gets the same one line, with no Start.
+
 Which turn: the workspace panels follow HEADER FOCUS, so their edge is the
 focused participant's turn — the PR tab, which is keyed to the open session
 (§3.4), takes that session's.
@@ -1053,7 +1059,11 @@ Decisions recorded while building it:
   eventually merging behind an unchecked box. The watcher therefore dispatches on
   `clusterPlaced` — a property of the DAEMON (`--k8s` runs every agent in a pod)
   — and a cluster agent with no live channel refuses to arm with `sandbox-asleep`
-  rather than arming somewhere else; the console's own wake action is the fix.
+  rather than arming somewhere else; the console's own wake action is the fix. For
+  an isolated session whose arm names it, which the read reports as
+  `autoMergeSessionPlaced`, the panel presses that session's wake itself and
+  re-sends the arm once its pod answers, bounded like a read's wake. An arm placed
+  in another agent's pod keeps its refusal.
   WHICH pod is decided once per arm by the same rule: the arming session's tier,
   read off its own directory as its wake is routed and off whether its own pod's
   claim exists, never whichever pod is attached. The watcher stays keyed by the

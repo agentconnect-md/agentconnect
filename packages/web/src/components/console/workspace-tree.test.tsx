@@ -2,7 +2,7 @@
 
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { StatusBadge, workspaceDirtyMap, workspaceEntryIcon } from './workspace-tree'
+import { StatusBadge, workspaceDirtyMap, workspaceEntryIcon, workspaceGitReadState } from './workspace-tree'
 import type { WorkspaceGitFileDto, WorkspaceGitStatusDto } from '@/lib/api'
 
 function status(files: WorkspaceGitFileDto[], agentDir: string | null = null): WorkspaceGitStatusDto {
@@ -114,5 +114,17 @@ describe('StatusBadge', () => {
     expect(renderToStaticMarkup(<StatusBadge ch="D" />)).toContain('var(--red-500)')
     expect(renderToStaticMarkup(<StatusBadge ch="R" />)).toContain('title="Renamed (uncommitted)"')
     expect(renderToStaticMarkup(<StatusBadge ch="M" />)).toContain('title="Modified (uncommitted)"')
+  })
+})
+
+describe('workspaceGitReadState', () => {
+  it('reads a checkout and a non-repo workspace as answers, and each sandbox refusal as the wake needs it', () => {
+    expect(workspaceGitReadState('pending')).toBe('pending')
+    expect(workspaceGitReadState('repo')).toBe('ready')
+    expect(workspaceGitReadState('none')).toBe('ready')
+    expect(workspaceGitReadState('asleep')).toBe('asleep')
+    // Final for the wake: nothing to start, and not the offline story either.
+    expect(workspaceGitReadState('removed')).toBe('removed')
+    expect(workspaceGitReadState('unavailable')).toBe('failed')
   })
 })

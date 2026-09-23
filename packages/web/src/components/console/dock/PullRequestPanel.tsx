@@ -13,16 +13,25 @@ import {
   fetchSessionPullRequest,
   mergeSessionPullRequest,
   setSessionPullRequestAutoMerge,
+  type AgentWakeDto,
   type SessionPullRequestCheckDto,
   type SessionPullRequestDto,
   type SessionPullRequestReviewDto,
   type SessionPullRequestThreadDto
 } from '@/lib/api'
 import { PR_POLL_MS, useDocumentVisible, useDockRefresh } from '@/components/console/dock/auto-refresh'
+import { retryAfterWake, SANDBOX_REMOVED_CODE } from '@/components/console/sandbox-wake'
+import { SESSION_SANDBOX_REMOVED_NOTICE } from '@/components/console/workspace-tree'
 import type { DockTabStatus } from './SessionDock'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const statusOf = (e: unknown) => (e instanceof ApiError ? e.status : null)
+
+/** The CP's code for an arm refused because the pod its watcher belongs in is not running. */
+export const AUTO_MERGE_SANDBOX_ASLEEP_CODE = 'AUTO_MERGE_SANDBOX_ASLEEP'
+const armAsleep = (e: unknown) => e instanceof ApiError && e.code === AUTO_MERGE_SANDBOX_ASLEEP_CODE
+
+const MERGE_IDLE = { busy: false, waking: false, err: null }
 
 /** The four answers the probe can settle on; `none` (a 404) is "no pull-request run owns this session", which the panel draws rather than blanks. */
 export type PullRequestPanelAnswer = 'pending' | 'linked' | 'none' | 'failed'
@@ -200,6 +209,7 @@ export function PullRequestPanel({
   tracking = null,
   base = null,
   onPostTurn,
+  wakeSandbox,
   onVerdictChange
 }: {
   /** The OPEN SESSION's id, the scope the CP resolves to its hook run. Deliberately no agentId: the PR belongs to the session, so a merged conversation's header-focus change must not re-key this read — the prop shape makes that unbuildable rather than merely avoided. */
@@ -218,10 +228,13 @@ export function PullRequestPanel({
   base?: string | null
   /** Posts one webchat message into the open session (§5.2's browser→relay→daemon path — no CP route), returning whether the send was ACCEPTED. Absent when the session has no usable composer (none at all, or a persisted webchat that cannot resume), and the Auto-fix and Create-pull-request actions render ABSENT with it, not disabled. */
   onPostTurn?: (text: string) => boolean
+  /** Presses an isolated session's own wake; used only when the read says an arm from this session names it (`autoMergeSessionPlaced`), since otherwise the refusing pod is another agent's. A press, not an agent id, so nothing here can re-key the read. */
+  wakeSandbox?: () => Promise<AgentWakeDto>
   /** The inputs to {@link pullRequestTabStatus}, the tab's badge and its external-link action. */
   onVerdictChange?: (verdict: PullRequestPanelVerdict) => void
 }) {
   const t = useTranslations('Sessions.detail.pullRequestPanel')
+  const tWake = useTranslations('Common.sandboxWake')
   // The panel owns its reads: the tab's header action is `external-link` (§1's table), so refresh lives in the body. Both fields move together so a press is exactly one effect run.
   const [reads, setReads] = useState({ tick: 0, force: false })
   const { read, refreshing } = useSessionPullRequest(sessionId, reads)
@@ -325,19 +338,42 @@ export function PullRequestPanel({
   useEffect(() => {
     if (armedBox.current) armedBox.current.indeterminate = view?.autoMergeArmed === null
   })
-  // The auto-merge toggle's own in-flight/error state; the armed FACT stays on the view, re-read after every write.
-  const [merge, setMerge] = useState<{ busy: boolean; err: string | null }>({ busy: false, err: null })
-  useEffect(() => setMerge({ busy: false, err: null }), [sessionId])
+  // The auto-merge toggle's own in-flight/error state; the armed FACT stays on the view, re-read after every write. `waking` is an arm waiting on its sandbox.
+  const [merge, setMerge] = useState<{ busy: boolean; waking: boolean; err: string | null }>(MERGE_IDLE)
+  // The write in flight: a session switch or unmount aborts it, so a late answer never lands on another session's box.
+  const mergeRun = useRef<AbortController | null>(null)
+  useEffect(() => {
+    setMerge(MERGE_IDLE)
+    return () => mergeRun.current?.abort()
+  }, [sessionId])
   const toggleAutoMerge = (enabled: boolean) => {
-    setMerge({ busy: true, err: null })
-    setSessionPullRequestAutoMerge(sessionId, enabled).then(
-      () => {
-        setMerge({ busy: false, err: null })
-        // The CP invalidated its cached view on the write, so a plain re-read already sees the new state.
-        setReads((r) => ({ tick: r.tick + 1, force: false }))
-      },
-      (e) => setMerge({ busy: false, err: msg(e) })
-    )
+    mergeRun.current?.abort()
+    const run = new AbortController()
+    mergeRun.current = run
+    setMerge({ busy: true, waking: false, err: null })
+    const write = () => setSessionPullRequestAutoMerge(sessionId, enabled)
+    // Only an arm that names this session is refused for this session's pod; another agent's run arms in that agent's pod, which this press cannot start.
+    const wakeable = enabled && view?.autoMergeSessionPlaced === true ? wakeSandbox : undefined
+    write()
+      .catch((e: unknown) => {
+        // The reader asked for the watcher, so a sleeping pod it belongs in is woken and the arm re-sent once that pod answers.
+        if (!wakeable || !armAsleep(e) || run.signal.aborted) throw e
+        setMerge({ busy: true, waking: true, err: null })
+        return retryAfterWake(write, armAsleep, wakeable, e, run.signal)
+      })
+      .then(
+        () => {
+          if (run.signal.aborted) return
+          setMerge(MERGE_IDLE)
+          // The CP invalidated its cached view on the write, so a plain re-read already sees the new state.
+          setReads((r) => ({ tick: r.tick + 1, force: false }))
+        },
+        (e: unknown) => {
+          if (run.signal.aborted) return
+          const removed = e instanceof ApiError && e.code === SANDBOX_REMOVED_CODE
+          setMerge({ busy: false, waking: false, err: removed ? SESSION_SANDBOX_REMOVED_NOTICE : msg(e) })
+        }
+      )
   }
 
   // The direct merge's own in-flight/error state, kept apart from the auto-merge toggle's. Two presses:
@@ -912,13 +948,15 @@ export function PullRequestPanel({
             data-pr-automerge-status=""
             className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)"
           >
-            {view.autoMergeArmed === null
-              ? 'Squash · can’t read whether anything is watching'
-              : view.autoMergeArmed
-                ? view.autoMergeWaitingOn
-                  ? `Squash · waiting on ${view.autoMergeWaitingOn}`
-                  : 'Squash · once checks pass and nothing blocks it'
-                : 'Squash and merge'}
+            {merge.waking
+              ? tWake('starting')
+              : view.autoMergeArmed === null
+                ? 'Squash · can’t read whether anything is watching'
+                : view.autoMergeArmed
+                  ? view.autoMergeWaitingOn
+                    ? `Squash · waiting on ${view.autoMergeWaitingOn}`
+                    : 'Squash · once checks pass and nothing blocks it'
+                  : 'Squash and merge'}
           </div>
           {/* A failed tick keeps the watcher ARMED: the usual cure is the next commit, so this is a
               status line rather than a dead end, and it is drawn apart from the toggle's own error. */}

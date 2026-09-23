@@ -1,9 +1,9 @@
 'use client'
 
-// The console's "start this sandbox" (#1070): a read refused as asleep is answered by ONE wake, then polled with backoff; a GET never wakes anything, so this is the one press.
+// The console's "start this sandbox" (#1070): a read refused as asleep is answered by ONE wake, then polled with backoff, and a write the same way; a GET never wakes anything, so this is the one press.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ApiError, wakeAgent } from '@/lib/api'
+import { ApiError, wakeAgent, type AgentWakeDto } from '@/lib/api'
 
 /** What the read this hook watches has resolved to. `removed` is a session whose own sandbox is gone, final for the hook; `failed` is any other refusal, kept polling while a wake is under way because a pool agent nobody serves reads that way until the member the wake reached has claimed it. */
 export type SandboxReadState = 'pending' | 'ready' | 'asleep' | 'removed' | 'failed'
@@ -139,4 +139,49 @@ export function useSandboxWake(
   }, [active, phase, read, retry, settle, tick])
 
   return { phase, start }
+}
+
+// A pause that an aborted caller cuts short, so a retry never outlives the panel that asked for it.
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason)
+    const stop = () => {
+      clearTimeout(timer)
+      reject(signal.reason)
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', stop)
+      resolve()
+    }, ms)
+    signal.addEventListener('abort', stop, { once: true })
+  })
+}
+
+/** An action refused because its sandbox is asleep, re-sent after ONE wake on the read poll's backoff and bound; a removed session sandbox, a refused press or nothing to wake ends it at once, since no wake helps. */
+export async function retryAfterWake<T>(
+  action: () => Promise<T>,
+  asleep: (err: unknown) => boolean,
+  wake: () => Promise<AgentWakeDto>,
+  refusal: unknown,
+  signal: AbortSignal
+): Promise<T> {
+  const startedAt = Date.now()
+  try {
+    if ((await wake()).state === 'unsupported') throw refusal
+  } catch (err) {
+    if (err instanceof ApiError && err.code === SANDBOX_REMOVED_CODE) throw err
+    if (err === refusal || (err instanceof ApiError && (err.status === 403 || err.status === 404))) throw refusal
+    // Anything else may have raced the resume, so the action decides, as the read does for the hook above.
+  }
+  let last = refusal
+  for (let attempt = 0; Date.now() - startedAt < SANDBOX_WAKE_BOUND_MS; attempt += 1) {
+    await pause(SANDBOX_WAKE_POLL_MS[Math.min(attempt, SANDBOX_WAKE_POLL_MS.length - 1)]!, signal)
+    try {
+      return await action()
+    } catch (err) {
+      if (!asleep(err)) throw err
+      last = err
+    }
+  }
+  throw last
 }

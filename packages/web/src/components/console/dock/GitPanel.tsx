@@ -4,7 +4,7 @@
 // M3 adds the write half. Every write runs on the OWNING DAEMON in the session's own worktree (§2) and answers with the fresh status, so the panel draws the result of its own action without a second read.
 // Status, diff, log and every write come live from that daemon through the CP (body-locality), so an offline daemon, a from-scratch workspace, a clean tree, a capped status list, a daemon too old for the log or for git writes, and a busy agent that refuses the write are all expected answers, each drawn as data.
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { Spinner } from '@/components/marks'
 import { Icon } from '@/components/ui'
@@ -12,7 +12,15 @@ import { formatFileMtime } from '@/components/console/FileBrowser'
 import { CommitBox } from '@/components/console/dock/CommitBox'
 import { DOCK_POLL_MS, useDockRefresh } from '@/components/console/dock/auto-refresh'
 import { gitWriteRequestFailureText } from '@/components/console/dock/git-write'
-import { StatusBadge, useWorkspaceGitStatus, type WorkspaceGitOutcome } from '@/components/console/workspace-tree'
+import { useSandboxWake } from '@/components/console/sandbox-wake'
+import { SandboxAsleepNotice, SandboxStartingNotice } from '@/components/console/SandboxWakeNotice'
+import {
+  SESSION_SANDBOX_REMOVED_NOTICE,
+  StatusBadge,
+  useWorkspaceGitStatus,
+  workspaceGitReadState,
+  type WorkspaceGitOutcome
+} from '@/components/console/workspace-tree'
 import {
   ApiError,
   fetchWorkspaceGitLog,
@@ -137,7 +145,7 @@ export function GitPanel({
   onWrote
 }: {
   agentId: string
-  /** Whether the Git tab is the one selected — the poll's gate. The panel stays MOUNTED either way, because its verdict is what keeps its own tab out of the dock's vacant state. */
+  /** Whether the Git tab is the one selected — the gate for the poll and for the sandbox wake, since a hidden tab must not start a pod. The panel stays MOUNTED either way, because its verdict is what keeps its own tab out of the dock's vacant state. */
   active?: boolean
   /** Whether a turn is streaming in this session. Its falling edge re-reads even while the tab is hidden: the agent's commits and pushes are what this panel counts, and that count is on the tab's badge. */
   turnActive?: boolean
@@ -165,9 +173,17 @@ export function GitPanel({
   // The automatic re-read (turn edge, poll, reveal), a third counter on the same sum so an auto refresh
   // is byte-identical to a pressed one — there is no second read path to keep in step.
   const [autoTick, setAutoTick] = useState(0)
-  const statusTick = refreshTick + writeTick + autoTick
+  // The sandbox wake's poll, a fourth counter on the same sum.
+  const [wakeTick, setWakeTick] = useState(0)
+  const statusTick = refreshTick + writeTick + autoTick + wakeTick
   const { git: readGit, outcome, primaryBranch } = useWorkspaceGitStatus(agentId, sessionId, statusTick)
   const log = useWorkspaceGitLog(agentId, sessionId, statusTick)
+  const retryStatus = useCallback(() => setWakeTick((tick) => tick + 1), [])
+  // The Files panel's wake on this panel's own scope: a session's page wakes that session's sandbox, and only while this tab is on screen.
+  const wake = useSandboxWake(agentId, workspaceGitReadState(outcome), retryStatus, {
+    active,
+    ...(sessionId ? { sessionId } : {})
+  })
   const scope = `${agentId}:${sessionId ?? 'primary'}`
   // The fresh status a stage/unstage answered with (§6: "the fresh `WorkspaceGitStatus`, so the panel never re-polls"). Keyed by the READ it replaces, so a refresh landing meanwhile wins and this is simply ignored rather than painting a pre-refresh tree over a newer one.
   const [applied, setApplied] = useState<{ key: string; git: WorkspaceGitStatusDto } | null>(null)
@@ -386,11 +402,16 @@ export function GitPanel({
 
   // Which of the status reads' answers the file half draws. Every branch is data — none may take the panel, the dock or the transcript down (§2).
   const files = (): ReactNode => {
+    // A removed session sandbox has nothing to start: one line, as the Files panel draws it.
+    if (shown === 'removed') return <PanelNotice text={SESSION_SANDBOX_REMOVED_NOTICE} />
+    if (wake.phase === 'starting' && (shown === 'asleep' || shown === 'unavailable')) {
+      return <SandboxStartingNotice compact />
+    }
     // Ahead of `unavailable`, which it arrives as (both are 503): the workspace is fine and comes
     // back on the agent's next turn, so this must not read as an outage — and must not read as "not
     // a git checkout" either, which is what a suspended pod used to answer.
     if (shown === 'asleep') {
-      return <PanelNotice text={t('sandboxAsleep')} />
+      return <SandboxAsleepNotice wake={wake} startable compact notice={<PanelNotice text={t('sandboxAsleep')} />} />
     }
     if (shown === 'unavailable') {
       return (

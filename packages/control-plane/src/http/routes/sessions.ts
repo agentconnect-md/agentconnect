@@ -473,6 +473,8 @@ function agentReviewOf(event: string | null): 'approved' | 'changes_requested' |
 /** What the EDGE said about its watcher, or null when nobody could be asked (no live daemon, or one
  *  too old to serve the frame) — which the panel draws differently from a confident "not armed". */
 export interface AutoMergeOverlay {
+  /** Whether an arm from the session being read names that session, so its watcher is placed by it. */
+  sessionPlaced: boolean
   armed: boolean
   placement?: 'sandbox' | 'daemon'
   waitingOn?: string
@@ -505,6 +507,7 @@ function toSessionPullRequestDto(
     autoMergePlacement: autoMerge?.placement ?? null,
     autoMergeWaitingOn: autoMerge?.waitingOn ?? null,
     autoMergeError: autoMerge?.lastError ?? null,
+    autoMergeSessionPlaced: autoMerge?.sessionPlaced ?? false,
     repoFullName: view.repoFullName,
     pullNumber: view.pullNumber,
     title: view.title,
@@ -1271,7 +1274,8 @@ export function sessionRoutes(deps: HttpDeps) {
       req: FastifyRequest,
       agent: (ResolvableAgent & { id: AgentId }) | null,
       repoFullName: string,
-      pullNumber: number
+      pullNumber: number,
+      session: { id: string; agentId: string }
     ): Promise<AutoMergeOverlay | null> => {
       // The member SERVING the agent, never its placement column: a set placement names no machine,
       // and the watcher lives wherever the agent is being served right now (#2199).
@@ -1280,13 +1284,14 @@ export function sessionRoutes(deps: HttpDeps) {
       if (!daemonId) return null
       const daemon = await deps.registry.getAvailable(orgOf(req), DaemonId(daemonId))
       if (!daemon?.capabilities.features.includes(AUTO_MERGE_FEATURE)) return null
+      const target = { agentId: agent.id, repoFullName, prNumber: pullNumber }
+      // Exactly when this session's own arm would name it, by the arm's own rule: only then is its session wake the pod that refuses.
+      const sessionPlaced =
+        autoMergeSetRequest(target, true, session, daemon.capabilities.features).sessionId !== undefined
       try {
-        const state = await deps.control.autoMergeState(daemonId, orgOf(req), {
-          agentId: agent.id,
-          repoFullName,
-          prNumber: pullNumber
-        })
+        const state = await deps.control.autoMergeState(daemonId, orgOf(req), target)
         return {
+          sessionPlaced,
           armed: state.armed,
           ...(state.placement ? { placement: state.placement } : {}),
           ...(state.waitingOn ? { waitingOn: state.waitingOn } : {}),
@@ -1309,7 +1314,7 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Get the session’s pull request',
           description:
-            'This session’s pull request: identity (repo, number, url, head/base) plus live state (checks, current reviews, unresolved review threads) proxied from GitHub in one GraphQL read. Identity comes from the owning hook run where one exists (`linkedBy: run`, which also carries the review facts a rate-limited answer falls back on); otherwise from the head branch of the checkout this session works in (`linkedBy: head-branch`, `linkBranch`, `linkScope`), so a pull request the agent opened mid-conversation is linked too — `linkScope: shared` means the branch came from the agent’s primary checkout, which every session on a shared-workspace agent works in, so the pull request is real but not exclusively this session’s; `linkAmbiguous` says the branch has more than one open pull request and this is the first of them. GitHub being rate limited, denying the installation, or unreachable is data — `degraded` names which, identity survives, and the live lists are empty — because a panel that still names its PR beats an empty one. 404 when neither source names a pull request (no run and no pull request for that branch, a purged session, a workspace that is not a checkout, no daemon serving the agent) or when the deployment has no GitHub App configured; the console then draws its branch state and a create action instead. Review thread bodies are user content: proxied, never stored.',
+            'This session’s pull request: identity (repo, number, url, head/base) plus live state (checks, current reviews, unresolved review threads) proxied from GitHub in one GraphQL read. Identity comes from the owning hook run where one exists (`linkedBy: run`, which also carries the review facts a rate-limited answer falls back on); otherwise from the head branch of the checkout this session works in (`linkedBy: head-branch`, `linkBranch`, `linkScope`), so a pull request the agent opened mid-conversation is linked too — `linkScope: shared` means the branch came from the agent’s primary checkout, which every session on a shared-workspace agent works in, so the pull request is real but not exclusively this session’s; `linkAmbiguous` says the branch has more than one open pull request and this is the first of them. `autoMergeSessionPlaced` says whether an arm from this session names it — the pull request’s agent is this session’s and the serving daemon places arms by session — which is the one case in which this session’s own wake starts the pod a sleeping arm is refused for. GitHub being rate limited, denying the installation, or unreachable is data — `degraded` names which, identity survives, and the live lists are empty — because a panel that still names its PR beats an empty one. 404 when neither source names a pull request (no run and no pull request for that branch, a purged session, a workspace that is not a checkout, no daemon serving the agent) or when the deployment has no GitHub App configured; the console then draws its branch state and a create action instead. Review thread bodies are user content: proxied, never stored.',
           operationId: 'getSessionPullRequest',
           params: IdParam,
           querystring: SessionPullRequestQueryDto,
@@ -1347,7 +1352,7 @@ export function sessionRoutes(deps: HttpDeps) {
               req.query.refresh === true
             ),
             canArmBranch,
-            await autoMergeOverlay(req, link.agent, link.repoFullName, link.pullNumber),
+            await autoMergeOverlay(req, link.agent, link.repoFullName, link.pullNumber, owned.session),
             {
               linkedBy: 'head-branch',
               linkBranch: link.branch,
@@ -1379,7 +1384,7 @@ export function sessionRoutes(deps: HttpDeps) {
             req.query.refresh === true
           ),
           canArm,
-          await autoMergeOverlay(req, agent, run.repoFullName, run.pullNumber)
+          await autoMergeOverlay(req, agent, run.repoFullName, run.pullNumber, owned.session)
         )
       }
     )

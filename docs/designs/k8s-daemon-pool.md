@@ -360,8 +360,10 @@ refuses instead of claiming a fresh empty volume for a session that no longer ha
 one — a wake can lose a race with a retirement, never win one. A session pod with
 no claim at all is not asleep but removed, so a file read or a wake of it refuses
 as `sandbox-removed`, which no press can undo; the session's next message creates
-a new one. Git tells the two apart only beside a bound agent pod, where its runner
-asks when first used; otherwise it refuses as asleep without asking the cluster.
+a new one. Git tells the two apart the same way, whatever the agent pod's state:
+its runner asks the claim when first used and wakes nothing. Beside a bound agent
+pod that runner still runs on a session pod bound by then; with the agent pod down
+it runs nothing and only refuses, as before.
 Sleep is per pod, each judged by its own work. A quiet session pod suspends on its
 own session's activity while its siblings and the agent pod stay. The agent pod is
 kept while a host, a dispatch or a turn runs IN it — its shared host, a shared
@@ -443,11 +445,15 @@ session rows remain, and offering Start there would loop until it gave up. The
 console's file views press the session wake in session scope and show that state
 in one line with no Start; the agent's checkout, skills tab and dream keep the
 agent-scoped wake. A member without the feature is sent the agent wake, which is
-what the console pressed before. The dock's Git tab and pull-request panel press
-no wake of their own: while the pod sleeps the Git tab reads it as asleep, and a
-pull request found only through the worktree's head branch is not found; both
-catch up on their next read once the Files view's wake or the session's next
-message has brought the pod back.
+what the console pressed before. The dock's Git tab does the same as its Files
+tab: while it is on screen it presses the wake of the checkout it reads, and it
+draws a removed session sandbox in the same one line. The pull-request panel
+presses the session wake only for an arm refused as asleep (below). A pull request
+found only through the worktree's head branch is still not found while the pod
+sleeps. Its tab is off the strip then, because the dock keeps a PR tab with no
+pull request only over a checkout the Git tab read, so there is no surface to
+press from. It returns on the next read once the Git or Files wake, or the
+session's next message, has brought the pod back.
 
 **What stays with the agent pod.** The conversion itself (it must stay atomic
 with its fail-closed marker, and it is rare), console views of the agent's
@@ -486,8 +492,17 @@ and only when the session belongs to the watcher's agent; an older member would
 strip it and arm in the agent pod, as it did before. A session's retirement
 deletes its pod and its watcher with it, and the box reads back unchecked.
 Nothing is persisted, as before. An arm while the pod that would run it is asleep
-still answers 409 `AUTO_MERGE_SANDBOX_ASLEEP`, and the panel offers no wake yet;
-opening the session's files wakes its pod.
+still answers 409 `AUTO_MERGE_SANDBOX_ASLEEP`. The pull-request read says whether
+an arm from this session names it (`autoMergeSessionPlaced`, computed by the same
+rule the arm uses): the pull request's agent is the session's, and the serving
+member advertises `auto-merge-session-v1`. Only then, and only for an isolated
+session, does the panel press that session's wake. That wake resolves the pod by
+the same `sessionPodOf` the placement uses, and the panel re-sends the arm on the
+read wake's backoff until it lands, another refusal answers, or the same 90 s
+bound passes. A removed session sandbox, a refused press or nothing to wake ends
+it at once, and a disarm never wakes anything. An arm in another agent's pod (a
+run that agent owns) or from an older member keeps its refusal, because this
+session's wake would start a different pod.
 
 **Order**, each change shippable on its own:
 
