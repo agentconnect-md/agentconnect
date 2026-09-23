@@ -24,6 +24,7 @@ const home = () => mkdtempSync(join(tmpdir(), 'ac-home-'))
 const root = () => mkdtempSync(join(tmpdir(), 'ac-root-'))
 const sys = () => mkdtempSync(join(tmpdir(), 'ac-sys-'))
 const polkit = () => mkdtempSync(join(tmpdir(), 'ac-polkit-'))
+const sudoers = () => mkdtempSync(join(tmpdir(), 'ac-sudoers-'))
 
 const ACCOUNT = { user: 'agent', uid: 1000, gid: 1000, home: '/home/agent' }
 
@@ -125,7 +126,7 @@ describe('scanSystemdUnits', () => {
   it('finds the default and every named instance with its root, ignoring other units', async () => {
     const [h, sd, pd] = [home(), sys(), polkit()]
     const { exec } = fakeExec()
-    const base = { home: h, uid: 1000, exec, systemUnitDir: sd, polkitDir: pd, account: ACCOUNT }
+    const base = { home: h, uid: 1000, exec, systemUnitDir: sd, polkitDir: pd, sudoersDir: sudoers(), account: ACCOUNT }
     await new SystemdController({ ...base, root: '/srv/a' }).install({
       execPath: '/usr/bin/node',
       includeRootEnv: true
@@ -165,6 +166,7 @@ describe('scanSystemdUnits', () => {
       exec,
       systemUnitDir: sd,
       polkitDir: pd,
+      sudoersDir: sudoers(),
       account: ACCOUNT
     }).install({ execPath: '/usr/bin/node', includeRootEnv: true })
     await new SystemdController({ root: '/srv/old', home: h, uid: 1000, exec, scope: 'user' }).install({
@@ -186,7 +188,7 @@ describe('scanSystemdUnits', () => {
 describe('SystemdController (system scope)', () => {
   const build = (over: Record<string, unknown> = {}) => {
     const { exec, calls } = fakeExec()
-    const [h, sd, pd] = [home(), sys(), polkit()]
+    const [h, sd, pd, sud] = [home(), sys(), polkit(), sudoers()]
     const c = new SystemdController({
       root: root(),
       home: h,
@@ -194,10 +196,11 @@ describe('SystemdController (system scope)', () => {
       exec,
       systemUnitDir: sd,
       polkitDir: pd,
+      sudoersDir: sud,
       account: ACCOUNT,
       ...over
     })
-    return { c, calls, h, sd, pd }
+    return { c, calls, h, sd, pd, sud }
   }
 
   it('install writes /etc/systemd/system, enables for boot, and drops the polkit rule', async () => {
@@ -233,7 +236,14 @@ describe('SystemdController (system scope)', () => {
 
   it('refuses to write a system unit with no resolved account', async () => {
     const { exec } = fakeExec()
-    const c = new SystemdController({ root: root(), home: home(), uid: 1000, exec, systemUnitDir: sys() })
+    const c = new SystemdController({
+      root: root(),
+      home: home(),
+      uid: 1000,
+      exec,
+      systemUnitDir: sys(),
+      sudoersDir: sudoers()
+    })
     await expect(c.install({ execPath: '/usr/bin/node', includeRootEnv: false })).rejects.toThrow(/service account/)
   })
 
@@ -256,9 +266,36 @@ describe('SystemdController (system scope)', () => {
       exec,
       systemUnitDir: sd,
       polkitDir: pd,
+      sudoersDir: sudoers(),
       account: ACCOUNT
     })
     await expect(c.up()).rejects.toThrow(/refresh the polkit rule|sudo systemctl start/)
+  })
+
+  it('never falls back to sudo on a polkit host, and drops a grant left from before polkit', async () => {
+    const [sd, pd, sud] = [sys(), polkit(), sudoers()]
+    writeFileSync(join(sud, 'agentconnect'), 'stale\n')
+    const calls: string[] = []
+    const exec: Exec = async (cmd, args) => {
+      calls.push(cmd)
+      return args[0] === 'start'
+        ? { code: 1, stdout: '', stderr: 'Access denied' }
+        : { code: 0, stdout: '', stderr: '' }
+    }
+    const c = new SystemdController({
+      root: root(),
+      home: home(),
+      uid: 1000,
+      exec,
+      systemUnitDir: sd,
+      polkitDir: pd,
+      sudoersDir: sud,
+      account: ACCOUNT
+    })
+    await c.install({ execPath: '/usr/bin/node', includeRootEnv: false })
+    expect(existsSync(join(sud, 'agentconnect'))).toBe(false)
+    await expect(c.up()).rejects.toThrow(/refresh the polkit rule/)
+    expect(calls).not.toContain('sudo')
   })
 
   it('uninstall disables the unit and removes its polkit rule', async () => {
@@ -294,9 +331,105 @@ describe('SystemdController (system scope)', () => {
       exec,
       systemUnitDir: sys(),
       polkitDir: join(sys(), 'absent'),
+      sudoersDir: join(sys(), 'absent'),
       account: ACCOUNT
     })
     expect(c.hasUnprivilegedControl()).toBe(false)
+  })
+})
+
+describe('SystemdController (no polkit rules.d backend)', () => {
+  // `denied` makes a bare systemctl fail the way polkit < 0.106 over SSH does.
+  const build = (opts: { denied?: boolean; visudo?: number; sudo?: number } = {}) => {
+    const calls: Array<{ cmd: string; args: string[] }> = []
+    const exec: Exec = async (cmd, args) => {
+      calls.push({ cmd, args })
+      if (cmd === 'visudo') return { code: opts.visudo ?? 0, stdout: '', stderr: '' }
+      if (cmd === 'sudo')
+        return { code: opts.sudo ?? 0, stdout: '', stderr: opts.sudo ? 'sudo: a password is required' : '' }
+      const lifecycle = args[0] === 'start' || args[0] === 'stop'
+      return opts.denied && lifecycle
+        ? { code: 1, stdout: '', stderr: `Failed to ${args[0]} ${args[1]}: Access denied` }
+        : { code: 0, stdout: '', stderr: '' }
+    }
+    const sud = sudoers()
+    const c = new SystemdController({
+      root: root(),
+      home: home(),
+      uid: 1000,
+      exec,
+      systemUnitDir: sys(),
+      polkitDir: join(sys(), 'absent'),
+      sudoersDir: sud,
+      account: ACCOUNT
+    })
+    return { c, calls, sud }
+  }
+  const asRoot = typeof process.geteuid === 'function' && process.geteuid() === 0
+
+  it('install writes a visudo-checked sudoers grant for this unit and account only', async () => {
+    const { c, calls, sud } = build()
+    await c.install({ execPath: '/usr/bin/node', includeRootEnv: false })
+    const path = join(sud, 'agentconnect')
+    const rule = readFileSync(path, 'utf8')
+    expect(rule).toMatch(
+      /^agent ALL=\(root\) NOPASSWD: \S+systemctl start agentconnect\.service, \S+systemctl stop agentconnect\.service, \S+systemctl restart agentconnect\.service$/m
+    )
+    expect(rule).not.toMatch(/enable|disable/)
+    expect((statSync(path).mode & 0o777).toString(8)).toBe('440')
+    expect(calls.find((k) => k.cmd === 'visudo')?.args).toEqual(['-c', '-q', '-f', `${path}.tmp`])
+    expect(existsSync(`${path}.tmp`)).toBe(false)
+    expect(c.hasUnprivilegedControl()).toBe(true)
+  })
+
+  it('names a named instance drop-in without the dot sudo would skip it for', async () => {
+    const { exec } = fakeExec()
+    const sud = sudoers()
+    const c = new SystemdController({
+      root: '/srv/b',
+      instance: 'b',
+      home: home(),
+      uid: 1000,
+      exec,
+      systemUnitDir: sys(),
+      polkitDir: join(sys(), 'absent'),
+      sudoersDir: sud,
+      account: ACCOUNT
+    })
+    await c.install({ execPath: '/usr/bin/node', includeRootEnv: true })
+    expect(readFileSync(join(sud, 'agentconnect-b'), 'utf8')).toContain('start agentconnect@b.service')
+  })
+
+  it('discards a grant visudo rejects, leaving sudo untouched', async () => {
+    const { c, sud } = build({ visudo: 1 })
+    await c.install({ execPath: '/usr/bin/node', includeRootEnv: false })
+    expect(existsSync(join(sud, 'agentconnect'))).toBe(false)
+    expect(existsSync(join(sud, 'agentconnect.tmp'))).toBe(false)
+    expect(c.hasUnprivilegedControl()).toBe(false)
+  })
+
+  it.skipIf(asRoot)('up and down fall back to sudo -n when systemctl is denied', async () => {
+    const { c, calls } = build({ denied: true })
+    await c.up()
+    await c.down()
+    expect(calls.map((k) => [k.cmd, ...k.args.map((a) => a.replace(/^\/(usr\/)?bin\//, ''))].join(' '))).toEqual([
+      'systemctl start agentconnect.service',
+      'sudo -n systemctl start agentconnect.service',
+      'systemctl stop agentconnect.service',
+      'sudo -n systemctl stop agentconnect.service'
+    ])
+  })
+
+  it.skipIf(asRoot)('explains a missing grant when the sudo fallback needs a password too', async () => {
+    const { c } = build({ denied: true, sudo: 1 })
+    await expect(c.up()).rejects.toThrow(/no sudoers grant for agentconnect\.service.*install-service/)
+  })
+
+  it('uninstall removes the sudoers grant', async () => {
+    const { c, sud } = build()
+    await c.install({ execPath: '/usr/bin/node', includeRootEnv: false })
+    await c.uninstall()
+    expect(existsSync(join(sud, 'agentconnect'))).toBe(false)
   })
 })
 

@@ -366,12 +366,12 @@ every path below `<root>` and the login-shell launch depend on them.
 
 Privilege is confined to the two commands that change what is installed:
 
-| command                   | privilege | what it does                                                     |
-| ------------------------- | --------- | ---------------------------------------------------------------- |
-| `install-service`         | root      | writes the unit, `daemon-reload`, `enable`, writes a polkit rule |
-| `uninstall-service`       | root      | `stop`, `disable`, removes the unit and its polkit rule          |
-| `up` / `down` / `restart` | none      | `systemctl start` / `stop` under the polkit rule                 |
-| `status` / `instances`    | none      | read-only `systemctl is-active` / `show`                         |
+| command                   | privilege | what it does                                                                        |
+| ------------------------- | --------- | ----------------------------------------------------------------------------------- |
+| `install-service`         | root      | writes the unit, `daemon-reload`, `enable`, writes a polkit rule (or sudoers grant) |
+| `uninstall-service`       | root      | `stop`, `disable`, removes the unit and its polkit rule / sudoers grant             |
+| `up` / `down` / `restart` | none      | `systemctl start` / `stop` under the polkit rule, else `sudo -n` under the grant    |
+| `status` / `instances`    | none      | read-only `systemctl is-active` / `show`                                            |
 
 Both privileged commands **re-execute themselves through sudo** rather than
 failing with an instruction. The elevated argv is rebuilt from resolved intent
@@ -402,8 +402,17 @@ unit name, one account, and `start`/`stop`/`restart`/`try-restart`/
 `reload-or-restart`. `enable`/`disable` are deliberately outside it — boot
 persistence is an install-time decision, which is also why install does the
 `enable` and `up` only needs `start`. A host without the `rules.d` JS backend
-(polkit < 0.106) is detected, the rule is skipped, and install says that `up`/
-`down` will need sudo there. `uninstall-service` removes only its own rule file.
+(polkit < 0.106, as on Ubuntu 22.04, or no polkit at all) gets
+`/etc/sudoers.d/<unit without .service, @ as ->` instead:
+`<account> ALL=(root) NOPASSWD:` for `systemctl start`/`stop`/`restart <unit>` by
+absolute path, nothing else. The drop-in is staged under a `.tmp` name, which sudo
+ignores, and goes live only after `visudo -c` accepts it, since a broken drop-in
+would break sudo for every account. `up`/`down` try plain `systemctl` first and
+retry through `sudo -n` only when that is denied on a host without `rules.d`; the
+account usually cannot read `/etc/sudoers.d`, so the grant is never probed for.
+If neither grant could be written, install says `up`/`down` will need sudo.
+`uninstall-service` removes only its own rule and grant files, and a reinstall on
+a host that has since gained `rules.d` swaps the grant for the rule.
 
 Because the unit is enabled at install, `down` on a system unit means _stop now_,
 not _stop and do not come back at boot_; `uninstall-service` is what retires an

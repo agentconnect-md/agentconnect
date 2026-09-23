@@ -31,6 +31,7 @@ export interface ControllerDeps {
   /** Test seams so a unit install never touches /etc on the developer's machine. */
   systemUnitDir?: string
   polkitDir?: string
+  sudoersDir?: string
 }
 
 /**

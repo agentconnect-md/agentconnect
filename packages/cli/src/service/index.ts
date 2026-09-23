@@ -63,6 +63,7 @@ export interface ControllerTarget {
   scope?: 'system' | 'user'
   systemUnitDir?: string
   polkitDir?: string
+  sudoersDir?: string
 }
 
 function scopeOf(target: ControllerTarget): { home?: string; platform?: NodeJS.Platform; systemUnitDir?: string } {
@@ -94,7 +95,8 @@ function depsFor(
     ...(unit.scope ? { scope: unit.scope } : {}),
     ...(target.account ? { account: target.account } : {}),
     ...(target.systemUnitDir !== undefined ? { systemUnitDir: target.systemUnitDir } : {}),
-    ...(target.polkitDir !== undefined ? { polkitDir: target.polkitDir } : {})
+    ...(target.polkitDir !== undefined ? { polkitDir: target.polkitDir } : {}),
+    ...(target.sudoersDir !== undefined ? { sudoersDir: target.sudoersDir } : {})
   }
 }
 

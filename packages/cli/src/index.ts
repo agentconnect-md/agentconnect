@@ -221,7 +221,7 @@ async function main(): Promise<void> {
         console.log(`agentconnect: service installed (${outcome.controller.label}, root ${root}).`)
         if (!outcome.unprivilegedControl) {
           console.log(
-            `This host has no polkit rules.d backend, so \`up\`/\`down\`/\`restart\` need sudo (\`sudo systemctl start ${outcome.controller.label}\`).`
+            `Neither a polkit rule nor a sudoers grant could be installed on this host, so \`up\`/\`down\`/\`restart\` need sudo (\`sudo systemctl start ${outcome.controller.label}\`).`
           )
         }
         console.log(`Run \`agentconnect${selector} up\` to start it.`)
