@@ -1892,7 +1892,7 @@ describe('the idle sweep keeps the agent pod only for its own work (#1896)', () 
       await new Promise((resolve) => setTimeout(resolve, 20))
       return suspended.includes(AGENT_POD)
     }
-    return { instance, inner, suspendsAgentPod }
+    return { instance, inner, suspendsAgentPod, suspended }
   }
 
   it('lets the agent pod go under an isolated session’s host, dispatch or turn, and keeps it for its own', async () => {
@@ -1974,6 +1974,53 @@ describe('the idle sweep keeps the agent pod only for its own work (#1896)', () 
       // The agent pod's own session speaking keeps it, as before.
       await row(SHARED, 'shared', late)
       expect(await pool.suspendsAgentPod()).toBe(false)
+    } finally {
+      await pool.instance.stop()
+    }
+  })
+
+  it('lets the agent’s shared host, and with it the agent pod, go under an isolated session’s traffic, and keeps both for a shared one’s', async () => {
+    const store = await LocalStore.open(':memory:')
+    const pool = await poolMember(store)
+    const { inner } = pool
+    const sharedHost = agentHostKey('bot-a')
+    const host = { stop: vi.fn(async () => {}) }
+    const row = (key: string, workspaceIsolation: 'shared' | 'session', updatedAt: number) =>
+      store.upsertSession({
+        key,
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread: key,
+        acpSessionId: null,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt,
+        workspaceIsolation
+      })
+    try {
+      const ttl = inner.cfg.limits.agentIdleTimeoutMs
+      /** One full idle sweep over a shared host started two windows ago: whether it stopped the host and suspended the agent pod. */
+      const sweep = async () => {
+        inner.hosts.set(sharedHost, host)
+        inner.hostStartedAt.set(sharedHost, Date.now() - 2 * ttl)
+        host.stop.mockClear()
+        pool.suspended.length = 0
+        await inner.sweepIdle()
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        return { hostStopped: host.stop.mock.calls.length > 0, podSuspended: pool.suspended.includes(AGENT_POD) }
+      }
+      // An isolated session busy right up to the sweep, on its own host, while the shared one went quiet two windows ago.
+      expect(inner.hostKeyFor('bot-a', ISOLATED)).not.toBe(sharedHost)
+      await row(ISOLATED, 'session', Date.now())
+      await row(SHARED, 'shared', Date.now() - 2 * ttl)
+      expect(await sweep()).toEqual({ hostStopped: true, podSuspended: true })
+      // A shared session speaking keeps the host it runs on, and that host keeps the pod.
+      const speaking = 'slack:C1:T4:bot-a'
+      inner.sessionIsolation.set(speaking, 'shared')
+      expect(inner.hostKeyFor('bot-a', speaking)).toBe(sharedHost)
+      await row(speaking, 'shared', Date.now())
+      expect(await sweep()).toEqual({ hostStopped: false, podSuspended: false })
     } finally {
       await pool.instance.stop()
     }

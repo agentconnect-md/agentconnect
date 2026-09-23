@@ -3715,6 +3715,13 @@ export class LocalStore {
     return row?.ts ?? null
   }
 
+  /** Each non-closed session of the agent with its last activity, most recent first — for a clock that counts only the sessions one host serves (k8s-daemon-pool §4). */
+  async agentSessionActivity(agentId: string): Promise<Array<{ key: string; updatedAt: number }>> {
+    return (await this.db
+      .prepare("SELECT key, updatedAt FROM sessions WHERE agentId = ? AND state != 'closed' ORDER BY updatedAt DESC")
+      .all(agentId)) as Array<{ key: string; updatedAt: number }>
+  }
+
   /** Every session key of the agent, open or closed — a row's existence is what keeps its session pod's claim (git-workspace-model §11). */
   async sessionKeysForAgent(agentId: string): Promise<string[]> {
     const rows = (await this.db.prepare('SELECT key FROM sessions WHERE agentId = ?').all(agentId)) as Array<{

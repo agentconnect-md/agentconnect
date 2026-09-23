@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
+import { agentHostKey } from '../src/acp/host-key.js'
 
 // The commit-message pass (webchat-side-panels.md §5.1) against a stub ACP host — the same seam the
 // dream tests use. What is asserted here is the SESSION LIFECYCLE, which is the part a real adapter
@@ -293,6 +294,24 @@ describe('runCommitMessagePass — a fresh isolated session on the warm host', (
       await expect(inner.runCommitMessagePass('ghost', 's', 'p', new AbortController().signal)).rejects.toThrow(
         'unknown agent'
       )
+    })
+  })
+
+  // No session row records a press, so the console's seam holds the warm host against the idle reaper for it (k8s-daemon-pool §4).
+  it('holds the warm host for a press through the console seam until it settles, then restarts its clock', async () => {
+    await withDaemon({ awaitCancel: true, stopReason: 'cancelled' }, async (daemon, host) => {
+      const inner = daemon as never as Record<string, any>
+      const owner = agentHostKey(AGENT)
+      const abort = new AbortController()
+      const seam = inner.cpClientDepsHost('/unused', 'wss://cp.example.test', () => {})
+      const pending = seam.runCommitMessagePass(AGENT, 'SYSTEM-POLICY', 'DIFF-PROMPT', abort.signal)
+      while (host.prompt.mock.calls.length === 0) await new Promise((resolve) => setImmediate(resolve))
+      expect(inner.hostPasses.holds(owner, Date.now(), 60_000)).toBe(true)
+      expect(inner.hostPasses.settledAt(owner)).toBeUndefined()
+      abort.abort()
+      await pending
+      expect(inner.hostPasses.holds(owner, Date.now(), 60_000)).toBe(false)
+      expect(inner.hostPasses.settledAt(owner)).toBeTypeOf('number')
     })
   })
 })
