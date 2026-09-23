@@ -9,8 +9,8 @@ interface ApprovalNotifierInputs {
   /** The org's waiting sessions; null until the first pull settles (or in mock mode). */
   pendingApprovalSessions: readonly PendingApprovalSession[] | null
   agents: readonly ApprovalAgentView[]
-  /** While the agent roster is loading, an empty roster must not resolve every item. */
-  agentsLoading: boolean
+  /** Until the roster has answered once, its empty default would resolve every item; loading and a failed pull alike. */
+  agentsLoaded: boolean
   orgPath: (path: string) => string
 }
 
@@ -18,12 +18,12 @@ interface ApprovalNotifierInputs {
 export function useApprovalNotifier({
   pendingApprovalSessions,
   agents,
-  agentsLoading,
+  agentsLoaded,
   orgPath
 }: ApprovalNotifierInputs) {
   const { syncSourceSnapshot } = useNotifications()
   useEffect(() => {
-    if (!pendingApprovalSessions || agentsLoading) return
+    if (!pendingApprovalSessions || !agentsLoaded) return
     syncSourceSnapshot('approvals', approvalNotifications(pendingApprovalSessions, agents, orgPath))
-  }, [pendingApprovalSessions, agents, agentsLoading, orgPath, syncSourceSnapshot])
+  }, [pendingApprovalSessions, agents, agentsLoaded, orgPath, syncSourceSnapshot])
 }
