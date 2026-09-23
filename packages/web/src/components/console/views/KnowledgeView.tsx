@@ -17,7 +17,7 @@ import { consoleKeys } from '@/lib/swr-keys'
 import { useOrgs } from '@/lib/org-context'
 import { KnowledgeEditor, TagChips } from '@/components/console/knowledge'
 import { MemoryConnectionsCard } from '@/components/console/MemoryConnectionsCard'
-import { SuggestionCard } from '@/components/console/SuggestionCard'
+import { SuggestionRow } from '@/components/console/SuggestionRow'
 import { LoadingState } from '@/components/marks'
 import { Button, Icon, Toggle } from '@/components/ui'
 
@@ -25,9 +25,26 @@ type SuggestionState = 'pending' | 'accepted' | 'rejected'
 const SUGGESTION_STATES: SuggestionState[] = ['pending', 'accepted', 'rejected']
 const GRID = 'grid-cols-1 desktop:grid-cols-[2.4fr_1.3fr_0.7fr_1fr] gap-3'
 
-function EmptyCard({ icon, title, children }: { icon: string; title: string; children?: ReactNode }) {
+function EmptyState({
+  icon,
+  title,
+  card = false,
+  children
+}: {
+  icon: string
+  title: string
+  /** Standalone card, or bare so it can sit inside one. */
+  card?: boolean
+  children?: ReactNode
+}) {
   return (
-    <div className="card flex flex-col items-center gap-3 px-6 py-[44px] text-center">
+    <div
+      className={
+        card
+          ? 'card flex flex-col items-center gap-3 px-6 py-[44px] text-center'
+          : 'flex flex-col items-center gap-3 px-6 py-[44px] text-center'
+      }
+    >
       <span className="flex h-[46px] w-[46px] items-center justify-center rounded-[11px] border border-(--border-subtle) bg-(--surface-sunken)">
         <Icon name={icon} size={22} color="var(--text-tertiary)" />
       </span>
@@ -37,9 +54,15 @@ function EmptyCard({ icon, title, children }: { icon: string; title: string; chi
   )
 }
 
-function ErrorCard({ message }: { message: string }) {
+function ErrorNote({ message, card = false }: { message: string; card?: boolean }) {
   return (
-    <div className="card flex items-center justify-center gap-2 px-5 py-10 font-sans text-[13px] text-(--text-tertiary)">
+    <div
+      className={
+        card
+          ? 'card flex items-center justify-center gap-2 px-5 py-10 font-sans text-[13px] text-(--text-tertiary)'
+          : 'flex items-center justify-center gap-2 px-5 py-10 font-sans text-[13px] text-(--text-tertiary)'
+      }
+    >
       <Icon name="triangle-alert" size={16} />
       {message}
     </div>
@@ -95,6 +118,7 @@ export default function KnowledgeView() {
   const tab = canManage && search.get('tab') === 'suggestions' ? 'suggestions' : 'library'
   const [includeArchived, setIncludeArchived] = useState(false)
   const [suggestionState, setSuggestionState] = useState<SuggestionState>('pending')
+  const [openSuggestionId, setOpenSuggestionId] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
 
   const knowledge = useSWR(
@@ -169,9 +193,9 @@ export default function KnowledgeView() {
               <LoadingState size={22} padding={28} />
             </div>
           ) : knowledgeError ? (
-            <ErrorCard message={knowledgeError} />
+            <ErrorNote message={knowledgeError} card />
           ) : !knowledge.data?.length ? (
-            <EmptyCard icon="book-open" title={t('empty.title')}>
+            <EmptyState icon="book-open" title={t('empty.title')} card>
               <div className="max-w-[400px] font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
                 {t('empty.description')}
               </div>
@@ -181,7 +205,7 @@ export default function KnowledgeView() {
                   {t('publish')}
                 </Button>
               )}
-            </EmptyCard>
+            </EmptyState>
           ) : (
             <div className="card">
               <div className={`row h hidden desktop:grid ${GRID}`}>
@@ -198,36 +222,47 @@ export default function KnowledgeView() {
           <MemoryConnectionsCard canManage={canManage} />
         </>
       ) : (
-        <div className="flex flex-col gap-3">
-          <div className="pillbar self-start">
-            {SUGGESTION_STATES.map((state) => (
-              <button
-                key={state}
-                type="button"
-                className={suggestionState === state ? 'pill on' : 'pill'}
-                onClick={() => setSuggestionState(state)}
-              >
-                {t(`states.${state}`)}
-              </button>
-            ))}
+        <div className="card">
+          <div className="cardhead justify-between gap-3">
+            <div className="pillbar">
+              {SUGGESTION_STATES.map((state) => (
+                <button
+                  key={state}
+                  type="button"
+                  className={suggestionState === state ? 'pill on' : 'pill'}
+                  onClick={() => setSuggestionState(state)}
+                >
+                  {t(`states.${state}`)}
+                </button>
+              ))}
+            </div>
+            {!!suggestions.data?.length && (
+              <span className="hidden font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:inline">
+                {t('suggestionCount', { count: suggestions.data.length })}
+              </span>
+            )}
           </div>
           {suggestions.isLoading && !suggestions.data ? (
-            <div className="card">
-              <LoadingState size={22} padding={28} />
-            </div>
+            <LoadingState size={22} padding={28} />
           ) : suggestionsError ? (
-            <ErrorCard message={suggestionsError} />
+            <ErrorNote message={suggestionsError} />
           ) : !suggestions.data?.length ? (
-            <EmptyCard icon="sparkles" title={t('emptySuggestions', { state: suggestionState })}>
+            <EmptyState icon="sparkles" title={t('emptySuggestions', { state: suggestionState })}>
               {suggestionState === 'pending' && (
                 <div className="max-w-[400px] font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
                   {t('emptySuggestionsHint')}
                 </div>
               )}
-            </EmptyCard>
+            </EmptyState>
           ) : (
             suggestions.data.map((suggestion) => (
-              <SuggestionCard key={suggestion.id} suggestion={suggestion} onReviewed={reviewed} />
+              <SuggestionRow
+                key={suggestion.id}
+                suggestion={suggestion}
+                open={openSuggestionId === suggestion.id}
+                onToggle={() => setOpenSuggestionId((current) => (current === suggestion.id ? null : suggestion.id))}
+                onReviewed={reviewed}
+              />
             ))
           )}
         </div>

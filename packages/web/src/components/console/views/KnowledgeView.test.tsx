@@ -6,11 +6,11 @@ import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setApiOrgId, type OrganizationKnowledgeDto, type OrganizationSuggestionDto } from '@/lib/api'
 
-const mocks = vi.hoisted(() => ({ role: 'owner' as 'owner' | 'collaborator' }))
+const mocks = vi.hoisted(() => ({ role: 'owner' as 'owner' | 'collaborator', tab: '' }))
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
-  useSearchParams: () => new URLSearchParams()
+  useSearchParams: () => new URLSearchParams(mocks.tab)
 }))
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'org-test' }, myRole: mocks.role, orgPath: (path: string) => path })
@@ -26,7 +26,7 @@ vi.mock('next/dynamic', () => ({
 }))
 
 import KnowledgeView from './KnowledgeView'
-import { SuggestionCard } from '@/components/console/SuggestionCard'
+import { SuggestionRow } from '@/components/console/SuggestionRow'
 
 const BASE: OrganizationSuggestionDto = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -76,28 +76,56 @@ const KNOWLEDGE: OrganizationKnowledgeDto = {
   canManage: true
 }
 
+const KNOWLEDGE_BODY = {
+  kind: 'knowledge',
+  digest: BASE.digest,
+  snapshotToken: `sha256:${'b'.repeat(64)}`,
+  content: '# Deployment\nRun every gate.',
+  summary: BASE.summary,
+  tags: BASE.tags
+}
+
 let host: HTMLDivElement
 let root: Root
 
+function buttons(): HTMLButtonElement[] {
+  return [...host.querySelectorAll('button')]
+}
+
+/** The button whose text is exactly `label`, else the first one containing it ("Accept" must not find the "Accepted" pill). */
 function button(label: string): HTMLButtonElement {
-  const found = [...host.querySelectorAll('button')].find((candidate) => candidate.textContent?.includes(label))
+  const found =
+    buttons().find((candidate) => candidate.textContent?.trim() === label) ??
+    buttons().find((candidate) => candidate.textContent?.includes(label))
   if (!found) throw new Error(`button not found: ${label}`)
   return found
+}
+
+function hasButton(label: string): boolean {
+  return buttons().some((candidate) => candidate.textContent?.trim() === label)
 }
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 }
 
-async function renderCard(suggestion: OrganizationSuggestionDto, onReviewed = vi.fn(async () => undefined)) {
+function reviewBody(fetchMock: ReturnType<typeof vi.fn>): unknown {
+  const call = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/review'))
+  return JSON.parse(String((call?.[1] as RequestInit | undefined)?.body))
+}
+
+async function renderRow(
+  suggestion: OrganizationSuggestionDto,
+  { open = true, onReviewed = vi.fn(async () => undefined), onToggle = vi.fn() } = {}
+) {
   await act(async () => {
     root.render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <SuggestionCard suggestion={suggestion} onReviewed={onReviewed} />
+        <SuggestionRow suggestion={suggestion} open={open} onToggle={onToggle} onReviewed={onReviewed} />
       </SWRConfig>
     )
   })
-  return onReviewed
+  return { onReviewed, onToggle }
 }
 
 async function renderView() {
@@ -127,6 +155,7 @@ beforeEach(() => {
   root = createRoot(host)
   setApiOrgId('org-test')
   mocks.role = 'owner'
+  mocks.tab = ''
 })
 
 afterEach(async () => {
@@ -136,21 +165,34 @@ afterEach(async () => {
   vi.unstubAllGlobals()
 })
 
-describe('organization suggestion review card', () => {
-  it('keeps both review decisions disabled while the source review surface is unavailable', async () => {
+describe('organization suggestion review row', () => {
+  it('keeps a closed row to its summary line: no body read, no decisions', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    await renderCard({ ...BASE, contentAvailable: false })
+    await renderRow(BASE, { open: false })
+
+    expect(host.textContent).toContain('Safe deployment')
+    expect(host.textContent).toContain('Proposed by dreamer')
+    expect(host.textContent).toContain('1 session')
+    expect(hasButton('Accept')).toBe(false)
+    expect(hasButton('Reject')).toBe(false)
+    expect(host.querySelector('button[aria-expanded="false"]')).not.toBeNull()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps both decisions disabled while the source review surface is unavailable', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    await renderRow({ ...BASE, contentAvailable: false })
 
     expect(button('Reject').disabled).toBe(true)
     expect(button('Accept').disabled).toBe(true)
-    expect(button('Inspect').disabled).toBe(true) // nothing to read the body from
     expect(host.textContent).toContain('Unavailable')
     expect(host.textContent).toContain("Can't review while the proposing agent is offline.")
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('renders the full knowledge Markdown body before enabling acceptance', async () => {
+  it('reads the body when the row opens and enables Accept once the full text has rendered', async () => {
     let releaseContent!: (response: Response) => void
     const contentResponse = new Promise<Response>((resolve) => {
       releaseContent = resolve
@@ -160,84 +202,56 @@ describe('organization suggestion review card', () => {
       return json({ ...BASE, state: 'accepted' }, init?.method === 'POST' ? 200 : 500)
     })
     vi.stubGlobal('fetch', fetchMock)
-    const onReviewed = await renderCard(BASE)
-    // Accept is disabled until the body renders — it binds to the inspected snapshot — and the
-    // step that unlocks it sits right beside it.
-    expect(button('Accept').disabled).toBe(true)
-    expect(button('Inspect').disabled).toBe(false)
-    expect(host.textContent).toContain('Inspect the full text to enable Accept.')
-    expect(fetchMock).not.toHaveBeenCalled()
-    await act(async () => button('Inspect').click())
+    const { onReviewed } = await renderRow(BASE)
     await settleUntil(() => fetchMock.mock.calls.length === 1)
-    await act(async () => {
-      releaseContent(
-        json({
-          kind: 'knowledge',
-          digest: BASE.digest,
-          snapshotToken: `sha256:${'b'.repeat(64)}`,
-          content: '# Deployment\nRun every gate.',
-          summary: BASE.summary,
-          tags: BASE.tags
-        })
-      )
-    })
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(`/knowledge-suggestions/${BASE.id}/content`)
+    // Opening is the inspection: nothing to click first, and Accept waits for the body it binds to.
+    expect(hasButton('Inspect')).toBe(false)
+    expect(button('Accept').disabled).toBe(true)
+    expect(button('Reject').disabled).toBe(false)
+
+    await act(async () => releaseContent(json(KNOWLEDGE_BODY)))
     await settleUntil(() => host.textContent?.includes('Run every gate.') === true)
-
     expect(host.textContent).toContain('# Deployment')
-    expect(host.textContent).not.toContain('Inspect the full text')
     expect(button('Accept').disabled).toBe(false)
-    await act(async () => button('Accept').click())
-    await settleUntil(() => onReviewed.mock.calls.length === 1)
-    const reviewCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/review'))
-    expect(JSON.parse(String(reviewCall?.[1]?.body))).toEqual({
-      decision: 'accept',
-      snapshotToken: `sha256:${'b'.repeat(64)}`
-    })
-    expect(onReviewed).toHaveBeenCalledTimes(1)
-  })
-
-  it('inspects from the header, then accepts — the inspect click never posts a review', async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).endsWith('/content')) {
-        return json({
-          kind: 'knowledge',
-          digest: BASE.digest,
-          snapshotToken: `sha256:${'c'.repeat(64)}`,
-          content: '# Deployment',
-          summary: BASE.summary,
-          tags: BASE.tags
-        })
-      }
-      return json({ ...BASE, state: 'accepted' }, init?.method === 'POST' ? 200 : 500)
-    })
-    vi.stubGlobal('fetch', fetchMock)
-    const onReviewed = await renderCard(BASE)
-
-    await act(async () => button('Inspect').click())
-    await settleUntil(() => host.textContent?.includes('Deployment') === true)
-    // That click fetched the body; it did NOT review anything.
-    expect(fetchMock.mock.calls.every(([input]) => !String(input).endsWith('/review'))).toBe(true)
 
     await act(async () => button('Accept').click())
     await settleUntil(() => onReviewed.mock.calls.length === 1)
-    const reviewCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/review'))
-    expect(JSON.parse(String(reviewCall?.[1]?.body))).toEqual({
-      decision: 'accept',
-      snapshotToken: `sha256:${'c'.repeat(64)}`
-    })
+    expect(reviewBody(fetchMock)).toEqual({ decision: 'accept', snapshotToken: KNOWLEDGE_BODY.snapshotToken })
   })
 
-  it('rejects without inspecting: nothing is installed, so no snapshot is needed', async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
-      json({ ...BASE, state: 'rejected' })
-    )
+  it('rejects from an open row without waiting for the body: nothing is installed, so no snapshot is needed', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/content')) return new Promise<Response>(() => undefined)
+      return json({ ...BASE, state: 'rejected' })
+    })
     vi.stubGlobal('fetch', fetchMock)
-    const onReviewed = await renderCard(BASE)
+    const { onReviewed } = await renderRow(BASE)
+    await settleUntil(() => !button('Reject').disabled)
+
     await act(async () => button('Reject').click())
     await settleUntil(() => onReviewed.mock.calls.length === 1)
-    const reviewCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/review'))
-    expect(JSON.parse(String(reviewCall?.[1]?.body))).toEqual({ decision: 'reject' })
-    expect(fetchMock.mock.calls.every(([input]) => !String(input).endsWith('/content'))).toBe(true)
+    expect(reviewBody(fetchMock)).toEqual({ decision: 'reject' })
+  })
+
+  it('surfaces a failed body read with a retry and keeps Accept off', async () => {
+    let attempts = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (!String(input).endsWith('/content')) return json({}, 500)
+      attempts += 1
+      return attempts === 1
+        ? json({ error: 'Service Unavailable', statusCode: 503, message: 'source daemon offline' }, 503)
+        : json(KNOWLEDGE_BODY)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await renderRow(BASE)
+    await settleUntil(() => host.textContent?.includes('source daemon offline') === true)
+    expect(button('Accept').disabled).toBe(true)
+    expect(button('Reject').disabled).toBe(false)
+
+    await act(async () => button('Retry').click())
+    await settleUntil(() => host.textContent?.includes('Run every gate.') === true)
+    expect(button('Accept').disabled).toBe(false)
   })
 
   it('renders every text file and identifies binary assets in a complete skill tree', async () => {
@@ -258,21 +272,23 @@ describe('organization suggestion review card', () => {
       })
     )
     vi.stubGlobal('fetch', fetchMock)
-    await renderCard({ ...BASE, kind: 'skill', title: 'safe-deploy' })
-    expect(fetchMock).not.toHaveBeenCalled()
-    await act(async () => button('Inspect').click())
+    await renderRow({ ...BASE, kind: 'skill', title: 'safe-deploy' })
     await settleUntil(() => host.textContent?.includes('echo ready') === true)
 
-    expect(host.textContent).toContain('SKILL.md')
+    expect(host.textContent).toContain('3 files')
+    // The manifest leads the tree even though "assets/" sorts first.
+    expect(host.textContent?.indexOf('SKILL.md')).toBeLessThan(host.textContent?.indexOf('assets/logo.png') ?? -1)
     expect(host.textContent).toContain('scripts/check.sh')
     expect(host.textContent).toContain('echo ready')
     expect(host.textContent).toContain('assets/logo.png')
     expect(host.textContent).toContain('Binary asset')
+    expect(button('Accept').disabled).toBe(false)
   })
 
-  it('reduces a reviewed suggestion to one outcome line that links to the accepted entry', async () => {
-    vi.stubGlobal('fetch', vi.fn())
-    await renderCard({
+  it('reduces an accepted suggestion to one outcome row that opens the accepted entry', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    await renderRow({
       ...BASE,
       state: 'accepted',
       reviewedAt: '2026-08-01T00:00:00.000Z',
@@ -281,11 +297,26 @@ describe('organization suggestion review card', () => {
     })
     expect(host.textContent).toContain('Accepted as rev 1')
     expect(host.querySelector(`a[href="/knowledge/${KNOWLEDGE.id}"]`)).not.toBeNull()
-    expect([...host.querySelectorAll('button')].map((b) => b.textContent)).toEqual([])
-    // Internal identifiers stay out of the card.
+    expect(buttons()).toEqual([])
+    expect(fetchMock).not.toHaveBeenCalled()
+    // Internal identifiers stay out of the row.
     expect(host.textContent).not.toContain('dream-1')
     expect(host.textContent).not.toContain('session-1')
     expect(host.textContent).not.toContain('sha256')
+  })
+
+  it('shows a rejection with its reason and nothing to click', async () => {
+    vi.stubGlobal('fetch', vi.fn())
+    await renderRow({
+      ...BASE,
+      state: 'rejected',
+      reviewedAt: '2026-08-01T00:00:00.000Z',
+      reviewReason: 'Duplicates the release runbook'
+    })
+    expect(host.textContent).toContain('Rejected')
+    expect(host.textContent).toContain('Duplicates the release runbook')
+    expect(buttons()).toEqual([])
+    expect(host.querySelector('a')).toBeNull()
   })
 })
 
@@ -331,6 +362,45 @@ describe('organization knowledge surface', () => {
     expect(urls.some((url) => url.includes('/knowledge-suggestions?state=pending'))).toBe(true)
   })
 
+  it('reviews from the Suggestions tab: one row opens at a time, and a decision refreshes the list', async () => {
+    mocks.tab = 'tab=suggestions'
+    const second = { ...BASE, id: 'second', title: 'Rollback checklist', summary: null }
+    let pendingRows = [BASE, second]
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/content')) return json(KNOWLEDGE_BODY)
+      if (url.endsWith('/review')) {
+        pendingRows = pendingRows.filter((row) => !url.includes(row.id))
+        return json({ ...BASE, state: 'accepted' }, init?.method === 'POST' ? 200 : 500)
+      }
+      if (url.includes('/knowledge-suggestions')) return json(pendingRows)
+      if (url.includes('/knowledge?')) return json([KNOWLEDGE])
+      return json([])
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await renderView()
+    await settleUntil(() => host.textContent?.includes('Rollback checklist') === true)
+    expect(host.textContent).toContain('2 suggestions')
+    expect(hasButton('Accept')).toBe(false)
+    expect(fetchMock.mock.calls.every(([input]) => !String(input).endsWith('/content'))).toBe(true)
+
+    await act(async () => button('Safe deployment').click())
+    await settleUntil(() => host.textContent?.includes('Run every gate.') === true)
+    expect(host.querySelectorAll('button[aria-expanded="true"]')).toHaveLength(1)
+
+    // Opening the second row closes the first: one body on screen at a time.
+    await act(async () => button('Rollback checklist').click())
+    await settleUntil(() => button('Rollback checklist').getAttribute('aria-expanded') === 'true')
+    expect(button('Safe deployment').getAttribute('aria-expanded')).toBe('false')
+    await settleUntil(() => !button('Accept').disabled)
+
+    await act(async () => button('Accept').click())
+    await settleUntil(() => host.textContent?.includes('Rollback checklist') === false)
+    expect(reviewBody(fetchMock)).toEqual({ decision: 'accept', snapshotToken: KNOWLEDGE_BODY.snapshotToken })
+    expect(host.textContent).toContain('Safe deployment')
+    expect(host.textContent).toContain('1 suggestion')
+  })
+
   it('hides the review tab and the publish action from members who cannot manage knowledge', async () => {
     mocks.role = 'collaborator'
     const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
@@ -341,7 +411,7 @@ describe('organization knowledge surface', () => {
     await settleUntil(() => host.textContent?.includes('Release policy') === true)
 
     expect(host.textContent).not.toContain('Suggestions')
-    expect([...host.querySelectorAll('button')].some((b) => b.textContent?.includes('Publish'))).toBe(false)
+    expect(buttons().some((b) => b.textContent?.includes('Publish'))).toBe(false)
     expect(fetchMock.mock.calls.every(([input]) => !String(input).includes('/knowledge-suggestions'))).toBe(true)
   })
 })
