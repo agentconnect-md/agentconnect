@@ -2279,8 +2279,27 @@ model Relay {
   lastSeenAt DateTime? @db.Timestamptz(6) // rc/heartbeat; drives the failover sweeper
   createdAt  DateTime  @default(now()) @db.Timestamptz(6)
 
+  credentialObservations BotCredentialObservation[]
+
   @@index([lastSeenAt])
   @@map("relay")
+}
+
+// Each relay's latest credential probe of a bot (preset-agents.md §5.3); the bot's rejected mark aggregates them for its current revision.
+model BotCredentialObservation {
+  botId              String   @db.Uuid
+  relayId            String   @db.Uuid
+  credentialRevision Int
+  result             String // ok | rejected
+  code               String? // the platform's code for a rejection
+  observedAt         DateTime @db.Timestamptz(6)
+
+  bot   Bot   @relation(fields: [botId], references: [id], onDelete: Cascade)
+  relay Relay @relation(fields: [relayId], references: [id], onDelete: Cascade)
+
+  @@id([botId, relayId])
+  @@index([relayId])
+  @@map("bot_credential_observation")
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -2332,11 +2351,9 @@ model Bot {
   revokedReason         String?
   revokedEvidence       String?
   revokedCode           String?
-  // The platform rejected the CURRENT credential on an ambiguous probe (first seen, and its code); a mark only, never a revocation.
+  // Some relay's latest probe rejected the CURRENT credential ambiguously (first seen, newest code), aggregated from `bot_credential_observation`; a mark only, never a revocation.
   credentialRejectedAt  DateTime?      @db.Timestamptz(6)
   credentialRejectedCode String?
-  // Latest probe observation applied to the CURRENT credential; a check applies only when strictly newer, so checks are monotonic.
-  credentialCheckedAt   DateTime?      @db.Timestamptz(6)
   // Install GENERATION of the bot's CURRENT credential. Slack does not guarantee
   // the ordering of `app_uninstalled` / `tokens_revoked`, so a delayed event from
   // a PRIOR install can land after the workspace re-installed — applying it would
@@ -2400,6 +2417,7 @@ model Bot {
   // The 1-install cap for classic bots is enforced in the install route, not by a
   // unique FK (dropped so shared bots can fan out).
   integrations Integration[]
+  credentialObservations BotCredentialObservation[]
 
   // One Bot per external app identity per platform — the relay demux fence, and
   // cross-org global because a workspace binds to exactly one org. A row that

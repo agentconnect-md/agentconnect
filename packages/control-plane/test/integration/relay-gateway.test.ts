@@ -1276,6 +1276,8 @@ describe('bot credential evidence over the relay wire', () => {
     await nextFrame(ws, 'rc/auth/ok')
     sendFrame(ws, 'rc/register', { name: 'pod-evidence', daemonUrl: 'wss://evidence.example.test' })
     const registered = (await nextFrame(ws, 'rc/registered')).payload as RcRegistered
+    // v2: the CP keeps each relay's observation and aggregates the mark, so a relay may report every change of its own.
+    expect(BOT_CREDENTIAL_CHECK_FEATURE).toBe('bot-credential-check-v2')
     expect(registered.serverFeatures).toContain(BOT_CREDENTIAL_CHECK_FEATURE)
 
     const rejected = await seedBot()
@@ -1293,6 +1295,10 @@ describe('bot credential evidence over the relay wire', () => {
       credentialRejectedCode: 'invalid_auth',
       revokedAt: null
     })
+    // Keyed by the registered relay that reported it.
+    expect(await prisma.botCredentialObservation.findMany({ where: { botId: rejected } })).toEqual([
+      expect.objectContaining({ relayId: registered.relayId, result: 'rejected', code: 'invalid_auth' })
+    ])
 
     // An older relay names no evidence: recorded as the lifecycle event it must have been.
     const legacy = await seedBot()

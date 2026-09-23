@@ -51,6 +51,14 @@ describe('RelayConfigSchema — exactly-one-credential boot guard (§8)', () => 
     expect(memoryOnly.RELAY_MEMORY_ALLOWED_UPSTREAMS).toBe('memory.example.test')
     expect(memoryOnly.RELAY_MCP_ALLOWED_UPSTREAMS).toBeUndefined()
   })
+  it('probes credentials hourly unless RELAY_CREDENTIAL_PROBE_INTERVAL_SEC overrides it', () => {
+    expect(RelayConfigSchema.parse({ ...BASE, RELAY_TOKEN: TOKEN }).RELAY_CREDENTIAL_PROBE_INTERVAL_SEC).toBe(3600)
+    const tuned = RelayConfigSchema.parse({ ...BASE, RELAY_TOKEN: TOKEN, RELAY_CREDENTIAL_PROBE_INTERVAL_SEC: '600' })
+    expect(tuned.RELAY_CREDENTIAL_PROBE_INTERVAL_SEC).toBe(600)
+    expect(
+      RelayConfigSchema.safeParse({ ...BASE, RELAY_TOKEN: TOKEN, RELAY_CREDENTIAL_PROBE_INTERVAL_SEC: '0' }).success
+    ).toBe(false)
+  })
 })
 
 describe('resolveAuth', () => {

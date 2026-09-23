@@ -104,9 +104,16 @@ export const linearIngressPlugin: RelayPlatformIngressPlugin<LinearHttpIngest, V
     if (verified.kind === 'ignored') return {}
     if (verified.kind === 'revoked') {
       host.log.warn(`relay-ingress(${botId}): workspace revoked the Linear app`)
-      // The revision is the OBSERVING assignment's, captured at buildIngest — a fire-and-forget
-      // older ingest must never revoke a credential a re-connect has since replaced.
-      host.reportRevoked(botId, 'tokens_revoked', verified.eventAtMs, ingest.credentialRevision)
+      // Fence with the OBSERVING assignment's revision, so an older ingest never revokes a credential a re-connect replaced.
+      host.reportRevoked(
+        botId,
+        {
+          reason: 'tokens_revoked',
+          evidence: 'event',
+          ...(verified.eventAtMs !== undefined ? { eventAtMs: verified.eventAtMs } : {})
+        },
+        ingest.credentialRevision
+      )
       return {}
     }
     const event = verified.event

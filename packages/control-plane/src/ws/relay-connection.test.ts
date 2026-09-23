@@ -635,7 +635,7 @@ describe('RelayConnection FSM', () => {
     expect(onBotRevoked).toHaveBeenCalledWith(revoked)
   })
 
-  it('rc/bot-credential-check in READY reaches its handler and is acknowledged with the verdict', async () => {
+  it('rc/bot-credential-check in READY reaches its handler with the reporting relay and is acknowledged', async () => {
     const onBotCredentialCheck = vi.fn(async () => ({ applied: false }))
     const { transport } = build({ onBotCredentialCheck })
     await toReady(transport)
@@ -651,7 +651,8 @@ describe('RelayConnection FSM', () => {
     await Promise.resolve()
     await Promise.resolve()
 
-    expect(onBotCredentialCheck).toHaveBeenCalledWith(check)
+    // The registered relay id keys the CP's per-relay observation.
+    expect(onBotCredentialCheck).toHaveBeenCalledWith(check, RELAY_ID)
     expect(transport.lastRep('rc/bot-credential-check/ok')!.payload).toEqual({ botId: check.botId, applied: false })
   })
 

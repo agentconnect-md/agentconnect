@@ -88,8 +88,8 @@ export interface RelayConnDeps {
    *  retryable error so the relay reports again rather than losing the only
    *  signal a dead credential ever produces. */
   onBotRevoked: (m: RcBotRevoked) => Promise<{ applied: boolean }>
-  /** Apply a probe's non-revoking answer (`rc/bot-credential-check`); acknowledged like `onBotRevoked`, so a throw answers a retryable error. */
-  onBotCredentialCheck: (m: RcBotCredentialCheck) => Promise<{ applied: boolean }>
+  /** Record this relay's probe answer that does not revoke (`rc/bot-credential-check`); acknowledged like `onBotRevoked`, so a throw answers a retryable error. */
+  onBotCredentialCheck: (m: RcBotCredentialCheck, relayId: string) => Promise<{ applied: boolean }>
   /** Fired after this relay left the connected registry (socket closed) — the
    *  connected roster changed, so §14.3 notice authorities must re-converge on the
    *  survivors. Best-effort; never throws. */
@@ -383,7 +383,7 @@ export class RelayConnection implements RelayChannel {
   private async handleBotCredentialCheck(frame: RelayCpFrame, req: RcBotCredentialCheck): Promise<void> {
     let result: { applied: boolean }
     try {
-      result = await this.deps.onBotCredentialCheck(req)
+      result = await this.deps.onBotCredentialCheck(req, this.relayId)
     } catch {
       this.sendError(frame.id, 'INTERNAL', 'bot credential check failed', true)
       return

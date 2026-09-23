@@ -271,12 +271,33 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
         onSessionAction: (action) => forwardSessionAction(host, botId, action),
         onSessionShortcut: (shortcut) => forwardSessionShortcut(host, botId, shortcut),
         onSessionStopped: (stop) => forwardSessionStop(host, botId, stop),
-        onBotRevoked: (reason, eventAtMs) => {
+        onBotRevoked: (reason, proof) => {
           host.log.warn(`relay-ingress(${botId}): workspace revoked the app (${reason})`)
-          // Fence with the generation THIS ingest was built from — assignments
-          // start fire-and-forget, and an older ingest's auth.test finishing
-          // after a re-assign must not revoke the replacement credential.
-          host.reportRevoked(botId, reason, eventAtMs, a.credentialRevision)
+          // Fence with the generation THIS ingest was built from, so a late probe of an older ingest cannot revoke its replacement.
+          host.reportRevoked(botId, { reason, ...proof }, a.credentialRevision)
+        },
+        onCredentialCheck: (check) => {
+          const observedAtMs = host.clock.now()
+          if (check.result === 'ok') {
+            host.reportCredentialCheck(botId, { result: 'ok', observedAtMs }, a.credentialRevision)
+            return
+          }
+          // A CP without credential checks cannot mark a rejection, so it gets the revocation it always did.
+          if (!host.credentialCheckSupported()) {
+            host.log.warn(`relay-ingress(${botId}): Slack rejected the token (${check.code}) — reporting revocation`)
+            host.reportRevoked(
+              botId,
+              { reason: 'tokens_revoked', evidence: 'probe', code: check.code },
+              a.credentialRevision
+            )
+            return
+          }
+          host.log.warn(`relay-ingress(${botId}): Slack rejected the token (${check.code}) — marking it, not revoking`)
+          host.reportCredentialCheck(
+            botId,
+            { result: 'rejected', code: check.code, observedAtMs },
+            a.credentialRevision
+          )
         },
         log: host.log
       }

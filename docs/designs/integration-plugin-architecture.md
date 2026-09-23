@@ -587,6 +587,9 @@ interface RelayBotIngress {
   // Slack performs relay-side egress; Feishu deliberately keeps egress on the
   // daemon. Facet presence IS the `relayOwnsEgress` capability read.
   egress?: { notice; lookupUserName }
+  // Re-checks the credential with the platform; core owns the jittered
+  // schedule and clears it with the ingest.
+  probeCredential?(): Promise<void>
 }
 
 interface RelayHostServices {
@@ -598,7 +601,12 @@ interface RelayHostServices {
   // Fenced with the revision the OBSERVING ingest was built from, never the
   // mutable current one: assignments start fire-and-forget, so an older
   // ingest's auth.test can land after a newer assignment installed.
-  reportRevoked(reason, credentialRevision, atMs?)
+  reportRevoked({ reason, evidence, eventAtMs?, code? }, credentialRevision)
+  // A probe answer that does not revoke (ok, or an ambiguous rejection). Core
+  // sends it only when it changed and the CP accepts checks; the plugin reads
+  // credentialCheckSupported() to fall back to reportRevoked for an older CP.
+  reportCredentialCheck({ result, code?, observedAtMs }, credentialRevision)
+  credentialCheckSupported(): boolean
   reportChannels
   reportConversation
   // Three trust models, not one lookup. targetForAgent requires a live routing
