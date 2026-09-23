@@ -527,7 +527,7 @@ import { sessionPodOf } from './cp/agent-wake.js'
 import { createWorkspaceFileLinkResolver, type WorkspaceFileLinkResolver } from './messages/workspace-file-links.js'
 import { canonicalWorkspacePath, containedWorkspacePath, WorkspaceViolationError } from './workspace/workspace-files.js'
 import { readRegularFile, RegularFileError } from './fs/regular-file.js'
-import { localWorkspaceFs, type WorkspaceFs } from './workspace/workspace-fs.js'
+import { localWorkspaceFs } from './workspace/workspace-fs.js'
 import type { SaveAttachmentResult } from './mcp/ops/platform-reads.js'
 import { saveAttachmentTo, type SaveAttachmentTarget } from './mcp/ops/save-attachment.js'
 import type { ShareReadResult, ShareTargetResult } from './mcp/ops/share-file.js'
@@ -3362,8 +3362,8 @@ export class Daemon {
           return { ok: true, bytes, name: `${stem}.${ext}`, mimeType: sniffed, sha256 }
         }
 
-        // Pod arm (design §6): the daemon adds the lexical fence (with the `.git` rule); the pod's fd-anchored descent is the symlink guarantee.
-        const podFs = this.poolToolWorkspaceFs(ctx.agentId, key)
+        // Pod arm (design §6), and an executor's: the daemon adds the lexical fence (with the `.git` rule); the shim's fd-anchored descent is the symlink guarantee.
+        const podFs = this.workspaces.offDiskFsFor(ctx.agentId, { sessionKey: key })
         if (podFs !== undefined) {
           if (podFs === 'unbound') return { ok: false, reason: 'sandboxed' }
           let resolved: string
@@ -3425,8 +3425,8 @@ export class Daemon {
           (await scope.location(ctx.agentId).catch(() => undefined))
         if (!location) return { ok: false, reason: 'no-workspace' }
 
-        // Pod arm: the channel's descent is the containment; local arm: realpath re-verifies `uploads/`. Anything thrown past the helper is the channel or the disk.
-        const podFs = this.poolToolWorkspaceFs(ctx.agentId, key)
+        // Pod or executor arm: the channel's descent is the containment; local arm: realpath re-verifies `uploads/`. Anything thrown past the helper is the channel or the disk.
+        const podFs = this.workspaces.offDiskFsFor(ctx.agentId, { sessionKey: key })
         if (podFs === 'unbound') return { ok: false, reason: 'sandboxed' }
         const target: SaveAttachmentTarget = podFs
           ? { kind: 'workspace-fs', fs: podFs, root: location.root }
@@ -4734,12 +4734,6 @@ export class Daemon {
   /** Where a session is placed, or undefined for one that runs on this machine. */
   private placedSession(sessionKey: string | undefined): PlacedSession | undefined {
     return sessionKey === undefined ? undefined : this.executorPlane?.placementOf(sessionKey)
-  }
-
-  /** A pool session's tool workspace on the pod that owns each path, 'unbound' while no pod of the agent is, undefined off the pool — judged by the session's own scope, as its location was, never by whether the agent pod ever reported a mount here. */
-  private poolToolWorkspaceFs(agentId: string, sessionKey: string): WorkspaceFs | 'unbound' | undefined {
-    if (!this.k8sPlane || !this.workspaces.offDisk({ agentId, sessionKey })) return undefined
-    return this.k8sPlane.workspaceFsFor(agentId)?.fs ?? 'unbound'
   }
 
   private workspaceFilesFor(agentId: string) {
@@ -6287,15 +6281,21 @@ export class Daemon {
     let lastError: unknown
     for (let attempt = 1; attempt <= attempts; attempt++) {
       // A session in its own pod prepares its workspace when it opens, after this launch; the gate re-verifies that pod alone.
-      const cwd = this.runsInSessionPod(agent, entry.sessionKey)
+      const inSessionPod = this.runsInSessionPod(agent, entry.sessionKey)
+      const cwd = inSessionPod
         ? await this.prepareSessionPodLaunch(agent, entry.sessionKey)
         : await this.prepareAgentWorkspace(agent, undefined, undefined)
       const hostKey = sessionHostKey(agent.id, entry.sessionKey)
+      // The clones it already holds on that pod, as an ordinary start lists them; a session opening after this launch has none yet.
+      const sessionGitDirs = inSessionPod
+        ? await this.listSessionGitDirs(agent, entry.sessionKey, hostKeyLabel(hostKey))
+        : undefined
       const { host, configFileState } = this.buildAcpHost(agent, this.cfg, {
         hostKey,
         runInSandbox: this.agentRunsInSandbox(agent),
         cwd,
         warnOnSandboxDowngrade: true,
+        ...(sessionGitDirs ? { sessionGitDirs } : {}),
         modelCredential: {
           target: entry.target,
           credential: {
@@ -6319,6 +6319,14 @@ export class Daemon {
       }
     }
     throw lastError
+  }
+
+  /** The `.git` of a session's clones off this disk, listed where they are because its launch cannot read them; undefined for clones on this disk, and a failed listing grants nothing. */
+  private async listSessionGitDirs(agent: Agent, sessionKey: string, label: string): Promise<string[] | undefined> {
+    return await this.workspaces.offDiskSessionGitDirs(agent, sessionKey)?.catch((err: unknown) => {
+      this.log.warn(`acp: could not list the clones of "${label}" where it runs: ${formatErr(err)}`)
+      return []
+    })
   }
 
   /** Forget a host's launch facts and drop its sandbox policy directory, once its process is gone. */
@@ -17526,14 +17534,7 @@ export class Daemon {
             )
       if (!this.usesMicrosandbox(agent))
         await withStartupPhase('runtime', () => this.ensureRuntimeInstalled(agent.runtime, true))
-      // Clones off this disk are listed where they are, since the launch cannot read them itself; no answer grants nothing.
-      const listing = boundKey ? this.workspaces.offDiskSessionGitDirs(agent, boundKey) : undefined
-      const sessionGitDirs = listing
-        ? await listing.catch((err: unknown) => {
-            this.log.warn(`acp: could not list the clones of "${label}" where it runs: ${formatErr(err)}`)
-            return []
-          })
-        : undefined
+      const sessionGitDirs = boundKey ? await this.listSessionGitDirs(agent, boundKey, label) : undefined
       if (this.hostStartGeneration.get(key) !== generation) {
         throw new Error(`host start superseded for ${label}`)
       }

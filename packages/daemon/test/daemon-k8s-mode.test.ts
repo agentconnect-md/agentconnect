@@ -1598,18 +1598,21 @@ describe("a host start in a session's own pod leaves the agent's checkout alone 
     const checkout = vi.spyOn(inner.workspaces, 'prepareClusterWorkspace').mockResolvedValue('/agent/checkout')
     const skills = vi.spyOn(inner, 'reconcileClusterSkills').mockResolvedValue(undefined)
     vi.spyOn(inner, 'ensureRuntimeInstalled').mockResolvedValue(undefined)
-    vi.spyOn(inner.workspaces, 'offDiskSessionGitDirs').mockResolvedValue([])
+    const gitListing = vi.spyOn(inner.workspaces, 'offDiskSessionGitDirs').mockResolvedValue([])
     const launches: { hostKey: string; cwd: string }[] = []
+    // The clones' `.git` each launch was handed, apart from `launches` so the cwd assertions stay exact.
+    const gitDirs: Array<string[] | undefined> = []
     vi.spyOn(inner, 'buildAcpHost').mockImplementation((...args: unknown[]) => {
-      const launch = args[2] as { hostKey: string; cwd: string }
+      const launch = args[2] as { hostKey: string; cwd: string; sessionGitDirs?: string[] }
       launches.push({ hostKey: launch.hostKey, cwd: launch.cwd })
+      gitDirs.push(launch.sessionGitDirs)
       const first = launches.length === 1
       const start = async () => {
         if (opts.failFirstStart && first) throw new Error('initialize failed')
       }
       return { host: { start, stop: async () => {} } }
     })
-    return { instance, inner, agent, bound, preparation, checkout, skills, launches }
+    return { instance, inner, agent, bound, preparation, checkout, skills, launches, gitListing, gitDirs }
   }
 
   const modelEntry = (sessionKey: string) => ({
@@ -1629,6 +1632,34 @@ describe("a host start in a session's own pod leaves the agent's checkout alone 
       expect(pool.skills.mock.calls.map((call) => call[1])).toEqual([SESSION_POD])
       expect(pool.launches).toEqual([{ hostKey: sessionHostKey('bot-a', KEY), cwd: SESSION_CWD }])
       expect(pool.inner.hostLaunch.get(sessionHostKey('bot-a', KEY)).cwd).toBe(SESSION_CWD)
+    } finally {
+      await pool.instance.stop()
+    }
+  })
+
+  // Codex's `:workspace` pins a clone's `.git` read-only, so a restarted key-server host — a refreshed credential, a reaped host — needs the grants an ordinary start gives.
+  it('hands a key-server host the clones its session pod already holds, as an ordinary start does', async () => {
+    const pool = await poolMember({ isolation: 'session', failFirstStart: true })
+    try {
+      const clones = [`${SESSION_CWD}/.git`, join('/agent', 'sessions', sessionKeyDirName(KEY), 'repos/acme/lib/.git')]
+      pool.gitListing.mockResolvedValue(clones)
+      await pool.inner.startModelSessionRuntime(pool.agent, modelEntry(KEY))
+      // Listed on every attempt, as the replacement of a failed child is a fresh launch.
+      expect(pool.gitListing.mock.calls).toEqual([
+        [pool.agent, KEY],
+        [pool.agent, KEY]
+      ])
+      expect(pool.gitDirs).toEqual([clones, clones])
+
+      // A listing that fails grants nothing and still starts the host.
+      const fresh = await poolMember({ isolation: 'session' })
+      try {
+        fresh.gitListing.mockRejectedValue(new Error('no bound channel'))
+        await fresh.inner.startModelSessionRuntime(fresh.agent, modelEntry(KEY))
+        expect(fresh.gitDirs).toEqual([[]])
+      } finally {
+        await fresh.instance.stop()
+      }
     } finally {
       await pool.instance.stop()
     }
@@ -1657,6 +1688,9 @@ describe("a host start in a session's own pod leaves the agent's checkout alone 
         expect(pool.bound).toEqual([AGENT_POD])
         expect(pool.skills.mock.calls.map((call) => call[1])).toEqual([AGENT_POD])
         expect(pool.launches).toEqual([{ hostKey: sessionHostKey('bot-a', scenario.key), cwd: '/agent/checkout' }])
+        // Neither holds clones of its own, so nothing is listed for it.
+        expect(pool.gitListing).not.toHaveBeenCalled()
+        expect(pool.gitDirs).toEqual([undefined])
       } finally {
         await pool.instance.stop()
       }
