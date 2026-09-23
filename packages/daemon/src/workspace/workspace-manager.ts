@@ -83,6 +83,7 @@ import {
   sessionDirIn,
   sessionGitDirsUnder,
   sessionLeafId,
+  sessionRootAttestationIn,
   sessionRootCloneIn,
   sessionsDirIn,
   sessionDirsIn
@@ -156,7 +157,7 @@ export interface SecondaryWorkspaceRoot extends WorkspaceRoot {
   subtreeName: string
   provider: CodeHostProvider
   repoId: string
-  /** Empty until `prepareSecondaryRoot` resolves the remote's default; nothing may clone before that. */
+  /** Empty until the remote's default is resolved — by `prepareSecondaryRoot` for the agent's checkout, by a confined session's clone for itself; nothing may clone before that. */
   branch: string
 }
 
@@ -764,6 +765,21 @@ export class WorkspaceManager {
     )
   }
 
+  /** {@link consoleSecondaryRoot} for one session: a confined session's branch is the one its own clone attests, so its push and log never read the agent's subtree; a session with no directory of its own stands in the agent's checkout. */
+  async sessionConsoleSecondaryRoot(
+    agent: Agent,
+    repoFullName: string,
+    sessionKey: string
+  ): Promise<SecondaryWorkspaceRoot | undefined> {
+    const sessionDir = this.confinedSessionDir(agent, sessionKey)
+    if (sessionDir === undefined) return await this.consoleSecondaryRoot(agent, repoFullName)
+    const root = this.consoleRootNamed(agent, repoFullName)
+    if (!root) return undefined
+    const clone = sessionRootCloneIn(sessionDir, root.subtreeName)
+    const recorded = await this.sessionRootAttestation(this.fsFor(agent.id, { sessionKey }), clone)
+    return recorded !== undefined && attestsRoot(recorded, root) ? { ...root, branch: recorded.branch } : root
+  }
+
   /** The worktree tier's record, beside the agent's subtree of the root it names; the session's directory of that root must exist too, so a leftover cannot capture a later session hashing to the same id. */
   private async legacySessionCwdSubtree(agent: Agent, sessionKey: string): Promise<SecondarySubtree | undefined> {
     const fs = this.fsFor(agent.id)
@@ -863,15 +879,7 @@ export class WorkspaceManager {
         try {
           await this.cloneRootAt(agent.id, { ...root, branch }, staged)
           // Attest before publishing so a crash leaves a retryable marker, never an unattributable checkout.
-          await fs.writeFile(
-            marker,
-            JSON.stringify(
-              { provider: root.provider, repoId: root.repoId, repoFullName: root.repoFullName, branch },
-              null,
-              2
-            ) + '\n',
-            { mode: 0o600 }
-          )
+          await fs.writeFile(marker, secondaryMaterializationText({ ...root, branch }), { mode: 0o600 })
           await this.publishSecondaryCheckout(agent.id, staged, root.path)
         } catch (err) {
           await fs.rmTree(staged)
@@ -915,16 +923,16 @@ export class WorkspaceManager {
     await fs.rename(staged, path)
   }
 
-  /** The branch `origin/HEAD` points at, asked of the remote through the clone's own credentials. */
-  async resolveRemoteDefaultBranch(agentId: string, root: SecondaryWorkspaceRoot): Promise<string> {
+  /** The branch `origin/HEAD` points at, asked of the remote through the clone's own credentials — from `cwd` when given, the directory that names the machine a session's clone runs on. */
+  async resolveRemoteDefaultBranch(agentId: string, root: SecondaryWorkspaceRoot, cwd?: string): Promise<string> {
     if (root.githubApp) await preWarmGitCred(agentId, 'clone', additionalRepositoryOf(root))
     const env = root.githubApp
-      ? { ...workspaceGitEnvBase(root.cloneUrl), ...cloneGitEnv(agentId, root.cloneUrl, root.managed) }
+      ? { ...workspaceGitEnvBase(root.cloneUrl), ...cloneGitEnv(agentId, root.cloneUrl, root.managed, cwd) }
       : { ...workspaceGitEnvBase(root.cloneUrl), GIT_TERMINAL_PROMPT: '0' }
     const abort = new AbortController()
     const timer = setTimeout(() => abort.abort(), LS_REMOTE_TIMEOUT_MS)
     try {
-      const out = await this.runnerFor(agentId, undefined, abort.signal)
+      const out = await this.runnerFor(agentId, cwd, abort.signal)
         .withEnv(env)
         .raw(['ls-remote', '--symref', root.cloneUrl, 'HEAD'])
       const branch = parseSymrefDefaultBranch(out)
@@ -2152,7 +2160,7 @@ export class WorkspaceManager {
   ): Promise<string> {
     // Locally the disk decides — a session that has a directory keeps it; on a pool the request does, and the worktree branch below serves only a session prepared before this tier.
     if (this.confinedSessionTier(agent, request.sessionKey, request.confined)) {
-      return await this.prepareRootSessionClone(agent, root, request)
+      return (await this.prepareRootSessionClone(agent, root, request)).path
     }
     return await this.prepareRootSessionWorktree(agent, root, request)
   }
@@ -2163,7 +2171,7 @@ export class WorkspaceManager {
     root: WorkspaceRoot,
     request: PrepareSessionWorkspaceRequest,
     discover?: (read: () => Promise<Set<string>>) => Promise<void>
-  ): Promise<string> {
+  ): Promise<{ path: string; branch: string }> {
     // By the SESSION, not the agent: its clones may live on a machine that holds nothing else of it (session-executors.md §7).
     const fs = this.fsFor(agent.id, { sessionKey: request.sessionKey })
     const id = this.sessionWorktreeId(request.sessionKey)
@@ -2182,14 +2190,28 @@ export class WorkspaceManager {
         attached = false
       }
     }
+    // A secondary root's clone answers for itself (k8s-daemon-pool.md §4 decision 1): the remote's default at clone time, attested inside the clone.
+    const secondary = asSecondaryRoot(root)
+    let taken = root
     if (!attached) {
       await fs.rmTree(cwd)
       await fs.mkdir(dirname(cwd), 0o700)
       const staged = `${cwd}.clone-${randomUUID()}`
       try {
-        await this.cloneSessionRootAt(agent.id, root, staged)
-        await this.prepareSessionCloneCheckout(agent.id, root, staged, request, false, discover)
-        // Publish only after checkout succeeds, so a failed no-checkout clone cannot be resumed as ready.
+        // Asked from the clone's parent, so the remote is reached from the machine, and over the credential route, the clone uses.
+        if (secondary) {
+          taken = { ...root, branch: await this.resolveRemoteDefaultBranch(agent.id, secondary, dirname(cwd)) }
+        }
+        await this.cloneSessionRootAt(agent.id, taken, staged)
+        await this.prepareSessionCloneCheckout(agent.id, taken, staged, request, false, discover)
+        if (secondary) {
+          await fs.writeFile(
+            sessionRootAttestationIn(staged),
+            secondaryMaterializationText({ ...secondary, branch: taken.branch }),
+            { mode: 0o600 }
+          )
+        }
+        // Publish only after checkout and attestation succeed, so a clone is never resumed unready or unattributed.
         await fs.rename(staged, cwd)
       } catch (err) {
         await fs.rmTree(staged)
@@ -2198,16 +2220,59 @@ export class WorkspaceManager {
         throw new Error(`session clone of ${root.cloneUrl} failed: ${formatErr(err)}`, { cause: err })
       }
     } else {
-      if (root.githubApp) {
+      // Before anything touches the clone, so one that attests another repository is left as it is.
+      if (secondary) taken = { ...root, branch: (await this.attestedSessionRoot(agent, secondary, cwd, fs)).branch }
+      if (taken.githubApp) {
         // A resumed clone gets the canonical origin and a live helper pin.
-        await this.convergeOriginInPlaceFor(agent.id, root, cwd)
-        await writeRepoHelperConfig(this.runnerFor(agent.id, cwd), agent.id, root.managed).catch(() => undefined)
+        await this.convergeOriginInPlaceFor(agent.id, taken, cwd)
+        await writeRepoHelperConfig(this.runnerFor(agent.id, cwd), agent.id, taken.managed).catch(() => undefined)
       }
-      await this.prepareSessionCloneCheckout(agent.id, root, cwd, request, true, discover)
+      await this.prepareSessionCloneCheckout(agent.id, taken, cwd, request, true, discover)
     }
     // Reclaim only an empty legacy worktree stub; never remove a session's work.
     if (root.worktreesPath) await fs.rmdir(join(root.worktreesPath, id)).catch(() => false)
-    return cwd
+    return { path: cwd, branch: taken.branch }
+  }
+
+  /** What a resumed secondary clone attests about itself; one cloned before clones carried it takes the agent's marker once, which preparation still reaches, and anything not attesting this repository is refused. */
+  private async attestedSessionRoot(
+    agent: Agent,
+    root: SecondaryWorkspaceRoot,
+    clone: string,
+    fs: WorkspaceFs
+  ): Promise<SecondaryMaterialization> {
+    let recorded = await this.sessionRootAttestation(fs, clone)
+    if (recorded === undefined) {
+      recorded = await this.agentRootMaterialization(agent, root)
+      if (recorded !== undefined && attestsRoot(recorded, root)) {
+        await fs.writeFile(sessionRootAttestationIn(clone), secondaryMaterializationText(recorded), { mode: 0o600 })
+      }
+    }
+    if (recorded === undefined || !attestsRoot(recorded, root)) {
+      throw new Error(
+        `the session clone of ${root.repoFullName} does not attest ${root.provider} repository id ${root.repoId} — leaving it untouched`
+      )
+    }
+    return recorded
+  }
+
+  /** A session clone's own attestation, bounded and regular files only: the session's runtime can write its `.git`. */
+  private async sessionRootAttestation(fs: WorkspaceFs, clone: string): Promise<SecondaryMaterialization | undefined> {
+    const read = await fs.readFileBytes(sessionRootAttestationIn(clone), MAX_SECONDARY_MATERIALIZATION_BYTES)
+    return read !== undefined && 'bytes' in read
+      ? parseSecondaryMaterialization(read.bytes.toString('utf8'))
+      : undefined
+  }
+
+  /** The attestation beside the agent's own checkout of one root, in the agent's coordinates. */
+  private async agentRootMaterialization(
+    agent: Agent,
+    root: SecondaryWorkspaceRoot
+  ): Promise<SecondaryMaterialization | undefined> {
+    const key = repoKey(root.subtreeName)
+    const reference = this.secondaryRootsFor(agent).find((entry) => repoKey(entry.subtreeName) === key)
+    if (reference === undefined) return undefined
+    return await readSecondaryMaterialization(this.fsFor(agent.id), dirname(reference.path))
   }
 
   // A fresh clone checks out its final target once; a resumed ordinary session keeps its work.
@@ -2503,7 +2568,7 @@ export class WorkspaceManager {
     if (confined) await this.requireEmptiedSandboxPath(agent.id, this.sessionDir(agent, confined.sessionKey))
   }
 
-  // §11 on a pool: the session's clones live on ITS pod under `<mount>/sessions/<leaf>`, cloned from the remotes exactly as a confined self-hosted session's are; the agent pod's checkout is not consulted, and its secondary roots are materialized only for the branch and repository-id attestation a session clone is taken with.
+  // §11 on a pool: the session's clones live on ITS pod under `<mount>/sessions/<leaf>`, cloned from the remotes exactly as a confined self-hosted session's are; neither the agent pod's checkout nor its secondary roots are consulted.
   private async prepareClusterConfinedSession(
     agent: Agent,
     mount: string,
@@ -2535,9 +2600,7 @@ export class WorkspaceManager {
     opts: PrepareWorkspaceOptions
   ): Promise<string> {
     const secondaries = this.secondaryRootsAt(agent, mount)
-    // The reference subtree belongs to the AGENT, so it is materialized where the agent is held; only
-    // this session's clone of it is on the machine the session runs on (session-executors.md §7). On a
-    // pod and on this disk the two coordinates are one root, so this is the same object there.
+    // The agent's own roots, in its coordinates, only to name what `readyRoots` hands a shared reader; nothing here reads or writes them.
     const references = this.secondaryRootsFor(agent)
     const referenceOf = (root: SecondaryWorkspaceRoot): SecondaryWorkspaceRoot =>
       references.find((entry) => repoKey(entry.subtreeName) === repoKey(root.subtreeName)) ?? root
@@ -2569,11 +2632,9 @@ export class WorkspaceManager {
         discovered = resolve
       })
       const preparation = (async () => {
-        const root = plan.secondary
-          ? await this.prepareSecondaryRoot(agent, referenceOf(plan.secondary), false)
-          : plan.root
-        if (!root) throw new Error(`session repository ${plan.root.cloneUrl} is unavailable`)
-        const path = await this.prepareRootSessionClone(
+        // A secondary's clone resolves and attests itself, so the agent's subtree is neither read nor its worktree stub reclaimed here.
+        const root = plan.secondary ? { ...plan.secondary, worktreesPath: '' } : plan.root
+        const { path, branch } = await this.prepareRootSessionClone(
           agent,
           root,
           plan.required ? request : referenceRequest,
@@ -2589,7 +2650,7 @@ export class WorkspaceManager {
           }
         )
         if (plan.required) cwd = path
-        if (plan.secondary) ready.set(plan.secondary.subtreeName, { ...plan.secondary, ...root })
+        if (plan.secondary) ready.set(plan.secondary.subtreeName, { ...referenceOf(plan.secondary), branch })
         return true
       })()
         .catch((err: unknown) => {
@@ -2780,9 +2841,11 @@ export class WorkspaceManager {
     const reviewed = await this.sessionCwdSubtreeName(agent, request)
     if (reviewed !== undefined) {
       const key = repoKey(reviewed)
-      const root = (await this.secondarySubtreesFor(agent)).find((entry) => repoKey(entry.subtreeName) === key)
-      // A subtree that is no longer on disk cannot vouch for the cwd; fall through to the primary,
-      // which the cwd is not under either, so the containment check refuses it.
+      // A confined session's clone is its own, so the rows name its root; on the worktree tier only a subtree still on disk vouches, else the primary answers and the containment check refuses.
+      const confined =
+        request?.sessionKey !== undefined && this.confinedSessionDir(agent, request.sessionKey) !== undefined
+      const roots = confined ? this.secondaryRootsFor(agent) : await this.secondarySubtreesFor(agent)
+      const root = roots.find((entry) => repoKey(entry.subtreeName) === key)
       if (root) return await this.sessionRootPath(agent, root, request)
     }
     if (agent.workspace.mode !== 'git-repo') return undefined
@@ -3122,6 +3185,11 @@ function parseSecondaryMaterialization(text: string): SecondaryMaterialization |
   }
 }
 
+/** A secondary root's attestation as written — beside the agent's checkout, or inside a session's clone. */
+function secondaryMaterializationText({ provider, repoId, repoFullName, branch }: SecondaryMaterialization): string {
+  return JSON.stringify({ provider, repoId, repoFullName, branch }, null, 2) + '\n'
+}
+
 /** The subtree a session's cwd record names, or undefined for anything but exactly two legal path segments. */
 function parseSessionCwdRecord(text: string): string | undefined {
   try {
@@ -3142,6 +3210,14 @@ function repoIdentity(entry: { provider: CodeHostProvider; repoId: string }): st
 /** Whether an attestation names exactly this root's repository. */
 function attestsRoot(recorded: SecondaryMaterialization, root: SecondaryWorkspaceRoot): boolean {
   return repoIdentity(recorded) === repoIdentity(root)
+}
+
+/** The root as a secondary one — every identity field its attestation names is set — or undefined for the primary. */
+function asSecondaryRoot(root: WorkspaceRoot): SecondaryWorkspaceRoot | undefined {
+  const { repoFullName, subtreeName, provider, repoId } = root
+  return repoFullName !== undefined && subtreeName !== undefined && provider !== undefined && repoId !== undefined
+    ? { ...root, repoFullName, subtreeName, provider, repoId }
+    : undefined
 }
 
 /** The additional repository a root is, whose own credential its git asks for; undefined for the primary, which warms the workspace's. */

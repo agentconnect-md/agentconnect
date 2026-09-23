@@ -226,10 +226,12 @@ export function createWorkspaceGit(
    *  target is: a secondary root is App-covered even when the primary workspace is not, so gating the
    *  helper on the primary's credential mode would leave its private clone anonymous. */
   credentialAgentIdFor: (agentId: string, repo?: string) => string | undefined = () => undefined,
-  /** The origin and branch of the scope being operated on — the agent's primary workspace, or the
-   *  secondary root `repo` names. A pull reaches THAT repository's remote, never the primary's. */
-  workspaceTargetByAgent: (agentId: string, repo?: string) => Promise<WorkspaceGitTarget | undefined> = async () =>
-    undefined,
+  /** The origin and branch of the scope operated on — the primary, or the secondary `repo` names (as `sessionId`'s own clone of it when given); a pull reaches THAT repository's remote, never the primary's. */
+  workspaceTargetByAgent: (
+    agentId: string,
+    repo?: string,
+    sessionId?: string
+  ) => Promise<WorkspaceGitTarget | undefined> = async () => undefined,
   /** The identity the CP registered on `register/ok`. Absent ⇒ a console commit is REFUSED as
    *  data: git would otherwise guess the host operator's passwd identity and attribute the
    *  commit to them, which is worse than not committing. */
@@ -285,15 +287,14 @@ export function createWorkspaceGit(
     }
   }
 
-  /** The origin URL a network operation may reach plus the configured branch, or `undefined` when the
-   *  checkout's own `origin` is not it (reported as the uninformative "not a safe remote"). Shared by
-   *  pull and push: a second, weaker check on the write path is how a push reaches an unapproved remote. */
+  /** The origin a network operation may reach plus the configured branch, or undefined when the checkout's own `origin` is not it; shared by pull and push, since a second, weaker check is how a push reaches an unapproved remote. */
   async function authorizedTarget(
     agentId: string,
     git: GitRunner,
-    repo?: string
+    repo?: string,
+    sessionId?: string
   ): Promise<{ origin: string; branch: string; managed: ManagedCredentialScope } | undefined> {
-    const target = await workspaceTargetByAgent(agentId, repo)
+    const target = await workspaceTargetByAgent(agentId, repo, sessionId)
     let currentOrigin: string | undefined
     let expectedOrigin: string
     try {
@@ -511,7 +512,10 @@ export function createWorkspaceGit(
       // `dev/<user>/<words>` wants the commits it adds over the base branch, not the repository's
       // history — the base's newest commit is not this session's work. On the base branch itself
       // there is nothing to exclude, so the full history stands (the agent workspace page's view).
-      const baseRef = await logBaseRef(git, (await workspaceTargetByAgent(req.agentId, req.repo))?.branch)
+      const baseRef = await logBaseRef(
+        git,
+        (await workspaceTargetByAgent(req.agentId, req.repo, req.sessionId))?.branch
+      )
       const range = baseRef ? `${baseRef}..HEAD` : 'HEAD'
 
       // One extra row proves there are more commits than the caller asked for.
@@ -702,7 +706,7 @@ export function createWorkspaceGit(
         // push to. Counting against that ref and finding nothing ahead used to answer
         // "Everything is already pushed" having sent nothing at all — a success report for a push
         // that never happened, which is the worst failure this button has available.
-        const authorized = await authorizedTarget(agentId, git, req.repo)
+        const authorized = await authorizedTarget(agentId, git, req.repo, req.sessionId)
         if (!authorized) {
           return pushRefusal(agentId, true, 'unsafe-origin', 'workspace origin is not a safe remote')
         }

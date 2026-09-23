@@ -12,7 +12,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import type { Agent } from '../src/agents/agent-schema.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
@@ -544,7 +544,7 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
     expect(await workspaces.sessionAdditionalRoots(agent, request)).toEqual([])
     expect(existsSync(join(leafOf(agent), 'repos', 'acme', 'library'))).toBe(false)
     const root = workspaces.secondaryRoots(agent).find((root) => root.repoFullName === 'example-co/review')!
-    for (const path of [root.path, cwd]) git(path, ['remote', 'set-url', 'origin', root.cloneUrl])
+    git(cwd, ['remote', 'set-url', 'origin', root.cloneUrl])
     const fresh = new WorkspaceManager()
     wireTestPlane(fresh, { gitRunnerFor: (_agentId, path, abort) => new SeamRunner(path, abort) })
     const resumed = { sessionKey: KEY, isolation: 'shared' as const }
@@ -588,9 +588,14 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
       { path: realpathSync(infra), repoFullName: 'acme/infra', branch: 'trunk' }
     ])
     expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, scope)).toEqual([realpathSync(infra)])
-    // The shared secondary checkout stays what it was: materialized for the console, no worktrees.
-    expect(existsSync(join(home, 'repos', 'acme', 'infra', 'checkout', '.git'))).toBe(true)
-    expect(existsSync(join(home, 'repos', 'acme', 'infra', 'worktrees'))).toBe(false)
+    // The clone answers for itself — the remote's default, attested inside it — so nothing of the agent's own subtree was made for it.
+    expect(JSON.parse(readFileSync(join(infra, '.git', 'agentconnect-materialization.json'), 'utf8'))).toEqual({
+      provider: 'github',
+      repoId: '42',
+      repoFullName: 'acme/infra',
+      branch: 'trunk'
+    })
+    expect(existsSync(join(home, 'repos'))).toBe(false)
   })
 
   it('keeps a scratch primary as the cwd while its secondaries get session clones', async () => {
@@ -904,6 +909,8 @@ describe('retiring a confined session', () => {
   it('removes the whole session directory, its HOME included, when every clone is clean and pushed', async () => {
     const agent = agentFixture({ additionalRepos: [{ repoFullName: 'acme/infra', repoId: '42' }] })
     serveAll(agent)
+    // The agent's own checkouts, which retiring the session must leave as they are.
+    await workspaces.prepareWorkspace(agent)
     await workspaces.prepareSessionWorkspace(agent, confined())
     expect(existsSync(leafOf(agent))).toBe(true)
     // What a launch leaves beside the clones (§11): the session's private HOME with runtime state in it — never a clone, never a reason to retain.
@@ -1035,12 +1042,12 @@ describe('a confined session records its cwd root in its own directory', () => {
     const cwd = await workspaces.prepareSessionWorkspace(agent, confined({ reviewRepoFullName: 'acme/infra' }))
     // What a session prepared before its directory kept the record has instead; a turn reads its directory alone until then.
     rmSync(recordOf(agent))
+    mkdirSync(dirname(legacyOf(agent)), { recursive: true })
     writeFileSync(legacyOf(agent), JSON.stringify({ repoFullName: 'acme/infra' }))
     expect(await handedOut(agent)).toEqual([cwd])
 
-    // A resume converges each clone's origin, so the fixtures stand at the authorized URL again.
-    const root = workspaces.secondaryRoots(agent)[0]!
-    for (const path of [root.path, cwd]) git(path, ['remote', 'set-url', 'origin', root.cloneUrl])
+    // A resume converges the clone's origin, so the fixture stands at the authorized URL again.
+    git(cwd, ['remote', 'set-url', 'origin', workspaces.secondaryRoots(agent)[0]!.cloneUrl])
     expect(await workspaces.prepareSessionWorkspace(agent, unconfined())).toBe(cwd)
     expect(JSON.parse(readFileSync(recordOf(agent), 'utf8'))).toEqual({ subtreeName: 'acme/infra' })
     expect(existsSync(legacyOf(agent))).toBe(false)
@@ -1313,7 +1320,9 @@ describe('the confined tier issues only Git the sandbox admits (k8s-daemon-pool.
 
     const issued = [...new Set(gitRuns.map((run) => run.args[0]!))].sort()
     // The assertion is only worth as much as the run behind it, so pin that the interesting ones ran.
-    expect(issued).toEqual(expect.arrayContaining(['branch', 'clone', 'fetch', 'reset', 'show-ref', 'symbolic-ref']))
+    expect(issued).toEqual(
+      expect.arrayContaining(['branch', 'clone', 'fetch', 'ls-remote', 'reset', 'show-ref', 'symbolic-ref'])
+    )
     expect(issued.filter((subcommand) => !ALLOWED_GIT_SUBCOMMANDS.has(subcommand))).toEqual([])
   })
 })

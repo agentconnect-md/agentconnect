@@ -1,6 +1,6 @@
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { Agent } from '../src/agents/agent-schema.js'
 import { sessionKeyDirName } from '../src/acp/host-key.js'
@@ -183,8 +183,16 @@ describe('a session prepared on an executor', () => {
     // …and it is the directory the runtime is handed; an agent-scoped read would have found none and dropped it.
     const roots = await workspaces.readySecondaryRoots(withRepo, { sessionKey: KEY, isolation: 'session' })
     expect(roots.map((root) => root.path)).toEqual([sessionClone])
-    // The reference subtree it was resolved through is the holder's own, in the holder's coordinates.
-    expect(await holder.stat(join(agentDir, 'repos', 'example-org', 'library'))).toBe('dir')
+    // Its branch and attestation were resolved there too, so the holder's own subtree was never made for it.
+    expect(calls.find((call) => call.args[0] === 'ls-remote')).toMatchObject({ cwd: dirname(sessionClone) })
+    const attestation = await executor.readFile(join(sessionClone, '.git', 'agentconnect-materialization.json'))
+    expect(JSON.parse(attestation!)).toEqual({
+      provider: 'github',
+      repoId: '42',
+      repoFullName: 'example-org/library',
+      branch: 'main'
+    })
+    expect(await holder.stat(join(agentDir, 'repos'))).toBe('missing')
     expectNoCrossedPaths()
   })
 
@@ -242,6 +250,7 @@ describe('a spread session’s cwd record', () => {
     const withRepo = withLibrary()
     const cwd = await workspaces.prepareExecutorWorkspace(withRepo, executorRoot, reviewed)
     await executor.rmTree(record())
+    await holder.mkdir(dirname(legacyRecord()))
     await holder.writeFile(legacyRecord(), JSON.stringify({ repoFullName: 'example-org/library' }))
 
     expect(await workspaces.prepareExecutorWorkspace(withRepo, executorRoot, request)).toBe(cwd)

@@ -108,6 +108,16 @@ next root while checkout may overlap it. An exclusion takes effect only after th
 parent finishes successfully; an unavailable parent leaves the authorized root
 eligible for its own clone. See [the confined preparation sequence](git-workspace-model.md#the-clone).
 
+The `repos/` subtree above is the agent's own, materialized for shared and
+worktree-tier sessions and the console. A confined session does not materialize
+it: its clone of each root is taken from the remote at that remote's
+current default branch and carries its own attestation, the same
+`{provider, repoId, repoFullName, branch}` as `.materialization.json`, inside its
+`.git` ([git-workspace-model.md §11](git-workspace-model.md#what-changes-for-a-confined-session)).
+An agent whose sessions are all confined therefore has no checkout of a secondary
+root, and the console's agent-level view of it reads as an empty checkout, as any
+root not yet materialized does.
+
 A GitLab project's subtree is `repos/_gitlab/<project id>` rather than its path
 ([gitlab-com-integration.md §13.1](gitlab-com-integration.md)): a namespaced
 path has any depth, and the numeric id is what a rename cannot change, so the

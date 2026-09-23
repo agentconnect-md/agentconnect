@@ -69,6 +69,11 @@ export function sessionCwdRecordIn(sessionDir: string): string {
   return join(sessionDir, '.session-cwd.json')
 }
 
+/** `<clone>/.git/agentconnect-materialization.json` — which repository a session's secondary clone holds and the default branch it was taken at, published with the clone and gone with it. */
+export function sessionRootAttestationIn(clone: string): string {
+  return join(clone, '.git', 'agentconnect-materialization.json')
+}
+
 /** Every `repos/<a>/<b>` clone ON DISK in a session directory, sorted by name; symlinks are skipped. */
 export function sessionSecondaryClonesIn(sessionDir: string): { subtreeName: string; path: string }[] {
   const parent = join(sessionDir, SECONDARY_ROOTS_DIR)

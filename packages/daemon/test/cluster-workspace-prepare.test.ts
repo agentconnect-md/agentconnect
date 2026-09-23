@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { createWorkspaceScope } from '../src/cp/workspace-scope.js'
 import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
 
 // One plane per test file — the isolation Vitest's per-file module registry used to give.
@@ -1213,6 +1214,7 @@ describe('secondary roots on the pod volume', () => {
 
   it('retires a root the rows no longer authorize, and removes it once nothing holds it', async () => {
     const agent = agentWithRoots()
+    await workspaces.prepareClusterWorkspace(agent, POD_ROOT)
     await workspaces.prepareClusterWorkspace(agent, POD_ROOT, {
       sessionKey: 'sess-1',
       isolation: 'session' as const
@@ -1252,6 +1254,7 @@ describe('secondary roots on the pod volume', () => {
     // operation, not degrade into "this agent has no secondary roots".
     const agent = agentWithRoots()
     const request = { sessionKey: 'sess-1', isolation: 'session' as const }
+    await workspaces.prepareClusterWorkspace(agent, POD_ROOT)
     await workspaces.prepareClusterWorkspace(agent, POD_ROOT, request)
     pod.unreadable.add(REPOS)
 
@@ -1284,6 +1287,8 @@ describe('secondary roots on the pod volume', () => {
     expect(workspaces.mayOwnSessionWorktrees(agent)).toBe(true)
     expect(workspaces.mayOwnSessionWorktrees(clusterAgent({ mode: 'from-scratch' }))).toBe(true)
 
+    // The agent's own pass materializes its subtree; the isolated session's is a clone of its own.
+    await workspaces.prepareClusterWorkspace(agent, POD_ROOT)
     await workspaces.prepareClusterWorkspace(agent, POD_ROOT, { sessionKey: 'sess-1', isolation: 'session' })
 
     expect(await workspaces.hasSessionWorktreeRoots(agent)).toBe(true)
@@ -1344,6 +1349,7 @@ describe('secondary roots on the pod volume', () => {
 
     it('moves a record left beside the agent’s subtree into the session directory when preparation runs', async () => {
       const agent = agentWithRoots()
+      await workspaces.prepareClusterWorkspace(agent, POD_ROOT)
       const cwd = await reviewInfra(agent)
       // What a session reviewed before its directory kept the record has there instead.
       await pod.rmTree(cwdRecordOf(KEY))
@@ -1374,6 +1380,7 @@ describe('secondary roots on the pod volume', () => {
 
     it('still sweeps a record left beside the agent’s subtree with the legacy half', async () => {
       const agent = agentWithRoots()
+      await workspaces.prepareClusterWorkspace(agent, POD_ROOT)
       await reviewInfra(agent)
       await pod.writeFile(legacyRecord(), JSON.stringify({ repoFullName: 'acme/infra' }))
 
@@ -1383,6 +1390,7 @@ describe('secondary roots on the pod volume', () => {
 
     it('is dropped, wherever it is, when a review degrades to revision-only', async () => {
       const agent = agentWithRoots()
+      await workspaces.prepareClusterWorkspace(agent, POD_ROOT)
       await reviewInfra(agent)
       await pod.writeFile(legacyRecord(), JSON.stringify({ repoFullName: 'acme/infra' }))
 
@@ -1418,6 +1426,196 @@ describe('secondary roots on the pod volume', () => {
       }
       await pod.writeFile(cwdRecordOf(KEY), JSON.stringify({ subtreeName: 'acme/infra' }))
       expect(await handedOut(agent)).toEqual([sessionCloneOf(KEY)])
+    })
+  })
+
+  // An isolated session's clone of an additional repository answers for itself (k8s-daemon-pool.md §4 decision 1): its default branch is the remote's at clone time and its attestation travels inside it.
+  describe('an isolated session’s additional repositories', () => {
+    const KEY = 'sess-own'
+    const request = { sessionKey: KEY, isolation: 'session' as const, initiatedBy: 'alice' }
+    const attestationOf = (clone: string): string => `${clone}/.git/agentconnect-materialization.json`
+    const attested = async (clone: string): Promise<unknown> => JSON.parse((await pod.readFile(attestationOf(clone)))!)
+    const inSession = (key: string) => (call: Invocation) =>
+      call.cwd === sessionDirOf(key) || call.cwd?.startsWith(`${sessionDirOf(key)}/`) === true
+    /** The agent pod answers nothing outside the session directories, save the `<mount>/repos` listing the cwd record's migration still makes (#2311); what it was asked is returned. */
+    const agentPodFails = (): string[] => {
+      const asked: string[] = []
+      pod.ownerAsleep = (path) => {
+        const agentPod = !path.startsWith(`${SESSIONS}/`) && path !== REPOS
+        if (agentPod) asked.push(path)
+        return agentPod
+      }
+      return asked
+    }
+
+    it('resolves each default branch and attestation on the session pod, asking the agent pod nothing about them', async () => {
+      const agent = agentWithRoots([
+        { repoFullName: 'acme/infra', repoId: '42' },
+        { repoFullName: 'example-co/shared-library', repoId: '815' }
+      ])
+      const asked = agentPodFails()
+
+      const cwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT, request)
+
+      expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([
+        sessionCloneOf(KEY, 'acme/infra'),
+        sessionCloneOf(KEY, 'example-co/shared-library')
+      ])
+      // Asked of each remote from the clone's parent, which names the session pod.
+      const asks = calls.filter((call) => call.args[0] === 'ls-remote')
+      expect(asks.map((call) => call.cwd).sort()).toEqual([
+        `${sessionDirOf(KEY)}/repos/acme`,
+        `${sessionDirOf(KEY)}/repos/example-co`
+      ])
+      const infra = calls.find((call) => call.args[0] === 'clone' && call.args[1] === 'https://github.com/acme/infra')
+      expect(infra!.args).toEqual(expect.arrayContaining(['--branch', 'trunk']))
+      expect(await attested(sessionCloneOf(KEY, 'acme/infra'))).toEqual({
+        provider: 'github',
+        repoId: '42',
+        repoFullName: 'acme/infra',
+        branch: 'trunk'
+      })
+      expect(await attested(sessionCloneOf(KEY, 'example-co/shared-library'))).toEqual({
+        provider: 'github',
+        repoId: '815',
+        repoFullName: 'example-co/shared-library',
+        branch: 'release'
+      })
+      expect((await workspaces.readySecondaryRoots(agent, request)).map((root) => root.branch)).toEqual([
+        'trunk',
+        'release'
+      ])
+      // No agent-pod subtree was asked about or made, and no Git ran outside the session's directory.
+      expect(asked.filter((path) => path.startsWith(`${REPOS}/`))).toEqual([])
+      expect([...pod.dirs, ...pod.files.keys()].filter((path) => path.startsWith(`${REPOS}/`))).toEqual([])
+      expect(calls.filter((call) => !inSession(KEY)(call))).toEqual([])
+    })
+
+    it('resumes a clone by its own attestation, asking the remote nothing and following no later default', async () => {
+      const agent = agentWithRoots()
+      await workspaces.prepareClusterWorkspace(agent, POD_ROOT, request)
+      remoteDefaultBranch['acme/infra'] = 'main'
+      calls.length = 0
+      agentPodFails()
+
+      expect(await workspaces.prepareClusterWorkspace(agent, POD_ROOT, request)).toBe(sessionCloneOf(KEY))
+
+      expect(calls.filter((call) => call.args[0] === 'ls-remote' || call.args[0] === 'clone')).toEqual([])
+      expect(await attested(sessionCloneOf(KEY, 'acme/infra'))).toMatchObject({ branch: 'trunk' })
+      expect((await workspaces.readySecondaryRoots(agent, request)).map((root) => root.branch)).toEqual(['trunk'])
+    })
+
+    it('takes a new session at the remote’s current default, not the one the agent pod’s checkout pinned', async () => {
+      const agent = agentWithRoots()
+      await workspaces.prepareClusterWorkspace(agent, POD_ROOT)
+      await workspaces.prepareClusterWorkspace(agent, POD_ROOT, request)
+      remoteDefaultBranch['acme/infra'] = 'main'
+      const later = { ...request, sessionKey: 'sess-later' }
+
+      await workspaces.prepareClusterWorkspace(agent, POD_ROOT, later)
+
+      const clone = sessionCloneOf('sess-later', 'acme/infra')
+      const taken = calls.find((call) => call.args[0] === 'clone' && call.args[2]?.startsWith(`${clone}.clone-`))
+      expect(taken!.args).toEqual(expect.arrayContaining(['--branch', 'main']))
+      expect(await attested(clone)).toMatchObject({ branch: 'main' })
+      expect((await workspaces.readySecondaryRoots(agent, later)).map((root) => root.branch)).toEqual(['main'])
+      // The earlier session keeps the default it was taken at, and the agent pod's checkout is not moved.
+      expect(await attested(sessionCloneOf(KEY, 'acme/infra'))).toMatchObject({ branch: 'trunk' })
+      expect(JSON.parse((await pod.readFile(`${INFRA}/.materialization.json`))!)).toMatchObject({ branch: 'trunk' })
+    })
+
+    it('refuses, untouched, a clone attesting another repository — omitted as a reference, fatal as the reviewed root', async () => {
+      const agent = agentWithRoots()
+      await workspaces.prepareClusterWorkspace(agent, POD_ROOT, request)
+      const clone = sessionCloneOf(KEY, 'acme/infra')
+      const foreign = JSON.stringify({ provider: 'github', repoId: '99', repoFullName: 'acme/infra', branch: 'trunk' })
+      await pod.writeFile(attestationOf(clone), foreign)
+      calls.length = 0
+
+      const cwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT, request)
+
+      expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([])
+      // Only the HEAD probe that found it ran there: no origin, helper or checkout was touched.
+      expect(calls.filter((call) => call.cwd === clone).map((call) => call.args[0])).toEqual(['rev-parse'])
+      expect(await pod.readFile(attestationOf(clone))).toBe(foreign)
+      const id = workspaces.sessionWorktreeId(KEY)
+      revs[`refs/agentconnect/reviews/${id}/base`] = 'a'.repeat(40)
+      revs[`refs/agentconnect/reviews/${id}/head`] = 'b'.repeat(40)
+      const review = { pullNumber: 9, baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40) }
+      await expect(
+        workspaces.prepareClusterWorkspace(agent, POD_ROOT, { ...request, reviewRepoFullName: 'acme/infra', review })
+      ).rejects.toThrow(/does not attest github repository id 42/)
+      expect(calls.some((call) => call.cwd === clone && call.args[0] === 'fetch')).toBe(false)
+    })
+
+    it('adopts the agent pod’s attestation once for a clone taken before clones carried one, and refuses one it does not vouch for', async () => {
+      const agent = agentWithRoots()
+      // What preparation left before: the agent pod's attested checkout, beside a session clone that carries nothing.
+      await workspaces.prepareClusterWorkspace(agent, POD_ROOT)
+      await workspaces.prepareClusterWorkspace(agent, POD_ROOT, request)
+      const clone = sessionCloneOf(KEY, 'acme/infra')
+      await pod.rmTree(attestationOf(clone))
+      remoteDefaultBranch['acme/infra'] = 'main'
+      calls.length = 0
+
+      // Preparation still reaches the agent pod, so its marker is copied into the clone, and the remote is not asked.
+      await workspaces.prepareClusterWorkspace(agent, POD_ROOT, request)
+      expect(await attested(clone)).toEqual({
+        provider: 'github',
+        repoId: '42',
+        repoFullName: 'acme/infra',
+        branch: 'trunk'
+      })
+      expect(calls.some((call) => call.args[0] === 'ls-remote')).toBe(false)
+      // From then on the clone answers alone: the agent pod's marker is not read again.
+      const reached: string[] = []
+      pod.ownerAsleep = (path) => {
+        reached.push(path)
+        return false
+      }
+      const cwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT, request)
+      expect(reached).not.toContain(`${INFRA}/.materialization.json`)
+      expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([clone])
+
+      // Where the agent pod's checkout attests another repository, the clone stays unattested and is left out.
+      pod.ownerAsleep = () => false
+      await pod.rmTree(attestationOf(clone))
+      await pod.writeFile(
+        `${INFRA}/.materialization.json`,
+        JSON.stringify({ provider: 'github', repoId: '99', repoFullName: 'acme/infra', branch: 'trunk' })
+      )
+      expect(
+        await workspaces.additionalWorkspaceDirectories(
+          agent,
+          await workspaces.prepareClusterWorkspace(agent, POD_ROOT, request),
+          request
+        )
+      ).toEqual([])
+      expect(await pod.stat(attestationOf(clone))).toBe('missing')
+    })
+
+    it('answers a session’s push and log target from its own clone, and the agent’s from the agent pod’s checkout', async () => {
+      const agent = agentWithRoots()
+      await workspaces.prepareClusterWorkspace(agent, POD_ROOT)
+      remoteDefaultBranch['acme/infra'] = 'main'
+      await workspaces.prepareClusterWorkspace(agent, POD_ROOT, request)
+      const scope = createWorkspaceScope({
+        workspaces,
+        agentOf: () => agent,
+        sessionOf: async (_agentId, sessionId) =>
+          sessionId === 'sid-own'
+            ? { key: KEY, workspaceIsolation: 'session' }
+            : { key: 'sess-shared', workspaceIsolation: 'shared' },
+        runtimeRootOf: () => POD_ROOT
+      })
+      const asked = agentPodFails()
+
+      expect(await scope.target(agent.id, 'acme/infra', 'sid-own')).toMatchObject({ branch: 'main', githubApp: true })
+      expect(asked).toEqual([])
+      // The agent's own view, and a shared session standing in it, read the agent pod's checkout.
+      pod.ownerAsleep = () => false
+      expect(await scope.target(agent.id, 'acme/infra')).toMatchObject({ branch: 'trunk' })
+      expect(await scope.target(agent.id, 'acme/infra', 'sid-shared')).toMatchObject({ branch: 'trunk' })
     })
   })
 })

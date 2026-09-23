@@ -305,15 +305,16 @@ Layout, one directory per session, removed whole at retirement:
 ```
 <agentDir>/sessions/<sid>/
 ├── workspace/            # primary clone — the session cwd
-├── repos/<owner>/<repo>/ # one clone per secondary root (multi-repository-workspaces.md decision 4)
+├── repos/<owner>/<repo>/ # one clone per secondary root (multi-repository-workspaces.md decision 4), attested inside its .git
 ├── home/                 # private HOME, XDG_RUNTIME_DIR, runtime state
 └── .session-cwd.json     # which secondary root's clone is the cwd, once a review made it one
 ```
 
 The primary checkout keeps its roles for `shared` isolation, the console's
 workspace views and unconfined worktrees; for confined sessions it is no longer
-the parent of anything. Confined sessions retain shared checkout initialization and
-identity checks, but do not pull those checkouts. Shared sessions and unconfined
+the parent of anything. Confined sessions retain the primary checkout's
+initialization and identity checks, but do not pull it, and do not materialize the
+secondary roots' shared checkouts at all (below). Shared sessions and unconfined
 worktrees still honor `pullOnNewSession`. Skills are reconciled only in the final
 session working directory.
 
@@ -368,6 +369,24 @@ time on shared filesystems.
   session that still has its record there is moved over by its next preparation,
   which reads the agent's filesystem anyway; until then its turns name no reviewed
   root.
+- **A secondary root's clone answers for itself.** It is taken at the remote's
+  default branch as of clone time, asked with `ls-remote --symref` from beside the
+  clone, so from the machine and over the credential route the clone itself uses.
+  The clone records what it holds — provider, numeric repository id, name and that
+  branch — in `.git/agentconnect-materialization.json`, written before the clone is
+  published and gone with it. A resumed clone is judged by that record alone and
+  asks the remote nothing; one whose record names another repository is left
+  untouched and omitted, or fails the preparation when it is the reviewed root,
+  which is the rule the agent's own subtree applies to a reused name. So a confined
+  session's preparation neither materializes nor consults the agent's
+  `repos/<a>/<b>` subtree, but for the one adoption below: a
+  new session follows the remote's _current_ default, while the agent's checkout,
+  which shared and worktree sessions use, keeps the one it pinned when it first
+  materialized ([k8s-daemon-pool.md](k8s-daemon-pool.md) §4, decision 1). A session's
+  console push and log read the same record. A clone taken before clones carried
+  one adopts the agent subtree's record once, if it names the same repository,
+  through the agent's filesystem that preparation still reaches; otherwise it is
+  omitted like a mismatch.
 - **Retirement** applies the same dirty and unique-commit rules in the clone —
   every local ref counts, not only HEAD, because the directory is the object
   store and a side branch or a stash is work the checked-out branch cannot speak
