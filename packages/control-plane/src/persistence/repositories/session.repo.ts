@@ -1476,14 +1476,16 @@ export class PgSessionRepo implements SessionRepo {
 
   async latestConversationSession(
     orgId: OrgId,
-    agentId: AgentId,
+    agentId: AgentId | readonly AgentId[],
     conversation: { platform: string; tenantScope: string | null; channel: string }
   ): Promise<SessionMetaRecord | null> {
     const { platform, tenantScope, channel } = conversation
+    const agentIds: AgentId[] = typeof agentId === 'string' ? [agentId] : [...agentId]
+    if (agentIds.length === 0) return null
     // A legacy null platform is Slack, as in conversationKeyJoinSql.
     const platformWhere = platform === 'slack' ? { OR: [{ platform }, { platform: null }] } : { platform }
     const s = await this.db.sessionMeta.findFirst({
-      where: { orgId, agentId, channel, tenantScope, parentSessionId: null, ...platformWhere },
+      where: { orgId, agentId: { in: agentIds }, channel, tenantScope, parentSessionId: null, ...platformWhere },
       orderBy: [{ startedAt: 'desc' }, { id: 'desc' }]
     })
     return s ? toRecord(s) : null

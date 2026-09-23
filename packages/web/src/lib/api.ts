@@ -6409,6 +6409,19 @@ export function createDecisionApi(orgId: string): DecisionApi {
     listChannels: unsupported,
     saveChannel: unsupported,
     getRouting: (botId) => apiGet(routing(botId)),
-    saveRouting: (botId, input) => apiPut(routing(botId), input)
+    saveRouting: (botId, input) => apiPut(routing(botId), input),
+    previewRouting: (botId, input) => apiPost(`${routing(botId)}/preview`, input),
+    listRoutingEvaluations: (botId, page = {}) => {
+      const query = new URLSearchParams()
+      if (page.channelId !== undefined) query.set('channelId', page.channelId)
+      if (page.cursor !== undefined) query.set('cursor', String(page.cursor))
+      if (page.limit !== undefined) query.set('limit', String(page.limit))
+      const suffix = query.toString()
+      return apiGet(`${routing(botId)}/evaluations${suffix ? `?${suffix}` : ''}`)
+    },
+    getRoutingEvaluation: (botId, ref) =>
+      apiGet(
+        `${routing(botId)}/evaluations/${encodeURIComponent(String(ref.seq))}?channelId=${encodeURIComponent(ref.channelId)}`
+      )
   }
 }

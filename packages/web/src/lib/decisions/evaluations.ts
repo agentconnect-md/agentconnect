@@ -55,6 +55,16 @@ export const REASON_KEYS = [
   'shutdown',
   'ownership',
   'admission',
+  'not_member',
+  'stopped',
+  'routing_disabled',
+  'no_agent',
+  'off',
+  'unsupported',
+  'rejected',
+  'targets_rejected',
+  'no_default',
+  'host_reassigned',
   'other'
 ] as const
 export type ReasonKey = (typeof REASON_KEYS)[number]

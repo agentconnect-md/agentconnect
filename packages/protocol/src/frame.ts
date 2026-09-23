@@ -100,7 +100,11 @@ import {
   DecisionEvaluationsRequest,
   DecisionEvaluationsReply,
   DecisionEvaluationRequest,
-  DecisionEvaluationReply
+  DecisionEvaluationReply,
+  DecisionRoutingEvaluationsRequest,
+  DecisionRoutingEvaluationsReply,
+  DecisionRoutingEvaluationRequest,
+  DecisionRoutingEvaluationReply
 } from './frames/decision.js'
 import { SecretsRequest, SecretsGrant, SecretsRenew, SecretsRevoke, ScopeAttestation } from './frames/secrets.js'
 import {
@@ -376,6 +380,10 @@ export const FRAME_SCHEMAS = {
   'decision/evaluations/page': DecisionEvaluationsReply,
   'decision/evaluation': DecisionEvaluationRequest,
   'decision/evaluation/result': DecisionEvaluationReply,
+  'decision/routing-evaluations': DecisionRoutingEvaluationsRequest,
+  'decision/routing-evaluations/page': DecisionRoutingEvaluationsReply,
+  'decision/routing-evaluation': DecisionRoutingEvaluationRequest,
+  'decision/routing-evaluation/result': DecisionRoutingEvaluationReply,
   'provider-credentials/request': ProviderCredentialsRequest,
   'provider-credentials/reply': ProviderCredentialsReply,
   'provider-credentials/changed': ProviderCredentialsChanged,
@@ -700,6 +708,10 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('decision/evaluations/page', FRAME_SCHEMAS['decision/evaluations/page']),
   frame('decision/evaluation', FRAME_SCHEMAS['decision/evaluation']),
   frame('decision/evaluation/result', FRAME_SCHEMAS['decision/evaluation/result']),
+  frame('decision/routing-evaluations', FRAME_SCHEMAS['decision/routing-evaluations']),
+  frame('decision/routing-evaluations/page', FRAME_SCHEMAS['decision/routing-evaluations/page']),
+  frame('decision/routing-evaluation', FRAME_SCHEMAS['decision/routing-evaluation']),
+  frame('decision/routing-evaluation/result', FRAME_SCHEMAS['decision/routing-evaluation/result']),
   frame('provider-credentials/request', FRAME_SCHEMAS['provider-credentials/request']),
   frame('provider-credentials/reply', FRAME_SCHEMAS['provider-credentials/reply']),
   frame('provider-credentials/changed', FRAME_SCHEMAS['provider-credentials/changed']),

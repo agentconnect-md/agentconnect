@@ -19,6 +19,7 @@ import { DecisionBindingStrip } from '@/components/console/decisions/DecisionBin
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { gateStatus, managedByRouting, savedGateOf, type SavedGate } from '@/lib/decisions/binding'
 import { useOrgs } from '@/lib/org-context'
+import { botRoutingPath } from '@/lib/decisions/usage-links'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { chatPlatformName } from '@/lib/platform-labels'
@@ -645,7 +646,7 @@ function ManagedByRoutingNote({ botId, bot, padX }: { botId: string; bot: string
     >
       <Icon name="split" size={13} className="mt-[2px] flex-none" />
       <span className="flex flex-col gap-[2px]">
-        <Link href={orgPath(`/integrations?bot=${encodeURIComponent(botId)}`)} className="lnk">
+        <Link href={botRoutingPath(botId, orgPath)} className="lnk">
           {t('managedByRouting', { bot })}
         </Link>
         <span>{t('managedByRoutingHint')}</span>

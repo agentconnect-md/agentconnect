@@ -33,7 +33,9 @@ describe('decisionUsageHref', () => {
     )
   })
 
-  it('links nothing for shared-bot routing yet', () => {
-    expect(decisionUsageHref({ kind: 'shared_bot_routing', id: 'bot', label: 'Bot' }, orgPath, integrations)).toBeNull()
+  it('sends shared-bot routing to the bot’s Routing page', () => {
+    expect(decisionUsageHref({ kind: 'shared_bot_routing', id: 'bot 1', label: 'Bot' }, orgPath, integrations)).toBe(
+      '/o/acme/integrations/bots/bot%201/routing'
+    )
   })
 })

@@ -397,8 +397,7 @@ describe('DecisionEditorView', () => {
       [...document.body.querySelectorAll('a')].find((node) => node.textContent?.trim() === label)
     expect(link('#general · Support')?.getAttribute('href')).toBe('/agents/agent-1')
     expect(link('Reviewer')?.getAttribute('href')).toBe('/agents/agent-2?tab=tools')
-    expect(link('Support bot')).toBeUndefined()
-    expect(byText('Support bot')).toBeTruthy()
+    expect(link('Support bot')?.getAttribute('href')).toBe('/integrations/bots/support-bot/routing')
   })
 
   it('replaces the criteria wholesale when the question type changes', async () => {

@@ -1767,6 +1767,13 @@
           "existing": "未使用的 QQ 机器人"
         }
       }
+    },
+    "botRouting": {
+      "title": "路由",
+      "configure": "配置路由",
+      "open": "打开路由",
+      "summary": "按决策 · {count, plural, other {# 个频道}}",
+      "notConfigured": "未配置"
     }
   },
   "Agents": {
@@ -4423,6 +4430,16 @@
         "shutdown": "守护进程已关闭",
         "ownership": "已移至其他守护进程",
         "admission": "未被接纳",
+        "not_member": "未连接",
+        "stopped": "已停止",
+        "routing_disabled": "路由已暂停",
+        "no_agent": "没有 Agent",
+        "off": "已关闭",
+        "unsupported": "不受支持",
+        "rejected": "已拒绝",
+        "targets_rejected": "没有目标被接纳",
+        "no_default": "无默认 Agent",
+        "host_reassigned": "主机已更换",
         "other": "其他原因"
       },
       "sheet": {
@@ -4448,6 +4465,265 @@
         "evidence": "证据",
         "snapshotRow": "快照行",
         "background": "提供的背景消息数"
+      }
+    },
+    "routing": {
+      "metadata": {
+        "title": "路由 · AgentConnect"
+      },
+      "breadcrumb": {
+        "integrations": "集成",
+        "configuration": "配置",
+        "routing": "路由"
+      },
+      "title": "路由",
+      "subtitle": "根据一个决策的回答，选择由哪些已连接的 Agent 接收消息。",
+      "recentEvaluations": "最近评估",
+      "notShared": "路由仅适用于服务多个 Agent 的共享机器人。",
+      "notFound": "此机器人不存在，或你无权查看它的任何 Agent。",
+      "loadError": "无法加载路由。{message}",
+      "retryLoad": "重试",
+      "readOnly": "你可以查看此配置，但你的角色无法更改它。",
+      "status": {
+        "ready": "就绪",
+        "pending_sync": "等待同步",
+        "needs_review": "需要复核",
+        "missing_credentials": "缺少凭据",
+        "daemon_offline": "Daemon 离线",
+        "unsupported": "不受支持",
+        "insufficient_credits": "额度不足",
+        "paused": "已暂停",
+        "draft": "未保存的草稿"
+      },
+      "banner": {
+        "pendingSync": "已保存，尚未生效。评估主机和 Relay 确认后即会生效。",
+        "needsReview": "决策已更改，路由已停用，需修复标出的规则并保存后才能恢复。",
+        "openDecision": "打开决策",
+        "missingCredentials": "{provider} 没有组织密钥，也没有可用的 Cloud 支持，因此评估会失败并使用其后续投递。",
+        "insufficientCredits": "{provider} 没有组织密钥，且组织的 AC 额度已用尽，因此评估会失败并使用其后续投递。",
+        "unknownProvider": "此决策的提供方",
+        "providerKeys": "打开提供方密钥",
+        "daemonOffline": "没有可以评估此机器人对话的 Daemon 在线。路由的消息会等待其重新连接。",
+        "unsupportedHost": "请先升级评估主机 Daemon，然后才能启用此配置。",
+        "unsupportedRelay": "请先升级 Relay 以转发路由的对话，然后才能启用此配置。",
+        "noAgents": "此机器人没有可用的已连接 Agent，因此无法保存“路由到 Agent”规则。",
+        "connectAgent": "连接 Agent",
+        "paused": "路由已暂停。在重新启用之前，这些频道中的新消息（包括 @提及和话题回复）都不会被投递。"
+      },
+      "empty": {
+        "title": "尚未配置路由",
+        "body": "根据决策的回答，将每个新对话路由给相应的 Agent。保存之前不会有任何更改。",
+        "start": "配置路由"
+      },
+      "enabled": {
+        "label": "已启用",
+        "pauseHint": "暂停会停止这些频道中的新投递，包括 @提及和话题回复。正在运行的回合会继续，控制命令仍然可用。"
+      },
+      "decision": {
+        "label": "决策",
+        "select": "选择决策…",
+        "summary": "{type} · {model}",
+        "edit": "编辑",
+        "view": "查看",
+        "create": "新建决策",
+        "required": "请选择一个决策。",
+        "hidden": "你无权查看的决策",
+        "typeChanged": "该决策的问题类型与这些规则不一致。请更新每条规则的条件；系统不会替你重新选择。"
+      },
+      "channels": {
+        "label": "频道",
+        "search": "搜索频道",
+        "manage": "对话设置",
+        "count": "{count, plural, other {# 个频道}}",
+        "none": "未选择频道。添加频道之前，路由不会在任何地方生效。",
+        "offRow": "关闭",
+        "enableFirst": "在频道设置中启用",
+        "gateRow": "已有自己的按决策门控；添加后将替换该门控。",
+        "applyNote": "保存后将对 {names} 应用按决策触发。",
+        "conversationSettings": "打开此机器人的对话设置",
+        "noEligible": "此机器人还没有群组频道。",
+        "hidden": "由于你无权查看此机器人的 Agent，频道名称已隐藏。"
+      },
+      "removal": {
+        "title": "替换 {channel} 中的路由",
+        "trigger": "替换触发方式",
+        "triggerRequired": "请选择 {channel} 改用的触发方式。",
+        "defaultAgent": "默认 Agent",
+        "keep": "保留当前默认",
+        "triggers": {
+          "off": "关闭",
+          "mention": "@提及",
+          "auto": "任意消息"
+        }
+      },
+      "rules": {
+        "title": "规则",
+        "choiceHint": "每个达到阈值的选项都会生效。",
+        "scoreHint": "各行按下限排序；区间不能重叠。",
+        "number": "规则 {number}",
+        "when": "条件",
+        "then": "动作",
+        "add": "添加规则",
+        "remove": "移除规则 {number}",
+        "empty": "没有规则。所有消息都使用“否则”。",
+        "gap": "{interval} 使用“否则”",
+        "dedupe": "多条规则可以指向同一个 Agent；它只会收到一次消息。"
+      },
+      "action": {
+        "label": "规则 {number} 的动作",
+        "route": "路由到 Agent",
+        "skip": "不激活",
+        "agent": "规则 {number} 的 Agent",
+        "selectAgent": "选择 Agent…",
+        "hiddenAgent": "你无权查看的 Agent",
+        "targetRequired": "请选择此规则要路由到的 Agent。",
+        "targetRemoved": "目标已移除",
+        "targetRemovedHint": "此 Agent 已不再连接到该机器人。请选择其他 Agent 或“不激活”。",
+        "targetUnavailable": "目标不可用",
+        "targetUnavailableHint": "此 Agent 暂时无法接收消息。选择会被保留，且不会改路由给其他 Agent。",
+        "refresh": "刷新"
+      },
+      "otherwise": {
+        "label": "否则",
+        "default": "使用默认 Agent",
+        "skip": "不激活",
+        "appliesHint": "仅在没有规则匹配时生效。",
+        "perChannel": "{channel}：{agent}",
+        "noDefault": "无默认 Agent"
+      },
+      "notes": {
+        "mentions": "@提及和话题回复同样会被评估，也可能被跳过。",
+        "constrained": "激活时，@提及保留其目标，话题保留当前参与者。",
+        "history": "最近的对话历史会自动包含在内。"
+      },
+      "footer": {
+        "test": "测试路由",
+        "cancel": "取消",
+        "save": "保存",
+        "saving": "正在保存…",
+        "saved": "已保存",
+        "retry": "重试",
+        "unsaved": "有未保存的更改",
+        "newDraft": "新配置，尚未保存",
+        "invalid": "请修正标出的字段后再保存。"
+      },
+      "saveError": {
+        "invalid": "请检查标出的字段后重新保存。",
+        "forbidden": "你的角色无法更改此机器人的路由或某个受影响的对话。",
+        "decisionMissing": "该决策已不可用。请选择其他决策。",
+        "unsupported": "Relay 或评估主机尚不支持路由。请升级后重试。",
+        "conflict": "你编辑期间机器人已发生变化。{message}",
+        "failed": "保存失败——你的更改已保留。{message}",
+        "keptDecision": "你新建的决策已保留；重试会保存相同的配置。"
+      },
+      "try": {
+        "title": "测试路由",
+        "channel": "示例频道",
+        "situation": "情境",
+        "situations": {
+          "new": "新对话",
+          "mention": "明确 @提及",
+          "thread": "已有话题"
+        },
+        "recipients": "被指定的 Agent",
+        "participants": "当前参与者",
+        "participant": "已参与",
+        "run": "运行",
+        "running": "正在运行…",
+        "stale": "本次运行后草稿或示例已更改，请重新运行。",
+        "answer": "回答",
+        "ruleMatched": "规则 {number} 已匹配",
+        "ruleNotMatched": "规则 {number} 未匹配",
+        "threshold": "阈值",
+        "matchedRules": "匹配的规则",
+        "otherwiseUsed": "没有规则匹配；使用“否则”。",
+        "matchedActions": "匹配的动作",
+        "effectiveTargets": "实际目标",
+        "wouldActivate": "会激活",
+        "wouldContinue": "会继续",
+        "wouldNotActivate": "不会激活",
+        "wouldSkip": "将跳过",
+        "constrainedNote": "目标已受约束，因此不会添加规则中的 Agent，而是保留原有接收方。",
+        "notEvaluated": "所有接收方都已参与，因此不会运行评估。",
+        "notApplied": "未应用",
+        "notAppliedBody": {
+          "off": "此频道已关闭，路由不适用。未进行任何评估。",
+          "outside_scope": "此频道不在草稿的频道范围内，将沿用其现有触发方式。未进行任何评估。",
+          "paused": "路由已暂停，不会投递任何消息。未进行任何评估。",
+          "needs_review": "已保存的规则需要复核，路由已停用。修复后即可测试。未进行任何评估。",
+          "unsupported": "评估主机或 Relay 尚不支持路由。未进行任何评估。"
+        },
+        "unavailableBody": "评估不可用：{reason}。这不是跳过。",
+        "continuation": {
+          "constrained": "该消息将继续发送给受约束的接收方。",
+          "default": "该消息将继续发送给默认 Agent。",
+          "none": "没有默认 Agent，因此不会投递任何消息。"
+        },
+        "targetUnavailable": "目标不可用",
+        "targetRemoved": "目标已移除",
+        "noSubstitute": "不会改选其他 Agent。",
+        "offline": "评估主机离线。请在其重新连接后重试。",
+        "failed": "无法运行测试。{message}"
+      },
+      "evaluations": {
+        "title": "最近评估",
+        "empty": "暂无路由评估。",
+        "offline": "评估主机离线，暂时无法读取最近评估。",
+        "unsupported": "请升级评估主机 Daemon 以查看路由评估。",
+        "error": "无法加载评估。{message}",
+        "loadMore": "加载更多",
+        "allChannels": "全部频道",
+        "channelFilter": "频道",
+        "otherwise": "否则",
+        "notEvaluated": "未评估",
+        "rules": "规则 {numbers}",
+        "columns": {
+          "time": "时间",
+          "channel": "频道",
+          "answer": "决策回答",
+          "matched": "匹配",
+          "targets": "目标",
+          "outcome": "结果",
+          "latency": "延迟"
+        },
+        "outcomes": {
+          "routed": "已路由",
+          "partially_routed": "部分路由",
+          "skipped": "已跳过",
+          "fallback": "后备投递",
+          "unavailable": "不可用",
+          "canceled": "已取消",
+          "pending": "处理中"
+        },
+        "dispositions": {
+          "pending": "处理中",
+          "admitted": "已接纳",
+          "rejected": "已拒绝",
+          "unavailable": "不可用"
+        },
+        "effects": {
+          "participant": "参与者",
+          "kept": "保留",
+          "selected": "选中",
+          "default_agent": "默认 Agent",
+          "fallback_constrained": "后备给接收方",
+          "fallback_default": "后备给默认 Agent"
+        },
+        "sheet": {
+          "title": "路由评估",
+          "close": "关闭路由评估",
+          "notFound": "此评估已不可用。",
+          "error": "无法加载此评估。{message}",
+          "detailsExpired": "详情已过期",
+          "detailsExpiredBody": "保留策略已移除此评估的输入和回答。摘要会保留，且不会根据当前的定义或历史重新构建。",
+          "snapshot": "评估时的决策",
+          "routing": "评估时的路由",
+          "constraint": "目标约束",
+          "constraintNone": "无：新的、未指定的对话",
+          "input": "被评估的消息",
+          "model": "模型",
+          "usage": "用量"
+        }
       }
     }
   },

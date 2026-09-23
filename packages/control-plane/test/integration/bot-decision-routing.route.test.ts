@@ -395,7 +395,11 @@ describe('PUT /bots/:id/decision-routing', () => {
       removals: []
     })
     expect(overlap.statusCode).toBe(400)
-    expect(overlap.json().issues).toEqual([expect.objectContaining({ message: 'Score intervals must not overlap.' })])
+    // Both conflicting rows are marked, so the editor can flag each one.
+    expect(overlap.json().issues).toEqual([
+      { path: ['rules', 0, 'when'], message: 'Score intervals must not overlap.' },
+      { path: ['rules', 1, 'when'], message: 'Score intervals must not overlap.' }
+    ])
     const repeatedKey = await put(app, botId, {
       config: routingConfig(await createDecision(app, choiceDraft), a.agentId, b.agentId, {
         rules: [
@@ -416,7 +420,8 @@ describe('PUT /bots/:id/decision-routing', () => {
     })
     expect(repeatedKey.statusCode).toBe(400)
     expect(repeatedKey.json().issues).toEqual([
-      expect.objectContaining({ message: 'An answer can appear in only one routing rule.' })
+      { path: ['rules', 0, 'when'], message: 'An answer can appear in only one routing rule.' },
+      { path: ['rules', 1, 'when'], message: 'An answer can appear in only one routing rule.' }
     ])
     const repeatedValue = await put(app, botId, {
       config: routingConfig(decisionId, a.agentId, b.agentId, {

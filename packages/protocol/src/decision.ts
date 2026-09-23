@@ -277,6 +277,19 @@ export type DecisionEvaluationEntry = z.infer<typeof DecisionEvaluationEntry>
 export const DecisionEvaluationOutcome = z.enum(['triggered', 'skipped', 'unavailable', 'canceled', 'pending'])
 export type DecisionEvaluationOutcome = z.infer<typeof DecisionEvaluationOutcome>
 
+// The frozen input an evaluation saw: the current message, bounded history, and context trimming.
+export const DecisionEvaluationInput = z.strictObject({
+  currentMessage: DecisionEvaluationEntry,
+  history: z.array(DecisionEvaluationEntry).max(100),
+  historyOmitted: z.number().int().nonnegative(),
+  context: z.strictObject({
+    partial: z.boolean(),
+    reasons: z.array(z.string().max(64)).max(8),
+    omittedMessages: z.number().int().nonnegative()
+  })
+})
+export type DecisionEvaluationInput = z.infer<typeof DecisionEvaluationInput>
+
 // A Recent evaluations summary row, read from the daemon's decision_verdict (decisions.md §9.5).
 export const DecisionEvaluationRecord = z.strictObject({
   seq: z.number().int().nonnegative(),
@@ -309,18 +322,7 @@ export const DecisionEvaluationRecordDetail = DecisionEvaluationRecord.extend({
       sessionMode: z.string().max(64)
     })
     .nullable(),
-  input: z
-    .strictObject({
-      currentMessage: DecisionEvaluationEntry,
-      history: z.array(DecisionEvaluationEntry).max(100),
-      historyOmitted: z.number().int().nonnegative(),
-      context: z.strictObject({
-        partial: z.boolean(),
-        reasons: z.array(z.string().max(64)).max(8),
-        omittedMessages: z.number().int().nonnegative()
-      })
-    })
-    .nullable(),
+  input: DecisionEvaluationInput.nullable(),
   fullAnswer: DecisionAnswer.nullable(),
   evidence: z
     .strictObject({
@@ -336,6 +338,96 @@ export const DecisionEvaluationRecordPage = z.strictObject({
   nextCursor: z.number().int().positive().nullable()
 })
 export type DecisionEvaluationRecordPage = z.infer<typeof DecisionEvaluationRecordPage>
+
+const Usage = z.strictObject({
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative()
+})
+
+// Router outcomes (decisions.md §9.5); Partially routed is at least one admitted and one rejected or unavailable target.
+export const DecisionRoutingEvaluationOutcome = z.enum([
+  'routed',
+  'partially_routed',
+  'skipped',
+  'fallback',
+  'unavailable',
+  'canceled',
+  'pending'
+])
+export type DecisionRoutingEvaluationOutcome = z.infer<typeof DecisionRoutingEvaluationOutcome>
+
+export const RoutingTargetEffectSchema = z.enum([
+  'participant',
+  'kept',
+  'selected',
+  'default_agent',
+  'fallback_constrained',
+  'fallback_default'
+])
+export const RoutingTargetDisposition = z.enum(['pending', 'admitted', 'rejected', 'unavailable'])
+export type RoutingTargetDisposition = z.infer<typeof RoutingTargetDisposition>
+
+// One frozen router target and its admission status; never a message body.
+export const DecisionRoutingTargetRecord = z.strictObject({
+  agentId: Id,
+  effect: RoutingTargetEffectSchema,
+  via: z.enum(['mention', 'implicit']),
+  participant: z.boolean(),
+  disposition: RoutingTargetDisposition,
+  reason: z.string().max(128).nullable()
+})
+export type DecisionRoutingTargetRecord = z.infer<typeof DecisionRoutingTargetRecord>
+
+// A routing Recent evaluations row, read from a router verdict (subject `router:<botId>`).
+export const DecisionRoutingEvaluationRecord = z.strictObject({
+  seq: z.number().int().nonnegative(),
+  at: z.string().max(64),
+  channel: z.string().max(512),
+  messageId: z.string().max(256).nullable(),
+  decisionId: Id,
+  outcome: DecisionRoutingEvaluationOutcome,
+  reason: z.string().max(128).nullable(),
+  evaluated: z.boolean(),
+  answer: DecisionAnswerSummary.nullable(),
+  matchedKeys: z.array(Key).max(32),
+  matchedRuleIds: z.array(Id).max(32),
+  usedOtherwise: z.boolean(),
+  fallback: z.enum(['constrained', 'default', 'none']).nullable(),
+  targets: z.array(DecisionRoutingTargetRecord).max(64),
+  latencyMs: z.number().int().nonnegative().nullable(),
+  requestedModel: Id,
+  actualModel: z.string().max(256).nullable(),
+  usage: Usage.nullable(),
+  detailsExpired: z.boolean()
+})
+export type DecisionRoutingEvaluationRecord = z.infer<typeof DecisionRoutingEvaluationRecord>
+
+// The frozen routing snapshot, target constraint, and input of one router verdict.
+export const DecisionRoutingEvaluationRecordDetail = DecisionRoutingEvaluationRecord.extend({
+  snapshot: z
+    .strictObject({
+      decisionId: Id,
+      providerId: Id,
+      model: Id,
+      question: DecisionQuestion,
+      routing: SharedBotDecisionRouting,
+      defaultAgentId: Id.nullable()
+    })
+    .nullable(),
+  constraint: z
+    .array(z.strictObject({ agentId: Id, participant: z.boolean(), via: z.enum(['mention', 'implicit']) }))
+    .max(64)
+    .nullable(),
+  input: DecisionEvaluationInput.nullable(),
+  fullAnswer: DecisionAnswer.nullable()
+})
+export type DecisionRoutingEvaluationRecordDetail = z.infer<typeof DecisionRoutingEvaluationRecordDetail>
+
+export const DecisionRoutingEvaluationRecordPage = z.strictObject({
+  items: z.array(DecisionRoutingEvaluationRecord).max(50),
+  nextCursor: z.number().int().positive().nullable()
+})
+export type DecisionRoutingEvaluationRecordPage = z.infer<typeof DecisionRoutingEvaluationRecordPage>
 
 export interface DecisionValidationIssue {
   path: Array<string | number>
@@ -377,13 +469,23 @@ export function decisionRoutingIssues(
   return decisionRuleIssues(question, routing.rules)
 }
 
+const DUPLICATE_ANSWER = 'An answer can appear in only one routing rule.'
+const OVERLAPPING_INTERVALS = 'Score intervals must not overlap.'
+
+// Both rows of a duplicated key or an overlapping interval are marked, so the editor can flag each one.
 function decisionRuleIssues(
   question: DecisionQuestion,
   rules: readonly { when: DecisionCondition }[]
 ): DecisionValidationIssue[] {
   const issues: DecisionValidationIssue[] = []
-  const assigned = new Set<string>()
-  const intervals: Array<{ min: number; max: number }> = []
+  const conflicts = new Map<number, Set<string>>()
+  const mark = (index: number, message: string) => {
+    const marked = conflicts.get(index) ?? new Set<string>()
+    marked.add(message)
+    conflicts.set(index, marked)
+  }
+  const assigned = new Map<string, number>()
+  const intervals: Array<{ index: number; min: number; max: number }> = []
   rules.forEach((rule, index) => {
     const path = ['rules', index, 'when']
     issues.push(
@@ -400,15 +502,23 @@ function decisionRuleIssues(
           ? condition.values.map(String)
           : []
     for (const key of keys) {
-      if (assigned.has(key)) issues.push({ path, message: 'An answer can appear in only one routing rule.' })
-      assigned.add(key)
+      const prior = assigned.get(key)
+      if (prior !== undefined) {
+        mark(prior, DUPLICATE_ANSWER)
+        mark(index, DUPLICATE_ANSWER)
+      } else assigned.set(key, index)
     }
     if (condition.type === 'score') {
-      if (intervals.some((other) => condition.min < other.max && other.min < condition.max))
-        issues.push({ path, message: 'Score intervals must not overlap.' })
-      intervals.push(condition)
+      for (const other of intervals)
+        if (condition.min < other.max && other.min < condition.max) {
+          mark(other.index, OVERLAPPING_INTERVALS)
+          mark(index, OVERLAPPING_INTERVALS)
+        }
+      intervals.push({ index, min: condition.min, max: condition.max })
     }
   })
+  for (const [index, messages] of [...conflicts].sort(([a], [b]) => a - b))
+    for (const message of messages) issues.push({ path: ['rules', index, 'when'], message })
   return issues
 }
 
@@ -668,4 +778,76 @@ export function resolveRoutingTargets(input: {
     )
   }
   return { evaluate, targets, disposition: targets.length > 0 ? 'match' : 'skip', match }
+}
+
+/** Each rule's own match against an answer, in rule order, so a preview can show every threshold result. */
+export function decisionRoutingRuleMatches(
+  question: DecisionQuestion,
+  routing: Pick<SharedBotDecisionRouting, 'rules'>,
+  answer: DecisionAnswer
+): Array<{ ruleId: string; matched: boolean; matchedKeys: string[] }> {
+  return routing.rules.map((rule) => ({ ruleId: rule.id, ...matchDecisionCondition(question, rule.when, answer) }))
+}
+
+export type RoutingPreviewOutcome = 'activate' | 'continue' | 'skip' | 'unavailable'
+
+export interface RoutingPreviewSettlement extends RoutingSettlement {
+  rules: Array<{ ruleId: string; matched: boolean; matchedKeys: string[] }>
+  outcome: RoutingPreviewOutcome
+  /** Set when the answer failed validation and settled like the router's `invalid_response`. */
+  reason?: 'invalid_response'
+}
+
+/** The router's settlement (resolveRoutingTargets) plus per-rule detail; an invalid answer re-settles as unavailable. */
+export function settleRoutingPreview(input: Parameters<typeof resolveRoutingTargets>[0]): RoutingPreviewSettlement {
+  let settlement: RoutingSettlement
+  let reason: 'invalid_response' | undefined
+  try {
+    settlement = resolveRoutingTargets(input)
+  } catch {
+    reason = 'invalid_response'
+    settlement = resolveRoutingTargets({ ...input, answer: 'unavailable' })
+  }
+  const answer = reason || input.answer === 'unavailable' ? undefined : input.answer
+  const rules = answer && settlement.evaluate ? decisionRoutingRuleMatches(input.question, input.routing, answer) : []
+  const { participants, eligible } = partitionRoutingConstraint(input.constraint)
+  const constrained = participants.length + eligible.length > 0
+  const outcome: RoutingPreviewOutcome =
+    settlement.disposition === 'unavailable'
+      ? 'unavailable'
+      : settlement.disposition === 'skip'
+        ? 'skip'
+        : constrained
+          ? 'continue'
+          : 'activate'
+  return { ...settlement, rules, outcome, ...(reason ? { reason } : {}) }
+}
+
+/** Cancel reasons the router writes when settlement itself ended with no admitted target, not an interruption. */
+const SETTLED_CANCEL_REASONS = new Set(['targets_rejected', 'no_default'])
+
+/** A router verdict's Recent evaluations outcome from its state, disposition, and per-target admissions. */
+export function routingEvaluationOutcome(input: {
+  state: string
+  disposition: 'match' | 'skip' | 'unavailable' | null
+  targets: ReadonlyArray<{ disposition: RoutingTargetDisposition }>
+  cancelReason?: string | null
+}): DecisionRoutingEvaluationOutcome {
+  if (input.state === 'canceled' && !SETTLED_CANCEL_REASONS.has(input.cancelReason ?? '')) return 'canceled'
+  if (input.state === 'skipped' || input.disposition === 'skip') return 'skipped'
+  if (
+    input.state === 'reserved' ||
+    input.state === 'evaluating' ||
+    input.state === 'settled' ||
+    input.disposition === null ||
+    input.targets.some((target) => target.disposition === 'pending')
+  )
+    return 'pending'
+  const admitted = input.targets.filter((target) => target.disposition === 'admitted').length
+  if (input.disposition === 'unavailable') return admitted > 0 ? 'fallback' : 'unavailable'
+  if (admitted === 0) return 'unavailable'
+  const refused = input.targets.some(
+    (target) => target.disposition === 'rejected' || target.disposition === 'unavailable'
+  )
+  return refused ? 'partially_routed' : 'routed'
 }

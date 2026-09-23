@@ -1,7 +1,9 @@
 import {
   DecisionEvaluationRequest,
   DecisionEvaluationsRequest,
-  DecisionPreviewRequest
+  DecisionPreviewRequest,
+  DecisionRoutingEvaluationRequest,
+  DecisionRoutingEvaluationsRequest
 } from '@agentconnect.md/protocol'
 import { DecisionEvaluationScopeError, type DecisionEvaluationReader } from '../../decisions/evaluations.js'
 import type { DecisionEvaluator } from '../../decisions/evaluator.js'
@@ -9,7 +11,7 @@ import type { ControlHandler } from './context.js'
 
 export interface DecisionControlDeps {
   decisionEvaluator?: Pick<DecisionEvaluator, 'catalog' | 'evaluate'>
-  decisionEvaluations?: Pick<DecisionEvaluationReader, 'list' | 'get'>
+  decisionEvaluations?: Pick<DecisionEvaluationReader, 'list' | 'get' | 'listRouting' | 'getRouting'>
 }
 
 export const decisionCatalog: ControlHandler<DecisionControlDeps> = (frame, deps, wire) => {
@@ -92,5 +94,35 @@ export const decisionEvaluation: ControlHandler<DecisionControlDeps> = async (fr
     () => DecisionEvaluationRequest.parse(frame.payload),
     (orgId, req) => reader.get(orgId, req),
     'decision/evaluation/result'
+  )
+}
+
+export const decisionRoutingEvaluations: ControlHandler<DecisionControlDeps> = async (frame, deps, wire) => {
+  const reader = deps.decisionEvaluations
+  if (!reader) {
+    wire.sendError(frame.id, 'BAD_PAYLOAD', 'Decision evaluations are unavailable', false)
+    return
+  }
+  await readEvaluations(
+    frame,
+    wire,
+    () => DecisionRoutingEvaluationsRequest.parse(frame.payload),
+    (orgId, req) => reader.listRouting(orgId, req),
+    'decision/routing-evaluations/page'
+  )
+}
+
+export const decisionRoutingEvaluation: ControlHandler<DecisionControlDeps> = async (frame, deps, wire) => {
+  const reader = deps.decisionEvaluations
+  if (!reader) {
+    wire.sendError(frame.id, 'BAD_PAYLOAD', 'Decision evaluations are unavailable', false)
+    return
+  }
+  await readEvaluations(
+    frame,
+    wire,
+    () => DecisionRoutingEvaluationRequest.parse(frame.payload),
+    (orgId, req) => reader.getRouting(orgId, req),
+    'decision/routing-evaluation/result'
   )
 }

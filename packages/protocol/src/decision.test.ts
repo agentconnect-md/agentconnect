@@ -21,6 +21,10 @@ import {
   parseDecisionAnswer,
   partitionRoutingConstraint,
   resolveRoutingTargets,
+  routingEvaluationOutcome,
+  settleRoutingPreview,
+  DecisionRoutingEvaluationRecord,
+  DecisionRoutingEvaluationRecordDetail,
   type DecisionAnswer,
   type SharedBotDecisionRouting
 } from './decision.js'
@@ -562,5 +566,242 @@ describe('router settlement (message-intake.md §6, decisions.md §3.2)', () => 
       expect.objectContaining({ agentId: 'billing-agent', daemonId: 'd-1' }),
       expect.objectContaining({ agentId: 'technical-agent', daemonId: null, unavailableReason: 'not_member' })
     ])
+  })
+})
+
+describe('routing preview settlement (decisions.md §9.3)', () => {
+  const candidates = [
+    { agentId: 'billing-agent', daemonId: 'd-1' },
+    { agentId: 'technical-agent', daemonId: 'd-1' },
+    { agentId: 'default-agent', daemonId: 'd-1' },
+    { agentId: 'A', daemonId: 'd-1' },
+    { agentId: 'B', daemonId: 'd-1' }
+  ]
+  const preview = (over: Partial<Parameters<typeof settleRoutingPreview>[0]> = {}) =>
+    settleRoutingPreview({
+      question: choice,
+      routing,
+      answer,
+      constraint: [],
+      defaultAgentId: 'default-agent',
+      candidates,
+      ...over
+    })
+  const choiceAnswer = (probabilities: Record<string, number>): DecisionAnswer => ({
+    type: 'choice',
+    value: Object.entries(probabilities).sort((a, b) => b[1] - a[1])[0]![0],
+    probabilities,
+    confidence: 0.5
+  })
+  const agents = (result: ReturnType<typeof preview>) => result.targets.map((t) => t.agentId)
+
+  it('Choice: no passing option uses Otherwise, several and tied options all match', () => {
+    const noRuleSkip = { ...routing, rules: routing.rules.slice(0, 2) }
+    const none = preview({ routing: noRuleSkip, answer: choiceAnswer({ billing: 0.2, technical: 0.2, sales: 0.6 }) })
+    expect(none).toMatchObject({ outcome: 'activate', match: { usedOtherwise: true } })
+    expect(agents(none)).toEqual(['default-agent'])
+    expect(none.rules.map((r) => r.matched)).toEqual([false, false])
+    const several = preview({ answer: choiceAnswer({ billing: 0.45, technical: 0.4, sales: 0.15 }) })
+    expect(agents(several)).toEqual(['billing-agent', 'technical-agent'])
+    expect(several.rules.map((r) => [r.ruleId, r.matched])).toEqual([
+      ['billing', true],
+      ['technical', true],
+      ['sales', false]
+    ])
+    const tie = preview({ answer: choiceAnswer({ billing: 0.4, technical: 0.4, sales: 0.2 }) })
+    expect(agents(tie)).toEqual(['billing-agent', 'technical-agent'])
+  })
+
+  it('Choice: several matches to one agent deduplicate; a mixed skip keeps the agent', () => {
+    const same = structuredClone(routing)
+    same.rules[1]!.action = { type: 'agent', agentId: 'billing-agent' }
+    expect(agents(preview({ routing: same }))).toEqual(['billing-agent'])
+    const mixed = structuredClone(routing)
+    mixed.rules[0]!.action = { type: 'skip' }
+    const result = preview({ routing: mixed })
+    expect(agents(result)).toEqual(['technical-agent'])
+    expect(result.match?.matchedRuleIds).toEqual(['billing', 'technical'])
+    mixed.rules[1]!.action = { type: 'skip' }
+    expect(preview({ routing: mixed })).toMatchObject({ outcome: 'skip', targets: [] })
+  })
+
+  it('Boolean Yes/No and Score 1, 2.49, 2.5, 3 select one destination', () => {
+    const yesNo = DecisionQuestion.parse({
+      type: 'boolean',
+      instructions: 'Urgent?',
+      criteria: { true: 'Y', false: 'N' }
+    })
+    const bool: SharedBotDecisionRouting = {
+      enabled: true,
+      decisionId: 'urgent',
+      otherwise: { type: 'skip' },
+      rules: [
+        { id: 'yes', when: { type: 'boolean', values: [true] }, action: { type: 'agent', agentId: 'A' } },
+        { id: 'no', when: { type: 'boolean', values: [false] }, action: { type: 'agent', agentId: 'B' } }
+      ]
+    }
+    const b = (value: boolean): DecisionAnswer => ({ type: 'boolean', value, probability: value ? 0.9 : 0.1 })
+    expect(agents(preview({ question: yesNo, routing: bool, answer: b(true) }))).toEqual(['A'])
+    expect(agents(preview({ question: yesNo, routing: bool, answer: b(false) }))).toEqual(['B'])
+    const ranges: SharedBotDecisionRouting = {
+      enabled: true,
+      decisionId: 'frustration',
+      otherwise: { type: 'skip' },
+      rules: [
+        { id: 'low', when: { type: 'score', min: 0, max: 1 }, action: { type: 'skip' } },
+        { id: 'mid', when: { type: 'score', min: 1, max: 2.5 }, action: { type: 'agent', agentId: 'A' } },
+        { id: 'high', when: { type: 'score', min: 2.5, max: 3 }, action: { type: 'agent', agentId: 'B' } }
+      ]
+    }
+    for (const [value, expected] of [
+      [1, ['A']],
+      [2.49, ['A']],
+      [2.5, ['B']],
+      [3, ['B']]
+    ] as const)
+      expect(agents(preview({ question: score, routing: ranges, answer: scoreAnswer(value) }))).toEqual(expected)
+    expect(preview({ question: score, routing: ranges, answer: scoreAnswer(0.5) }).outcome).toBe('skip')
+  })
+
+  it('a constrained answer continues with the recipients or skips; participants alone need no evaluation', () => {
+    const constraint = [{ agentId: 'B', participant: false, via: 'mention' as const }]
+    const kept = preview({ constraint })
+    expect(kept).toMatchObject({ outcome: 'continue', evaluate: true })
+    expect(kept.targets.map((t) => [t.agentId, t.effect])).toEqual([['B', 'kept']])
+    const skip = preview({ constraint, answer: choiceAnswer({ billing: 0.1, technical: 0.1, sales: 0.8 }) })
+    expect(skip).toMatchObject({ outcome: 'skip', targets: [] })
+    const participants = preview({ constraint: [{ agentId: 'A', participant: true }], answer: undefined })
+    expect(participants).toMatchObject({ outcome: 'continue', evaluate: false, rules: [] })
+  })
+
+  it('unavailable names the constrained, default, or no continuation; an invalid answer settles the same way', () => {
+    const constrained = preview({ constraint: [{ agentId: 'B', participant: false }], answer: 'unavailable' })
+    expect(constrained).toMatchObject({ outcome: 'unavailable', fallback: 'constrained' })
+    expect(preview({ answer: 'unavailable' })).toMatchObject({ outcome: 'unavailable', fallback: 'default' })
+    expect(preview({ answer: 'unavailable', defaultAgentId: undefined })).toMatchObject({
+      outcome: 'unavailable',
+      fallback: 'none',
+      targets: []
+    })
+    const invalid = preview({ answer: { ...answer, probabilities: { billing: 1 } } })
+    expect(invalid).toMatchObject({ outcome: 'unavailable', reason: 'invalid_response', fallback: 'default' })
+  })
+
+  it('marks both overlapping Score rows and both rows sharing a key', () => {
+    const overlap: SharedBotDecisionRouting = {
+      enabled: true,
+      decisionId: 'frustration',
+      otherwise: { type: 'skip' },
+      rules: [
+        { id: 'a', when: { type: 'score', min: 0, max: 2 }, action: { type: 'skip' } },
+        { id: 'b', when: { type: 'score', min: 1, max: 3 }, action: { type: 'skip' } }
+      ]
+    }
+    expect(decisionRoutingIssues(score, overlap).map((issue) => issue.path)).toEqual([
+      ['rules', 0, 'when'],
+      ['rules', 1, 'when']
+    ])
+    const duplicate = structuredClone(routing)
+    duplicate.rules[2]!.when = { type: 'choice', thresholds: { billing: 0.1 } }
+    expect(decisionRoutingIssues(choice, duplicate).map((issue) => issue.path)).toEqual([
+      ['rules', 0, 'when'],
+      ['rules', 2, 'when']
+    ])
+  })
+})
+
+describe('routing evaluation outcomes (decisions.md §9.5)', () => {
+  const t = (...dispositions: Array<'pending' | 'admitted' | 'rejected' | 'unavailable'>) =>
+    dispositions.map((disposition) => ({ disposition }))
+  it('classifies every outcome', () => {
+    expect(
+      routingEvaluationOutcome({ state: 'admitted', disposition: 'match', targets: t('admitted', 'admitted') })
+    ).toBe('routed')
+    expect(
+      routingEvaluationOutcome({ state: 'admitted', disposition: 'match', targets: t('admitted', 'unavailable') })
+    ).toBe('partially_routed')
+    expect(
+      routingEvaluationOutcome({ state: 'admitted', disposition: 'match', targets: t('admitted', 'rejected') })
+    ).toBe('partially_routed')
+    expect(routingEvaluationOutcome({ state: 'skipped', disposition: 'skip', targets: [] })).toBe('skipped')
+    expect(routingEvaluationOutcome({ state: 'admitted', disposition: 'unavailable', targets: t('admitted') })).toBe(
+      'fallback'
+    )
+    // A fallback target that is itself unavailable is Unavailable, never Fallback or Routed.
+    expect(
+      routingEvaluationOutcome({
+        state: 'canceled',
+        disposition: 'unavailable',
+        targets: t('unavailable'),
+        cancelReason: 'targets_rejected'
+      })
+    ).toBe('unavailable')
+    expect(
+      routingEvaluationOutcome({
+        state: 'canceled',
+        disposition: 'unavailable',
+        targets: [],
+        cancelReason: 'no_default'
+      })
+    ).toBe('unavailable')
+    expect(
+      routingEvaluationOutcome({
+        state: 'canceled',
+        disposition: 'match',
+        targets: t('rejected'),
+        cancelReason: 'targets_rejected'
+      })
+    ).toBe('unavailable')
+    expect(routingEvaluationOutcome({ state: 'canceled', disposition: null, targets: [], cancelReason: 'stop' })).toBe(
+      'canceled'
+    )
+    for (const state of ['reserved', 'evaluating'])
+      expect(routingEvaluationOutcome({ state, disposition: null, targets: [] })).toBe('pending')
+    expect(
+      routingEvaluationOutcome({ state: 'settled', disposition: 'match', targets: t('admitted', 'pending') })
+    ).toBe('pending')
+  })
+
+  it('bounds the routing record and its detail', () => {
+    const row = {
+      seq: 3,
+      at: '2026-01-01T00:00:00.000Z',
+      channel: 'C1',
+      messageId: null,
+      decisionId: 'd1',
+      outcome: 'routed',
+      reason: null,
+      evaluated: true,
+      answer: null,
+      matchedKeys: [],
+      matchedRuleIds: ['r1'],
+      usedOtherwise: false,
+      fallback: null,
+      targets: [
+        { agentId: 'A', effect: 'selected', via: 'implicit', participant: false, disposition: 'admitted', reason: null }
+      ],
+      latencyMs: 12,
+      requestedModel: 'jev-latest',
+      actualModel: null,
+      usage: null,
+      detailsExpired: false
+    }
+    expect(DecisionRoutingEvaluationRecord.parse(row)).toEqual(row)
+    expect(DecisionRoutingEvaluationRecord.safeParse({ ...row, outcome: 'triggered' }).success).toBe(false)
+    expect(DecisionRoutingEvaluationRecord.safeParse({ ...row, extra: 1 }).success).toBe(false)
+    const detail = {
+      ...row,
+      snapshot: null,
+      constraint: [{ agentId: 'A', participant: true, via: 'mention' }],
+      input: null,
+      fullAnswer: null
+    }
+    expect(DecisionRoutingEvaluationRecordDetail.parse(detail)).toEqual(detail)
+    expect(
+      DecisionRoutingEvaluationRecordDetail.safeParse({
+        ...detail,
+        constraint: [{ agentId: 'A', participant: true, via: 'mention', text: 'x' }]
+      }).success
+    ).toBe(false)
   })
 })

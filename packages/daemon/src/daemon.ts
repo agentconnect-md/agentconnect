@@ -3,6 +3,7 @@ import {
   MEMORY_ENTRIES_V1_FEATURE,
   PROVIDER_CREDENTIALS_V1_FEATURE,
   DECISION_EVALUATIONS_V1_FEATURE,
+  DECISION_ROUTING_EVALUATIONS_V1_FEATURE,
   DECISION_PREVIEW_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
   DECISION_ROUTING_V1_FEATURE,
@@ -1746,7 +1747,14 @@ export class Daemon {
         const transportScope = this.transportScopeForIntegrationIds([integrationId])
         // The durable scope classifyNewSession stamps on this install's sessions; empty is unstamped there too.
         const tenantScope = (await this.tenantScopeForIntegration(integration)) || null
-        return { ...(transportScope ? { transportScope } : {}), platform: integration.platform, tenantScope }
+        const botId = resolveDecisionBundle(integrationCore(integration).decisions ?? { bindings: [], definitions: [] })
+          .sharedBotRouting?.botId
+        return {
+          ...(transportScope ? { transportScope } : {}),
+          ...(botId ? { botId } : {}),
+          platform: integration.platform,
+          tenantScope
+        }
       }
     })
     this.codexSessionFloor = this.k8s ? configuredCodexSessionFloor(process.env) : undefined
@@ -6197,6 +6205,7 @@ export class Daemon {
       PROVIDER_CREDENTIALS_V1_FEATURE,
       DECISION_PREVIEW_V1_FEATURE,
       DECISION_EVALUATIONS_V1_FEATURE,
+      DECISION_ROUTING_EVALUATIONS_V1_FEATURE,
       DECISION_TRIGGER_V1_FEATURE,
       // This daemon evaluates routed conversations it hosts and admits routed forwards without evaluating.
       DECISION_ROUTING_V1_FEATURE,

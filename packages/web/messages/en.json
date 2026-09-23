@@ -1767,6 +1767,13 @@
           "existing": "An unused QQ bot"
         }
       }
+    },
+    "botRouting": {
+      "title": "Routing",
+      "configure": "Configure routing",
+      "open": "Open routing",
+      "summary": "By decision · {count, plural, one {# channel} other {# channels}}",
+      "notConfigured": "Not configured"
     }
   },
   "Agents": {
@@ -4423,6 +4430,16 @@
         "shutdown": "Daemon shut down",
         "ownership": "Moved to another daemon",
         "admission": "Not admitted",
+        "not_member": "Not connected",
+        "stopped": "Stopped",
+        "routing_disabled": "Routing paused",
+        "no_agent": "No agent",
+        "off": "Off",
+        "unsupported": "Unsupported",
+        "rejected": "Rejected",
+        "targets_rejected": "No target admitted",
+        "no_default": "No default agent",
+        "host_reassigned": "Host changed",
         "other": "Other reason"
       },
       "sheet": {
@@ -4448,6 +4465,265 @@
         "evidence": "Evidence",
         "snapshotRow": "Snapshot row",
         "background": "Background messages supplied"
+      }
+    },
+    "routing": {
+      "metadata": {
+        "title": "Routing · AgentConnect"
+      },
+      "breadcrumb": {
+        "integrations": "Integrations",
+        "configuration": "Configuration",
+        "routing": "Routing"
+      },
+      "title": "Routing",
+      "subtitle": "Choose which connected agents receive a message from one Decision's answer.",
+      "recentEvaluations": "Recent evaluations",
+      "notShared": "Routing is available only for a shared bot that serves several agents.",
+      "notFound": "This bot does not exist, or you cannot see any of its agents.",
+      "loadError": "Routing could not be loaded. {message}",
+      "retryLoad": "Retry",
+      "readOnly": "You can read this configuration, but your role cannot change it.",
+      "status": {
+        "ready": "Ready",
+        "pending_sync": "Pending sync",
+        "needs_review": "Needs review",
+        "missing_credentials": "Missing credentials",
+        "daemon_offline": "Daemon offline",
+        "unsupported": "Unsupported",
+        "insufficient_credits": "Insufficient credits",
+        "paused": "Paused",
+        "draft": "Unsaved draft"
+      },
+      "banner": {
+        "pendingSync": "Saved, not yet applied. It takes effect once the evaluation host and the relay confirm it.",
+        "needsReview": "The Decision changed, so routing is off until the highlighted rules are repaired and saved.",
+        "openDecision": "Open decision",
+        "missingCredentials": "{provider} has no organization key and no eligible Cloud support, so evaluations fail and use their continuation.",
+        "insufficientCredits": "{provider} has no organization key and the organization's AC credits are exhausted, so evaluations fail and use their continuation.",
+        "unknownProvider": "The Decision's provider",
+        "providerKeys": "Open provider keys",
+        "daemonOffline": "No daemon that can evaluate this bot's conversations is connected. Routed messages wait until one reconnects.",
+        "unsupportedHost": "Upgrade the evaluation host daemon before this configuration can be activated.",
+        "unsupportedRelay": "Upgrade the relay so it can forward routed conversations before this configuration can be activated.",
+        "noAgents": "No usable agent is connected to this bot, so Route to agent rules cannot be saved.",
+        "connectAgent": "Connect an agent",
+        "paused": "Routing is paused. New messages in these channels, including mentions and thread replies, are not delivered until it is enabled again."
+      },
+      "empty": {
+        "title": "No routing yet",
+        "body": "Route each new conversation to the agents a Decision's answer selects. Nothing changes until you save.",
+        "start": "Configure routing"
+      },
+      "enabled": {
+        "label": "Enabled",
+        "pauseHint": "Pausing stops new deliveries in these channels, including mentions and thread replies. Running turns continue and control commands still work."
+      },
+      "decision": {
+        "label": "Decision",
+        "select": "Select a decision…",
+        "summary": "{type} · {model}",
+        "edit": "Edit",
+        "view": "View",
+        "create": "Create decision",
+        "required": "Choose a Decision.",
+        "hidden": "A decision you cannot see",
+        "typeChanged": "The Decision's question type differs from these rules. Update each rule's condition; nothing is reselected for you."
+      },
+      "channels": {
+        "label": "Channels",
+        "search": "Search channels",
+        "manage": "Conversation settings",
+        "count": "{count, plural, one {# channel} other {# channels}}",
+        "none": "No channels selected. Routing applies nowhere until you add one.",
+        "offRow": "Off",
+        "enableFirst": "Enable in channel settings",
+        "gateRow": "Has its own By decision gate; adding it replaces the gate.",
+        "applyNote": "Save applies By decision to {names}.",
+        "conversationSettings": "Open the bot's conversation settings",
+        "noEligible": "This bot has no group channels yet.",
+        "hidden": "Channel names are hidden because you cannot view this bot's agents."
+      },
+      "removal": {
+        "title": "Replace routing in {channel}",
+        "trigger": "Replacement trigger",
+        "triggerRequired": "Choose what {channel} uses instead.",
+        "defaultAgent": "Default agent",
+        "keep": "Keep the current default",
+        "triggers": {
+          "off": "Off",
+          "mention": "Mention",
+          "auto": "Any message"
+        }
+      },
+      "rules": {
+        "title": "Rules",
+        "choiceHint": "Every option meeting its threshold applies.",
+        "scoreHint": "Rows sort by their lower bound; intervals must not overlap.",
+        "number": "Rule {number}",
+        "when": "When",
+        "then": "Then",
+        "add": "Add rule",
+        "remove": "Remove rule {number}",
+        "empty": "No rules. Every message uses Otherwise.",
+        "gap": "{interval} uses Otherwise",
+        "dedupe": "Several rules can name one agent; it receives the message once."
+      },
+      "action": {
+        "label": "Action for rule {number}",
+        "route": "Route to agent",
+        "skip": "Do not activate",
+        "agent": "Agent for rule {number}",
+        "selectAgent": "Select an agent…",
+        "hiddenAgent": "An agent you cannot see",
+        "targetRequired": "Choose the agent this rule routes to.",
+        "targetRemoved": "Target removed",
+        "targetRemovedHint": "This agent is no longer connected to the bot. Choose another agent or Do not activate.",
+        "targetUnavailable": "Target unavailable",
+        "targetUnavailableHint": "This agent cannot receive messages right now. The selection is kept and nothing is rerouted.",
+        "refresh": "Refresh"
+      },
+      "otherwise": {
+        "label": "Otherwise",
+        "default": "Use default agent",
+        "skip": "Do not activate",
+        "appliesHint": "Applies only when no rule matches.",
+        "perChannel": "{channel}: {agent}",
+        "noDefault": "no default agent"
+      },
+      "notes": {
+        "mentions": "Mentions and thread replies are also evaluated and may be skipped.",
+        "constrained": "If activated, mentions keep their targets and threads keep their current participants.",
+        "history": "Recent conversation history is included automatically."
+      },
+      "footer": {
+        "test": "Test routing",
+        "cancel": "Cancel",
+        "save": "Save",
+        "saving": "Saving…",
+        "saved": "Saved",
+        "retry": "Retry",
+        "unsaved": "Unsaved changes",
+        "newDraft": "New configuration, not saved yet",
+        "invalid": "Fix the highlighted fields to save."
+      },
+      "saveError": {
+        "invalid": "Check the highlighted fields and save again.",
+        "forbidden": "Your role cannot change this bot's routing or one of the affected conversations.",
+        "decisionMissing": "The Decision is no longer available. Choose another one.",
+        "unsupported": "The relay or the evaluation host does not support routing yet. Upgrade it, then retry.",
+        "conflict": "The bot changed while you edited. {message}",
+        "failed": "Save failed; your edits are kept. {message}",
+        "keptDecision": "The Decision you created is kept; Retry saves the same configuration."
+      },
+      "try": {
+        "title": "Test routing",
+        "channel": "Sample channel",
+        "situation": "Situation",
+        "situations": {
+          "new": "New conversation",
+          "mention": "Explicit mention",
+          "thread": "Established thread"
+        },
+        "recipients": "Addressed agents",
+        "participants": "Current participants",
+        "participant": "Already participating",
+        "run": "Run",
+        "running": "Running…",
+        "stale": "The draft or sample changed since this run. Run it again.",
+        "answer": "Answer",
+        "ruleMatched": "Rule {number} matched",
+        "ruleNotMatched": "Rule {number} did not match",
+        "threshold": "Threshold",
+        "matchedRules": "Matched rules",
+        "otherwiseUsed": "No rule matched; Otherwise applies.",
+        "matchedActions": "Matched actions",
+        "effectiveTargets": "Effective targets",
+        "wouldActivate": "Would activate",
+        "wouldContinue": "Would continue",
+        "wouldNotActivate": "Would not activate",
+        "wouldSkip": "Would skip",
+        "constrainedNote": "Targets are constrained, so the rules' agents are not added and the recipients are kept.",
+        "notEvaluated": "Every recipient already participates, so no evaluation runs.",
+        "notApplied": "Not applied",
+        "notAppliedBody": {
+          "off": "This channel is Off, so routing does not apply. No evaluation ran.",
+          "outside_scope": "This channel is outside the draft's channels, so its existing trigger applies. No evaluation ran.",
+          "paused": "Routing is paused, so nothing would be delivered. No evaluation ran.",
+          "needs_review": "The saved rules need review, so routing is off. Repair them to test. No evaluation ran.",
+          "unsupported": "The evaluation host or the relay does not support routing yet. No evaluation ran."
+        },
+        "unavailableBody": "Evaluation unavailable: {reason}. This is not a skip.",
+        "continuation": {
+          "constrained": "The message continues to its constrained recipients.",
+          "default": "The message continues to the default agent.",
+          "none": "There is no default agent, so nothing is delivered."
+        },
+        "targetUnavailable": "Target unavailable",
+        "targetRemoved": "Target removed",
+        "noSubstitute": "No other agent is chosen instead.",
+        "offline": "The evaluation host is offline. Try again once it reconnects.",
+        "failed": "The test could not run. {message}"
+      },
+      "evaluations": {
+        "title": "Recent evaluations",
+        "empty": "No routing evaluations yet.",
+        "offline": "The evaluation host is offline, so recent evaluations cannot be read right now.",
+        "unsupported": "Upgrade the evaluation host daemon to read routing evaluations.",
+        "error": "Could not load evaluations. {message}",
+        "loadMore": "Load more",
+        "allChannels": "All channels",
+        "channelFilter": "Channel",
+        "otherwise": "Otherwise",
+        "notEvaluated": "Not evaluated",
+        "rules": "Rules {numbers}",
+        "columns": {
+          "time": "Time",
+          "channel": "Channel",
+          "answer": "Decision answer",
+          "matched": "Matched",
+          "targets": "Targets",
+          "outcome": "Outcome",
+          "latency": "Latency"
+        },
+        "outcomes": {
+          "routed": "Routed",
+          "partially_routed": "Partially routed",
+          "skipped": "Skipped",
+          "fallback": "Fallback",
+          "unavailable": "Unavailable",
+          "canceled": "Canceled",
+          "pending": "Pending"
+        },
+        "dispositions": {
+          "pending": "Pending",
+          "admitted": "Admitted",
+          "rejected": "Rejected",
+          "unavailable": "Unavailable"
+        },
+        "effects": {
+          "participant": "Participant",
+          "kept": "Kept",
+          "selected": "Selected",
+          "default_agent": "Default agent",
+          "fallback_constrained": "Fallback to recipient",
+          "fallback_default": "Fallback to default"
+        },
+        "sheet": {
+          "title": "Routing evaluation",
+          "close": "Close routing evaluation",
+          "notFound": "This evaluation is no longer available.",
+          "error": "Could not load this evaluation. {message}",
+          "detailsExpired": "Details expired",
+          "detailsExpiredBody": "Retention removed this evaluation's input and answer. The summary is kept and is not rebuilt from current definitions or history.",
+          "snapshot": "Decision at evaluation",
+          "routing": "Routing at evaluation",
+          "constraint": "Target constraint",
+          "constraintNone": "None: a new, unaddressed conversation",
+          "input": "Evaluated message",
+          "model": "Model",
+          "usage": "Usage"
+        }
       }
     }
   },

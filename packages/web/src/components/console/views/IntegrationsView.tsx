@@ -42,6 +42,8 @@ import DeleteBotModal from '@/components/console/modals/DeleteBotModal'
 import GithubCard from '@/components/console/GithubCard'
 import GiteaCard from '@/components/console/GiteaCard'
 import GitlabCard from '@/components/console/GitlabCard'
+import { featureFlagEnabled } from '@/lib/feature-flags'
+import { botRoutingPath } from '@/lib/decisions/usage-links'
 
 // The free-bot sub-line shows where the bot came from without repeating
 // historical usage metadata in the list row.
@@ -147,6 +149,35 @@ function botChannels(bot: BotDto, integrations: IntegrationRow[]): BotChannelVie
     if (rank(a.kind) !== rank(b.kind)) return rank(a.kind) - rank(b.kind)
     return a.name.localeCompare(b.name)
   })
+}
+
+// The routed conversations of one shared bot, counted once across its installs.
+function routedChannelCount(bot: BotDto, integrations: IntegrationRow[]): number {
+  const routed = new Set<string>()
+  for (const i of integrations)
+    if (i.botId === bot.id)
+      for (const c of i.channels)
+        if (c.trigger === 'decision' && c.decisionBinding?.type === 'shared_bot_routing') routed.add(c.channelId)
+  return routed.size
+}
+
+/** A shared bot's Configuration → Routing entry, beneath its expanded row. */
+function BotRoutingEntry({ bot, integrations }: { bot: BotDto; integrations: IntegrationRow[] }) {
+  const t = useTranslations('Integrations.botRouting')
+  const { orgPath } = useOrgs()
+  const count = routedChannelCount(bot, integrations)
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-(--border-subtle) bg-(--surface-card) px-3 py-2">
+      <Icon name="split" size={13} color="var(--text-tertiary)" className="flex-none" />
+      <span className="font-sans text-[12.5px] font-semibold leading-normal">{t('title')}</span>
+      <span className="min-w-0 flex-1 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+        {count > 0 ? t('summary', { count }) : t('notConfigured')}
+      </span>
+      <Link href={botRoutingPath(bot.id, orgPath)} className="lnk text-[12px] font-medium">
+        {count > 0 ? t('open') : t('configure')}
+      </Link>
+    </div>
+  )
 }
 
 /** The page's two section headings. Cards own no top margin here — the section
@@ -554,6 +585,13 @@ function BotsCard({
               {open && (
                 <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-4 pb-[14px] pl-10 pt-3">
                   {RowSettings && <RowSettings bot={b} canWrite={canWrite} />}
+                  {b.shareable &&
+                    b.transport === 'http' &&
+                    featureFlagEnabled('decisions') &&
+                    (!channelListSemantics(b.platform).triggers ||
+                      channelListSemantics(b.platform).triggers!.includes('decision')) && (
+                      <BotRoutingEntry bot={b} integrations={integrations} />
+                    )}
                   {channels.length > 0 ? (
                     <>
                       <div
