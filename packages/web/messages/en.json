@@ -4228,7 +4228,8 @@
       },
       "needsReview": "needs review",
       "ok": "ok",
-      "hidden": "{count, plural, one {# more you cannot see} other {# more you cannot see}}"
+      "hidden": "{count, plural, one {# more you cannot see} other {# more you cannot see}}",
+      "hiddenUnknown": "Used by items you cannot see"
     },
     "errors": {
       "name": "Give the decision a name before saving.",
@@ -4250,7 +4251,8 @@
       "from": "From",
       "to": "To",
       "intervalStart": "Interval start",
-      "intervalEnd": "Interval end"
+      "intervalEnd": "Interval end",
+      "removedChoice": "No longer a choice of this decision. Click to remove it."
     },
     "binding": {
       "decision": "Decision",
@@ -4278,6 +4280,9 @@
       "openDecision": "Open decision",
       "repair": "Repair condition",
       "chooseAnother": "Choose another decision",
+      "chooseCondition": "The decision's question changed type, so pick the answers that should trigger this agent before saving.",
+      "noInterval": "No score interval set.",
+      "setInterval": "Set an interval",
       "status": {
         "pending_sync": "Pending sync",
         "needs_review": "Needs review",

@@ -10,10 +10,13 @@ import type { DecisionUsage } from '@agentconnect.md/protocol/decision-api'
 export function DecisionUsageList({
   usages,
   hiddenCount = 0,
+  inUse = false,
   hrefFor
 }: {
   usages: DecisionUsage[]
   hiddenCount?: number
+  /** A server refusal said the Decision is used, so an empty list still names that someone uses it. */
+  inUse?: boolean
   hrefFor: (usage: DecisionUsage) => string | null
 }) {
   const t = useTranslations('Decisions')
@@ -40,6 +43,11 @@ export function DecisionUsageList({
       {hiddenCount > 0 && (
         <div className="px-4 py-[9px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
           {t('usedBy.hidden', { count: hiddenCount })}
+        </div>
+      )}
+      {inUse && usages.length === 0 && hiddenCount === 0 && (
+        <div className="px-4 py-[9px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+          {t('usedBy.hiddenUnknown')}
         </div>
       )}
     </>

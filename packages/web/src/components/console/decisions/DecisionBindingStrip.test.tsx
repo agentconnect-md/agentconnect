@@ -9,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as decisionProvider from '@/lib/decisions/provider'
 import * as decisionMock from '@/lib/decisions/mock-api'
 import { createDecisionMockSeed } from '@/lib/decisions/fixtures'
+import type { SavedGate } from '@/lib/decisions/binding'
+import type { ChannelDecisionGate } from '@agentconnect.md/protocol/decision'
 
 const { DecisionsPrototypeProvider, useDecisionsPrototype } = decisionProvider
 let store: ReturnType<typeof useDecisionsPrototype>
@@ -71,6 +73,21 @@ function MockStrip({
   )
 }
 
+/** A row whose gate is already saved and flagged, so Repair opens the editor on that saved condition. */
+function SavedStrip({ saved, onSave }: { saved: SavedGate; onSave: (gate: ChannelDecisionGate) => Promise<void> }) {
+  return (
+    <DecisionBindingStrip
+      bindingKey="org-test|support-bot|#saved"
+      canWrite
+      agentName="Billing"
+      padX={18}
+      saved={saved}
+      status="needs_review"
+      onSave={onSave}
+    />
+  )
+}
+
 async function render(node: ReactNode) {
   container = document.createElement('div')
   document.body.append(container)
@@ -118,6 +135,7 @@ describe('DecisionBindingStrip', () => {
     expect(findByText(view, 'Activates')).toBeTruthy()
     expect(view.querySelector('input[aria-label="Minimum probability for billing"]')).toBeTruthy()
     expect(view.querySelector('input[aria-label="Minimum probability for technical"]')).toBeTruthy()
+    expect((findByText(view, 'Save') as HTMLButtonElement | undefined)?.disabled).toBe(false)
   })
 
   it('saves the gate and collapses to a summary that names the decision, its condition, and its target', async () => {
@@ -241,6 +259,123 @@ describe('DecisionBindingStrip', () => {
     })
     expect(findByText(view, 'Escalation')).toBeTruthy()
     expect(view.querySelector('input[aria-label="Minimum probability for billing"]')).toBeNull()
+  })
+
+  // A type change strands the saved condition; Repair must not reseed a match-everything default.
+  it('opens a type-change repair with nothing selected and saves only the answer the operator picks', async () => {
+    const onSave = vi.fn(async () => {})
+    const view = await render(
+      <SavedStrip
+        saved={{ decisionId: 'needs-response', when: { type: 'choice', thresholds: { billing: 0.5 } } }}
+        onSave={onSave}
+      />
+    )
+    await clickText(view, 'Repair condition')
+    const chip = (label: string) => findByText(view, label) as HTMLButtonElement | undefined
+    const save = () => findByText(view, 'Save') as HTMLButtonElement | undefined
+    expect(chip('Yes')?.getAttribute('aria-pressed')).toBe('false')
+    expect(chip('No')?.getAttribute('aria-pressed')).toBe('false')
+    expect(save()?.disabled).toBe(true)
+
+    await clickText(view, 'Yes')
+    expect(save()?.disabled).toBe(false)
+    await clickText(view, 'Save')
+    expect(onSave).toHaveBeenCalledTimes(1)
+    expect(onSave).toHaveBeenCalledWith({
+      type: 'gate',
+      decisionId: 'needs-response',
+      when: { type: 'boolean', values: [true] }
+    })
+  })
+
+  it('disables a type-change repair Save again once the operator un-toggles every answer', async () => {
+    const view = await render(
+      <SavedStrip
+        saved={{ decisionId: 'needs-response', when: { type: 'choice', thresholds: { billing: 0.5 } } }}
+        onSave={vi.fn()}
+      />
+    )
+    await clickText(view, 'Repair condition')
+    const save = () => findByText(view, 'Save') as HTMLButtonElement | undefined
+    await clickText(view, 'Yes')
+    expect(save()?.disabled).toBe(false)
+    await clickText(view, 'Yes')
+    expect((findByText(view, 'Yes') as HTMLButtonElement | undefined)?.getAttribute('aria-pressed')).toBe('false')
+    expect(save()?.disabled).toBe(true)
+  })
+
+  it('makes a Score repair set its interval deliberately before Save', async () => {
+    const onSave = vi.fn(async () => {})
+    const view = await render(
+      <SavedStrip saved={{ decisionId: 'frustration', when: { type: 'boolean', values: [true] } }} onSave={onSave} />
+    )
+    await clickText(view, 'Repair condition')
+    expect(view.querySelector('input[aria-label="Interval start"]')).toBeNull()
+    expect((findByText(view, 'Save') as HTMLButtonElement | undefined)?.disabled).toBe(true)
+
+    await clickText(view, 'Set an interval')
+    expect(view.querySelector('input[aria-label="Interval start"]')).toBeTruthy()
+    await clickText(view, 'Save')
+    expect(onSave).toHaveBeenCalledWith({
+      type: 'gate',
+      decisionId: 'frustration',
+      when: { type: 'score', min: 0, max: 3 }
+    })
+  })
+
+  it('keeps re-picking the same decision during a repair from reseeding defaults', async () => {
+    const view = await render(
+      <SavedStrip saved={{ decisionId: 'needs-response', when: { type: 'score', min: 0, max: 1 } }} onSave={vi.fn()} />
+    )
+    await clickText(view, 'Repair condition')
+    await act(async () => {
+      view.querySelector('button[aria-haspopup="menu"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    const current = document.body.querySelector<HTMLButtonElement>('button[role="menuitemradio"][aria-checked="true"]')
+    await act(async () => {
+      current?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect((findByText(view, 'Yes') as HTMLButtonElement | undefined)?.getAttribute('aria-pressed')).toBe('false')
+    expect((findByText(view, 'Save') as HTMLButtonElement | undefined)?.disabled).toBe(true)
+  })
+
+  // A same-type change keeps the saved values for editing: an out-of-range interval stays visible and blocks Save.
+  it('keeps a stranded Score interval unclamped and invalid until the operator fixes it', async () => {
+    const onSave = vi.fn(async () => {})
+    const view = await render(
+      <SavedStrip saved={{ decisionId: 'frustration', when: { type: 'score', min: 1, max: 5 } }} onSave={onSave} />
+    )
+    await clickText(view, 'Repair condition')
+    const end = view.querySelector<HTMLInputElement>('input[type="number"][aria-label="Interval end"]')
+    expect(end?.value).toBe('5')
+    expect((findByText(view, 'Save') as HTMLButtonElement | undefined)?.disabled).toBe(true)
+
+    await typeInto(end, '2')
+    await clickText(view, 'Save')
+    expect(onSave).toHaveBeenCalledWith({
+      type: 'gate',
+      decisionId: 'frustration',
+      when: { type: 'score', min: 1, max: 2 }
+    })
+  })
+
+  it('lets a Choice repair remove a key the question no longer has', async () => {
+    const onSave = vi.fn(async () => {})
+    const view = await render(
+      <SavedStrip
+        saved={{ decisionId: 'support-category', when: { type: 'choice', thresholds: { removed: 0.5, billing: 0.4 } } }}
+        onSave={onSave}
+      />
+    )
+    await clickText(view, 'Repair condition')
+    expect((findByText(view, 'Save') as HTMLButtonElement | undefined)?.disabled).toBe(true)
+    await clickText(view, 'removed')
+    await clickText(view, 'Save')
+    expect(onSave).toHaveBeenCalledWith({
+      type: 'gate',
+      decisionId: 'support-category',
+      when: { type: 'choice', thresholds: { billing: 0.4 } }
+    })
   })
 
   it('says there are no decisions yet when the list is empty', async () => {

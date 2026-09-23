@@ -1,7 +1,6 @@
 'use client'
 
-// "Trigger when" — the condition a consumer matches an answer against, one control set per
-// question type so no two surfaces can describe the same condition differently.
+// "Trigger when": one control set per question type, so no two surfaces describe a condition differently.
 
 import { useTranslations } from 'next-intl'
 import type { ReactNode } from 'react'
@@ -107,6 +106,27 @@ export function DecisionConditionFields({
             </div>
           )
         })}
+        {/* A key the question no longer has stays visible, so a repair can remove it instead of being stuck invalid. */}
+        {Object.keys(thresholds)
+          .filter((key) => !Object.hasOwn(question.criteria, key))
+          .map((key) => (
+            <div key={key} className="flex flex-wrap items-center gap-2">
+              <Chip
+                on
+                title={t('removedChoice')}
+                onClick={() => {
+                  const next = { ...thresholds }
+                  delete next[key]
+                  onChange({ type: 'choice', thresholds: next })
+                }}
+              >
+                <s>{key}</s>
+              </Chip>
+              <span className="font-sans text-[11.5px] leading-normal text-(--text-tertiary)">
+                {t('removedChoice')}
+              </span>
+            </div>
+          ))}
         <span className="font-sans text-[11px] leading-[1.5] text-(--text-tertiary)">{t('choiceHelp')}</span>
         {invalid && <ConditionIssue issue={issues[0]!} />}
       </div>

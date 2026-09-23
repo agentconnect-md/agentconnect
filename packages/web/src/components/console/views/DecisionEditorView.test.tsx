@@ -277,6 +277,30 @@ describe('DecisionEditorView', () => {
     expect(push).not.toHaveBeenCalled()
   })
 
+  // A refusal whose only references are hidden must never fall back to the unused copy.
+  it.each([
+    { hiddenUsageCount: 2, line: '2 more you cannot see' },
+    { hiddenUsageCount: 0, line: 'Used by items you cannot see' }
+  ])('keeps a 409 with no visible usages in use (hidden $hiddenUsageCount)', async ({ hiddenUsageCount, line }) => {
+    params = { id: 'needs-response' }
+    await render()
+    vi.spyOn(store.api, 'getDecision').mockResolvedValue({
+      decision: store.decisions.find((entry) => entry.id === 'needs-response')!,
+      usages: []
+    })
+    vi.spyOn(store.api, 'deleteDecision').mockRejectedValue(
+      new ApiError('in use', 409, undefined, { usages: [], hiddenUsageCount })
+    )
+    await click(byText('Delete'))
+    const dialog = document.body.querySelector('[role="dialog"]')!
+    await click([...dialog.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'Delete'))
+    expect(dialog.textContent).not.toContain('This decision is not used anywhere.')
+    expect(dialog.textContent).toContain('This decision is still used. Remove it from these places before deleting it:')
+    expect(dialog.textContent).toContain(line)
+    expect(document.body.textContent).not.toContain('Not used anywhere yet.')
+    expect(push).not.toHaveBeenCalled()
+  })
+
   it('duplicates the saved decision and opens the copy', async () => {
     params = { id: 'support-category' }
     await render()

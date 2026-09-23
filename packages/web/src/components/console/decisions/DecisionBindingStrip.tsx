@@ -9,7 +9,13 @@ import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { useOrgs } from '@/lib/org-context'
-import { defaultConditionFor, gateIssues, useDecisionProviders, useDecisionsPrototype } from '@/lib/decisions/provider'
+import {
+  defaultConditionFor,
+  emptyConditionFor,
+  gateIssues,
+  useDecisionProviders,
+  useDecisionsPrototype
+} from '@/lib/decisions/provider'
 import { bindingSaveError, type BindingSaveError, type GateStatus, type SavedGate } from '@/lib/decisions/binding'
 import {
   matchDecisionCondition,
@@ -19,6 +25,14 @@ import {
   type DecisionDefinition
 } from '@agentconnect.md/protocol/decision'
 import { DecisionConditionFields, intervalText } from './DecisionConditionFields'
+
+/** True when a condition is missing or selects no answer, so a repair still waits on the operator. */
+function selectsNothing(when: DecisionCondition | null): boolean {
+  if (!when) return true
+  if (when.type === 'boolean') return when.values.length === 0
+  if (when.type === 'choice') return Object.keys(when.thresholds).length === 0
+  return false
+}
 
 /** How a saved condition reads in one line — the summary the collapsed strip prints. */
 function conditionSummary(
@@ -152,16 +166,19 @@ export function DecisionBindingStrip({
   const savedDecision = saved ? (decisions.find((entry) => entry.id === saved.decisionId) ?? null) : null
   const savedLabel = savedDecision?.name ?? savedName ?? t('binding.hiddenDecision')
 
-  // A condition of another question type has no fields to repair, so it restarts from the Decision's default; null asks the user to choose.
+  // A condition of another question type restarts with nothing selected, so the operator must choose; null asks for a Decision.
   const edit = (decisionId: string | null) => {
     if (!saved) return
     if (decisionId === null) {
       setBindingDraft(bindingKey, { decisionId: null, when: null, phase: 'editing', explicitPick: true })
       return
     }
-    const when =
-      savedDecision && savedDecision.question.type !== saved.when.type ? defaultConditionFor(savedDecision) : saved.when
-    setBindingDraft(bindingKey, { decisionId, when, phase: 'editing' })
+    if (savedDecision && savedDecision.question.type !== saved.when.type) {
+      const when = emptyConditionFor(savedDecision)
+      setBindingDraft(bindingKey, { decisionId, when, phase: 'editing', awaitingCondition: true })
+      return
+    }
+    setBindingDraft(bindingKey, { decisionId, when: saved.when, phase: 'editing' })
   }
 
   if (!draft) {
@@ -259,17 +276,28 @@ export function DecisionBindingStrip({
   const decision = activeDraft.decisionId
     ? (decisions.find((entry) => entry.id === activeDraft.decisionId) ?? null)
     : null
-  const when = decision ? (activeDraft.when ?? defaultConditionFor(decision)) : null
+  const awaiting = decision !== null && activeDraft.awaitingCondition === true && selectsNothing(activeDraft.when)
+  const when = decision ? (activeDraft.when ?? (awaiting ? null : defaultConditionFor(decision))) : null
   const localIssues = gateIssues(decision, when)
   const serverIssues = activeDraft.error?.kind === 'invalid' ? activeDraft.error.issues : []
   const issues = localIssues.length ? localIssues : serverIssues
-  const invalidText = decision ? (localIssues[0]?.message ?? '') : t('binding.pickDecision')
+  const invalidText = decision
+    ? awaiting
+      ? t('binding.chooseCondition')
+      : (localIssues[0]?.message ?? '')
+    : t('binding.pickDecision')
   const busy = activeDraft.phase === 'saving'
   const returnTo = `${pathname}${search.toString() ? `?${search.toString()}` : ''}`
 
-  // Every edit drops a failed save's error, so Save starts fresh.
+  // Every edit drops a failed save's error; a repair keeps waiting on the same Decision so un-toggling disables Save again.
   const change = (decisionId: string, next: DecisionCondition) => {
-    setBindingDraft(bindingKey, { decisionId, when: next, phase: 'editing' })
+    const awaitingCondition = activeDraft.awaitingCondition === true && decisionId === activeDraft.decisionId
+    setBindingDraft(bindingKey, {
+      decisionId,
+      when: next,
+      phase: 'editing',
+      ...(awaitingCondition && { awaitingCondition })
+    })
   }
 
   const save = async () => {
@@ -393,7 +421,8 @@ export function DecisionBindingStrip({
                         className={entry.id === activeDraft.decisionId ? 'fopt on' : 'fopt'}
                         onClick={() => {
                           close(true)
-                          change(entry.id, defaultConditionFor(entry))
+                          // Re-picking the current Decision keeps the draft, so a repair is never reseeded with defaults.
+                          if (entry.id !== activeDraft.decisionId) change(entry.id, defaultConditionFor(entry))
                         }}
                       >
                         <span className="flex min-w-0 flex-1 flex-col items-start">
@@ -447,6 +476,22 @@ export function DecisionBindingStrip({
               issues={issues}
             />
           </div>
+        ) : decision ? (
+          <div className="fld">
+            <span className="fldlbl">{t('binding.triggerWhen')}</span>
+            <span className="flex flex-wrap items-center gap-[9px]">
+              <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                {t('binding.noInterval')}
+              </span>
+              <button
+                type="button"
+                className="lnk text-[11.5px] font-medium"
+                onClick={() => change(decision.id, defaultConditionFor(decision))}
+              >
+                {t('binding.setInterval')}
+              </button>
+            </span>
+          </div>
         ) : (
           <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
             {loading ? t('loading') : decisions.length ? t('binding.pickDecision') : t('binding.noDecisions')}
@@ -459,7 +504,9 @@ export function DecisionBindingStrip({
         </div>
       </fieldset>
 
-      {decision && invalidText && (
+      {awaiting && <Note icon="info">{invalidText}</Note>}
+
+      {decision && invalidText && !awaiting && (
         <div className="flex items-start gap-[9px] rounded-md border border-(--red-500) bg-(--status-error-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]">
           <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
           <span>{invalidText}</span>

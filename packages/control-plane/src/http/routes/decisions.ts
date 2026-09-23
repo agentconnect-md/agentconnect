@@ -13,7 +13,7 @@ import {
 import { canEdit, canView } from '../../authorization/policy.js'
 import { AgentId, DaemonId } from '../../domain/ids.js'
 import { DecisionInUse } from '../../persistence/errors.js'
-import type { DecisionChannelUsage } from '../../persistence/ports.js'
+import type { AgentRecord, DecisionChannelUsage } from '../../persistence/ports.js'
 import { convergeDecisionConsumers } from '../../orchestrator/integrationPush.js'
 import type { HttpDeps } from '../deps.js'
 import { visibleDecision } from '../decision-access.js'
@@ -133,8 +133,8 @@ export function decisionRoutes(deps: HttpDeps) {
     // Distinct conversations, counted across sibling rows the same way as the visible set.
     const conversationCount = (usages: readonly DecisionChannelUsage[]) =>
       new Set(usages.map((u) => `${u.botId}\u0000${u.channelId}`)).size
-    const agentUsages = async (req: FastifyRequest) =>
-      (await deps.repos.agent.list(orgOf(req), ctxOf(req))).flatMap((agent) => [
+    const agentReferences = (agents: readonly AgentRecord[]) =>
+      agents.flatMap((agent) => [
         ...(agent.modelSelection
           ? [
               {
@@ -152,6 +152,8 @@ export function decisionRoutes(deps: HttpDeps) {
           label: agent.displayName ?? agent.name
         }))
       ])
+    const agentUsages = async (req: FastifyRequest) =>
+      agentReferences(await deps.repos.agent.list(orgOf(req), ctxOf(req)))
     // A preview borrows a visible placed agent's credential identity without executing that agent.
     const executionAgent = async (req: FastifyRequest, daemonId: string) => {
       const agents = await deps.repos.agent.list(orgOf(req), ctxOf(req))
@@ -346,7 +348,7 @@ export function decisionRoutes(deps: HttpDeps) {
           summary: 'Delete a Decision',
           operationId: 'deleteDecision',
           description:
-            'Deletes a visible definition. Refused with 409 and a permission-filtered usage summary while a conversation gate or an agent still references it.',
+            'Deletes a visible definition. Refused with 409 while a conversation gate or an agent still references it: usages lists what the caller can see and hiddenUsageCount counts the conversations and agents it cannot.',
           params: IdParam,
           response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: DecisionInUseDto }
         }
@@ -357,10 +359,17 @@ export function decisionRoutes(deps: HttpDeps) {
         const inUse = async () => {
           const { all, visible: shown } = await visibleUsages(req, [req.params.id])
           const agents = (await agentUsages(req)).filter((usage) => usage.decisionId === req.params.id)
+          // Org-wide references count agents the caller cannot see, so the refusal never reads as unused.
+          const referencing = new Set(
+            agentReferences(await deps.repos.agent.list(orgOf(req)))
+              .filter((usage) => usage.decisionId === req.params.id)
+              .map((usage) => usage.id)
+          )
+          const hiddenAgents = [...referencing].filter((id) => !agents.some((usage) => usage.id === id)).length
           const conversations = conversationCount(all)
           const parts = [
             ...(conversations ? [`${conversations} conversation${conversations === 1 ? '' : 's'}`] : []),
-            ...(agents.length ? [`${agents.length} agent${agents.length === 1 ? '' : 's'}`] : [])
+            ...(referencing.size ? [`${referencing.size} agent${referencing.size === 1 ? '' : 's'}`] : [])
           ]
           return reply.code(409).send({
             error: 'Conflict',
@@ -369,7 +378,7 @@ export function decisionRoutes(deps: HttpDeps) {
               ? `This Decision is used by ${parts.join(' and ')}.`
               : 'This Decision is still in use.',
             usages: [...shown.map(usageDto), ...agents.map(({ decisionId: _decisionId, ...usage }) => usage)],
-            hiddenUsageCount: Math.max(0, conversations - shown.length)
+            hiddenUsageCount: Math.max(0, conversations - shown.length) + hiddenAgents
           })
         }
         if ((await deps.repos.integrationChannel.listDecisionUsages(orgOf(req), [req.params.id])).length > 0)

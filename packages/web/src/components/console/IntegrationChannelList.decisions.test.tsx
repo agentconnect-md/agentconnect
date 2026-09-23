@@ -233,7 +233,8 @@ describe('IntegrationChannelList By decision', () => {
     expect(data.setChannelDecision).not.toHaveBeenCalled()
   })
 
-  it('restarts a Needs review condition of another question type from the decision default', async () => {
+  // Repair never reseeds a match-everything default: the operator picks the answers the PATCH then carries.
+  it('reopens a Needs review condition of another question type with nothing selected', async () => {
     const row = gated({ enabled: false, disabledReason: 'needs_review', readiness: { status: 'needs_review' } })
     await render([
       {
@@ -242,13 +243,16 @@ describe('IntegrationChannelList By decision', () => {
       }
     ])
     await click(byText('Repair condition'))
-    expect(document.body.querySelector('input[aria-label="Minimum probability for billing"]')).toBeTruthy()
+    expect(document.body.querySelector('input[aria-label="Minimum probability for billing"]')).toBeNull()
     expect(byText('Condition type must match the question.')).toBeUndefined()
+    expect(byText('Save')?.closest('button')?.disabled).toBe(true)
+    await click(all('button[aria-pressed]').find((node) => node.textContent?.trim() === 'billing'))
+    expect(byText('Save')?.closest('button')?.disabled).toBe(false)
     await click(byText('Save'))
     expect(data.setChannelDecision).toHaveBeenCalledWith('int-1', 'C1', {
       type: 'gate',
       decisionId: 'support-category',
-      when: CHOICE_WHEN
+      when: { type: 'choice', thresholds: { billing: 0.3 } }
     })
   })
 

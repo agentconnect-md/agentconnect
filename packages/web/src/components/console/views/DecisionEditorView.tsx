@@ -175,6 +175,8 @@ function DecisionEditor() {
   const [saving, setSaving] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [hiddenUsageCount, setHiddenUsageCount] = useState(0)
+  // Set by an authoritative 409 in-use refusal, so nothing reads as unused even when every usage is hidden.
+  const [refusedInUse, setRefusedInUse] = useState(false)
   const [confirmAgentAnswerChange, setConfirmAgentAnswerChange] = useState(false)
   const [history, setHistory] = useState<Array<{ sender: string; text: string }>>([])
   const [current, setCurrent] = useState('')
@@ -536,6 +538,7 @@ function DecisionEditor() {
       const detail = await api.getDecision(id)
       setUsageState({ status: 'ready', usages: detail.usages })
       setHiddenUsageCount(0)
+      setRefusedInUse(false)
       setConfirmDelete(true)
     } catch (cause) {
       setSaveError(cause instanceof Error ? cause.message : String(cause))
@@ -562,6 +565,7 @@ function DecisionEditor() {
       if (inUse) {
         setUsageState({ status: 'ready', usages: inUse.usages })
         setHiddenUsageCount(inUse.hiddenUsageCount)
+        setRefusedInUse(true)
         setSaveError(t('errors.inUse'))
       } else setSaveError(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -604,11 +608,16 @@ function DecisionEditor() {
           onConfirm={() => void remove()}
           onClose={() => setConfirmDelete(false)}
         >
-          {usages.length + hiddenUsageCount + gated.length ? (
+          {refusedInUse || usages.length + hiddenUsageCount + gated.length ? (
             <>
               <p className="m-0">{t('deleteBodyInUse')}</p>
               <div className="mt-2">
-                <DecisionUsageList usages={usages} hiddenCount={hiddenUsageCount} hrefFor={hrefFor} />
+                <DecisionUsageList
+                  usages={usages}
+                  hiddenCount={hiddenUsageCount}
+                  inUse={refusedInUse && gated.length === 0}
+                  hrefFor={hrefFor}
+                />
                 {gated.map((usage) => (
                   <div key={`gate:${usage.channelId}`} className="flex items-center gap-[10px] px-4 py-[9px]">
                     <Icon name="hash" size={13} color="var(--text-tertiary)" />
@@ -856,7 +865,7 @@ function DecisionEditor() {
               <span className="cardtitle">{t('usedBy.title')}</span>
               <span className="font-mono text-[11px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
                 {usageState.status === 'ready'
-                  ? t('places', { count: usages.length + gated.length })
+                  ? t('places', { count: usages.length + gated.length + hiddenUsageCount })
                   : usageState.status === 'loading'
                     ? t('usedBy.loading')
                     : t('usedBy.error')}
@@ -882,12 +891,19 @@ function DecisionEditor() {
                   </div>
                 )
               })}
-              {usageState.status === 'ready' && usages.length + gated.length === 0 ? (
+              {usageState.status === 'ready' &&
+              !refusedInUse &&
+              usages.length + gated.length + hiddenUsageCount === 0 ? (
                 <div className="px-4 py-[10px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
                   {t('notUsed')}
                 </div>
               ) : (
-                <DecisionUsageList usages={usages} hrefFor={hrefFor} />
+                <DecisionUsageList
+                  usages={usages}
+                  hiddenCount={hiddenUsageCount}
+                  inUse={refusedInUse && gated.length === 0}
+                  hrefFor={hrefFor}
+                />
               )}
             </div>
           </div>

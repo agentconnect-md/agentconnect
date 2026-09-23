@@ -4228,7 +4228,8 @@
       },
       "needsReview": "需要复核",
       "ok": "正常",
-      "hidden": "{count, plural, other {另有 # 处你无权查看}}"
+      "hidden": "{count, plural, other {另有 # 处你无权查看}}",
+      "hiddenUnknown": "被你无权查看的项目使用"
     },
     "errors": {
       "name": "保存前请先为决策命名。",
@@ -4250,7 +4251,8 @@
       "from": "从",
       "to": "到",
       "intervalStart": "区间起点",
-      "intervalEnd": "区间终点"
+      "intervalEnd": "区间终点",
+      "removedChoice": "该选项已不在此决策中。点击将其移除。"
     },
     "binding": {
       "decision": "决策",
@@ -4278,6 +4280,9 @@
       "openDecision": "打开决策",
       "repair": "修复条件",
       "chooseAnother": "选择其他决策",
+      "chooseCondition": "该决策的问题类型已更改，请先选择应触发此 Agent 的答案，再保存。",
+      "noInterval": "尚未设置分数区间。",
+      "setInterval": "设置区间",
       "status": {
         "pending_sync": "等待同步",
         "needs_review": "需要复核",

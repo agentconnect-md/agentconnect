@@ -38,6 +38,8 @@ export interface DecisionBindingDraft {
   error?: BindingSaveError
   /** Set when the user asked to choose a Decision, so no first entry is auto-picked for them. */
   explicitPick?: boolean
+  /** Set on a repair whose saved condition no longer fits the question type; Save waits for an explicit choice. */
+  awaitingCondition?: boolean
 }
 
 type DraftUpdate =
@@ -268,6 +270,14 @@ export function gateUsagesIn(
       when: binding.when,
       needsReview: binding.needsReview === true
     }))
+}
+
+/** A repair's starting condition: nothing selected, or null for Score, which has no empty interval. */
+export function emptyConditionFor(decision: DecisionDefinition): DecisionCondition | null {
+  const question = decision.question
+  if (question.type === 'boolean') return { type: 'boolean', values: [] }
+  if (question.type === 'choice') return { type: 'choice', thresholds: {} }
+  return null
 }
 
 /** Fresh mock gates accept every Choice key at 50%, both Booleans, or the whole Score rubric. */
