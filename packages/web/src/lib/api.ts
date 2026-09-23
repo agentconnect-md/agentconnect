@@ -2273,6 +2273,9 @@ export function daemonFromDto(
 ): DaemonRow {
   // `cloud` is the CP DTO's field name (a REST contract); the console's own word is `pool`.
   const pool = d.cloud ?? false
+  // A relaunch that has not reconnected within the offline grace is an offline daemon, however long the op's deadline still runs.
+  const lifecycleOp =
+    d.status === 'offline' && lifecycleStatus(d.lifecycleOp) === 'restarting' ? null : (d.lifecycleOp ?? null)
   return {
     daemonId: d.daemonId,
     pool,
@@ -2287,8 +2290,8 @@ export function daemonFromDto(
     latestVersion: d.latestVersion,
     releaseChannel: d.releaseChannel,
     availableVersions: d.availableVersions ?? [],
-    lifecycleOp: d.lifecycleOp ?? null,
-    lifecycleStatus: lifecycleStatus(d.lifecycleOp) ?? null,
+    lifecycleOp,
+    lifecycleStatus: lifecycleStatus(lifecycleOp) ?? null,
     canManageLifecycle: d.canManageLifecycle ?? false,
     // Flag an available upgrade only when both versions parse and latest > running.
     upgradeAvailable: isUpgradeAvailable(d.agentVersion, d.latestVersion),

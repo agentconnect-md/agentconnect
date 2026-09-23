@@ -61,7 +61,10 @@ Once the daemon reports `restarting`, its active placed agents show `restarting`
 the paused-state color through drain and relaunch. An explicitly paused agent remains
 `paused`. Operations without phase reports keep the generic `upgrading` or `restarting`
 presentation. On success, failure, or expiry, the current connection status applies;
-success still requires the new version to reach READY.
+success still requires the new version to reach READY. A relaunch that has not
+reconnected within the offline grace window reads as `offline`, not `restarting`, even
+though its operation stays pending until the deadline. An upgrade still queued for the
+daemon's next connection keeps its `upgrading` presentation.
 
 ## An unavailable agent is reported by its actual cause
 
