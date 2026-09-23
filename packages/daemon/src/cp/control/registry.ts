@@ -3,6 +3,8 @@ import {
   decisionEvaluation,
   decisionEvaluations,
   decisionPreview,
+  decisionRoutingEvaluation,
+  decisionRoutingEvaluations,
   type DecisionControlDeps
 } from './decision.js'
 import { memoryEntriesWrite, memoryEntriesRead } from './memory.js'
@@ -125,6 +127,8 @@ export const CONTROL_HANDLERS: Map<string, ControlHandler<ControlDeps>> = new Ma
   ['decision/preview', decisionPreview],
   ['decision/evaluations', decisionEvaluations],
   ['decision/evaluation', decisionEvaluation],
+  ['decision/routing-evaluations', decisionRoutingEvaluations],
+  ['decision/routing-evaluation', decisionRoutingEvaluation],
   ['config/push', configPush],
   ['duty/grant', dutyGrant],
   ['duty/renewed', dutyRenewed],

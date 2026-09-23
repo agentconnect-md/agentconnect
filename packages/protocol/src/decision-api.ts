@@ -10,7 +10,10 @@ import type {
   DecisionEvaluationRecordPage,
   DecisionPreviewSample,
   DecisionQuestion,
+  DecisionRoutingEvaluationRecordDetail,
+  DecisionRoutingEvaluationRecordPage,
   DecisionValidationIssue,
+  RoutingTargetEffect,
   SharedBotDecisionRouting
 } from './decision.js'
 
@@ -110,7 +113,9 @@ export interface DecisionRoutingDetail {
   updatedAt: string | null
 }
 
-export type DecisionTargetConstraint = { type: 'new' } | { type: 'mention' | 'thread'; agentIds: string[] }
+// `participantAgentIds` marks recipients already participating in the thread, a subset of `agentIds`.
+export type DecisionTargetConstraint =
+  { type: 'new' } | { type: 'mention' | 'thread'; agentIds: string[]; participantAgentIds?: string[] }
 
 export type DecisionPreviewTarget =
   { kind: 'daemon'; daemonId: string } | { kind: 'pool' } | { kind: 'set'; setId: string }
@@ -180,6 +185,49 @@ export interface DecisionGatePreviewResult {
   }
 }
 
+export interface DecisionRoutingPreviewInput {
+  /** The draft configuration and draft scope; neither is saved. */
+  config: SharedBotDecisionRouting
+  channelIds: string[]
+  /** The sample channel. */
+  channelId: string
+  targets: DecisionTargetConstraint
+  state: DecisionPreviewSample
+}
+
+export type DecisionRoutingNotAppliedReason = 'off' | 'outside_scope' | 'paused' | 'needs_review' | 'unsupported'
+
+// Routing Try on the bot's evaluation host; `unavailable` names its continuation and is never a skip.
+export interface DecisionRoutingPreviewResult {
+  mode: 'mock' | 'live'
+  readiness: DecisionReadiness
+  evaluation: DecisionEvaluation | null
+  consumer: {
+    type: 'shared_bot_routing'
+    outcome: 'activate' | 'continue' | 'skip' | 'unavailable' | 'not_applied'
+    notAppliedReason?: DecisionRoutingNotAppliedReason
+    reason?: string
+    /** False when every recipient participates, so the set settled with no model call. */
+    evaluated: boolean
+    rules: Array<{ ruleId: string; matched: boolean; matchedKeys: string[] }>
+    matchedRuleIds: string[]
+    matchedKeys: string[]
+    matchedAgentIds: string[]
+    usedOtherwise: boolean
+    fallback: 'constrained' | 'default' | 'none' | null
+    defaultAgent: { id: string; name: string | null } | null
+    targetConstraint: DecisionTargetConstraint
+    targets: Array<{
+      agentId: string
+      name: string | null
+      effect: RoutingTargetEffect
+      participant: boolean
+      via: 'mention' | 'implicit'
+      status: 'available' | 'unavailable' | 'removed'
+    }>
+  }
+}
+
 export interface DecisionApi {
   mode: 'mock' | 'live'
   listProviders(daemonId?: string): Promise<DecisionProviderOption[]>
@@ -201,6 +249,15 @@ export interface DecisionApi {
     page?: { cursor?: number; limit?: number }
   ): Promise<DecisionEvaluationRecordPage>
   getEvaluation(ref: DecisionConversationRef, seq: number): Promise<DecisionEvaluationRecordDetail>
+  previewRouting(botId: string, input: DecisionRoutingPreviewInput): Promise<DecisionRoutingPreviewResult>
+  listRoutingEvaluations(
+    botId: string,
+    page?: { channelId?: string; cursor?: number; limit?: number }
+  ): Promise<DecisionRoutingEvaluationRecordPage>
+  getRoutingEvaluation(
+    botId: string,
+    ref: { channelId: string; seq: number }
+  ): Promise<DecisionRoutingEvaluationRecordDetail>
 }
 
 export interface DecisionApiErrorBody {

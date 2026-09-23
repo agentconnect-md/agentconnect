@@ -3,10 +3,17 @@ import {
   DECISION_EVALUATION_DETAIL_MAX_BYTES,
   DecisionEvaluationReply,
   DecisionEvaluationsReply,
+  DecisionRoutingEvaluationReply,
+  DecisionRoutingEvaluationsReply,
   type AnyFrame
 } from '@agentconnect.md/protocol'
 import { DecisionEvaluationReader } from '../src/decisions/evaluations.js'
-import { decisionEvaluation, decisionEvaluations } from '../src/cp/control/decision.js'
+import {
+  decisionEvaluation,
+  decisionEvaluations,
+  decisionRoutingEvaluation,
+  decisionRoutingEvaluations
+} from '../src/cp/control/decision.js'
 import type { ControlWire } from '../src/cp/control/context.js'
 import type { DecisionVerdictReservation, LocalStore } from '../src/store/local-store.js'
 import { openTestStore } from './store-support.js'
@@ -251,18 +258,18 @@ describe('DecisionEvaluationReader', () => {
   })
 })
 
-describe('decision/evaluations control handlers', () => {
-  function wire() {
-    const reply = vi.fn()
-    const sendError = vi.fn()
-    return { reply, sendError, emit: vi.fn(), log: { warn: vi.fn() } } as unknown as ControlWire & {
-      reply: ReturnType<typeof vi.fn>
-      sendError: ReturnType<typeof vi.fn>
-    }
+function wire() {
+  const reply = vi.fn()
+  const sendError = vi.fn()
+  return { reply, sendError, emit: vi.fn(), log: { warn: vi.fn() } } as unknown as ControlWire & {
+    reply: ReturnType<typeof vi.fn>
+    sendError: ReturnType<typeof vi.fn>
   }
-  const frame = (type: string, payload: unknown, orgId?: string) =>
-    ({ v: 1, id: 'req-1', ts: 't', type, payload, ...(orgId ? { orgId } : {}) }) as unknown as AnyFrame
+}
+const frame = (type: string, payload: unknown, orgId?: string) =>
+  ({ v: 1, id: 'req-1', ts: 't', type, payload, ...(orgId ? { orgId } : {}) }) as unknown as AnyFrame
 
+describe('decision/evaluations control handlers', () => {
   it('answers with a page and a detail, and refuses a lane or org it does not serve', async () => {
     const s = await openTestStore()
     const { seq } = await reserve(s, 1)
@@ -308,6 +315,316 @@ describe('decision/evaluations control handlers', () => {
     expect(noOrg.sendError).toHaveBeenCalledWith('req-1', 'BAD_PAYLOAD', expect.any(String), false)
     const bad = wire()
     await decisionEvaluation(frame('decision/evaluation', { ...lane }, ORG), deps, bad)
+    expect(bad.sendError).toHaveBeenCalledWith('req-1', 'BAD_PAYLOAD', expect.any(String), false)
+    await s.close()
+  })
+})
+
+describe('DecisionEvaluationReader router verdicts', () => {
+  const BOT = '33333333-3333-4333-8333-333333333333'
+  const ROUTER = `router:${BOT}`
+  const routing = {
+    enabled: true,
+    decisionId: 'd-1',
+    rules: [
+      { id: 'r1', when: { type: 'boolean', values: [true] }, action: { type: 'agent', agentId: AGENT } },
+      { id: 'r2', when: { type: 'boolean', values: [false] }, action: { type: 'skip' } }
+    ],
+    otherwise: { type: 'skip' }
+  }
+  const frozen = (channel: string) =>
+    JSON.stringify({
+      botId: BOT,
+      channel,
+      decisionId: 'd-1',
+      providerId: 'typesafe',
+      model: 'jev-latest',
+      question,
+      routing,
+      defaultAgentId: AGENT,
+      fingerprint: 'f',
+      hostDaemonId: 'daemon-1'
+    })
+  const delivery = JSON.stringify({
+    rd: { payload: { msgId: 'm', text: 'SECRET-BODY' } },
+    msg: { text: 'SECRET-BODY' },
+    constraint: [{ agentId: OTHER_AGENT, participant: false, via: 'mention', daemonId: 'd-2' }],
+    frozenConstraint: [
+      { agentId: OTHER_AGENT, participant: false, via: 'mention', daemonId: 'd-2', integrationId: 'int-b' },
+      { agentId: AGENT, participant: true, daemonId: 'daemon-1' }
+    ],
+    candidates: [],
+    thread: null
+  })
+  const routerState = JSON.stringify({
+    ...JSON.parse(state()),
+    addressing: { mentions: [], constraint: { eligibleAgentIds: [OTHER_AGENT], participantAgentIds: [AGENT] } }
+  })
+  const target = (agentId: string, disposition: string, extra: Record<string, unknown> = {}) => ({
+    agentId,
+    daemonId: 'daemon-1',
+    participant: false,
+    effect: 'selected',
+    via: 'implicit',
+    disposition,
+    ...extra
+  })
+
+  async function routed(
+    s: LocalStore,
+    ts: number,
+    channel: string,
+    end: {
+      disposition?: 'match' | 'skip' | 'unavailable'
+      targets?: unknown[]
+      finish?: ['admitted' | 'canceled', string | null]
+      answer?: Record<string, unknown>
+    } = {}
+  ): Promise<number> {
+    const { seq, orgId } = await record(s, ts, channel)
+    await s.reserveDecisionVerdict({
+      seq,
+      subject: ROUTER,
+      orgId,
+      channel,
+      agentId: AGENT,
+      integrationId: `int-${ts}`,
+      decisionId: 'd-1',
+      configJson: frozen(channel),
+      deliveryJson: delivery,
+      requestedModel: 'jev-latest',
+      deadlineAt: AT + 5_000,
+      ownerFence: FENCE,
+      createdAt: AT + ts
+    })
+    if (!end.disposition) return seq
+    await s.beginDecisionEvaluation(seq, ROUTER, FENCE, routerState)
+    await s.settleDecisionVerdict(seq, ROUTER, FENCE, {
+      disposition: end.disposition,
+      ...(end.disposition === 'unavailable' ? { unavailableReason: 'timeout' } : {}),
+      answerJson: JSON.stringify(
+        end.answer ?? { answer: yes, matchedRuleIds: ['r1'], matchedKeys: [], usedOtherwise: false }
+      ),
+      targetsJson: JSON.stringify(end.targets ?? []),
+      latencyMs: 30,
+      settledAt: AT + 100
+    })
+    if (end.finish) await s.finishDecisionVerdict(seq, ROUTER, FENCE, end.finish[0], end.finish[1], AT + 200)
+    return seq
+  }
+
+  function routingReader(s: LocalStore, botId: string | null = BOT) {
+    return new DecisionEvaluationReader({
+      store: () => s,
+      servedIntegration: async (orgId, agentId, integrationId) =>
+        orgId === ORG && agentId === AGENT && integrationId === 'int-a'
+          ? { ...SCOPE, ...(botId ? { botId } : {}) }
+          : undefined
+    })
+  }
+  const routingLane = { agentId: AGENT, integrationId: 'int-a', botId: BOT }
+
+  it('lists the bot router across channels with no install filter and classifies every outcome', async () => {
+    const s = await openTestStore()
+    const routedSeq = await routed(s, 1, CH, {
+      disposition: 'match',
+      targets: [target(AGENT, 'admitted'), target(OTHER_AGENT, 'admitted')],
+      finish: ['admitted', null]
+    })
+    const partial = await routed(s, 2, 'C2', {
+      disposition: 'match',
+      targets: [target(AGENT, 'admitted'), target(OTHER_AGENT, 'unavailable', { reason: 'not_member' })],
+      finish: ['admitted', null]
+    })
+    const fallback = await routed(s, 3, CH, {
+      disposition: 'unavailable',
+      answer: { matchedRuleIds: [], matchedKeys: [], usedOtherwise: false, fallback: 'default' },
+      targets: [target(AGENT, 'admitted', { effect: 'fallback_default' })],
+      finish: ['admitted', null]
+    })
+    const unavailable = await routed(s, 4, CH, {
+      disposition: 'unavailable',
+      answer: { matchedRuleIds: [], matchedKeys: [], usedOtherwise: false, fallback: 'default' },
+      targets: [target(AGENT, 'unavailable', { effect: 'fallback_default', reason: 'timeout' })],
+      finish: ['canceled', 'targets_rejected']
+    })
+    const skipped = await routed(s, 5, CH, {
+      disposition: 'skip',
+      answer: { answer: no, matchedRuleIds: ['r2'], matchedKeys: [], usedOtherwise: false }
+    })
+    const canceled = await routed(s, 6, CH)
+    await s.finishDecisionVerdict(canceled, ROUTER, null, 'canceled', 'stop', AT + 400)
+    const pending = await routed(s, 7, CH, { disposition: 'match', targets: [target(AGENT, 'pending')] })
+    // Another bot's router, a gate verdict, and an unlisted channel stay out.
+    const { seq: gateSeq } = await reserve(s, 8)
+    await routed(s, 9, 'C3', { disposition: 'skip' })
+    const reader = routingReader(s)
+    const page = await reader.listRouting(ORG, { ...routingLane, channels: [CH, 'C2'], limit: 20 })
+    expect(DecisionRoutingEvaluationsReply.parse(page)).toEqual(page)
+    expect(page.conversation).toEqual(SCOPE)
+    expect(page.items.map((item) => [item.seq, item.channel, item.outcome])).toEqual([
+      [pending, CH, 'pending'],
+      [canceled, CH, 'canceled'],
+      [skipped, CH, 'skipped'],
+      [unavailable, CH, 'unavailable'],
+      [fallback, CH, 'fallback'],
+      [partial, 'C2', 'partially_routed'],
+      [routedSeq, CH, 'routed']
+    ])
+    expect(page.items.map((item) => item.seq)).not.toContain(gateSeq)
+    expect(page.items.find((item) => item.seq === partial)).toMatchObject({
+      matchedRuleIds: ['r1'],
+      usedOtherwise: false,
+      evaluated: true,
+      answer: { type: 'boolean', value: true },
+      targets: [
+        { agentId: AGENT, disposition: 'admitted', effect: 'selected', reason: null },
+        { agentId: OTHER_AGENT, disposition: 'unavailable', reason: 'not_member' }
+      ]
+    })
+    expect(page.items.find((item) => item.seq === fallback)).toMatchObject({ fallback: 'default', answer: null })
+    expect(page.items.find((item) => item.seq === canceled)).toMatchObject({ reason: 'stop' })
+    const first = await reader.listRouting(ORG, { ...routingLane, channels: [CH, 'C2'], limit: 3 })
+    expect(first.nextCursor).toBe(skipped)
+    const rest = await reader.listRouting(ORG, { ...routingLane, channels: [CH, 'C2'], limit: 20, cursor: skipped })
+    expect(rest.items.map((item) => item.seq)).toEqual([unavailable, fallback, partial, routedSeq])
+    await s.close()
+  })
+
+  it('projects the frozen snapshot and constraint without message content, then expires the bodies', async () => {
+    const s = await openTestStore()
+    const seq = await routed(s, 1, CH, {
+      disposition: 'match',
+      targets: [target(OTHER_AGENT, 'admitted', { effect: 'kept', via: 'mention' })],
+      finish: ['admitted', null]
+    })
+    const reader = routingReader(s)
+    // While pending, the frozen delivery names the constraint; its message fields are never projected.
+    const open = await routed(s, 2, CH, { disposition: 'match', targets: [target(OTHER_AGENT, 'pending')] })
+    const pendingReply = await reader.getRouting(ORG, { ...routingLane, channel: CH, seq: open })
+    expect(pendingReply.evaluation).toMatchObject({ outcome: 'pending' })
+    expect(pendingReply.evaluation!.constraint).toEqual([
+      { agentId: OTHER_AGENT, participant: false, via: 'mention' },
+      { agentId: AGENT, participant: true, via: 'implicit' }
+    ])
+    expect(JSON.stringify(pendingReply)).not.toContain('SECRET-BODY')
+    expect(JSON.stringify(pendingReply)).not.toContain('int-b')
+    const reply = await reader.getRouting(ORG, { ...routingLane, channel: CH, seq })
+    expect(DecisionRoutingEvaluationReply.parse(reply)).toEqual(reply)
+    expect(reply.evaluation).toMatchObject({
+      seq,
+      outcome: 'routed',
+      snapshot: {
+        decisionId: 'd-1',
+        providerId: 'typesafe',
+        model: 'jev-latest',
+        question,
+        routing,
+        defaultAgentId: AGENT
+      },
+      constraint: [
+        { agentId: OTHER_AGENT, participant: false, via: 'mention' },
+        { agentId: AGENT, participant: true, via: 'implicit' }
+      ],
+      input: { currentMessage: { id: 'cur', text: 'Help please' } },
+      fullAnswer: yes
+    })
+    expect(JSON.stringify(reply)).not.toContain('SECRET-BODY')
+    expect(JSON.stringify(reply.evaluation!.constraint)).not.toContain('int-b')
+    expect(await reader.getRouting(ORG, { ...routingLane, channel: 'C2', seq })).toEqual({
+      evaluation: null,
+      conversation: SCOPE
+    })
+    await s.stripDecisionVerdictBodies(AT + 10 * 24 * 3_600_000)
+    expect((await reader.getRouting(ORG, { ...routingLane, channel: CH, seq })).evaluation).toMatchObject({
+      detailsExpired: true,
+      input: null,
+      fullAnswer: null,
+      constraint: null,
+      outcome: 'routed',
+      snapshot: { routing }
+    })
+    await s.close()
+  })
+
+  it('bounds a page at 32 KiB and a detail at 64 KiB', async () => {
+    const s = await openTestStore()
+    const many = Array.from({ length: 64 }, (_, i) =>
+      target(`${i}`.padEnd(128, 'a'), 'admitted', { reason: 'r'.repeat(128) })
+    )
+    for (let n = 1; n <= 20; n += 1)
+      await routed(s, n, CH, { disposition: 'match', targets: many, finish: ['admitted', null] })
+    const reader = routingReader(s)
+    const page = await reader.listRouting(ORG, { ...routingLane, channels: [CH], limit: 20 })
+    expect(page.items.length).toBeLessThan(20)
+    expect(DecisionRoutingEvaluationsReply.safeParse(page).success).toBe(true)
+    expect(page.nextCursor).toBe(page.items.at(-1)!.seq)
+    const { seq, orgId } = await record(s, 99, CH)
+    const history = Array.from({ length: 6 }, (_, i) => ({ id: `h${i}`, text: 'z'.repeat(15 * 1024) }))
+    await s.reserveDecisionVerdict({
+      seq,
+      subject: ROUTER,
+      orgId,
+      channel: CH,
+      agentId: AGENT,
+      integrationId: 'int-a',
+      decisionId: 'd-1',
+      configJson: frozen(CH),
+      deliveryJson: delivery,
+      requestedModel: 'jev-latest',
+      deadlineAt: AT + 5_000,
+      ownerFence: FENCE,
+      createdAt: AT + 99
+    })
+    await s.beginDecisionEvaluation(seq, ROUTER, FENCE, state(history))
+    const detail = await reader.getRouting(ORG, { ...routingLane, channel: CH, seq })
+    expect(Buffer.byteLength(JSON.stringify(detail))).toBeLessThanOrEqual(DECISION_EVALUATION_DETAIL_MAX_BYTES)
+    expect(detail.evaluation!.input!.historyOmitted).toBeGreaterThan(0)
+    await s.close()
+  })
+
+  it('refuses another bot, an unrouted member, and an unserved lane as SCOPE_DENIED', async () => {
+    const s = await openTestStore()
+    const seq = await routed(s, 1, CH, { disposition: 'skip' })
+    const deps = { decisionEvaluations: routingReader(s) }
+    const ok = wire()
+    await decisionRoutingEvaluations(
+      frame('decision/routing-evaluations', { ...routingLane, channels: [CH] }, ORG),
+      deps,
+      ok
+    )
+    expect(ok.reply).toHaveBeenCalledWith(expect.anything(), 'decision/routing-evaluations/page', {
+      items: [expect.objectContaining({ seq, outcome: 'skipped' })],
+      nextCursor: null,
+      conversation: SCOPE
+    })
+    const one = wire()
+    await decisionRoutingEvaluation(
+      frame('decision/routing-evaluation', { ...routingLane, channel: CH, seq }, ORG),
+      deps,
+      one
+    )
+    expect(one.reply).toHaveBeenCalledWith(expect.anything(), 'decision/routing-evaluation/result', {
+      evaluation: expect.objectContaining({ seq }),
+      conversation: SCOPE
+    })
+    const cases: Array<[unknown, { decisionEvaluations: DecisionEvaluationReader }]> = [
+      [{ ...routingLane, botId: '44444444-4444-4444-8444-444444444444', channels: [CH] }, deps],
+      [{ ...routingLane, channels: [CH] }, { decisionEvaluations: routingReader(s, null) }],
+      [{ ...routingLane, integrationId: 'int-b', channels: [CH] }, deps]
+    ]
+    for (const [payload, handlerDeps] of cases) {
+      const denied = wire()
+      await decisionRoutingEvaluations(frame('decision/routing-evaluations', payload, ORG), handlerDeps, denied)
+      expect(denied.reply).not.toHaveBeenCalled()
+      expect(denied.sendError).toHaveBeenCalledWith('req-1', 'SCOPE_DENIED', expect.any(String), false)
+    }
+    const bad = wire()
+    await decisionRoutingEvaluations(
+      frame('decision/routing-evaluations', { ...routingLane, channels: [] }, ORG),
+      deps,
+      bad
+    )
     expect(bad.sendError).toHaveBeenCalledWith('req-1', 'BAD_PAYLOAD', expect.any(String), false)
     await s.close()
   })

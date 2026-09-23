@@ -411,3 +411,116 @@ describe('Decision mock API', () => {
     await expect(api.getEvaluation(ref, 1)).rejects.toMatchObject({ status: 404 })
   })
 })
+
+describe('Decision mock routing preview and evaluations', () => {
+  const seed = createDecisionMockSeed()
+  const config = seed.routings[0]!.config
+  const input = (over: Record<string, unknown> = {}) => ({
+    config,
+    channelIds: ['help-channel'],
+    channelId: 'help-channel',
+    targets: { type: 'new' as const },
+    state: { history: [], currentMessage: { text: 'Billing API failed' } },
+    ...over
+  })
+
+  it('settles a Choice fan-out with the router settlement and names every target', async () => {
+    const api = createDecisionMockApi()
+    const result = await api.previewRouting('support-bot', input())
+    expect(result).toMatchObject({
+      mode: 'mock',
+      consumer: {
+        outcome: 'activate',
+        evaluated: true,
+        matchedRuleIds: ['billing', 'technical'],
+        targets: [
+          { agentId: 'billing-agent', name: 'Billing', effect: 'selected', status: 'available' },
+          { agentId: 'technical-agent', name: 'Technical', effect: 'selected', status: 'available' }
+        ]
+      }
+    })
+    expect(result.consumer.rules.map((rule) => rule.matched)).toEqual([true, true, false])
+  })
+
+  it('returns Not applied in the live order and keeps constrained recipients', async () => {
+    const api = createDecisionMockApi()
+    expect(
+      (await api.previewRouting('support-bot', input({ channelId: 'off-channel', channelIds: ['off-channel'] })))
+        .consumer.notAppliedReason
+    ).toBe('off')
+    expect((await api.previewRouting('support-bot', input({ channelIds: [] }))).consumer.notAppliedReason).toBe(
+      'outside_scope'
+    )
+    expect(
+      (await api.previewRouting('support-bot', input({ config: { ...config, enabled: false } }))).consumer
+        .notAppliedReason
+    ).toBe('paused')
+    const mention = await api.previewRouting(
+      'support-bot',
+      input({ targets: { type: 'mention', agentIds: ['sales-agent'] } })
+    )
+    expect(mention.consumer).toMatchObject({
+      outcome: 'continue',
+      targets: [{ agentId: 'sales-agent', effect: 'kept' }]
+    })
+    const thread = await api.previewRouting(
+      'support-bot',
+      input({ targets: { type: 'thread', agentIds: ['sales-agent'], participantAgentIds: ['sales-agent'] } })
+    )
+    expect(thread).toMatchObject({ evaluation: null, consumer: { outcome: 'continue', evaluated: false } })
+    await expect(
+      api.previewRouting('support-bot', input({ targets: { type: 'mention', agentIds: ['moderator-agent'] } }))
+    ).rejects.toMatchObject({ status: 400 })
+    expect(
+      (await createDecisionMockApi({ scenario: 'needs_review' }).previewRouting('support-bot', input())).consumer
+        .notAppliedReason
+    ).toBe('needs_review')
+  })
+
+  it('names the continuation on a provider failure and a removed target', async () => {
+    const failing = createDecisionMockApi({ scenario: 'provider_unavailable' })
+    expect((await failing.previewRouting('support-bot', input())).consumer).toMatchObject({
+      outcome: 'unavailable',
+      fallback: 'default',
+      targets: [{ agentId: 'billing-agent', effect: 'fallback_default' }]
+    })
+    const removed = {
+      ...config,
+      rules: [{ ...config.rules[0]!, action: { type: 'agent' as const, agentId: 'gone-agent' } }]
+    }
+    expect(
+      (await createDecisionMockApi().previewRouting('support-bot', input({ config: removed }))).consumer.targets
+    ).toEqual([expect.objectContaining({ agentId: 'gone-agent', name: null, status: 'removed' })])
+    await expect(
+      createDecisionMockApi({ scenario: 'daemon_offline' }).previewRouting('support-bot', input())
+    ).rejects.toMatchObject({
+      status: 503
+    })
+  })
+
+  it('pages the canned routing evaluations, one per outcome, and reads an expired detail', async () => {
+    const api = createDecisionMockApi()
+    const page = await api.listRoutingEvaluations('support-bot', { limit: 5 })
+    expect(page.items.map((item) => item.outcome)).toEqual([
+      'pending',
+      'routed',
+      'partially_routed',
+      'skipped',
+      'fallback'
+    ])
+    expect(page.items[0]).not.toHaveProperty('input')
+    const rest = await api.listRoutingEvaluations('support-bot', { cursor: page.nextCursor!, limit: 5 })
+    expect(rest.items.map((item) => item.outcome)).toEqual(['unavailable', 'canceled', 'routed'])
+    expect(rest.nextCursor).toBeNull()
+    const expired = await api.getRoutingEvaluation('support-bot', { channelId: 'help-channel', seq: 201 })
+    expect(expired).toMatchObject({ detailsExpired: true, input: null })
+    await expect(api.getRoutingEvaluation('support-bot', { channelId: 'other', seq: 201 })).rejects.toMatchObject({
+      status: 404
+    })
+    await expect(
+      createDecisionMockApi({ scenario: 'daemon_offline' }).listRoutingEvaluations('support-bot')
+    ).rejects.toMatchObject({
+      status: 503
+    })
+  })
+})

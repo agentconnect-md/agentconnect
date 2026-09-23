@@ -6,7 +6,16 @@ import {
   DecisionEvaluationEntry,
   DecisionEvaluationRecord,
   DecisionQuestion,
+  DecisionRoutingEvaluationRecord,
+  DecisionRoutingTargetRecord,
+  SharedBotDecisionRouting,
+  routingEvaluationOutcome,
   type DecisionAnswerSummary,
+  type DecisionRoutingEvaluationRecordDetail,
+  type DecisionRoutingEvaluationReply,
+  type DecisionRoutingEvaluationRequest,
+  type DecisionRoutingEvaluationsReply,
+  type DecisionRoutingEvaluationsRequest,
   type DecisionEvaluationConversation,
   type DecisionEvaluationOutcome,
   type DecisionEvaluationRecordDetail,
@@ -16,6 +25,7 @@ import {
   type DecisionEvaluationsRequest
 } from '@agentconnect.md/protocol'
 import { transcriptChannelKey, type DecisionVerdictRow, type LocalStore } from '../store/local-store.js'
+import { routerSubject } from './router.js'
 
 /** Refused because this daemon does not serve the lane the frame names (answered as SCOPE_DENIED). */
 export class DecisionEvaluationScopeError extends Error {
@@ -27,12 +37,12 @@ export class DecisionEvaluationScopeError extends Error {
 
 export interface DecisionEvaluationReaderDeps {
   store(): LocalStore
-  /** The served lane's transport scope and session namespace; undefined when not served or the namespace is not yet known. */
+  /** The served lane's transport scope, session namespace, and routed bot; undefined when not served or the namespace is not yet known. */
   servedIntegration(
     orgId: string,
     agentId: string,
     integrationId: string
-  ): Promise<({ transportScope?: string } & DecisionEvaluationConversation) | undefined>
+  ): Promise<({ transportScope?: string; botId?: string } & DecisionEvaluationConversation) | undefined>
 }
 
 type VerdictRow = DecisionVerdictRow & { ts: string | null }
@@ -156,6 +166,116 @@ function suppliedCount(row: DecisionVerdictRow): number | null {
   return Array.isArray(seqs) ? seqs.length : null
 }
 
+const text = (value: unknown, max: number): string | undefined =>
+  typeof value === 'string' && value.trim() && value.length <= max ? value : undefined
+
+function routerTargets(row: DecisionVerdictRow): DecisionRoutingEvaluationRecord['targets'] {
+  const stored = parseJson(row.targetsJson)
+  if (!Array.isArray(stored)) return []
+  return stored.slice(0, 64).flatMap((entry) => {
+    const target = record(entry)
+    const parsed = DecisionRoutingTargetRecord.safeParse({
+      agentId: target?.agentId,
+      effect: target?.effect,
+      via: target?.via === 'mention' ? 'mention' : 'implicit',
+      participant: target?.participant === true,
+      disposition: target?.disposition,
+      reason: clip(typeof target?.reason === 'string' ? target.reason : null, 128)
+    })
+    return parsed.success ? [parsed.data] : []
+  })
+}
+
+function routerSummaryRow(row: VerdictRow): DecisionRoutingEvaluationRecord {
+  const base = summaryRow(row)
+  const config = record(parseJson(row.configJson))
+  const stored = record(parseJson(row.answerJson))
+  const ids = Array.isArray(stored?.matchedRuleIds) ? stored.matchedRuleIds : []
+  const fallback = stored?.fallback
+  const targets = routerTargets(row)
+  return {
+    seq: base.seq,
+    at: base.at,
+    channel: clip(text(config?.channel, 512) ?? null, 512) ?? '',
+    messageId: base.messageId,
+    decisionId: base.decisionId,
+    outcome: routingEvaluationOutcome({
+      state: row.state,
+      disposition: row.disposition,
+      targets,
+      cancelReason: row.cancelReason
+    }),
+    reason: base.reason,
+    evaluated: stored?.evaluated !== false,
+    answer: base.answer,
+    matchedKeys: base.matchedKeys,
+    matchedRuleIds: ids.filter((id): id is string => text(id, 128) !== undefined).slice(0, 32),
+    usedOtherwise: stored?.usedOtherwise === true,
+    fallback: fallback === 'constrained' || fallback === 'default' || fallback === 'none' ? fallback : null,
+    targets,
+    latencyMs: base.latencyMs,
+    requestedModel: base.requestedModel,
+    actualModel: base.actualModel,
+    usage: base.usage,
+    detailsExpired: base.detailsExpired
+  }
+}
+
+function routerSnapshotOf(row: DecisionVerdictRow): DecisionRoutingEvaluationRecordDetail['snapshot'] {
+  const config = record(parseJson(row.configJson))
+  const question = DecisionQuestion.safeParse(config?.question)
+  const routing = SharedBotDecisionRouting.safeParse(config?.routing)
+  const decisionId = text(config?.decisionId, 128)
+  const providerId = text(config?.providerId, 128)
+  const model = text(config?.model, 128)
+  if (!question.success || !routing.success || !decisionId || !providerId || !model) return null
+  return {
+    decisionId,
+    providerId,
+    model,
+    question: question.data,
+    routing: routing.data,
+    defaultAgentId: text(config?.defaultAgentId, 128) ?? null
+  }
+}
+
+// Agent ids and participation only; the delivery is cleared at finish, so the frozen input's addressing, then the targets, stand in.
+function routerConstraintOf(
+  row: DecisionVerdictRow,
+  targets: DecisionRoutingEvaluationRecord['targets']
+): DecisionRoutingEvaluationRecordDetail['constraint'] {
+  const via = (agentId: string, stored?: unknown): 'mention' | 'implicit' =>
+    stored === 'mention' || targets.find((t) => t.agentId === agentId)?.via === 'mention' ? 'mention' : 'implicit'
+  const delivery = record(parseJson(row.deliveryJson))
+  const frozen = Array.isArray(delivery?.frozenConstraint)
+    ? delivery.frozenConstraint
+    : Array.isArray(delivery?.constraint)
+      ? delivery.constraint
+      : null
+  if (frozen)
+    return frozen.slice(0, 64).flatMap((entry) => {
+      const item = record(entry)
+      const agentId = text(item?.agentId, 128)
+      return agentId ? [{ agentId, participant: item?.participant === true, via: via(agentId, item?.via) }] : []
+    })
+  const addressing = record(record(parseJson(row.inputJson))?.addressing)
+  const constraint = record(addressing?.constraint)
+  if (constraint) {
+    const ids = (value: unknown) =>
+      (Array.isArray(value) ? value : []).flatMap((id) => (text(id, 128) ? [id as string] : []))
+    return [
+      ...ids(constraint.eligibleAgentIds).map((agentId) => ({ agentId, participant: false, via: via(agentId) })),
+      ...ids(constraint.participantAgentIds).map((agentId) => ({ agentId, participant: true, via: via(agentId) }))
+    ].slice(0, 64)
+  }
+  const constrained = targets.filter(
+    (t) => t.effect === 'participant' || t.effect === 'kept' || t.effect === 'fallback_constrained'
+  )
+  if (constrained.length > 0)
+    return constrained.map((t) => ({ agentId: t.agentId, participant: t.participant, via: t.via }))
+  return row.state === 'admitted' || row.state === 'canceled' || row.state === 'skipped' ? null : []
+}
+
 /** Recent evaluations (decisions.md §9.5): bounded, read-only views of one conversation lane's verdicts. */
 export class DecisionEvaluationReader {
   constructor(private readonly deps: DecisionEvaluationReaderDeps) {}
@@ -220,6 +340,69 @@ export class DecisionEvaluationReader {
       fullAnswer,
       evidence:
         row.state === 'admitted' ? { snapshotSeq: Number(row.seq), suppliedBackground: suppliedCount(row) } : null
+    }
+    const fits = () => encodedBytes({ evaluation: detail, conversation }) <= DECISION_EVALUATION_DETAIL_MAX_BYTES
+    // The oldest history goes first; the current message is kept or the whole input is.
+    while (!fits() && detail.input && detail.input.history.length > 0) {
+      detail.input.history.shift()
+      detail.input.historyOmitted += 1
+    }
+    if (!fits()) detail.input = null
+    return { evaluation: detail, conversation }
+  }
+
+  // A router lane is the bot's subject across channels; the served member must be an install of that bot.
+  private async routingLane(orgId: string, req: { agentId: string; integrationId: string; botId: string }) {
+    const served = await this.deps.servedIntegration(orgId, req.agentId, req.integrationId)
+    if (!served || served.botId !== req.botId) throw new DecisionEvaluationScopeError()
+    const conversation: DecisionEvaluationConversation = { platform: served.platform, tenantScope: served.tenantScope }
+    const channel = (raw: string) => transcriptChannelKey(raw, served.transportScope)
+    return { subject: routerSubject(req.botId), channel, conversation }
+  }
+
+  async listRouting(orgId: string, req: DecisionRoutingEvaluationsRequest): Promise<DecisionRoutingEvaluationsReply> {
+    const { subject, channel, conversation } = await this.routingLane(orgId, req)
+    const rows = await this.deps.store().listRouterVerdicts({
+      orgId,
+      subject,
+      channels: [...new Set(req.channels.map(channel))],
+      ...(req.cursor !== undefined ? { before: req.cursor } : {}),
+      limit: req.limit
+    })
+    const items: DecisionRoutingEvaluationRecord[] = []
+    let more = rows.length > req.limit
+    for (const row of rows.slice(0, req.limit)) {
+      const parsed = DecisionRoutingEvaluationRecord.safeParse(routerSummaryRow(row))
+      if (!parsed.success) continue
+      // The cursor placeholder is the widest a seq can print, so the real page never exceeds the cap.
+      if (
+        encodedBytes({ items: [...items, parsed.data], nextCursor: Number.MAX_SAFE_INTEGER, conversation }) >
+        DECISION_LIST_MAX_BYTES
+      ) {
+        more = true
+        break
+      }
+      items.push(parsed.data)
+    }
+    const last = items.at(-1)?.seq ?? rows[0]?.seq
+    return { items, nextCursor: more && last !== undefined && last > 0 ? last : null, conversation }
+  }
+
+  async getRouting(orgId: string, req: DecisionRoutingEvaluationRequest): Promise<DecisionRoutingEvaluationReply> {
+    const { subject, channel, conversation } = await this.routingLane(orgId, req)
+    const [row] = await this.deps
+      .store()
+      .listRouterVerdicts({ orgId, subject, channels: [channel(req.channel)], seq: req.seq, limit: 1 })
+    if (!row) return { evaluation: null, conversation }
+    const summary = DecisionRoutingEvaluationRecord.safeParse(routerSummaryRow(row))
+    if (!summary.success) return { evaluation: null, conversation }
+    const expired = summary.data.detailsExpired
+    const detail: DecisionRoutingEvaluationRecordDetail = {
+      ...summary.data,
+      snapshot: routerSnapshotOf(row),
+      constraint: expired ? null : routerConstraintOf(row, summary.data.targets),
+      input: expired ? null : inputOf(row),
+      fullAnswer: expired ? null : answerOf(row).answer
     }
     const fits = () => encodedBytes({ evaluation: detail, conversation }) <= DECISION_EVALUATION_DETAIL_MAX_BYTES
     // The oldest history goes first; the current message is kept or the whole input is.

@@ -2,8 +2,8 @@
 
 This describes the live Decision Console and its explicit mock mode, tracked in
 [#2228](https://github.com/agentconnect-md/agentconnect/issues/2228). The
-[Decisions design](decisions.md) defines the intended live behavior. Shared-bot
-routing remains Stage 2 even though its configuration can be prototyped now.
+[Decisions design](decisions.md) defines the intended live behavior, including the
+Stage 2 shared-bot Routing screen described below.
 
 ## Available code
 
@@ -17,6 +17,11 @@ routing remains Stage 2 even though its configuration can be prototyped now.
 | `packages/web/src/lib/decisions/binding.ts`                        | Saved gate, readiness status, and save-error projections of the channel DTO and API errors                                                           |
 | `packages/web/src/lib/decisions/evaluations.ts`                    | Recent evaluations projections: answer text, outcome tone, reason keys, and latency                                                                  |
 | `packages/web/src/lib/decisions/usage-links.ts`                    | Console destinations for Decision usages                                                                                                             |
+| `packages/web/src/lib/decisions/routing-draft.ts`                  | The Routing draft, its validation, Score order and gaps, new rules, and the load/save reducer                                                        |
+| `packages/web/src/lib/decisions/routing-roster.ts`                 | `useRoutingRoster`: the shared bot, its agents and availability, and its conversations, from console or mock data                                    |
+| `packages/web/src/lib/decisions/routing-evaluations.ts`            | Routing Recent evaluations projections: outcome tones, target and matched-rule text                                                                  |
+| `packages/web/src/components/console/decisions/routing/`           | The Routing editor, Test routing, and routing Recent evaluations with their detail sheet                                                             |
+| `packages/web/src/components/console/views/BotRoutingView.tsx`     | A shared bot's Configuration → Routing page (`/integrations/bots/:botId/routing`)                                                                    |
 | `packages/web/src/components/console/decisions/`                   | The condition editor, the per-conversation `By decision` binding strip with gate Try and Recent evaluations, the usage list, and the flag-off notice |
 | `packages/web/src/components/console/views/DecisionsView.tsx`      | The Decisions list (`/decisions`)                                                                                                                    |
 | `packages/web/src/components/console/views/DecisionEditorView.tsx` | One decision's editor and example sandbox (`/decisions/new`, `/decisions/:id`)                                                                       |
@@ -146,8 +151,15 @@ feature flag controls the routes, the rail entry, and the By decision option. Li
 bindings bypass `DecisionApi`: rows read `trigger`, `decisionBinding`, and the `decision`
 readiness view from the integration channel DTO, and save through
 `PATCH /integrations/:id/channels/:channelId` (`updateIntegrationChannel`).
-`DecisionApi.saveChannel`, `listChannels`, `listBots`, and the routing methods stay
-mock-only. Three conversation methods are live on both implementations:
+`DecisionApi.saveChannel`, `listChannels`, and `listBots` stay mock-only. The routing
+methods are live: `getRouting` and `saveRouting` read and write
+`GET`/`PUT /bots/:id/decision-routing`, `previewRouting(botId, input)` posts to
+`POST /bots/:id/decision-routing/preview` (`previewBotDecisionRouting`),
+`listRoutingEvaluations(botId, { channelId, cursor, limit })` reads
+`GET /bots/:id/decision-routing/evaluations` (`listBotDecisionRoutingEvaluations`), and
+`getRoutingEvaluation(botId, { channelId, seq })` reads
+`GET /bots/:id/decision-routing/evaluations/:seq?channelId=` (`getBotDecisionRoutingEvaluation`).
+Three conversation methods are live on both implementations:
 `previewGate(ref, { decisionBinding, state })` posts to
 `POST /integrations/:id/channels/:channelId/decision-preview`
 (`previewIntegrationChannelDecision`), and `listEvaluations(ref, { cursor, limit })` and
@@ -156,7 +168,12 @@ mock-only. Three conversation methods are live on both implementations:
 `ref` is `{ integrationId, channelId }`. The mock seed carries canned `evaluations`, one per
 outcome (Triggered, Skipped, Unavailable, Canceled, Pending) plus a row whose bodies are
 already stripped (`detailsExpired: true`); the `needs_review` scenario answers gate previews
-Not applied and `daemon_offline` answers 503.
+Not applied and `daemon_offline` answers 503. It also carries canned `routingEvaluations`,
+one per routing outcome (Routed, Partially routed, Skipped, Fallback, Unavailable,
+Canceled, Pending) plus an expired row. The mock `previewRouting` checks Not applied in
+the live order and settles with the protocol's `settleRoutingPreview`, the same code the
+CP preview and the daemon router use; `needs_review` answers Not applied and
+`daemon_offline` answers 503 for routing too.
 
 ## Console surface
 
@@ -168,8 +185,8 @@ state resets on an organization switch so a draft or deletion dialog cannot carr
 - `/decisions` lists visible definitions, with search, duplicate, and delete. Server-provided
   editing authority and the organization role gate actions. Used by counts conversation
   gates and agent tools. Usage lists link a gate to its agent's Integrations tab, an agent
-  tool to `?tab=tools`, and model selection to `?tab=config`; shared-bot routing has no link
-  yet. A delete refused with 409 lists the returned usages plus "N more you cannot see"
+  tool to `?tab=tools`, model selection to `?tab=config`, and shared-bot routing to the bot's
+  Routing page. A delete refused with 409 lists the returned usages plus "N more you cannot see"
   from `hiddenUsageCount`.
 - `/decisions/new` and `/decisions/:id` edit the typed question, model, and Team visibility.
   Unchanged sharing is omitted from PATCH. Saving needs no online daemon.
@@ -194,7 +211,7 @@ state resets on an organization switch so a draft or deletion dialog cannot carr
 - A saved gate shows its status: Pending sync, Needs review (Repair condition and Open
   decision), Daemon offline, Unsupported, or Access revoked (Choose another decision);
   Ready has no banner. Shared-bot rows do not offer By decision; a shared-bot routing
-  binding reads **Managed by [bot] routing**, linked to the bot's integration page.
+  binding reads **Managed by [bot] routing**, linked to the bot's Routing page.
 - **Try a message** in the gate editor runs `previewGate` on the conversation, not on a
   daemon the operator picks: the CP resolves the consumer's serving daemon, evaluates the
   draft on it, and applies the draft condition. The sample is ordered history lines with
@@ -213,15 +230,53 @@ state resets on an organization switch so a draft or deletion dialog cannot carr
 - Explicit mock mode runs the same strip against local prototype gates, using the real
   pure matcher with canned answers.
 
-Still unimplemented: the shared-bot routing screen, with its routing preview and
-routing evaluation history. See the
-[current delivery boundary](decisions.md#104-rollout-and-remaining-implementation-work).
+## Routing screen
+
+`/integrations/bots/:botId/routing` is a shared bot's Configuration → Routing page. It is
+entered from the bot's expanded row on Integrations (a Routing link with the routed
+channel count), from a Decision's shared-bot usage link, and from **Managed by [bot]
+routing** on a routed channel row. A bot that is not shared says so; a flag-off console
+shows the not-offered notice.
+
+- The header keeps the bot identity, its agents, the Integrations / bot / Configuration /
+  Routing location, the saved status, and **Recent evaluations**. Banners cover Pending
+  sync (saved, not yet applied), Needs review with Open decision, missing credentials
+  with a link to provider keys, an offline host, an unsupported host or relay, no
+  connected agents, paused routing, and read-only access.
+- The form reads Enabled, Decision (picker, type and model, View/Edit, inline Create
+  decision), Channels (searchable group channels; Off rows disabled with an enable link;
+  gate rows noted; the count and names Save applies to), Rules, Otherwise, notes, and the
+  footer. Removing a saved channel opens its replacement trigger (no preselection) and
+  optional default agent inline; Save waits for it.
+- Rules are numbered When / Then rows. When reuses `DecisionConditionFields`; Then is
+  Route to agent with a same-bot agent picker (identity and availability) or Do not
+  activate. Score rows sort by lower bound and uncovered ranges read "… uses Otherwise".
+  Both rows of a duplicated key or an overlapping interval are marked, as the API does.
+  A removed target stays as Target removed; an unavailable one keeps its selection.
+  Otherwise is fixed last and names each channel's resolved default.
+- The draft lives in `DecisionsPrototypeProvider` (`routingDrafts`), so an inline Create
+  decision returns with the new Decision selected and a failed save keeps both the draft
+  and the Decision. New configurations start as an unsaved draft with Otherwise = Do not
+  activate; Save sends the complete configuration and scope, Cancel restores the saved
+  state, and Retry resends the last attempt.
+- **Test routing** picks a channel and a situation (new conversation, explicit mention,
+  or established thread with participant flags) plus a sample. It shows the answer, each
+  rule's threshold result, all matched rules or Otherwise, the matched actions, and the
+  effective targets with Target unavailable or removed and no substitute; Not applied
+  names Off, outside scope, paused, Needs review, or unsupported; a provider failure
+  names its continuation. Any edit marks the result stale. Viewers do not see it.
+- **Recent evaluations** filters by channel and lists Time, Channel, Decision answer,
+  Matched (rules and keys, or Otherwise), Targets with admission marks, Outcome, and
+  Latency, stacking below the desktop breakpoint. Load more follows the cursor, which may
+  continue after a page the audience check emptied. A row opens the sheet with the
+  Decision and routing snapshots, the target constraint, input and history, model and
+  usage, and each target's disposition, or **Details expired**.
 
 Focused validation:
 
 ```sh
 pnpm --filter @agentconnect.md/protocol exec vitest run src/decision.test.ts src/frames/decision.test.ts --maxWorkers=1
-pnpm --filter @agentconnect.md/daemon exec vitest run test/decision-evaluations.test.ts --maxWorkers=1
-pnpm --filter @agentconnect.md/web exec vitest run src/protocol-imports.leaf.test.ts src/icon-names.test.ts src/lib/decisions src/lib/integration-row.test.ts src/components/console/decisions src/components/console/IntegrationChannelList.decisions.test.tsx src/components/console/views/DecisionsView.test.tsx src/components/console/views/DecisionEditorView.test.tsx --maxWorkers=1
+pnpm --filter @agentconnect.md/daemon exec vitest run test/decision-evaluations.test.ts test/decision-router.test.ts --maxWorkers=1
+pnpm --filter @agentconnect.md/web exec vitest run src/protocol-imports.leaf.test.ts src/icon-names.test.ts src/lib/decisions src/lib/integration-row.test.ts src/components/console/decisions src/components/console/IntegrationChannelList.decisions.test.tsx src/components/console/views/DecisionsView.test.tsx src/components/console/views/DecisionEditorView.test.tsx src/components/console/views/BotRoutingView.test.tsx src/components/console/views/IntegrationsView.routing.test.tsx --maxWorkers=1
 pnpm --filter @agentconnect.md/web i18n:check
 ```

@@ -19,6 +19,7 @@ import { createDecisionMockApi } from './mock-api'
 import { createDecisionApi } from '@/lib/api'
 import { MOCK_MODE } from '@/lib/data'
 import type { BindingSaveError } from './binding'
+import { INITIAL_ROUTING_STATE, routingReducer, type RoutingEditorState, type RoutingEvent } from './routing-draft'
 
 /** A Stage 1 fixed-target gate: one conversation, one decision, one trigger condition. */
 export interface DecisionGateBinding {
@@ -44,6 +45,9 @@ export interface DecisionBindingDraft {
 
 type DraftUpdate =
   DecisionBindingDraft | null | ((current: DecisionBindingDraft | undefined) => DecisionBindingDraft | null)
+
+/** Where an inline Create decision returns: a conversation's binding draft, or a bot's routing draft. */
+export type InlineCreateTarget = { kind: 'binding'; key: string } | { kind: 'routing'; botId: string }
 
 /** The stored form: the store stamps the organization, so a caller cannot misfile it. */
 type StoredGate = DecisionGateBinding & { orgId: string }
@@ -85,8 +89,13 @@ interface DecisionsPrototype {
   bindingDrafts: Readonly<Record<string, DecisionBindingDraft>>
   /** Replace, update, or (with null) drop one draft; a functional update sees the latest draft. */
   setBindingDraft: (key: string, next: DraftUpdate) => void
-  /** Remember which draft an inline Create decision should return to. */
-  beginInlineCreate: (key: string) => void
+  /** Routing editor state by bot, so an inline Create decision returns to the same draft. */
+  routingDrafts: Readonly<Record<string, RoutingEditorState>>
+  /** This store's identity for one bot's routing draft. */
+  routingKeyFor: (botId: string) => string
+  dispatchRouting: (botId: string, event: RoutingEvent) => void
+  /** Remember which draft an inline Create decision should return to; a bare key is a binding draft. */
+  beginInlineCreate: (target: string | InlineCreateTarget) => void
   /** Select a just-created Decision on the draft that started the inline create. */
   completeInlineCreate: (decision: DecisionDefinition) => void
 }
@@ -107,7 +116,8 @@ export function DecisionsPrototypeProvider({ children }: { children: ReactNode }
   }, [apis, orgId])
   const [gates, setGates] = useState<Record<string, StoredGate>>({})
   const [bindingDrafts, setBindingDrafts] = useState<Record<string, DecisionBindingDraft>>({})
-  const [pendingCreate, setPendingCreate] = useState<string | null>(null)
+  const [routingDrafts, setRoutingDrafts] = useState<Record<string, RoutingEditorState>>({})
+  const [pendingCreate, setPendingCreate] = useState<InlineCreateTarget | null>(null)
   // Disabled features and an unresolved organization must not make API requests.
   const { data, error, isLoading, mutate } = useSWR(
     orgId && featureFlagEnabled('decisions') ? ['decisions', api.mode, orgId] : null,
@@ -155,17 +165,37 @@ export function DecisionsPrototypeProvider({ children }: { children: ReactNode }
       return Object.fromEntries(Object.entries(current).filter(([entry]) => entry !== key))
     })
   }, [])
-  const beginInlineCreate = useCallback((key: string) => setPendingCreate(key), [])
+  const routingKeyFor = useCallback((botId: string) => gateKey(orgId, botId, 'routing'), [orgId])
+  const dispatchRouting = useCallback(
+    (botId: string, event: RoutingEvent) => {
+      const key = gateKey(orgId, botId, 'routing')
+      setRoutingDrafts((current) => {
+        const next = routingReducer(current[key] ?? INITIAL_ROUTING_STATE, event)
+        return next === current[key] ? current : { ...current, [key]: next }
+      })
+    },
+    [orgId]
+  )
+  const beginInlineCreate = useCallback(
+    (target: string | InlineCreateTarget) =>
+      setPendingCreate(typeof target === 'string' ? { kind: 'binding', key: target } : target),
+    []
+  )
   const completeInlineCreate = useCallback(
     (decision: DecisionDefinition) => {
       if (!pendingCreate) return
-      setBindingDrafts((current) => ({
-        ...current,
-        [pendingCreate]: { decisionId: decision.id, when: defaultConditionFor(decision), phase: 'editing' }
-      }))
+      if (pendingCreate.kind === 'routing')
+        dispatchRouting(pendingCreate.botId, { type: 'SELECT_DECISION', decisionId: decision.id })
+      else {
+        const key = pendingCreate.key
+        setBindingDrafts((current) => ({
+          ...current,
+          [key]: { decisionId: decision.id, when: defaultConditionFor(decision), phase: 'editing' }
+        }))
+      }
       setPendingCreate(null)
     },
-    [pendingCreate]
+    [pendingCreate, dispatchRouting]
   )
   const value = useMemo<DecisionsPrototype>(
     () => ({
@@ -183,6 +213,9 @@ export function DecisionsPrototypeProvider({ children }: { children: ReactNode }
       markGatesForReview,
       bindingDrafts,
       setBindingDraft,
+      routingDrafts,
+      routingKeyFor,
+      dispatchRouting,
       beginInlineCreate,
       completeInlineCreate
     }),
@@ -201,6 +234,9 @@ export function DecisionsPrototypeProvider({ children }: { children: ReactNode }
       markGatesForReview,
       bindingDrafts,
       setBindingDraft,
+      routingDrafts,
+      routingKeyFor,
+      dispatchRouting,
       beginInlineCreate,
       completeInlineCreate
     ]

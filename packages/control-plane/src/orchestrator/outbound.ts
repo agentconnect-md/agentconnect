@@ -5,6 +5,11 @@ import {
   DecisionEvaluationReply,
   DecisionEvaluationsReply,
   DecisionPreviewReply,
+  DECISION_ROUTING_EVALUATIONS_V1_FEATURE,
+  DecisionRoutingEvaluationReply,
+  DecisionRoutingEvaluationsReply,
+  type DecisionRoutingEvaluationRequest,
+  type DecisionRoutingEvaluationsRequestInput,
   type DecisionEvaluationRequest,
   type DecisionEvaluationsRequest,
   type DecisionPreviewRequest,
@@ -911,6 +916,46 @@ export class ControlSender {
     return DecisionEvaluationReply.parse(
       await c.conn.request(
         'decision/evaluation',
+        req,
+        { epoch: c.sessionEpoch, agentId: req.agentId },
+        { ackTimeoutMs: 5000, maxTries: 1 },
+        orgId
+      )
+    )
+  }
+
+  /** A bot's router verdicts across the channels named; proxied, never persisted or logged. */
+  async decisionRoutingEvaluations(
+    daemonId: string,
+    orgId: string,
+    req: DecisionRoutingEvaluationsRequestInput
+  ): Promise<DecisionRoutingEvaluationsReply> {
+    const c = this.must(daemonId)
+    if (c.state !== 'READY' || !c.capabilities?.features.includes(DECISION_ROUTING_EVALUATIONS_V1_FEATURE))
+      throw new NoConnection(daemonId)
+    return DecisionRoutingEvaluationsReply.parse(
+      await c.conn.request(
+        'decision/routing-evaluations',
+        req,
+        { epoch: c.sessionEpoch, agentId: req.agentId },
+        { ackTimeoutMs: 5000, maxTries: 1 },
+        orgId
+      )
+    )
+  }
+
+  /** One router verdict's frozen detail, or null when the host no longer holds it. */
+  async decisionRoutingEvaluation(
+    daemonId: string,
+    orgId: string,
+    req: DecisionRoutingEvaluationRequest
+  ): Promise<DecisionRoutingEvaluationReply> {
+    const c = this.must(daemonId)
+    if (c.state !== 'READY' || !c.capabilities?.features.includes(DECISION_ROUTING_EVALUATIONS_V1_FEATURE))
+      throw new NoConnection(daemonId)
+    return DecisionRoutingEvaluationReply.parse(
+      await c.conn.request(
+        'decision/routing-evaluation',
         req,
         { epoch: c.sessionEpoch, agentId: req.agentId },
         { ackTimeoutMs: 5000, maxTries: 1 },

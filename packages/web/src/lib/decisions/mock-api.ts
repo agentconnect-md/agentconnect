@@ -11,7 +11,10 @@ import {
   matchDecisionCondition,
   matchDecisionRouting,
   parseDecisionAnswer,
+  partitionRoutingConstraint,
+  settleRoutingPreview,
   type DecisionDefinition,
+  type DecisionRoutingEvaluationRecord,
   type DecisionEvaluationRecord,
   type DecisionValidationIssue
 } from '@agentconnect.md/protocol/decision'
@@ -23,6 +26,8 @@ import type {
   DecisionPreviewResult,
   DecisionReadiness,
   DecisionRoutingDetail,
+  DecisionRoutingNotAppliedReason,
+  DecisionRoutingPreviewResult,
   DecisionUsage
 } from '@agentconnect.md/protocol/decision-api'
 import {
@@ -135,6 +140,7 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
   }
 
   const evaluations = [...seed.evaluations].sort((a, b) => b.seq - a.seq)
+  const routingEvaluations = [...(seed.routingEvaluations ?? [])].sort((a, b) => b.seq - a.seq)
   const offline = () =>
     new DecisionMockApiError(503, {
       error: 'unavailable',
@@ -543,6 +549,151 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
     async getEvaluation(_ref, seq) {
       if (options.scenario === 'daemon_offline') throw offline()
       const found = evaluations.find((entry) => entry.seq === seq)
+      if (!found) throw missing()
+      return copy(found)
+    },
+    // The live route's order: validation, Not applied without a model call, then the router's own settlement.
+    async previewRouting(botId, input) {
+      input = copy(input)
+      const bot = get(bots, botId)
+      if (!bot.shared) invalid([{ path: ['botId'], message: 'Routing requires a shared bot.' }])
+      const config = parse(SharedBotDecisionRouting, input.config)
+      const sample = parse(DecisionPreviewSample, input.state)
+      const definition = definitions.get(config.decisionId)
+      if (!definition)
+        throw new DecisionMockApiError(404, {
+          error: 'not_found',
+          code: 'DECISION_NOT_FOUND',
+          message: 'Decision not found.'
+        })
+      invalid(decisionRoutingIssues(definition.question, config))
+      const channel = get(channels, input.channelId)
+      if (channel.botId !== botId || channel.kind !== 'channel')
+        invalid([{ path: ['channelId'], message: 'Select a group channel of this bot.' }])
+      const situation = input.targets
+      const recipients = situation.type === 'new' ? [] : situation.agentIds
+      const participants = situation.type === 'new' ? [] : (situation.participantAgentIds ?? [])
+      if (recipients.some((id) => !bot.agents.some((agent) => agent.id === id)))
+        invalid([{ path: ['targets'], message: 'Choose recipients connected to this bot.' }])
+      const defaultAgentId = channel.agentId || bot.defaultAgentId
+      const named = (id: string) => bot.agents.find((agent) => agent.id === id) ?? null
+      const consumer: DecisionRoutingPreviewResult['consumer'] = {
+        type: 'shared_bot_routing',
+        outcome: 'not_applied',
+        evaluated: false,
+        rules: [],
+        matchedRuleIds: [],
+        matchedKeys: [],
+        matchedAgentIds: [],
+        usedOtherwise: false,
+        fallback: null,
+        defaultAgent: defaultAgentId ? { id: defaultAgentId, name: named(defaultAgentId)?.name ?? null } : null,
+        targetConstraint: copy(situation),
+        targets: []
+      }
+      const saved = routings.get(botId)
+      const reason: DecisionRoutingNotAppliedReason | null =
+        channel.settings.trigger === 'off'
+          ? 'off'
+          : !input.channelIds.includes(input.channelId)
+            ? 'outside_scope'
+            : !config.enabled
+              ? 'paused'
+              : (options.scenario === 'needs_review' || saved?.readiness.status === 'needs_review') &&
+                  JSON.stringify(saved?.config) === JSON.stringify(config)
+                ? 'needs_review'
+                : null
+      const readiness: DecisionReadiness = { status: options.scenario === 'pending_sync' ? 'pending_sync' : 'ready' }
+      if (reason)
+        return copy({
+          mode: 'mock' as const,
+          readiness: reason === 'needs_review' ? { status: 'needs_review' as const } : readiness,
+          evaluation: null,
+          consumer: { ...consumer, notAppliedReason: reason }
+        })
+      const constraint = recipients.map((agentId) => ({
+        agentId,
+        daemonId: bot.daemonId,
+        participant: participants.includes(agentId),
+        via: situation.type === 'mention' ? ('mention' as const) : ('implicit' as const)
+      }))
+      const candidates = bot.agents.map((agent) => ({ agentId: agent.id, daemonId: bot.daemonId }))
+      let evaluation: DecisionEvaluation | null = null
+      if (partitionRoutingConstraint(constraint).evaluate) {
+        if (options.scenario === 'daemon_offline') throw offline()
+        const status = providerReadiness(definition, bot.daemonId).status
+        evaluation =
+          status === 'ready' || status === 'pending_sync'
+            ? await evaluateDraft(definition, { ...sample })
+            : { status: 'unavailable', reason: 'credentials' }
+      }
+      const settled = settleRoutingPreview({
+        question: definition.question,
+        routing: config,
+        answer: evaluation === null ? undefined : evaluation.status === 'answered' ? evaluation.answer : 'unavailable',
+        constraint,
+        ...(defaultAgentId ? { defaultAgentId } : {}),
+        candidates
+      })
+      const unavailableReason = settled.reason ?? (evaluation?.status === 'unavailable' ? evaluation.reason : undefined)
+      return copy({
+        mode: 'mock' as const,
+        readiness,
+        evaluation: settled.reason ? { status: 'unavailable' as const, reason: settled.reason } : evaluation,
+        consumer: {
+          ...consumer,
+          outcome: settled.outcome,
+          ...(settled.outcome === 'unavailable' ? { reason: unavailableReason ?? 'provider' } : {}),
+          evaluated: settled.evaluate,
+          rules: settled.rules,
+          matchedRuleIds: settled.match?.matchedRuleIds ?? [],
+          matchedKeys: settled.match?.matchedKeys ?? [],
+          matchedAgentIds: settled.match?.agentIds ?? [],
+          usedOtherwise: settled.match?.usedOtherwise ?? false,
+          fallback: settled.fallback ?? null,
+          targets: settled.targets.map((target) => {
+            const agent = named(target.agentId)
+            return {
+              agentId: target.agentId,
+              name: agent?.name ?? null,
+              effect: target.effect,
+              participant: target.participant,
+              via: target.via,
+              status: !agent
+                ? ('removed' as const)
+                : agent.available
+                  ? ('available' as const)
+                  : ('unavailable' as const)
+            }
+          })
+        }
+      })
+    },
+    async listRoutingEvaluations(botId, page = {}) {
+      get(bots, botId)
+      if (options.scenario === 'daemon_offline') throw offline()
+      const limit = Math.min(50, Math.max(1, page.limit ?? 20))
+      const after = routingEvaluations.filter(
+        (entry) =>
+          (page.cursor === undefined || entry.seq < page.cursor) &&
+          (page.channelId === undefined || entry.channel === page.channelId)
+      )
+      const items: DecisionRoutingEvaluationRecord[] = after.slice(0, limit).map((entry) => {
+        const {
+          snapshot: _snapshot,
+          constraint: _constraint,
+          input: _input,
+          fullAnswer: _fullAnswer,
+          ...summary
+        } = entry
+        return summary
+      })
+      return copy({ items, nextCursor: after.length > limit ? (items.at(-1)?.seq ?? null) : null })
+    },
+    async getRoutingEvaluation(botId, ref) {
+      get(bots, botId)
+      if (options.scenario === 'daemon_offline') throw offline()
+      const found = routingEvaluations.find((entry) => entry.seq === ref.seq && entry.channel === ref.channelId)
       if (!found) throw missing()
       return copy(found)
     }

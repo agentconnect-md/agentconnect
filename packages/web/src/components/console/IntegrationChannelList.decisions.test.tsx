@@ -75,7 +75,10 @@ vi.mock('@/lib/api', async (original) => {
     preview: refuse,
     previewGate: refuse,
     listEvaluations: evals.listEvaluations,
-    getEvaluation: refuse
+    getEvaluation: refuse,
+    previewRouting: refuse,
+    listRoutingEvaluations: refuse,
+    getRoutingEvaluation: refuse
   }
   return { ...actual, createDecisionApi: () => live }
 })
@@ -417,7 +420,7 @@ describe('IntegrationChannelList By decision', () => {
       botId: 'bot-shared'
     })
     const link = byText('Managed by Shared bot routing')
-    expect(link?.getAttribute('href')).toBe('/integrations?bot=bot-shared')
+    expect(link?.getAttribute('href')).toBe('/integrations/bots/bot-shared/routing')
     expect(byText('Trigger when')).toBeUndefined()
   })
 

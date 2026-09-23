@@ -4,6 +4,7 @@ import type {
   DecisionEvaluation,
   DecisionEvaluationEntry,
   DecisionEvaluationRecordDetail,
+  DecisionRoutingEvaluationRecordDetail,
   SharedBotDecisionRouting
 } from '@agentconnect.md/protocol/decision'
 import type {
@@ -24,6 +25,8 @@ export interface DecisionMockSeed {
   routings: Array<{ botId: string; config: SharedBotDecisionRouting; readiness: DecisionReadiness }>
   /** Canned Recent evaluations, newest first, shown for any conversation in mock mode. */
   evaluations: DecisionEvaluationRecordDetail[]
+  /** Canned routing Recent evaluations, newest first: one per outcome plus an expired row. */
+  routingEvaluations: DecisionRoutingEvaluationRecordDetail[]
 }
 
 export type DecisionMockScenario =
@@ -197,7 +200,8 @@ export function createDecisionMockSeed(scenario: DecisionMockScenario = 'ready')
       }
     ],
     routings: [{ botId: bot.id, config, readiness }],
-    evaluations: mockEvaluations(decisions)
+    evaluations: mockEvaluations(decisions),
+    routingEvaluations: mockRoutingEvaluations(decisions[0]!, config)
   })
   if (scenario === 'needs_review') {
     seed.channels[3]!.settings = {
@@ -404,6 +408,182 @@ function mockEvaluations(decisions: DecisionDefinition[]): DecisionEvaluationRec
       input: null,
       fullAnswer: null,
       evidence: { snapshotSeq: 101, suppliedBackground: null }
+    }
+  ]
+}
+
+// One routing row per outcome (decisions.md §9.5), plus one whose bodies retention already stripped.
+function mockRoutingEvaluations(
+  category: DecisionDefinition,
+  routing: SharedBotDecisionRouting
+): DecisionRoutingEvaluationRecordDetail[] {
+  const snapshot = {
+    decisionId: category.id,
+    providerId: category.providerId,
+    model: category.model,
+    question: category.question,
+    routing,
+    defaultAgentId: 'billing-agent'
+  }
+  const choice = (billing: number, technical: number, sales: number) => ({
+    type: 'choice' as const,
+    value: billing >= technical && billing >= sales ? 'billing' : technical >= sales ? 'technical' : 'sales',
+    probabilities: { billing, technical, sales },
+    confidence: Math.max(billing, technical, sales)
+  })
+  const summary = (full: ReturnType<typeof choice>) => ({
+    type: 'choice' as const,
+    value: full.value,
+    confidence: full.confidence
+  })
+  const input = (text: string): NonNullable<DecisionRoutingEvaluationRecordDetail['input']> => ({
+    currentMessage: entry('1767262260.000900', 'U-customer', text),
+    history: [entry('1767262200.000800', 'U-customer', 'Hi, I need a hand with my account.')],
+    historyOmitted: 0,
+    context: { partial: false, reasons: [], omittedMessages: 0 }
+  })
+  const target = (
+    agentId: string,
+    disposition: 'pending' | 'admitted' | 'rejected' | 'unavailable',
+    effect:
+      'selected' | 'kept' | 'default_agent' | 'fallback_default' | 'fallback_constrained' | 'participant' = 'selected',
+    reason: string | null = null
+  ) => ({ agentId, effect, via: 'implicit' as const, participant: effect === 'participant', disposition, reason })
+  const base = {
+    channel: 'help-channel',
+    decisionId: category.id,
+    reason: null,
+    evaluated: true,
+    matchedKeys: [] as string[],
+    matchedRuleIds: [] as string[],
+    usedOtherwise: false,
+    fallback: null,
+    latencyMs: 710,
+    requestedModel: category.model,
+    actualModel: category.model,
+    usage: { inputTokens: 520, outputTokens: 3 },
+    detailsExpired: false,
+    snapshot,
+    constraint: [] as NonNullable<DecisionRoutingEvaluationRecordDetail['constraint']>
+  }
+  const both = choice(0.45, 0.4, 0.15)
+  const partial = choice(0.5, 0.35, 0.15)
+  const sales = choice(0.1, 0.1, 0.8)
+  const pending = choice(0.6, 0.2, 0.2)
+  return [
+    {
+      ...base,
+      seq: 208,
+      at: '2026-01-01T11:08:00.000Z',
+      messageId: '1767265680.000800',
+      outcome: 'pending',
+      answer: summary(pending),
+      matchedKeys: ['billing'],
+      matchedRuleIds: ['billing'],
+      targets: [target('billing-agent', 'pending')],
+      input: input('Can you look at invoice 7781?'),
+      fullAnswer: pending
+    },
+    {
+      ...base,
+      seq: 207,
+      at: '2026-01-01T11:07:00.000Z',
+      messageId: '1767265620.000700',
+      outcome: 'routed',
+      answer: summary(both),
+      matchedKeys: ['billing', 'technical'],
+      matchedRuleIds: ['billing', 'technical'],
+      targets: [target('billing-agent', 'admitted'), target('technical-agent', 'admitted')],
+      input: input('My billing API request failed with a 500.'),
+      fullAnswer: both
+    },
+    {
+      ...base,
+      seq: 206,
+      at: '2026-01-01T11:06:00.000Z',
+      messageId: '1767265560.000600',
+      outcome: 'partially_routed',
+      answer: summary(partial),
+      matchedKeys: ['billing', 'technical'],
+      matchedRuleIds: ['billing', 'technical'],
+      targets: [target('billing-agent', 'admitted'), target('technical-agent', 'unavailable', 'selected', 'timeout')],
+      input: input('The export fails and I was charged for it.'),
+      fullAnswer: partial
+    },
+    {
+      ...base,
+      seq: 205,
+      at: '2026-01-01T11:05:00.000Z',
+      messageId: '1767265500.000500',
+      outcome: 'skipped',
+      answer: summary(sales),
+      matchedKeys: [],
+      matchedRuleIds: [],
+      usedOtherwise: true,
+      targets: [],
+      input: input('What does the enterprise plan cost?'),
+      fullAnswer: sales
+    },
+    {
+      ...base,
+      seq: 204,
+      at: '2026-01-01T11:04:00.000Z',
+      messageId: '1767265440.000400',
+      outcome: 'fallback',
+      reason: 'timeout',
+      answer: null,
+      fallback: 'default',
+      latencyMs: 5000,
+      actualModel: null,
+      usage: null,
+      targets: [target('billing-agent', 'admitted', 'fallback_default')],
+      input: input('Hello? Anyone there?'),
+      fullAnswer: null
+    },
+    {
+      ...base,
+      seq: 203,
+      at: '2026-01-01T11:03:00.000Z',
+      messageId: '1767265380.000300',
+      outcome: 'unavailable',
+      reason: 'provider',
+      answer: null,
+      fallback: 'default',
+      latencyMs: 1200,
+      actualModel: null,
+      usage: null,
+      targets: [target('billing-agent', 'unavailable', 'fallback_default', 'timeout')],
+      input: input('Is the status page right?'),
+      fullAnswer: null
+    },
+    {
+      ...base,
+      seq: 202,
+      at: '2026-01-01T11:02:00.000Z',
+      messageId: '1767265320.000200',
+      outcome: 'canceled',
+      reason: 'stop',
+      answer: null,
+      latencyMs: null,
+      actualModel: null,
+      usage: null,
+      targets: [],
+      constraint: [{ agentId: 'technical-agent', participant: false, via: 'mention' }],
+      input: input('@Technical never mind'),
+      fullAnswer: null
+    },
+    {
+      ...base,
+      seq: 201,
+      at: '2025-12-24T09:00:00.000Z',
+      messageId: '1766566800.000100',
+      outcome: 'routed',
+      answer: null,
+      targets: [target('billing-agent', 'admitted')],
+      detailsExpired: true,
+      constraint: null,
+      input: null,
+      fullAnswer: null
     }
   ]
 }

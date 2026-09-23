@@ -20,5 +20,11 @@ export function decisionUsageHref(
   }
   if (usage.kind === 'agent_tool') return agentPath(usage.id, 'tools')
   if (usage.kind === 'model_selection') return agentPath(usage.id, 'config')
+  if (usage.kind === 'shared_bot_routing') return botRoutingPath(usage.id, orgPath)
   return null
+}
+
+/** The shared bot's Configuration → Routing page. */
+export function botRoutingPath(botId: string, orgPath: (path: string) => string): string {
+  return orgPath(`/integrations/bots/${encodeURIComponent(botId)}/routing`)
 }

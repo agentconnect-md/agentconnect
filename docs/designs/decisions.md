@@ -717,28 +717,29 @@ Evaluation usage is its own category rather than a fabricated ACP turn.
 These routes extend the organization-scoped `/api/v1` API with normal
 authentication, visibility, error DTOs, and OpenAPI metadata. The bot routing routes
 are Stage 2; the resource and gate routes are Stage 1. Decision CRUD, the provider
-catalog, standalone preview, gate preview, Recent evaluations, and the shared-bot routing
-GET/PUT are implemented; routing preview remains proposed, and until routing runtime
-lands every routed conversation is held.
+catalog, standalone preview, gate preview, Recent evaluations, the shared-bot routing
+GET/PUT, routing preview, and routing Recent evaluations are implemented.
 Usage lists identify the
 consumer kind without restricting the reusable resource to gates and routers.
 
-| Method and route                                                      | Input / result                                                                              |
-| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `GET /decisions/providers?daemonId=:id`                               | Authorized daemon's non-secret catalog, BYOK/AC credits source, models, and readiness       |
-| `GET /decisions`                                                      | Visible definitions, model/type, visible consumer counts                                    |
-| `GET /decisions/:id`                                                  | Definition and visible consumer usages                                                      |
-| `POST /decisions`                                                     | DecisionDraft                                                                               |
-| `PATCH /decisions/:id`                                                | Complete DecisionDraft, atomically saved                                                    |
-| `DELETE /decisions/:id`                                               | Refuse while used                                                                           |
-| `PATCH /integrations/:id/channels/:channelId`                         | Trigger and complete decisionBinding                                                        |
-| `GET /bots/:id/decision-routing` (Stage 2)                            | Bot-owned routing configuration, effective channel scope, readiness                         |
-| `PUT /bots/:id/decision-routing` (Stage 2)                            | Complete configuration plus explicit channel additions/removals and replacement settings    |
-| `POST /decisions/preview`                                             | Draft/ID and sample state; typed answer only                                                |
-| `POST /integrations/:id/channels/:channelId/decision-preview`         | Gate draft and sample state; answer plus match/skip                                         |
-| `GET /integrations/:id/channels/:channelId/decision-evaluations`      | Recent evaluations, newest first, bounded page by `cursor`/`limit`; proxied from the daemon |
-| `GET /integrations/:id/channels/:channelId/decision-evaluations/:seq` | One evaluation's frozen snapshot, input, answer, and evidence, or `detailsExpired`          |
-| `POST /bots/:id/decision-routing/preview` (Stage 2)                   | Routing draft, channel and sample context; precedence outcome or answer/rule/target         |
+| Method and route                                                       | Input / result                                                                              |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `GET /decisions/providers?daemonId=:id`                                | Authorized daemon's non-secret catalog, BYOK/AC credits source, models, and readiness       |
+| `GET /decisions`                                                       | Visible definitions, model/type, visible consumer counts                                    |
+| `GET /decisions/:id`                                                   | Definition and visible consumer usages                                                      |
+| `POST /decisions`                                                      | DecisionDraft                                                                               |
+| `PATCH /decisions/:id`                                                 | Complete DecisionDraft, atomically saved                                                    |
+| `DELETE /decisions/:id`                                                | Refuse while used                                                                           |
+| `PATCH /integrations/:id/channels/:channelId`                          | Trigger and complete decisionBinding                                                        |
+| `GET /bots/:id/decision-routing` (Stage 2)                             | Bot-owned routing configuration, effective channel scope, readiness                         |
+| `PUT /bots/:id/decision-routing` (Stage 2)                             | Complete configuration plus explicit channel additions/removals and replacement settings    |
+| `POST /decisions/preview`                                              | Draft/ID and sample state; typed answer only                                                |
+| `POST /integrations/:id/channels/:channelId/decision-preview`          | Gate draft and sample state; answer plus match/skip                                         |
+| `GET /integrations/:id/channels/:channelId/decision-evaluations`       | Recent evaluations, newest first, bounded page by `cursor`/`limit`; proxied from the daemon |
+| `GET /integrations/:id/channels/:channelId/decision-evaluations/:seq`  | One evaluation's frozen snapshot, input, answer, and evidence, or `detailsExpired`          |
+| `POST /bots/:id/decision-routing/preview` (Stage 2)                    | Routing draft, channel and sample context; precedence outcome or answer/rule/target         |
+| `GET /bots/:id/decision-routing/evaluations` (Stage 2)                 | Router verdicts newest first by `channelId`/`cursor`/`limit`; each row's audience checked   |
+| `GET /bots/:id/decision-routing/evaluations/:seq?channelId=` (Stage 2) | One router verdict's snapshots, constraint, input, answer, and per-target admissions        |
 
 For example, a fixed-target binding selects its own condition:
 
@@ -1283,8 +1284,7 @@ with a link to its configuration, avoiding a second mapping editor on an agent p
 
 ### 9.2 Stage 2: Shared Bot → Configuration → Routing
 
-Stage 2 has a complete configuration flow, including its interactive design.
-Keep the runtime entry unavailable until Stage 2 is implemented. Enter through
+Stage 2 has a complete configuration flow, including its interactive design. Enter through
 Integrations → shared bot, retain the bot identity, connected-agent roster, and
 existing default-agent settings, and open Routing under Configuration. A Decision
 usage link lands at this same page.
@@ -1439,6 +1439,18 @@ naming an audience: there the summary list follows the organization read baselin
 bodies additionally requires edit access to the consumer agent. Expired snapshots
 say **Details expired**. Editing a definition cannot relabel a historical result.
 
+Routing reads follow the same rules on the bot's evaluation host. The host answers
+`decision/routing-evaluations` and `decision/routing-evaluation` (feature
+`decision-routing-evaluations-v1`) from its router verdicts (subject `router:<botId>`)
+for a served member of that bot, across the requested channels with no per-install
+filter; the list covers one channel or every routed channel the bot-level host
+evaluates. The CP checks each row's conversation against the newest session any of the
+bot's agents holds in the namespace the host names, drops refused rows unread while
+keeping the cursor, and answers a refused detail as a 404; before any session there,
+bodies need edit access to the conversation's owner agent. The detail projects the
+frozen target constraint as agent ids, participation, and mention or implicit only.
+Verdicts evaluated by a previous self-hosted host stay on that daemon and drop out of view.
+
 Emit separate evaluation/match/skip/failure/latency/usage counters, without
 message IDs or channel names as metric labels. Provider outages surface in the
 Console and rate-limited logs rather than one chat warning per ordinary message.
@@ -1574,8 +1586,10 @@ provider connections may be saved in Infra but do not become Decision adapters.
 
 The `decisions` flag is a temporary prerelease gate. Helm exposes it through
 `features.decisions` (default `false`), which adds `decisions` to the Web runtime's
-`FEATURE_FLAGS`. Enabling it exposes Decision management, standalone preview, and
-fixed-target By decision bindings; it does not enable Stage 2 shared-bot routing.
+`FEATURE_FLAGS`. Enabling it exposes Decision management, standalone preview,
+fixed-target By decision bindings, and shared-bot Routing: its configuration, Test
+routing, and Recent evaluations. What remains is Cloud evaluation on AC credits
+(C1) and removing the flag.
 
 Before the final Jev release:
 
@@ -1607,7 +1621,8 @@ member-removal repair, and identity-merge paths. Sharing omitted from an update 
 preserved, including an ordinary editor save that did not change Team visibility.
 Consumer usages include visible agents that explicitly attach the Decision. The
 Console's By decision channel option saves live fixed-target gates; explicit mock mode
-keeps local prototype gates. Stage 2 shared-bot routing is still unimplemented.
+keeps local prototype gates. The Routing screen saves live shared-bot routing and
+its scope through the routing PUT and reads its preview and Recent evaluations live.
 
 Roll out each stage independently, starting with its additive CP/data-plane migrations
 and capable consumers, then its live configuration surfaces. Stage 1 does not create
