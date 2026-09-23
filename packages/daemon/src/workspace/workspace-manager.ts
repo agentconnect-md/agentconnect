@@ -236,7 +236,7 @@ export function effectiveSessionIsolation(
 }
 
 const PULL_TIMEOUT_MS = 4500
-const REVIEW_FETCH_TIMEOUT_MS = 15_000
+const REVIEW_FETCH_TIMEOUT_MS = 60_000
 const LS_REMOTE_TIMEOUT_MS = 10_000
 const MATERIALIZATION_FILE = 'workspace-materialization.json'
 /** A `.gitmodules` past this is not a submodule declaration anyone wrote; refuse to read it. */
