@@ -445,7 +445,7 @@ describe.skipIf(process.platform === 'win32')('a cluster daemon addresses a seco
   it('locates a root without reading the volume, so only a push or pull needs the pod that holds its marker', async () => {
     // The agent pod asleep beside a bound session pod: every read of `repos/**` fails, as a routed read of an unbound pod does.
     const pod = new PodWorkspaceFs(POD_ROOT)
-    const read = vi.spyOn(pod, 'readFile').mockRejectedValue(new Error(`sandbox ${AGENT} has no bound channel`))
+    const read = vi.spyOn(pod, 'readFileBytes').mockRejectedValue(new Error(`sandbox ${AGENT} has no bound channel`))
     wireTestPlane(workspaces, { workspacesOffDisk: true, workspaceFsFor: () => ({ fs: pod, mount: POD_ROOT }) })
     const podScope = createWorkspaceScope({
       workspaces,
@@ -462,7 +462,7 @@ describe.skipIf(process.platform === 'win32')('a cluster daemon addresses a seco
       })
       expect(read).not.toHaveBeenCalled()
       await expect(podScope.target(AGENT, AUTHORIZED)).rejects.toThrow('no bound channel')
-      expect(read).toHaveBeenCalledExactlyOnceWith(`${POD_SECONDARY}/.materialization.json`)
+      expect(read).toHaveBeenCalledExactlyOnceWith(`${POD_SECONDARY}/.materialization.json`, expect.any(Number))
     } finally {
       workspaces.setPlaneResolver(undefined)
     }
