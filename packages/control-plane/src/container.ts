@@ -2232,7 +2232,7 @@ export function buildContainer(
     // A daemon socket's lifecycle report takes the same fenced revocation as the relay's, minus a relay release it never had.
     socketBotRevocation: {
       matches: (bot, reported) => platforms.get(bot.platform)?.socketLifecycleRevocation?.(bot, reported) === true,
-      revoke: (botId, reason, eventAtMs) => httpBot.revokeBot(botId, reason, { eventAtMs })
+      revoke: (botId, reason, eventAtMs) => httpBot.revokeBot(botId, reason, { eventAtMs }, { evidence: 'event' })
     },
     githubInstallation: repos.githubInstallation,
     integrationChannel: repos.integrationChannel,
@@ -2569,18 +2569,19 @@ export function buildContainer(
         .reconcileAll()
         .catch((err) => http.log.error({ err }, 'relay: HTTP-bot reconcile on disconnect failed'))
     },
-    // A workspace uninstalled the app / revoked its tokens — mark the Bot + its
-    // installs revoked and release the bot from the pool, unless the report is
-    // stale (the fence fields; Slack does not order lifecycle events). Swallow+log.
-    // ACKNOWLEDGED: the relay keeps retrying until this resolves, so a failure
-    // must PROPAGATE (the connection answers a retryable error) rather than be
-    // swallowed — swallowing would look like success and lose the only signal a
-    // dead credential ever produces.
+    // A definitive revocation, fenced and recording its evidence; acknowledged, so a failure propagates and the relay retries.
     onBotRevoked: async (m) =>
-      httpBot.revokeBot(m.botId, m.reason, {
-        ...(m.credentialRevision !== undefined ? { revision: m.credentialRevision } : {}),
-        ...(m.eventAtMs !== undefined ? { eventAtMs: m.eventAtMs } : {})
-      }),
+      httpBot.revokeBot(
+        m.botId,
+        m.reason,
+        {
+          ...(m.credentialRevision !== undefined ? { revision: m.credentialRevision } : {}),
+          ...(m.eventAtMs !== undefined ? { eventAtMs: m.eventAtMs } : {})
+        },
+        { ...(m.evidence ? { evidence: m.evidence } : {}), ...(m.code ? { code: m.code } : {}) }
+      ),
+    // A probe's ambiguous rejection only marks the bot, and `ok` clears it; acknowledged, so a failure propagates.
+    onBotCredentialCheck: async (m) => httpBot.recordCredentialCheck(m),
     // A relay delivered a §14.3 DM gating notice — record + re-stamp the pool's
     // latch. Swallow+log.
     onNoticePosted: async (m) => {

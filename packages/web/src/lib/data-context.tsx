@@ -342,6 +342,7 @@ export function integrationRowFromDto(
 ): IntegrationRow {
   const agent = agentsById.get(d.agentId)
   const bot = botsById.get(d.botId)
+  const revoked = d.status === 'revoked'
   return {
     id: d.id,
     agentId: d.agentId,
@@ -355,7 +356,9 @@ export function integrationRowFromDto(
     workspace: '—',
     daemon: agent?.daemon ?? '—',
     status: d.status === 'active' ? 'online' : 'offline',
-    revoked: d.status === 'revoked',
+    revoked,
+    rejected: !!bot?.credentialRejectedAt,
+    credentialCode: (revoked ? bot?.revokedCode : bot?.credentialRejectedCode) ?? null,
     channels: d.channels.map((c) => ({
       channelId: c.channelId,
       name: c.name || c.channelId,

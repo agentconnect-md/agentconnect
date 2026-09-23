@@ -20,6 +20,9 @@ import {
   RcGithubInstallation,
   RcGithubRerequest,
   RcGithubRerequestResult,
+  RcBotRevoked,
+  RcBotCredentialCheck,
+  RcBotCredentialCheckOk,
   SharedSlackStatusTarget,
   decodeSlackStatusOverflowValue,
   encodeSlackStatusOverflowValue,
@@ -1121,5 +1124,68 @@ describe('code-host rule view (gitea-integration.md §13)', () => {
     const webhook = RcHookAssign.parse({ ...base, kind: 'webhook', webhook: { urlToken: 't'.repeat(32) } })
     expect(codeHostHookRuleOf(webhook)).toBeUndefined()
     expect(codeHostHookRuleOf({ kind: 'gitlab' })).toBeUndefined()
+  })
+})
+
+// Two evidence tiers: a definitive revocation records how it was learned, an ambiguous probe answer only marks the bot.
+describe('bot credential evidence (preset-agents.md §5.3)', () => {
+  const BOT = '66666666-6666-4666-8666-666666666666'
+
+  it('decodes a legacy rc/bot-revoked with neither evidence nor code', () => {
+    const r = decodeRelayCpFrame(envelope('rc/bot-revoked', { botId: BOT, reason: 'app_uninstalled', eventAtMs: 1 }))
+    expect(r.ok).toBe(true)
+    if (!r.ok || r.frame.type !== 'rc/bot-revoked') throw new Error('expected rc/bot-revoked')
+    expect(r.frame.payload.evidence).toBeUndefined()
+    expect(r.frame.payload.code).toBeUndefined()
+  })
+
+  it('carries a probe revocation’s evidence and the platform code', () => {
+    const frame = buildRelayCpFrame('rc/bot-revoked', {
+      botId: BOT,
+      reason: 'tokens_revoked',
+      credentialRevision: 3,
+      evidence: 'probe',
+      code: 'token_revoked'
+    })
+    const r = decodeRelayCpFrame(JSON.stringify(frame))
+    if (!r.ok || r.frame.type !== 'rc/bot-revoked') throw new Error('expected rc/bot-revoked')
+    expect(r.frame.payload).toMatchObject({ evidence: 'probe', code: 'token_revoked' })
+  })
+
+  it('refuses an unknown evidence kind and an empty or unbounded code', () => {
+    const base = { botId: BOT, reason: 'tokens_revoked' }
+    expect(RcBotRevoked.safeParse({ ...base, evidence: 'guess' }).success).toBe(false)
+    expect(RcBotRevoked.safeParse({ ...base, code: '' }).success).toBe(false)
+    expect(RcBotRevoked.safeParse({ ...base, code: 'x'.repeat(65) }).success).toBe(false)
+  })
+
+  it('round-trips a rejected check and its verdict', () => {
+    const check: RcBotCredentialCheck = {
+      botId: BOT,
+      credentialRevision: 2,
+      result: 'rejected',
+      code: 'invalid_auth',
+      observedAtMs: 1_780_000_000_000
+    }
+    const req = buildRelayCpFrame('rc/bot-credential-check', check)
+    const decoded = decodeRelayCpFrame(JSON.stringify(req))
+    if (!decoded.ok || decoded.frame.type !== 'rc/bot-credential-check') throw new Error('expected check')
+    expect(decoded.frame.payload).toEqual(check)
+    const rep = decodeRelayCpFrame(
+      JSON.stringify(buildRelayCpFrame('rc/bot-credential-check/ok', { botId: BOT, applied: true }, { corr: req.id }))
+    )
+    expect(rep.ok && rep.frame.corr).toBe(req.id)
+  })
+
+  it('needs a code for a rejection, the probed revision, and the observation time', () => {
+    const ok = { botId: BOT, credentialRevision: 2, result: 'ok', observedAtMs: 5 }
+    expect(RcBotCredentialCheck.safeParse(ok).success).toBe(true)
+    expect(RcBotCredentialCheck.safeParse({ ...ok, result: 'rejected' }).success).toBe(false)
+    expect(RcBotCredentialCheck.safeParse({ ...ok, result: 'revoked', code: 'x' }).success).toBe(false)
+    const { credentialRevision: _revision, ...unfenced } = ok
+    expect(RcBotCredentialCheck.safeParse(unfenced).success).toBe(false)
+    const { observedAtMs: _observed, ...undated } = ok
+    expect(RcBotCredentialCheck.safeParse(undated).success).toBe(false)
+    expect(RcBotCredentialCheckOk.safeParse({ botId: BOT }).success).toBe(false)
   })
 })

@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// The agent page's integration pill: revoked, then offline when nothing serves the agent, else connected.
+// The agent page's integration pill: revoked, then rejected, then offline when nothing serves the agent, else connected.
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { SWRConfig } from 'swr'
@@ -95,7 +95,7 @@ function daemon(status: DaemonRow['status']): DaemonRow {
   } as unknown as DaemonRow
 }
 
-function slackIntegration(revoked: boolean): IntegrationRow {
+function slackIntegration(revoked: boolean, over: Partial<IntegrationRow> = {}): IntegrationRow {
   return {
     id: 'int-1',
     agentId: 'agent-1',
@@ -108,7 +108,8 @@ function slackIntegration(revoked: boolean): IntegrationRow {
     daemon: 'd1',
     status: revoked ? 'offline' : 'online',
     revoked,
-    channels: []
+    channels: [],
+    ...over
   }
 }
 
@@ -192,5 +193,32 @@ describe('AgentDetailView integration pill', () => {
     expect(desktop.className).toContain('badge')
     // The header's mark cluster flags the same integration.
     expect(scope.querySelectorAll('[data-revoked-dot]')).toHaveLength(1)
+  })
+
+  it('reads rejected with the module’s sentence and the platform’s code, ahead of an offline agent', async () => {
+    mocks.agent = agentOn()
+    mocks.daemons = [daemon('offline')]
+    mocks.integrations = [slackIntegration(false, { rejected: true, credentialCode: 'invalid_auth' })]
+    const scope = await render()
+    const { mobile, desktop } = pills(scope)
+
+    for (const pill of [mobile, desktop]) {
+      expect(pill.textContent).toBe('rejected')
+      expect(pill.className).toContain('bg-(--status-error-soft)')
+      expect(pill.getAttribute('title')).toBe(`${botCardCopy('slack').rejectedHint} (invalid_auth)`)
+    }
+    expect(scope.querySelectorAll('[data-revoked-dot]')).toHaveLength(1)
+  })
+
+  it('reads revoked over a rejection, with the code the revocation recorded', async () => {
+    mocks.agent = agentOn()
+    mocks.daemons = [daemon('online')]
+    mocks.integrations = [slackIntegration(true, { rejected: true, credentialCode: 'token_revoked' })]
+    const { mobile, desktop } = pills(await render())
+
+    for (const pill of [mobile, desktop]) {
+      expect(pill.textContent).toBe('revoked')
+      expect(pill.getAttribute('title')).toBe(`${botCardCopy('slack').revokedHint} (token_revoked)`)
+    }
   })
 })

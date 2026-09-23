@@ -1,12 +1,12 @@
 'use client'
 
-// The agent page's Slack card ({@link WebAgentIntegrationCardFacet}): a revoked app's repair in the header, its progress under it.
+// The agent page's Slack card ({@link WebAgentIntegrationCardFacet}): a revoked or rejected app's repair in the header, its progress under it.
 
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import type { BotDto } from '@/lib/api'
-import type { IntegrationRow } from '@/lib/data'
+import { credentialAttention, type IntegrationRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import { SlackReinstallButton, useSlackBuiltinReinstall } from './reinstall'
@@ -58,10 +58,10 @@ export function SlackAgentCardProvider({
   return <CardCtx.Provider value={value}>{children}</CardCtx.Provider>
 }
 
-/** A revoked app's repair beside the unlink: reinstall the built-in app, or paste a custom app's new token. */
+/** A revoked or rejected app's repair beside the unlink: reinstall the built-in app, or paste a custom app's new token. */
 export function SlackAgentCardHeaderActions({ integration }: { integration: IntegrationRow }) {
   const card = useContext(CardCtx)
-  if (!card?.bot || !card.canWrite || !integration.revoked) return null
+  if (!card?.bot || !card.canWrite || !credentialAttention(integration)) return null
   if (!card.bot.prebuilt) return <SlackReplaceTokenAction bot={card.bot} attention />
   return <SlackReinstallButton busy={card.reinstalling} onClick={card.reinstall} />
 }

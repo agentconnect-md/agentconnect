@@ -333,6 +333,28 @@ installed via standard OAuth v2. Verified gaps against current code:
   by the event time alone. A daemon sends the frame only to a Control Plane that
   advertises `integration-revoked-v1`.
 
+  The Control Plane records how it learned that a credential is dead, in two
+  tiers. Definitive evidence revokes: a lifecycle event, or a relay's `auth.test`
+  probe that Slack answers with `account_inactive` or `token_revoked`. The relay
+  reports it as `rc/bot-revoked` with its `evidence` (`event` or `probe`) and,
+  for a probe, Slack's `code`, and the Control Plane stores the reason, evidence
+  and code beside `revokedAt`. A report without `evidence`, from an older relay,
+  is recorded as an event without a code, and a daemon's `integration/revoked` is
+  always an event. Ambiguous evidence does not revoke: Slack also answers
+  `invalid_auth` to a caller outside the app's IP allowlist, where a reinstall
+  cannot help, so a probe that gets it sends `rc/bot-credential-check` with
+  `result: 'rejected'` and the code instead. That only marks the bot with the
+  time the rejection was first seen and the latest code; its integrations stay
+  active and its specs stay on the daemons. A later successful probe sends
+  `result: 'ok'`, which clears a mark first seen no later than that probe, and a
+  fresh credential clears the mark in the same statement that clears the
+  revocation. A check applies only while the `credentialRevision` it probed is
+  still current, so a probe of a replaced credential changes nothing. A relay
+  sends the check and the new `rc/bot-revoked` fields only to a Control Plane
+  that advertises `bot-credential-check-v1`. The console shows a marked bot's
+  integrations as `rejected`, ranked after `revoked` and before `offline`, with
+  Slack's code in the tooltip and the same repairs a revoked app offers.
+
 - **Transport.** Distributed apps are Events-API-only — a socket-mode app token is
   per-app and cannot be demuxed per workspace — so this path hard-depends on the relay
   pool (`PUBLIC_RELAY_URL` + ≥1 connected relay), exactly like `http` transport today.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_BOT_CARD_COPY, botCardCopy, platformRegistry } from './registry'
+import { DEFAULT_BOT_CARD_COPY, botCardCopy, platformRegistry, withCredentialCode } from './registry'
 
 /**
  * The two sentences the Settings → Bots card writes into chrome the HOST owns
@@ -30,6 +30,14 @@ describe('Settings → Bots row copy', () => {
     expect(copy.shareHint.unavailable).toBe(SLACK_SHARE_UNAVAILABLE)
   })
 
+  it('names both fixes for Slack’s ambiguous rejection', () => {
+    // `invalid_auth` also answers a caller outside the app's IP allowlist, where a reinstall alone cannot help.
+    const { rejectedHint } = botCardCopy('slack')
+    expect(rejectedHint).toMatch(/rejected/)
+    expect(rejectedHint).toMatch(/IP allowlist/)
+    expect(rejectedHint).toMatch(/re-install/)
+  })
+
   it('names the revocation Linear can actually reach', () => {
     // The `OAuthApp revoked` doorbell stamps `revokedAt` and flips every membership,
     // and reconnecting is what repairs it — a lifecycle Linear can describe, unlike
@@ -43,6 +51,7 @@ describe('Settings → Bots row copy', () => {
     for (const id of platformRegistry.ids().filter((p) => !DECLARES_COPY.includes(p))) {
       const copy = botCardCopy(id)
       expect(copy.revokedHint, id).toBe(DEFAULT_BOT_CARD_COPY.revokedHint)
+      expect(copy.rejectedHint, id).toBe(DEFAULT_BOT_CARD_COPY.rejectedHint)
       expect(copy.shareHint, id).toEqual(DEFAULT_BOT_CARD_COPY.shareHint)
     }
     // Named, so a module that starts declaring one is a visible diff here.
@@ -58,6 +67,7 @@ describe('Settings → Bots row copy', () => {
     // The whole defect was a provider's vocabulary leaking onto other
     // providers' rows; a default that names one would reintroduce it.
     expect(DEFAULT_BOT_CARD_COPY.revokedHint).not.toMatch(PLATFORM_WORDS)
+    expect(DEFAULT_BOT_CARD_COPY.rejectedHint).not.toMatch(PLATFORM_WORDS)
     expect(DEFAULT_BOT_CARD_COPY.shareHint.available).not.toMatch(PLATFORM_WORDS)
     expect(DEFAULT_BOT_CARD_COPY.shareHint.unavailable).not.toMatch(PLATFORM_WORDS)
     expect(DEFAULT_BOT_CARD_COPY.identityNoun).not.toMatch(PLATFORM_WORDS)
@@ -94,6 +104,18 @@ describe('Settings → Bots row copy', () => {
     const partial = platformRegistry.get('slack')!.settingsFragments!.copy!
     expect(partial.revokedHint).toBeDefined()
     expect(partial.shareHint).toBeDefined()
-    expect(Object.keys(DEFAULT_BOT_CARD_COPY).sort()).toEqual(['identityNoun', 'revokedHint', 'shareHint'])
+    expect(Object.keys(DEFAULT_BOT_CARD_COPY).sort()).toEqual([
+      'identityNoun',
+      'rejectedHint',
+      'revokedHint',
+      'shareHint'
+    ])
+    expect(botCardCopy('linear').rejectedHint).toBe(DEFAULT_BOT_CARD_COPY.rejectedHint)
+  })
+
+  it('appends the platform’s code only when one was recorded', () => {
+    expect(withCredentialCode('Rejected', 'invalid_auth')).toBe('Rejected (invalid_auth)')
+    expect(withCredentialCode('Rejected', null)).toBe('Rejected')
+    expect(withCredentialCode('Rejected')).toBe('Rejected')
   })
 })

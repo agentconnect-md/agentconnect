@@ -90,6 +90,7 @@ export function platformAgentCard(platformId?: string): WebAgentIntegrationCardF
  */
 export const DEFAULT_BOT_CARD_COPY: Required<WebBotCardCopy> = {
   revokedHint: 'This bot’s credentials were revoked — re-install to reconnect',
+  rejectedHint: 'The platform rejected this bot’s credentials — check its network access, or re-install to reconnect',
   shareHint: {
     available: 'Sharing one bot across several agents isn’t available on this platform',
     unavailable: 'Sharing one bot across several agents isn’t available on this platform'
@@ -108,9 +109,15 @@ export function botCardCopy(platformId?: string): Required<WebBotCardCopy> {
   const copy = platformId ? platformRegistry.get(platformId)?.settingsFragments?.copy : undefined
   return {
     revokedHint: copy?.revokedHint ?? DEFAULT_BOT_CARD_COPY.revokedHint,
+    rejectedHint: copy?.rejectedHint ?? DEFAULT_BOT_CARD_COPY.rejectedHint,
     shareHint: copy?.shareHint ?? DEFAULT_BOT_CARD_COPY.shareHint,
     identityNoun: copy?.identityNoun ?? DEFAULT_BOT_CARD_COPY.identityNoun
   }
+}
+
+/** A revoked or rejected tooltip with the platform's own code appended, when one was recorded. */
+export function withCredentialCode(hint: string, code?: string | null): string {
+  return code ? `${hint} (${code})` : hint
 }
 
 /**

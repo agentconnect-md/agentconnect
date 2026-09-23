@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { GiteaMark, GithubMark, GitlabMark, PlatformMark } from '@/components/marks'
 import type { HookKind } from '@/lib/api'
+import { credentialAttention } from '@/lib/data'
 
 // Total over the hook-kind vocabulary, so a new code host is given its own mark here
 // instead of inheriting the generic webhook glyph. The webhook mark is the brand-pink
@@ -28,9 +29,10 @@ interface IntegrationMarkSource {
   id?: string
   platform: string
   revoked: boolean
+  rejected?: boolean
 }
 
-/** The corner dot on a revoked integration's mark — one shape for every platform and surface. */
+/** The corner dot on a revoked or rejected integration's mark — one shape for every platform and surface. */
 export function RevokedMarkDot() {
   return (
     <span
@@ -50,10 +52,10 @@ export function IntegrationMarks({
 }) {
   const distinctHookKinds = [...new Set(hookKinds)]
   const total = integrations.length + distinctHookKinds.length
-  // Revoked marks lead, so the three-mark cap never hides the one that needs attention.
+  // Marks needing attention lead, so the three-mark cap never hides one.
   const visibleIntegrations = [
-    ...integrations.filter((i) => i.revoked),
-    ...integrations.filter((i) => !i.revoked)
+    ...integrations.filter(credentialAttention),
+    ...integrations.filter((i) => !credentialAttention(i))
   ].slice(0, 3)
   const visibleHookKinds = distinctHookKinds.slice(0, Math.max(0, 3 - visibleIntegrations.length))
 
@@ -69,7 +71,7 @@ export function IntegrationMarks({
             className={`imark relative h-[21px] w-[21px] ${index === 0 ? '' : 'imark-overlap -ml-[7px]'}`}
           >
             <PlatformMark platform={integration.platform} />
-            {integration.revoked && <RevokedMarkDot />}
+            {credentialAttention(integration) && <RevokedMarkDot />}
           </span>
         ))}
         {/* No hover title: these sit beside platform marks, which carry none either. */}

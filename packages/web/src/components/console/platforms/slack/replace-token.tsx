@@ -83,7 +83,7 @@ export function SlackReplaceTokenModal({
   )
 }
 
-/** The icon control that opens {@link SlackReplaceTokenModal}, highlighted while the bot is revoked (or `attention` says so). */
+/** The icon control that opens {@link SlackReplaceTokenModal}, highlighted while the bot is revoked or rejected (or `attention` says so). */
 export function SlackReplaceTokenAction({
   bot,
   attention,
@@ -95,7 +95,7 @@ export function SlackReplaceTokenAction({
 }) {
   const t = useTranslations('Platforms.slack.replaceToken')
   const [open, setOpen] = useState(false)
-  const revoked = attention ?? !!bot.revokedAt
+  const revoked = attention ?? !!(bot.revokedAt || bot.credentialRejectedAt)
 
   useEffect(() => {
     if (!open) return

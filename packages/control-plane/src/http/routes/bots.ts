@@ -48,6 +48,11 @@ export function toBotDto(b: BotRecord): BotDtoT {
     workspaceId: b.workspaceId,
     workspaceName: b.workspaceName,
     revokedAt: b.revokedAt?.toISOString() ?? null,
+    revokedReason: b.revokedReason,
+    revokedEvidence: b.revokedEvidence,
+    revokedCode: b.revokedCode,
+    credentialRejectedAt: b.credentialRejectedAt?.toISOString() ?? null,
+    credentialRejectedCode: b.credentialRejectedCode,
     createdAt: b.createdAt.toISOString()
   }
 }
