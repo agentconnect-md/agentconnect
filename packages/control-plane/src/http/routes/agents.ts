@@ -1,4 +1,6 @@
+import { DecisionBindingDenied } from '../../persistence/decision-binding-fence.js'
 import {
+  DecisionToolDefinition,
   MemoryEntryCreateRequest,
   MemoryEntryUpdateRequest,
   MemoryEntryDeleteRequest,
@@ -361,6 +363,7 @@ function toDto(
     organizationSecretKeys: organizationEnvironment.secretKeys,
     mcpServers: a.mcpServers,
     skills: a.skills,
+    decisionIds: a.decisionIds ?? [],
     managedSkills: a.managedSkills,
     memory: a.memory,
     status: a.status,
@@ -1998,6 +2001,7 @@ export function agentRoutes(deps: HttpDeps) {
                   ...(req.body.env !== undefined ? { env: req.body.env } : {}),
                   ...(req.body.mcpServers !== undefined ? { mcpServers: req.body.mcpServers } : {}),
                   ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
+                  ...(req.body.decisionIds !== undefined ? { decisionIds: req.body.decisionIds } : {}),
                   ...(req.body.managedSkills !== undefined ? { managedSkills: req.body.managedSkills } : {}),
                   ...(memory !== undefined ? { memory } : {}),
                   ...(targetSetId !== null
@@ -2023,7 +2027,7 @@ export function agentRoutes(deps: HttpDeps) {
               )
             })
           } catch (e) {
-            if (e instanceof McpEnableDenied || e instanceof SkillEnableDenied) {
+            if (e instanceof McpEnableDenied || e instanceof SkillEnableDenied || e instanceof DecisionBindingDenied) {
               return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: e.message })
             }
             // Everything else (including the organization-environment fence's
@@ -2239,6 +2243,34 @@ export function agentRoutes(deps: HttpDeps) {
           await placementViewFor(deps, agent),
           await organizationEnvironmentOf(agent)
         )
+      }
+    )
+
+    r.get(
+      '/agents/:id/decisions',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'List an agent’s attached Decisions',
+          description:
+            'Returns metadata for explicitly attached Decisions to members who can view the agent. Adding a Decision requires access to that Decision; existing attachments remain usable independently of later sharing changes.',
+          operationId: 'listAgentDecisions',
+          params: IdParam,
+          response: {
+            200: z.array(
+              DecisionToolDefinition.omit({ question: true }).extend({
+                questionType: z.enum(['boolean', 'choice', 'score'])
+              })
+            ),
+            404: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        const agent = await getOrgAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        const rows = await deps.repos.decision.listForAgent(agent.orgId, agent.decisionIds ?? [], { limit: 64 })
+        return rows.map(({ question, ...row }) => ({ ...row, questionType: question.type }))
       }
     )
 
@@ -2594,7 +2626,7 @@ export function agentRoutes(deps: HttpDeps) {
                 )
             )
           } catch (e) {
-            if (e instanceof McpEnableDenied || e instanceof SkillEnableDenied) {
+            if (e instanceof McpEnableDenied || e instanceof SkillEnableDenied || e instanceof DecisionBindingDenied) {
               return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: e.message })
             }
             // The binding changed under the edit (a forced return, a completion) and the locked resolution refused.

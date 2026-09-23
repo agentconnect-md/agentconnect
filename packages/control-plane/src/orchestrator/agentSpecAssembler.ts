@@ -405,6 +405,7 @@ export function agentRecordToSpec(
     // enable-list against the org SkillSource registry. Always shipped (even []) so
     // disabling the last skill replicates.
     skills: skillEntries,
+    decisionIds: a.decisionIds ?? [],
     // Immutable centrally-managed bundle metadata. Content is fetched separately
     // in bounded chunks, keeping reconcile/upsert frames small.
     managedSkills: managedSkillEntries,

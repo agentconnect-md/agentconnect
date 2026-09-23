@@ -903,6 +903,47 @@ function buildCanvasTools(offered: boolean, integrationId: SchemaProp): ToolDesc
   ]
 }
 
+export const DECISION_TOOLS: ToolDescriptor[] = [
+  {
+    name: 'listDecisions',
+    description:
+      'Browse saved Decisions available to this agent. Returns names, IDs, models, and complete questions. ' +
+      'Read the instructions to construct state for evaluateDecision. Continue with nextCursor when present.',
+    inputSchema: obj({
+      query: { type: 'string', minLength: 1, maxLength: 120, description: 'Optional name filter.' },
+      cursor: {
+        type: 'string',
+        format: 'uuid',
+        description: 'nextCursor from the previous page; keep the same query.'
+      },
+      limit: {
+        type: 'integer',
+        minimum: 1,
+        maximum: 20,
+        description: 'Maximum results (default 10); pages are also byte bounded.'
+      }
+    })
+  },
+  {
+    name: 'evaluateDecision',
+    description:
+      'Evaluate a saved Decision on this agent’s daemon using its configured model and provider. Supply the JSON ' +
+      'state referenced by the Decision instructions, including any needed history; no conversation is added automatically. ' +
+      'Returns a typed answer with probabilities or an unavailable reason. The result does not authorize or execute actions.',
+    inputSchema: obj(
+      {
+        decisionId: { type: 'string', format: 'uuid', description: 'Saved Decision ID from listDecisions.' },
+        state: {
+          type: 'object',
+          additionalProperties: true,
+          description: 'Input data and relevant context for the question; total provider request is limited to 32 KiB.'
+        }
+      },
+      ['decisionId', 'state']
+    )
+  }
+]
+
 export const KNOWLEDGE_TOOLS: ToolDescriptor[] = [
   {
     name: 'findKnowledge',
@@ -1349,6 +1390,7 @@ export const ALL_TOOL_NAMES = [
       ...allSessionToolDescriptors(),
       ...MEMORY_TOOLS,
       ...KNOWLEDGE_TOOLS,
+      ...DECISION_TOOLS,
       ...COLLABORATION_TOOLS,
       // Retired from injection but still dispatched by `executeTool`, so the name stays
       // reserved (no evaluation tool may shadow it) and auto-allowed (a session warm with
@@ -1374,7 +1416,7 @@ export const ALL_TOOL_NAMES = [
  */
 export function toolsForIntegrations(
   integrations: Integration[],
-  options: { organizationKnowledge?: boolean; currentPlatform?: string } = {}
+  options: { organizationKnowledge?: boolean; decisions?: boolean; currentPlatform?: string } = {}
 ): ToolDescriptor[] {
   const tools: ToolDescriptor[] = []
   const seen = new Set<string>()
@@ -1387,6 +1429,7 @@ export function toolsForIntegrations(
   }
   add(MEMORY_TOOLS)
   if (options.organizationKnowledge) add(KNOWLEDGE_TOOLS)
+  if (options.decisions) add(DECISION_TOOLS)
   add(COLLABORATION_TOOLS)
   // The unified `sendMessage` tool is ALWAYS present (session-concept §3): even a
   // memory-only agent with no platform integration can wake a peer (`toAgent`) or reply to

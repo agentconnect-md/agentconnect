@@ -18,6 +18,7 @@ import { Tag } from '../plugins/openapi.js'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import { ctxOf, denyViewerWrite, orgOf } from '../rbac.js'
 import { resolveShareSet } from '../sharing.js'
+import { DecisionInUse } from '../../persistence/decision-binding-fence.js'
 
 const DefinitionDto = z.object({
   ...DecisionDraft.shape,
@@ -29,7 +30,11 @@ const DefinitionDto = z.object({
   canEdit: z.boolean()
 })
 const IdParam = z.object({ id: z.string().uuid() })
-const UsageDto = z.object({ kind: z.enum(['gate', 'shared_bot_routing']), id: z.string(), label: z.string() })
+const UsageDto = z.object({
+  kind: z.enum(['gate', 'shared_bot_routing', 'agent_tool']),
+  id: z.string(),
+  label: z.string()
+})
 const ReadinessDto = z.object({
   status: z.enum(['ready', 'pending_sync', 'missing_credentials', 'daemon_offline', 'unsupported'])
 })
@@ -98,6 +103,15 @@ export function decisionRoutes(deps: HttpDeps) {
       const row = await deps.repos.decision.get(orgOf(req), id)
       return row && canView(row, ctxOf(req)) ? row : null
     }
+    const agentUsages = async (req: FastifyRequest) =>
+      (await deps.repos.agent.list(orgOf(req), ctxOf(req))).flatMap((agent) =>
+        (agent.decisionIds ?? []).map((decisionId) => ({
+          decisionId,
+          kind: 'agent_tool' as const,
+          id: agent.id,
+          label: agent.displayName ?? agent.name
+        }))
+      )
     // A preview borrows a visible placed agent's credential identity without executing that agent.
     const executionAgent = async (req: FastifyRequest, daemonId: string) => {
       const agents = await deps.repos.agent.list(orgOf(req), ctxOf(req))
@@ -185,8 +199,13 @@ export function decisionRoutes(deps: HttpDeps) {
           response: { 200: z.array(DefinitionDto.extend({ usageCount: z.number().int() })) }
         }
       },
-      async (req) =>
-        (await deps.repos.decision.list(orgOf(req), ctxOf(req))).map((row) => ({ ...dto(row, req), usageCount: 0 }))
+      async (req) => {
+        const [rows, usages] = await Promise.all([deps.repos.decision.list(orgOf(req), ctxOf(req)), agentUsages(req)])
+        return rows.map((row) => ({
+          ...dto(row, req),
+          usageCount: usages.filter((usage) => usage.decisionId === row.id).length
+        }))
+      }
     )
 
     r.get(
@@ -203,7 +222,9 @@ export function decisionRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         const row = await visible(req, req.params.id)
-        return row ? { decision: dto(row, req), usages: [] } : reply.code(404).send(notFound)
+        if (!row) return reply.code(404).send(notFound)
+        const usages = (await agentUsages(req)).filter((usage) => usage.decisionId === row.id)
+        return { decision: dto(row, req), usages: usages.map(({ decisionId: _decisionId, ...usage }) => usage) }
       }
     )
 
@@ -274,15 +295,21 @@ export function decisionRoutes(deps: HttpDeps) {
           tags: [Tag.Decisions],
           summary: 'Delete a Decision',
           operationId: 'deleteDecision',
-          description: 'Deletes a visible definition. Live message bindings are not yet supported.',
+          description: 'Deletes a visible definition after it is removed from every agent.',
           params: IdParam,
-          response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto }
+          response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
         if (!(await visible(req, req.params.id))) return reply.code(404).send(notFound)
-        await deps.repos.decision.delete(orgOf(req), req.params.id, ctxOf(req))
+        try {
+          await deps.repos.decision.delete(orgOf(req), req.params.id, ctxOf(req))
+        } catch (error) {
+          if (error instanceof DecisionInUse)
+            return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: error.message })
+          throw error
+        }
         return reply.code(204).send(null)
       }
     )

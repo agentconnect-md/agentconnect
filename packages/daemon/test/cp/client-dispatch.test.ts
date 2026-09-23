@@ -5,6 +5,7 @@ import {
   MAX_FRAME_BYTES,
   SESSION_LIVE_TAIL_FEATURE,
   DECISION_PROVIDER_PROFILES,
+  DECISION_TOOLS_V1_FEATURE,
   PROVIDER_CREDENTIALS_V1_FEATURE
 } from '@agentconnect.md/protocol'
 import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
@@ -295,6 +296,40 @@ describe('CpClient dispatch', () => {
     )
     await expect(changed).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
     await client.stop()
+  })
+
+  it('negotiates Decision reads and sends only agent-scoped configuration identifiers', async () => {
+    const unsupported = await readyClient()
+    await expect(unsupported.client.decisionList({ requesterAgentId: CRON_AGENT_ID, limit: 10 })).rejects.toThrow(
+      'does not support'
+    )
+    await expect(
+      unsupported.client.decisionGet({ requesterAgentId: CRON_AGENT_ID, decisionId: MOVE_ID })
+    ).rejects.toThrow('does not support')
+    expect(unsupported.t.sent).toHaveLength(0)
+    const { client, t } = await readyClient({ orgForAgent: () => 'example-org' }, [DECISION_TOOLS_V1_FEATURE], 'frame')
+    const listed = client.decisionList({ requesterAgentId: CRON_AGENT_ID, query: 'Reply', limit: 10 })
+    const listReq = t.lastSent()
+    expect(listReq).toMatchObject({
+      type: 'decision/list',
+      orgId: 'example-org',
+      payload: { requesterAgentId: CRON_AGENT_ID, query: 'Reply', limit: 10 }
+    })
+    t.pushInbound(
+      frame('decision/list/result', { items: [], nextCursor: null }, { corr: listReq.id, orgId: 'example-org' })
+    )
+    await expect(listed).resolves.toEqual({ items: [], nextCursor: null })
+    const read = client.decisionGet({ requesterAgentId: CRON_AGENT_ID, decisionId: MOVE_ID })
+    const getReq = t.lastSent()
+    expect(getReq).toMatchObject({
+      type: 'decision/get',
+      orgId: 'example-org',
+      payload: { requesterAgentId: CRON_AGENT_ID, decisionId: MOVE_ID }
+    })
+    t.pushInbound(frame('decision/get/result', { decision: null }, { corr: getReq.id, orgId: 'example-org' }))
+    await expect(read).resolves.toEqual({ decision: null })
+    await client.stop()
+    await unsupported.client.stop()
   })
 
   it('tracks additive CP features negotiated through register/ok', async () => {

@@ -1580,9 +1580,10 @@ remain typed `unavailable` results.
 The Decision table participates in the normal Selected-audience membership lock,
 member-removal repair, and identity-merge paths. Sharing omitted from an update is
 preserved, including an ordinary editor save that did not change Team visibility.
-Live consumer usages are empty until message bindings land. The prototype By decision
-channel option is therefore offered only in explicit mock mode; it cannot look like
-a saved production trigger. Stage 2 shared-bot routing is still unimplemented.
+Consumer usages include visible agents that explicitly attach the Decision. The
+prototype By decision channel option remains available only in explicit mock mode;
+it cannot look like a saved production trigger. Stage 2 shared-bot routing is still
+unimplemented.
 
 Roll out each stage independently, starting with its additive CP/data-plane migrations
 and capable consumers, then its live configuration surfaces. Stage 1 does not create
@@ -1597,6 +1598,61 @@ actionable messages, provider latency, and peak message rate on representative
 content. Semantic judgments such as repeated violations need contextual samples;
 an exact counting benchmark is not a prerequisite. Concurrency limits belong to
 this host's measured budget, not to another application's defaults.
+
+### 10.5 Agent-invoked Decisions
+
+A running agent can reuse saved Decisions through the daemon's MCP bridge,
+independently of message-trigger admission. Attach Decisions in **Agent → Tools &
+Skills → Decisions**, using the same add/remove interaction as Skills. The agent's
+`decisionIds` enable-list is empty by default and is saved through normal agent
+create/PATCH configuration. Adding a Decision requires both agent edit access and
+visibility of that same-organization Decision. Retaining or removing a previously
+authorized attachment does not require visibility of the Decision today. A later
+Selected sharing change controls human discovery, not the agent's existing binding.
+
+Binding authorization runs inside the agent configuration transaction. It locks
+the actor's membership and submitted Decision rows before the committed agent
+enable-list is read and replaced. An edit that preserves a hidden attachment cannot
+restore it after a concurrent removal. Deletion takes the conflicting Decision lock
+and refuses while any agent still references it. The Decision's Used by list shows
+only agents visible to the viewer; deletion also protects hidden references.
+
+`GET /agents/:id/decisions` returns attached names, provider/model, and question type
+to members who can view the agent, following the Skills attached-resource precedent.
+It does not expose the question instructions or sharing audience. New additions
+come from the viewer's normal Decision library. The full enable-list, including
+an empty list, is projected into `AgentSpec` and daemon-local agent configuration.
+Changing it refreshes the agent's runtime tool set through normal reconciliation.
+
+| Tool               | Input                                                           | Result                                                                                  |
+| ------------------ | --------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `listDecisions`    | Optional name `query`, `limit` (1–20; default 10), and `cursor` | Attached definitions with full questions and `nextCursor`; each page fits within 32 KiB |
+| `evaluateDecision` | `decisionId` and JSON-object `state`                            | `{ decisionId, evaluation }`, using the existing typed answer or `unavailable` result   |
+
+The tools are injected only for agents with attachments when the CP advertises
+`decision-tools-v1`. Older CPs and agents without attachments receive neither tool.
+The daemon binds requester identity to the active session; model-supplied arguments
+cannot select another agent, organization, provider, or model. Before each evaluation,
+the daemon reads the current saved definition using `decision/get`. `decision/list`
+and `decision/get` carry control metadata only. The CP checks the requesting daemon's
+current placement authority and the agent's enable-list before returning a definition,
+including a recheck after asynchronous reads. No creator's or initiating human's
+identity is impersonated.
+
+The calling agent supplies all relevant context in `state`, following the question's
+instructions; the tool does not automatically collect history or create a session.
+Evaluation runs on that agent's serving daemon using the existing evaluator, provider
+credential resolution, typed normalization, 32 KiB request limit, concurrency cap, and
+deadline. Input state and evaluation results do not traverse the CP. There is no
+automatic retry of a provider evaluation. Missing or unbound Decisions produce a tool
+error; provider failures retain their typed `unavailable` reason. A stopped or replaced
+turn, or a locally removed binding, cannot publish a late result.
+
+The tool returns evidence only. The calling agent chooses how to use the result;
+it grants no permission, applies no routing rule, and bypasses no approval. This
+consumer is available before live message triggers and does not advance shared-bot
+routing out of Stage 2. The temporary Console `decisions` flag also gates its
+attachment card and must be removed with the other gates at final release.
 
 ## 11. Future possibilities
 
@@ -1629,15 +1685,14 @@ None is required to complete Stage 1 or Stage 2.
 
 ### Other possible consumers
 
-| Possible consumer                  | Potential judgment                                                                                      |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Webhooks and code-host events      | Whether an event contains an actionable request, repeated feedback, or ordinary discussion              |
-| Memory distillation                | Whether a completed conversation contains durable information worth extracting                          |
-| Scheduled tasks and monitoring     | Whether a result represents a meaningful change worth notifying the user about                          |
-| Organization knowledge suggestions | Whether an insight is useful to one agent or worth proposing for broader team reuse                     |
-| Final-answer context refresh       | Whether newly arrived conversation changes materially affect a pending answer                           |
-| Tool-approval assistance           | Whether a proposed operation raises concerns about risk or alignment with the user's task               |
-| Agent-invoked evaluation           | Letting a running agent reuse a maintained Decision instead of restating the judgment in its own prompt |
+| Possible consumer                  | Potential judgment                                                                         |
+| ---------------------------------- | ------------------------------------------------------------------------------------------ |
+| Webhooks and code-host events      | Whether an event contains an actionable request, repeated feedback, or ordinary discussion |
+| Memory distillation                | Whether a completed conversation contains durable information worth extracting             |
+| Scheduled tasks and monitoring     | Whether a result represents a meaningful change worth notifying the user about             |
+| Organization knowledge suggestions | Whether an insight is useful to one agent or worth proposing for broader team reuse        |
+| Final-answer context refresh       | Whether newly arrived conversation changes materially affect a pending answer              |
+| Tool-approval assistance           | Whether a proposed operation raises concerns about risk or alignment with the user's task  |
 
 Future consumers would retain their own context, result handling, permissions, and
 failure behavior. A judgment would not replace existing authorization or required

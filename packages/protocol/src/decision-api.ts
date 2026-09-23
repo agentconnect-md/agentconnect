@@ -37,7 +37,7 @@ export interface DecisionProviderOption {
 }
 
 export interface DecisionUsage {
-  kind: 'gate' | 'shared_bot_routing'
+  kind: 'gate' | 'shared_bot_routing' | 'agent_tool'
   id: string
   label: string
 }

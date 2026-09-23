@@ -2288,6 +2288,7 @@ export function buildContainer(
     // broker must not become a second opinion on when a grant is stale (linear-integration.md §4.4).
     linearTokens: linearTokenService,
     providerKey: repos.providerKey,
+    decision: repos.decision,
     ...(githubReviewBroker ? { githubReviewBroker } : {}),
     codeHostReviewBroker,
     ...(githubRunCoordinator ? { githubRunCoordinator } : {}),

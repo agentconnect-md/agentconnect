@@ -50,6 +50,7 @@ function hostSpawnSig(a: Agent): string {
     // before changing them so the runtime never observes the remove/reinstall
     // transaction halfway through and always discovers the final set.
     skills: a.skills,
+    decisionIds: a.decisionIds ?? [],
     managedSkills: a.managedSkills
   })
 }

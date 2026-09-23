@@ -2685,6 +2685,20 @@
         "saving": "Saving…",
         "close": "Close",
         "done": "Done"
+      },
+      "decisions": {
+        "title": "Decisions",
+        "add": "Add Decision",
+        "available": "Available Decisions",
+        "noMore": "No more Decisions available",
+        "loading": "Loading Decisions",
+        "empty": "No Decisions attached",
+        "hint": "Attach a Decision so this agent can evaluate it during a conversation.",
+        "unavailable": "Unavailable Decision",
+        "remove": "Remove from agent",
+        "boolean": "Boolean",
+        "choice": "Choice",
+        "score": "Score"
       }
     }
   },
@@ -4110,7 +4124,8 @@
       "title": "Used by",
       "kind": {
         "gate": "channel gate",
-        "shared_bot_routing": "shared bot routing"
+        "shared_bot_routing": "shared bot routing",
+        "agent_tool": "agent tool"
       },
       "needsReview": "needs review",
       "ok": "ok"

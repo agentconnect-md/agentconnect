@@ -132,6 +132,18 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
     const agentId = randomUUID()
     await seedAgent(prisma, agentId, { daemonId: DAEMON })
     const { app, spy } = withSpy()
+    const decision = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/decisions`,
+      payload: {
+        name: 'Useful reply',
+        providerId: 'typesafe',
+        model: 'jev-latest',
+        question: { type: 'boolean', instructions: 'Does this need a reply?', criteria: { true: 'Yes', false: 'No' } }
+      }
+    })
+    expect(decision.statusCode).toBe(201)
+    const decisionId = decision.json().id as string
 
     const patch = await app.app.inject({
       method: 'PATCH',
@@ -143,7 +155,8 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
         outputMode: 'medium',
         fastMode: true,
         env: { GITHUB_TOKEN: 'ghp_x' },
-        mcpServers: ['github', 'metrics']
+        mcpServers: ['github', 'metrics'],
+        decisionIds: [decisionId]
       }
     })
     expect(patch.statusCode).toBe(200)
@@ -179,6 +192,7 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
         skills: [],
         // Managed organization skills are a distinct explicit enable-list.
         managedSkills: [],
+        decisionIds: [decisionId],
         // Agent→agent call policy (§2.5) — always shipped so a policy/allow-list change replicates.
         callPolicy: 'all',
         allowedCallerAgentIds: [],
@@ -199,18 +213,17 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
       }
     })
 
-    // Removing the last variable must still replicate: the daemon merge treats an
-    // absent env as "leave alone", so the spec always ships env — {} included.
-    // Same rule for mcpServers: disabling the last server must ship [].
+    // Clearing CP-owned variables and enable-lists must replicate empty values, never omission.
     const clear = await app.app.inject({
       method: 'PATCH',
       url: `${ORG}/agents/${agentId}`,
-      payload: { env: {}, mcpServers: null }
+      payload: { env: {}, mcpServers: null, decisionIds: null }
     })
     expect(clear.statusCode).toBe(200)
     expect(spy.upserts).toHaveLength(2)
     expect(spy.upserts[1]!.u.spec.env).toEqual({})
     expect(spy.upserts[1]!.u.spec.mcpServers).toEqual([])
+    expect(spy.upserts[1]!.u.spec.decisionIds).toEqual([])
   })
 
   it('PATCHed secrets replicate on the wire spec (values from the AgentSecretStore, never the DTO)', async () => {

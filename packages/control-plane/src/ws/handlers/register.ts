@@ -11,6 +11,7 @@
  * snapshot (CP wins all conflicts) — reconnect is convergence, not replay.
  */
 import {
+  DECISION_TOOLS_V1_FEATURE,
   MEMORY_TRANSACTION_V1_FEATURE,
   PROVIDER_CREDENTIALS_V1_FEATURE,
   MEMORY_CAPTURE_FENCE_V1_FEATURE,
@@ -102,6 +103,7 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
     serverFeatures: [
       'gitcred-actions-v1',
       ...(deps.providerKey ? [PROVIDER_CREDENTIALS_V1_FEATURE] : []),
+      ...(deps.decision ? [DECISION_TOOLS_V1_FEATURE] : []),
       // §17.1: this CP decodes provider-qualified gitcred v2 requests. A daemon
       // may name provider 'gitlab' only after seeing this.
       GITCRED_PROVIDER_V2_FEATURE,

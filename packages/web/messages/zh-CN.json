@@ -2685,6 +2685,20 @@
         "saving": "保存中…",
         "close": "关闭",
         "done": "完成"
+      },
+      "decisions": {
+        "title": "Decisions",
+        "add": "添加 Decision",
+        "available": "可用的 Decisions",
+        "noMore": "没有更多可用的 Decision",
+        "loading": "正在加载 Decisions",
+        "empty": "尚未添加 Decision",
+        "hint": "添加 Decision 后，此 Agent 可以在对话中调用它进行判断。",
+        "unavailable": "Decision 不可用",
+        "remove": "从 Agent 移除",
+        "boolean": "布尔值",
+        "choice": "选项",
+        "score": "评分"
       }
     }
   },
@@ -4110,7 +4124,8 @@
       "title": "使用处",
       "kind": {
         "gate": "频道门控",
-        "shared_bot_routing": "共享 Bot 路由"
+        "shared_bot_routing": "共享 Bot 路由",
+        "agent_tool": "Agent 工具"
       },
       "needsReview": "需要复核",
       "ok": "正常"
