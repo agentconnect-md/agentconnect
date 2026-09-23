@@ -944,7 +944,7 @@ export class PgAgentRepo implements AgentRepo {
             kind: { in: ['im', 'mpim'] },
             trigger: { not: 'off' }
           },
-          data: { trigger: 'off' }
+          data: { trigger: 'off', decisionBinding: Prisma.DbNull, decisionId: null, decisionNeedsReview: false }
         })
       }
       // A sharing change is a human edit — advance the last-modified audit

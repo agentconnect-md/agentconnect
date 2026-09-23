@@ -86,7 +86,8 @@ const INTEGRATION: IntegrationSpec = {
     bindRules: [{ match: { kind: 'mention' } }],
     mutedChannels: [],
     gated: false,
-    sessionModes: []
+    sessionModes: [],
+    decisions: { bindings: [], definitions: [] }
   },
   config: {
     botToken: 'xoxb-secret-abc',

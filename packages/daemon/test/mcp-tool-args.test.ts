@@ -21,19 +21,40 @@ import type { Integration } from '../src/agents/agent-schema.js'
 const slackInt: Integration = {
   id: 'int-1',
   platform: 'slack',
-  core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
+  core: {
+    mode: 'direct',
+    bindRules: [],
+    mutedChannels: [],
+    gated: false,
+    sessionModes: [],
+    decisions: { bindings: [], definitions: [] }
+  },
   config: { botToken: 'xoxb', appToken: 'xapp' }
 }
 const telegramInt: Integration = {
   id: 'int-2',
   platform: 'telegram',
-  core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
+  core: {
+    mode: 'direct',
+    bindRules: [],
+    mutedChannels: [],
+    gated: false,
+    sessionModes: [],
+    decisions: { bindings: [], definitions: [] }
+  },
   config: { botToken: '123456:ABC' }
 }
 const qqInt: Integration = {
   id: 'int-3',
   platform: 'qq',
-  core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
+  core: {
+    mode: 'direct',
+    bindRules: [],
+    mutedChannels: [],
+    gated: false,
+    sessionModes: [],
+    decisions: { bindings: [], definitions: [] }
+  },
   config: { appId: '123456', appSecret: 'secret' }
 }
 

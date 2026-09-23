@@ -46,7 +46,8 @@ describe('IntegrationCoreEnvelope sessionModes', () => {
       bindRules: [{ match: { kind: 'mention' } }],
       mutedChannels: ['C9'],
       gated: true,
-      sessionModes: []
+      sessionModes: [],
+      decisions: { bindings: [], definitions: [] }
     })
   })
 
@@ -100,5 +101,54 @@ describe('IntegrationRevoked', () => {
   it('is org-scoped on the wire, so an install-wide connection must name the org', () => {
     expect(isInstallWideFrameType('integration/revoked')).toBe(false)
     expect(isInstallWideFrameType('integration/revoked/ok')).toBe(false)
+  })
+})
+
+describe('IntegrationCoreEnvelope decisions', () => {
+  const base = { mode: 'direct' as const, bindRules: [], mutedChannels: [], gated: false, sessionModes: [] }
+  const definition = {
+    id: 'd1',
+    orgId: 'org1',
+    name: 'Needs help',
+    providerId: 'typesafe',
+    model: 'jev-1.13.0',
+    question: { type: 'boolean', instructions: 'Is help needed?', criteria: { true: 'Yes', false: 'No' } }
+  }
+  const bundle = {
+    bindings: [
+      {
+        channel: 'C1',
+        consumer: { type: 'gate', decisionId: 'd1', when: { type: 'boolean', values: [true] } },
+        enabled: true
+      }
+    ],
+    definitions: [definition]
+  }
+
+  it('parses a decision bind rule', () => {
+    const parsed = IntegrationCoreEnvelope.parse({
+      ...base,
+      bindRules: [{ channel: 'C1', match: { kind: 'decision' } }]
+    })
+    expect(parsed.bindRules).toEqual([{ channel: 'C1', match: { kind: 'decision' } }])
+  })
+
+  it('defaults an old-shaped envelope to an empty bundle', () => {
+    expect(IntegrationCoreEnvelope.parse(base).decisions).toEqual({ bindings: [], definitions: [] })
+  })
+
+  it('round-trips a bundle', () => {
+    expect(IntegrationCoreEnvelope.parse({ ...base, decisions: bundle }).decisions).toEqual(bundle)
+  })
+
+  it('lets a reader that predates the field strip it', () => {
+    const legacy = IntegrationCoreEnvelope.omit({ decisions: true })
+    const parsed = legacy.parse({ ...base, decisions: bundle })
+    expect(parsed).not.toHaveProperty('decisions')
+  })
+
+  it('rejects an unknown consumer type', () => {
+    const bad = { ...bundle, bindings: [{ ...bundle.bindings[0], consumer: { type: 'router' } }] }
+    expect(IntegrationCoreEnvelope.safeParse({ ...base, decisions: bad }).success).toBe(false)
   })
 })

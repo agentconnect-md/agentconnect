@@ -2224,6 +2224,7 @@ export function buildContainer(
     webchatRemoteMcp,
     launch: repos.launch,
     visibilityPush,
+    httpBotDaemonReady: (daemonId) => httpBot.daemonReady(daemonId),
     ...(sessionPullRequestFeedback ? { pullRequestFeedback: sessionPullRequestFeedback } : {}),
     events,
     usageWriter,

@@ -17,6 +17,7 @@
  */
 import type {
   AttributedRoute,
+  ChannelDecisionGate,
   RcBotAssign,
   RcConversationDefault,
   BindMatch,
@@ -37,6 +38,8 @@ import type {
   IntegrationChannelRepo,
   IntegrationChannelRecord,
   ChannelTrigger,
+  SeedTrigger,
+  ChannelActivation,
   ConversationKind,
   ReportedChannel,
   AgentRepo,
@@ -53,6 +56,32 @@ import type { AgentDelivery } from './agentDelivery.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
 import { AgentId, BotId, DaemonId } from '../domain/ids.js'
+import { decisionTriggerSupported, encodeRelayRoutesForPeer } from '../domain/decision-trigger-features.js'
+import { activationOf, decisionGateState } from './decisionBundle.js'
+
+// Key-order-independent JSON, since jsonb does not preserve the order a binding was written in.
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value && typeof value === 'object')
+    return `{${Object.keys(value)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`)
+      .join(',')}}`
+  return JSON.stringify(value)
+}
+
+/** Whether a row already carries this trigger write, binding and review flag included. */
+function sameActivation(
+  row: Pick<IntegrationChannelRecord, 'trigger' | 'decisionBinding' | 'decisionNeedsReview'>,
+  activation: ChannelActivation
+): boolean {
+  if (row.trigger !== activation.trigger) return false
+  if (activation.trigger !== 'decision') return row.decisionBinding === null
+  return (
+    row.decisionNeedsReview === activation.decisionNeedsReview &&
+    canonicalJson(row.decisionBinding) === canonicalJson(activation.decisionBinding)
+  )
+}
 
 export interface HttpBotLog {
   info(obj: unknown, msg?: string): void
@@ -121,6 +150,8 @@ export function conversationOwnerRow(
 
 export class HttpBotOrchestrator {
   private readonly conversationMutationChains = new Map<string, Promise<unknown>>()
+  // daemonId → bots whose last compile held a By decision conversation because that daemon lacked the feature.
+  private readonly decisionHeldBots = new Map<string, Set<string>>()
 
   constructor(
     /** Every bot read here is `getUnscoped`: this is the orchestration trust
@@ -207,12 +238,37 @@ export class HttpBotOrchestrator {
       this.log.warn({ botId, platform: bot.platform }, 'http-bot: platform contributes no relay ingress — skipping')
       return
     }
-    this.broadcast((ch) => ch.send('rc/bot-assign', assign))
+    this.broadcast((ch) => ch.send('rc/bot-assign', encodeRelayRoutesForPeer(assign, ch.features)))
     this.log.info(
       { botId: bot.id, members: compiled.members.length, routes: compiled.routes.length },
       'http-bot: broadcast assign to relay pool'
     )
     await this.pushSpecs(compiled, secret, bot)
+  }
+
+  /** A daemon reached READY: recompile the bots whose By decision conversations were held for its missing feature. */
+  async daemonReady(daemonId: string): Promise<void> {
+    const held = this.decisionHeldBots.get(daemonId)
+    if (!held || !decisionTriggerSupported(this.control.daemonFeatures?.(daemonId))) return
+    this.decisionHeldBots.delete(daemonId)
+    for (const botId of held) {
+      await this.syncRoutes(botId).catch((err: unknown) =>
+        this.log.warn({ err, botId, daemonId }, 'http-bot: decision-trigger resync deferred')
+      )
+    }
+  }
+
+  private recordDecisionHolds(botId: string, heldFor: ReadonlySet<string>): void {
+    for (const [daemonId, bots] of this.decisionHeldBots) {
+      if (heldFor.has(daemonId)) continue
+      bots.delete(botId)
+      if (bots.size === 0) this.decisionHeldBots.delete(daemonId)
+    }
+    for (const daemonId of heldFor) {
+      const bots = this.decisionHeldBots.get(daemonId) ?? new Set<string>()
+      bots.add(botId)
+      this.decisionHeldBots.set(daemonId, bots)
+    }
   }
 
   /**
@@ -228,22 +284,28 @@ export class HttpBotOrchestrator {
     const compiled = await this.compile(bot)
     if (!compiled) return this.unassign(bot)
     this.broadcast((ch) =>
-      ch.send('rc/routes', {
-        botId: bot.id,
-        members: compiled.members,
-        agents: compiled.agents,
-        routes: compiled.routes,
-        ...(compiled.defaultAgentId ? { defaultAgentId: compiled.defaultAgentId } : {}),
-        ...(compiled.defaultDaemonId ? { defaultDaemonId: compiled.defaultDaemonId } : {}),
-        gatedAgentIds: compiled.gatedAgentIds,
-        mutedChannels: compiled.mutedChannels,
-        gatedOffChannels: compiled.gatedOffChannels,
-        noticedDmConversations: compiled.noticedDmConversations,
-        // An owner edit converges here without a re-assign, so the defaults must ride the hot
-        // update too — otherwise a connected relay keeps the old default, and the old grant.
-        conversationDefaults: compiled.conversationDefaults,
-        ...(this.noticeAuthorityFor(bot.id) ? { noticeAuthority: this.noticeAuthorityFor(bot.id) } : {})
-      })
+      ch.send(
+        'rc/routes',
+        encodeRelayRoutesForPeer(
+          {
+            botId: bot.id,
+            members: compiled.members,
+            agents: compiled.agents,
+            routes: compiled.routes,
+            ...(compiled.defaultAgentId ? { defaultAgentId: compiled.defaultAgentId } : {}),
+            ...(compiled.defaultDaemonId ? { defaultDaemonId: compiled.defaultDaemonId } : {}),
+            gatedAgentIds: compiled.gatedAgentIds,
+            mutedChannels: compiled.mutedChannels,
+            gatedOffChannels: compiled.gatedOffChannels,
+            noticedDmConversations: compiled.noticedDmConversations,
+            // An owner edit converges here without a re-assign, so the defaults must ride the hot
+            // update too — otherwise a connected relay keeps the old default, and the old grant.
+            conversationDefaults: compiled.conversationDefaults,
+            ...(this.noticeAuthorityFor(bot.id) ? { noticeAuthority: this.noticeAuthorityFor(bot.id) } : {})
+          },
+          ch.features
+        )
+      )
     )
     const secret = await this.botSecret.get(bot.orgId, bot.id)
     if (secret) await this.pushSpecs(compiled, secret, bot)
@@ -350,7 +412,7 @@ export class HttpBotOrchestrator {
       const assign = await this.buildAssign(bot, compiled, secret)
       if (!assign) continue
       try {
-        ch.send('rc/bot-assign', assign)
+        ch.send('rc/bot-assign', encodeRelayRoutesForPeer(assign, ch.features))
         for (const t of await this.threads.listForBot(bot.id)) {
           ch.send('rc/assign', { botId: bot.id, sessionKey: t.sessionKey, agentId: t.agentId, daemonId: t.daemonId })
         }
@@ -554,6 +616,12 @@ export class HttpBotOrchestrator {
     return this.relayReg.all().length > 0
   }
 
+  /** How many connected relays advertise a feature, and how many do not. */
+  relayFeatureSupport(feature: string): { connected: number; missing: number } {
+    const relays = this.relayReg.all()
+    return { connected: relays.length, missing: relays.filter((ch) => !ch.features?.includes(feature)).length }
+  }
+
   /** Apply the authoritative channel-membership snapshot reported by an HTTP
    *  ingest. Every active integration of the bot represents the same app-level
    *  membership, so fan the snapshot across them, preserving per-install
@@ -634,7 +702,7 @@ export class HttpBotOrchestrator {
     agent: AgentRecord,
     bot: Pick<BotRecord, 'platform' | 'teamId'>,
     conversation: { id: string; kind?: ConversationKind; dmUserId?: string | null }
-  ): Promise<ChannelTrigger> {
+  ): Promise<SeedTrigger> {
     if (!this.gatedDmSeeds || conversation.kind !== 'im' || !conversation.dmUserId) return 'off'
     const seeds = await this.gatedDmSeeds(
       [{ id: conversation.id, kind: 'im', dmUserId: conversation.dmUserId }],
@@ -686,7 +754,12 @@ export class HttpBotOrchestrator {
   async updateConversation(
     botId: string,
     channelId: string,
-    patch: { agentId?: string; trigger?: ChannelTrigger; sessionMode?: ChannelSessionMode },
+    patch: {
+      agentId?: string
+      trigger?: ChannelTrigger
+      decisionBinding?: ChannelDecisionGate
+      sessionMode?: ChannelSessionMode
+    },
     options: { expectedOwnerAgentId?: string; source?: 'console' | 'slack' } = {}
   ): Promise<IntegrationChannelRecord | null> {
     return this.serializeConversationMutation(botId, channelId, async () => {
@@ -718,21 +791,35 @@ export class HttpBotOrchestrator {
       const currentRow = conversationOwnerRow(currentOwner, rows)
       const targetAgent = options.source === 'slack' ? await this.agents.getUnscoped(owner.agentId) : null
       let updated = await this.persistConversationOwner(installs, channelId, owner, rows[0])
-      const trigger =
-        targetAgent && isGatedAgent(targetAgent)
-          ? ('off' as const)
-          : (patch.trigger ?? currentRow?.trigger ?? rows[0]?.trigger ?? updated.trigger)
+      // The trigger and its Decision binding replicate together, exactly like the session mode below.
+      let activation: ChannelActivation
+      if (targetAgent && isGatedAgent(targetAgent)) activation = { trigger: 'off' }
+      else if (patch.trigger === 'decision') {
+        if (!patch.decisionBinding) throw new Error('trigger decision requires a decisionBinding')
+        activation = { trigger: 'decision', decisionBinding: patch.decisionBinding, decisionNeedsReview: false }
+      } else if (patch.trigger) activation = { trigger: patch.trigger }
+      else activation = activationOf(currentRow ?? rows[0] ?? updated)
       // This call IS the human's action (console patch or the in-Slack modal), so the
       // resulting trigger is a decision on every sibling row, not a default (§14.8).
-      await this.syncConversationTrigger(installs, channelId, trigger, rows, { chosen: true })
-      updated = { ...updated, trigger }
+      await this.syncConversationTrigger(installs, channelId, activation, rows, { chosen: true })
+      updated = {
+        ...updated,
+        trigger: activation.trigger,
+        decisionBinding: activation.trigger === 'decision' ? activation.decisionBinding : null,
+        decisionNeedsReview: activation.trigger === 'decision' ? activation.decisionNeedsReview : false,
+        decisionDefinition: null
+      }
       // The session mode is bot-scoped for the same reason the trigger is: every sibling
       // row repeats it, so deleting the canonical owner does not discard the choice.
       const sessionMode = patch.sessionMode ?? currentRow?.sessionMode ?? rows[0]?.sessionMode ?? updated.sessionMode
       await this.syncConversationSessionMode(installs, channelId, sessionMode, rows)
       updated = { ...updated, sessionMode }
+      // Re-read the owner row so the response carries the joined Decision definition.
+      const fresh = (await this.channels.listForBot(bot.id)).find(
+        (row) => row.integrationId === owner.id && row.channelId === channelId
+      )
       await this.syncRoutes(botId)
-      return updated
+      return fresh ?? updated
     })
   }
 
@@ -799,7 +886,7 @@ export class HttpBotOrchestrator {
   private async syncConversationTrigger(
     installs: IntegrationRecord[],
     channelId: string,
-    trigger: ChannelTrigger,
+    activation: ChannelActivation,
     knownRows: IntegrationChannelRecord[],
     opts?: { chosen?: boolean }
   ): Promise<void> {
@@ -833,7 +920,7 @@ export class HttpBotOrchestrator {
       // missing on exactly the rows the shared-bot paths converge, and a later catch-up
       // would read a deliberate Off as pending and reopen it.
       const marked = opts?.chosen !== true || row?.triggerChosen === true
-      if (row?.trigger === trigger && marked) continue
+      if (row && sameActivation(row, activation) && marked) continue
       if (!row) {
         // The template carries the CONVERSATION's own metadata, so a sibling gets all
         // of it rather than a subset. `dmUserId` is the load-bearing one: it is the
@@ -853,11 +940,12 @@ export class HttpBotOrchestrator {
             isPrivate: template.isPrivate,
             kind: template.kind
           },
-          { defaultTrigger: trigger }
+          // A backfill is created Off and then carries the binding in setTrigger, so the CHECK always holds.
+          { defaultTrigger: activation.trigger === 'decision' ? 'off' : activation.trigger }
         )
-        if (backfilled.trigger === trigger && opts?.chosen !== true) continue
+        if (sameActivation(backfilled, activation) && opts?.chosen !== true) continue
       }
-      await this.channels.setTrigger(integration.id, channelId, trigger, opts)
+      await this.channels.setTrigger(integration.id, channelId, activation, opts)
     }
   }
 
@@ -898,7 +986,7 @@ export class HttpBotOrchestrator {
       // integration while siblings survive. Reading it from the owner row alone would
       // lose the decision on precisely the owner-removal path this method exists for.
       const chosen = conversationRows.some((row) => row.triggerChosen)
-      let trigger = ownerRow?.trigger
+      let trigger: ChannelActivation | undefined = ownerRow ? activationOf(ownerRow) : undefined
       // A decision outranks every default: a conversation a human has ruled on is not
       // re-derived, whoever ends up owning it. Only an undecided one falls through to
       // the gated rule below.
@@ -911,13 +999,15 @@ export class HttpBotOrchestrator {
         if (ownerAgent && isGatedAgent(ownerAgent)) {
           if (bot === undefined) bot = await this.bots.getUnscoped(botId)
           const direct = conversationRows.find((row) => row.kind === 'im' && row.dmUserId)
-          trigger = bot
-            ? await this.gatedConversationTrigger(ownerAgent, bot, {
-                id: channelId,
-                kind: direct?.kind,
-                dmUserId: direct?.dmUserId
-              })
-            : 'off'
+          trigger = {
+            trigger: bot
+              ? await this.gatedConversationTrigger(ownerAgent, bot, {
+                  id: channelId,
+                  kind: direct?.kind,
+                  dmUserId: direct?.dmUserId
+                })
+              : 'off'
+          }
         }
       }
       const canonical = conversationRows.some((row) => row.integrationId === owner.id && row.agentId === owner.agentId)
@@ -992,6 +1082,7 @@ export class HttpBotOrchestrator {
     // 1. conversation ownership (§10.1, the primary path): an observed conversation
     //    routes to one owner, respecting its trigger. Emit scoped rules first.
     const chans = await this.channels.listForBot(bot.id)
+    const heldFor = new Set<string>()
     const conversationOwner = new Map<string, AgentId>()
     for (const c of chans) {
       if (c.agentId && !conversationOwner.has(c.channelId)) conversationOwner.set(c.channelId, c.agentId)
@@ -999,6 +1090,10 @@ export class HttpBotOrchestrator {
     // Off or unavailable ownership closes unscoped fallback rungs.
     const offConversationIds = new Set(chans.filter((c) => c.trigger === 'off').map((c) => c.channelId))
     const muted = new Set(offConversationIds)
+    // A held By decision conversation (disabled, or no consumer route on this platform) is Off, never Any.
+    for (const c of chans) {
+      if (c.trigger === 'decision' && (ownerAsDefault || !decisionGateState(c)?.enabled)) muted.add(c.channelId)
+    }
     for (const [channelId, ownerId] of conversationOwner) {
       if (!byAgent.has(ownerId)) muted.add(channelId)
     }
@@ -1020,6 +1115,26 @@ export class HttpBotOrchestrator {
       // Such an owner is delivered as this conversation's default below; emitting a scoped rule
       // for it too would make the FIRST rung swallow every addressed message.
       if (ownerAsDefault) continue
+      if (c.trigger === 'decision') {
+        const g = decisionGateState(c)
+        // Hold only for a daemon KNOWN to lack the feature; an offline one gets the route and the relay fails closed per delivery.
+        const features = this.control.daemonFeatures?.(p.daemonId)
+        const downgraded = features !== undefined && !decisionTriggerSupported(features)
+        if (downgraded) heldFor.add(p.daemonId)
+        if (!g?.enabled || !g.gate || downgraded) {
+          muted.add(c.channelId)
+          continue
+        }
+        routes.push({
+          agentId: p.integration.agentId,
+          daemonId: p.daemonId,
+          integrationId: p.integration.id,
+          scope: { channel: c.channelId },
+          match: { kind: 'decision' },
+          decisionId: g.gate.decisionId
+        })
+        continue
+      }
       const match: BindMatch = c.trigger === 'any' ? { kind: 'auto' } : { kind: 'mention' }
       routes.push({
         agentId: p.integration.agentId,
@@ -1031,6 +1146,7 @@ export class HttpBotOrchestrator {
     }
     const mutedChannels = [...muted]
     const gatedOffChannels = [...gatedOff]
+    this.recordDecisionHolds(bot.id, heldFor)
 
     // 2. keyword disambiguation (§10.2): one keyword rule per agent = its slug, so
     //    "@bot <slug> …" routes to that agent. No unscoped mention rule — that would
@@ -1058,7 +1174,7 @@ export class HttpBotOrchestrator {
     // An Off row contributes none: a muted channel resolves to nothing at every rung.
     const conversationDefaults: RcConversationDefault[] = ownerAsDefault
       ? chans.flatMap((c) => {
-          if (!c.agentId || c.trigger === 'off') return []
+          if (!c.agentId || c.trigger === 'off' || c.trigger === 'decision') return []
           const p = byAgent.get(c.agentId)
           if (!p) return []
           return [

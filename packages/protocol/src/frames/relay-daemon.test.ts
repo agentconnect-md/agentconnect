@@ -330,6 +330,34 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     expect(r.frame.payload.integrationId).toBe(CONV_ID)
   })
 
+  it('carries an optional, bounded decisionId on rd/msg im', () => {
+    const im = {
+      source: 'im' as const,
+      agentId: AGENT_ID,
+      sessionKey: 'C123',
+      msgId: 'm1',
+      botId: DAEMON_ID,
+      integrationId: CONV_ID,
+      payload: {
+        msgId: 'm1',
+        traceId: 't-1',
+        source: 'user',
+        platform: 'slack',
+        channel: 'C123',
+        sender: { id: 'U1', isBot: false },
+        text: 'hello',
+        mentionedBots: [],
+        isDm: false,
+        trigger: 'auto'
+      }
+    }
+    expect(RdMsg.safeParse(im).success).toBe(true)
+    const withId = RdMsg.parse({ ...im, decisionId: 'd1' })
+    expect(withId.source === 'im' && withId.decisionId).toBe('d1')
+    expect(RdMsg.safeParse({ ...im, decisionId: '' }).success).toBe(false)
+    expect(RdMsg.safeParse({ ...im, decisionId: 'x'.repeat(129) }).success).toBe(false)
+  })
+
   it('separates the untrusted provider authorship claim from the relay-minted trusted mint', () => {
     // send-message-routing-rework.md §8.1/§8.2: the provider's own claim rides INSIDE
     // `payload` (any workspace app could have written that metadata); what the relay

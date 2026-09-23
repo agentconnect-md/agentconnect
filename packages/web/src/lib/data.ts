@@ -2149,7 +2149,8 @@ export interface IntegrationChannelRow {
   url?: string
   /** 'im' = a DM conversation row, 'mpim' = a Slack group DM; absent = channel. */
   kind?: 'channel' | 'im' | 'mpim'
-  trigger: 'off' | 'mention' | 'any'
+  /** 'decision' is By decision; it is displayed but never written back by the trigger controls. */
+  trigger: 'off' | 'mention' | 'any' | 'decision'
   /** Which session a message here joins: a new one per thread, or the conversation's one
    *  ongoing session. Channel rows only — a direct conversation is not a place this choice
    *  means anything. */

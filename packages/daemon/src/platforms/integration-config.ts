@@ -23,9 +23,13 @@
  * its own words.
  */
 import type { z, ZodType } from 'zod'
-import { IntegrationQQConfig } from '@agentconnect.md/protocol'
+import {
+  EMPTY_DECISION_BUNDLE,
+  IntegrationQQConfig,
+  type DecisionBundle,
+  type IntegrationSessionMode
+} from '@agentconnect.md/protocol'
 import type { BindRuleConfig, Integration } from '../agents/agent-schema.js'
-import type { IntegrationSessionMode } from '@agentconnect.md/protocol'
 import {
   DiscordConfigSchema,
   FeishuConfigSchema,
@@ -80,6 +84,8 @@ export interface IntegrationCore {
   /** Conversations whose session mode departs from `createNew` (channel-session-mode.md).
    *  Sparse, and normalized to [] here so a hand-assembled integration reads as all-default. */
   sessionModes: IntegrationSessionMode[]
+  /** The By decision bundle (decisions.md §7.1); normalized to empty so a hand-assembled integration binds nothing. */
+  decisions: DecisionBundle
 }
 
 /**
@@ -153,6 +159,7 @@ export function integrationCore(int: Integration): IntegrationCore {
     bindRules: core?.bindRules ?? [],
     mutedChannels: core?.mutedChannels ?? [],
     gated: core?.gated ?? false,
-    sessionModes: core?.sessionModes ?? []
+    sessionModes: core?.sessionModes ?? [],
+    decisions: core?.decisions ?? EMPTY_DECISION_BUNDLE
   }
 }

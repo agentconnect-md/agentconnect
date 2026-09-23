@@ -3,6 +3,8 @@ import {
   MEMORY_ENTRIES_V1_FEATURE,
   PROVIDER_CREDENTIALS_V1_FEATURE,
   DECISION_PREVIEW_V1_FEATURE,
+  DECISION_TRIGGER_V1_FEATURE,
+  type DecisionBundle,
   MEMORY_ENTRIES_SEARCH_V1_FEATURE,
   MEMORY_ENTRIES_HISTORY_V1_FEATURE,
   MEMORY_ENTRIES_WRITE_V1_FEATURE,
@@ -2936,7 +2938,10 @@ export class Daemon {
     // CP integrations are memory-only and overlaid onto the effective agent set.
     this.cpIntegrations = new CpIntegrationRegistry(
       this.agentsDir,
-      { warn: (m) => this.log.warn(m) },
+      {
+        warn: (m) => this.log.warn(m),
+        onDecisionConfigApplied: (id, previous, next) => this.onDecisionConfigApplied(id, previous, next)
+      },
       () =>
         void this.reconcile().catch((err) =>
           this.log.error(`cp: integration reconcile failed: ${(err as Error).stack ?? err}`)
@@ -5915,6 +5920,7 @@ export class Daemon {
     return [
       PROVIDER_CREDENTIALS_V1_FEATURE,
       DECISION_PREVIEW_V1_FEATURE,
+      DECISION_TRIGGER_V1_FEATURE,
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
       'workspace-file-edit-v1',
       'workspace-file-delete-v1',
@@ -7905,6 +7911,8 @@ export class Daemon {
       )
       return { kind: 'rejected', reason: 'unrouted' }
     }
+    if (this.decisionCandidate(result.integrationId, msg) === 'held')
+      return dispatchedPeer ?? { kind: 'rejected', reason: 'gated' }
     const targetMsg = { ...msg }
     if (result.via === 'mention') targetMsg.trigger = 'mention'
     else delete targetMsg.trigger
@@ -8054,6 +8062,10 @@ export class Daemon {
         continue
       }
 
+      if (this.decisionCandidate(rule.integrationId, msg) === 'held') {
+        outcomes.push({ kind: 'rejected', reason: 'gated' })
+        continue
+      }
       const via: 'mention' | 'implicit' = explicitlyMentioned.has(agentId) ? 'mention' : 'implicit'
       const targetMsg = { ...msg }
       if (via === 'mention') targetMsg.trigger = 'mention'
@@ -8521,6 +8533,9 @@ export class Daemon {
       await this.commands.handleCommand(command, normalized, target)
       return { msgId: msg.msgId, accepted: true }
     }
+    // Consumed, not retried: the candidate is recorded (step 1) and held until the gate runs.
+    if (this.decisionCandidate(msg.integrationId, normalized, msg.decisionId) === 'held')
+      return { msgId: msg.msgId, accepted: true }
     // HTTP-bot ingress bypasses onInbound(), so repeat its `!stop` thread-mute gate:
     // while muted, implicit routing (thread affinity / keyword / auto / dm) never
     // dispatches — only an explicit @mention does, and it clears the mute. Muted traffic is
@@ -17315,6 +17330,50 @@ export class Daemon {
 
   private mergedRulesForSource(srcIntegrationIds?: readonly string[]): RoutingRule[] {
     return this.mergedRules().filter((rule) => this.integrationBelongsToSource(rule.integrationId, srcIntegrationIds))
+  }
+
+  // Stage 3a holds every human By decision candidate; Stage 3b replaces this with message-intake §5 step 5.
+  private decisionCandidate(
+    integrationId: string,
+    msg: NormalizedMessage,
+    relayDecisionId?: string
+  ): 'not_bound' | 'held' {
+    const int = this.integrationConfigById(integrationId)
+    const routing = int ? integrationRouting(int) : undefined
+    if (!routing?.decisionBound(msg.channel)) {
+      if (relayDecisionId === undefined) return 'not_bound'
+      this.decisionHoldLog(
+        integrationId,
+        msg.channel,
+        `relay decision ${relayDecisionId} has no local binding (pending sync)`
+      )
+      return 'held'
+    }
+    const local = routing.decisionBindingFor(msg.channel)?.binding.decisionId
+    if (relayDecisionId !== undefined && relayDecisionId !== local)
+      this.decisionHoldLog(integrationId, msg.channel, `relay decision ${relayDecisionId} is stale (pending sync)`)
+    else this.decisionHoldLog(integrationId, msg.channel, 'gate not implemented yet')
+    return 'held'
+  }
+
+  // At most one info line per (integration, channel) every 10 minutes.
+  private readonly decisionHoldLogged = new Map<string, number>()
+  private decisionHoldLog(integrationId: string, channel: string, why: string): void {
+    const key = `${integrationId}\u0000${channel}`
+    const now = Date.now()
+    const last = this.decisionHoldLogged.get(key)
+    if (last !== undefined && now - last < 10 * 60_000) return
+    if (this.decisionHoldLogged.size > 10_000) this.decisionHoldLogged.clear()
+    this.decisionHoldLogged.set(key, now)
+    this.log.info(`decision: ${why} — holding message in ch=${channel}`)
+  }
+
+  private onDecisionConfigApplied(
+    _integrationId: string,
+    _previous: DecisionBundle | undefined,
+    _next: DecisionBundle | undefined
+  ): void {
+    // Stage 3b cancels pending decision verdicts whose binding or definition changed here.
   }
 
   /** Last-hop admission for a pre-addressed (relay) message. The relay arbitrated it,

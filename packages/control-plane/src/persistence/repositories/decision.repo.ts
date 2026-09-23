@@ -1,8 +1,15 @@
-import { DecisionDraft, type DecisionDefinition, type DecisionDraftInput } from '@agentconnect.md/protocol'
+import {
+  ChannelDecisionGate,
+  DecisionDraft,
+  DecisionQuestion,
+  decisionConditionNeedsReview,
+  type DecisionDefinition,
+  type DecisionDraftInput
+} from '@agentconnect.md/protocol'
 import { canEdit, visibilityWhere } from '../../authorization/policy.js'
-import type { OrgId } from '../../domain/ids.js'
+import { IntegrationId, type OrgId } from '../../domain/ids.js'
 import { Prisma, type Decision } from '../../generated/prisma/client.js'
-import { OrgMembershipMissing, ResourceAudienceEmpty } from '../errors.js'
+import { DecisionInUse, OrgMembershipMissing, ResourceAudienceEmpty } from '../errors.js'
 import type { DecisionRepo, ViewCtx } from '../ports.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
@@ -66,7 +73,7 @@ export class PgDecisionRepo implements DecisionRepo {
     id: string,
     input: DecisionDraftInput,
     actor: ViewCtx
-  ): Promise<DecisionDefinition | null> {
+  ): Promise<{ decision: DecisionDefinition; consumerIntegrationIds: IntegrationId[] } | null> {
     return withAmbientTx(this.db, async (tx) => {
       const audience = await lockResourceWriteMemberships(tx, {
         orgId,
@@ -74,7 +81,8 @@ export class PgDecisionRepo implements DecisionRepo {
         actorUserId: actor.userId,
         sharedWith: input.sharedWith
       })
-      await tx.$queryRaw`SELECT "id" FROM "decision" WHERE "orgId" = ${orgId} AND "id" = ${id}::uuid FOR UPDATE`
+      // NO KEY UPDATE: FOR UPDATE would conflict with the KEY SHARE lock a concurrent gate write takes on the FK.
+      await tx.$queryRaw`SELECT "id" FROM "decision" WHERE "orgId" = ${orgId} AND "id" = ${id}::uuid FOR NO KEY UPDATE`
       const existing = await tx.decision.findUnique({ where: { id, orgId } })
       if (!existing) return null
       const membership = await tx.membership.findUnique({ where: { orgId_userId: { orgId, userId: actor.userId } } })
@@ -87,7 +95,7 @@ export class PgDecisionRepo implements DecisionRepo {
       }
       if (next.visibility === 'restricted' && next.sharedWith.length === 0) throw new ResourceAudienceEmpty()
       const draft = DecisionDraft.parse(next)
-      return definition(
+      const decision = definition(
         await tx.decision.update({
           where: { id, orgId },
           data: {
@@ -96,6 +104,27 @@ export class PgDecisionRepo implements DecisionRepo {
           }
         })
       )
+      // Revalidate every gate: an incompatible one stays saved but is marked Needs review (decisions.md §6.1).
+      const consumers = await tx.integrationChannel.findMany({
+        where: { decisionId: id },
+        select: { integrationId: true, channelId: true, decisionBinding: true, decisionNeedsReview: true }
+      })
+      const previous = DecisionQuestion.safeParse(existing.question)
+      const review = consumers.filter((c) => {
+        if (c.decisionNeedsReview) return false
+        const gate = ChannelDecisionGate.safeParse(c.decisionBinding)
+        if (!gate.success || !previous.success) return true
+        return decisionConditionNeedsReview(previous.data, draft.question, gate.data.when)
+      })
+      if (review.length > 0)
+        await tx.integrationChannel.updateMany({
+          where: { OR: review.map((c) => ({ integrationId: c.integrationId, channelId: c.channelId })) },
+          data: { decisionNeedsReview: true }
+        })
+      return {
+        decision,
+        consumerIntegrationIds: [...new Set(consumers.map((c) => c.integrationId))].map(IntegrationId)
+      }
     })
   }
 
@@ -104,7 +133,12 @@ export class PgDecisionRepo implements DecisionRepo {
       await lockResourceWriteMemberships(tx, { orgId, visibility: 'org', actorUserId: actor.userId })
       const membership = await tx.membership.findUnique({ where: { orgId_userId: { orgId, userId: actor.userId } } })
       if (!membership || membership.role === 'viewer') throw new OrgMembershipMissing()
-      await tx.decision.deleteMany({ where: { id, orgId, ...visibilityWhere({ ...actor, role: membership.role }) } })
+      try {
+        await tx.decision.deleteMany({ where: { id, orgId, ...visibilityWhere({ ...actor, role: membership.role }) } })
+      } catch (err) {
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') throw new DecisionInUse(id)
+        throw err
+      }
     })
   }
 }

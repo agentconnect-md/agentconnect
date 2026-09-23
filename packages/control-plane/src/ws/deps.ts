@@ -103,6 +103,8 @@ export interface DaemonWsDeps {
   /** Pushes the CP-confirmed capture gate to the owning daemon (§5.1); absent ⇒
    *  daemons converge on their next register snapshot instead. */
   visibilityPush?: SessionVisibilityPushService
+  /** Recompiles relay routes held for this daemon's missing decision-trigger-v1 once it is READY; absent ⇒ next sync. */
+  httpBotDaemonReady?: (daemonId: string) => Promise<void>
   /** Persists exact-session PR capture obligations and drains durable PR feedback after daemon readiness. */
   pullRequestFeedback?: Pick<SessionPullRequestFeedbackService, 'trackSession' | 'kick'>
   /** Publishes persisted session milestones to the WebUI SSE feed. */

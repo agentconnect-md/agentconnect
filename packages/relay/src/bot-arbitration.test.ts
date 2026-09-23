@@ -742,3 +742,73 @@ describe('boundTarget — the Stop-only, grant-blind affinity read', () => {
     expect(router.boundTarget('bot-1', `${TEAM_A}/agent-session-unseen`)).toBeUndefined()
   })
 })
+
+describe('By decision candidate routes (decisions.md §7.1)', () => {
+  const decisionAssignment = (): BotAssignment => ({
+    ...assignment(),
+    routes: [
+      {
+        agentId: ALICE,
+        daemonId: D1,
+        integrationId: 'iA',
+        scope: { channel: 'C9' },
+        match: { kind: 'decision' },
+        decisionId: 'dec-1'
+      },
+      { agentId: BOB, daemonId: D2, integrationId: 'iB', match: { kind: 'keyword', value: 'bob' } }
+    ]
+  })
+  const empty = () => new Map<string, RouteTarget>()
+
+  it('arbitrates a human message, and a human @mention, to the decision owner', () => {
+    expect(arbitrate(decisionAssignment(), msg({ channel: 'C9', text: 'anyone?' }), empty())?.agentId).toBe(ALICE)
+    const mention = msg({ channel: 'C9', text: '<@UBOT> help', mentionedBots: [BOTUSER] })
+    expect(arbitrate(decisionAssignment(), mention, empty())?.agentId).toBe(ALICE)
+  })
+
+  it('never arbitrates a verified agent author through the decision rung', () => {
+    const fromAgent = msg({ channel: 'C9', text: 'status', sender: { id: 'UAPP', isBot: true } })
+    expect(arbitrate(decisionAssignment(), fromAgent, empty(), BOB)).toBeNull()
+  })
+
+  it('joins the decision owner implicitly for humans only, owns the channel, and names the Decision', () => {
+    const r = new BotArbitrationRouter()
+    r.upsert(decisionAssignment())
+    const human = r.conversationTargets('bot-1', msg({ channel: 'C9', text: 'hi' }))
+    expect(human).toEqual([{ target: { agentId: ALICE, daemonId: D1, integrationId: 'iA' }, via: 'implicit' }])
+    expect(
+      r.conversationTargets(
+        'bot-1',
+        msg({ channel: 'C9', thread: 'ts-agent', sender: { id: 'UAPP', isBot: true } }),
+        null,
+        BOB
+      )
+    ).toEqual([])
+    expect(r.channelAutoOwned('bot-1', 'C9')).toBe(true)
+    expect(r.decisionIdFor('bot-1', 'C9')).toBe('dec-1')
+    expect(r.decisionIdFor('bot-1', 'C1')).toBeUndefined()
+  })
+
+  it('drops a decision route that names no Decision (fail closed)', () => {
+    const route = {
+      agentId: ALICE,
+      daemonId: D1,
+      integrationId: 'iA',
+      scope: { channel: 'C9' },
+      match: { kind: 'decision' }
+    }
+    const a = toBotAssignment({
+      botId: 'bot-1',
+      platform: 'slack',
+      secrets: { botToken: 'xoxb-x', signingSecret: 'sig' },
+      members: [],
+      agents: [],
+      routes: [route, { ...route, decisionId: 'dec-1' }],
+      gatedAgentIds: [],
+      mutedChannels: [],
+      gatedOffChannels: [],
+      noticedDmConversations: []
+    } as never)
+    expect(a?.routes).toEqual([{ ...route, decisionId: 'dec-1' }])
+  })
+})

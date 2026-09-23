@@ -5,13 +5,20 @@
  * SECURITY: specs carry PLAINTEXT platform tokens. Never log a spec or an
  * entry — ids only.
  */
-import type { IntegrationSpec } from '@agentconnect.md/protocol'
+import type { DecisionBundle, IntegrationSpec } from '@agentconnect.md/protocol'
 import type { Integration } from '../agents/agent-schema.js'
-import { integrationConfig } from '../platforms/integration-config.js'
+import { resolveDecisionBundle } from '../decisions/bundle.js'
+import { integrationConfig, integrationCore } from '../platforms/integration-config.js'
 
 export interface WriteIntegrationDeps {
   /** Warn sink for a spec that cannot be applied (unknown platform / bad payload). */
   warn?: (msg: string) => void
+  /** Called before `onChange` whenever an integration's Decision bundle is applied or dropped. */
+  onDecisionConfigApplied?: (
+    integrationId: string,
+    previous: DecisionBundle | undefined,
+    next: DecisionBundle | undefined
+  ) => void
 }
 
 /**
@@ -66,21 +73,41 @@ export class CpIntegrationRegistry {
       this.deps.warn?.(`cp: integration ${spec.integrationId} carried no usable platform payload — ignored`)
       return
     }
-    this.entries.set(spec.integrationId, { agentId: spec.agentId, integration })
+    this.apply(spec.integrationId, { agentId: spec.agentId, integration })
     this.onChange()
   }
 
   remove(integrationId: string): void {
-    if (this.entries.delete(integrationId)) this.onChange()
+    const entry = this.entries.get(integrationId)
+    if (!entry) return
+    this.entries.delete(integrationId)
+    this.decisionsChanged(integrationId, entry, undefined)
+    this.onChange()
   }
 
   converge(specs: IntegrationSpec[]): void {
     for (const spec of specs ?? []) {
       const integration = toIntegration(spec)
-      if (integration) this.entries.set(spec.integrationId, { agentId: spec.agentId, integration })
+      if (integration) this.apply(spec.integrationId, { agentId: spec.agentId, integration })
       else this.deps.warn?.(`cp: integration ${spec.integrationId} carried no usable platform payload — ignored`)
     }
     this.onChange()
+  }
+
+  // Validates the new bundle once (logging disabled bindings) before it replaces the old one.
+  private apply(integrationId: string, next: Entry): void {
+    const previous = this.entries.get(integrationId)
+    resolveDecisionBundle(integrationCore(next.integration).decisions, this.deps.warn)
+    this.entries.set(integrationId, next)
+    this.decisionsChanged(integrationId, previous, next)
+  }
+
+  private decisionsChanged(integrationId: string, previous: Entry | undefined, next: Entry | undefined): void {
+    this.deps.onDecisionConfigApplied?.(
+      integrationId,
+      previous ? integrationCore(previous.integration).decisions : undefined,
+      next ? integrationCore(next.integration).decisions : undefined
+    )
   }
 
   forAgent(agentId: string): Integration[] {
@@ -96,6 +123,7 @@ export class CpIntegrationRegistry {
     for (const [id, entry] of this.entries) {
       if (entry.agentId === agentId && !desiredIds.has(id)) {
         this.entries.delete(id)
+        this.decisionsChanged(id, entry, undefined)
         changed = true
       }
     }

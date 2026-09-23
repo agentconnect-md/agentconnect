@@ -15,7 +15,7 @@
 import { conversationLink } from '@agentconnect.md/protocol'
 import type { AgentId, IntegrationId } from '../../domain/ids.js'
 import { isGatedAgent } from '../../orchestrator/placement.js'
-import type { AgentRecord, ChannelTrigger, IntegrationChannelRepo } from '../../persistence/ports.js'
+import type { AgentRecord, SeedTrigger, IntegrationChannelRepo } from '../../persistence/ports.js'
 import type { LinearTeam } from './api.js'
 
 /** What a Linear label joins the workspace and the team with — the daemon's own separator,
@@ -47,7 +47,7 @@ export const linearTeamRowLink = (team: LinearTeam): { key: string | null; url: 
  * `off` when they are all gated (and, fail-closed, when there are none). `any` has no Linear
  * meaning: the platform emits no unaddressed traffic to opt into.
  */
-export const linearTeamSeedTrigger = (candidates: readonly Pick<AgentRecord, 'visibility'>[]): ChannelTrigger =>
+export const linearTeamSeedTrigger = (candidates: readonly Pick<AgentRecord, 'visibility'>[]): SeedTrigger =>
   candidates.some((agent) => !isGatedAgent(agent)) ? 'mention' : 'off'
 
 /**
@@ -67,7 +67,7 @@ export async function seedLinearTeamRows(
   channels: Pick<IntegrationChannelRepo, 'upsertConversation' | 'upsertAgent'>,
   integrationId: IntegrationId,
   teams: readonly LinearTeam[],
-  opts: { trigger: ChannelTrigger; owner?: AgentId; workspaceName?: string | null }
+  opts: { trigger: SeedTrigger; owner?: AgentId; workspaceName?: string | null }
 ): Promise<void> {
   for (const team of teams) {
     await channels.upsertConversation(

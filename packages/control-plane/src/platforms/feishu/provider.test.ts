@@ -152,6 +152,9 @@ const channel = (
   dmUserId: null,
   sessionMode: 'createNew',
   triggerChosen: false,
+  decisionBinding: null,
+  decisionNeedsReview: false,
+  decisionDefinition: null,
   agentId: null
 })
 
@@ -428,7 +431,14 @@ describe('feishu projection equivalence with the live integrationToSpec path (di
       integrationId: INTEGRATION.id,
       agentId: INTEGRATION.agentId,
       platform: 'feishu',
-      core: { mode: 'direct', bindRules, mutedChannels: ['oc_3'], gated: false, sessionModes: [] },
+      core: {
+        mode: 'direct',
+        bindRules,
+        mutedChannels: ['oc_3'],
+        gated: false,
+        sessionModes: [],
+        decisions: { bindings: [], definitions: [] }
+      },
       // §6.4 final shape: platform-private material ONLY — the routing knobs
       // and the ingress mode ride the core envelope, never the config payload.
       config: {
@@ -505,7 +515,14 @@ describe('feishu projection equivalence with the live httpIntegrationToSpec path
       agentId: INTEGRATION.agentId,
       platform: 'feishu',
       // Ungated shared installs ship NO bindRules — the relay arbitrates.
-      core: { mode: 'shared', bindRules: [], mutedChannels: ['oc_2'], gated: false, sessionModes: [] },
+      core: {
+        mode: 'shared',
+        bindRules: [],
+        mutedChannels: ['oc_2'],
+        gated: false,
+        sessionModes: [],
+        decisions: { bindings: [], definitions: [] }
+      },
       config: {
         appId: 'cli_testapp',
         appSecret: 'feishu-app-secret',

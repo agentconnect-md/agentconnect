@@ -32,7 +32,8 @@ import {
   GITEA_V1_FEATURE,
   RD_HOOK_NOTICE_V1,
   GITLAB_COM_V1_FEATURE,
-  GITLAB_INSTANCE_V1_FEATURE
+  GITLAB_INSTANCE_V1_FEATURE,
+  DECISION_TRIGGER_V1_FEATURE
 } from '@agentconnect.md/protocol'
 import { Backoff, ReqRep, WireError, type Clock, type TimerHandle, type Transport } from '@agentconnect.md/connection'
 import type { Logger } from '../log.js'
@@ -61,7 +62,9 @@ const DAEMON_RD_CAPABILITIES: readonly string[] = [
   // gitea-integration.md §11: the relay gates every gitea rd/msg dispatch on this one, gitea.com and self-hosted alike.
   GITEA_V1_FEATURE,
   // The relay sends a `notice` delivery only here: a daemon without it would run the fixed-text post as a prompt.
-  RD_HOOK_NOTICE_V1
+  RD_HOOK_NOTICE_V1,
+  // The relay forwards By decision candidates only to daemons that list this.
+  DECISION_TRIGGER_V1_FEATURE
 ]
 
 export type RelayClientState = 'CONNECTING' | 'HELLO' | 'READY' | 'CLOSED' | 'DEGRADED'

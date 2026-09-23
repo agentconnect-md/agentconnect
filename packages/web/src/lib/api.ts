@@ -915,7 +915,16 @@ export interface IntegrationChannelDto {
   url: string | null // the page it opens on the platform; null elsewhere
   isPrivate: boolean
   kind: 'channel' | 'im' | 'mpim'
-  trigger: ChannelTrigger
+  // 'decision' is By decision, set through the Decision flow; the console's own trigger PATCH never sends it.
+  trigger: ChannelTrigger | 'decision'
+  decisionBinding?: import('@agentconnect.md/protocol').ChannelDecisionBinding | null
+  decision?: {
+    id: string
+    name: string | null
+    enabled: boolean
+    disabledReason?: 'needs_review' | 'access_revoked'
+    readiness: { status: 'ready' | 'pending_sync' | 'needs_review' | 'daemon_offline' | 'unsupported'; reason?: string }
+  } | null
   sessionMode: ChannelSessionMode
   agentId: string | null // effective shared-conversation owner; null before convergence / when not applicable
 }

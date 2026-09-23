@@ -9,6 +9,7 @@
  */
 import type { Agent, BindMatch, BindRuleConfig, Integration } from '../agents/agent-schema.js'
 import { configuredBotSelfId, integrationCore } from '../platforms/integration-config.js'
+import { resolveDecisionBundle, type ResolvedDecisionGate } from '../decisions/bundle.js'
 import type { ActivationRule } from '@agentconnect.md/activation-policy'
 import type { ChannelSessionMode, RouteAssign, RouteUpdate } from '@agentconnect.md/protocol'
 
@@ -25,25 +26,27 @@ export interface RoutingRule extends ActivationRule {
   match: RoutingMatch
 }
 
-/**
- * The routing bits of an Integration, with no knowledge of which platform it is.
- * Exported for the daemon's conversation-gating ingress checks (§14).
- *
- * This used to be a four-arm switch on `int.platform` that only ever reached
- * identically-named fields. §6.4 says those knobs are the CORE ENVELOPE, so this
- * is an envelope read (`platforms/integration-config.ts`) plus the one genuinely
- * per-platform value — the bot's own id, which each platform names in its own
- * vocabulary. Same values as before, and a new platform is now routable without
- * editing the router.
- */
+/** The platform-independent routing bits of an Integration (§6.4 core envelope) plus the bot's own id. */
 export function integrationRouting(int: Integration): {
   staticBotUserId?: string
   bindRules: BindRuleConfig[]
   mutedChannels: string[]
   gated: boolean
+  /** The enabled By decision gate for a channel with its resolved definition, or undefined. */
+  decisionBindingFor(channel: string): ResolvedDecisionGate | undefined
+  /** Whether the channel carries any By decision binding, enabled or not. */
+  decisionBound(channel: string): boolean
 } {
-  const { bindRules, mutedChannels, gated } = integrationCore(int)
-  return { staticBotUserId: configuredBotSelfId(int), bindRules, mutedChannels, gated }
+  const { bindRules, mutedChannels, gated, decisions } = integrationCore(int)
+  const bundle = resolveDecisionBundle(decisions)
+  return {
+    staticBotUserId: configuredBotSelfId(int),
+    bindRules,
+    mutedChannels,
+    gated,
+    decisionBindingFor: (channel) => bundle.gates.get(channel),
+    decisionBound: (channel) => bundle.bound.has(channel)
+  }
 }
 
 /** How this integration keys sessions in one conversation (channel-session-mode.md §4).

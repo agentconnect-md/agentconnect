@@ -789,7 +789,8 @@ export const AttributedRoute = z.object({
   daemonId: z.string().uuid(),
   integrationId: z.string().uuid(),
   scope: z.object({ channel: z.string().optional(), thread: z.string().optional() }).optional(),
-  match: BindMatch
+  match: BindMatch,
+  decisionId: z.string().min(1).max(128).optional() // present exactly when match.kind === 'decision'
 })
 export type AttributedRoute = z.infer<typeof AttributedRoute>
 
