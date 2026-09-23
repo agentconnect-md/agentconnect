@@ -2425,6 +2425,7 @@ function sessionUnavailableReasons(providerName: string | undefined, profileLink
 export default function SessionDetailView() {
   const t = useTranslations('Sessions.detail')
   const permissionT = useTranslations('Common.permissionModes')
+  const runtimeModelT = useTranslations('Agents.dialog.runtimeModel')
   const acpRegistry = useAcpRegistry()
   const { activeOrg, orgPath, myRole } = useOrgs()
   const router = useRouter()
@@ -4597,7 +4598,13 @@ export default function SessionDetailView() {
     }))
   const beforeFirstTurn = pgEmpty && !session.realSessionId
   const byDecision =
-    beforeFirstTurn && !!owner?.modelSelection && !runtimeSelection?.model && !runtimeSelection?.runtime
+    beforeFirstTurn &&
+    !!owner?.modelSelection &&
+    !runtimeSelection?.model &&
+    !runtimeSelection?.runtime &&
+    session.runtimePending !== false
+  const runtimeUnresolved = byDecision || session.runtimePending === true
+  const runtimePending = runtimeUnresolved && !beforeFirstTurn
   const runtimeDecision = decisionCatalog?.decisions.find((item) => item.id === owner?.modelSelection?.decisionId)
   const runtimeProfile = owningDaemon?.runtimeModels.find((profile) => profile.runtime === agentRuntime)
   const runtimeCatalog = runtimeProfile?.modelCatalog ?? undefined
@@ -4686,18 +4693,23 @@ export default function SessionDetailView() {
   ]
   if (focusedDaemonName) headerFacts.push({ icon: focusedDaemonIcon, label: t('daemon'), value: focusedDaemonName })
   if (runsOn) headerFacts.push({ icon: 'server', label: t('runsOn'), value: runsOn })
-  if (focusedAgentRuntime)
-    headerFacts.push({
-      icon: 'cpu',
-      label: t('runtime'),
-      value: runtimeLabel(focusedAgentRuntime, focusedRuntimeMeta?.name)
-    })
-  if (focusedSession?.model ?? focusedAgent?.model)
-    headerFacts.push({
-      icon: 'box',
-      label: t('model'),
-      value: modelLabel(focusedSession?.model ?? focusedAgent?.model ?? '')
-    })
+  if (focusedSession?.runtimePending) {
+    const value = runtimeModelT(beforeFirstTurn ? 'byDecision' : 'pending')
+    headerFacts.push({ icon: 'cpu', label: t('runtime'), value }, { icon: 'box', label: t('model'), value })
+  } else {
+    if (focusedAgentRuntime)
+      headerFacts.push({
+        icon: 'cpu',
+        label: t('runtime'),
+        value: runtimeLabel(focusedAgentRuntime, focusedRuntimeMeta?.name)
+      })
+    if (focusedSession?.model ?? focusedAgent?.model)
+      headerFacts.push({
+        icon: 'box',
+        label: t('model'),
+        value: modelLabel(focusedSession?.model ?? focusedAgent?.model ?? '')
+      })
+  }
 
   // The popover's contents — one definition behind both triggers (desktop hover,
   // mobile tap), so a fact can never show up on one form factor and not the other.
@@ -5834,9 +5846,10 @@ export default function SessionDetailView() {
                                 }}
                               />
                             )}
-                            {!multiLive && (pgModel || byDecision) && (
+                            {!multiLive && (pgModel || byDecision || runtimePending) && (
                               <RuntimeModelSelect
                                 compact
+                                pending={runtimePending}
                                 ariaLabel={t('model')}
                                 value={{ runtime: agentRuntime, model: pgModel }}
                                 source={pickerSource}

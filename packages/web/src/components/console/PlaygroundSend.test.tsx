@@ -10,6 +10,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { Agent } from '@/lib/data'
 
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({ agents: [], daemons: [], refreshSessions: vi.fn() })
@@ -63,6 +64,8 @@ let getLiveSteps: ReturnType<typeof usePlayground>['getLiveSteps']
 let pgAttach: ReturnType<typeof usePlayground>['pgAttach']
 let pgAnswerElicitation: ReturnType<typeof usePlayground>['pgAnswerElicitation']
 let pgAppRpc: ReturnType<typeof usePlayground>['pgAppRpc']
+let getPgSession: ReturnType<typeof usePlayground>['getPgSession']
+let pgStageRuntime: ReturnType<typeof usePlayground>['pgStageRuntime']
 
 function Probe() {
   const pg = usePlayground()
@@ -79,6 +82,8 @@ function Probe() {
   pgAttach = pg.pgAttach
   pgAnswerElicitation = pg.pgAnswerElicitation
   pgAppRpc = pg.pgAppRpc
+  getPgSession = pg.getPgSession
+  pgStageRuntime = pg.pgStageRuntime
   return null
 }
 
@@ -104,6 +109,94 @@ afterEach(() => {
   act(() => root.unmount())
   host.remove()
   vi.clearAllMocks()
+})
+
+describe('Decision runtime startup', () => {
+  afterEach(async () => {
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockRejectedValue(new Error('no relay in this test'))
+  })
+
+  const agent = {
+    id: 'agent-1',
+    name: 'Review bot',
+    runtime: 'claude',
+    model: 'model-standard',
+    modelSelection: { decisionId: 'decision-1', rules: [] }
+  } as unknown as Agent
+
+  class RuntimeSocket extends StubSocket {
+    static instances: RuntimeSocket[] = []
+    onopen?: () => void
+    onmessage?: (event: { data: string }) => void
+    constructor() {
+      super()
+      RuntimeSocket.instances.push(this)
+    }
+  }
+
+  it.each([
+    { runtime: 'codex', model: 'model-capable' },
+    { runtime: agent.runtime, model: agent.model }
+  ])('resolves pending from the reported $runtime pair', async (target) => {
+    RuntimeSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', RuntimeSocket)
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
+    let id = ''
+    await act(async () => {
+      id = openPlayground(agent)
+      pgSend(id, agent.id, 'Review this change')
+    })
+    expect(getPgSession(id)?.runtimePending).toBe(true)
+    const socket = RuntimeSocket.instances[0]!
+    await act(async () => {
+      socket.readyState = 1
+      socket.onopen?.()
+    })
+    const { turnId } = JSON.parse(String(socket.send.mock.calls.at(-1)?.[0])) as { turnId: string }
+    act(() => {
+      socket.onmessage?.({ data: JSON.stringify({ type: 'ack', ack: { accepted: true, turnId, agentId: agent.id } }) })
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'output',
+          output: { turnId, agentId: agent.id, index: 0, status: { contextUsed: 10 } }
+        })
+      })
+    })
+    expect(getPgSession(id)?.runtimePending).toBe(true)
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'output',
+          output: { turnId, agentId: agent.id, index: 1, status: { runtime: target.runtime } }
+        })
+      })
+    })
+    expect(getPgSession(id)?.runtimePending).toBe(true)
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'output',
+          output: { turnId, agentId: agent.id, index: 2, status: { ...target, sessionId: 'session-1' } }
+        })
+      })
+    })
+    expect(getPgSession(id)).toMatchObject({ ...target, runtimePending: false, realSessionId: 'session-1' })
+  })
+
+  it('shows a manual first-turn selection and restores pending when returning to Decision', () => {
+    let id = ''
+    act(() => {
+      id = openPlayground(agent)
+      pgStageRuntime(id, { runtime: 'codex', model: 'model-capable' })
+    })
+    expect(getPgSession(id)).toMatchObject({ runtime: 'codex', model: 'model-capable', runtimePending: false })
+    act(() => pgStageRuntime(id, { runtime: undefined, model: undefined }))
+    expect(getPgSession(id)?.runtimePending).toBe(true)
+    act(() => pgStageRuntime(id, { fastMode: true }))
+    expect(getPgSession(id)?.runtimePending).toBe(true)
+  })
 })
 
 // An approval decision is news the conversation must speak, but the composer is

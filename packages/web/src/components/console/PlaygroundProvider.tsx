@@ -482,7 +482,22 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
 
   const stageRuntimeChange = useCallback((id: string, patch: WebchatRuntimeConfig): void => {
     if (!id.startsWith(PG_PREFIX)) return
-    stagedRuntime.current.set(id, { ...stagedRuntime.current.get(id), ...patch })
+    const runtime = { ...stagedRuntime.current.get(id), ...patch }
+    stagedRuntime.current.set(id, runtime)
+    if (!('runtime' in patch || 'model' in patch)) return
+    setPgSessions((current) => {
+      const session = current[id]
+      if (!session || session.realSessionId) return current
+      return {
+        ...current,
+        [id]: {
+          ...session,
+          runtime: runtime.runtime ?? session.runtime,
+          model: runtime.model ?? session.model,
+          runtimePending: !runtime.runtime && !runtime.model
+        }
+      }
+    })
   }, [])
   const getPgWorktree = useCallback((id: string): boolean | undefined => stagedWorktree.current.get(id), [])
   const pgSetWorktree = useCallback((id: string, worktree: boolean): void => {
@@ -944,6 +959,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           usage,
           ...(st.runtime !== undefined ? { runtime: st.runtime } : {}),
           ...(st.model !== undefined ? { model: st.model } : {}),
+          ...(st.runtime !== undefined && st.model !== undefined ? { runtimePending: false } : {}),
           ...(st.models !== undefined ? { availableModels: st.models } : {}),
           ...(st.effort !== undefined ? { effort: st.effort } : {}),
           ...(st.efforts !== undefined ? { availableEfforts: st.efforts } : {}),
@@ -1722,6 +1738,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               : {}),
             model: da.model,
             runtime: da.runtime,
+            runtimePending: !!da.modelSelection,
             permissionMode: da.permissionMode,
             duration: 'live',
             tokens: '0',

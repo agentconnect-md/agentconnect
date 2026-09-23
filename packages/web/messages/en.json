@@ -2321,6 +2321,7 @@
         "title": "Provider and model",
         "effort": "Effort",
         "approval": "Approval",
+        "pending": "Pending",
         "provider": "Provider",
         "byDecision": "By decision",
         "choose": "Choose a provider and model",
