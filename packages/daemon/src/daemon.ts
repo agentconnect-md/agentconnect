@@ -2,6 +2,7 @@ import { memorySourceTurnId } from './memory/source-turn.js'
 import {
   MEMORY_ENTRIES_V1_FEATURE,
   PROVIDER_CREDENTIALS_V1_FEATURE,
+  DECISION_EVALUATIONS_V1_FEATURE,
   DECISION_PREVIEW_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
   type DecisionBundle,
@@ -473,6 +474,7 @@ import {
 } from './runtimes/model-provider-config.js'
 import { KeyServerClient, type KeyGrant } from './key-server/client.js'
 import { DecisionEvaluator, type DecisionEvaluationInput } from './decisions/evaluator.js'
+import { DecisionEvaluationReader } from './decisions/evaluations.js'
 import { backgroundConversationText, decisionEvidenceText } from './decisions/evidence.js'
 import {
   DecisionGate,
@@ -1356,6 +1358,7 @@ export class Daemon {
   /** Owns the per-session model-credential lifecycle: key-server handle, grants, confined hosts. */
   private readonly modelSessions: ModelSessionHostPool
   private readonly decisionEvaluator: DecisionEvaluator
+  private readonly decisionEvaluations: DecisionEvaluationReader
   private readonly decisionGate: DecisionGate
   /** Distinguishes this process's verdict ownership from an earlier one's on the same daemon id. */
   private readonly decisionBootNonce = randomUUID()
@@ -1672,6 +1675,15 @@ export class Daemon {
       warn: (message) => this.log.warn(message)
     })
     this.decisionGate = new DecisionGate(this.decisionGateHost())
+    this.decisionEvaluations = new DecisionEvaluationReader({
+      store: () => this.store,
+      servedIntegration: (orgId, agentId, integrationId) => {
+        const integration = this.agents.get(agentId)?.integrations?.find((i) => i.id === integrationId)
+        if (!integration || !this.servesAgent(agentId) || this.orgForAgent(agentId) !== orgId) return undefined
+        const transportScope = this.transportScopeForIntegrationIds([integrationId])
+        return transportScope ? { transportScope } : {}
+      }
+    })
     this.codexSessionFloor = this.k8s ? configuredCodexSessionFloor(process.env) : undefined
     // Self-hosted launches inherit the host environment already; only a pod launch needs these carried.
     this.claudeModelAliases = this.k8s ? configuredClaudeModelAliases(process.env) : undefined
@@ -6094,6 +6106,7 @@ export class Daemon {
     return [
       PROVIDER_CREDENTIALS_V1_FEATURE,
       DECISION_PREVIEW_V1_FEATURE,
+      DECISION_EVALUATIONS_V1_FEATURE,
       DECISION_TRIGGER_V1_FEATURE,
       DECISION_TOOLS_V1_FEATURE,
       DECISION_MODEL_SELECTION_V1_FEATURE,
@@ -21061,6 +21074,7 @@ export class Daemon {
       memory: () => this.memory,
       dreamRunner: () => this.dreamRunner(),
       decisionEvaluator: () => this.decisionEvaluator,
+      decisionEvaluations: () => this.decisionEvaluations,
       runtimeCommands: () => this.runtimeCommands,
       memoryHomePortsFor: (agentId) => this.memoryHomePortsFor(agentId),
       wakeMemoryOutbox: () => this.memoryOutbox?.wake(),

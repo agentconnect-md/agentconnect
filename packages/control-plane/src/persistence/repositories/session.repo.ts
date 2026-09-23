@@ -1474,6 +1474,14 @@ export class PgSessionRepo implements SessionRepo {
     return s ? toRecord(s) : null
   }
 
+  async latestConversationSession(orgId: OrgId, agentId: AgentId, channel: string): Promise<SessionMetaRecord | null> {
+    const s = await this.db.sessionMeta.findFirst({
+      where: { orgId, agentId, channel, parentSessionId: null },
+      orderBy: [{ startedAt: 'desc' }, { id: 'desc' }]
+    })
+    return s ? toRecord(s) : null
+  }
+
   async getUnscoped(id: SessionId): Promise<SessionMetaRecord | null> {
     const s = await this.db.sessionMeta.findUnique({ where: { id } })
     return s ? toRecord(s) : null

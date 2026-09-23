@@ -7,6 +7,9 @@ import {
   decisionModelSelectionIssues,
   selectDecisionTarget,
   DecisionDraft,
+  DecisionEvaluationRecord,
+  DecisionEvaluationRecordDetail,
+  DecisionPreviewSample,
   DecisionQuestion,
   decisionConditionIssues,
   decisionConditionNeedsReview,
@@ -254,6 +257,72 @@ describe('Decision wire bundle', () => {
     expect(
       DecisionBundle.safeParse({ bindings: [{ channel: 'C1', consumer: gate, enabled: false, disabledReason: 'x' }] })
         .success
+    ).toBe(false)
+  })
+})
+
+describe('Gate Try samples and Recent evaluations records', () => {
+  it('bounds a preview sample and requires a current message', () => {
+    const sample = { history: [{ sender: 'U1', text: 'Earlier' }], currentMessage: { sender: 'U2', text: ' Now ' } }
+    expect(DecisionPreviewSample.parse(sample).currentMessage.text).toBe('Now')
+    expect(DecisionPreviewSample.safeParse({ ...sample, currentMessage: { text: '   ' } }).success).toBe(false)
+    expect(DecisionPreviewSample.safeParse({ ...sample, history: [{ sender: ' ', text: 'x' }] }).success).toBe(false)
+    const long = Array.from({ length: 51 }, () => ({ sender: 'U1', text: 'x' }))
+    expect(DecisionPreviewSample.safeParse({ ...sample, history: long }).success).toBe(false)
+    expect(
+      DecisionPreviewSample.safeParse({ ...sample, currentMessage: { text: 'x'.repeat(16 * 1024 + 1) } }).success
+    ).toBe(false)
+    expect(DecisionPreviewSample.safeParse({ ...sample, extra: true }).success).toBe(false)
+  })
+
+  const record = {
+    seq: 7,
+    at: '2026-01-01T00:00:00.000Z',
+    messageId: '1700000000.0001',
+    decisionId: 'd1',
+    outcome: 'triggered',
+    reason: null,
+    answer: { type: 'boolean', value: true, probability: 0.9 },
+    matchedKeys: [],
+    latencyMs: 120,
+    requestedModel: 'jev-latest',
+    actualModel: 'jev-1.13.0',
+    usage: { inputTokens: 10, outputTokens: 1 },
+    detailsExpired: false
+  }
+
+  it('accepts a summary row and refuses unknown fields or probability vectors', () => {
+    expect(DecisionEvaluationRecord.parse(record)).toEqual(record)
+    expect(DecisionEvaluationRecord.safeParse({ ...record, text: 'body' }).success).toBe(false)
+    expect(
+      DecisionEvaluationRecord.safeParse({
+        ...record,
+        answer: { type: 'choice', value: 'a', confidence: 0.5, probabilities: { a: 1 } }
+      }).success
+    ).toBe(false)
+    expect(DecisionEvaluationRecord.safeParse({ ...record, outcome: 'routed' }).success).toBe(false)
+  })
+
+  it('accepts an expired detail with its snapshot and no bodies', () => {
+    const detail = {
+      ...record,
+      detailsExpired: true,
+      answer: null,
+      snapshot: {
+        decisionId: 'd1',
+        providerId: 'typesafe',
+        model: 'jev-latest',
+        question: { type: 'boolean', instructions: 'Reply?', criteria: { true: 'Yes', false: 'No' } },
+        condition: { type: 'boolean', values: [true] },
+        sessionMode: 'createNew'
+      },
+      input: null,
+      fullAnswer: null,
+      evidence: { snapshotSeq: 7, suppliedBackground: null }
+    }
+    expect(DecisionEvaluationRecordDetail.parse(detail)).toEqual(detail)
+    expect(
+      DecisionEvaluationRecordDetail.safeParse({ ...detail, snapshot: { ...detail.snapshot, x: 1 } }).success
     ).toBe(false)
   })
 })

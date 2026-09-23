@@ -61,6 +61,7 @@ function MockStrip({
   return (
     <DecisionBindingStrip
       bindingKey={bindingKey}
+      conversation={{ integrationId: 'int-mock', channelId: 'help-channel' }}
       canWrite={canWrite}
       agentName={agentName}
       padX={18}
@@ -78,6 +79,7 @@ function SavedStrip({ saved, onSave }: { saved: SavedGate; onSave: (gate: Channe
   return (
     <DecisionBindingStrip
       bindingKey="org-test|support-bot|#saved"
+      conversation={null}
       canWrite
       agentName="Billing"
       padX={18}
@@ -108,9 +110,10 @@ const findByText = (scope: HTMLElement, text: string) =>
   [...scope.querySelectorAll('button, span, a, b, label')].find((node) => node.textContent?.trim() === text)
 
 /** React tracks a controlled field's value, so a bare assignment is swallowed; set it natively. */
-async function typeInto(input: HTMLInputElement | null, value: string) {
+async function typeInto(input: HTMLInputElement | HTMLTextAreaElement | null, value: string) {
   if (!input) throw new Error('no field to type into')
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+  const proto = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+  const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
   await act(async () => {
     setter?.call(input, value)
     input.dispatchEvent(new Event('input', { bubbles: true }))
@@ -210,23 +213,37 @@ describe('DecisionBindingStrip', () => {
   })
 
   // The verdict is its own block, so a reader who collapses the disclosure keeps the result.
-  it('keeps the preview verdict after collapsing Try a message', async () => {
+  it('runs the gate Try on the conversation without a daemon pick and keeps the verdict after collapsing', async () => {
     const view = await render(<MockStrip bindingKey="org-test|support-bot|#help" />)
-    // The daemon catalog is a second read; wait for it or Try stays inert.
-    await act(async () => {})
-    await act(async () => {})
-
     await clickText(view, 'Try a message')
-    await typeInto(view.querySelector('input[aria-label="Try a message"]'), 'Can someone ship the hotfix?')
+    await typeInto(view.querySelector('textarea[aria-label="Current message"]'), 'Can someone ship the hotfix?')
     await clickText(view, 'Try')
     await act(async () => {})
 
     // Every fixture probability (0.4/0.4/0.2) sits below the canonical 50% minimum.
-    expect(findByText(view, 'Skipped')).toBeTruthy()
+    expect(findByText(view, 'Would skip')).toBeTruthy()
+    expect(findByText(view, 'Would trigger')).toBeUndefined()
 
     await clickText(view, 'Try a message')
-    expect(view.querySelector('input[aria-label="Try a message"]')).toBeNull()
-    expect(findByText(view, 'Skipped')).toBeTruthy()
+    expect(view.querySelector('textarea[aria-label="Current message"]')).toBeNull()
+    expect(view.querySelector('[data-testid="gate-try-result"]')).toBeTruthy()
+  })
+
+  it('opens Recent evaluations from a saved gate even without write permission', async () => {
+    const key = 'org-test|support-bot|#help'
+    const view = await render(<MockStrip bindingKey={key} canWrite={false} />)
+    await act(async () => {
+      store.setGate(key, {
+        decisionId: 'needs-response',
+        when: { type: 'boolean', values: [true] },
+        channelName: '#help'
+      })
+      store.setBindingDraft(key, null)
+    })
+    expect(findByText(view, 'Edit')).toBeUndefined()
+    await clickText(view, 'Recent evaluations')
+    await act(async () => {})
+    expect(view.querySelectorAll('li button').length).toBeGreaterThan(0)
   })
 
   // Inline Create returns to this draft with the new Decision selected.

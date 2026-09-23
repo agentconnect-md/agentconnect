@@ -1,7 +1,12 @@
 import {
+  DECISION_EVALUATIONS_V1_FEATURE,
   DECISION_PREVIEW_V1_FEATURE,
   DecisionCatalogReply,
+  DecisionEvaluationReply,
+  DecisionEvaluationsReply,
   DecisionPreviewReply,
+  type DecisionEvaluationRequest,
+  type DecisionEvaluationsRequest,
   type DecisionPreviewRequest,
   MEMORY_ENTRIES_V1_FEATURE,
   MEMORY_ENTRIES_SEARCH_V1_FEATURE,
@@ -864,6 +869,46 @@ export class ControlSender {
         req,
         { epoch: c.sessionEpoch, agentId: req.agentId },
         { ackTimeoutMs: 7000, maxTries: 1 },
+        orgId
+      )
+    )
+  }
+
+  /** Recent evaluations for one conversation lane; the page is proxied, never persisted or logged. */
+  async decisionEvaluations(
+    daemonId: string,
+    orgId: string,
+    req: DecisionEvaluationsRequest
+  ): Promise<DecisionEvaluationsReply> {
+    const c = this.must(daemonId)
+    if (c.state !== 'READY' || !c.capabilities?.features.includes(DECISION_EVALUATIONS_V1_FEATURE))
+      throw new NoConnection(daemonId)
+    return DecisionEvaluationsReply.parse(
+      await c.conn.request(
+        'decision/evaluations',
+        req,
+        { epoch: c.sessionEpoch, agentId: req.agentId },
+        { ackTimeoutMs: 5000, maxTries: 1 },
+        orgId
+      )
+    )
+  }
+
+  /** One evaluation's frozen detail, or null when the lane no longer holds it. */
+  async decisionEvaluation(
+    daemonId: string,
+    orgId: string,
+    req: DecisionEvaluationRequest
+  ): Promise<DecisionEvaluationReply> {
+    const c = this.must(daemonId)
+    if (c.state !== 'READY' || !c.capabilities?.features.includes(DECISION_EVALUATIONS_V1_FEATURE))
+      throw new NoConnection(daemonId)
+    return DecisionEvaluationReply.parse(
+      await c.conn.request(
+        'decision/evaluation',
+        req,
+        { epoch: c.sessionEpoch, agentId: req.agentId },
+        { ackTimeoutMs: 5000, maxTries: 1 },
         orgId
       )
     )

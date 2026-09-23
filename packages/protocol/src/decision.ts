@@ -218,6 +218,105 @@ export const DecisionEvaluation = z.discriminatedUnion('status', [
 ])
 export type DecisionEvaluation = z.infer<typeof DecisionEvaluation>
 
+// A Gate Try sample: ordered history lines with sender ids, then the message being judged.
+export const DecisionPreviewSample = z.strictObject({
+  history: z
+    .array(z.strictObject({ sender: z.string().trim().min(1).max(128), text: z.string().max(16 * 1024) }))
+    .max(50),
+  currentMessage: z.strictObject({
+    sender: z.string().trim().min(1).max(128).optional(),
+    text: z
+      .string()
+      .trim()
+      .min(1)
+      .max(16 * 1024)
+  })
+})
+export type DecisionPreviewSample = z.infer<typeof DecisionPreviewSample>
+
+// The answer a Recent evaluations row shows: the value and its confidence, never a probability vector.
+export const DecisionAnswerSummary = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('boolean'), value: z.boolean(), probability: Probability }),
+  z.strictObject({ type: z.literal('choice'), value: Key, confidence: Probability }),
+  z.strictObject({ type: z.literal('score'), value: z.number().nonnegative(), confidence: Probability })
+])
+export type DecisionAnswerSummary = z.infer<typeof DecisionAnswerSummary>
+
+// One frozen state entry as the daemon evaluated it; the current message is never truncated, so it may exceed 16 KiB.
+export const DecisionEvaluationEntry = z.object({
+  id: z.string().max(256),
+  sender: z.object({ id: z.string().max(256) }),
+  text: z.string().max(32 * 1024),
+  quote: z.object({ sender: z.string().max(256).optional(), text: z.string().max(32 * 1024) }).optional(),
+  threadId: z.string().max(512).nullable(),
+  time: z.string().max(64).optional(),
+  truncated: z.literal(true).optional()
+})
+export type DecisionEvaluationEntry = z.infer<typeof DecisionEvaluationEntry>
+
+export const DecisionEvaluationOutcome = z.enum(['triggered', 'skipped', 'unavailable', 'canceled', 'pending'])
+export type DecisionEvaluationOutcome = z.infer<typeof DecisionEvaluationOutcome>
+
+// A Recent evaluations summary row, read from the daemon's decision_verdict (decisions.md §9.5).
+export const DecisionEvaluationRecord = z.strictObject({
+  seq: z.number().int().nonnegative(),
+  at: z.string().max(64),
+  messageId: z.string().max(256).nullable(),
+  decisionId: Id,
+  outcome: DecisionEvaluationOutcome,
+  reason: z.string().max(128).nullable(),
+  answer: DecisionAnswerSummary.nullable(),
+  matchedKeys: z.array(Key).max(32),
+  latencyMs: z.number().int().nonnegative().nullable(),
+  requestedModel: Id,
+  actualModel: z.string().max(256).nullable(),
+  usage: z
+    .strictObject({ inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative() })
+    .nullable(),
+  detailsExpired: z.boolean()
+})
+export type DecisionEvaluationRecord = z.infer<typeof DecisionEvaluationRecord>
+
+// The frozen snapshot, input, and answer of one evaluation; never rebuilt from current definitions.
+export const DecisionEvaluationRecordDetail = DecisionEvaluationRecord.extend({
+  snapshot: z
+    .strictObject({
+      decisionId: Id,
+      providerId: Id,
+      model: Id,
+      question: DecisionQuestion,
+      condition: DecisionCondition,
+      sessionMode: z.string().max(64)
+    })
+    .nullable(),
+  input: z
+    .strictObject({
+      currentMessage: DecisionEvaluationEntry,
+      history: z.array(DecisionEvaluationEntry).max(100),
+      historyOmitted: z.number().int().nonnegative(),
+      context: z.strictObject({
+        partial: z.boolean(),
+        reasons: z.array(z.string().max(64)).max(8),
+        omittedMessages: z.number().int().nonnegative()
+      })
+    })
+    .nullable(),
+  fullAnswer: DecisionAnswer.nullable(),
+  evidence: z
+    .strictObject({
+      snapshotSeq: z.number().int().nonnegative(),
+      suppliedBackground: z.number().int().nonnegative().nullable()
+    })
+    .nullable()
+})
+export type DecisionEvaluationRecordDetail = z.infer<typeof DecisionEvaluationRecordDetail>
+
+export const DecisionEvaluationRecordPage = z.strictObject({
+  items: z.array(DecisionEvaluationRecord).max(50),
+  nextCursor: z.number().int().positive().nullable()
+})
+export type DecisionEvaluationRecordPage = z.infer<typeof DecisionEvaluationRecordPage>
+
 export interface DecisionValidationIssue {
   path: Array<string | number>
   message: string

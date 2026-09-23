@@ -717,24 +717,27 @@ Evaluation usage is its own category rather than a fabricated ACP turn.
 These routes extend the organization-scoped `/api/v1` API with normal
 authentication, visibility, error DTOs, and OpenAPI metadata. The bot routing routes
 are Stage 2; the resource and gate routes are Stage 1. Decision CRUD, the provider
-catalog, and standalone preview are implemented; consumer routes remain proposed.
+catalog, standalone preview, gate preview, and Recent evaluations are implemented; the
+shared-bot routing routes remain proposed.
 Usage lists identify the
 consumer kind without restricting the reusable resource to gates and routers.
 
-| Method and route                                              | Input / result                                                                           |
-| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `GET /decisions/providers?daemonId=:id`                       | Authorized daemon's non-secret catalog, BYOK/AC credits source, models, and readiness    |
-| `GET /decisions`                                              | Visible definitions, model/type, visible consumer counts                                 |
-| `GET /decisions/:id`                                          | Definition and visible consumer usages                                                   |
-| `POST /decisions`                                             | DecisionDraft                                                                            |
-| `PATCH /decisions/:id`                                        | Complete DecisionDraft, atomically saved                                                 |
-| `DELETE /decisions/:id`                                       | Refuse while used                                                                        |
-| `PATCH /integrations/:id/channels/:channelId`                 | Trigger and complete decisionBinding                                                     |
-| `GET /bots/:id/decision-routing` (Stage 2)                    | Bot-owned routing configuration, effective channel scope, readiness                      |
-| `PUT /bots/:id/decision-routing` (Stage 2)                    | Complete configuration plus explicit channel additions/removals and replacement settings |
-| `POST /decisions/preview`                                     | Draft/ID and sample state; typed answer only                                             |
-| `POST /integrations/:id/channels/:channelId/decision-preview` | Gate draft and sample state; answer plus match/skip                                      |
-| `POST /bots/:id/decision-routing/preview` (Stage 2)           | Routing draft, channel and sample context; precedence outcome or answer/rule/target      |
+| Method and route                                                      | Input / result                                                                              |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `GET /decisions/providers?daemonId=:id`                               | Authorized daemon's non-secret catalog, BYOK/AC credits source, models, and readiness       |
+| `GET /decisions`                                                      | Visible definitions, model/type, visible consumer counts                                    |
+| `GET /decisions/:id`                                                  | Definition and visible consumer usages                                                      |
+| `POST /decisions`                                                     | DecisionDraft                                                                               |
+| `PATCH /decisions/:id`                                                | Complete DecisionDraft, atomically saved                                                    |
+| `DELETE /decisions/:id`                                               | Refuse while used                                                                           |
+| `PATCH /integrations/:id/channels/:channelId`                         | Trigger and complete decisionBinding                                                        |
+| `GET /bots/:id/decision-routing` (Stage 2)                            | Bot-owned routing configuration, effective channel scope, readiness                         |
+| `PUT /bots/:id/decision-routing` (Stage 2)                            | Complete configuration plus explicit channel additions/removals and replacement settings    |
+| `POST /decisions/preview`                                             | Draft/ID and sample state; typed answer only                                                |
+| `POST /integrations/:id/channels/:channelId/decision-preview`         | Gate draft and sample state; answer plus match/skip                                         |
+| `GET /integrations/:id/channels/:channelId/decision-evaluations`      | Recent evaluations, newest first, bounded page by `cursor`/`limit`; proxied from the daemon |
+| `GET /integrations/:id/channels/:channelId/decision-evaluations/:seq` | One evaluation's frozen snapshot, input, answer, and evidence, or `detailsExpired`          |
+| `POST /bots/:id/decision-routing/preview` (Stage 2)                   | Routing draft, channel and sample context; precedence outcome or answer/rule/target         |
 
 For example, a fixed-target binding selects its own condition:
 
@@ -1411,7 +1414,11 @@ requested/actual model, all matched actions, and effective targets. Mention/thre
 evaluations include their target constraint and real model usage. Ineligible or
 outside-scope preview outcomes say Not applied and have no model usage.
 Reads are bounded authorized daemon BFF operations with
-the conversation's audience checks; CP never persists those bodies. Expired snapshots
+the conversation's audience checks; CP never persists those bodies. A gate opens a
+session only when it triggers, so much of a conversation's history has no session
+naming an audience: there the summary list follows the organization read baseline
+(closed while an external-access policy is active), and the detail read with frozen
+bodies additionally requires edit access to the consumer agent. Expired snapshots
 say **Details expired**. Editing a definition cannot relabel a historical result.
 
 Emit separate evaluation/match/skip/failure/latency/usage counters, without

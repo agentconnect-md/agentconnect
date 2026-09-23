@@ -363,6 +363,7 @@ export class CpClient {
       memoryEntriesWrite: deps.memoryEntriesWrite,
       dreamReader: deps.dreamReader,
       decisionEvaluator: deps.decisionEvaluator,
+      decisionEvaluations: deps.decisionEvaluations,
       localSkillsReader: deps.localSkillsReader,
       runtimeCommandsReader: deps.runtimeCommandsReader,
       gitMessagePasses: new GitMessagePasses(),

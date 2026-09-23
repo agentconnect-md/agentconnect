@@ -9,22 +9,13 @@ import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { useOrgs } from '@/lib/org-context'
-import {
-  defaultConditionFor,
-  emptyConditionFor,
-  gateIssues,
-  useDecisionProviders,
-  useDecisionsPrototype
-} from '@/lib/decisions/provider'
+import { defaultConditionFor, emptyConditionFor, gateIssues, useDecisionsPrototype } from '@/lib/decisions/provider'
 import { bindingSaveError, type BindingSaveError, type GateStatus, type SavedGate } from '@/lib/decisions/binding'
-import {
-  matchDecisionCondition,
-  type ChannelDecisionGate,
-  type DecisionAnswer,
-  type DecisionCondition,
-  type DecisionDefinition
-} from '@agentconnect.md/protocol/decision'
-import { DecisionConditionFields, intervalText } from './DecisionConditionFields'
+import type { ChannelDecisionGate, DecisionCondition } from '@agentconnect.md/protocol/decision'
+import type { DecisionConversationRef } from '@agentconnect.md/protocol/decision-api'
+import { DecisionConditionFields, conditionSummary } from './DecisionConditionFields'
+import { DecisionEvaluationsPanel } from './DecisionEvaluationsPanel'
+import { DecisionGateTry } from './DecisionGateTry'
 
 /** True when a condition is missing or selects no answer, so a repair still waits on the operator. */
 function selectsNothing(when: DecisionCondition | null): boolean {
@@ -34,38 +25,11 @@ function selectsNothing(when: DecisionCondition | null): boolean {
   return false
 }
 
-/** How a saved condition reads in one line — the summary the collapsed strip prints. */
-function conditionSummary(
-  decision: DecisionDefinition,
-  when: DecisionCondition,
-  labels: { yes: string; no: string; none: string }
-): string {
-  if (when.type === 'boolean') {
-    if (!when.values.length) return labels.none
-    return when.values.map((value) => (value ? labels.yes : labels.no)).join(' or ')
-  }
-  if (when.type === 'score') {
-    return intervalText(when, decision.question.type === 'score' ? decision.question.criteria.length : 2)
-  }
-  const keys = Object.keys(when.thresholds)
-  if (!keys.length) return labels.none
-  return keys.map((key) => `${key} ≥ ${Math.round((when.thresholds[key] ?? 0) * 100)}%`).join(', ')
-}
-
 function Note({ icon, children }: { icon: string; children: ReactNode }) {
   return (
     <div className="flex gap-2 font-sans text-[12px] font-normal leading-[1.55] text-(--text-tertiary)">
       <Icon name={icon} size={13} className="mt-[2px] flex-none" />
       <span>{children}</span>
-    </div>
-  )
-}
-
-function Row({ label, value }: { label: ReactNode; value: ReactNode }) {
-  return (
-    <div className="flex items-baseline justify-between gap-3 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-      <span>{label}</span>
-      <b className="mono font-medium text-(--text-secondary)">{value}</b>
     </div>
   )
 }
@@ -93,7 +57,8 @@ function saveErrorText(t: ReturnType<typeof useTranslations<'Decisions'>>, error
 
 export function DecisionBindingStrip({
   bindingKey,
-  canWrite,
+  conversation,
+  canWrite: writable,
   agentName,
   padX,
   saved,
@@ -103,6 +68,8 @@ export function DecisionBindingStrip({
 }: {
   /** The gate's identity: organization, owning bot, and conversation (see `gateKey`). */
   bindingKey: string
+  /** The live conversation Try and Recent evaluations read; null where none is addressable. */
+  conversation: DecisionConversationRef | null
   canWrite: boolean
   /** The agent this conversation dispatches to — the gate's one fixed target. */
   agentName: string
@@ -117,22 +84,17 @@ export function DecisionBindingStrip({
   onSave: (gate: ChannelDecisionGate) => Promise<void>
 }) {
   const t = useTranslations('Decisions')
-  const { orgPath } = useOrgs()
+  const { orgPath, myRole } = useOrgs()
+  // Viewers read the gate and its Recent evaluations; editing and Try need write access.
+  const canWrite = writable && myRole !== 'viewer'
   const pathname = usePathname()
   const search = useSearchParams()
-  const { decisions, loading, api, reload, bindingDrafts, setBindingDraft, beginInlineCreate } = useDecisionsPrototype()
-  const { daemonId } = useDecisionProviders()
+  const { decisions, loading, reload, bindingDrafts, setBindingDraft, beginInlineCreate } = useDecisionsPrototype()
   const draft = bindingDrafts[bindingKey] ?? null
   const saving = useRef(false)
   const [helpOpen, setHelpOpen] = useState(false)
   const [tryOpen, setTryOpen] = useState(false)
-  const [tryText, setTryText] = useState('')
-  const [tryRunning, setTryRunning] = useState(false)
-  const [tryResult, setTryResult] = useState<{
-    matched: boolean
-    rows: Array<{ label: string; value: string }>
-    unavailable: boolean
-  } | null>(null)
+  const [historyOpen, setHistoryOpen] = useState(false)
 
   // A fresh draft with no Decision takes the first one once the list lands; the functional update keeps both mounted copies idempotent.
   const needsPick = draft !== null && draft.decisionId === null && !draft.explicitPick
@@ -159,7 +121,6 @@ export function DecisionBindingStrip({
   const collapse = () => {
     refocus.current = true
     setBindingDraft(bindingKey, null)
-    setTryResult(null)
   }
 
   const words = { yes: t('condition.yes'), no: t('condition.no'), none: t('condition.noAnswer') }
@@ -199,7 +160,7 @@ export function DecisionBindingStrip({
           <span className="mono min-w-0 truncate text-[11.5px] text-(--text-primary)">{savedLabel}</span>
           {savedDecision && (
             <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              {conditionSummary(savedDecision, saved.when, words)}
+              {conditionSummary(savedDecision.question, saved.when, words)}
             </span>
           )}
           <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
@@ -268,6 +229,18 @@ export function DecisionBindingStrip({
             )}
           </div>
         )}
+        {conversation && (
+          <button
+            type="button"
+            className="lnk self-start gap-[6px] text-[11.5px] font-medium"
+            aria-expanded={historyOpen}
+            onClick={() => setHistoryOpen((open) => !open)}
+          >
+            <Icon name={historyOpen ? 'chevron-down' : 'chevron-right'} size={12} />
+            {t('evaluations.toggle')}
+          </button>
+        )}
+        {conversation && historyOpen && <DecisionEvaluationsPanel conversation={conversation} />}
       </div>
     )
   }
@@ -314,54 +287,6 @@ export function DecisionBindingStrip({
       if (error.kind === 'decision_unavailable') void reload()
     } finally {
       saving.current = false
-    }
-  }
-
-  const runTry = async () => {
-    if (!daemonId || !decision || !when || !tryText.trim()) return
-    setTryRunning(true)
-    setTryResult(null)
-    try {
-      const result = await api.preview({
-        decision: {
-          name: decision.name,
-          providerId: decision.providerId,
-          model: decision.model,
-          question: decision.question,
-          visibility: decision.visibility,
-          sharedWith: decision.sharedWith
-        },
-        daemonId,
-        state: { history: [], currentMessage: { text: tryText } },
-        consumer: { type: 'none' }
-      })
-      const evaluation = result.evaluation
-      if (!evaluation || evaluation.status !== 'answered') {
-        setTryResult({ matched: false, rows: [], unavailable: true })
-        return
-      }
-      const answer: DecisionAnswer = evaluation.answer
-      const rows =
-        answer.type === 'score'
-          ? [{ label: 'score', value: String(answer.value) }]
-          : answer.type === 'choice'
-            ? Object.entries(answer.probabilities).map(([key, value]) => ({
-                label: key,
-                value: `${Math.round(value * 100)}%`
-              }))
-            : [
-                { label: words.yes, value: `${Math.round(answer.probability * 100)}%` },
-                { label: words.no, value: `${Math.round((1 - answer.probability) * 100)}%` }
-              ]
-      setTryResult({
-        matched: matchDecisionCondition(decision.question, when, answer).matched,
-        rows,
-        unavailable: false
-      })
-    } catch {
-      setTryResult({ matched: false, rows: [], unavailable: true })
-    } finally {
-      setTryRunning(false)
     }
   }
 
@@ -533,14 +458,17 @@ export function DecisionBindingStrip({
             <Icon name={helpOpen ? 'chevron-down' : 'chevron-right'} size={12} />
             {t('binding.howThisWorks')}
           </button>
-          <button
-            type="button"
-            className="lnk gap-[6px] text-[11.5px] font-medium"
-            onClick={() => setTryOpen((open) => !open)}
-          >
-            <Icon name={tryOpen ? 'chevron-down' : 'chevron-right'} size={12} />
-            {t('binding.tryMessage')}
-          </button>
+          {conversation && canWrite && (
+            <button
+              type="button"
+              className="lnk gap-[6px] text-[11.5px] font-medium"
+              aria-expanded={tryOpen}
+              onClick={() => setTryOpen((open) => !open)}
+            >
+              <Icon name={tryOpen ? 'chevron-down' : 'chevron-right'} size={12} />
+              {t('binding.tryMessage')}
+            </button>
+          )}
         </div>
       )}
 
@@ -552,65 +480,14 @@ export function DecisionBindingStrip({
         </div>
       )}
 
-      {decision && tryOpen && (
-        <div className="flex flex-wrap items-center gap-[9px]">
-          <input
-            value={tryText}
-            onChange={(event) => setTryText(event.target.value)}
-            placeholder={t('binding.tryPlaceholder')}
-            aria-label={t('binding.tryMessage')}
-            className="inp h-8 min-h-0 min-w-[200px] flex-1"
-          />
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={!tryText.trim() || tryRunning || !daemonId}
-            onClick={() => void runTry()}
-          >
-            <Icon name="play" size={14} />
-            {tryRunning ? t('try.running') : t('binding.try')}
-          </Button>
-        </div>
-      )}
-
-      {/* Outside the `Try a message` disclosure, so collapsing it keeps the verdict on screen. */}
-      {decision && when && tryResult && (
-        <div className="overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card)">
-          <div className="flex items-center gap-[9px] border-b border-(--border-subtle) px-[12px] py-[10px]">
-            <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-[1.45]">{tryText}</span>
-            <span
-              className={`badge flex-none ${
-                tryResult.unavailable
-                  ? 'bg-(--status-error-soft) text-(--red-600)'
-                  : tryResult.matched
-                    ? 'bg-(--status-online-soft) text-(--status-online)'
-                    : 'bg-(--surface-active) text-(--text-secondary)'
-              }`}
-            >
-              {tryResult.unavailable
-                ? t('try.unavailableBadge')
-                : tryResult.matched
-                  ? t('binding.wouldTrigger')
-                  : t('binding.skipped')}
-            </span>
-          </div>
-          <div className="flex flex-col gap-[7px] bg-(--surface-app) px-[12px] py-[11px]">
-            {tryResult.unavailable ? (
-              <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                {t('try.unavailableBody')}
-              </span>
-            ) : (
-              <>
-                {tryResult.rows.map((row) => (
-                  <Row key={row.label} label={<span className="mono">{row.label}</span>} value={row.value} />
-                ))}
-                <Row label={t('binding.triggerCondition')} value={conditionSummary(decision, when, words)} />
-                <Row label={t('binding.triggers')} value={tryResult.matched ? agentName : '—'} />
-              </>
-            )}
-            <Row label={t('model')} value={`${decision.providerId} / ${decision.model}`} />
-          </div>
-        </div>
+      {decision && when && conversation && canWrite && (
+        <DecisionGateTry
+          conversation={conversation}
+          decision={decision}
+          when={when}
+          agentName={agentName}
+          open={tryOpen}
+        />
       )}
 
       {canWrite && (

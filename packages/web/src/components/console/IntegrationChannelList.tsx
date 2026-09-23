@@ -830,6 +830,7 @@ export function IntegrationChannelList({
     return (
       <DecisionBindingStrip
         bindingKey={key}
+        conversation={integrationId ? { integrationId, channelId: c.channelId } : null}
         canWrite={!!integrationId && !shareable}
         // The same owner the row's dispatch picker shows — for a shared bot, a sibling install's.
         agentName={(defaultAgent(c) ?? (agentId ? member(agentId) : undefined))?.label ?? ''}
