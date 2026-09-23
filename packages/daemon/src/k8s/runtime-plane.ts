@@ -27,7 +27,7 @@ import { TunnelBinder } from '../remote/tunnel-binder.js'
 import { ShimWorkspaceFiles } from '../shim/workspace-files-channel.js'
 import { ShimMemoryFs } from '../shim/memory-fs-channel.js'
 import { ShimWorkspaceFs } from '../shim/workspace-fs-channel.js'
-import type { WorkspaceFiles } from '../workspace/workspace-files.js'
+import { WorkspaceViolationError, type WorkspaceFiles } from '../workspace/workspace-files.js'
 import { RoutedWorkspaceFs, type WorkspacePlacement } from '../workspace/workspace-fs.js'
 import { sessionDirIn } from '../workspace/session-layout.js'
 import type { MemoryFs } from '../memory/fs.js'
@@ -158,9 +158,7 @@ export interface K8sRuntimePlane extends ExecutionPlane {
    *  probe reuse this pod instead of claiming a second one. A caller that arrives while a probe is
    *  already in flight awaits ITS table and its own sweep is skipped — the pod is gone by then. */
   probeRuntimes: (sweep?: ProbeSandboxSweep) => Promise<K8sRuntimeTable>
-  /** A git runner for an agent's workspace path, on the pod that owns it, or undefined when this
-   *  daemon has no channel to that pod — the caller then keeps its local behaviour. A session pod that
-   *  is asleep is brought up on first use while the agent's own pod is bound (see `sessionForPath`). */
+  /** A git runner on the pod that owns the path (a sleeping session pod is woken beside a bound agent pod), or undefined with no channel to it, which callers refuse. */
   gitRunnerFor: (agentId: string, cwd?: string, abort?: AbortSignal) => GitRunner | undefined
   /** The console's file operations for the agent's workspaces, each root on the pod that owns it. Separate
    *  from the git runner because they are separate capabilities (`read` vs `exec`) and a channel is not a
@@ -304,7 +302,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     if (!boundSession(agentSandboxSubject(sandboxSubjectAgentId(subject)))) return undefined
     return await driver.claimUidFor(subject)
   }
-  /** The session that owns `path`, resuming a sleeping session pod beside a bound agent pod, or the reason none does. */
+  /** The session that owns `path`, resuming a sleeping session pod beside a bound agent pod; otherwise the typed `sandbox-unavailable` refusal the console can wake on. */
   const sessionForPath = async (agentId: string, path: string): Promise<ShimSession> => {
     const subject = subjectForPath(agentId, path)
     let session = boundSession(subject)
@@ -316,7 +314,13 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
         session = boundSession(subject)
       }
     }
-    if (!session) throw new Error(`sandbox ${subject} that owns ${path} has no bound channel`)
+    // Path-free: the message rides the wire to the Control Plane, and the subject already names the pod.
+    if (!session) {
+      throw new WorkspaceViolationError(
+        `sandbox "${subject}" has no bound channel, so this workspace cannot be reached`,
+        'sandbox-unavailable'
+      )
+    }
     return session
   }
 
@@ -436,9 +440,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     // The driver claims the pod a host key names, so only a confined session's host hands it one; every other host shares the agent's pod (§11).
     spawnFor: ({ hostKey, confined }) => ({ driver, ...(confined() ? { hostKey } : {}) }),
     gitRunnerFor: (agentId, cwd, abort) => {
-      // No channel means this path has no bound sandbox to run git in. Returning undefined keeps the
-      // caller on its local runner rather than failing the operation — which is what a
-      // self-hosted agent beside a cluster-backed one needs anyway.
+      // No channel to the owning pod answers undefined, which the workspace manager refuses as `sandbox-unavailable`.
       const subject = subjectForPath(agentId, cwd)
       const session = boundSession(subject)
       if (session) return new ShimGitRunner(session, cwd, undefined, abort)

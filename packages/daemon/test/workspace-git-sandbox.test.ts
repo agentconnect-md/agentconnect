@@ -5,7 +5,8 @@ import { join } from 'node:path'
 import { createWorkspaceGit } from '../src/cp/workspace-git.js'
 import { ShimChannelLostError } from '../src/shim/channels.js'
 import { ShimGitRunner } from '../src/shim/git-exec.js'
-import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
+import { LocalGitRunner } from '../src/workspace/git-runner.js'
+import { WorkspaceManager, type SecondaryWorkspaceRoot } from '../src/workspace/workspace-manager.js'
 import { wireTestPlane } from './workspace-plane-support.js'
 
 // One plane per test file — the isolation Vitest's per-file module registry used to give.
@@ -173,5 +174,48 @@ describe.skipIf(process.platform === 'win32')('a shim channel that goes away mid
     const sent = seen.map((args) => args.join(' '))
     expect(new Set(sent).size).toBe(sent.length)
     expect(sent.some((line) => line.startsWith('add ') || line.startsWith('commit'))).toBe(false)
+  })
+})
+
+describe("the workspace manager's own git without a bound sandbox", () => {
+  const thrownBy = (run: () => unknown): unknown => {
+    try {
+      run()
+    } catch (err) {
+      return err
+    }
+    return undefined
+  }
+  const refusal = { name: 'WorkspaceViolationError', reason: 'sandbox-unavailable' }
+  const secondary: SecondaryWorkspaceRoot = {
+    cloneUrl: 'https://git.example.test/example-org/example-repo.git',
+    branch: '',
+    path: '/agent/repos/example-org/example-repo/checkout',
+    worktreesPath: '/agent/repos/example-org/example-repo/worktrees',
+    repoFullName: 'example-org/example-repo',
+    subtreeName: 'example-org/example-repo',
+    provider: 'github',
+    repoId: '1',
+    githubApp: false
+  }
+
+  it('refuses an off-disk path the plane has no runner for, instead of running git on this disk', async () => {
+    wireTestPlane(workspaces, { workspacesOffDisk: true })
+    // No cwd is this process's own directory, and it exists here: where a local fallback used to run.
+    for (const cwd of [undefined, process.cwd(), '/agent/checkout']) {
+      expect(thrownBy(() => workspaces.runnerFor(AGENT, cwd))).toMatchObject(refusal)
+    }
+    // The `ls-remote` a secondary root's default branch is resolved with ran in the daemon's cwd that way.
+    await expect(workspaces.resolveRemoteDefaultBranch(AGENT, secondary)).rejects.toMatchObject(refusal)
+  })
+
+  it("keeps an on-disk path on this daemon's own git", async () => {
+    // A plane whose files are on this disk (a microsandbox VM), and no plane at all: git runs right here.
+    for (const wire of [() => wireTestPlane(workspaces, {}), () => workspaces.setPlaneResolver(undefined)]) {
+      wire()
+      const git = workspaces.runnerFor(AGENT, process.cwd())
+      expect(git).toBeInstanceOf(LocalGitRunner)
+      expect(await git.raw(['--version'])).toMatch(/^git version/)
+    }
   })
 })

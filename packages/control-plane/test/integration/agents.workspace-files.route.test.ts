@@ -119,6 +119,24 @@ describe('GET /agents/:id/workspace/files', () => {
     expect(gone.statusCode).toBe(404)
     expect(control.listCalls).toHaveLength(1)
   })
+
+  it('answers a sandbox the daemon cannot reach with 503 and the code the console offers Start on', async () => {
+    await seedScratch()
+    const control = new WorkspaceWriteSpy()
+    // The error frame a daemon sends for a read whose owning pod has no bound channel.
+    control.workspaceList = async () => {
+      throw ProtocolError.fromFrame({
+        code: 'BAD_PAYLOAD',
+        message: 'workspace/list failed: sandbox "agent-a" has no bound channel, so this workspace cannot be reached',
+        retryable: false,
+        details: { reason: 'sandbox-unavailable' }
+      })
+    }
+
+    const res = await app(control).app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}/workspace/files` })
+    expect(res.statusCode).toBe(503)
+    expect(res.json()).toMatchObject({ code: 'WORKSPACE_SANDBOX_UNAVAILABLE' })
+  })
 })
 
 describe('PUT /agents/:id/workspace/file', () => {
