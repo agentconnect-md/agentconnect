@@ -412,7 +412,7 @@ import type { ExecutionPlane, PlaneLaunch, PlaneScope } from './execution/plane.
 import { seedSessionHome, startExecutorFacet, type ExecutorFacet } from './execution/executor-facet.js'
 import { ExecutorPlane, executorMcpBridge, type PlacedSession } from './execution/executor-plane.js'
 import { placeSession, type PlacementAsk, type PlacementChoice } from './execution/executor-placement.js'
-import { microsandboxLauncher } from './execution/executor-vm.js'
+import { HOSTED_PREFIX, microsandboxLauncher } from './execution/executor-vm.js'
 import { effectiveStrategies, hostLauncher } from './execution/strategies.js'
 import {
   declaredRuntimeCatalog,
@@ -797,6 +797,9 @@ function liveSdkLease(l: {
 function dreamExecutionKey(agentId: string, dreamId: string): string {
   return sessionKey('dream', 'memory', dreamId, agentId)
 }
+
+/** A session VM's environment id as `microsandboxPlacement` names it; the capture is the agent id. */
+const SESSION_VM_ID = /^([^/]+)\/session-[a-f0-9]{24}$/
 
 function acpUpdateChainKey(owner: HostKey, sessionId: string): string {
   return `${owner}\u001f${sessionId}`
@@ -18556,7 +18559,8 @@ export class Daemon {
     if (this.sessionRetentionSweepInFlight) return
     this.sessionRetentionSweepInFlight = true
     try {
-      const discarded = await this.sweepExpiredSessions()
+      // Orphans too, whatever the window: a VM whose row is gone serves nothing and still pins its image.
+      const discarded = (await this.sweepExpiredSessions()) + (await this.retireOrphanSessionVms())
       // A discarded VM may have been the last pin on a retired release's image, which startup alone keeps until a restart.
       if (discarded && !this.draining) {
         try {
@@ -18669,6 +18673,64 @@ export class Daemon {
     )
     if (removed) void this.drainSessionPurges()
     return discarded
+  }
+
+  /** Retire session VMs whose row is gone, as a purge leaves them while microsandbox is down; returns how many it discarded. */
+  private async retireOrphanSessionVms(): Promise<number> {
+    const manager = this.microsandbox
+    if (!manager || this.draining) return 0
+    const byAgent = new Map<string, string[]>()
+    try {
+      for (const id of await manager.environmentIds()) {
+        // Only `<agentId>/session-<leaf>`: never the shared `/agent` VM, a hosted executor VM or the preparation VM.
+        const agentId = SESSION_VM_ID.exec(id)?.[1]
+        if (agentId === undefined || id.startsWith(HOSTED_PREFIX) || !this.agents.has(agentId)) continue
+        if (!manager.environment(id)) byAgent.set(agentId, [...(byAgent.get(agentId) ?? []), id])
+      }
+    } catch (err) {
+      this.log.warn(`retention: could not list microsandbox environments (${formatErr(err)})`)
+      return 0
+    }
+    let retired = 0
+    for (const [agentId, ids] of byAgent) {
+      if (this.draining) break
+      try {
+        const kept = await this.keptSessionVms(agentId)
+        const orphans = ids.filter((id) => !kept.has(id))
+        if (orphans.length === 0 || (await this.agentWorkspaceActive(agentId))) continue
+        await this.withWorkspaceAdmissionFence(agentId, async () => {
+          const agent = this.agents.get(agentId)
+          if (!agent || (await this.agentWorkspaceActive(agentId))) return
+          for (const id of orphans) {
+            if (this.draining) return
+            // Re-judged inside the fence, which holds turn admission: a session reopened under the same key keeps its VM.
+            if (manager.environment(id) || (await this.keptSessionVms(agentId)).has(id)) continue
+            try {
+              await manager.discard(id)
+              retired += 1
+              this.log.info(`retention: retired session VM ${id}, whose session row is gone`)
+              await rm(join(agent.dir, 'runtime-homes', id.slice(agentId.length + 1)), { recursive: true, force: true })
+            } catch (err) {
+              this.log.warn(`retention: could not retire session VM ${id} (${formatErr(err)})`)
+            }
+          }
+        })
+      } catch (err) {
+        this.log.warn(`retention: could not judge the session VMs of agent ${agentId} (${formatErr(err)})`)
+      }
+    }
+    return retired
+  }
+
+  /** The session VMs of an agent that something may still use: one per stored row, per dream and per host held here. */
+  private async keptSessionVms(agentId: string): Promise<Set<string>> {
+    const keys = [
+      ...(await this.store.sessionKeysForAgent(agentId)).map((key) => sessionHostKey(agentId, key)),
+      // A dream's host starts before its execution row exists, and a dream that fails first never writes one.
+      ...(await this.store.dreamIdsForAgent(agentId)).map((dreamId) => this.dreamOwnerKey(agentId, dreamId)),
+      ...this.hostKeysForAgent(agentId)
+    ]
+    return new Set(keys.map((key) => `${agentId}/${hostKeyDirName(key)}`))
   }
 
   /** Whether an agent still holds live work of ANY kind — the per-agent form of the retention
