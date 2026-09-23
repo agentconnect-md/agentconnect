@@ -62,6 +62,7 @@ import { replyTargetProvider, type CodeHostReplyTarget } from '../codehost/reply
 import {
   codeHostHostFence,
   codeHostPromptSupplement,
+  codeHostPullRequestDescription,
   codeHostReplyTarget,
   codeHostThreadWorktreeCleanup,
   turnFinalFor,
@@ -1047,6 +1048,10 @@ export class GithubReviewOrchestrator {
       apiBaseUrl: lease.apiBaseUrl,
       log: { warn: (message: string) => this.log.warn(message) }
     })
+  }
+
+  pullRequestDescription(hook: HookDispatchContext, signal: AbortSignal): Promise<string | undefined> {
+    return codeHostPullRequestDescription(hook, hook.agentId, this.turnFinalHost, signal)
   }
 
   /** Build the per-turn final-answer selector and the owning host's poster, tokened via that

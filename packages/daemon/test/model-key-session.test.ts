@@ -29,6 +29,29 @@ function harness(grants: Array<Record<string, unknown>>, opts: Record<string, un
 const agent = { id: 'agent-a', runtime: 'claude' }
 
 describe('daemon model-key session lifecycle', () => {
+  it('restores the pinned Decision model into both provider selection and host startup', async () => {
+    const h = harness([{ keyId: 'key-1', key: 'secret', requestedAtMs: 1_000 }])
+    const configured = {
+      id: 'agent-a',
+      runtime: 'opencode',
+      runtimeOverrides: { model: 'openai/gpt-5', env: [], secrets: [] }
+    }
+    h.daemon.runtimes = { opencode: { command: 'opencode', args: ['acp'], env: [] } }
+    h.daemon.agents.set('agent-a', configured)
+    h.daemon.store.getSession = () => ({
+      agentId: 'agent-a',
+      decisionModel: JSON.stringify({ runtime: 'opencode', model: 'anthropic/claude-opus-4' })
+    })
+    await h.daemon.modelSessions.ensure(configured, 'session-a')
+    expect(h.issue).toHaveBeenCalledWith(expect.objectContaining({ provider: 'anthropic' }))
+    expect(h.starts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtimeOverrides: expect.objectContaining({ model: 'anthropic/claude-opus-4' })
+      }),
+      expect.anything()
+    )
+    await h.daemon.modelSessions.release('session-a')
+  })
   it('refuses a key server outside cloud mode, and never demands a token path', () => {
     // A minted key is only usable with the `*_MODEL_BASE_URL` pair that aims it at this install's
     // gateway, and that pair is cloud-mode configuration — so a non-cloud key server is refused.

@@ -1,4 +1,4 @@
-import { DecisionBindingDenied } from '../../persistence/decision-binding-fence.js'
+import { DecisionBindingDenied, ModelSelectionInvalid } from '../../persistence/decision-binding-fence.js'
 import {
   DecisionToolDefinition,
   MemoryEntryCreateRequest,
@@ -365,6 +365,7 @@ function toDto(
     mcpServers: a.mcpServers,
     skills: a.skills,
     decisionIds: a.decisionIds ?? [],
+    modelSelection: a.modelSelection ?? null,
     managedSkills: a.managedSkills,
     memory: a.memory,
     status: a.status,
@@ -2015,6 +2016,7 @@ export function agentRoutes(deps: HttpDeps) {
                   ...(req.body.mcpServers !== undefined ? { mcpServers: req.body.mcpServers } : {}),
                   ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
                   ...(req.body.decisionIds !== undefined ? { decisionIds: req.body.decisionIds } : {}),
+                  ...(req.body.modelSelection !== undefined ? { modelSelection: req.body.modelSelection } : {}),
                   ...(req.body.managedSkills !== undefined ? { managedSkills: req.body.managedSkills } : {}),
                   ...(memory !== undefined ? { memory } : {}),
                   ...(targetSetId !== null
@@ -2040,6 +2042,9 @@ export function agentRoutes(deps: HttpDeps) {
               )
             })
           } catch (e) {
+            if (e instanceof ModelSelectionInvalid) {
+              return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: e.message })
+            }
             if (e instanceof McpEnableDenied || e instanceof SkillEnableDenied || e instanceof DecisionBindingDenied) {
               return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: e.message })
             }
@@ -2266,9 +2271,10 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'List an agent’s attached Decisions',
           description:
-            'Returns metadata for explicitly attached Decisions to members who can view the agent. Adding a Decision requires access to that Decision; existing attachments remain usable independently of later sharing changes.',
+            'Returns metadata for an agent’s MCP Decision attachments, or its model-selection binding when purpose=model_selection. Adding a binding requires access to the Decision; existing bindings remain usable independently of later sharing changes.',
           operationId: 'listAgentDecisions',
           params: IdParam,
+          querystring: z.object({ purpose: z.literal('model_selection').optional() }),
           response: {
             200: z.array(
               DecisionToolDefinition.omit({ question: true }).extend({
@@ -2282,7 +2288,13 @@ export function agentRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const agent = await getOrgAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
-        const rows = await deps.repos.decision.listForAgent(agent.orgId, agent.decisionIds ?? [], { limit: 64 })
+        const ids =
+          req.query.purpose === 'model_selection'
+            ? agent.modelSelection
+              ? [agent.modelSelection.decisionId]
+              : []
+            : (agent.decisionIds ?? [])
+        const rows = await deps.repos.decision.listForAgent(agent.orgId, ids, { limit: 64 })
         return rows.map(({ question, ...row }) => ({ ...row, questionType: question.type }))
       }
     )
@@ -2639,6 +2651,9 @@ export function agentRoutes(deps: HttpDeps) {
                 )
             )
           } catch (e) {
+            if (e instanceof ModelSelectionInvalid) {
+              return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: e.message })
+            }
             if (e instanceof McpEnableDenied || e instanceof SkillEnableDenied || e instanceof DecisionBindingDenied) {
               return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: e.message })
             }

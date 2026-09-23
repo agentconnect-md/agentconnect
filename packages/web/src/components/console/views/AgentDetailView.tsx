@@ -865,7 +865,8 @@ export default function AgentDetailView() {
   // agent shows the SAME effective model / effort / permission the Edit modal
   // does (else a blank model reads "Default" here but its resolved default in the
   // editor). Falls back to the static labels when the daemon reports no catalog.
-  const modelText = agentModelDisplay(capabilitySource, da.runtime, da.model)
+  const defaultModelText = agentModelDisplay(capabilitySource, da.runtime, da.model)
+  const modelText = da.modelSelection ? t('modelByDecision', { model: defaultModelText }) : defaultModelText
   const ds = status(effectiveAgentStatus(da, owningDaemon))
   // The agents list's own reading: an agent nothing is serving cannot answer on any integration.
   const agentOffline = ds.label === 'offline'

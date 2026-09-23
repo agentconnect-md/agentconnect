@@ -3,6 +3,7 @@ import {
   decodeEnvelope,
   encode,
   DECISION_LIST_MAX_BYTES,
+  type AgentModelSelection,
   type DecisionToolDefinition
 } from '@agentconnect.md/protocol'
 import { describe, expect, it, vi } from 'vitest'
@@ -22,7 +23,15 @@ const decision: DecisionToolDefinition = {
 }
 
 function setup() {
-  const agent = vi.fn(async () => ({ id: agentId, orgId, daemonId, decisionIds: [decision.id] }))
+  const agent = vi.fn(
+    async (): Promise<{
+      id: string
+      orgId: string
+      daemonId: string
+      decisionIds: string[]
+      modelSelection?: AgentModelSelection
+    }> => ({ id: agentId, orgId, daemonId, decisionIds: [decision.id] })
+  )
   const listForAgent = vi.fn(async () => [decision])
   const getForAgent = vi.fn(async (): Promise<DecisionToolDefinition | null> => decision)
   const mayAct = vi.fn(async () => true)
@@ -49,6 +58,27 @@ function setup() {
 }
 
 describe('Decision configuration reads for agent tools', () => {
+  it('separates the model-selection grant from MCP attachments and rechecks revocation', async () => {
+    const { agent, getForAgent, conn, run } = setup()
+    const bound = {
+      id: agentId,
+      orgId,
+      daemonId,
+      decisionIds: [],
+      modelSelection: {
+        decisionId: decision.id,
+        rules: [{ when: { type: 'boolean' as const, values: [true] }, model: 'model-a' }]
+      }
+    }
+    agent.mockResolvedValue(bound)
+    await run('decision/get')
+    expect(getForAgent).not.toHaveBeenCalled()
+    await run('decision/get', { purpose: 'model_selection' })
+    expect(conn.replyTo).toHaveBeenLastCalledWith(expect.anything(), 'decision/get/result', { decision })
+    agent.mockResolvedValue({ ...bound, modelSelection: undefined }).mockResolvedValueOnce(bound)
+    await run('decision/get', { purpose: 'model_selection' })
+    expect(conn.replyTo).toHaveBeenLastCalledWith(expect.anything(), 'decision/get/result', { decision: null })
+  })
   it('scopes both reads to the frame organization and current serving daemon', async () => {
     const { agent, listForAgent, getForAgent, mayAct, conn, run } = setup()
     await run('decision/list')

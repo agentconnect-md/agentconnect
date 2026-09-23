@@ -322,6 +322,8 @@ export interface QueueEntry {
   githubReply?: CodeHostReplyTarget
   /** Selected before session/new|load so cancellation uses the exact host. */
   selectedHost?: SelectedTurnHost
+  // A saved session choice, or a new choice fenced against its opening configuration until pinned.
+  modelSelection?: { configuration?: string; runtime: string; model: string }
   /** Session initialization must await cleanup before releasing ownership. */
   lifecycleCleanup?: Promise<void>
   /** Permanent fail-closed latch after lifecycle cleanup rejects. The serial

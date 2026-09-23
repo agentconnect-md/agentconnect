@@ -11,6 +11,7 @@ import type {
 } from '../codehost/turn-final.js'
 import type { CodeHostReplyTarget } from '../codehost/reply-target.js'
 import { GithubFinalPoster } from './poster.js'
+import { readPullDescription } from '../codehost/pull-description.js'
 
 /** The deployment's App speaks to github.com alone, so this root is not a per-turn fact. */
 const GITHUB_API_BASE_URL = 'https://api.github.com'
@@ -92,5 +93,22 @@ export const githubTurnFinal: CodeHostTurnFinal<'github'> = {
   worktreeCleanup,
   effectLease,
   finalPoster,
+  pullRequestDescription: async (source, agentId, host, signal) => {
+    const pr = source.github
+    if (pr?.subjectKind !== 'pull_request' || pr.pullNumber === undefined) return undefined
+    const target: CodeHostReplyTarget = {
+      provider: 'github',
+      hookId: source.hookId,
+      repo: pr.repoFullName,
+      number: pr.pullNumber
+    }
+    const repo = pr.repoFullName.split('/').map(encodeURIComponent).join('/')
+    return readPullDescription(
+      effectLease(agentId, target, host),
+      `/repos/${repo}/pulls/${pr.pullNumber}`,
+      'body',
+      signal
+    )
+  },
   reportsAbsentOutput: false
 }

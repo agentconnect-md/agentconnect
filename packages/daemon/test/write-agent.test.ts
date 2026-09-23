@@ -112,6 +112,18 @@ describe('durable agent removal tombstones', () => {
 })
 
 describe('writeAgentSpec — merge (agent.json exists)', () => {
+  it('clears a model Decision on null while an older omitted field retains it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-model-decision-'))
+    const modelSelection = {
+      decisionId: '33333333-3333-4333-8333-333333333333',
+      rules: [{ when: { type: 'boolean', values: [true] }, model: 'model-capable' }]
+    }
+    const file = seedAgent(dir, 'bot-a', { id: 'bot-a', name: 'bot-a', runtime: 'claude', modelSelection })
+    writeAgentSpec(dir, 'bot-a', baseSpec(), deps)
+    expect(readJson(file).modelSelection).toEqual(modelSelection)
+    writeAgentSpec(dir, 'bot-a', baseSpec({ modelSelection: null }), deps)
+    expect(readJson(file)).not.toHaveProperty('modelSelection')
+  })
   it('merges displayName from the CP spec', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
     const file = seedAgent(dir, 'bot-a', {

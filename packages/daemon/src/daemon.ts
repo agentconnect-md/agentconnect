@@ -6,6 +6,7 @@ import {
   DECISION_TRIGGER_V1_FEATURE,
   type DecisionBundle,
   DECISION_TOOLS_V1_FEATURE,
+  DECISION_MODEL_SELECTION_V1_FEATURE,
   MEMORY_ENTRIES_SEARCH_V1_FEATURE,
   MEMORY_ENTRIES_HISTORY_V1_FEATURE,
   MEMORY_ENTRIES_WRITE_V1_FEATURE,
@@ -464,6 +465,12 @@ import {
 } from './runtimes/model-provider-config.js'
 import { KeyServerClient, type KeyGrant } from './key-server/client.js'
 import { DecisionEvaluator, type DecisionEvaluationInput } from './decisions/evaluator.js'
+import {
+  evaluateSessionModel,
+  modelSelectionConfiguration,
+  modelSelectionState,
+  pinnedDecisionModel
+} from './decisions/model-selection.js'
 import { internalSessionKey, ModelSessionHostPool, type ModelSessionHostPoolHost } from './key-server/session-hosts.js'
 import { CuratedRuntimeAdmission } from './runtimes/curated-admission.js'
 import { RuntimeFactsRegistry, PROBE_TTL_MS, type RuntimeFactsHost } from './runtimes/facts-registry.js'
@@ -5980,6 +5987,7 @@ export class Daemon {
       DECISION_PREVIEW_V1_FEATURE,
       DECISION_TRIGGER_V1_FEATURE,
       DECISION_TOOLS_V1_FEATURE,
+      DECISION_MODEL_SELECTION_V1_FEATURE,
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
       'workspace-file-edit-v1',
       'workspace-file-delete-v1',
@@ -6077,7 +6085,13 @@ export class Daemon {
       agent: (agentId) => this.agents.get(agentId),
       runtime: (kind) => this.runtimes[kind],
       orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
-      modelOverride: async (sessionKey) => await this.store.getModelOverride(sessionKey),
+      modelOverride: async (sessionKey) => {
+        const session = await this.store.getSession(sessionKey)
+        const agent = session?.agentId ? this.agents.get(session.agentId) : undefined
+        return (
+          (await this.store.getModelOverride(sessionKey)) ?? pinnedDecisionModel(session?.decisionModel, agent?.runtime)
+        )
+      },
       acpSessionId: async (sessionKey) => (await this.store.getSession(sessionKey))?.acpSessionId,
       outwardSessionId: async (sessionKey, agentId) =>
         await this.store.ensureOutwardSessionId(sessionKey, agentId, this.clock.now()),
@@ -8186,14 +8200,17 @@ export class Daemon {
     await this.dispatch(agentId, msg, integrationId)
   }
 
-  /** Apply the Agent's configured runtime policy to one live session. Callers that
-   *  fence a pending prompt await this; reconciliation fans it out in the background. */
-  private async applyConfiguredRuntimeSettings(agent: LoadedAgent, host: AcpHost, sessionId: string): Promise<void> {
+  // Restore Agent policy, retaining the model pinned for this session.
+  private async applyConfiguredRuntimeSettings(
+    agent: LoadedAgent,
+    host: AcpHost,
+    sessionId: string,
+    sessionModel?: string
+  ): Promise<void> {
     const catalog = this.runtimeFacts.modelCatalog(agent.runtime)
-    // A fresh ACP session may advertise its baseline as the literal `default`.
-    // Catalog metadata intentionally keeps defaultModel concrete, so fall back to
-    // that selectable entry when the Agent leaves its model unpinned.
+    // Catalog defaults resolve ACP's opaque `default` to a concrete selectable model.
     const model =
+      sessionModel ??
       agent.runtimeOverrides?.model ??
       catalog?.defaultModel ??
       catalog?.models.find((candidate) => candidate.id === 'default')?.id
@@ -8218,7 +8235,12 @@ export class Daemon {
       const host = this.hostForOwner(this.sessionOwnerKey(agent.id, session.key))
       if (!session.acpSessionId || host?.hasSession?.(session.acpSessionId) !== true) continue
       const sessionId = session.acpSessionId
-      void this.applyConfiguredRuntimeSettings(agent, host, sessionId)
+      void this.applyConfiguredRuntimeSettings(
+        agent,
+        host,
+        sessionId,
+        pinnedDecisionModel(session.decisionModel, agent.runtime)
+      )
         .then(async () => {
           await this.commands.refreshStatusBarForKey(session.key)
         })
@@ -12937,9 +12959,14 @@ export class Daemon {
     let remoteMcpServer: import('@agentclientprotocol/sdk').McpServer | undefined
     try {
       const reviewWorkspace = await this.githubReviews.prepareGithubReviewWorkspace(entry, key, agent)
+      await this.selectSessionModel(run, persisted)
       if (this.modelSessions.enabled) {
-        const firstTurnModel = agent.allowRuntimeChangesInChat ? webchat?.runtime?.model : undefined
-        entry.selectedHost = await this.modelSessions.ensure(agent, key, firstTurnModel)
+        const currentAgent = this.agents.get(agentId) ?? agent
+        const manualModel = currentAgent.allowRuntimeChangesInChat
+          ? (webchat?.runtime?.model ?? (await this.store.getModelOverride(key)))
+          : undefined
+        const firstTurnModel = manualModel ?? this.selectedSessionModel(run, currentAgent)
+        entry.selectedHost = await this.modelSessions.ensure(currentAgent, key, firstTurnModel)
       }
       // A prior provider post-turn operation is serialized. Managed needs this
       // barrier before reading its index; external recordTurn only durably enqueues.
@@ -13054,6 +13081,65 @@ export class Daemon {
       throw err
     }
     return { kind: 'opened', handled, restoreDeliveryBinding }
+  }
+
+  private selectedSessionModel(run: TurnRun, agent: LoadedAgent): string | undefined {
+    const selected = run.entry.modelSelection
+    if (!selected || selected.runtime !== agent.runtime) return undefined
+    if (selected.configuration === undefined || selected.configuration === modelSelectionConfiguration(agent))
+      return selected.model
+    return agent.runtimeOverrides?.model
+  }
+
+  private async selectSessionModel(run: TurnRun, persisted: SessionRecord | undefined): Promise<void> {
+    const { entry, key, plan } = run
+    const agent = this.agents.get(entry.agentId)
+    if (agent && persisted?.decisionModel) {
+      const model = pinnedDecisionModel(persisted.decisionModel, agent.runtime)
+      if (model) entry.modelSelection = { runtime: agent.runtime, model }
+      return
+    }
+    if (persisted && (await this.store.getObservedModel(key)) !== undefined) return
+    const selection = agent?.modelSelection
+    if (!agent || !selection || plan.initializeOnly || !agent.runtimeOverrides?.model) return
+    if (!this.runtimeFacts.canSwitchModels(agent.runtime)) return
+    if (agent.allowRuntimeChangesInChat && (entry.webchat?.runtime?.model || (await this.store.getModelOverride(key))))
+      return
+    const configuration = modelSelectionConfiguration(agent)
+    const orgId = this.cpCollab.orgForAgent(agent.id)
+    const client = this.cpClient
+    let model: string | undefined
+    if (client?.supportsServerFeature(DECISION_MODEL_SELECTION_V1_FEATURE)) {
+      model = await evaluateSessionModel({
+        agentId: agent.id,
+        selection,
+        models: this.runtimeFacts.profileFor(agent.runtime).models,
+        signal: entry.initAbort.signal,
+        evaluationId: randomUUID(),
+        current: () =>
+          this.cpCollab.orgForAgent(agent.id) === orgId &&
+          modelSelectionConfiguration(this.agents.get(agent.id)) === configuration,
+        decision: () =>
+          client.decisionGet({
+            requesterAgentId: agent.id,
+            decisionId: selection.decisionId,
+            purpose: 'model_selection'
+          }),
+        state: async () => {
+          if (entry.hookContext) {
+            const description = await this.githubReviews.pullRequestDescription(
+              entry.hookContext,
+              AbortSignal.any([entry.initAbort.signal, AbortSignal.timeout(5_000)])
+            )
+            return description === undefined ? undefined : modelSelectionState('pull_request', description)
+          }
+          return entry.msg.source === 'user' ? modelSelectionState('chat', entry.msg.text) : undefined
+        },
+        evaluate: (input, signal) => this.decisionEvaluator.evaluate(input, signal)
+      })
+    }
+    entry.initAbort.signal.throwIfAborted()
+    entry.modelSelection = { configuration, runtime: agent.runtime, model: model ?? agent.runtimeOverrides.model }
   }
 
   /** Persist the staged first-turn runtime choices a webchat composer sent with this message.
@@ -13495,23 +13581,30 @@ export class Daemon {
     const host = p.selectedHost.host
     const runtimeAgent = this.agents.get(agentId)
     const allowRuntimeChangesInChat = runtimeAgent?.allowRuntimeChangesInChat === true
-    // Re-apply a sticky session model override (set via the console's in-session model
-    // switch) before the turn runs — the agent's default model was applied at
-    // session/new, so this layers the per-session choice on top each turn. Best-effort.
+    // Manual choices win over the model pinned when this session started.
     const override = allowRuntimeChangesInChat ? await this.store.getModelOverride(key) : undefined
-    if (override && this.modelSessions.crossesHostProvider(key, agentId, override)) {
-      // The host is bound to the provider it was started for — pushing a foreign one live
-      // would run the turn against options that never received a key or base URL.
-      this.log.debug(`model override "${override}" deferred — host is bound to its start-time provider`)
-    } else if (override) {
-      await host
-        .setSessionModel(sessionId, override)
-        .catch((err) => this.log.debug(`model override "${override}" not applied: ${(err as Error).message}`))
+    const automaticModel = runtimeAgent ? this.selectedSessionModel(run, runtimeAgent) : undefined
+    const selectedModel = override ?? automaticModel
+    if (selectedModel && this.modelSessions.crossesHostProvider(key, agentId, selectedModel)) {
+      // A live host can only use the provider credentials it started with.
+      this.log.debug('model selection deferred — host is bound to its start-time provider')
+    } else if (selectedModel) {
+      const applied =
+        host.modelOptions?.(sessionId)?.current === selectedModel ||
+        (await host.setSessionModel(sessionId, selectedModel).catch(() => false))
+      if (
+        !applied &&
+        !override &&
+        runtimeAgent?.runtimeOverrides?.model &&
+        !this.modelSessions.crossesHostProvider(key, agentId, runtimeAgent.runtimeOverrides.model)
+      ) {
+        await host.setSessionModel(sessionId, runtimeAgent.runtimeOverrides.model).catch(() => false)
+      }
     }
-    // Re-apply the remaining sticky controls. Effort is applied AFTER the model
-    // because the offered levels depend on it; `ultracode` rides session `_meta`
-    // at new/load instead (setSessionEffort returns false for it). Best-effort.
-    const effortOverride = allowRuntimeChangesInChat ? await this.store.getEffortOverride(key) : undefined
+    // Apply effort after the model, which determines the offered levels.
+    const effortOverride =
+      (allowRuntimeChangesInChat ? await this.store.getEffortOverride(key) : undefined) ??
+      (automaticModel ? runtimeAgent?.reasoningEffort : undefined)
     if (effortOverride) {
       await host
         .setSessionEffort(sessionId, effortOverride)
@@ -13543,9 +13636,14 @@ export class Daemon {
     const promptAgent = this.agents.get(agentId)
     if (webchat?.runtime && promptAgent?.allowRuntimeChangesInChat !== true) {
       await this.store.clearRuntimeConfigOverrides(agentId)
-      await this.applyConfiguredRuntimeSettings(promptAgent ?? agent, host, sessionId)
+      await this.applyConfiguredRuntimeSettings(
+        promptAgent ?? agent,
+        host,
+        sessionId,
+        promptAgent ? this.selectedSessionModel(run, promptAgent) : undefined
+      )
     }
-    return { host, modelOverride: override }
+    return { host, modelOverride: promptAgent?.allowRuntimeChangesInChat ? override : undefined }
   }
 
   /** Capture the model for THIS session/turn after sticky overrides are applied, and observe it
@@ -13569,6 +13667,17 @@ export class Daemon {
         : advertisedModel === 'default'
           ? undefined
           : advertisedModel
+    const currentAgent = this.agents.get(run.entry.agentId)
+    if (
+      run.entry.modelSelection?.configuration !== undefined &&
+      run.entry.modelSelection.configuration === modelSelectionConfiguration(currentAgent)
+    ) {
+      const selected =
+        modelOverride === undefined
+          ? (turnModel ?? currentAgent?.runtimeOverrides?.model ?? run.entry.modelSelection.model)
+          : run.entry.modelSelection.model
+      await this.store.pinDecisionModel(run.key, run.entry.modelSelection.runtime, selected)
+    }
     await this.store.setObservedModel(run.key, turnModel ?? null)
     return turnModel
   }

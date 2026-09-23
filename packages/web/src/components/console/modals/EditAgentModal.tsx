@@ -44,6 +44,8 @@ import { Button, Icon, Toggle } from '@/components/ui'
 import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
 import { useModal } from '@/components/console/ModalProvider'
 import { ModelSelect } from '@/components/console/ModelSelect'
+import { ModelSelectionField } from '@/components/console/decisions/ModelSelectionField'
+import type { AgentModelSelection } from '@agentconnect.md/protocol/decision'
 import { RuntimeSelect } from '@/components/console/RuntimeSelect'
 import { editAgentCapabilitySource, editAgentDaemonChoices, preselectPlacementReset } from './edit-agent-daemon-choice'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
@@ -158,6 +160,9 @@ export default function EditAgentModal({
   const initialDaemonId = useRef(initialPlacementValue)
   const [model, setModel] = useState('')
   const initialModel = useRef('')
+  const [modelSelection, setModelSelection] = useState<AgentModelSelection | null>(null)
+  const initialModelSelection = useRef<AgentModelSelection | null>(null)
+  const [modelSelectionValid, setModelSelectionValid] = useState(true)
   const [outputMode, setOutputMode] = useState<OutputMode | ''>('')
   const initialOutputMode = useRef<OutputMode | ''>('')
   const [showFooter, setShowFooter] = useState(agent.showFooter)
@@ -242,6 +247,8 @@ export default function EditAgentModal({
         initialDaemonId.current = placement
         setModel(dto.model ?? '')
         initialModel.current = dto.model ?? ''
+        setModelSelection(dto.modelSelection ?? null)
+        initialModelSelection.current = dto.modelSelection ?? null
         setEffort(dto.reasoningEffort ?? '')
         initialEffort.current = dto.reasoningEffort ?? ''
         const nextOutputMode = isOutputMode(dto.outputMode) ? dto.outputMode : ''
@@ -586,12 +593,16 @@ export default function EditAgentModal({
     Object.keys(envRecord).length !== Object.keys(initialEnvRecord.current).length ||
     Object.keys(envRecord).some((k) => envRecord[k] !== initialEnvRecord.current[k])
   const secretsChanged = Object.keys(secretsPatch).length > 0
+  const modelSelectionChanged = JSON.stringify(modelSelection) !== JSON.stringify(initialModelSelection.current)
+  const validateModelSelection =
+    modelSelectionChanged || model !== initialModel.current || runtime !== initialRuntime.current || daemonChanged
   const envSecretError = envSecretsError(envRows, secretRows)
   const patch: UpdateAgentInput = {
     ...(normalizedDisplayName !== (initialDisplayName.current.trim() || null)
       ? { displayName: normalizedDisplayName }
       : {}),
-    ...(model !== initialModel.current ? { model: model || null } : {}),
+    ...(model !== initialModel.current ? { model: model || (modelSelection ? selectedModel : null) } : {}),
+    ...(modelSelectionChanged ? { modelSelection, ...(modelSelection && !model ? { model: selectedModel } : {}) } : {}),
     ...(runtime.trim() !== initialRuntime.current ? { runtime: runtime.trim() } : {}),
     ...(effort !== initialEffort.current ? { reasoningEffort: effort || null } : {}),
     ...(outputMode !== initialOutputMode.current ? { outputMode: outputMode || null } : {}),
@@ -614,7 +625,7 @@ export default function EditAgentModal({
     !sameIds(outboundSelected, initialOutboundSelected.current)
 
   const save = async () => {
-    if (saving) return
+    if (saving || (validateModelSelection && !modelSelectionValid)) return
     if (envSecretError) {
       setErr(t(`errors.${envSecretError.key}`, envSecretError.values))
       return
@@ -884,6 +895,17 @@ export default function EditAgentModal({
               <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
                 {t('sections.runtime')}
               </div>
+              {featureFlagEnabled('decisions') && (
+                <ModelSelectionField
+                  agentId={agent.id}
+                  value={modelSelection}
+                  onChange={setModelSelection}
+                  onValidityChange={setModelSelectionValid}
+                  fallbackModel={selectedModel}
+                  models={modelOptionsFor(daemon, runtime, reportedModels)}
+                  supported={modelSelectable && modelCatalog?.modelSwitching !== false}
+                />
+              )}
               <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
                 {(showEffort || fastModeAvailable || showPermission) && (
                   <div className="fld desktop:col-span-2">
@@ -1106,7 +1128,7 @@ export default function EditAgentModal({
         </Button>
         <Button
           variant={forceMove ? 'danger' : 'primary'}
-          disabled={saving || !loaded || sourceBlocksSafeMove}
+          disabled={saving || !loaded || sourceBlocksSafeMove || (validateModelSelection && !modelSelectionValid)}
           onClick={() => void save()}
         >
           <Icon name={forceMove ? 'triangle-alert' : 'check'} size={15} />

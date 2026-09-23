@@ -43,16 +43,18 @@ export const handleDecisionRead: Handler = async (frame, conn, deps) => {
     result.items = result.items.filter((item) => current.decisionIds?.includes(item.id))
     conn.replyTo(frame, 'decision/list/result', result)
   } else {
-    const decision = agent.decisionIds?.includes(frame.payload.decisionId)
-      ? await repo.getForAgent(orgId, frame.payload.decisionId)
-      : null
+    const bound = (current: typeof agent) =>
+      frame.payload.purpose === 'model_selection'
+        ? current.modelSelection?.decisionId === frame.payload.decisionId
+        : current.decisionIds?.includes(frame.payload.decisionId)
+    const decision = bound(agent) ? await repo.getForAgent(orgId, frame.payload.decisionId) : null
     const current = await authorized()
     if (!current) {
       conn.sendError(frame.id, 'SCOPE_DENIED', 'this daemon no longer serves that agent', false)
       return
     }
     conn.replyTo(frame, 'decision/get/result', {
-      decision: current.decisionIds?.includes(frame.payload.decisionId) ? decision : null
+      decision: bound(current) ? decision : null
     })
   }
 }

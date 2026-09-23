@@ -5,6 +5,7 @@ import { Prisma } from '../../generated/prisma/client.js'
 import type { Agent, PrismaClient, User } from '../../generated/prisma/client.js'
 import {
   AgentMemoryBinding,
+  type AgentModelSelection,
   isCodeHostProvider,
   redactGitUrlSecrets,
   type CodeHostProvider
@@ -43,7 +44,7 @@ import {
   lockHookReviewOrgProducerScope
 } from '../review-projection-lock.js'
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
-import { enterDecisionBindingFence } from '../decision-binding-fence.js'
+import { enterDecisionBindingFence, validateModelSelection } from '../decision-binding-fence.js'
 import { lockSkillSourceNameScopes } from '../skill-source-lock.js'
 import { tryLockMemoryConnectionScopes } from '../memory-connection-lock.js'
 import {
@@ -196,6 +197,7 @@ type RuntimeOverrides = {
   // AgentSpec.skills entries (agentSpecAssembler) when it builds the spec.
   skills?: string[]
   decisionIds?: string[]
+  modelSelection?: AgentModelSelection
   // Which memory backend the agent uses (managed | native | external). Stored in
   // the overrides bag like the sibling knobs; the daemon builds the provider from it.
   memory?: AgentMemoryBinding
@@ -302,6 +304,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     mcpServers: ov.mcpServers ?? [],
     skills: ov.skills ?? [],
     decisionIds: ov.decisionIds ?? [],
+    ...(ov.modelSelection ? { modelSelection: ov.modelSelection } : {}),
     managedSkills: a.managedSkills,
     memory: storedMemoryBinding(ov.memory),
     status: a.status as AgentRecord['status'],
@@ -394,10 +397,11 @@ export class PgAgentRepo implements AgentRepo {
       const authorizeDecisions = await enterDecisionBindingFence(
         tx,
         input.orgId,
-        input.decisionIds,
+        [...(input.decisionIds ?? []), ...(input.modelSelection ? [input.modelSelection.decisionId] : [])],
         input.createdByUserId
       )
       authorizeDecisions([])
+      await validateModelSelection(tx, input.orgId, input.modelSelection, input.model)
       const a = await tx.agent.create({
         data: {
           id: input.id,
@@ -424,6 +428,7 @@ export class PgAgentRepo implements AgentRepo {
           input.mcpServers ||
           input.skills ||
           input.decisionIds ||
+          input.modelSelection ||
           input.memory
             ? {
                 runtimeOverrides: {
@@ -442,6 +447,7 @@ export class PgAgentRepo implements AgentRepo {
                   ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
                   ...(input.skills ? { skills: input.skills } : {}),
                   ...(input.decisionIds ? { decisionIds: input.decisionIds } : {}),
+                  ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
                   ...(input.memory ? { memory: input.memory } : {})
                 }
               }
@@ -551,7 +557,12 @@ export class PgAgentRepo implements AgentRepo {
     // per-name chains wrapped the whole write); the visibility set it returns
     // feeds the authorize call below, after the committed bag read.
     const visibleSourceNames = opts?.skillSources ? await enterSkillSourceFence(tx, opts.skillSources) : undefined
-    const authorizeDecisions = await enterDecisionBindingFence(tx, orgId, patch.decisionIds, patch.lastModifiedByUserId)
+    const authorizeDecisions = await enterDecisionBindingFence(
+      tx,
+      orgId,
+      [...(patch.decisionIds ?? []), ...(patch.modelSelection ? [patch.modelSelection.decisionId] : [])],
+      patch.lastModifiedByUserId
+    )
     // model/reasoningEffort/env live in the runtimeOverrides JSON — merge key by
     // key so patching one never clobbers the others (null deletes its key).
     let overrides: RuntimeOverrides | typeof undefined
@@ -569,6 +580,7 @@ export class PgAgentRepo implements AgentRepo {
       patch.mcpServers !== undefined ||
       patch.skills !== undefined ||
       patch.decisionIds !== undefined ||
+      patch.modelSelection !== undefined ||
       patch.memory !== undefined ||
       opts?.memoryHome !== undefined
     ) {
@@ -604,7 +616,19 @@ export class PgAgentRepo implements AgentRepo {
       // throw aborts the transaction before any merge is computed.
       opts?.authorizeMcpServers?.(cur?.mcpServers ?? [])
       opts?.skillSources?.authorize(cur?.skills ?? [], visibleSourceNames!)
-      authorizeDecisions(cur?.decisionIds ?? [])
+      authorizeDecisions(cur?.decisionIds ?? [], patch.decisionIds ?? [])
+      authorizeDecisions(
+        cur?.modelSelection ? [cur.modelSelection.decisionId] : [],
+        patch.modelSelection ? [patch.modelSelection.decisionId] : []
+      )
+      if (patch.modelSelection !== undefined || patch.model !== undefined) {
+        await validateModelSelection(
+          tx,
+          orgId,
+          patch.modelSelection === undefined ? cur?.modelSelection : patch.modelSelection,
+          patch.model === undefined ? cur?.model : patch.model
+        )
+      }
       const next: RuntimeOverrides = { ...(cur ?? {}) }
       if (patch.model !== undefined) {
         if (patch.model === null) delete next.model
@@ -646,6 +670,10 @@ export class PgAgentRepo implements AgentRepo {
       if (patch.decisionIds !== undefined) {
         if (patch.decisionIds === null) delete next.decisionIds
         else next.decisionIds = patch.decisionIds
+      }
+      if (patch.modelSelection !== undefined) {
+        if (patch.modelSelection === null) delete next.modelSelection
+        else next.modelSelection = patch.modelSelection
       }
       if (patch.skills !== undefined) {
         if (patch.skills === null) delete next.skills

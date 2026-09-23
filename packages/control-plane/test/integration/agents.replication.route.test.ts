@@ -144,6 +144,7 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
     })
     expect(decision.statusCode).toBe(201)
     const decisionId = decision.json().id as string
+    const modelSelection = { decisionId, rules: [{ when: { type: 'boolean', values: [true] }, model: 'opus' }] }
 
     const patch = await app.app.inject({
       method: 'PATCH',
@@ -156,7 +157,8 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
         fastMode: true,
         env: { GITHUB_TOKEN: 'ghp_x' },
         mcpServers: ['github', 'metrics'],
-        decisionIds: [decisionId]
+        decisionIds: [decisionId],
+        modelSelection
       }
     })
     expect(patch.statusCode).toBe(200)
@@ -193,6 +195,7 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
         // Managed organization skills are a distinct explicit enable-list.
         managedSkills: [],
         decisionIds: [decisionId],
+        modelSelection,
         // Agent→agent call policy (§2.5) — always shipped so a policy/allow-list change replicates.
         callPolicy: 'all',
         allowedCallerAgentIds: [],
@@ -217,13 +220,14 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
     const clear = await app.app.inject({
       method: 'PATCH',
       url: `${ORG}/agents/${agentId}`,
-      payload: { env: {}, mcpServers: null, decisionIds: null }
+      payload: { env: {}, mcpServers: null, decisionIds: null, modelSelection: null }
     })
     expect(clear.statusCode).toBe(200)
     expect(spy.upserts).toHaveLength(2)
     expect(spy.upserts[1]!.u.spec.env).toEqual({})
     expect(spy.upserts[1]!.u.spec.mcpServers).toEqual([])
     expect(spy.upserts[1]!.u.spec.decisionIds).toEqual([])
+    expect(spy.upserts[1]!.u.spec.modelSelection).toBeNull()
   })
 
   it('PATCHed secrets replicate on the wire spec (values from the AgentSecretStore, never the DTO)', async () => {

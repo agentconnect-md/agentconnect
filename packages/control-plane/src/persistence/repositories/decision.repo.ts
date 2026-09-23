@@ -166,7 +166,17 @@ export class PgDecisionRepo implements DecisionRepo {
         where: { id, orgId, ...visibilityWhere({ ...actor, role: membership.role }) }
       })
       if (!visible) return
-      if (await tx.agent.count({ where: { orgId, runtimeOverrides: { path: ['decisionIds'], array_contains: [id] } } }))
+      if (
+        await tx.agent.count({
+          where: {
+            orgId,
+            OR: [
+              { runtimeOverrides: { path: ['decisionIds'], array_contains: [id] } },
+              { runtimeOverrides: { path: ['modelSelection', 'decisionId'], equals: id } }
+            ]
+          }
+        })
+      )
         throw new DecisionInUse(id)
       try {
         await tx.decision.deleteMany({ where: { id, orgId, ...visibilityWhere({ ...actor, role: membership.role }) } })

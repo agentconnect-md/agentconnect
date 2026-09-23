@@ -227,11 +227,8 @@ export class ModelSessionHostPool {
     if (!keyServer) throw new Error('key-server is not configured')
     const runtime = this.host.runtime(agent.runtime)
     if (!runtime) throw new Error(`runtime "${agent.runtime}" is unavailable`)
-    const target = modelProviderTarget(
-      agent,
-      runtime,
-      effectiveModel ?? (await this.host.modelOverride(sessionKey)) ?? agent.runtimeOverrides?.model
-    )
+    const model = effectiveModel ?? (await this.host.modelOverride(sessionKey)) ?? agent.runtimeOverrides?.model
+    const target = modelProviderTarget(agent, runtime, model)
     if (!target) throw new Error(`runtime "${agent.runtime}" does not support MODEL_TOKEN translation`)
     const now = this.opts.now()
     let entry = this.entries.get(sessionKey)
@@ -299,7 +296,10 @@ export class ModelSessionHostPool {
       // of seeing an entry with no host, stopping nothing, and leaking the process it misses.
       const starting: Promise<AcpHost> = (owner.starting ??= shareStartup(() =>
         this.host
-          .startRuntime(agent, owner)
+          .startRuntime(
+            model ? { ...agent, runtimeOverrides: { env: [], secrets: [], ...agent.runtimeOverrides, model } } : agent,
+            owner
+          )
           .then((started) => {
             owner.host = started
             return started

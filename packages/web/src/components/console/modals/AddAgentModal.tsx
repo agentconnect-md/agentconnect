@@ -55,6 +55,8 @@ import { GithubMark, LoadingState } from '@/components/marks'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
 import { ModelSelect } from '@/components/console/ModelSelect'
+import { ModelSelectionField } from '@/components/console/decisions/ModelSelectionField'
+import type { AgentModelSelection } from '@agentconnect.md/protocol/decision'
 import { RuntimeSelect } from '@/components/console/RuntimeSelect'
 import { randomGlyphIcon, type AgentIcon } from '@/lib/agent-icon'
 import { DEFAULT_AGENT_OUTPUT_MODE, type OutputMode } from '@/lib/output-mode'
@@ -163,6 +165,8 @@ export default function AddAgentModal({
   const [icon, setIcon] = useState<AgentIcon>(() => randomGlyphIcon())
   const [runtime, setRuntime] = useState(seed.runtime) // '' = untouched; the daemon supplies the default
   const [model, setModel] = useState(seed.model)
+  const [modelSelection, setModelSelection] = useState<AgentModelSelection | null>(null)
+  const [modelSelectionValid, setModelSelectionValid] = useState(true)
   const [effort, setEffort] = useState(seed.effort)
   const [fastMode, setFastMode] = useState(seed.fastMode)
   const [outputMode, setOutputMode] = useState<OutputMode>(seed.outputMode ?? DEFAULT_AGENT_OUTPUT_MODE)
@@ -710,7 +714,7 @@ export default function AddAgentModal({
     // ("Deploy Bot" → deploy-bot) — a non-latin display name derives nothing,
     // so the explicit name stays required then.
     const slug = agentSlugFinalize(name) || agentSlugFinalize(displayName)
-    if (busy) return
+    if (busy || !modelSelectionValid) return
     if (!slug) {
       setErr(t('errors.nameRequired'))
       return
@@ -843,6 +847,7 @@ export default function AddAgentModal({
         icon,
         runtime: effectiveRuntime,
         ...(selectedModel ? { model: selectedModel } : {}),
+        ...(modelSelection ? { modelSelection } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
         ...(placement?.kind === 'pool'
           ? { placementKind: 'pool' as const }
@@ -1071,6 +1076,16 @@ export default function AddAgentModal({
             <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
               {t('sections.runtime')}
             </div>
+            {featureFlagEnabled('decisions') && (
+              <ModelSelectionField
+                value={modelSelection}
+                onChange={setModelSelection}
+                onValidityChange={setModelSelectionValid}
+                fallbackModel={selectedModel}
+                models={modelOptionsFor(daemon, effectiveRuntime, models)}
+                supported={models.length > 0 && modelCatalog?.modelSwitching !== false}
+              />
+            )}
             <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
               {(showEffort || fastModeAvailable || showPermission) && (
                 <div className="fld desktop:col-span-2">
@@ -1640,7 +1655,12 @@ export default function AddAgentModal({
           {t('cancel')}
         </Button>
         <Button
-          disabled={busy || !effectiveRuntime || (memoryProvider === 'external' && !externalMemory.connectionId)}
+          disabled={
+            busy ||
+            !effectiveRuntime ||
+            !modelSelectionValid ||
+            (memoryProvider === 'external' && !externalMemory.connectionId)
+          }
           onClick={submit}
         >
           <Icon name="bot" size={15} />

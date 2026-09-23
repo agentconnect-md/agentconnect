@@ -2250,10 +2250,29 @@
         "forceReassign": "强制重新分配",
         "moveAgent": "迁移 Agent",
         "repairAgent": "修复 Agent"
+      },
+      "modelSelection": {
+        "title": "模型选择",
+        "fixed": "使用默认模型",
+        "byDecision": "由 Decision 选择：{name}",
+        "unavailableDecision": "已绑定的 Decision",
+        "unsupported": "此运行时目前不支持切换模型。",
+        "help": "新会话开始时选择一次。聊天使用首条消息；Pull Request 使用 PR 描述。Choice 取达到阈值且概率最高的结果，概率相同时按规则顺序选择。",
+        "loadError": "无法加载 Decision，请重试。",
+        "loading": "正在加载 Decision…",
+        "retained": "你已无法查看此 Decision，现有规则会保留。选择其他 Decision 可替换规则。",
+        "rule": "规则 {index}",
+        "removeRule": "删除规则 {index}",
+        "ruleModel": "规则 {index} 的模型",
+        "addRule": "添加规则",
+        "invalidRules": "请检查条件：每个答案只能分配一次，Score 区间不能重叠，且至少保留一条规则。",
+        "missingModel": "请为每条规则选择可用的模型。",
+        "fallback": "没有规则命中或评估不可用时使用默认模型。已有会话沿用已选模型，手动选择的模型优先。"
       }
     },
     "detail": {
       "on": "开启",
+      "modelByDecision": "由 Decision 选择 · 默认：{model}",
       "dreams": {
         "title": "Dreaming",
         "unsupported": "当前 Agent 的 Daemon 版本过低，无法使用 Dreaming。请升级后在此整合记忆。",
@@ -4134,7 +4153,8 @@
       "kind": {
         "gate": "频道门控",
         "shared_bot_routing": "共享 Bot 路由",
-        "agent_tool": "Agent 工具"
+        "agent_tool": "Agent 工具",
+        "model_selection": "模型选择"
       },
       "needsReview": "需要复核",
       "ok": "正常"
