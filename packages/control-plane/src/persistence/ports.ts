@@ -3307,7 +3307,7 @@ export interface BotRepo {
     fence: { revision?: number; eventAt?: Date },
     record: BotRevocationRecord
   ): Promise<boolean>
-  /** Apply a probe's non-revoking answer to the bot's CURRENT credential only: `rejected` sets the mark (first-seen time kept, code updated), `ok` clears one first seen no later than it; false ⇒ a replaced credential, an unknown bot or an `ok` older than the mark, nothing written. System-tier, relay-reported like a revocation. */
+  /** Apply a probe's non-revoking answer to the CURRENT credential, only when strictly newer than the last one applied: `rejected` sets the mark (first-seen time kept, code updated), `ok` clears it; false ⇒ a replaced credential, an unknown bot or a stale observation, nothing written. System-tier, relay-reported like a revocation. */
   recordCredentialCheck(id: BotId, check: BotCredentialCheck): Promise<boolean>
   /** Callers must refuse while the bot is installed (FK Restrict backstops).
    *  Org-fenced: a cross-org id throws the same Prisma P2025 as an absent row. */

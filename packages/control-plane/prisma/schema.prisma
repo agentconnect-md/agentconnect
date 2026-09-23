@@ -2335,6 +2335,8 @@ model Bot {
   // The platform rejected the CURRENT credential on an ambiguous probe (first seen, and its code); a mark only, never a revocation.
   credentialRejectedAt  DateTime?      @db.Timestamptz(6)
   credentialRejectedCode String?
+  // Latest probe observation applied to the CURRENT credential; a check applies only when strictly newer, so checks are monotonic.
+  credentialCheckedAt   DateTime?      @db.Timestamptz(6)
   // Install GENERATION of the bot's CURRENT credential. Slack does not guarantee
   // the ordering of `app_uninstalled` / `tokens_revoked`, so a delayed event from
   // a PRIOR install can land after the workspace re-installed — applying it would

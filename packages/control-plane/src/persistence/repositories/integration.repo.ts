@@ -377,7 +377,8 @@ export class PgBotRepo implements BotRepo {
         revokedEvidence: null,
         revokedCode: null,
         credentialRejectedAt: null,
-        credentialRejectedCode: null
+        credentialRejectedCode: null,
+        credentialCheckedAt: null
       },
       select: { credentialRevision: true }
     })
@@ -405,29 +406,21 @@ export class PgBotRepo implements BotRepo {
   }
 
   async recordCredentialCheck(id: BotId, check: BotCredentialCheck): Promise<boolean> {
-    const current = { id, credentialRevision: check.revision }
-    if (check.result === 'ok') {
-      // Clears only a mark first seen no later than this answer, so a delayed `ok` cannot erase a newer rejection.
-      const { count } = await this.db.bot.updateMany({
-        where: {
-          ...current,
-          OR: [{ credentialRejectedAt: null }, { credentialRejectedAt: { lte: check.observedAt } }]
-        },
-        data: { credentialRejectedAt: null, credentialRejectedCode: null }
-      })
-      return count > 0
-    }
-    // First sighting stamps the time; a repeat keeps it and refreshes the code — each statement is its own revision CAS.
-    const first = await this.db.bot.updateMany({
-      where: { ...current, credentialRejectedAt: null },
-      data: { credentialRejectedAt: check.observedAt, credentialRejectedCode: check.code }
-    })
-    if (first.count > 0) return true
-    const repeat = await this.db.bot.updateMany({
-      where: { ...current, credentialRejectedAt: { not: null } },
-      data: { credentialRejectedCode: check.code }
-    })
-    return repeat.count > 0
+    const at = check.observedAt
+    // One conditional UPDATE per result, fenced on the probed revision and a strictly newer observation than the watermark.
+    const count =
+      check.result === 'rejected'
+        ? await this.db.$executeRaw`
+            UPDATE bot SET "credentialCheckedAt" = ${at}, "credentialRejectedAt" = COALESCE("credentialRejectedAt", ${at}),
+              "credentialRejectedCode" = ${check.code}, "updatedAt" = CURRENT_TIMESTAMP
+            WHERE id = ${id} AND "credentialRevision" = ${check.revision}
+              AND ("credentialCheckedAt" IS NULL OR "credentialCheckedAt" < ${at})`
+        : await this.db.$executeRaw`
+            UPDATE bot SET "credentialCheckedAt" = ${at}, "credentialRejectedAt" = NULL,
+              "credentialRejectedCode" = NULL, "updatedAt" = CURRENT_TIMESTAMP
+            WHERE id = ${id} AND "credentialRevision" = ${check.revision}
+              AND ("credentialCheckedAt" IS NULL OR "credentialCheckedAt" < ${at})`
+    return count > 0
   }
 
   async delete(orgId: OrgId, id: BotId): Promise<void> {

@@ -346,10 +346,14 @@ installed via standard OAuth v2. Verified gaps against current code:
   `result: 'rejected'` and the code instead. That only marks the bot with the
   time the rejection was first seen and the latest code; its integrations stay
   active and its specs stay on the daemons. A later successful probe sends
-  `result: 'ok'`, which clears a mark first seen no later than that probe, and a
-  fresh credential clears the mark in the same statement that clears the
-  revocation. A check applies only while the `credentialRevision` it probed is
-  still current, so a probe of a replaced credential changes nothing. A relay
+  `result: 'ok'`, which clears the mark, and a fresh credential clears the mark
+  in the same statement that clears the revocation. A check applies only while
+  the `credentialRevision` it probed is still current, so a probe of a replaced
+  credential changes nothing, and only when its observation time is strictly
+  newer than the last check applied to that credential (the bot's
+  `credentialCheckedAt` watermark, reset by a fresh credential). Checks that
+  relay replicas or retries deliver out of order therefore neither clear a newer
+  rejection nor re-mark the bot after a newer success. A relay
   sends the check and the new `rc/bot-revoked` fields only to a Control Plane
   that advertises `bot-credential-check-v1`. The console shows a marked bot's
   integrations as `rejected`, ranked after `revoked` and before `offline`, with

@@ -1063,7 +1063,7 @@ const RcBotCredentialCheckBase = z.object({
   botId: z.string().uuid(),
   // The generation the relay probed; the CP applies the check only while it is still the bot's current one.
   credentialRevision: z.number().int().nonnegative(),
-  // When the relay observed the answer, in ms: a rejection's first-seen time, and the fence behind which an `ok` clears it.
+  // When the relay observed the answer, in ms: a rejection's first-seen time, and the order checks apply in (older ones are ignored).
   observedAtMs: z.number().int().nonnegative()
 })
 
@@ -1074,7 +1074,7 @@ export const RcBotCredentialCheck = z.discriminatedUnion('result', [
 ])
 export type RcBotCredentialCheck = z.infer<typeof RcBotCredentialCheck>
 
-// C→R REP (corr = rc/bot-credential-check id) — committed; `applied: false` means a replaced credential, an unknown bot or an `ok` older than the mark, and nothing was written.
+// C→R REP (corr = rc/bot-credential-check id) — committed; `applied: false` means a replaced credential, an unknown bot or an observation no newer than the last applied, and nothing was written.
 export const RcBotCredentialCheckOk = z.object({
   botId: z.string().uuid(),
   applied: z.boolean()

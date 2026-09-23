@@ -882,11 +882,14 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   } = useSWR<IntegrationDto[]>(consoleKeys.integrations(orgKey), ([, orgId]) => fetchIntegrations(orgId as string), {
     refreshInterval: RESOURCE_REFRESH_MS
   })
+  // Polled like integrations: a bot's rejected mark changes while its integrations stay active, so nothing else re-reads it.
   const {
     data: botsData,
     isLoading: botsIsLoading,
     mutate: mutateBots
-  } = useSWR<BotDto[]>(consoleKeys.bots(orgKey), ([, orgId]) => fetchBots(orgId as string))
+  } = useSWR<BotDto[]>(consoleKeys.bots(orgKey), ([, orgId]) => fetchBots(orgId as string), {
+    refreshInterval: RESOURCE_REFRESH_MS
+  })
   const realBots = botsData ?? NO_BOTS
   const botsLoaded = botsData !== undefined
   const {
