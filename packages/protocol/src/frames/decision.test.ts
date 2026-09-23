@@ -67,6 +67,24 @@ describe('decision evaluation frames', () => {
     expect(DecisionEvaluationReply.parse({ evaluation: null })).toEqual({ evaluation: null })
   })
 
+  it('carries the lane conversation namespace on both replies and bounds it', () => {
+    const conversation = { platform: 'slack', tenantScope: 'T1' }
+    const page = { items: [row(1)], nextCursor: null, conversation }
+    expect(DecisionEvaluationsReply.parse(page)).toEqual(page)
+    expect(
+      DecisionEvaluationReply.parse({ evaluation: null, conversation: { platform: 'discord', tenantScope: null } })
+    ).toMatchObject({ conversation: { tenantScope: null } })
+    for (const bad of [
+      { platform: '', tenantScope: 'T1' },
+      { platform: 'slack', tenantScope: '' },
+      { platform: 'slack' }
+    ])
+      expect(DecisionEvaluationsReply.safeParse({ ...page, conversation: bad }).success).toBe(false)
+    expect(DecisionEvaluationsReply.safeParse({ ...page, conversation: { ...conversation, extra: 1 } }).success).toBe(
+      false
+    )
+  })
+
   it('registers both request/reply pairs', () => {
     for (const type of [
       'decision/evaluations',

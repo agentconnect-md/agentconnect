@@ -1,7 +1,14 @@
 import type { FastifyRequest } from 'fastify'
+import type { DecisionEvaluationConversation } from '@agentconnect.md/protocol'
 import { canEdit, canView, canViewSession } from '../authorization/policy.js'
 import { IntegrationId } from '../domain/ids.js'
-import type { AgentRecord, BotRecord, IntegrationChannelRecord, IntegrationRecord } from '../persistence/ports.js'
+import type {
+  AgentRecord,
+  BotRecord,
+  IntegrationChannelRecord,
+  IntegrationRecord,
+  ViewCtx
+} from '../persistence/ports.js'
 import { gateConsumer } from './decision-access.js'
 import type { HttpDeps } from './deps.js'
 import { ctxOf, orgOf } from './rbac.js'
@@ -12,15 +19,15 @@ export interface ReadableConversation {
   consumer: { agent: AgentRecord; integration: IntegrationRecord; row: IntegrationChannelRecord }
   row: IntegrationChannelRecord
   bot: BotRecord
+  viewer: ViewCtx
 }
 
-/** A group conversation the caller may read, with the same session audience as a transcript read; null is a 404. */
+/** The session-independent half of a conversation read (role, install, agent and consumer visibility, row kind); null is a 404. */
 export async function readableConversation(
   deps: HttpDeps,
   req: FastifyRequest,
   integrationId: string,
-  channelId: string,
-  opts: { bodies?: boolean } = {}
+  channelId: string
 ): Promise<ReadableConversation | null> {
   const orgId = orgOf(req)
   // The role is re-read, so a member removed mid-read loses access at the next check.
@@ -39,19 +46,33 @@ export async function readableConversation(
   if (!row || row.kind === 'im') return null
   const consumer = await gateConsumer(deps, orgId, integration, bot, channelId)
   if (!consumer || !canView(consumer.agent, viewer)) return null
-  const session = await deps.repos.session.latestConversationSession(orgId, consumer.agent.id, channelId)
+  return { integration, consumer, row, bot, viewer }
+}
+
+/** The transcript audience of the newest top-level session in the daemon-named namespace, checked before a reply is returned. */
+export async function conversationAudienceAllows(
+  deps: HttpDeps,
+  req: FastifyRequest,
+  conversation: ReadableConversation,
+  namespace: DecisionEvaluationConversation,
+  opts: { bodies?: boolean } = {}
+): Promise<boolean> {
+  const orgId = orgOf(req)
+  const { viewer, consumer } = conversation
+  const session = await deps.repos.session.latestConversationSession(orgId, consumer.agent.id, {
+    ...namespace,
+    channel: conversation.row.channelId
+  })
   if (session) {
     const access = await makeSessionAccessResolver(deps).forSessions(req, [session])
-    if (!canViewSession(session, viewer, access.identitySet, access.externalAccess)) return null
-  } else {
-    // No session names an audience yet: an active external-access policy fails closed; otherwise the org baseline holds for summaries.
-    const providers = (deps.sessionAccessPlugins ?? []).filter((plugin) => plugin.available)
-    const policies = await Promise.all(
-      providers.map((plugin) => deps.repos.session.getExternalAccessPolicy(orgId, plugin.provider))
-    )
-    if (policies.some((policy) => policy !== null && policy.state !== 'disabled')) return null
-    // Frozen bodies with no session audience need edit rights on the consumer agent, not the org read baseline.
-    if (opts.bodies && !canEdit(consumer.agent, viewer)) return null
+    return canViewSession(session, viewer, access.identitySet, access.externalAccess)
   }
-  return { integration, consumer, row, bot }
+  // No session names an audience yet: an active external-access policy fails closed; otherwise the org baseline holds for summaries.
+  const providers = (deps.sessionAccessPlugins ?? []).filter((plugin) => plugin.available)
+  const policies = await Promise.all(
+    providers.map((plugin) => deps.repos.session.getExternalAccessPolicy(orgId, plugin.provider))
+  )
+  if (policies.some((policy) => policy !== null && policy.state !== 'disabled')) return false
+  // Frozen bodies with no session audience need edit rights on the consumer agent, not the org read baseline.
+  return !opts.bodies || canEdit(consumer.agent, viewer)
 }

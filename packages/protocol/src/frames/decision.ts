@@ -102,16 +102,27 @@ export const DecisionEvaluationsRequest = z.strictObject({
 })
 export type DecisionEvaluationsRequest = z.infer<typeof DecisionEvaluationsRequest>
 export type DecisionEvaluationsRequestInput = z.input<typeof DecisionEvaluationsRequest>
-export const DecisionEvaluationsReply = DecisionEvaluationRecordPage.refine(
-  (page) => encodedBytes(page) <= DECISION_LIST_MAX_BYTES,
-  { message: 'The evaluation page must fit within 32 KiB.' }
-)
+// The lane's durable session namespace (platform, tenantScope), so the CP checks that install's audience only.
+export const DecisionEvaluationConversation = z.strictObject({
+  platform: z.string().min(1).max(64),
+  tenantScope: z.string().min(1).max(256).nullable()
+})
+export type DecisionEvaluationConversation = z.infer<typeof DecisionEvaluationConversation>
+// Optional only so a reply without it parses and the CP can fail closed on it; the cap covers the whole reply.
+export const DecisionEvaluationsReply = DecisionEvaluationRecordPage.extend({
+  conversation: DecisionEvaluationConversation.optional()
+}).refine((page) => encodedBytes(page) <= DECISION_LIST_MAX_BYTES, {
+  message: 'The evaluation page must fit within 32 KiB.'
+})
 export type DecisionEvaluationsReply = z.infer<typeof DecisionEvaluationsReply>
 
 export const DecisionEvaluationRequest = z.strictObject({ ...EvaluationLane, seq: z.number().int().nonnegative() })
 export type DecisionEvaluationRequest = z.infer<typeof DecisionEvaluationRequest>
 export const DecisionEvaluationReply = z
-  .strictObject({ evaluation: DecisionEvaluationRecordDetail.nullable() })
+  .strictObject({
+    evaluation: DecisionEvaluationRecordDetail.nullable(),
+    conversation: DecisionEvaluationConversation.optional()
+  })
   .refine((reply) => encodedBytes(reply) <= DECISION_EVALUATION_DETAIL_MAX_BYTES, {
     message: 'The evaluation detail must fit within 64 KiB.'
   })

@@ -90,7 +90,7 @@ export const decisionEvaluation: ControlHandler<DecisionControlDeps> = async (fr
     frame,
     wire,
     () => DecisionEvaluationRequest.parse(frame.payload),
-    async (orgId, req) => ({ evaluation: await reader.get(orgId, req) }),
+    (orgId, req) => reader.get(orgId, req),
     'decision/evaluation/result'
   )
 }

@@ -7,10 +7,12 @@ import {
   DecisionEvaluationRecord,
   DecisionQuestion,
   type DecisionAnswerSummary,
+  type DecisionEvaluationConversation,
   type DecisionEvaluationOutcome,
   type DecisionEvaluationRecordDetail,
-  type DecisionEvaluationRecordPage,
+  type DecisionEvaluationReply,
   type DecisionEvaluationRequest,
+  type DecisionEvaluationsReply,
   type DecisionEvaluationsRequest
 } from '@agentconnect.md/protocol'
 import { transcriptChannelKey, type DecisionVerdictRow, type LocalStore } from '../store/local-store.js'
@@ -25,8 +27,12 @@ export class DecisionEvaluationScopeError extends Error {
 
 export interface DecisionEvaluationReaderDeps {
   store(): LocalStore
-  /** The integration's transport scope when this daemon serves the agent, in this org, with this integration. */
-  servedIntegration(orgId: string, agentId: string, integrationId: string): { transportScope?: string } | undefined
+  /** The served lane's transport scope and session namespace; undefined when not served or the namespace is not yet known. */
+  servedIntegration(
+    orgId: string,
+    agentId: string,
+    integrationId: string
+  ): Promise<({ transportScope?: string } & DecisionEvaluationConversation) | undefined>
 }
 
 type VerdictRow = DecisionVerdictRow & { ts: string | null }
@@ -154,19 +160,27 @@ function suppliedCount(row: DecisionVerdictRow): number | null {
 export class DecisionEvaluationReader {
   constructor(private readonly deps: DecisionEvaluationReaderDeps) {}
 
-  private lane(orgId: string, req: { agentId: string; integrationId: string; channel: string }) {
-    const served = this.deps.servedIntegration(orgId, req.agentId, req.integrationId)
+  private async lane(orgId: string, req: { agentId: string; integrationId: string; channel: string }) {
+    const served = await this.deps.servedIntegration(orgId, req.agentId, req.integrationId)
     if (!served) throw new DecisionEvaluationScopeError()
+    const conversation: DecisionEvaluationConversation = {
+      platform: served.platform,
+      tenantScope: served.tenantScope
+    }
     return {
-      orgId,
-      integrationId: req.integrationId,
-      channel: transcriptChannelKey(req.channel, served.transportScope),
-      subject: req.agentId
+      lane: {
+        orgId,
+        integrationId: req.integrationId,
+        channel: transcriptChannelKey(req.channel, served.transportScope),
+        subject: req.agentId
+      },
+      conversation
     }
   }
 
-  async list(orgId: string, req: DecisionEvaluationsRequest): Promise<DecisionEvaluationRecordPage> {
-    const lane = this.lane(orgId, req)
+  // Each reply names the lane's session namespace so the CP gates it on that install's audience alone.
+  async list(orgId: string, req: DecisionEvaluationsRequest): Promise<DecisionEvaluationsReply> {
+    const { lane, conversation } = await this.lane(orgId, req)
     const rows = await this.deps.store().listDecisionVerdicts({
       ...lane,
       ...(req.cursor !== undefined ? { before: req.cursor } : {}),
@@ -179,7 +193,8 @@ export class DecisionEvaluationReader {
       if (!parsed.success) continue
       // The cursor placeholder is the widest a seq can print, so the real page never exceeds the cap.
       if (
-        encodedBytes({ items: [...items, parsed.data], nextCursor: Number.MAX_SAFE_INTEGER }) > DECISION_LIST_MAX_BYTES
+        encodedBytes({ items: [...items, parsed.data], nextCursor: Number.MAX_SAFE_INTEGER, conversation }) >
+        DECISION_LIST_MAX_BYTES
       ) {
         more = true
         break
@@ -187,15 +202,15 @@ export class DecisionEvaluationReader {
       items.push(parsed.data)
     }
     const last = items.at(-1)?.seq ?? rows[0]?.seq
-    return { items, nextCursor: more && last !== undefined && last > 0 ? last : null }
+    return { items, nextCursor: more && last !== undefined && last > 0 ? last : null, conversation }
   }
 
-  async get(orgId: string, req: DecisionEvaluationRequest): Promise<DecisionEvaluationRecordDetail | null> {
-    const lane = this.lane(orgId, req)
+  async get(orgId: string, req: DecisionEvaluationRequest): Promise<DecisionEvaluationReply> {
+    const { lane, conversation } = await this.lane(orgId, req)
     const [row] = await this.deps.store().listDecisionVerdicts({ ...lane, seq: req.seq, limit: 1 })
-    if (!row) return null
+    if (!row) return { evaluation: null, conversation }
     const summary = DecisionEvaluationRecord.safeParse(summaryRow(row))
-    if (!summary.success) return null
+    if (!summary.success) return { evaluation: null, conversation }
     const expired = summary.data.detailsExpired
     const fullAnswer = expired ? null : answerOf(row).answer
     const detail: DecisionEvaluationRecordDetail = {
@@ -206,13 +221,13 @@ export class DecisionEvaluationReader {
       evidence:
         row.state === 'admitted' ? { snapshotSeq: Number(row.seq), suppliedBackground: suppliedCount(row) } : null
     }
-    const fits = () => encodedBytes({ evaluation: detail }) <= DECISION_EVALUATION_DETAIL_MAX_BYTES
+    const fits = () => encodedBytes({ evaluation: detail, conversation }) <= DECISION_EVALUATION_DETAIL_MAX_BYTES
     // The oldest history goes first; the current message is kept or the whole input is.
     while (!fits() && detail.input && detail.input.history.length > 0) {
       detail.input.history.shift()
       detail.input.historyOmitted += 1
     }
     if (!fits()) detail.input = null
-    return detail
+    return { evaluation: detail, conversation }
   }
 }

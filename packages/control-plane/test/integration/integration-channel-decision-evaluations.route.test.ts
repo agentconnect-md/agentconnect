@@ -4,9 +4,12 @@ import { randomUUID } from 'node:crypto'
 import {
   DECISION_EVALUATIONS_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
+  type DecisionEvaluationConversation,
   type DecisionEvaluationRecordDetail,
   type DecisionEvaluationRecordPage,
+  type DecisionEvaluationReply,
   type DecisionEvaluationRequest,
+  type DecisionEvaluationsReply,
   type DecisionEvaluationsRequest
 } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
@@ -61,20 +64,28 @@ const detail: DecisionEvaluationRecordDetail = {
   evidence: { snapshotSeq: 12, suppliedBackground: 0 }
 }
 
+// The namespace seeded sessions carry by default: Slack with no stamped tenant scope.
+const UNSCOPED: DecisionEvaluationConversation = { platform: 'slack', tenantScope: null }
+
 class SpyControl {
   readonly lists: Array<{ daemonId: string; orgId: string; req: DecisionEvaluationsRequest }> = []
   readonly gets: Array<{ daemonId: string; orgId: string; req: DecisionEvaluationRequest }> = []
-  list: (daemonId: string) => Promise<DecisionEvaluationRecordPage> = async () => page
-  get: (daemonId: string) => Promise<{ evaluation: DecisionEvaluationRecordDetail | null }> = async () => ({
-    evaluation: detail
-  })
+  scopeOf: (integrationId: string) => DecisionEvaluationConversation | undefined = () => UNSCOPED
+  list: (daemonId: string, req: DecisionEvaluationsRequest) => Promise<DecisionEvaluationsReply> = async (_, req) =>
+    this.scoped(page, req.integrationId)
+  get: (daemonId: string, req: DecisionEvaluationRequest) => Promise<DecisionEvaluationReply> = async (_, req) =>
+    this.scoped({ evaluation: detail }, req.integrationId)
+  scoped<T extends object>(body: T, integrationId: string): T & { conversation?: DecisionEvaluationConversation } {
+    const conversation = this.scopeOf(integrationId)
+    return conversation ? { ...body, conversation } : body
+  }
   async decisionEvaluations(daemonId: string, orgId: string, req: DecisionEvaluationsRequest) {
     this.lists.push({ daemonId, orgId, req })
-    return this.list(daemonId)
+    return this.list(daemonId, req)
   }
   async decisionEvaluation(daemonId: string, orgId: string, req: DecisionEvaluationRequest) {
     this.gets.push({ daemonId, orgId, req })
-    return this.get(daemonId)
+    return this.get(daemonId, req)
   }
   daemonFeatures(): readonly string[] {
     return FEATURES
@@ -136,6 +147,20 @@ async function seedInstall(opts: { name?: string; agent?: { visibility: 'restric
   return { integrationId, agentId }
 }
 
+// A second install of the same agent on another bot whose platform reuses the channel id C1.
+async function seedSecondInstall(agentId: string) {
+  const botId = randomUUID()
+  await prisma.bot.create({ data: { id: botId, orgId: DEFAULT_ORG_ID, platform: 'slack', name: `bot-${botId}` } })
+  const integrationId = randomUUID()
+  await prisma.integration.create({
+    data: { id: integrationId, orgId: DEFAULT_ORG_ID, agentId, botId, platform: 'slack', name: 'b2' }
+  })
+  await prisma.integrationChannel.create({
+    data: { integrationId, channelId: 'C1', name: 'general', trigger: 'mention', agentId }
+  })
+  return integrationId
+}
+
 const list = (app: HttpApp, integrationId: string, channelId = 'C1', query = '') =>
   app.app.inject({
     method: 'GET',
@@ -182,8 +207,9 @@ describe('GET /integrations/:id/channels/:channelId/decision-evaluations', () =>
     const { integrationId, agentId } = await seedInstall()
     const viewer = appWith({ userId: await member('viewer') })
     expect((await list(viewer.app, integrationId)).statusCode).toBe(200)
-    expect((await get(viewer.app, integrationId, 12)).statusCode).toBe(404)
-    expect(viewer.spy.gets).toHaveLength(0)
+    const denied = await get(viewer.app, integrationId, 12)
+    expect(denied.statusCode).toBe(404)
+    expect(denied.body).not.toContain('SECRET-BODY')
     const collaborator = appWith({ userId: await member('collaborator') })
     expect((await get(collaborator.app, integrationId, 12)).statusCode).toBe(200)
     await seedSessionMeta(prisma, 'audience', agentId, { channel: 'C1' })
@@ -208,9 +234,62 @@ describe('GET /integrations/:id/channels/:channelId/decision-evaluations', () =>
       ownerIdentity: 'user:someone-else'
     })
     expect((await list(collaborator.app, integrationId)).statusCode).toBe(404)
-    expect((await get(collaborator.app, integrationId, 12)).statusCode).toBe(404)
-    expect(collaborator.spy.lists).toHaveLength(1)
-    expect(collaborator.spy.gets).toHaveLength(0)
+    const denied = await get(collaborator.app, integrationId, 12)
+    expect(denied.statusCode).toBe(404)
+    expect(denied.body).not.toContain('SECRET-BODY')
+    // Pre-checks refuse without a daemon call; the audience check discards the replies it refuses.
+    expect(collaborator.spy.lists).toHaveLength(2)
+    expect(collaborator.spy.gets).toHaveLength(1)
+  })
+
+  it('checks the audience of the install namespace the daemon names, not a same-id channel on another install', async () => {
+    const { integrationId: a, agentId } = await seedInstall()
+    const b = await seedSecondInstall(agentId)
+    const scopes: Record<string, DecisionEvaluationConversation> = {
+      [a]: { platform: 'slack', tenantScope: 'T-A' },
+      [b]: { platform: 'slack', tenantScope: 'T-B' }
+    }
+    const reader = appWith({ userId: await member('collaborator') })
+    reader.spy.scopeOf = (integrationId) => scopes[integrationId]
+    await seedSessionMeta(prisma, 'a-private', agentId, {
+      channel: 'C1',
+      tenantScope: 'T-A',
+      visibility: 'private',
+      ownerIdentity: 'user:someone-else',
+      startedAt: new Date(Date.now() - 60_000)
+    })
+    await seedSessionMeta(prisma, 'b-open', agentId, { channel: 'C1', tenantScope: 'T-B' })
+    const hiddenList = await list(reader.app, a)
+    expect(hiddenList.statusCode).toBe(404)
+    const hiddenDetail = await get(reader.app, a, 12)
+    expect(hiddenDetail.statusCode).toBe(404)
+    expect(hiddenDetail.body).not.toContain('SECRET-BODY')
+    expect(reader.spy.gets.at(-1)!.req.integrationId).toBe(a)
+    expect((await list(reader.app, b)).statusCode).toBe(200)
+
+    await prisma.sessionMeta.update({ where: { id: 'a-private' }, data: { visibility: 'org', ownerIdentity: null } })
+    await prisma.sessionMeta.update({
+      where: { id: 'b-open' },
+      data: { visibility: 'private', ownerIdentity: 'user:someone-else' }
+    })
+    const shown = await list(reader.app, a)
+    expect(shown.statusCode, shown.body).toBe(200)
+    expect(shown.json()).toEqual(page)
+    expect((await get(reader.app, a, 12)).json()).toEqual(detail)
+    expect((await list(reader.app, b)).statusCode).toBe(404)
+  })
+
+  it('fails closed with 503 when the daemon reply names no namespace', async () => {
+    const { integrationId, agentId } = await seedInstall()
+    await seedSessionMeta(prisma, 'audience', agentId, { channel: 'C1' })
+    const { app, spy } = appWith({ userId: await member('collaborator') })
+    spy.scopeOf = () => undefined
+    for (const res of [await list(app, integrationId), await get(app, integrationId, 12)]) {
+      expect(res.statusCode).toBe(503)
+      expect(res.json()).toMatchObject({ code: 'DAEMON_UPGRADE_REQUIRED' })
+      expect(res.body).not.toContain('SECRET-BODY')
+      expect(res.body).not.toContain('jev-1.13.0')
+    }
   })
 
   it('fails closed without a session while an external-access policy is active', async () => {
@@ -219,9 +298,10 @@ describe('GET /integrations/:id/channels/:channelId/decision-evaluations', () =>
     const plugins = [
       { provider: 'slack', available: true, resolve: async () => ({ allowedScopes: [], degraded: false }) }
     ]
-    const { app, spy } = appWith({ plugins })
-    expect((await list(app, integrationId)).statusCode).toBe(404)
-    expect(spy.lists).toHaveLength(0)
+    const { app } = appWith({ plugins })
+    const res = await list(app, integrationId)
+    expect(res.statusCode).toBe(404)
+    expect(res.body).not.toContain('jev-1.13.0')
   })
 
   it('answers 503 offline or unsupported with distinct messages, and moves past a daemon that refuses the lane', async () => {
@@ -238,9 +318,9 @@ describe('GET /integrations/:id/channels/:channelId/decision-evaluations', () =>
 
     const two = appWith({ features: { [DAEMON]: FEATURES, [SECOND]: FEATURES } })
     vi.spyOn(two.app.deps.placementResolver, 'servingDaemons').mockResolvedValue([DAEMON, SECOND])
-    two.spy.list = async (daemonId) => {
+    two.spy.list = async (daemonId, req) => {
       if (daemonId === DAEMON) throw new ProtocolError('SCOPE_DENIED', 'not served here')
-      return page
+      return two.spy.scoped(page, req.integrationId)
     }
     const moved = await list(two.app, integrationId)
     expect(moved.statusCode).toBe(200)
@@ -255,7 +335,7 @@ describe('GET /integrations/:id/channels/:channelId/decision-evaluations', () =>
   it('returns 404 for a detail the daemon no longer holds and re-checks access after the reply', async () => {
     const { integrationId, agentId } = await seedInstall()
     const collaborator = appWith({ userId: await member('collaborator') })
-    collaborator.spy.get = async () => ({ evaluation: null })
+    collaborator.spy.get = async () => ({ evaluation: null, conversation: UNSCOPED })
     expect((await get(collaborator.app, integrationId, 3)).statusCode).toBe(404)
     expect((await get(collaborator.app, integrationId, 'abc')).statusCode).toBe(400)
     collaborator.spy.list = async () => {
@@ -263,7 +343,7 @@ describe('GET /integrations/:id/channels/:channelId/decision-evaluations', () =>
         where: { id: agentId },
         data: { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }
       })
-      return page
+      return { ...page, conversation: UNSCOPED }
     }
     expect((await list(collaborator.app, integrationId)).statusCode).toBe(404)
   })

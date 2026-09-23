@@ -165,6 +165,8 @@ export async function seedSessionMeta(
     /** The shared-store set the rows went to (a pool-recorded session); absent ⇒ private store. */
     contentSetId?: string
     platform?: string
+    /** The durable conversation namespace the daemon stamped (session-visibility §2); absent ⇒ null. */
+    tenantScope?: string
     channel?: string
     thread?: string
     /** The executor this session's environment ran on (session-executors.md §7). */
@@ -193,6 +195,7 @@ export async function seedSessionMeta(
       ...(opts.visibility ? { visibility: opts.visibility } : {}),
       ...(opts.ownerIdentity ? { ownerIdentity: opts.ownerIdentity } : {}),
       ...(opts.thread ? { thread: opts.thread } : {}),
+      ...(opts.tenantScope ? { tenantScope: opts.tenantScope } : {}),
       ...(opts.executorDaemonId ? { executorDaemonId: opts.executorDaemonId } : {}),
       ...(opts.daemonId ? { daemonId: opts.daemonId } : {}),
       ...(opts.contentSetId ? { contentSetId: opts.contentSetId } : {}),

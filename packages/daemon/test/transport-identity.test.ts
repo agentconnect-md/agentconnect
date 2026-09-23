@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { connectionIdentityFor, tenantScopeFor, type TenantScopeHost } from '../src/platforms/transport-identity.js'
+import {
+  connectionIdentityFor,
+  tenantScopeFor,
+  tenantScopePending,
+  type TenantScopeHost
+} from '../src/platforms/transport-identity.js'
 import { conversationAudienceFor } from '../src/platforms/session-audience.js'
 
 const host = (live?: string, minted?: string): TenantScopeHost => ({
@@ -112,6 +117,21 @@ describe('tenant scope (durable owner identity)', () => {
     )
     // No minted scope either ⇒ undefined ⇒ the CP records no owner (fail closed).
     expect(await tenantScopeFor(host(undefined, undefined), { id: 'i9', platform: 'x' } as never)).toBeUndefined()
+  })
+})
+
+describe('tenant scope pending (read-side)', () => {
+  it('is pending only for a live-tenant platform whose connection has not reported its tenant id', () => {
+    expect(tenantScopePending(host(undefined, 'm1'), { id: 'i1', platform: 'slack' } as never)).toBe(true)
+    expect(tenantScopePending(host('T012', 'm1'), { id: 'i1', platform: 'slack' } as never)).toBe(false)
+    expect(tenantScopePending(host(undefined, 'm4'), { id: 'i3', platform: 'discord' } as never)).toBe(false)
+    expect(
+      tenantScopePending(host(undefined, 'm2'), {
+        id: 'i2',
+        platform: 'telegram',
+        config: { botToken: '42:x' }
+      } as never)
+    ).toBe(false)
   })
 })
 

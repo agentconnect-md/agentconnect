@@ -18,6 +18,7 @@ const AGENT = '11111111-1111-4111-8111-111111111111'
 const OTHER_AGENT = '22222222-2222-4222-8222-222222222222'
 const CH = 'C1'
 const FENCE = 'daemon-1:boot-1'
+const SCOPE = { platform: 'slack', tenantScope: 'T-A' }
 const AT = 1_800_000_000_000
 const question = { type: 'boolean', instructions: 'Reply?', criteria: { true: 'Yes', false: 'No' } }
 const config = {
@@ -104,8 +105,8 @@ async function settle(
 function readerFor(s: LocalStore) {
   return new DecisionEvaluationReader({
     store: () => s,
-    servedIntegration: (orgId, agentId, integrationId) =>
-      orgId === ORG && agentId === AGENT && integrationId === 'int-a' ? {} : undefined
+    servedIntegration: async (orgId, agentId, integrationId) =>
+      orgId === ORG && agentId === AGENT && integrationId === 'int-a' ? { ...SCOPE } : undefined
   })
 }
 
@@ -134,6 +135,7 @@ describe('DecisionEvaluationReader', () => {
     const reader = readerFor(s)
     const page = await reader.list(ORG, { ...lane, limit: 20 })
     expect(DecisionEvaluationsReply.parse(page)).toEqual(page)
+    expect(page.conversation).toEqual(SCOPE)
     expect(page.nextCursor).toBeNull()
     expect(page.items.map((item) => [item.seq, item.outcome, item.reason])).toEqual([
       [settled, 'pending', null],
@@ -161,7 +163,7 @@ describe('DecisionEvaluationReader', () => {
     const second = await reader.list(ORG, { ...lane, limit: 2, cursor: first.nextCursor! })
     expect(second.items.map((item) => item.seq)).toEqual([canceled, unavailable])
     const last = await reader.list(ORG, { ...lane, limit: 2, cursor: unavailable })
-    expect(last).toEqual({ items: expect.any(Array), nextCursor: null })
+    expect(last).toEqual({ items: expect.any(Array), nextCursor: null, conversation: SCOPE })
     expect(last.items.map((item) => item.seq)).toEqual([skipped, triggered])
     await s.close()
   })
@@ -199,8 +201,10 @@ describe('DecisionEvaluationReader', () => {
     await s.claimVerdictBackground(seq, AGENT, [1, 2])
     await s.finishDecisionVerdict(seq, AGENT, FENCE, 'admitted', null, AT + 200)
     const reader = readerFor(s)
-    const detail = await reader.get(ORG, { ...lane, seq })
-    expect(DecisionEvaluationReply.parse({ evaluation: detail })).toEqual({ evaluation: detail })
+    const reply = await reader.get(ORG, { ...lane, seq })
+    expect(DecisionEvaluationReply.parse(reply)).toEqual(reply)
+    expect(reply.conversation).toEqual(SCOPE)
+    const detail = reply.evaluation
     expect(detail).toMatchObject({
       seq,
       outcome: 'triggered',
@@ -217,7 +221,7 @@ describe('DecisionEvaluationReader', () => {
     })
     expect(detail!.input!.currentMessage).not.toHaveProperty('conversation')
     await s.stripDecisionVerdictBodies(AT + 10 * 24 * 3_600_000)
-    const expired = await reader.get(ORG, { ...lane, seq })
+    const expired = (await reader.get(ORG, { ...lane, seq })).evaluation
     expect(expired).toMatchObject({
       detailsExpired: true,
       answer: null,
@@ -227,7 +231,7 @@ describe('DecisionEvaluationReader', () => {
       snapshot: { decisionId: 'd-1', question }
     })
     expect((await reader.list(ORG, { ...lane, limit: 5 })).items[0]).toMatchObject({ detailsExpired: true })
-    expect(await reader.get(ORG, { ...lane, seq: seq + 999 })).toBeNull()
+    expect(await reader.get(ORG, { ...lane, seq: seq + 999 })).toEqual({ evaluation: null, conversation: SCOPE })
     await s.close()
   })
 
@@ -236,11 +240,10 @@ describe('DecisionEvaluationReader', () => {
     const { seq } = await reserve(s, 1)
     const history = Array.from({ length: 6 }, (_, i) => ({ id: `h${i}`, text: 'z'.repeat(15 * 1024) }))
     await settle(s, seq, 'skip', no, [], state(history))
-    const detail = await readerFor(s).get(ORG, { ...lane, seq })
-    expect(Buffer.byteLength(JSON.stringify({ evaluation: detail }))).toBeLessThanOrEqual(
-      DECISION_EVALUATION_DETAIL_MAX_BYTES
-    )
-    expect(DecisionEvaluationReply.safeParse({ evaluation: detail }).success).toBe(true)
+    const reply = await readerFor(s).get(ORG, { ...lane, seq })
+    const detail = reply.evaluation
+    expect(Buffer.byteLength(JSON.stringify(reply))).toBeLessThanOrEqual(DECISION_EVALUATION_DETAIL_MAX_BYTES)
+    expect(DecisionEvaluationReply.safeParse(reply).success).toBe(true)
     expect(detail!.input!.historyOmitted).toBeGreaterThan(0)
     expect(detail!.input!.history.at(-1)?.id).toBe('h5')
     expect(detail!.input!.history.length + detail!.input!.historyOmitted).toBe(6)
@@ -268,12 +271,27 @@ describe('decision/evaluations control handlers', () => {
     await decisionEvaluations(frame('decision/evaluations', { ...lane, limit: 5 }, ORG), deps, ok)
     expect(ok.reply).toHaveBeenCalledWith(expect.anything(), 'decision/evaluations/page', {
       items: [expect.objectContaining({ seq, outcome: 'pending' })],
-      nextCursor: null
+      nextCursor: null,
+      conversation: SCOPE
     })
     const detail = wire()
     await decisionEvaluation(frame('decision/evaluation', { ...lane, seq }, ORG), deps, detail)
     expect(detail.reply).toHaveBeenCalledWith(expect.anything(), 'decision/evaluation/result', {
-      evaluation: expect.objectContaining({ seq })
+      evaluation: expect.objectContaining({ seq }),
+      conversation: SCOPE
+    })
+    const unscoped = wire()
+    const bare = new DecisionEvaluationReader({
+      store: () => s,
+      servedIntegration: async () => ({ platform: 'discord', tenantScope: null })
+    })
+    await decisionEvaluation(
+      frame('decision/evaluation', { ...lane, seq }, ORG),
+      { decisionEvaluations: bare },
+      unscoped
+    )
+    expect(DecisionEvaluationReply.parse(unscoped.reply.mock.calls[0]![2])).toMatchObject({
+      conversation: { platform: 'discord', tenantScope: null }
     })
     for (const [payload, orgId] of [
       [{ ...lane, agentId: OTHER_AGENT, limit: 5 }, ORG],

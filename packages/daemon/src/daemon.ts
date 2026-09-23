@@ -302,7 +302,12 @@ import { registerObservedChannels } from './platforms/observed-channels.js'
 import { ObservedChannelsSync, type ObservedChannelsSyncHost } from './platforms/observed-channels-sync.js'
 import { discordObservedChannels } from './platforms/discord/observed-channels.js'
 import { linearObservedChannels } from './platforms/linear/observed-channels.js'
-import { connectionIdentityFor, tenantScopeFor, type TenantScopeHost } from './platforms/transport-identity.js'
+import {
+  connectionIdentityFor,
+  tenantScopeFor,
+  tenantScopePending,
+  type TenantScopeHost
+} from './platforms/transport-identity.js'
 import { conversationAudienceFor } from './platforms/session-audience.js'
 import { turnChromeFor } from './platforms/turn-chrome.js'
 import { CommandChromeRegistry } from './platforms/command-chrome.js'
@@ -1677,11 +1682,15 @@ export class Daemon {
     this.decisionGate = new DecisionGate(this.decisionGateHost())
     this.decisionEvaluations = new DecisionEvaluationReader({
       store: () => this.store,
-      servedIntegration: (orgId, agentId, integrationId) => {
+      servedIntegration: async (orgId, agentId, integrationId) => {
         const integration = this.agents.get(agentId)?.integrations?.find((i) => i.id === integrationId)
         if (!integration || !this.servesAgent(agentId) || this.orgForAgent(agentId) !== orgId) return undefined
+        // A minted stand-in would miss the install's real sessions and fall to the no-session baseline, so refuse until live.
+        if (tenantScopePending(this.tenantScopeHost, integration)) return undefined
         const transportScope = this.transportScopeForIntegrationIds([integrationId])
-        return transportScope ? { transportScope } : {}
+        // The durable scope classifyNewSession stamps on this install's sessions; empty is unstamped there too.
+        const tenantScope = (await this.tenantScopeForIntegration(integration)) || null
+        return { ...(transportScope ? { transportScope } : {}), platform: integration.platform, tenantScope }
       }
     })
     this.codexSessionFloor = this.k8s ? configuredCodexSessionFloor(process.env) : undefined

@@ -1454,8 +1454,12 @@ export interface SessionRepo {
    *  identity set, the external-access policy) stays at the route — the fence
    *  here is tenancy only (§8). */
   get(orgId: OrgId, id: SessionId): Promise<SessionMetaRecord | null>
-  /** The newest top-level session an agent holds in one platform conversation — its audience gates conversation reads. */
-  latestConversationSession(orgId: OrgId, agentId: AgentId, channel: string): Promise<SessionMetaRecord | null>
+  /** The newest top-level session an agent holds in one conversation namespace; a null tenantScope matches only null rows. */
+  latestConversationSession(
+    orgId: OrgId,
+    agentId: AgentId,
+    conversation: { platform: string; tenantScope: string | null; channel: string }
+  ): Promise<SessionMetaRecord | null>
   /** Tenancy-UNSCOPED read for internal trust domains — a daemon proving it owns
    *  the parent of a child session it is reporting. Never call this from the
    *  HTTP surface; lint enforces it (§6). */

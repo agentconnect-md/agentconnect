@@ -83,11 +83,12 @@ export interface TenantScopeHost {
   minted(integrationId: string): Promise<string | undefined>
 }
 
+// Platforms whose durable scope is the live connection's tenant id; their minted scope is only a pre-auth fallback.
+const LIVE_TENANT_SCOPE = new Set(['slack'])
+
 const TENANT_SCOPE = new Map<string, (host: TenantScopeHost, integration: Integration) => Promise<string | undefined>>([
   ['qq', async (_host, int) => platformIntegrationConfig('qq', int)?.appId],
-  // The workspace id from auth.test, surfaced by the live connection. A
-  // not-yet-authenticated (or test-substituted) connection may not expose it —
-  // fall back to the minted scope rather than throw.
+  // The auth.test workspace id; a not-yet-authenticated connection falls back to the minted scope rather than throw.
   ['slack', async (host, int) => host.liveWorkspaceId(int.id) || (await host.minted(int.id))],
   // The public bot id prefix survives a BotFather token rotation.
   [
@@ -115,4 +116,9 @@ const TENANT_SCOPE = new Map<string, (host: TenantScopeHost, integration: Integr
 export async function tenantScopeFor(host: TenantScopeHost, integration: Integration): Promise<string | undefined> {
   const strategy = TENANT_SCOPE.get(integration.platform)
   return strategy ? await strategy(host, integration) : await host.minted(integration.id)
+}
+
+// True while a live-tenant platform's connection has not reported its tenant id, so its durable scope is not yet known.
+export function tenantScopePending(host: TenantScopeHost, integration: Integration): boolean {
+  return LIVE_TENANT_SCOPE.has(integration.platform) && !host.liveWorkspaceId(integration.id)
 }

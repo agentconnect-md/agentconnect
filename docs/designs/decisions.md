@@ -1414,7 +1414,15 @@ requested/actual model, all matched actions, and effective targets. Mention/thre
 evaluations include their target constraint and real model usage. Ineligible or
 outside-scope preview outcomes say Not applied and have no model usage.
 Reads are bounded authorized daemon BFF operations with
-the conversation's audience checks; CP never persists those bodies. A gate opens a
+the conversation's audience checks; CP never persists those bodies. Raw channel ids
+are not unique across installs, so the daemon's reply names the install's durable
+session namespace (platform and tenant scope, which only the daemon can derive) and
+the CP checks the audience of the newest top-level session in that namespace before
+returning anything; a refused reply is discarded as a 404, and a reply that names no
+namespace fails closed as an upgrade-required 503. While the install's connection
+has not yet reported the tenant id its scope derives from (a Slack connection before
+`auth.test`), the daemon refuses the read rather than name a minted stand-in that
+would miss the real sessions, and the CP answers it as offline. A gate opens a
 session only when it triggers, so much of a conversation's history has no session
 naming an audience: there the summary list follows the organization read baseline
 (closed while an external-access policy is active), and the detail read with frozen

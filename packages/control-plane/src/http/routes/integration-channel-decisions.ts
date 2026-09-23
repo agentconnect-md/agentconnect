@@ -7,6 +7,7 @@ import {
   DECISION_EVALUATIONS_V1_FEATURE,
   DECISION_PREVIEW_V1_FEATURE,
   DecisionEvaluation,
+  type DecisionEvaluationConversation,
   DecisionEvaluationRecordDetail,
   DecisionEvaluationRecordPage,
   DecisionPreviewRequest,
@@ -22,7 +23,7 @@ import { AgentId, IntegrationId } from '../../domain/ids.js'
 import type { AgentRecord } from '../../persistence/ports.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { ConnectionClosed } from '../../ws/registry.js'
-import { readableConversation, type ReadableConversation } from '../conversation-access.js'
+import { conversationAudienceAllows, readableConversation, type ReadableConversation } from '../conversation-access.js'
 import { decisionGateReadiness, gateConsumer, visibleDecision } from '../decision-access.js'
 import type { HttpDeps } from '../deps.js'
 import { ErrorDto } from '../dto/index.js'
@@ -252,6 +253,34 @@ export function integrationChannelDecisionRoutes(deps: HttpDeps) {
       return { ok: false }
     }
 
+    // Runs after the daemon replies and before anything is returned; a refused reply is discarded unread and never logged.
+    const audienceAllows = async (
+      req: FastifyRequest<{ Params: { id: string; channelId: string } }>,
+      reply: FastifyReply,
+      asked: ReadableConversation,
+      namespace: DecisionEvaluationConversation | undefined,
+      opts: { bodies?: boolean } = {}
+    ): Promise<boolean> => {
+      const fresh = await readableConversation(deps, req, req.params.id, req.params.channelId)
+      const sameLane =
+        fresh?.consumer.agent.id === asked.consumer.agent.id &&
+        fresh.consumer.integration.id === asked.consumer.integration.id
+      if (!fresh || !sameLane) {
+        await reply.code(404).send(notFound('conversation not found'))
+        return false
+      }
+      // A reply that names no namespace cannot be scoped to its install, so it fails closed as an upgrade.
+      if (!namespace) {
+        await reply.code(503).send(unavailable(UNSUPPORTED, 'DAEMON_UPGRADE_REQUIRED'))
+        return false
+      }
+      if (!(await conversationAudienceAllows(deps, req, fresh, namespace, opts))) {
+        await reply.code(404).send(notFound('conversation not found'))
+        return false
+      }
+      return true
+    }
+
     r.get(
       '/integrations/:id/channels/:channelId/decision-evaluations',
       {
@@ -260,7 +289,7 @@ export function integrationChannelDecisionRoutes(deps: HttpDeps) {
           summary: 'List recent conversation evaluations',
           operationId: 'listIntegrationChannelDecisionEvaluations',
           description:
-            "Recent By decision evaluations for one conversation, newest first, read from the serving daemon and proxied without being stored or logged. The caller must be able to read the conversation: the audience of its newest session, or, before any session exists, the organization baseline (closed while an external-access policy is active). Pages by `cursor` (the previous page's `nextCursor`) up to 50 rows and 32 KiB. Returns 503 when the serving daemon is offline or must be upgraded.",
+            "Recent By decision evaluations for one conversation, newest first, read from the serving daemon and proxied without being stored or logged. The caller must be able to read the conversation: the audience of its newest session in the namespace (platform and tenant scope) the serving daemon names for the install, or, before any session exists there, the organization baseline (closed while an external-access policy is active); the check runs on the reply before anything is returned. Pages by `cursor` (the previous page's `nextCursor`) up to 50 rows and 32 KiB. Returns 503 when the serving daemon is offline, including while its connection to the install has not yet reported the tenant scope, or must be upgraded, including a reply that names no namespace.",
           params: ConversationParams,
           querystring: z.object({
             cursor: z.coerce.number().int().positive().optional(),
@@ -282,9 +311,9 @@ export function integrationChannelDecisionRoutes(deps: HttpDeps) {
           })
         )
         if (!result.ok) return reply
-        if (!(await readableConversation(deps, req, req.params.id, req.params.channelId)))
-          return reply.code(404).send(notFound('conversation not found'))
-        return result.value
+        const { conversation: namespace, ...page } = result.value
+        if (!(await audienceAllows(req, reply, conversation, namespace))) return reply
+        return page
       }
     )
 
@@ -296,14 +325,13 @@ export function integrationChannelDecisionRoutes(deps: HttpDeps) {
           summary: 'Get a conversation evaluation',
           operationId: 'getIntegrationChannelDecisionEvaluation',
           description:
-            'One evaluation with its frozen Decision and condition snapshot, input and history, answer, model, usage, and evidence while the daemon still retains the bodies (bounded to 64 KiB); once stripped, `detailsExpired` is true and only the summary and snapshot remain. Proxied from the serving daemon under the conversation audience check, never stored or logged; before any session names an audience the bodies need edit access to the consumer agent rather than the organization read baseline. Returns 404 when the evaluation is gone and 503 when the daemon is offline or must be upgraded.',
+            'One evaluation with its frozen Decision and condition snapshot, input and history, answer, model, usage, and evidence while the daemon still retains the bodies (bounded to 64 KiB); once stripped, `detailsExpired` is true and only the summary and snapshot remain. Proxied from the serving daemon, never stored or logged, and returned only after the conversation audience check on the namespace the daemon names for the install; before any session there names an audience the bodies need edit access to the consumer agent rather than the organization read baseline. Returns 404 when the evaluation is gone and 503 when the daemon is offline, including while its connection to the install has not yet reported the tenant scope, or must be upgraded, including a reply that names no namespace.',
           params: ConversationParams.extend({ seq: z.coerce.number().int().nonnegative() }),
           response: { 200: DecisionEvaluationRecordDetail, 404: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
-        const readable = () => readableConversation(deps, req, req.params.id, req.params.channelId, { bodies: true })
-        const conversation = await readable()
+        const conversation = await readableConversation(deps, req, req.params.id, req.params.channelId)
         if (!conversation) return reply.code(404).send(notFound('conversation not found'))
         const result = await proxied(req, reply, conversation, (daemonId, agentId, integrationId) =>
           deps.control.decisionEvaluation(daemonId, orgOf(req), {
@@ -314,7 +342,7 @@ export function integrationChannelDecisionRoutes(deps: HttpDeps) {
           })
         )
         if (!result.ok) return reply
-        if (!(await readable())) return reply.code(404).send(notFound('conversation not found'))
+        if (!(await audienceAllows(req, reply, conversation, result.value.conversation, { bodies: true }))) return reply
         if (!result.value.evaluation) return reply.code(404).send(notFound('evaluation not found'))
         return result.value.evaluation
       }
