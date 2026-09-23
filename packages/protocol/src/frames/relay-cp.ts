@@ -1029,48 +1029,58 @@ export const RcNoticePosted = z.object({
 })
 export type RcNoticePosted = z.infer<typeof RcNoticePosted>
 
-// R→C REQ → rc/bot-revoked/ok — the workspace uninstalled the Slack app
-// (`app_uninstalled`) or revoked its tokens (`tokens_revoked`). The relay cannot serve the bot any longer (its
-// token is dead); the CP marks the Bot revoked, flips its integrations to
-// `revoked`, and unassigns the bot from the pool.
-//
-// NOT droppable, and the ONLY rc/* report that is acknowledged: Slack acks the
-// HTTP event before the relay's async handler runs, so it is never redelivered,
-// and a dead token gives the CP nothing to observe — assignment reconciliation
-// would just republish the stale active state forever. A send that the socket
-// accepted is not evidence the CP COMMITTED (its handler can fail on the DB), so
-// the relay keeps the report queued until `rc/bot-revoked/ok` comes back, and
-// replays it across reconnects. Applying the same report twice is a no-op.
-//
-// The two fence fields answer Slack's unordered lifecycle delivery: a delayed
-// event from a PRIOR install must not revoke the credential that replaced it.
-// The CP applies the revocation only if BOTH still hold (each arm is skipped when
-// its field is absent — fail-open, an uninstall must eventually take effect).
+// A platform's own answer code, recorded beside a revocation or a rejection; bounded so it stays a code, never prose.
+export const BotCredentialCode = z.string().min(1).max(64)
+export type BotCredentialCode = z.infer<typeof BotCredentialCode>
+
+// How a relay learned a credential is dead: a platform lifecycle `event`, or a `probe` of the credential answering definitively.
+export const BotRevocationEvidence = z.enum(['event', 'probe'])
+export type BotRevocationEvidence = z.infer<typeof BotRevocationEvidence>
+
+// R→C REQ → rc/bot-revoked/ok — the bot's credential is definitively dead: revoke it, flip its installs, release it; kept queued until acknowledged and fenced against a replaced credential (preset-agents.md §5.3).
 export const RcBotRevoked = z.object({
   botId: z.string().uuid(),
   reason: z.enum(['app_uninstalled', 'tokens_revoked']),
-  // The `credentialRevision` this relay held for the bot when it observed the
-  // event (from `rc/bot-assign`). Catches a relay that had not yet received the
-  // re-install's assignment.
+  // The generation this relay held when it observed the event (from `rc/bot-assign`); a mismatch refuses the report.
   credentialRevision: z.number().int().nonnegative().optional(),
-  // Slack's envelope `event_time` in MILLISECONDS — when the uninstall actually
-  // HAPPENED. The load-bearing arm: a relay that already applied the newer
-  // assignment would echo the NEW revision, so only the event's own timestamp can
-  // reveal that it predates the current credential.
-  eventAtMs: z.number().int().nonnegative().optional()
+  // The platform's event time in ms; refuses an event that predates the current credential even when the revision matches.
+  eventAtMs: z.number().int().nonnegative().optional(),
+  // Recorded with the revocation for the console; absent (an older relay) ⇒ `event`.
+  evidence: BotRevocationEvidence.optional(),
+  // The platform's own code behind a probe's verdict (e.g. `token_revoked`); absent ⇒ none recorded.
+  code: BotCredentialCode.optional()
 })
 export type RcBotRevoked = z.infer<typeof RcBotRevoked>
 
-// C→R REP (corr = rc/bot-revoked id) — the CP COMMITTED its decision for this
-// report: `applied: true` ⇒ the bot + its installs are now revoked; `false` ⇒ the
-// generation fence refused it (a re-install replaced that credential). Both are
-// terminal — the relay stops retrying either way. A missing reply means the CP
-// never committed, so the relay retries.
+// C→R REP (corr = rc/bot-revoked id) — the committed verdict, `applied: false` meaning the fence refused it; both are terminal, only a missing reply is retried.
 export const RcBotRevokedOk = z.object({
   botId: z.string().uuid(),
   applied: z.boolean()
 })
 export type RcBotRevokedOk = z.infer<typeof RcBotRevokedOk>
+
+// Fields every credential check carries, whatever its result.
+const RcBotCredentialCheckBase = z.object({
+  botId: z.string().uuid(),
+  // The generation the relay probed; the CP applies the check only while it is still the bot's current one.
+  credentialRevision: z.number().int().nonnegative(),
+  // When the relay observed the answer, in ms: a rejection's first-seen time, and the order checks apply in (older ones are ignored).
+  observedAtMs: z.number().int().nonnegative()
+})
+
+// R→C REQ → rc/bot-credential-check/ok — a probe answer that is not a revocation: `rejected` (ambiguous, e.g. an IP allowlist) only marks the bot, `ok` clears the mark; sent only to a CP advertising `bot-credential-check-v1`.
+export const RcBotCredentialCheck = z.discriminatedUnion('result', [
+  RcBotCredentialCheckBase.extend({ result: z.literal('ok') }),
+  RcBotCredentialCheckBase.extend({ result: z.literal('rejected'), code: BotCredentialCode })
+])
+export type RcBotCredentialCheck = z.infer<typeof RcBotCredentialCheck>
+
+// C→R REP (corr = rc/bot-credential-check id) — committed; `applied: false` means a replaced credential, an unknown bot or an observation no newer than the last applied, and nothing was written.
+export const RcBotCredentialCheckOk = z.object({
+  botId: z.string().uuid(),
+  applied: z.boolean()
+})
+export type RcBotCredentialCheckOk = z.infer<typeof RcBotCredentialCheckOk>
 
 // R→C EVT (fire-and-forget) — INCREMENTAL conversation report (resource-visibility
 // §14.3): the relay saw an inbound direct conversation to a shared bot. The CP fans
@@ -1239,6 +1249,8 @@ export const RELAY_CP_SCHEMAS = {
   'rc/bot-conversation': RcBotConversation,
   'rc/bot-revoked': RcBotRevoked,
   'rc/bot-revoked/ok': RcBotRevokedOk,
+  'rc/bot-credential-check': RcBotCredentialCheck,
+  'rc/bot-credential-check/ok': RcBotCredentialCheckOk,
   'rc/notice-posted': RcNoticePosted,
   'rc/thread-assign': RcThreadAssign,
   'rc/thread-participant': RcThreadParticipant,
@@ -1291,6 +1303,8 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/bot-conversation', RELAY_CP_SCHEMAS['rc/bot-conversation']),
   frameSchema('rc/bot-revoked', RELAY_CP_SCHEMAS['rc/bot-revoked']),
   frameSchema('rc/bot-revoked/ok', RELAY_CP_SCHEMAS['rc/bot-revoked/ok']),
+  frameSchema('rc/bot-credential-check', RELAY_CP_SCHEMAS['rc/bot-credential-check']),
+  frameSchema('rc/bot-credential-check/ok', RELAY_CP_SCHEMAS['rc/bot-credential-check/ok']),
   frameSchema('rc/notice-posted', RELAY_CP_SCHEMAS['rc/notice-posted']),
   frameSchema('rc/thread-assign', RELAY_CP_SCHEMAS['rc/thread-assign']),
   frameSchema('rc/thread-participant', RELAY_CP_SCHEMAS['rc/thread-participant']),

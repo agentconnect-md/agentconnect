@@ -155,6 +155,8 @@ interface ConsoleData {
   integrationsLoaded: boolean
   /** Durable bot identities (freed + in-use) — Add-integration picker + Settings Bots card. */
   bots: BotDto[]
+  /** Whether the bot list has returned successfully at least once; the integration rows' rejected mark is read from it. */
+  botsLoaded: boolean
   /** Org MCP-provider registry (metadata + header names) — the MCP Servers admin view
    *  and the per-agent enable-list candidate set both read this. */
   mcpProviders: McpProviderDto[]
@@ -318,6 +320,9 @@ const DAEMON_REFRESH_MS = 15_000
  *  fleet, so this is a backstop rather than the way a change is noticed. */
 const DAEMON_CAPABILITY_REFRESH_MS = 300_000
 const RESOURCE_REFRESH_MS = 30_000
+// A stable empty bot list while the first pull is outstanding, so memos keyed on it do not recompute every render.
+const NO_BOTS: BotDto[] = []
+
 const EMPTY_SESSION_FACETS: SessionFacets = {
   agentIds: [],
   agentNames: {},
@@ -342,6 +347,7 @@ export function integrationRowFromDto(
 ): IntegrationRow {
   const agent = agentsById.get(d.agentId)
   const bot = botsById.get(d.botId)
+  const revoked = d.status === 'revoked'
   return {
     id: d.id,
     agentId: d.agentId,
@@ -355,7 +361,9 @@ export function integrationRowFromDto(
     workspace: '—',
     daemon: agent?.daemon ?? '—',
     status: d.status === 'active' ? 'online' : 'offline',
-    revoked: d.status === 'revoked',
+    revoked,
+    rejected: !!bot?.credentialRejectedAt,
+    credentialCode: (revoked ? bot?.revokedCode : bot?.credentialRejectedCode) ?? null,
     channels: d.channels.map((c) => ({
       channelId: c.channelId,
       name: c.name || c.channelId,
@@ -874,11 +882,16 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   } = useSWR<IntegrationDto[]>(consoleKeys.integrations(orgKey), ([, orgId]) => fetchIntegrations(orgId as string), {
     refreshInterval: RESOURCE_REFRESH_MS
   })
+  // Polled like integrations: a bot's rejected mark changes while its integrations stay active, so nothing else re-reads it.
   const {
-    data: realBots = [],
+    data: botsData,
     isLoading: botsIsLoading,
     mutate: mutateBots
-  } = useSWR<BotDto[]>(consoleKeys.bots(orgKey), ([, orgId]) => fetchBots(orgId as string))
+  } = useSWR<BotDto[]>(consoleKeys.bots(orgKey), ([, orgId]) => fetchBots(orgId as string), {
+    refreshInterval: RESOURCE_REFRESH_MS
+  })
+  const realBots = botsData ?? NO_BOTS
+  const botsLoaded = botsData !== undefined
   const {
     data: realMcpProviders = [],
     isLoading: mcpProvidersIsLoading,
@@ -1716,6 +1729,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       integrations,
       integrationsLoaded,
       bots,
+      botsLoaded,
       mcpProviders,
       mcpProvidersLoading,
       createMcpProvider,
@@ -1804,6 +1818,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       integrations,
       integrationsLoaded,
       bots,
+      botsLoaded,
       mcpProviders,
       mcpProvidersLoading,
       createMcpProvider,

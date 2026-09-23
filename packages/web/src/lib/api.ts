@@ -969,6 +969,11 @@ export interface BotDto {
   workspaceId?: string | null // external workspace identity used only for Console grouping
   workspaceName?: string | null // human-readable external workspace label
   revokedAt?: string | null // workspace uninstalled the app / revoked tokens; null ⇒ live
+  revokedReason?: 'app_uninstalled' | 'tokens_revoked' | null // how that revocation was learned; null when not recorded
+  revokedEvidence?: 'event' | 'probe' | null // a platform lifecycle event, or a probe answering definitively
+  revokedCode?: string | null // the platform's own code recorded with that revocation, when one was
+  credentialRejectedAt?: string | null // an ambiguous check rejected the current credential (first seen); the bot stays live
+  credentialRejectedCode?: string | null // the platform's own code behind that rejection
   createdAt: string // ISO-8601
 }
 

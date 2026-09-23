@@ -24,7 +24,7 @@ export {
   type SlackViewState
 } from '@agentconnect.md/protocol'
 import { renderAttributionMessage, type ReplyAttributionInfo } from '../messages/attribution.js'
-import { flattenUnsafeLinks, referenceBufferStart } from '../messages/agent-links.js'
+import { flattenUnsafeLinks } from '../messages/agent-links.js'
 import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
 import { AgentMessageRun } from '../messages/message-boundary.js'
 import { splitAtParagraphBoundary } from '../messages/stream-boundary.js'
@@ -57,22 +57,12 @@ export type SlackAction =
   // agents replaying the thread see what this one actually said. `attributed: false`
   // is reserved for daemon-generated failure notices that use the same transcript path.
   // `recordOnly: true` writes the text to the transcript WITHOUT posting to the channel —
-  // used by `minimal` mode to keep the full audit trail while the channel shows only the
-  // single collapsed `live-reply` message.
+  // used by `minimal` mode, whose interim segments reach the channel as history cards on
+  // the chrome stream rather than as messages.
   // `terminal: true` marks the LAST body section of the turn's final flush: the complete
   // response is known when it posts, so the applier can stamp it `final` at birth
   // (send-message-routing-rework.md §5.5) instead of re-editing it after delivery.
   | { kind: 'post'; text: string; attributed?: boolean; recordOnly?: boolean; terminal?: boolean }
-  // `live-reply` is `minimal` mode's single, in-place agent reply: posted once then
-  // chat.update-ed as the turn streams (same post-once/edit-thereafter contract as
-  // `progress`), collapsing what would otherwise be many `post` messages into one that
-  // settles on the final answer. Display only — NOT recorded (the paired `recordOnly`
-  // posts carry the full text to the transcript).
-  | { kind: 'live-reply'; text: string }
-  // `final-live-reply` settles minimal mode with the complete final segment. The daemon
-  // splits it across Slack messages when it exceeds one markdown block, preserving all
-  // content while keeping the common case to one in-place message.
-  | { kind: 'final-live-reply'; text: string }
   // `notice` is a system line the daemon posts but must NOT record — recording it would
   // replay daemon chrome back to agents as thread context.
   | { kind: 'notice'; text: string }
@@ -98,12 +88,12 @@ export type SlackAction =
   // `attribution` closes the footer lifecycle after the latest reply section was first
   // posted with it. The daemon uses this boundary to retry stale-footer cleanup or refresh
   // final metadata that changed during the prompt. Not transcript content.
-  // `standalone` (minimal mode only): finalize the footer kept on the live reply.
-  | { kind: 'attribution'; text: string; blocks: unknown[]; standalone?: boolean }
+  | { kind: 'attribution'; text: string; blocks: unknown[] }
   // ── Native tool-call chrome (slack-streaming-turn-output.md §3) ──────────────
   // On a medium/high turn the in-place `progress` message becomes ONE cards-only
-  // `chat.startStream` stream. The BODY never rides it: posts, live replies, the
-  // footer, the transcript and the status calls are all unchanged.
+  // `chat.startStream` stream; on a minimal turn the same stream holds the interim reply
+  // segments as history cards. The final answer never rides it: posts, the footer, the
+  // transcript and the status calls are all unchanged.
   | { kind: 'stream-start' }
   // `progressText` is the same in-place `progress` rendering this batch would have
   // produced, so a turn whose stream never opened degrades to today's message.
@@ -170,6 +160,8 @@ const MAX_COMMAND_TITLE = 48
 const SHELL_SEPARATOR = / (?:&&|\|\||;|\|) /
 /** The card that stands for one thinking run until its first line names it. */
 const THINKING_CARD = 'Thinking'
+/** minimal: the history card for an interim reply whose first line yields no title. */
+const REPLY_CARD = 'Reply'
 // How much of a thinking run to hold while waiting for its first line to end. A runtime opens
 // a thought with a short `**heading**`, so this only ever buffers one line's worth.
 const MAX_THINKING_HEAD = 400
@@ -210,6 +202,23 @@ function plainCardText(s: string): string {
 
 function clampLabel(s: string): string {
   return clampTo(s, MAX_LABEL)
+}
+
+/** A card body under a title taken from its first line: '' when the title already shows the
+ *  whole text, the rest when the title shows the first line whole, the whole body when the
+ *  title had to clamp it — that line is then what the title could not show. */
+function bodyUnderTitle(body: string, title: string): string {
+  if (!body || plainCardText(body) === title) return ''
+  const nl = body.indexOf('\n')
+  return nl >= 0 && plainCardText(body.slice(0, nl)) === title ? body.slice(nl + 1).trim() : body
+}
+
+/** minimal: a history card's title is the segment's first line, or the fallback when that line
+ *  is a code fence or flattens to nothing. */
+function replyCardTitle(text: string): string {
+  const nl = text.indexOf('\n')
+  const line = nl < 0 ? text : text.slice(0, nl)
+  return (line.startsWith('```') ? '' : clampTo(plainCardText(line), MAX_CARD_TITLE)) || REPLY_CARD
 }
 
 /** Wrap tool activity (a command line, tool title, or tool output) in a CommonMark code
@@ -2231,14 +2240,8 @@ export class OutputConverger {
   // terminal status, so it isn't re-posted on every streamed update.
   private toolOutputs = new Map<string, string>()
   private emittedOutput = new Set<string>()
-  // `minimal` mode only. `segmentReset` marks that the previous reply segment was closed
-  // by a tool boundary, so the next agent_message_chunk starts a fresh segment (the old one
-  // is replaced in the single live message). `recordDirty` is true while `buf` holds text
-  // not yet written to the transcript — it gates both the transcript record (at each
-  // boundary / onFinal) and the idle-flush live update (so an already-recorded segment
-  // isn't re-pushed to chat.update every idle window).
-  private segmentReset = false
-  private recordDirty = false
+  // minimal: how many interim segments have become history cards, so each gets its own id.
+  private replyCards = 0
   // The runtime's own message identity, which is the only boundary a speak-only run offers.
   private readonly messages = new AgentMessageRun()
   // ── Native tool-call chrome (slack-streaming-turn-output.md §3) ──────────────
@@ -2296,19 +2299,19 @@ export class OutputConverger {
    *  the ~2s idle-flush timer (§9.1 text-buffer) so a long pure-text stream posts in
    *  steps and streamed thinking updates its in-place block at most once per window. */
   hasBuffered(): boolean {
-    // minimal: only the current (unrecorded) segment matters — arm the idle timer while
-    // there is fresh streamed text to reflect into the single live message.
-    if (this.mode === 'minimal') return this.recordDirty
+    // minimal: nothing is delivered mid-segment, so there is never an idle flush to arm.
+    if (this.mode === 'minimal') return false
     return this.buf.trim().length > 0 || this.reasoningDirty
   }
 
   /**
    * Take the native chrome pipeline for this turn (§3.1). Decided once at turn start from a
-   * synchronous capability read; only `medium` and `high` render tool chrome at all, so the
-   * other rungs stay byte-identical to today whatever the workspace supports.
+   * synchronous capability read; `medium` and `high` put tool chrome on the stream and
+   * `minimal` its interim reply segments (§5.2), so `none` and `low` stay byte-identical to
+   * today whatever the workspace supports.
    */
   enableStreaming(): void {
-    if (this.mode === 'medium' || this.mode === 'high') this.streaming = true
+    if (this.mode === 'minimal' || this.mode === 'medium' || this.mode === 'high') this.streaming = true
   }
 
   isStreaming(): boolean {
@@ -2437,6 +2440,8 @@ export class OutputConverger {
   private planSummary(): string {
     const total = this.emittedTasks.size
     if (total === 0) return 'Done'
+    // minimal: every card is an interim reply, and the container sits above the final one.
+    if (this.mode === 'minimal') return `${total} earlier ${total === 1 ? 'reply' : 'replies'}`
     const steps = `${total} step${total === 1 ? '' : 's'}`
     const failed = this.failedTasks.size
     return failed === 0 ? `Completed ${steps}` : `Completed ${steps} · ${failed} failed`
@@ -2516,15 +2521,8 @@ export class OutputConverger {
    */
   private thinkingRunBody(title: string): string {
     if (this.mode !== 'high') return ''
-    let body = stripBoldMarks(this.thinkingBody.trim())
-    if (!body || plainCardText(body) === title) return ''
-    // Unclamped comparison on purpose: a truncated title differs from its full first line, and
-    // a body under a truncated title must keep that line — it is what the title could not show.
-    const nl = body.indexOf('\n')
-    if (nl >= 0 && plainCardText(body.slice(0, nl)) === title) {
-      body = body.slice(nl + 1).trim()
-      if (!body) return ''
-    }
+    const body = bodyUnderTitle(stripBoldMarks(this.thinkingBody.trim()), title)
+    if (!body) return ''
     return this.thinkingBodyTruncated ? `${body}…` : body
   }
 
@@ -2535,9 +2533,9 @@ export class OutputConverger {
    *  block is first-posted ABOVE the reply: thinking precedes the answer (§9.1), so the
    *  Thinking block must sit above it, not below.
    *
-   *  minimal: no per-window `post`s — just the `live-reply` refresh. */
+   *  minimal: nothing — a segment reaches the channel only once it closes (§5.2). */
   flushBuffered(): SlackAction[] {
-    if (this.mode === 'minimal') return this.liveRefresh()
+    if (this.mode === 'minimal') return []
     return [...this.drainReasoning(), ...this.flushStreaming()]
   }
 
@@ -2547,54 +2545,46 @@ export class OutputConverger {
    *  the whole buffer, paragraph break or not — otherwise the runtime's own error text is
    *  dropped and replaced by the generic failure notice. */
   flushTerminal(): SlackAction[] {
-    if (this.mode === 'minimal') return this.liveRefresh(true)
     // A crashed turn settles like a stopped one: whatever was still in flight did not finish
     // BECAUSE the turn died, so those cards are honestly `error` under a "Failed" label — while
     // steps that already finished keep their state, (failed)-prefixed ones included. The ⚠️
     // notice the caller appends still carries the reason in the body.
-    return [...this.drainReasoning(), ...this.flush(), ...this.settleStream('failed')]
+    const opensLate = !this.streamOpened
+    const settle = this.settleStream('failed')
+    const body = [...this.drainReasoning(), ...this.flush()]
+    return opensLate ? [...settle, ...body] : [...body, ...settle]
   }
 
-  /** minimal: refresh the single in-place `live-reply` with the current segment (display only;
-   *  the transcript record happens at segment boundaries). */
-  private liveRefresh(complete = false): SlackAction[] {
+  /** minimal: close an interim reply segment — a history card on the chrome stream for the
+   *  channel (§5.2) plus the full text as `recordOnly` post(s) for the transcript. The final
+   *  segment is not closed here: onFinal posts it as the turn's one visible reply. */
+  private closeSegment(): SlackAction[] {
     const trimmed = this.buf.trim()
-    // Hold the live reply while the body could still be the bare response-control marker, so a
-    // suppressed turn never flashes a partial reply in-place (onFinal drops it entirely).
-    if (!trimmed || isNoResponsePrefix(trimmed)) return []
-    const raw = complete ? this.buf : this.buf.slice(0, referenceBufferStart(this.buf))
-    const text = flattenUnsafeLinks(raw, { resolveFileLink: this.resolveFileLink })
-    return text.trim() ? [{ kind: 'live-reply', text: this.liveDisplay(text) }] : []
-  }
-
-  /** minimal: the single live message can hold one Block Kit `markdown` block (≤12000
-   *  chars). If the current segment is longer it's shown head-clamped with a pointer to the
-   *  full text in the web session — the untruncated segment always reaches the transcript
-   *  via the paired `recordOnly` posts. */
-  private liveDisplay(text: string): string {
-    const sections = splitIntoSections(text, undefined, this.protectedAddresses)
-    return sections.length <= 1 ? text : `${sections[0]}\n\n_…full reply in the web session_`
-  }
-
-  /** minimal: close the current reply segment — the full text as `recordOnly` post(s) for the
-   *  transcript, plus a live-reply refresh for the channel. Finalization carries the complete
-   *  segment so the daemon can split an over-limit answer across Slack messages. Guards on
-   *  `recordDirty` so an already-closed segment isn't re-recorded. Always arms the next segment. */
-  private closeSegment(final = false): SlackAction[] {
-    this.segmentReset = true
-    if (!this.recordDirty || !this.buf.trim()) return []
-    // Hold while the body may still be / is the bare sentinel — a suppressed reply must not be
+    if (!trimmed) {
+      this.buf = ''
+      return []
+    }
+    // Hold while the body may still be the bare sentinel — a suppressed reply must not be
     // recorded or shown; onFinal makes the final drop. Non-sentinel bodies close normally.
-    if (isNoResponsePrefix(this.buf.trim())) return []
+    if (isNoResponsePrefix(trimmed)) return []
     const text = flattenUnsafeLinks(this.buf, { resolveFileLink: this.resolveFileLink })
-    this.recordDirty = false
+    this.buf = ''
     if (!text.trim()) return []
-    return [
-      final ? { kind: 'final-live-reply', text } : { kind: 'live-reply', text: this.liveDisplay(text) },
-      ...splitIntoSections(text, undefined, this.protectedAddresses).map(
-        (t) => ({ kind: 'post', text: t, recordOnly: true }) as SlackAction
-      )
-    ]
+    this.queueReplyCard(text)
+    return splitIntoSections(text, undefined, this.protectedAddresses).map(
+      (t) => ({ kind: 'post', text: t, recordOnly: true }) as SlackAction
+    )
+  }
+
+  /** minimal: one history card per closed segment, the shape of a settled thinking card — titled
+   *  by its first line, its body written once, `complete` from birth. Off the axis the segment
+   *  stays transcript-only, which is what minimal showed before the stream existed. */
+  private queueReplyCard(text: string): void {
+    if (!this.streaming) return
+    this.replyCards += 1
+    const body = text.trim()
+    const title = replyCardTitle(body)
+    this.queueTask(`reply-${this.replyCards}`, title, 'complete', { details: bodyUnderTitle(body, title) })
   }
 
   /** Drain reasoning buffered since the last flush into a 0-or-1-length action list (only
@@ -2749,14 +2739,7 @@ export class OutputConverger {
         // A new message closes the one before it exactly as a tool boundary would — same mode
         // semantics, same actions. Without this the two arrive as one post, run together.
         const closed = this.messages.opens(update) ? (this.mode === 'minimal' ? this.closeSegment() : this.flush()) : []
-        // minimal: a chunk arriving after a tool boundary opens a new segment that REPLACES
-        // the previous one in the single live message (the previous was already recorded).
-        if (this.mode === 'minimal' && this.segmentReset && text) {
-          this.buf = ''
-          this.segmentReset = false
-        }
         this.buf += text
-        if (this.mode === 'minimal' && text.trim()) this.recordDirty = true
         return closed
       }
       case 'agent_thought_chunk': {
@@ -2777,8 +2760,9 @@ export class OutputConverger {
         }
         // streaming: ONE card per thinking run, opened once and settled once. Its title is the
         // run's own first line and, on high, its body is the rest of the run — so the card IS
-        // the Thinking message and the separate one is not posted (§5).
-        if (this.streaming && thought) {
+        // the Thinking message and the separate one is not posted (§5). Not on minimal, whose
+        // cards are its interim replies and whose thinking stays in the transient status.
+        if (this.streaming && thought && this.mode !== 'minimal') {
           if (!this.thinkingActive) {
             this.thinkingActive = true
             this.queueTask(this.thinkingId(), THINKING_CARD, 'in_progress')
@@ -2808,9 +2792,8 @@ export class OutputConverger {
         const label = this.mode === 'minimal' ? WORKING : this.toolLabel(u)
         this.noteToolInput(u)
         const status = this.pushActivity(label)
-        // minimal: a tool boundary closes the current reply segment (record it + settle the
-        // live message); closeSegment marks the next chunk as a fresh segment. No progress/
-        // tool-output message — activity lives in the transient status only.
+        // minimal: a tool boundary closes the current reply segment into a history card and
+        // the transcript. No progress/tool-output message — activity lives in the status only.
         if (this.mode === 'minimal') return [...status, ...this.closeSegment()]
         // none/low: just record the buffered body — no tool card, no status (none emits none).
         if (this.mode === 'low' || this.mode === 'none') return [...this.flush(), ...status]
@@ -2863,7 +2846,7 @@ export class OutputConverger {
       }
       case 'plan': {
         const entries = (update as { entries?: PlanEntry[] }).entries ?? []
-        // `minimal` promises the turn is ONE live reply and `none` sends nothing at all, so
+        // `minimal` promises the turn is ONE visible reply and `none` sends nothing at all, so
         // both keep planning as transient status. `low` renders it: that rung means "body and
         // result only, activity goes to the status row", and the plan was excluded when its
         // only shape was a six-line emoji block. As a ruled, struck-through list it is neither
@@ -2892,7 +2875,6 @@ export class OutputConverger {
     // just stays silent.
     if (isNoResponseBody(this.buf.trim())) {
       this.buf = ''
-      this.recordDirty = false
       // The stream is chrome, not the answer: a silent turn that ran tools still owes its
       // cards a terminal status and its container a closing label.
       return [clear, ...this.settleStream('completed')]
@@ -2901,28 +2883,20 @@ export class OutputConverger {
     // status clear, no attribution footer; nothing is delivered to the channel this turn.
     if (this.mode === 'none') return this.flush()
     const attribution: SlackAction[] = info ? [{ kind: 'attribution', ...buildAttributionBlocks(info) }] : []
-    // minimal: settle the complete final segment (the daemon splits it only when Slack's
-    // per-block limit requires multiple messages), record it, clear the status, then attach
-    // the attribution footer to the last delivered response message.
-    if (this.mode === 'minimal') {
-      const footer: SlackAction[] = info
-        ? [{ kind: 'attribution', standalone: true, ...buildAttributionBlocks(info) }]
-        : []
-      return [...this.closeSegment(true), clear, ...footer]
-    }
     if (this.mode === 'low') return [...this.markTerminalPost(this.flush()), clear, ...attribution]
+    // minimal takes the same path as medium/high: its one visible reply is the final flush,
+    // posted like any other body, and the settle closes the history cards above it (§5.2).
     // The daemon cancels the idle-flush timer before onFinal, so drain any reasoning
     // buffered since the last flush here. It goes BEFORE the body flush so the Thinking
     // block posts above the reply — thinking precedes the answer (§9.1), so it must sit
     // above it, not below (only high mode ever has reasoning to drain).
     const reasoning = this.drainReasoning()
-    return [
-      ...reasoning,
-      ...this.markTerminalPost(this.flush()),
-      clear,
-      ...attribution,
-      ...this.settleStream('completed')
-    ]
+    // A settle that must still OPEN the stream goes before the body, so the container is created
+    // above the answer it precedes (§6); a stream already open settles after the body, as before.
+    const opensLate = !this.streamOpened
+    const settle = this.settleStream('completed')
+    const body = [...this.markTerminalPost(this.flush()), clear, ...attribution]
+    return opensLate ? [...reasoning, ...settle, ...body] : [...reasoning, ...body, ...settle]
   }
 
   /** onFinal only: flag the last delivered body section as this response's terminal post,

@@ -253,6 +253,8 @@ rc/thread-lookup/ok { botId, sessionKey, target }
 
 rc/bot-channels      { botId, channels }
 rc/set-channel-agent { botId, channelId, agentId }
+rc/bot-revoked       { botId, reason, credentialRevision?, eventAtMs?, evidence?: 'event' | 'probe', code? }
+rc/bot-credential-check { botId, credentialRevision, result: 'ok' | 'rejected', code?, observedAtMs }
 rc/daemon-revoke     { daemonId }
 rc/verify            { kind: 'daemon-key' | 'daemon-token' | 'webchat-token', credential, daemonId?, conversationBinding?: 'v1' }
 ```
@@ -260,7 +262,10 @@ rc/verify            { kind: 'daemon-key' | 'daemon-token' | 'webchat-token', cr
 `rc/bot-assign`, `rc/routes`, and `rc/assign` are broadcast to the pool.
 `rc/thread-assign` and `rc/bot-channels` are relay reports to CP. Route and
 credential frames use full-replace or idempotent-upsert semantics so replay
-converges cleanly.
+converges cleanly. `rc/bot-revoked` and `rc/bot-credential-check` are the
+acknowledged reports: the relay keeps each until the CP replies, and the CP
+revokes only on the first and only marks the bot on a rejected check
+([preset-agents.md](preset-agents.md) §5.3).
 
 Hook assignments and removals follow the same pool-wide projection pattern.
 Hook run reports carry identifiers and status, not the original payload.

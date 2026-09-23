@@ -369,14 +369,14 @@ as reasons. With the agent pod unbound they fail or wake it:
 | Attachment writes and image reads decide "pod workspace?" from the agent pod's recorded mount                                                                 | per attachment                                                                  | a member that never bound the agent pod writes to its own disk | decide from the session's own scope and mount                                                                                      |
 | Merge-when-ready watcher                                                                                                                                      | while armed                                                                     | the watcher dies with the pod                                  | an armed watcher holds its pod (#2290); later it moves into the session pod that armed it                                          |
 
-**Fail closed first.** `WorkspaceManager.runnerFor` falls back to a local git runner
-whenever the plane gives none, and the plane gives none for an agent-pod path
-whose pod is unbound; `resolveRemoteDefaultBranch` would then run `ls-remote` in
-the daemon's own working directory. Every such caller sits inside the preparation
-wrapper today. Before the wrapper narrows, an off-disk scope with no runner must
-refuse with `sandbox-unavailable`, and a routed file read whose owning pod is
-unbound must throw the same typed refusal instead of a plain error (which the
-console now shows as "the daemon may be offline", with no Start button).
+**Fail closed first.** The plane gives no git runner for an agent-pod path whose
+pod is unbound, and `WorkspaceManager.runnerFor` used to fall back to a local one,
+so `resolveRemoteDefaultBranch` would have run `ls-remote` in the daemon's own
+working directory. An off-disk scope with no runner now refuses with
+`sandbox-unavailable`, and a routed file read whose owning pod is unbound throws
+the same typed refusal instead of a plain error, which the console showed as "the
+daemon may be offline" with no Start button. Every such caller still sits inside
+the preparation wrapper; this is what lets the wrapper narrow.
 
 **What stays with the agent pod.** The conversion itself (it must stay atomic
 with its fail-closed marker, and it is rare), console views of the agent's

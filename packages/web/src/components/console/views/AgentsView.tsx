@@ -9,6 +9,7 @@ import {
   agentLabel,
   agentModelDisplay,
   agentPlacementIcon,
+  credentialAttention,
   effectiveAgentStatus,
   isGitWorkspace,
   runtimeLabel,
@@ -411,8 +412,8 @@ export default function AgentsView() {
               const runtimeMeta = acpRuntime(acpRegistry, a.runtime)
               const s = status(effectiveAgentStatus(a, owning))
               const agentInts = integrations.filter((int) => int.agentId === a.id)
-              // A revoked integration takes the one mark, as it leads the desktop cluster.
-              const first = agentInts.find((int) => int.revoked) ?? agentInts[0]
+              // An integration needing attention takes the one mark, as it leads the desktop cluster.
+              const first = agentInts.find(credentialAttention) ?? agentInts[0]
               const primaryKind = primaryHookKind(a.hookKinds ?? [])
               const n24 = sessions24h(a.id)
               return (
@@ -452,7 +453,7 @@ export default function AgentsView() {
                   {first ? (
                     <span className="relative isolate flex h-4 w-4 flex-none items-center justify-center">
                       <PlatformMark platform={first.platform} fillPct={100} />
-                      {first.revoked && <RevokedMarkDot />}
+                      {credentialAttention(first) && <RevokedMarkDot />}
                     </span>
                   ) : primaryKind ? (
                     <span className="flex h-4 w-4 flex-none items-center justify-center">

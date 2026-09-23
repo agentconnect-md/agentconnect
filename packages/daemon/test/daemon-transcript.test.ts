@@ -600,7 +600,7 @@ describe('Daemon transcript records the agent reply', () => {
     await daemon.stop()
   })
 
-  it('minimal mode: includes the footer in the initial live-reply post', async () => {
+  it('minimal mode: posts the final reply once, born with the footer, and never edits it', async () => {
     const { factory } = replyingHost('here is my answer')
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
@@ -612,7 +612,8 @@ describe('Daemon transcript records the agent reply', () => {
 
     await (daemon as any).dispatch('bot-a', dm('100', 'q'), 'int-a')
 
-    // The live reply is born with the footer instead of flashing body-only until finalization.
+    // The one visible reply is born with the footer instead of flashing body-only until finalization.
+    expect(conn.postMessage).toHaveBeenCalledTimes(1)
     expect(conn.postMessage).toHaveBeenCalledWith('C1', 'here is my answer', 'T1', {
       username: 'bot-a',
       agentAuthorId: 'bot-a',
@@ -663,80 +664,58 @@ describe('Daemon transcript records the agent reply', () => {
     await daemon.stop()
   })
 
-  it('minimal mode: re-anchors the live reply below a card that needs human input', async () => {
-    let onUpdate!: (sid: string, update: unknown) => void
-    const host = {
-      start: vi.fn(async () => {}),
-      newSession: vi.fn(async () => 'acp-1'),
-      prompt: vi.fn(async (sid: string) => {
-        // Segment 1 streams and settles into the single live reply (reply-1).
-        onUpdate(sid, text('first part'))
-        onUpdate(sid, tool('t1', 'Read one'))
-        await vi.waitFor(
-          () =>
-            expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('first part'), 'T1', {
-              username: 'bot-a',
-              agentAuthorId: 'bot-a',
-              response: streamingResponse(),
-              trailingBlocks: [classicFooter()]
-            }),
-          WAIT
-        )
-        // A permission / elicitation card is posted mid-turn (its handler calls this). The
-        // live reply (reply-1) now sits ABOVE the card, so the next segment must start a
-        // FRESH reply BELOW it — not edit reply-1 in place above the question.
-        const p = [...(daemon as any).pending.values()][0]
-        ;(daemon as any).reanchorInPlaceChrome(p)
-        await p.signals.applyChain
-        onUpdate(sid, text('second part'))
-        onUpdate(sid, tool('t2', 'Read two'))
-        await vi.waitFor(
-          () =>
-            expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('second part'), 'T1', {
-              username: 'bot-a',
-              agentAuthorId: 'bot-a',
-              response: streamingResponse(),
-              trailingBlocks: [classicFooter()]
-            }),
-          WAIT
-        )
-        return 'end_turn'
-      }),
-      cancel: vi.fn(async () => {}),
-      stop: vi.fn(async () => {})
-    }
+  it('minimal mode: interim segments ride the chrome stream as history cards; the final reply posts once', async () => {
+    const { factory } = streamingHost([
+      text('Looking into it.'),
+      tool('t1', 'Read file.ts'),
+      text('Here is the answer.')
+    ])
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
       root: scaffold('minimal'),
-      hostFactory: (_agent, callback) => {
-        onUpdate = callback
-        return host as any
-      }
+      hostFactory: factory
     })
     await daemon.start()
     const conn = makeRoutable(daemon)
-    ;(conn as any).updateMessage = vi.fn(async () => {})
+    // A workspace that can stream: the axis is taken at turn start from this read.
+    const streaming = {
+      streamingLikely: vi.fn(() => true),
+      startTurnStream: vi.fn(async (channel: string, threadTs: string) => ({ channel, threadTs, ts: 'stream-1' })),
+      appendTurnStream: vi.fn(async (_stream: unknown, _chunks: unknown[]) => 'ok' as const),
+      settleAndStop: vi.fn(async (_stream: unknown, _settle: unknown[]) => {})
+    }
+    Object.assign(conn, streaming)
 
     await (daemon as any).dispatch('bot-a', dm('100', 'q'), 'int-a')
 
-    // Each segment is its OWN posted message — reply-1 above the card, reply-2 below it.
-    const posts = conn.postMessage.mock.calls.map((c) => String(c[1]))
-    expect(posts.some((t) => t.includes('first part'))).toBe(true)
-    expect(posts.some((t) => t.includes('second part'))).toBe(true)
-    expect(conn.updateBlocks).toHaveBeenCalledWith(
-      'C1',
-      'reply-1',
-      [{ type: 'markdown', text: 'first part' }],
-      undefined,
-      false,
-      'bot-a'
+    // ONE visible message: the final segment, born with the footer and never edited.
+    expect(conn.postMessage).toHaveBeenCalledTimes(1)
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', 'Here is the answer.', 'T1', {
+      username: 'bot-a',
+      agentAuthorId: 'bot-a',
+      response: streamingResponse(),
+      trailingBlocks: [classicFooter()]
+    })
+    expect(conn.updateBlocks.mock.calls.some((call) => call[1] === 'reply-1')).toBe(false)
+    // The interim segment reached the stream as one complete card — on the coalesced append or
+    // on the settle, whichever the timing chose — and the container closed on a reply count.
+    await vi.waitFor(() => expect(streaming.settleAndStop).toHaveBeenCalledTimes(1), WAIT)
+    // The container was created BEFORE the answer posted, so it sits above the reply it precedes.
+    expect(streaming.startTurnStream.mock.invocationCallOrder[0]).toBeLessThan(
+      conn.postMessage.mock.invocationCallOrder[0] ?? Infinity
     )
-    // reply-1 (above the card) is never edited to show the post-card segment.
-    expect((conn as any).updateMessage).not.toHaveBeenCalledWith(
-      'C1',
-      'reply-1',
-      expect.stringContaining('second part')
-    )
+    const chunks = [
+      ...streaming.appendTurnStream.mock.calls.flatMap((call) => call[1]),
+      ...streaming.settleAndStop.mock.calls.flatMap((call) => call[1])
+    ]
+    expect(chunks).toContainEqual({ type: 'task_update', id: 'reply-1', title: 'Looking into it.', status: 'complete' })
+    expect(chunks).toContainEqual({ type: 'plan_update', title: '1 earlier reply' })
+    expect(chunks.every((c) => (c as { type: string }).type !== 'markdown_text')).toBe(true)
+    // Both segments are in the transcript, in order.
+    expect((await transcript(daemon)).filter((row) => row.sender === 'bot-a').map((row) => row.text)).toEqual([
+      'Looking into it.',
+      'Here is the answer.'
+    ])
     await daemon.stop()
   })
 

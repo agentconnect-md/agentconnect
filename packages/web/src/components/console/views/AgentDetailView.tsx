@@ -89,7 +89,7 @@ import { AgentMark, GiteaMark, GithubMark, GitlabMark, LoadingState, PlatformMar
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import type { Platform } from '@/components/console/modals/AddIntegrationModal'
 import { INTEGRATION_BLURB, isCoreTriggerKind } from '@/components/console/platforms/host-projections'
-import { botCardCopy, platformAgentCard } from '@/components/console/platforms/registry'
+import { botCardCopy, platformAgentCard, withCredentialCode } from '@/components/console/platforms/registry'
 import {
   GT_TRIGGER_MODES,
   GT_TRIGGER_PILL,
@@ -190,13 +190,13 @@ function FeishuRegionBadge({ integration }: { integration: Pick<IntegrationRow, 
   )
 }
 
-// One integration's state pill: a revoked credential first, then whether the agent itself is served.
+// One integration's state pill: a revoked credential, then a rejected one, then whether the agent itself is served.
 function IntegrationStatePill({
   integration,
   agentOffline,
   mobile
 }: {
-  integration: Pick<IntegrationRow, 'platform' | 'revoked'>
+  integration: Pick<IntegrationRow, 'platform' | 'revoked' | 'rejected' | 'credentialCode'>
   agentOffline: boolean
   mobile: boolean
 }) {
@@ -204,13 +204,17 @@ function IntegrationStatePill({
   const shape = mobile
     ? 'inline-flex flex-none items-center gap-[5px] rounded-full px-[10px] py-[3px] font-sans text-[12px] font-semibold leading-normal'
     : 'badge'
-  if (integration.revoked) {
+  if (integration.revoked || integration.rejected) {
+    const copy = botCardCopy(integration.platform)
     return (
       <span
         className={`${shape} bg-(--status-error-soft) text-(--status-error)`}
-        title={botCardCopy(integration.platform).revokedHint}
+        title={withCredentialCode(
+          integration.revoked ? copy.revokedHint : copy.rejectedHint,
+          integration.credentialCode
+        )}
       >
-        {t('integrations.revoked')}
+        {integration.revoked ? t('integrations.revoked') : t('integrations.rejected')}
       </span>
     )
   }

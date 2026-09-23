@@ -20,12 +20,14 @@ const bodies = (actions: Array<{ kind: string; text?: string }>) =>
     )
     .map((action) => action.text)
 
+// `previews`: whether the platform's minimal mode shows the current segment mid-stream. Slack's
+// does not — its interim replies become history cards only once a segment closes.
 describe.each([
-  { name: 'Slack', create: (mode: 'low' | 'minimal') => new OutputConverger(mode) },
-  { name: 'Telegram', create: (mode: 'low' | 'minimal') => new TelegramConverger(mode) },
-  { name: 'Discord', create: (mode: 'low' | 'minimal') => new DiscordConverger(mode) },
-  { name: 'Feishu', create: (mode: 'low' | 'minimal') => new FeishuConverger(mode) }
-])('$name reference delivery', ({ create }) => {
+  { name: 'Slack', previews: false, create: (mode: 'low' | 'minimal') => new OutputConverger(mode) },
+  { name: 'Telegram', previews: true, create: (mode: 'low' | 'minimal') => new TelegramConverger(mode) },
+  { name: 'Discord', previews: true, create: (mode: 'low' | 'minimal') => new DiscordConverger(mode) },
+  { name: 'Feishu', previews: true, create: (mode: 'low' | 'minimal') => new FeishuConverger(mode) }
+])('$name reference delivery', ({ create, previews }) => {
   it('does not activate an outer host link when its nested link is flattened', () => {
     const c = create('low')
     c.onUpdate(chunk('[report [source](/home/agent/source.md)](/home/agent/report.md)'))
@@ -37,7 +39,7 @@ describe.each([
     (completion) => {
       const c = create('minimal')
       c.onUpdate(chunk('Earlier paragraph.\n\nRead [the digest][r].\n\n[r]: </home/agent/secret'))
-      expect(bodies(c.flushBuffered())).toEqual(['Earlier paragraph.\n\n'])
+      expect(bodies(c.flushBuffered())).toEqual(previews ? ['Earlier paragraph.\n\n'] : [])
       c.onUpdate(chunk('.md>'))
       expect(bodies(c.flushBuffered()).every((text) => text === 'Earlier paragraph.\n\n')).toBe(true)
       const finished =

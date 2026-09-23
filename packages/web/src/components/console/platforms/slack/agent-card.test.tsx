@@ -225,6 +225,19 @@ describe('the agent page’s Slack card', () => {
     expect(document.body.querySelector('[role="dialog"]')?.getAttribute('aria-label')).toBe('Replace bot token')
   })
 
+  // An ambiguous rejection keeps the integration active, but the same two repairs are what fix it.
+  it('offers a rejected app the same repair, although its integration is still active', async () => {
+    const rejected = { ...integration(false), rejected: true, credentialCode: 'invalid_auth' }
+    mocks.bots = [bot({ revokedAt: null, credentialRejectedAt: '2026-09-01T00:00:00.000Z' })]
+    await renderCard(rejected)
+    expect(byLabel('Reinstall the Slack app')?.className).toContain('border-(--status-error)')
+
+    mocks.bots = [bot({ prebuilt: false, revokedAt: null, credentialRejectedAt: '2026-09-01T00:00:00.000Z' })]
+    await renderCard(rejected)
+    expect(byLabel('Replace bot token')?.className).toContain('border-(--amber-500)')
+    expect(byLabel('Reinstall the Slack app')).toBeUndefined()
+  })
+
   it('offers nothing while the integration is live', async () => {
     mocks.bots = [bot({ revokedAt: null })]
     await renderCard(integration(false))

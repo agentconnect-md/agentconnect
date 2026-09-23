@@ -1923,9 +1923,16 @@ export const BotDto = z.object({
   /** External workspace metadata used only to label/group bots in the Console. */
   workspaceId: z.string().nullable(),
   workspaceName: z.string().nullable(),
-  /** The workspace uninstalled the app / revoked its tokens (`rc/bot-revoked`);
-   *  a platform-app re-install clears it. ISO-8601, null ⇒ live. */
+  /** The credential was definitively revoked; a fresh credential clears it. ISO-8601, null ⇒ live. */
   revokedAt: z.string().nullable(),
+  /** How that revocation was learned: the lifecycle reason, a platform `event` or a `probe`, and the platform's own code; null when not recorded. */
+  revokedReason: z.enum(['app_uninstalled', 'tokens_revoked']).nullable(),
+  revokedEvidence: z.enum(['event', 'probe']).nullable(),
+  revokedCode: z.string().nullable(),
+  /** The platform rejected the current credential on an ambiguous check (first seen, ISO-8601); the bot stays live. Null ⇒ no mark. */
+  credentialRejectedAt: z.string().nullable(),
+  /** The platform's own code behind that rejection. */
+  credentialRejectedCode: z.string().nullable(),
   createdAt: z.string() // ISO-8601
 })
 export const BotListDto = z.array(BotDto)

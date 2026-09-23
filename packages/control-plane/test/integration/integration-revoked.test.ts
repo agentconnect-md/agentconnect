@@ -125,6 +125,12 @@ describe('integration/revoked → socket bot revocation', () => {
     expect(after.integration).toBe('revoked')
     expect(after.revokedAt).toBeInstanceOf(Date)
     expect(spy.removals).toEqual([{ daemonId: DAEMON, integrationId }])
+    // A socket's lifecycle event is definitive evidence, with no platform code to record.
+    expect(await prisma.bot.findUniqueOrThrow({ where: { id: botId } })).toMatchObject({
+      revokedReason: 'app_uninstalled',
+      revokedEvidence: 'event',
+      revokedCode: null
+    })
   })
 
   it('treats a duplicate report as settled without writing anything', async () => {

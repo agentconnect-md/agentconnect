@@ -13,7 +13,11 @@ import {
   sandboxSubjectFor,
   sessionSandboxSubject
 } from '../src/k8s/sandbox-identity.js'
-import type { PlaneLaunch } from '../src/execution/plane.js'
+import { wireWorkspacePlane, type PlaneLaunch } from '../src/execution/plane.js'
+import type { ControlWire } from '../src/cp/control/context.js'
+import { workspaceError } from '../src/cp/control/workspace.js'
+import { createWorkspaceReader } from '../src/cp/workspace-reader.js'
+import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimServer } from '../src/shim/server.js'
@@ -515,13 +519,66 @@ describe('one pod per session on the plane (git-workspace-model §11)', () => {
     expect(placement.mount).toBe('/agent')
     expect(await placement.fs.stat(`/agent/sessions/${leaf}/workspace`)).toBe('dir')
     expect(served.map((payload) => (payload as { rel: string }).rel)).toEqual([`sessions/${leaf}/workspace`])
-    await expect(placement.fs.stat('/agent/checkout')).rejects.toThrow(
-      /agent-a that owns \/agent\/checkout has no bound channel/
-    )
+    await expect(placement.fs.stat('/agent/checkout')).rejects.toMatchObject({ reason: 'sandbox-unavailable' })
     expect(await plane.clearPath('agent-a', '/agent/checkout')).toMatch(/no bound sandbox channel/)
     expect(plane.workspaceIncarnationFor?.(session)).toBe(
       cluster.claims.get(plane.driver.claimName(session))!.metadata!.uid
     )
+  })
+
+  it("refuses an unbound agent pod's paths with the typed reason the console wakes on, for files and git alike", async () => {
+    // What an isolated session leaves once its agent pod may sleep: the session pod bound, the agent pod not.
+    const cluster = fakeCluster()
+    const plane = await planeUnderTest(cluster as never)
+    const port = shimPort(plane)
+    const T1 = sessionHostKey('agent-a', 'slack:C1:T1:agent-a')
+    const leaf = hostKeyDirName(T1)
+    const binding = plane.driver.ensureBoundChannel(sandboxSubjectFor(T1))
+    shimAgainst(port, { workspaceRoot: '/agent', token: 'pod-1', handle: async () => ({ ok: true, value: 'dir' }) })
+    await binding
+    expect(plane.sandboxBound('agent-a')).toBe(false)
+    // The message rides the wire to the Control Plane, so it names the pod and never the path.
+    const refusal = {
+      name: 'WorkspaceViolationError',
+      reason: 'sandbox-unavailable',
+      message: expect.not.stringContaining('/agent/checkout')
+    }
+
+    // The console's read of the primary checkout, through the reader and the wire mapping its request takes.
+    const reader = createWorkspaceReader(
+      new WorkspaceManager(),
+      async () => ({ root: '/agent/checkout', scratch: false }),
+      async (_agentId, write) => await write(),
+      (agentId) => plane.workspaceFilesFor(agentId)
+    )
+    const listed = await reader.list({ agentId: 'agent-a', path: '', limit: 50 }).catch((err: unknown) => err)
+    expect(listed).toMatchObject(refusal)
+    await expect(reader.read({ agentId: 'agent-a', path: 'README.md', offset: 0, limit: 64 })).rejects.toMatchObject(
+      refusal
+    )
+    const sendError = vi.fn()
+    workspaceError({ sendError, log: { warn: vi.fn() } } as unknown as ControlWire, 'req-1', 'workspace/list', listed)
+    expect(sendError).toHaveBeenCalledWith('req-1', 'BAD_PAYLOAD', expect.any(String), false, {
+      reason: 'sandbox-unavailable'
+    })
+    // A read that resolves a session's secondary clone through the agent pod's marker refuses the same way.
+    await expect(
+      plane.workspaceFsFor('agent-a')!.fs.readFile('/agent/repos/example-org/example-repo/.materialization.json')
+    ).rejects.toMatchObject(refusal)
+
+    // Git on the agent pod's paths refuses rather than running on this member's disk; the session's own path still runs.
+    const workspaces = new WorkspaceManager()
+    wireWorkspacePlane(workspaces, plane)
+    expect(workspaces.runnerFor('agent-a', `/agent/sessions/${leaf}/workspace`)).toBeDefined()
+    for (const cwd of ['/agent/checkout', undefined]) {
+      let thrown: unknown
+      try {
+        workspaces.runnerFor('agent-a', cwd)
+      } catch (err) {
+        thrown = err
+      }
+      expect(thrown).toMatchObject({ name: 'WorkspaceViolationError', reason: 'sandbox-unavailable' })
+    }
   })
 
   it('routes a read of a suspended session directory to that session pod, waking it, not to the agent pod', async () => {

@@ -27,8 +27,10 @@ import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import { BotExternalIdentityTaken, BotMissing, BotStillShared } from '../errors.js'
 import type {
   BotRepo,
+  BotCredentialCheck,
   BotIdentityProjector,
   BotRecord,
+  BotRevocationRecord,
   BotUpdate,
   CreateBotInput,
   BotSecretStore,
@@ -95,6 +97,11 @@ function toBotRecord(b: BotJoined): BotRecord {
     workspaceName: b.workspaceName,
     botUserId: b.botUserId,
     revokedAt: b.revokedAt,
+    revokedReason: (b.revokedReason as BotRevocationRecord['reason'] | null) ?? null,
+    revokedEvidence: (b.revokedEvidence as BotRevocationRecord['evidence'] | null) ?? null,
+    revokedCode: b.revokedCode,
+    credentialRejectedAt: b.credentialRejectedAt,
+    credentialRejectedCode: b.credentialRejectedCode,
     credentialRevision: b.credentialRevision,
     credentialInstalledAt: b.credentialInstalledAt,
     // The column cannot be NULL (Prisma scalar list), so empty encodes "never
@@ -374,23 +381,32 @@ export class PgBotRepo implements BotRepo {
   }
 
   async bumpCredential(id: BotId, at: Date): Promise<number> {
-    // One statement: the generation advance, its timestamp, and clearing the
-    // revocation marker are the SAME event ("a fresh credential landed"). A
-    // reader can never observe a live bot whose generation still matches a
-    // report that was already in flight for the dead credential.
+    // One statement, one event: no reader sees a fresh credential still carrying the dead one's revocation, evidence or mark.
     const row = await this.db.bot.update({
       where: { id },
-      data: { credentialRevision: { increment: 1 }, credentialInstalledAt: at, revokedAt: null },
+      data: {
+        credentialRevision: { increment: 1 },
+        credentialInstalledAt: at,
+        revokedAt: null,
+        revokedReason: null,
+        revokedEvidence: null,
+        revokedCode: null,
+        credentialRejectedAt: null,
+        credentialRejectedCode: null,
+        credentialCheckedAt: null
+      },
       select: { credentialRevision: true }
     })
     return row.credentialRevision
   }
 
-  async revokeIfCurrent(id: BotId, at: Date, fence: { revision?: number; eventAt?: Date }): Promise<boolean> {
-    // CAS in the WHERE clause — no read-then-write window. Both predicates are
-    // conjunctive and each is skipped when the report didn't carry it (fail-open:
-    // an uninstall must eventually take effect). `credentialInstalledAt: null`
-    // (a bot predating the fence) also passes the timestamp arm via the OR.
+  async revokeIfCurrent(
+    id: BotId,
+    at: Date,
+    fence: { revision?: number; eventAt?: Date },
+    record: BotRevocationRecord
+  ): Promise<boolean> {
+    // CAS in the WHERE clause, each arm skipped when absent (fail-open); a pre-fence NULL install time passes the time arm.
     const { count } = await this.db.bot.updateMany({
       where: {
         id,
@@ -399,8 +415,26 @@ export class PgBotRepo implements BotRepo {
           ? { OR: [{ credentialInstalledAt: null }, { credentialInstalledAt: { lt: fence.eventAt } }] }
           : {})
       },
-      data: { revokedAt: at }
+      data: { revokedAt: at, revokedReason: record.reason, revokedEvidence: record.evidence, revokedCode: record.code }
     })
+    return count > 0
+  }
+
+  async recordCredentialCheck(id: BotId, check: BotCredentialCheck): Promise<boolean> {
+    const at = check.observedAt
+    // One conditional UPDATE per result, fenced on the probed revision and a strictly newer observation than the watermark.
+    const count =
+      check.result === 'rejected'
+        ? await this.db.$executeRaw`
+            UPDATE bot SET "credentialCheckedAt" = ${at}, "credentialRejectedAt" = COALESCE("credentialRejectedAt", ${at}),
+              "credentialRejectedCode" = ${check.code}, "updatedAt" = CURRENT_TIMESTAMP
+            WHERE id = ${id} AND "credentialRevision" = ${check.revision}
+              AND ("credentialCheckedAt" IS NULL OR "credentialCheckedAt" < ${at})`
+        : await this.db.$executeRaw`
+            UPDATE bot SET "credentialCheckedAt" = ${at}, "credentialRejectedAt" = NULL,
+              "credentialRejectedCode" = NULL, "updatedAt" = CURRENT_TIMESTAMP
+            WHERE id = ${id} AND "credentialRevision" = ${check.revision}
+              AND ("credentialCheckedAt" IS NULL OR "credentialCheckedAt" < ${at})`
     return count > 0
   }
 

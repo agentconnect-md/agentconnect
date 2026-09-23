@@ -27,7 +27,7 @@
  */
 import type { PrismaClient } from '../../generated/prisma/client.js'
 import { withTx } from '../prisma.js'
-import type { BotCredentialWriter, BotSecretMaterial, RevokeBotResult } from '../ports.js'
+import type { BotCredentialWriter, BotRevocationRecord, BotSecretMaterial, RevokeBotResult } from '../ports.js'
 import type { BotId, IntegrationId, OrgId } from '../../domain/ids.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
 import { orgScope } from '../../secrets/scope.js'
@@ -80,13 +80,16 @@ export class PgBotCredentialWriter implements BotCredentialWriter {
     })
   }
 
-  async revoke(botId: BotId, at: Date, fence: { revision?: number; eventAt?: Date }): Promise<RevokeBotResult> {
+  async revoke(
+    botId: BotId,
+    at: Date,
+    fence: { revision?: number; eventAt?: Date },
+    record: BotRevocationRecord
+  ): Promise<RevokeBotResult> {
     return withTx(this.prisma, async (tx) => {
       const bots = new PgBotRepo(tx)
-      // The CAS is an UPDATE on the bot row — it takes the row lock for the rest
-      // of this transaction, so a concurrent `install` blocks here rather than
-      // slipping a fresh generation between the decision and the flip below.
-      const applied = await bots.revokeIfCurrent(botId, at, fence)
+      // The CAS UPDATE takes the bot row lock for this transaction, so a concurrent `install` cannot slip between it and the flip.
+      const applied = await bots.revokeIfCurrent(botId, at, fence, record)
       if (!applied) return { applied: false, integrationIds: [] }
       const bot = await tx.bot.findUniqueOrThrow({ where: { id: botId }, select: { credentialRevision: true } })
       const integrationIds = await new PgIntegrationRepo(tx).markRevokedForBot(botId, bot.credentialRevision)

@@ -227,7 +227,10 @@ built-in app reconnects by reinstalling it instead
 The console offers the matching repair wherever a revoked app appears, to
 members who may change bots: the header of the agent page's Slack card, and the
 app's row on the Integrations page. That row keeps listing the agents the app
-served, marked revoked, although its active install count is zero.
+served, marked revoked, although its active install count is zero. An app whose
+token Slack rejected ambiguously (`invalid_auth`, which an IP allowlist also
+causes) is shown as `rejected` rather than revoked and offers the same repairs;
+its integrations stay active ([preset-agents.md](preset-agents.md) §5.3).
 
 Agent moves use the mutation gate and transfer the desired integration set from
 the old daemon to the new daemon. Reconciliation repairs any missed live event.

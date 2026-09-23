@@ -29,6 +29,7 @@ import type {
   RcBotChannels,
   RcBotConversation,
   RcBotRevoked,
+  RcBotCredentialCheck,
   RcNoticePosted,
   RcSetChannelAgent,
   RcThreadAssign,
@@ -42,6 +43,7 @@ import type {
   ErrorCode
 } from '@agentconnect.md/protocol'
 import {
+  BOT_CREDENTIAL_CHECK_FEATURE,
   buildRelayCpFrame,
   decodeRelayCpFrame,
   PULL_REQUEST_FEEDBACK_FEATURE,
@@ -86,6 +88,8 @@ export interface RelayConnDeps {
    *  retryable error so the relay reports again rather than losing the only
    *  signal a dead credential ever produces. */
   onBotRevoked: (m: RcBotRevoked) => Promise<{ applied: boolean }>
+  /** Apply a probe's non-revoking answer (`rc/bot-credential-check`); acknowledged like `onBotRevoked`, so a throw answers a retryable error. */
+  onBotCredentialCheck: (m: RcBotCredentialCheck) => Promise<{ applied: boolean }>
   /** Fired after this relay left the connected registry (socket closed) — the
    *  connected roster changed, so §14.3 notice authorities must re-converge on the
    *  survivors. Best-effort; never throws. */
@@ -199,6 +203,9 @@ export class RelayConnection implements RelayChannel {
         case 'rc/bot-revoked':
           await this.handleBotRevoked(frame, frame.payload)
           return
+        case 'rc/bot-credential-check':
+          await this.handleBotCredentialCheck(frame, frame.payload)
+          return
         case 'rc/thread-assign':
           await this.handleThreadAssign(frame.payload)
           return
@@ -243,6 +250,7 @@ export class RelayConnection implements RelayChannel {
           type === 'rc/bot-channels' ||
           type === 'rc/bot-conversation' ||
           type === 'rc/bot-revoked' ||
+          type === 'rc/bot-credential-check' ||
           type === 'rc/notice-posted' ||
           type === 'rc/thread-assign' ||
           type === 'rc/thread-participant' ||
@@ -293,7 +301,7 @@ export class RelayConnection implements RelayChannel {
     this.state = 'READY'
     this.reply(frame, 'rc/registered', {
       relayId: row.id,
-      serverFeatures: [PULL_REQUEST_FEEDBACK_FEATURE]
+      serverFeatures: [PULL_REQUEST_FEEDBACK_FEATURE, BOT_CREDENTIAL_CHECK_FEATURE]
     })
     // A relay just appeared (or reclaimed its id) — refresh the daemons' roster
     // and replay this relay's pool config (hook rules).
@@ -369,6 +377,18 @@ export class RelayConnection implements RelayChannel {
       return
     }
     this.reply(frame, 'rc/bot-revoked/ok', { botId: req.botId, applied: result.applied })
+  }
+
+  /** Acknowledged like `rc/bot-revoked`: a failure answers a retryable error, so the relay keeps the check and reports again. */
+  private async handleBotCredentialCheck(frame: RelayCpFrame, req: RcBotCredentialCheck): Promise<void> {
+    let result: { applied: boolean }
+    try {
+      result = await this.deps.onBotCredentialCheck(req)
+    } catch {
+      this.sendError(frame.id, 'INTERNAL', 'bot credential check failed', true)
+      return
+    }
+    this.reply(frame, 'rc/bot-credential-check/ok', { botId: req.botId, applied: result.applied })
   }
 
   private async handleThreadLookup(frame: RelayCpFrame, req: RcThreadLookup): Promise<void> {

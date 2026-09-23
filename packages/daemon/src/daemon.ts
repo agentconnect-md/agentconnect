@@ -14916,7 +14916,8 @@ export class Daemon {
   }
 
   /** Append a reply segment to the transcript WITHOUT sending it. Minimal mode keeps
-   * earlier narration behind one collapsed live reply; Feishu uses this for every
+   * earlier narration off the channel (Slack folds it into history cards, the others
+   * behind one live reply); Feishu uses this for every
    * CardKit-delivered body segment. A distinct monotonic ts per call avoids text-row
    * dedup collisions. Platform-agnostic; runs even headless (no conn). */
   private async recordReplySegment(p: Pending, text: string): Promise<void> {
@@ -16115,27 +16116,14 @@ export class Daemon {
     return await this.postLiveChromeBoundarySerialized(p, 'human-input-card', post).catch(() => undefined)
   }
 
-  /**
-   * Mark turn-local in-place messages to continue below a newly posted chronological boundary.
-   * This covers human-input cards and visible agent-authored `messageAgent` text. Minimal mode's
-   * single live reply and the medium/high progress / plan / reasoning messages may now sit ABOVE
-   * that message and would keep editing above it, so the newest activity would read as if it came
-   * before the boundary. Re-anchor so the next update posts a FRESH message BELOW it (the old one
-   * stays frozen above), preserving chat order. The session status bar is deliberately excluded:
-   * it is a header for the whole session and stays pinned to its original topmost message.
-   *
-   * Enqueued on the apply chain so it lands AFTER any segment-close / tool-progress action
-   * already queued before the boundary (which belongs above) and BEFORE the following stream
-   * (which belongs below). The live reply reanchors lazily on its next action (so an empty tail
-   * keeps the old message and its footer); the turn-local progress / plan / reasoning anchors
-   * reset directly. Slack-only.
-   */
+  /** Continue the turn-local in-place chrome (progress / plan / reasoning) BELOW a newly posted boundary
+   *  (a human-input card, visible `messageAgent` text) so chat order holds; chained after the actions
+   *  queued before the boundary, and the session status bar stays pinned. Slack-only. */
   private reanchorInPlaceChrome(p: Pending): void {
     p.signals.applyChain = p.signals.applyChain.then(() => this.markInPlaceChromeForReanchor(p))
   }
 
   private markInPlaceChromeForReanchor(p: Pending): void {
-    p.chrome.liveReplyReanchor = true
     p.chrome.progressTs = undefined
     p.chrome.progressAttempted = false
     p.chrome.planTs = undefined

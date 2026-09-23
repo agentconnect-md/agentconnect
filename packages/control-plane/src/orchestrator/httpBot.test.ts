@@ -15,6 +15,8 @@ import { AgentId, BotId, DaemonId, IntegrationId, OrgId } from '../domain/ids.js
 import type {
   BotRepo,
   BotRecord,
+  BotCredentialCheck,
+  BotRevocationRecord,
   BotSecretMaterial,
   BotSecretStore,
   BotCredentialWriter,
@@ -156,6 +158,9 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
   let threadParticipants: Awaited<ReturnType<ThreadAffinityStore['participantsForBot']>>
   // revokeBot recordings: the Bot revocation stamp + integration/remove pushes.
   let botRevokedAt: Date | null
+  // What the committed revocation recorded, and every credential check the repo was asked to apply.
+  let botRevocation: BotRevocationRecord | null
+  let credentialChecks: BotCredentialCheck[]
   let removals: { daemonId: string; integrationId: string }[]
   // One-shot barrier for deterministic channel-mutation concurrency tests.
   let blockNextChannelList: (() => Promise<void>) | null
@@ -182,7 +187,10 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       [BOB]: agent(BOB, 'bob', unplacedAgents.has(BOB) ? null : D2)
     }
     let getCalls = 0
-    const bots: Pick<BotRepo, 'getUnscoped' | 'listForOrg' | 'listHttpActive' | 'revokeIfCurrent'> = {
+    const bots: Pick<
+      BotRepo,
+      'getUnscoped' | 'listForOrg' | 'listHttpActive' | 'revokeIfCurrent' | 'recordCredentialCheck'
+    > = {
       getUnscoped: async () => {
         getCalls += 1
         if (bumpRevisionAfterFirstGet && getCalls > 1) {
@@ -194,11 +202,17 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       listHttpActive: async () => [botRow],
       // Mirrors the SQL CAS: both arms conjunctive, each skipped when the report
       // didn't carry it, and `credentialInstalledAt: null` passes the time arm.
-      revokeIfCurrent: async (_id, at, fence) => {
+      revokeIfCurrent: async (_id, at, fence, record) => {
         if (fence.revision !== undefined && fence.revision !== botRow.credentialRevision) return false
         if (fence.eventAt && botRow.credentialInstalledAt && botRow.credentialInstalledAt >= fence.eventAt) return false
         botRevokedAt = at
+        botRevocation = record
         return true
+      },
+      // The revision CAS alone; the mark's own semantics are the repository's and are covered against Postgres.
+      recordCredentialCheck: async (_id, check) => {
+        credentialChecks.push(check)
+        return check.revision === botRow.credentialRevision
       }
     }
     const botSecret: Pick<BotSecretStore, 'get'> = {
@@ -339,8 +353,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         botRow = { ...botRow, credentialRevision: botRow.credentialRevision + 1 }
         return botRow.credentialRevision
       },
-      revoke: async (id, at, fence) => {
-        const applied = await bots.revokeIfCurrent!(id, at, fence)
+      revoke: async (id, at, fence, record) => {
+        const applied = await bots.revokeIfCurrent!(id, at, fence, record)
         if (!applied) return { applied: false, integrationIds: [] }
         return {
           applied: true,
@@ -394,6 +408,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     blockNextChannelList = null
     bumpRevisionAfterFirstGet = false
     botRevokedAt = null
+    botRevocation = null
+    credentialChecks = []
     removals = []
     warns = []
     daemonFeatures = {}
@@ -1603,6 +1619,51 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
 
     expect(ch.sends).toEqual([]) // no bot-unassign racing the fresh assign
     expect(removals).toEqual([]) // no spec pulled off the re-installed bot
+  })
+
+  it('revokeBot records a reporter that names no evidence as a lifecycle event without a code', async () => {
+    await makeOrch().revokeBot(BOT, 'app_uninstalled', { eventAtMs: Date.now() })
+
+    expect(botRevocation).toEqual({ reason: 'app_uninstalled', evidence: 'event', code: null })
+  })
+
+  it('revokeBot records a probe’s evidence and the platform code it carried', async () => {
+    await makeOrch().revokeBot(BOT, 'tokens_revoked', { revision: 1 }, { evidence: 'probe', code: 'token_revoked' })
+
+    expect(botRevocation).toEqual({ reason: 'tokens_revoked', evidence: 'probe', code: 'token_revoked' })
+    expect(integrations.map((i) => i.status)).toEqual(['revoked', 'revoked'])
+  })
+
+  // An ambiguous rejection is a mark on the bot, never a revocation: nothing downstream of one may move.
+  it('recordCredentialCheck marks a rejection without revoking, releasing, or pulling a spec', async () => {
+    const observedAtMs = Date.UTC(2026, 8, 1)
+
+    await expect(
+      makeOrch().recordCredentialCheck({
+        botId: BOT,
+        credentialRevision: 1,
+        result: 'rejected',
+        code: 'invalid_auth',
+        observedAtMs
+      })
+    ).resolves.toEqual({ applied: true })
+
+    expect(credentialChecks).toEqual([
+      { result: 'rejected', code: 'invalid_auth', revision: 1, observedAt: new Date(observedAtMs) }
+    ])
+    expect(botRevokedAt).toBeNull()
+    expect(integrations.map((i) => i.status)).toEqual(['active', 'active'])
+    expect(ch.sends).toEqual([])
+    expect(removals).toEqual([])
+  })
+
+  it('recordCredentialCheck reports a check of a replaced credential as not applied', async () => {
+    botRow = bot({ credentialRevision: 2 })
+
+    await expect(
+      makeOrch().recordCredentialCheck({ botId: BOT, credentialRevision: 1, result: 'ok', observedAtMs: 1 })
+    ).resolves.toEqual({ applied: false })
+    expect(credentialChecks).toEqual([{ result: 'ok', revision: 1, observedAt: new Date(1) }])
   })
 
   it('revokeBot is idempotent — a duplicate report finds no active installs', async () => {
