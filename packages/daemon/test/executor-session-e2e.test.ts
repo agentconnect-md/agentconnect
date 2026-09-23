@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -25,6 +25,8 @@ import { applyFileSinkPayload } from '../src/shim/file-sink.js'
 import type { GitExecPayload } from '../src/shim/git-exec.js'
 import { shimPaths } from '../src/shim/sandbox-paths.js'
 import { ShimServer } from '../src/shim/server.js'
+import { applyWorkspaceFilesPayload } from '../src/shim/workspace-files-channel.js'
+import { localWorkspaceFiles } from '../src/workspace/workspace-files.js'
 import type { ShimTransport } from '../src/shim/client.js'
 import { WAIT } from './wait-support.js'
 
@@ -127,6 +129,9 @@ describe('a session on another machine of the group', () => {
           handle: async (capability, payload) => {
             // What a launch writes into the environment: the shim applies it to its own disk, as the image's does.
             if (capability === 'materialize') return await applyFileSinkPayload(payload).then(() => null)
+            // The console's file reads, path-based here: the image's fd-anchored ones need Linux and have their own suite.
+            if (capability === 'read')
+              return await applyWorkspaceFilesPayload(payload, workspaceRoot, localWorkspaceFiles)
             if (capability !== 'exec') throw new Error(`unexpected ${capability}`)
             exec.push(payload as GitExecPayload)
             return Promise.resolve({ code: 0, stdout: `${HEAD}\n`, stderr: '' })
@@ -268,6 +273,37 @@ describe('a session on another machine of the group', () => {
     ])
     expect(relay.released[0]!.launchId).toBe(launchId)
     expect(holder.placementOf(KEY)).toBeUndefined()
+  })
+
+  it('serves the console’s reads of its files from the executor, and refuses them once its pipe closes', async () => {
+    const executor = await machine(EXECUTOR_A)
+    const holder = holderPlane(HOLDER, new Relay(new Map([[EXECUTOR_A, executor]])))
+    await holder.prepareAt(AGENT, KEY, [choice(EXECUTOR_A)])
+    await holder.ensureChannel(SUBJECT)
+    const clone = join(executor.root, 'sessions', LEAF, 'workspace')
+    await mkdir(clone, { recursive: true })
+    await writeFile(join(clone, 'notes.md'), 'on the executor')
+    const list = { agentId: AGENT, path: '', limit: 50 }
+
+    // Named by its key, as the console's scope names it, the session is read over its own pipe on that machine.
+    const files = holder.workspaceFilesFor(AGENT, { sessionKey: KEY })!
+    expect((await files.list(clone, list)).entries.map((entry) => entry.name)).toEqual(['notes.md'])
+    expect(await files.read(clone, { agentId: AGENT, path: 'notes.md', offset: 0, limit: 1024 })).toMatchObject({
+      exists: true,
+      content: 'on the executor'
+    })
+    // Its root alone names it while the pipe is up; the agent's own checkout and another session stay with this holder.
+    expect(holder.workspaceFilesFor(AGENT, { path: clone })).toBeDefined()
+    expect(holder.workspaceFilesFor(AGENT, { path: '/srv/holder/agents/bot/workspace' })).toBeUndefined()
+    expect(holder.workspaceFilesFor(AGENT, { sessionKey: `slack:C1:1700000000.000900:${AGENT}` })).toBeUndefined()
+
+    // Idle closes the pipe and forgets the root, so only the key still names the session, and its reads refuse.
+    await expect(holder.suspendIdle(SUBJECT)).resolves.toBe('suspended')
+    expect(holder.workspaceFilesFor(AGENT, { path: clone })).toBeUndefined()
+    await expect(holder.workspaceFilesFor(AGENT, { sessionKey: KEY })!.list(clone, list)).rejects.toMatchObject({
+      name: 'WorkspaceViolationError',
+      reason: 'sandbox-unavailable'
+    })
   })
 
   it("launches a real prepared runtime under the HOME its executor seeded, with none of the holder's environment", async () => {

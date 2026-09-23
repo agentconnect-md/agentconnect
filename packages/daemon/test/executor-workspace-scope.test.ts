@@ -234,10 +234,13 @@ describe('a spread session’s location', () => {
     const withRepo = agent([{ repoFullName: 'example-org/library', repoId: '42' }])
     const cwd = await workspaces.prepareExecutorWorkspace(withRepo, executorRoot, request)
     const scope = scopeFor(withRepo)
-    expect(await scope.location(AGENT, 'outward-1')).toEqual({ root: cwd, scratch: false })
-    expect((await scope.location(AGENT, 'outward-1', 'example-org/library'))?.root).toBe(
-      join(sessionDir, 'repos', 'example-org', 'library')
-    )
+    // The session travels with each root, so the console's reads are routed by it, not by a path its idle pipe no longer names.
+    expect(await scope.location(AGENT, 'outward-1')).toEqual({ root: cwd, scratch: false, sessionKey: KEY })
+    expect(await scope.location(AGENT, 'outward-1', 'example-org/library')).toEqual({
+      root: join(sessionDir, 'repos', 'example-org', 'library'),
+      scratch: false,
+      sessionKey: KEY
+    })
   })
 
   it('is reached through that machine’s filesystem, and a session on this disk is not', () => {

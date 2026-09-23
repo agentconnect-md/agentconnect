@@ -27,7 +27,7 @@ import { TunnelBinder } from '../remote/tunnel-binder.js'
 import { ShimWorkspaceFiles } from '../shim/workspace-files-channel.js'
 import { ShimMemoryFs } from '../shim/memory-fs-channel.js'
 import { ShimWorkspaceFs } from '../shim/workspace-fs-channel.js'
-import { WorkspaceViolationError, type WorkspaceFiles } from '../workspace/workspace-files.js'
+import { RoutedWorkspaceFiles, WorkspaceViolationError, type WorkspaceFiles } from '../workspace/workspace-files.js'
 import { RoutedWorkspaceFs, type WorkspacePlacement } from '../workspace/workspace-fs.js'
 import { sessionDirIn } from '../workspace/session-layout.js'
 import type { MemoryFs } from '../memory/fs.js'
@@ -587,32 +587,3 @@ export function shimEndpoint(podIp: string, port: number): string {
 }
 
 export { RoutedWorkspaceFs } from '../workspace/workspace-fs.js'
-
-// The console's file port over several pods: each call names its root, and the root names the pod (§11).
-export class RoutedWorkspaceFiles implements WorkspaceFiles {
-  constructor(private readonly route: (root: string) => Promise<WorkspaceFiles>) {}
-
-  async list(root: string, req: Parameters<WorkspaceFiles['list']>[1]): ReturnType<WorkspaceFiles['list']> {
-    return await (await this.route(root)).list(root, req)
-  }
-
-  async read(root: string, req: Parameters<WorkspaceFiles['read']>[1]): ReturnType<WorkspaceFiles['read']> {
-    return await (await this.route(root)).read(root, req)
-  }
-
-  async write(
-    root: string,
-    scratch: boolean,
-    req: Parameters<WorkspaceFiles['write']>[2]
-  ): ReturnType<WorkspaceFiles['write']> {
-    return await (await this.route(root)).write(root, scratch, req)
-  }
-
-  async delete(
-    root: string,
-    scratch: boolean,
-    req: Parameters<WorkspaceFiles['delete']>[2]
-  ): ReturnType<WorkspaceFiles['delete']> {
-    return await (await this.route(root)).delete(root, scratch, req)
-  }
-}

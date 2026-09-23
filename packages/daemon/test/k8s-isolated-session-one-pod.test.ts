@@ -8,7 +8,6 @@ import { Daemon } from '../src/daemon.js'
 import { agentHostKey, hostKeyDirName, sessionHostKey, type HostKey } from '../src/acp/host-key.js'
 import { buildCpClientDeps } from '../src/cp/cp-client-deps.js'
 import { K8sDriver } from '../src/k8s/driver.js'
-import { RoutedWorkspaceFiles } from '../src/k8s/runtime-plane.js'
 import {
   agentSandboxSubject,
   sandboxClaimName,
@@ -21,7 +20,7 @@ import type { SpawnRecord } from '../src/shim/binding.js'
 import type { ShimConnection } from '../src/shim/connection.js'
 import { SANDBOX_CHECKOUT_DIR } from '../src/shim/sandbox-paths.js'
 import { LocalStore, sessionKey } from '../src/store/local-store.js'
-import { WorkspaceViolationError, type WorkspaceFiles } from '../src/workspace/workspace-files.js'
+import { RoutedWorkspaceFiles, WorkspaceViolationError, type WorkspaceFiles } from '../src/workspace/workspace-files.js'
 import type { GitRunner } from '../src/workspace/git-runner.js'
 import { fakeGenerations } from './fake-generations.js'
 import { PodWorkspaceFs } from './fixtures/pod-workspace-fs.js'

@@ -36,7 +36,7 @@ export interface WorkspaceScopeDeps {
 type LocalLocation = WorkspaceLocation & { sessionKey?: string }
 
 export interface WorkspaceScope {
-  /** The root in EXECUTION coordinates — under `--k8s`, the sandbox pod's volume. */
+  /** The root in EXECUTION coordinates — under `--k8s`, the sandbox pod's volume — and the isolated session it belongs to. */
   location(agentId: string, sessionId?: string, repo?: string): Promise<WorkspaceLocation | undefined>
   gitRoot(agentId: string, sessionId?: string, repo?: string): Promise<string | undefined>
   /** The origin and branch a network git operation on this scope may reach; a session names its own clone's. */
@@ -111,7 +111,8 @@ export function createWorkspaceScope(deps: WorkspaceScopeDeps): WorkspaceScope {
       local.sessionKey === undefined ? undefined : { isolation: 'session', sessionKey: local.sessionKey },
       repo
     )
-    return root === undefined ? undefined : { root, scratch: local.scratch }
+    if (root === undefined) return undefined
+    return { root, scratch: local.scratch, ...(local.sessionKey === undefined ? {} : { sessionKey: local.sessionKey }) }
   }
 
   return {

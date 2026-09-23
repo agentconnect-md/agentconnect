@@ -7,11 +7,13 @@ import { MAX_TASK_LIST_TASKS, type SessionPurged } from '@agentconnect.md/protoc
 import { agentHostKey, sessionHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
 import { Daemon } from '../src/daemon.js'
 import { buildCpClientDeps } from '../src/cp/cp-client-deps.js'
+import { ExecutorPlane } from '../src/execution/executor-plane.js'
 import { TaskViolationError } from '../src/cp/task-reader.js'
 import { configFilesDir } from '../src/shim/config-file-env.js'
 import { readSkillLedger, skillLedgerLocation } from '../src/skills/skill-install-ledger.js'
 import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { NO_RESPONSE_SENTINEL } from '../src/session/no-response.js'
+import { localWorkspaceFiles } from '../src/workspace/workspace-files.js'
 import { FakeClock } from './cp/fake-clock.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { PodWorkspaceFs } from './fixtures/pod-workspace-fs.js'
@@ -223,6 +225,81 @@ describe('Daemon session lifecycle (#118)', () => {
       await daemon.stop()
     }
   })
+
+  // An executor's coordinates are POSIX: its `host` strategy needs Linux (session-executors.md §5).
+  it.skipIf(process.platform === 'win32')(
+    'lists a spread session’s files on its executor through the console, and never off this holder',
+    async () => {
+      const root = scaffold()
+      const executorClone = mkdtempSync(join(tmpdir(), 'ac-exec-clone-'))
+      writeFileSync(join(executorClone, 'on-executor.md'), 'executor')
+      const daemon = new Daemon({ root, hostFactory: () => quietHost() as never })
+      try {
+        await daemon.start()
+        const d = daemon as any
+        await vi.waitFor(() => expect(d.sessionRetentionSweepInFlight).toBe(false))
+        const agent = d.agents.get('bot-a')
+        agent.workspace.mode = 'git-repo'
+        agent.workspace.gitRepo = 'https://github.com/example-org/example-repo'
+        mkdirSync(agent.workspace.path, { recursive: true })
+        writeFileSync(join(agent.workspace.path, 'on-holder.md'), 'holder')
+        const row = { key: KEY, sessionId: 'outward-1', workspaceIsolation: 'session' }
+        vi.spyOn(d.store, 'getSessionByOutwardId').mockImplementation(async (id: any) =>
+          id === 'outward-1' ? row : undefined
+        )
+        // This holder's own plane, with the session placed on another machine of its group and no pool here.
+        const plane = new ExecutorPlane({
+          prepare: async () => ({ status: 'refused', reason: 'draining' }),
+          release: async () => ({ status: 'released' }),
+          replace: async () => undefined,
+          log: { info: () => {}, warn: () => {} }
+        })
+        const { subject } = plane.place({
+          agentId: 'bot-a',
+          sessionKey: KEY,
+          executorDaemonId: 'exec-a',
+          strategy: 'host'
+        })
+        d.executorPlane = plane
+        d.wirePlaneResolver()
+        // Its pipe up: the executor's shim answers from that machine's clone, whatever this disk holds at the root.
+        const asked: Array<{ capability: string; op: string; root: string }> = []
+        const pipe = {
+          request: async (capability: string, payload: any) => {
+            asked.push({ capability, op: payload.op, root: payload.root })
+            return { ok: true, value: await localWorkspaceFiles.list(executorClone, payload.req) }
+          }
+        }
+        const bound = vi
+          .spyOn(plane as any, 'boundSession')
+          .mockImplementation((s) => (s === subject ? pipe : undefined))
+        const deps = buildCpClientDeps(d.cpClientDepsHost(root, 'wss://cp.example.test', () => {}))
+        const names = async (sessionId?: string) =>
+          (await deps.workspaceRead!.list({ agentId: 'bot-a', sessionId, path: '', limit: 50 })).entries.map(
+            (entry: { name: string }) => entry.name
+          )
+
+        expect(await names('outward-1')).toEqual(['on-executor.md'])
+        expect(asked).toEqual([
+          {
+            capability: 'read',
+            op: 'list',
+            root: expect.stringMatching(`/sessions/${sessionKeyDirName(KEY)}/workspace$`)
+          }
+        ])
+        // The agent's own checkout stays on this holder (§7).
+        expect(await names()).toEqual(['on-holder.md'])
+
+        // Its pipe closed: refused, rather than an empty tree read off this holder at the session's path.
+        bound.mockReturnValue(undefined)
+        await expect(names('outward-1')).rejects.toMatchObject({ reason: 'sandbox-unavailable' })
+        expect(asked).toHaveLength(1)
+      } finally {
+        await daemon.stop()
+        rmSync(executorClone, { recursive: true, force: true })
+      }
+    }
+  )
 
   it.each([false, true])('sweeps retired microsandbox roots only with a warm VM (warm: %s)', async (warm) => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as never })

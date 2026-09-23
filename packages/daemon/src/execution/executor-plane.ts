@@ -20,9 +20,11 @@ import { ClusterSkillClient } from '../shim/skill-client.js'
 import type { ShimCapability } from '../shim/protocol.js'
 import { shimPaths } from '../shim/sandbox-paths.js'
 import type { ShimSession } from '../shim/session.js'
+import { ShimWorkspaceFiles } from '../shim/workspace-files-channel.js'
 import { ShimWorkspaceFs } from '../shim/workspace-fs-channel.js'
 import type { TunnelName } from '../shim/tunnel.js'
 import type { GitRunner } from '../workspace/git-runner.js'
+import { RoutedWorkspaceFiles, WorkspaceViolationError, type WorkspaceFiles } from '../workspace/workspace-files.js'
 import { SESSIONS_DIR, sessionDirIn, sessionHomeIn } from '../workspace/session-layout.js'
 import type { WorkspacePlacement } from '../workspace/workspace-fs.js'
 import { ExecutorEndpoints, ExecutorUnavailableError, type ExecutorLaunch } from './executor-endpoint.js'
@@ -387,6 +389,21 @@ export class ExecutorPlane implements ExecutionPlane {
     if (!session || !root || !mount) return undefined
     // The anchor is the shim's own root, which is the session's directory; the mount is the root the daemon composes paths on.
     return { fs: new ShimWorkspaceFs(session, root), mount }
+  }
+
+  /** The console's file operations on a placed session's roots, run by its shim and refused while its pipe is closed, never read off this disk; undefined for any other scope. */
+  workspaceFilesFor(agentId: string, scope?: Omit<PlaneScope, 'agentId'>): WorkspaceFiles | undefined {
+    const placed = this.placedFor({ agentId, ...scope })
+    if (!placed) return undefined
+    return new RoutedWorkspaceFiles(async () => {
+      const session = this.boundSession(placed.subject)
+      if (session) return new ShimWorkspaceFiles(session)
+      // Path-free: the message rides the wire to the Control Plane, and the subject already names the session.
+      throw new WorkspaceViolationError(
+        `session "${placed.subject}" has no pipe to its executor, so this workspace cannot be reached`,
+        'sandbox-unavailable'
+      )
+    })
   }
 
   async clearPath(agentId: string, root: string): Promise<string | undefined> {
