@@ -2334,7 +2334,12 @@
         "fast": "快速",
         "lowerLatency": "更低延迟",
         "imageBinaryMissing": "镜像中未安装此运行时",
-        "readOnly": "当前聊天不允许修改 Runtime。"
+        "readOnly": "当前聊天不允许修改 Runtime。",
+        "model": "模型",
+        "decision": "Decision",
+        "fallback": "兜底",
+        "on": "开",
+        "off": "关"
       }
     },
     "detail": {

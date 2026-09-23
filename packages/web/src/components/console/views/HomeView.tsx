@@ -1,6 +1,7 @@
 'use client'
 
 import { RuntimeModelSelect } from '@/components/console/RuntimeModelSelect'
+import { ruleSummaries } from '@/components/console/decisions/rule-summary'
 import { useDecisionsPrototype } from '@/lib/decisions/provider'
 
 // The chat-first console landing. A composer ("Ask an agent") is the primary
@@ -58,7 +59,7 @@ import {
   type SessionImage
 } from '@/lib/data'
 import { agentSessionIsolationLabel } from '@/lib/session-isolation'
-import { permissionModeLabelKey } from '@/lib/permission-mode-i18n'
+import { localizedPermissionChoices } from '@/lib/permission-mode-i18n'
 import { cronNext, cronHuman, fmtNextRun } from '@/lib/cron'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
 
@@ -327,10 +328,7 @@ export default function HomeView() {
     ? resolvedPermissionMode(agent?.permissionMode ?? '', permissionList, modelCatalog)
     : ''
   const permissionPreset = runtime.permissionPreset ?? permissionMode
-  const permissionChoices = permissionList.map((o) => {
-    const key = permissionModeLabelKey(o.v)
-    return { value: o.v, label: key ? permissionT(key) : o.l, description: o.description }
-  })
+  const permissionChoices = localizedPermissionChoices(permissionList, permissionT)
 
   // Why the composer can't start a session for the selected agent (null ⇒ it can).
   const executionAgent = agent && runtime.runtime ? { ...agent, runtime: runtime.runtime, model } : agent
@@ -717,7 +715,9 @@ export default function HomeView() {
                         ? {
                             name: selectedDecision?.name ?? t('composer.byDecision'),
                             selected: byDecision,
-                            onSelect: () => setRuntime((current) => ({ fastMode: current.fastMode }))
+                            onSelect: () => setRuntime((current) => ({ fastMode: current.fastMode })),
+                            rules: ruleSummaries(agent.modelSelection, selectedDecision?.question),
+                            fallback: defaultModel || agent.runtime
                           }
                         : undefined
                     }

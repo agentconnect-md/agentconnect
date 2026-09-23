@@ -2334,7 +2334,12 @@
         "fast": "Fast",
         "lowerLatency": "Lower latency",
         "imageBinaryMissing": "Binary not installed in image",
-        "readOnly": "Runtime changes are disabled for this chat."
+        "readOnly": "Runtime changes are disabled for this chat.",
+        "model": "Model",
+        "decision": "Decision",
+        "fallback": "Fallback",
+        "on": "On",
+        "off": "Off"
       }
     },
     "detail": {
