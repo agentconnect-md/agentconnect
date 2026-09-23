@@ -5824,7 +5824,7 @@ export default function SessionDetailView() {
                                 source={pickerSource}
                                 runtimes={beforeFirstTurn ? undefined : [agentRuntime]}
                                 runInSandbox={owner?.runInSandbox}
-                                disabled={!runtimeChangesEnabled}
+                                readOnly={!runtimeChangesEnabled}
                                 decision={
                                   beforeFirstTurn && owner?.modelSelection
                                     ? {

@@ -1,7 +1,6 @@
 // @vitest-environment happy-dom
 
-// The list reads the visible definitions, filters them, and refuses to delete one a channel
-// still evaluates.
+// Visible decisions link directly to their editor.
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -65,18 +64,6 @@ const click = async (node: Element | undefined | null) => {
 const byText = (text: string) =>
   [...document.body.querySelectorAll('button, a, span, div')].find((node) => node.textContent?.trim() === text)
 
-const field = (label: string) => document.body.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)
-
-/** React tracks a controlled input's value, so a bare assignment is swallowed; set it natively. */
-const type = async (input: HTMLInputElement | null, value: string) => {
-  if (!input) throw new Error('no field')
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
-  await act(async () => {
-    setter?.call(input, value)
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-  })
-}
-
 describe('DecisionsView', () => {
   it('lists every visible decision with its question type', async () => {
     await render()
@@ -87,32 +74,19 @@ describe('DecisionsView', () => {
     expect(byText('Choice')).toBeTruthy()
   })
 
-  it('filters by name and reports a query that matches nothing', async () => {
+  it('makes the entire row a link without nested actions or a separate search field', async () => {
     await render()
-    await type(field('Search decisions…'), 'frustration')
-    expect(byText('Support category')).toBeUndefined()
-    expect(byText('Customer frustration')).toBeTruthy()
-
-    await type(field('Search decisions…'), 'nothing here')
-    expect(byText('No decisions match “nothing here”.')).toBeTruthy()
+    const row = document.body.querySelector('a.row.click[href="/decisions/support-category"]')!
+    expect(row.textContent).toContain('Support category')
+    expect(row.textContent).toContain('Choice')
+    expect(row.textContent).toContain('jev-1.13.0')
+    expect(row.querySelector('button, a')).toBeNull()
+    expect(document.body.querySelector('input')).toBeNull()
   })
 
-  it('sends Create decision to the editor route', async () => {
+  it('sends Add decision to the editor route', async () => {
     await render()
-    await click(byText('Create decision'))
+    await click(byText('Add decision'))
     expect(push).toHaveBeenCalledWith('/decisions/new')
-  })
-
-  // A decision a channel still evaluates cannot be deleted: the row menu reaches the
-  // confirmation, and the workspace's refusal is what the dialog shows.
-  it('refuses to delete a decision a consumer still uses', async () => {
-    await render()
-    await click(document.body.querySelector('button[aria-label="Actions for Support category"]'))
-    await click(byText('Delete'))
-    expect(byText('Delete Support category')).toBeTruthy()
-    await click(byText('Delete'))
-    await act(async () => {})
-    expect(byText('This Decision is still used. Remove its bindings before deleting it.')).toBeTruthy()
-    expect(byText('Support category')).toBeTruthy()
   })
 })

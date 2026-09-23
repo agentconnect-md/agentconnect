@@ -4,6 +4,8 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+
 const push = vi.fn()
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push })
@@ -31,10 +33,14 @@ const consoleData = vi.hoisted(() => ({
   memberSets: [] as unknown[],
   orgSetIds: new Set<string>(),
   crons: [] as unknown[],
+  decisions: [] as unknown[],
   allSessions: [] as unknown[]
 }))
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => consoleData
+}))
+vi.mock('@/lib/decisions/provider', () => ({
+  useOptionalDecisionsPrototype: () => ({ decisions: consoleData.decisions })
 }))
 const authConfigured = vi.fn(() => true)
 vi.mock('@/lib/auth', () => ({
@@ -60,6 +66,7 @@ beforeEach(() => {
   consoleData.memberSets = []
   consoleData.orgSetIds = new Set()
   consoleData.crons = []
+  consoleData.decisions = []
   consoleData.allSessions = []
   setFlags('')
   authConfigured.mockReturnValue(true)
@@ -106,6 +113,21 @@ function resultButton(route: string): HTMLButtonElement {
   if (!found) throw new Error(`result not found: ${route}`)
   return found
 }
+
+it('opens a visible decision from global search only when Decisions is enabled', () => {
+  consoleData.decisions = [
+    { id: 'request-type', name: 'Request type', model: 'jev-1.13.0', question: { type: 'choice' } }
+  ]
+  render()
+  type('request')
+  expect(host.textContent).not.toContain('Request type')
+  setFlags('decisions')
+  type('choice')
+  const result = [...host.querySelectorAll('button')].find((button) => button.textContent?.includes('Request type'))!
+  expect(result.textContent).toContain('Choice · jev-1.13.0')
+  act(() => result.click())
+  expect(push).toHaveBeenCalledWith('/org-test/decisions/request-type')
+})
 
 describe('SEARCH_PAGES index', () => {
   it('contains every rail destination as a page', () => {

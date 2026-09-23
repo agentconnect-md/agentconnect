@@ -741,7 +741,8 @@
         "schedules": "Schedules",
         "sessions": "Sessions",
         "pages": "Pages",
-        "settings": "Settings"
+        "settings": "Settings",
+        "decisions": "Decisions"
       },
       "all": "All",
       "placeholder": "Search agents, daemons, schedules…",
@@ -772,7 +773,8 @@
         "knowledge": "Knowledge",
         "infra": "Infra",
         "analytics": "Analytics",
-        "billing": "Billing"
+        "billing": "Billing",
+        "decisions": "Decisions"
       },
       "settings": {
         "organization": "Organization",
@@ -2310,7 +2312,10 @@
           "startsOn": "Session starts on",
           "booleanResult": "{value} · {probability}% true",
           "text4": "The evaluator is temporarily unavailable"
-        }
+        },
+        "answerColumn": "Answer",
+        "probabilityColumn": "Probability",
+        "add": "Add"
       },
       "runtimeModel": {
         "title": "Provider and model",
@@ -2324,7 +2329,8 @@
         "decisionHelp": "{name} picks the runtime and model when the session starts",
         "fastMode": "Fast mode",
         "lowerLatency": "Lower latency",
-        "imageBinaryMissing": "Binary not installed in image"
+        "imageBinaryMissing": "Binary not installed in image",
+        "readOnly": "Runtime changes are disabled for this chat."
       }
     },
     "detail": {
@@ -3056,7 +3062,7 @@
   },
   "Crons": {
     "description": "Cron jobs that run an agent on a timer — reports, sweeps, audits.",
-    "newSchedule": "New schedule",
+    "newSchedule": "Add schedule",
     "enabled": "{count} enabled",
     "next": "next: {value}",
     "off": "off",
@@ -3089,7 +3095,7 @@
     "dialog": {
       "at": "At",
       "editSchedule": "Edit schedule",
-      "newSchedule": "New schedule",
+      "newSchedule": "Add schedule",
       "name": "Name",
       "namePlaceholder": "weekly-deploy-report",
       "agent": "Agent",
@@ -4142,7 +4148,7 @@
     },
     "description": "A decision asks one question about an incoming message and returns an answer. Channels decide what each answer does.",
     "searchPlaceholder": "Search decisions…",
-    "createDecision": "Create decision",
+    "createDecision": "Add decision",
     "create": "Create",
     "loading": "Loading decisions…",
     "emptyTitle": "No decisions yet",
@@ -4161,7 +4167,7 @@
     "delete": "Delete",
     "deleting": "Deleting…",
     "deleteTitle": "Delete {name}",
-    "deleteBodyUsed": "{names} uses this decision. Those channels stop evaluating messages until another decision is picked. This can’t be undone.",
+    "deleteBodyUsed": "This decision is used by {names}. Remove its bindings before deleting it.",
     "deleteBodyUnused": "This decision is not used anywhere. This can’t be undone.",
     "save": "Save",
     "cancel": "Cancel",
@@ -4313,7 +4319,8 @@
     "notOffered": {
       "title": "Decisions are not enabled",
       "body": "This console has not turned on the Decisions surface. An administrator can enable it with the decisions feature flag."
-    }
+    },
+    "providerModel": "Provider · model"
   },
   "ProviderKeys": {
     "title": "Provider keys",

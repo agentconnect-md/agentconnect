@@ -235,97 +235,122 @@ export function ModelSelectionField({
           {!decision && fallbackPanel}
           {value && decision && (
             <>
-              <div className="flex items-center justify-between">
-                <strong className="text-[13px]">{t('rules')}</strong>
-                <Button
-                  variant="secondary"
-                  disabled={value.rules.length >= 32}
-                  onClick={() =>
-                    onChange({
-                      ...value,
-                      rules: [...value.rules, { when: nextCondition(decision.question, value.rules), ...fallback }]
-                    })
-                  }
-                >
-                  <Icon name="plus" size={14} />
-                  {t('addRule')}
-                </Button>
-              </div>
-              <p className="m-0 text-[12px] text-(--text-tertiary)">
-                {t(decision.question.type === 'choice' ? 'choiceHelp' : 'intervalHelp')}
-              </p>
               <div className="rounded-lg border border-(--border-subtle)">
-                <div className="hidden grid-cols-[24px_minmax(0,1fr)_minmax(0,1.1fr)_78px] gap-2 rounded-t-lg border-b border-(--border-subtle) bg-(--surface-sunken) px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-(--text-tertiary) desktop:grid">
-                  <span>#</span>
-                  <span>{t('condition')}</span>
-                  <span>{t('providerModel')}</span>
-                  <span />
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-t-lg border-b border-(--border-subtle) bg-(--surface-sunken) px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-(--text-tertiary) desktop:grid-cols-[20px_minmax(0,1fr)_116px_16px_minmax(0,1.4fr)_78px]">
+                  <span className="hidden desktop:inline">#</span>
+                  <span className="flex items-center gap-1">
+                    {t(decision.question.type === 'choice' ? 'answerColumn' : 'condition')}
+                    {decision.question.type !== 'choice' && (
+                      <button
+                        type="button"
+                        className="inline-flex"
+                        title={t('intervalHelp')}
+                        aria-label={t('intervalHelp')}
+                      >
+                        <Icon name="info" size={12} />
+                      </button>
+                    )}
+                  </span>
+                  <span className="hidden items-center gap-1 desktop:flex">
+                    {decision.question.type === 'choice' && (
+                      <>
+                        {t('probabilityColumn')}
+                        <button
+                          type="button"
+                          className="inline-flex"
+                          title={t('choiceHelp')}
+                          aria-label={t('choiceHelp')}
+                        >
+                          <Icon name="info" size={12} />
+                        </button>
+                      </>
+                    )}
+                  </span>
+                  <span className="hidden desktop:inline" />
+                  <span className="hidden desktop:inline">{t('providerModel')}</span>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="justify-self-end normal-case tracking-normal"
+                    ariaLabel={t('addRule')}
+                    disabled={value.rules.length >= 32}
+                    onClick={() =>
+                      onChange({
+                        ...value,
+                        rules: [...value.rules, { when: nextCondition(decision.question, value.rules), ...fallback }]
+                      })
+                    }
+                  >
+                    <Icon name="plus" size={14} />
+                    {t('add')}
+                  </Button>
                 </div>
                 {value.rules.map((rule, index) => (
                   <div
                     key={index}
-                    className="grid grid-cols-1 items-center gap-2 border-b border-(--border-subtle) p-3 desktop:grid-cols-[24px_minmax(0,1fr)_minmax(0,1.1fr)_78px]"
+                    className="grid grid-cols-1 items-center gap-2 border-b border-(--border-subtle) p-3 desktop:grid-cols-[20px_minmax(0,1fr)_116px_16px_minmax(0,1.4fr)_78px]"
                   >
                     <span className="font-mono text-[12px] text-(--text-tertiary)">{index + 1}</span>
                     {rule.when.type === 'choice' &&
                     decision.question.type === 'choice' &&
                     Object.keys(rule.when.thresholds).length === 1 ? (
-                      <div className="flex min-w-0 items-center gap-2">
-                        <select
-                          className="inp min-w-0 flex-1 font-mono"
-                          aria-label={t('answer', { index: index + 1 })}
-                          value={Object.keys(rule.when.thresholds)[0]}
-                          onChange={(event) =>
+                      <>
+                        <AnswerSelect
+                          ariaLabel={t('answer', { index: index + 1 })}
+                          value={Object.keys(rule.when.thresholds)[0]!}
+                          answers={decision.question.criteria}
+                          onChange={(answer) =>
                             replaceRule(index, {
                               ...rule,
                               when: {
                                 type: 'choice',
                                 thresholds: {
-                                  [event.target.value]: Object.values(
+                                  [answer]: Object.values(
                                     (rule.when as Extract<DecisionCondition, { type: 'choice' }>).thresholds
                                   )[0]!
                                 }
                               }
                             })
                           }
-                        >
-                          {Object.keys(decision.question.criteria).map((key) => (
-                            <option key={key}>{key}</option>
-                          ))}
-                        </select>
-                        <span className="text-(--text-tertiary)">≥</span>
-                        <input
-                          className="inp w-16"
-                          type="number"
-                          min={0}
-                          max={100}
-                          step={1}
-                          aria-label={t('probability', { index: index + 1 })}
-                          value={Math.round(Object.values(rule.when.thresholds)[0]! * 100)}
-                          onChange={(event) =>
-                            replaceRule(index, {
-                              ...rule,
-                              when: {
-                                type: 'choice',
-                                thresholds: {
-                                  [Object.keys(
-                                    (rule.when as Extract<DecisionCondition, { type: 'choice' }>).thresholds
-                                  )[0]!]: Number(event.target.value) / 100
-                                }
-                              }
-                            })
-                          }
                         />
-                        <span className="text-[12px] text-(--text-tertiary)">%</span>
-                      </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-(--text-tertiary)">≥</span>
+                          <input
+                            className="inp w-16"
+                            type="number"
+                            min={0}
+                            max={100}
+                            step={1}
+                            aria-label={t('probability', { index: index + 1 })}
+                            value={Math.round(Object.values(rule.when.thresholds)[0]! * 100)}
+                            onChange={(event) =>
+                              replaceRule(index, {
+                                ...rule,
+                                when: {
+                                  type: 'choice',
+                                  thresholds: {
+                                    [Object.keys(
+                                      (rule.when as Extract<DecisionCondition, { type: 'choice' }>).thresholds
+                                    )[0]!]: Number(event.target.value) / 100
+                                  }
+                                }
+                              })
+                            }
+                          />
+                          <span className="text-[12px] text-(--text-tertiary)">%</span>
+                        </div>
+                      </>
                     ) : (
-                      <DecisionConditionFields
-                        question={decision.question}
-                        value={rule.when}
-                        issues={[]}
-                        onChange={(when) => replaceRule(index, { ...rule, when })}
-                      />
+                      <div className="min-w-0 desktop:col-span-2">
+                        <DecisionConditionFields
+                          question={decision.question}
+                          value={rule.when}
+                          issues={[]}
+                          onChange={(when) => replaceRule(index, { ...rule, when })}
+                        />
+                      </div>
                     )}
+                    <Icon name="arrow-right" size={16} className="hidden text-(--text-tertiary) desktop:block" />
                     <RuntimeModelSelect
                       value={rule}
                       ariaLabel={t('ruleModel', { index: index + 1 })}
@@ -388,5 +413,65 @@ export function ModelSelectionField({
         </div>
       )}
     </div>
+  )
+}
+
+function AnswerSelect({
+  value,
+  answers,
+  onChange,
+  ariaLabel
+}: {
+  value: string
+  answers: Record<string, string>
+  onChange(value: string): void
+  ariaLabel: string
+}) {
+  return (
+    <AnchoredFlyout
+      ariaLabel={ariaLabel}
+      width={280}
+      matchTriggerWidth
+      align="start"
+      triggerClassName="block min-w-0"
+      trigger={({ open, menuId, toggle }) => (
+        <button
+          type="button"
+          className={`inp w-full cursor-pointer gap-2 text-left hover:border-(--border-strong) hover:bg-(--surface-hover) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`}
+          aria-label={ariaLabel}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-controls={open ? menuId : undefined}
+          onClick={toggle}
+        >
+          <span className="min-w-0 flex-1 font-mono break-all">{value}</span>
+          <Icon
+            name="chevron-down"
+            size={14}
+            className={`flex-none transition-transform ${open ? 'rotate-180' : ''}`}
+          />
+        </button>
+      )}
+    >
+      {({ close }) =>
+        Object.entries(answers).map(([answer, description]) => (
+          <button
+            key={answer}
+            type="button"
+            role="menuitemradio"
+            aria-checked={answer === value}
+            title={description}
+            className={`fopt min-h-8 gap-2 py-[6px] ${answer === value ? 'on' : ''}`}
+            onClick={() => {
+              onChange(answer)
+              close(true)
+            }}
+          >
+            <span className="min-w-0 flex-1 font-mono break-all">{answer}</span>
+            {answer === value && <Icon name="check" size={14} className="flex-none text-(--brand)" />}
+          </button>
+        ))
+      }
+    </AnchoredFlyout>
   )
 }

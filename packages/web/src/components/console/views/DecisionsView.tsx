@@ -4,21 +4,18 @@
 
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useState } from 'react'
 import { useFormatter, useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
-import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { LoadingState } from '@/components/marks'
-import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
 import { formatDateTime } from '@/i18n/format'
 import { useOrgs } from '@/lib/org-context'
 import { useDecisionProviders, useDecisionsPrototype } from '@/lib/decisions/provider'
 import { DecisionsNotOffered } from '@/components/console/decisions/DecisionsNotOffered'
 import { featureFlagEnabled } from '@/lib/feature-flags'
-import type { DecisionSummary, DecisionUsage } from '@agentconnect.md/protocol/decision-api'
+import type { DecisionSummary } from '@agentconnect.md/protocol/decision-api'
 
-// Name/question lead at every width; a six-track grid would be unreadable on mobile.
-const GRID = 'grid-cols-[minmax(0,1fr)_auto] gap-3 desktop:grid-cols-[2fr_.8fr_1.2fr_.8fr_.7fr_34px]'
+// Name and question lead at every width.
+const GRID = 'grid-cols-1 gap-3 desktop:grid-cols-[2fr_.8fr_1.2fr_.8fr_.7fr]'
 
 const TYPE_TONE: Record<string, string> = {
   choice: 'bg-(--status-info-soft) text-(--status-info)',
@@ -37,80 +34,10 @@ function DecisionsList() {
   const { orgPath, myRole } = useOrgs()
   const writable = myRole !== 'viewer'
   const router = useRouter()
-  const { decisions, loading, error, reload, api, gateUsages } = useDecisionsPrototype()
+  const { decisions, loading, error, gateUsages } = useDecisionsPrototype()
   const { providers } = useDecisionProviders()
-  const [query, setQuery] = useState('')
-  const [pendingDelete, setPendingDelete] = useState<{ decision: DecisionSummary; usages: DecisionUsage[] } | null>(
-    null
-  )
-  const [deleting, setDeleting] = useState(false)
-  const [deleteError, setDeleteError] = useState<string | null>(null)
-  const [actionError, setActionError] = useState<string | null>(null)
-  const [busyId, setBusyId] = useState<string | null>(null)
-
-  const needle = query.trim().toLowerCase()
-  const rows = needle
-    ? decisions.filter((entry) => entry.name.toLowerCase().includes(needle) || entry.question.type.includes(needle))
-    : decisions
   const providerName = (providerId: string) => providers.find((entry) => entry.id === providerId)?.name ?? providerId
-  // Local mock gates count toward this organization's usages and block deletion.
-  const gatedIn = gateUsages
-  const usageCount = (entry: DecisionSummary) => entry.usageCount + gatedIn(entry.id).length
-  const usageNames = (entry: DecisionSummary, mockUsages: DecisionUsage[]) => [
-    ...mockUsages.map((usage) => usage.label),
-    ...gatedIn(entry.id).map((usage) => usage.channelName)
-  ]
-
-  const askDelete = async (decision: DecisionSummary) => {
-    setDeleteError(null)
-    try {
-      const detail = await api.getDecision(decision.id)
-      setPendingDelete({ decision, usages: detail.usages })
-    } catch (cause) {
-      setPendingDelete({ decision, usages: [] })
-      setDeleteError(cause instanceof Error ? cause.message : String(cause))
-    }
-  }
-
-  const confirmDelete = async () => {
-    if (!pendingDelete) return
-    // The mock service would accept this delete, so a gate we hold has to refuse it here.
-    if (gatedIn(pendingDelete.decision.id).length) {
-      setDeleteError(t('errors.inUse'))
-      return
-    }
-    setDeleting(true)
-    setDeleteError(null)
-    try {
-      await api.deleteDecision(pendingDelete.decision.id)
-      await reload()
-      setPendingDelete(null)
-    } catch (cause) {
-      setDeleteError(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      setDeleting(false)
-    }
-  }
-
-  const duplicate = async (decision: DecisionSummary) => {
-    setBusyId(decision.id)
-    setActionError(null)
-    try {
-      await api.createDecision({
-        name: t('copyName', { name: decision.name }),
-        providerId: decision.providerId,
-        model: decision.model,
-        question: decision.question,
-        visibility: decision.visibility,
-        sharedWith: decision.sharedWith
-      })
-      await reload()
-    } catch (cause) {
-      setActionError(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      setBusyId(null)
-    }
-  }
+  const usageCount = (entry: DecisionSummary) => entry.usageCount + gateUsages(entry.id).length
 
   if (!featureFlagEnabled('decisions')) return <DecisionsNotOffered />
 
@@ -118,27 +45,12 @@ function DecisionsList() {
     <div className="wrap max-desktop:p-4">
       <div className="mb-4 flex min-h-[34px] flex-wrap items-center gap-3">
         <p className="psub mt-0 min-w-[240px] flex-1">{t('description')}</p>
-        <span className="relative inline-flex items-center">
-          <Icon name="search" size={15} color="var(--text-tertiary)" className="absolute left-[10px]" />
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder={t('searchPlaceholder')}
-            aria-label={t('searchPlaceholder')}
-            className="inp mn h-[34px] w-[210px] min-h-0 pl-[31px]"
-          />
-        </span>
         <Button variant="primary" size="sm" disabled={!writable} onClick={() => router.push(orgPath('/decisions/new'))}>
           <Icon name="plus" size={14} />
           {t('createDecision')}
         </Button>
       </div>
 
-      {actionError && (
-        <p role="alert" className="mb-3 text-[13px] text-(--red-600)">
-          {actionError}
-        </p>
-      )}
       {loading ? (
         <div className="card">
           <LoadingState size={22} padding={30} />
@@ -176,24 +88,25 @@ function DecisionsList() {
             <span>{t('columns.providerModel')}</span>
             <span>{t('usedBy.title')}</span>
             <span>{t('columns.updated')}</span>
-            <span />
           </div>
-          {rows.map((entry) => (
-            <div key={entry.id} className={`row ${GRID}`}>
-              <Link href={orgPath(`/decisions/${encodeURIComponent(entry.id)}`)} className="min-w-0 no-underline">
-                <span className="flex min-w-0 flex-col gap-[3px]">
-                  <span className="truncate font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)">
-                    {entry.name}
-                  </span>
-                  <span className="mono truncate text-[11.5px] text-(--text-tertiary)">
-                    {entry.question.instructions || t('noInstructions')}
-                  </span>
-                  <span className="mono text-[11px] text-(--text-tertiary) desktop:hidden">
-                    {t(`types.${entry.question.type}`)} · {providerName(entry.providerId)} ·{' '}
-                    {t('places', { count: usageCount(entry) })}
-                  </span>
+          {decisions.map((entry) => (
+            <Link
+              key={entry.id}
+              href={orgPath(`/decisions/${encodeURIComponent(entry.id)}`)}
+              className={`row click ${GRID}`}
+            >
+              <span className="flex min-w-0 flex-col gap-[3px]">
+                <span className="truncate font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)">
+                  {entry.name}
                 </span>
-              </Link>
+                <span className="mono truncate text-[11.5px] text-(--text-tertiary)">
+                  {entry.question.instructions || t('noInstructions')}
+                </span>
+                <span className="mono text-[11px] text-(--text-tertiary) desktop:hidden">
+                  {t(`types.${entry.question.type}`)} · {providerName(entry.providerId)} ·{' '}
+                  {t('places', { count: usageCount(entry) })}
+                </span>
+              </span>
               <span className="hidden desktop:block">
                 <span className={`badge ${TYPE_TONE[entry.question.type] ?? ''}`}>
                   {t(`types.${entry.question.type}`)}
@@ -208,92 +121,9 @@ function DecisionsList() {
               <span className="mono hidden text-[11.5px] text-(--text-tertiary) desktop:inline">
                 {formatDateTime(format, new Date(entry.updatedAt), { dateStyle: 'medium' })}
               </span>
-              <span className="justify-self-end">
-                <AnchoredFlyout
-                  ariaLabel={t('rowActions', { name: entry.name })}
-                  align="end"
-                  width={190}
-                  estimatedHeight={3 * 34 + 10}
-                  trigger={({ open, menuId, toggle }) => (
-                    <button
-                      type="button"
-                      className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
-                      aria-haspopup="menu"
-                      aria-expanded={open}
-                      aria-controls={open ? menuId : undefined}
-                      aria-label={t('rowActions', { name: entry.name })}
-                      onClick={toggle}
-                    >
-                      <Icon name="ellipsis" size={16} />
-                    </button>
-                  )}
-                >
-                  {({ close }) => (
-                    <>
-                      <Link
-                        href={orgPath(`/decisions/${encodeURIComponent(entry.id)}`)}
-                        role="menuitem"
-                        className="fopt no-underline"
-                        onClick={() => close()}
-                      >
-                        <Icon name="pencil" size={15} color="var(--text-tertiary)" />
-                        {t('edit')}
-                      </Link>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        className="fopt"
-                        disabled={!writable || busyId === entry.id}
-                        onClick={() => {
-                          close()
-                          void duplicate(entry)
-                        }}
-                      >
-                        <Icon name="copy" size={15} color="var(--text-tertiary)" />
-                        {t('duplicate')}
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        className="fopt text-(--red-600)"
-                        disabled={!writable || entry.canEdit === false}
-                        onClick={() => {
-                          close()
-                          void askDelete(entry)
-                        }}
-                      >
-                        <Icon name="trash" size={15} color="var(--red-600)" />
-                        {t('delete')}
-                      </button>
-                    </>
-                  )}
-                </AnchoredFlyout>
-              </span>
-            </div>
+            </Link>
           ))}
-          {rows.length === 0 && (
-            <div className="px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-              {t('noMatches', { query: query.trim() })}
-            </div>
-          )}
         </div>
-      )}
-
-      {pendingDelete && (
-        <ConfirmationDialog
-          title={t('deleteTitle', { name: pendingDelete.decision.name })}
-          confirmLabel={t('delete')}
-          destructive
-          busy={deleting}
-          busyLabel={t('deleting')}
-          error={deleteError}
-          onClose={() => setPendingDelete(null)}
-          onConfirm={() => void confirmDelete()}
-        >
-          {usageNames(pendingDelete.decision, pendingDelete.usages).length
-            ? t('deleteBodyUsed', { names: usageNames(pendingDelete.decision, pendingDelete.usages).join(', ') })
-            : t('deleteBodyUnused')}
-        </ConfirmationDialog>
       )}
     </div>
   )
