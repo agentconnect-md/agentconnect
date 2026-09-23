@@ -301,8 +301,11 @@ describe('PATCH /integrations/:id/channels/:channelId with By decision', () => {
     const foreign = await prisma.decision.create({
       data: { orgId: 'org_other', name: 'x', providerId: 'typesafe', model: 'jev-1.13.0', question: boolDraft.question }
     })
-    for (const id of [foreign.id])
-      expect((await patchChannel(asMember, integrationId, 'C1', gateOf(id))).statusCode).toBe(404)
+    for (const id of [foreign.id]) {
+      const res = await patchChannel(asMember, integrationId, 'C1', gateOf(id))
+      expect(res.statusCode).toBe(404)
+      expect(res.json().code).toBe('DECISION_NOT_FOUND')
+    }
     expect(hidden).toBeDefined()
     // The owner can view every Decision, so the restricted one is invisible only to a third member.
     const { userId: third } = await users.provisionOidcUser({
@@ -312,7 +315,9 @@ describe('PATCH /integrations/:id/channels/:channelId with By decision', () => {
     })
     await users.addMemberByEmail(DEFAULT_ORG_ID, 't@example.test', 'collaborator')
     const asThird = appWith([DECISION_TRIGGER_V1_FEATURE], third).app
-    expect((await patchChannel(asThird, integrationId, 'C1', gateOf(hidden))).statusCode).toBe(404)
+    const invisible = await patchChannel(asThird, integrationId, 'C1', gateOf(hidden))
+    expect(invisible.statusCode).toBe(404)
+    expect(invisible.json().code).toBe('DECISION_NOT_FOUND')
     expect(await prisma.integrationChannel.findFirst({ where: { channelId: 'C1' } })).toMatchObject({
       trigger: 'mention'
     })
@@ -324,6 +329,7 @@ describe('PATCH /integrations/:id/channels/:channelId with By decision', () => {
     const decisionId = await createDecision(app)
     const res = await patchChannel(app, integrationId, 'C1', gateOf(decisionId))
     expect(res.statusCode, res.body).toBe(409)
+    expect(res.json().code).toBe('DECISION_UNSUPPORTED_CONSUMER')
     expect(spy.upserts).toHaveLength(0)
     expect(await prisma.integrationChannel.findFirst({ where: { channelId: 'C1' } })).toMatchObject({
       trigger: 'mention'
@@ -351,6 +357,7 @@ describe('PATCH /integrations/:id/channels/:channelId with By decision', () => {
     app.relayReg.add(legacy)
     const refused = await patchChannel(app, integrationId, 'C1', gateOf(decisionId))
     expect(refused.statusCode, refused.body).toBe(409)
+    expect(refused.json().code).toBe('DECISION_UNSUPPORTED_CONSUMER')
     await app.deps.httpBot.syncRoutes(botId)
     const held = legacy.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcBotAssign
     expect(
@@ -381,6 +388,7 @@ describe('readiness of a shared-bot conversation patched through a sibling insta
     const { app, sibling } = await throughSibling([OLD_DAEMON, DAEMON])
     const res = await patchChannel(app, sibling.integrationId, 'C1', gateOf(await createDecision(app)))
     expect(res.statusCode, res.body).toBe(409)
+    expect(res.json().code).toBe('DECISION_UNSUPPORTED_CONSUMER')
     for (const row of await prisma.integrationChannel.findMany({ where: { channelId: 'C1' } }))
       expect(row).toMatchObject({ trigger: 'mention' })
   })

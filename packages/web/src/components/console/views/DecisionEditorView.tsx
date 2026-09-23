@@ -16,6 +16,9 @@ import { DaemonSelect, type DaemonSelectOption } from '@/components/console/Daem
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
 import { DecisionsNotOffered } from '@/components/console/decisions/DecisionsNotOffered'
 import { DecisionModelSelect } from '@/components/console/decisions/DecisionModelSelect'
+import { DecisionUsageList } from '@/components/console/decisions/DecisionUsageList'
+import { decisionInUse } from '@/lib/decisions/binding'
+import { decisionUsageHref } from '@/lib/decisions/usage-links'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import {
   DecisionDraft,
@@ -147,14 +150,15 @@ function DecisionEditor() {
   const t = useTranslations('Decisions')
   const placementT = useTranslations('Agents.dialog.daemonSelect')
   const { orgPath, myRole } = useOrgs()
-  const { memberSets } = useConsoleData()
+  const { memberSets, integrations } = useConsoleData()
   const router = useRouter()
   const search = useSearchParams()
   const { id } = useParams<{ id?: string }>()
   // `returnTo` is attacker-controllable: only a console-relative target may be followed.
   const requested = search.get('returnTo')
   const returnTo = requested?.startsWith('/') && !requested.startsWith('//') ? requested : null
-  const { decisions, loading, error, api, reload, gateUsages, markGatesForReview } = useDecisionsPrototype()
+  const { decisions, loading, error, api, reload, gateUsages, markGatesForReview, completeInlineCreate } =
+    useDecisionsPrototype()
   const { providers, error: providerError } = useDecisionProviders()
   const definition = id ? decisions.find((entry) => entry.id === id) : undefined
 
@@ -170,6 +174,9 @@ function DecisionEditor() {
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [hiddenUsageCount, setHiddenUsageCount] = useState(0)
+  // Set by an authoritative 409 in-use refusal, so nothing reads as unused even when every usage is hidden.
+  const [refusedInUse, setRefusedInUse] = useState(false)
   const [confirmAgentAnswerChange, setConfirmAgentAnswerChange] = useState(false)
   const [history, setHistory] = useState<Array<{ sender: string; text: string }>>([])
   const [current, setCurrent] = useState('')
@@ -285,6 +292,7 @@ function DecisionEditor() {
       : []
   const usages = usageState.usages
   const usageNames = [...usages.map((usage) => usage.label), ...gated.map((usage) => usage.channelName)].join(', ')
+  const hrefFor = (usage: DecisionUsage) => decisionUsageHref(usage, orgPath, integrations)
 
   if (!featureFlagEnabled('decisions')) return <DecisionsNotOffered />
 
@@ -466,7 +474,10 @@ function DecisionEditor() {
             return
           }
           setUsageState({ status: 'ready', usages: detail.usages })
-          if (detail.usages.some((usage) => usage.kind === 'agent_tool') && !confirmedAgentAnswerChange) {
+          if (
+            detail.usages.some((usage) => usage.kind === 'agent_tool' || usage.kind === 'gate') &&
+            !confirmedAgentAnswerChange
+          ) {
             setConfirmAgentAnswerChange(true)
             return
           }
@@ -480,7 +491,11 @@ function DecisionEditor() {
         )
         // The mock service has no bindings, so the invalidation is recorded here (§6.1).
         if (definition) markGatesForReview(id, definition.question, parsed.data.question)
-      } else await api.createDecision(parsed.data)
+      } else {
+        const created = await api.createDecision(parsed.data)
+        // An inline create returns to the binding draft that opened it, now on this Decision.
+        if (returnTo) completeInlineCreate(created)
+      }
       await reload()
       router.push(returnTo ?? orgPath('/decisions'))
     } catch (cause) {
@@ -522,6 +537,8 @@ function DecisionEditor() {
     try {
       const detail = await api.getDecision(id)
       setUsageState({ status: 'ready', usages: detail.usages })
+      setHiddenUsageCount(0)
+      setRefusedInUse(false)
       setConfirmDelete(true)
     } catch (cause) {
       setSaveError(cause instanceof Error ? cause.message : String(cause))
@@ -543,7 +560,14 @@ function DecisionEditor() {
       await reload()
       router.push(orgPath('/decisions'))
     } catch (cause) {
-      setSaveError(cause instanceof Error ? cause.message : String(cause))
+      // An in-use refusal lists where the Decision is still used, including the places this viewer cannot see.
+      const inUse = decisionInUse(cause)
+      if (inUse) {
+        setUsageState({ status: 'ready', usages: inUse.usages })
+        setHiddenUsageCount(inUse.hiddenUsageCount)
+        setRefusedInUse(true)
+        setSaveError(t('errors.inUse'))
+      } else setSaveError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       setSaving(false)
     }
@@ -584,13 +608,38 @@ function DecisionEditor() {
           onConfirm={() => void remove()}
           onClose={() => setConfirmDelete(false)}
         >
-          {usageNames ? t('deleteBodyUsed', { names: usageNames }) : t('deleteBodyUnused')}
+          {refusedInUse || usages.length + hiddenUsageCount + gated.length ? (
+            <>
+              <p className="m-0">{t('deleteBodyInUse')}</p>
+              <div className="mt-2">
+                <DecisionUsageList
+                  usages={usages}
+                  hiddenCount={hiddenUsageCount}
+                  inUse={refusedInUse && gated.length === 0}
+                  hrefFor={hrefFor}
+                />
+                {gated.map((usage) => (
+                  <div key={`gate:${usage.channelId}`} className="flex items-center gap-[10px] px-4 py-[9px]">
+                    <Icon name="hash" size={13} color="var(--text-tertiary)" />
+                    <span className="mono min-w-[120px] flex-1 text-[12.5px]">{usage.channelName}</span>
+                    <span className="badge bg-(--surface-active) text-(--text-secondary)">{t('usedBy.kind.gate')}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            t('deleteBodyUnused')
+          )}
         </ConfirmationDialog>
       )}
 
       {confirmAgentAnswerChange && (
         <ConfirmationDialog
-          title={t('agentAnswerChange.title')}
+          title={
+            usages.some((usage) => usage.kind === 'gate')
+              ? t('agentAnswerChange.titleUsages')
+              : t('agentAnswerChange.title')
+          }
           confirmLabel={t('agentAnswerChange.confirm')}
           busy={saving}
           busyLabel={t('agentAnswerChange.saving')}
@@ -598,7 +647,17 @@ function DecisionEditor() {
           onConfirm={() => void save(true)}
           onClose={() => setConfirmAgentAnswerChange(false)}
         >
-          {t('agentAnswerChange.body')}
+          {usages.some((usage) => usage.kind === 'agent_tool') && <p className="m-0">{t('agentAnswerChange.body')}</p>}
+          {usages.some((usage) => usage.kind === 'gate') && (
+            <p className="mb-0 mt-2 first:mt-0">
+              {t('agentAnswerChange.gateBody', {
+                names: usages
+                  .filter((usage) => usage.kind === 'gate')
+                  .map((usage) => usage.label)
+                  .join(', ')
+              })}
+            </p>
+          )}
         </ConfirmationDialog>
       )}
 
@@ -806,7 +865,7 @@ function DecisionEditor() {
               <span className="cardtitle">{t('usedBy.title')}</span>
               <span className="font-mono text-[11px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
                 {usageState.status === 'ready'
-                  ? t('places', { count: usages.length + gated.length })
+                  ? t('places', { count: usages.length + gated.length + hiddenUsageCount })
                   : usageState.status === 'loading'
                     ? t('usedBy.loading')
                     : t('usedBy.error')}
@@ -832,23 +891,19 @@ function DecisionEditor() {
                   </div>
                 )
               })}
-              {usageState.status === 'ready' && usages.length + gated.length === 0 ? (
+              {usageState.status === 'ready' &&
+              !refusedInUse &&
+              usages.length + gated.length + hiddenUsageCount === 0 ? (
                 <div className="px-4 py-[10px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
                   {t('notUsed')}
                 </div>
               ) : (
-                usages.map((usage) => (
-                  <div
-                    key={`${usage.kind}:${usage.id}`}
-                    className="flex flex-wrap items-center gap-[10px] px-4 py-[9px]"
-                  >
-                    <Icon name={usage.kind === 'gate' ? 'hash' : 'git-branch'} size={13} color="var(--text-tertiary)" />
-                    <span className="mono min-w-[120px] flex-1 text-[12.5px]">{usage.label}</span>
-                    <span className="badge bg-(--surface-active) text-(--text-secondary)">
-                      {t(`usedBy.kind.${usage.kind}`)}
-                    </span>
-                  </div>
-                ))
+                <DecisionUsageList
+                  usages={usages}
+                  hiddenCount={hiddenUsageCount}
+                  inUse={refusedInUse && gated.length === 0}
+                  hrefFor={hrefFor}
+                />
               )}
             </div>
           </div>

@@ -148,6 +148,9 @@ export interface DecisionApiErrorBody {
   error: 'invalid_input' | 'not_found' | 'conflict' | 'unavailable'
   message: string
   issues?: DecisionValidationIssue[]
+  // A delete refused while in use lists the visible usages and counts the hidden ones.
+  usages?: DecisionUsage[]
+  hiddenUsageCount?: number
 }
 
 export type DecisionPreviewEvaluator = (

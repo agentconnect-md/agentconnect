@@ -184,6 +184,31 @@ describe('Decision management and standalone preview', () => {
     expect((await app.inject({ method: 'DELETE', url: `${BASE}/${decisionId}` })).statusCode).toBe(204)
   })
 
+  it('counts agents the caller cannot see in a delete refusal without naming them', async () => {
+    const collaborator = appAs(await member('collaborator'))
+    const decisionId = (await appAs().app.inject({ method: 'POST', url: BASE, payload: draft })).json().id
+    const hidden = { visibility: 'restricted' as const, sharedWith: [DEFAULT_OWNER_ID], name: 'secret-agent' }
+    await seedAgent(prisma, randomUUID(), { ...hidden, runtimeOverrides: { decisionIds: [decisionId] } })
+    await seedAgent(prisma, randomUUID(), {
+      ...hidden,
+      name: 'secret-router',
+      runtimeOverrides: { modelSelection: { decisionId, rules: [] } }
+    })
+    const refused = await collaborator.app.inject({ method: 'DELETE', url: `${BASE}/${decisionId}` })
+    expect(refused.statusCode).toBe(409)
+    expect(refused.json()).toMatchObject({ usages: [], hiddenUsageCount: 2 })
+    expect(refused.body).not.toContain('secret-')
+
+    const shownId = randomUUID()
+    await seedAgent(prisma, shownId, { name: 'open-agent', runtimeOverrides: { decisionIds: [decisionId] } })
+    const mixed = await collaborator.app.inject({ method: 'DELETE', url: `${BASE}/${decisionId}` })
+    expect(mixed.json()).toMatchObject({
+      message: 'This Decision is used by 3 agents.',
+      usages: [expect.objectContaining({ kind: 'agent_tool', id: shownId })],
+      hiddenUsageCount: 2
+    })
+  })
+
   it('persists definitions across clients, preserves omitted sharing, and deletes without a daemon', async () => {
     const { app } = appAs()
     const created = await app.inject({

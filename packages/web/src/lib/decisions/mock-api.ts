@@ -246,7 +246,14 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
     async deleteDecision(id) {
       options.beforeSave?.()
       get(definitions, id)
-      if (usages(id).length) conflict('This Decision is still used. Remove its bindings before deleting it.')
+      const used = usages(id)
+      if (used.length)
+        throw new DecisionMockApiError(409, {
+          error: 'conflict',
+          message: 'This Decision is still used. Remove its bindings before deleting it.',
+          usages: used,
+          hiddenUsageCount: 0
+        })
       definitions.delete(id)
     },
     async listBots() {

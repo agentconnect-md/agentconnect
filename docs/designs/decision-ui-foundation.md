@@ -7,16 +7,18 @@ routing remains Stage 2 even though its configuration can be prototyped now.
 
 ## Available code
 
-| Module                                                             | Provides                                                                                                                          |
-| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| `@agentconnect.md/protocol/decision`                               | Zod question/draft/answer/condition/routing schemas, question-aware validation, pure matchers, and edit invalidation              |
-| `@agentconnect.md/protocol/decision-api`                           | Browser-safe API types, provider/model catalog and readiness, channel settings, routing scope, preview request/result, and errors |
-| `packages/web/src/lib/decisions/mock-api.ts`                       | Opt-in `createDecisionMockApi()` implementing `DecisionApi` with isolated in-memory saves                                         |
-| `packages/web/src/lib/decisions/fixtures.ts`                       | Example Decisions, direct/shared bots, channels, provider options, canned evaluations, and repeated-mention context               |
-| `packages/web/src/lib/decisions/provider.tsx`                      | Organization-scoped live/mock APIs, shared Decision list, and mock-only channel gates                                             |
-| `packages/web/src/components/console/decisions/`                   | The condition editor, the per-conversation `By decision` gate strip, and the flag-off notice                                      |
-| `packages/web/src/components/console/views/DecisionsView.tsx`      | The Decisions list (`/decisions`)                                                                                                 |
-| `packages/web/src/components/console/views/DecisionEditorView.tsx` | One decision's editor and example sandbox (`/decisions/new`, `/decisions/:id`)                                                    |
+| Module                                                             | Provides                                                                                                                                        |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@agentconnect.md/protocol/decision`                               | Zod question/draft/answer/condition/routing schemas, question-aware validation, pure matchers, and edit invalidation                            |
+| `@agentconnect.md/protocol/decision-api`                           | Browser-safe API types, provider/model catalog and readiness, channel settings, routing scope, preview request/result, and errors               |
+| `packages/web/src/lib/decisions/mock-api.ts`                       | Opt-in `createDecisionMockApi()` implementing `DecisionApi` with isolated in-memory saves                                                       |
+| `packages/web/src/lib/decisions/fixtures.ts`                       | Example Decisions, direct/shared bots, channels, provider options, canned evaluations, and repeated-mention context                             |
+| `packages/web/src/lib/decisions/provider.tsx`                      | Organization-scoped live/mock APIs, shared Decision list, route-surviving binding drafts and inline-create handoff, and mock-only channel gates |
+| `packages/web/src/lib/decisions/binding.ts`                        | Saved gate, readiness status, and save-error projections of the channel DTO and API errors                                                      |
+| `packages/web/src/lib/decisions/usage-links.ts`                    | Console destinations for Decision usages                                                                                                        |
+| `packages/web/src/components/console/decisions/`                   | The condition editor, the per-conversation `By decision` binding strip, the usage list, and the flag-off notice                                 |
+| `packages/web/src/components/console/views/DecisionsView.tsx`      | The Decisions list (`/decisions`)                                                                                                               |
+| `packages/web/src/components/console/views/DecisionEditorView.tsx` | One decision's editor and example sandbox (`/decisions/new`, `/decisions/:id`)                                                                  |
 
 Import runtime schemas from `protocol/decision`; import API contracts from
 `protocol/decision-api` with `import type` so the browser never resolves its relative
@@ -139,8 +141,12 @@ The live `DecisionApi` is `createDecisionApi(orgId)` in `lib/api.ts`. It capture
 organization for every read and write and uses the normal authenticated HTTP client.
 The provider selects this API unless `NEXT_PUBLIC_MOCK` is explicitly enabled. A failed
 production request surfaces its error; it never installs mock data. The `decisions`
-feature flag still controls the routes and rail entry. Prototype channel gates additionally
-require mock mode because live message bindings and admission have not shipped.
+feature flag controls the routes, the rail entry, and the By decision option. Live
+bindings bypass `DecisionApi`: rows read `trigger`, `decisionBinding`, and the `decision`
+readiness view from the integration channel DTO, and save through
+`PATCH /integrations/:id/channels/:channelId` (`updateIntegrationChannel`).
+`DecisionApi.saveChannel`, `listChannels`, `listBots`, and the routing methods stay
+mock-only.
 
 ## Console surface
 
@@ -150,8 +156,11 @@ instances and prototype gates survive route navigation but are not durable. Edit
 state resets on an organization switch so a draft or deletion dialog cannot carry over.
 
 - `/decisions` lists visible definitions, with search, duplicate, and delete. Server-provided
-  editing authority and the organization role gate actions. Live usage lists are empty
-  until consumers ship; mock usage/deletion guards remain available for design work.
+  editing authority and the organization role gate actions. Used by counts conversation
+  gates and agent tools. Usage lists link a gate to its agent's Integrations tab, an agent
+  tool to `?tab=tools`, and model selection to `?tab=config`; shared-bot routing has no link
+  yet. A delete refused with 409 lists the returned usages plus "N more you cannot see"
+  from `hiddenUsageCount`.
 - `/decisions/new` and `/decisions/:id` edit the typed question, model, and Team visibility.
   Unchanged sharing is omitted from PATCH. Saving needs no online daemon.
 - **Try with an example** selects a daemon from the live catalog and sends history/current
@@ -162,18 +171,32 @@ state resets on an organization switch so a draft or deletion dialog cannot carr
   metadata; only the daemon evaluates. The adapter's shipped catalog supports Jev 1.13
   and its stable/preview aliases. Preview needs a visible currently served agent for the
   existing credential/token attribution contract, but does not execute that agent.
-- In explicit mock mode, conversation rows on single-owner bots also offer **By decision**.
-  Those gates remain local to the prototype and use the real pure matcher with canned
-  answers. Shared-bot routing and evaluation-log screens remain Stage 2.
+- Group conversation rows on single-owner bots offer **By decision** where the platform's
+  channel-list `triggers` allow it (Linear omits it, matching the CP's `ownerAsDefault`
+  refusal). The strip reads Decision → Trigger when → Activates: [the row's agent]. Save
+  sends trigger and gate in one PATCH; Cancel restores the saved row; switching to
+  Off/Mention/Any sends the ordinary trigger PATCH, which clears the gate. Drafts live in
+  the provider, keyed by organization, bot, and conversation, so an inline Create decision
+  returns to the draft with the new Decision selected, and a failed save keeps the draft
+  (and the created Decision) for Retry. Save errors map to field issues (400), no
+  permission (403), Decision not available (404 `DECISION_NOT_FOUND`), and an upgrade
+  message (409 `DECISION_UNSUPPORTED_CONSUMER`).
+- A saved gate shows its status: Pending sync, Needs review (Repair condition and Open
+  decision), Daemon offline, Unsupported, or Access revoked (Choose another decision);
+  Ready has no banner. Shared-bot rows do not offer By decision; a shared-bot routing
+  binding reads **Managed by [bot] routing**, linked to the bot's integration page.
+- Explicit mock mode runs the same strip against local prototype gates, using the real
+  pure matcher with canned answers.
 
-Still unimplemented: live message bindings, retained observation context, admission,
-the shared-bot routing screen, and evaluation history. See the
+Still unimplemented: gate preview with the saved consumer (the strip's Try is a
+standalone preview), recent evaluations and evidence, and the shared-bot routing
+screen. See the
 [current delivery boundary](decisions.md#104-rollout-and-remaining-implementation-work).
 
 Focused validation:
 
 ```sh
 pnpm --filter @agentconnect.md/protocol exec vitest run src/decision.test.ts --maxWorkers=1
-pnpm --filter @agentconnect.md/web exec vitest run src/protocol-imports.leaf.test.ts src/icon-names.test.ts src/lib/decisions src/components/console/decisions src/components/console/views/DecisionsView.test.tsx src/components/console/views/DecisionEditorView.test.tsx --maxWorkers=1
+pnpm --filter @agentconnect.md/web exec vitest run src/protocol-imports.leaf.test.ts src/icon-names.test.ts src/lib/decisions src/lib/integration-row.test.ts src/components/console/decisions src/components/console/IntegrationChannelList.decisions.test.tsx src/components/console/views/DecisionsView.test.tsx src/components/console/views/DecisionEditorView.test.tsx --maxWorkers=1
 pnpm --filter @agentconnect.md/web i18n:check
 ```

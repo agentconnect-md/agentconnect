@@ -1549,8 +1549,8 @@ provider connections may be saved in Infra but do not become Decision adapters.
 
 The `decisions` flag is a temporary prerelease gate. Helm exposes it through
 `features.decisions` (default `false`), which adds `decisions` to the Web runtime's
-`FEATURE_FLAGS`. Enabling it exposes Decision management and standalone preview;
-it does not enable live message triggers or Stage 2 shared-bot routing.
+`FEATURE_FLAGS`. Enabling it exposes Decision management, standalone preview, and
+fixed-target By decision bindings; it does not enable Stage 2 shared-bot routing.
 
 Before the final Jev release:
 
@@ -1581,9 +1581,8 @@ The Decision table participates in the normal Selected-audience membership lock,
 member-removal repair, and identity-merge paths. Sharing omitted from an update is
 preserved, including an ordinary editor save that did not change Team visibility.
 Consumer usages include visible agents that explicitly attach the Decision. The
-prototype By decision channel option remains available only in explicit mock mode;
-it cannot look like a saved production trigger. Stage 2 shared-bot routing is still
-unimplemented.
+Console's By decision channel option saves live fixed-target gates; explicit mock mode
+keeps local prototype gates. Stage 2 shared-bot routing is still unimplemented.
 
 Roll out each stage independently, starting with its additive CP/data-plane migrations
 and capable consumers, then its live configuration surfaces. Stage 1 does not create

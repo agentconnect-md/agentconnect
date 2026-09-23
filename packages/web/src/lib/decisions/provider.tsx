@@ -1,6 +1,6 @@
 'use client'
 
-// Organization-scoped Decision APIs; only explicit mock mode enables the prototype channel gates.
+// Organization-scoped Decision APIs, route-surviving binding drafts, and mock-only channel gates.
 
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
 import useSWR from 'swr'
@@ -18,6 +18,7 @@ import { featureFlagEnabled } from '@/lib/feature-flags'
 import { createDecisionMockApi } from './mock-api'
 import { createDecisionApi } from '@/lib/api'
 import { MOCK_MODE } from '@/lib/data'
+import type { BindingSaveError } from './binding'
 
 /** A Stage 1 fixed-target gate: one conversation, one decision, one trigger condition. */
 export interface DecisionGateBinding {
@@ -28,6 +29,21 @@ export interface DecisionGateBinding {
   /** Set when an edit to the decision stranded this condition; cleared by saving the gate again. */
   needsReview?: boolean
 }
+
+/** An unsaved By decision edit for one conversation; it outlives the strip so inline Create can return to it. */
+export interface DecisionBindingDraft {
+  decisionId: string | null
+  when: DecisionCondition | null
+  phase: 'editing' | 'saving' | 'error'
+  error?: BindingSaveError
+  /** Set when the user asked to choose a Decision, so no first entry is auto-picked for them. */
+  explicitPick?: boolean
+  /** Set on a repair whose saved condition no longer fits the question type; Save waits for an explicit choice. */
+  awaitingCondition?: boolean
+}
+
+type DraftUpdate =
+  DecisionBindingDraft | null | ((current: DecisionBindingDraft | undefined) => DecisionBindingDraft | null)
 
 /** The stored form: the store stamps the organization, so a caller cannot misfile it. */
 type StoredGate = DecisionGateBinding & { orgId: string }
@@ -65,6 +81,14 @@ interface DecisionsPrototype {
   orgId: string
   /** Flag the gates this edit invalidated, before the caller re-reads. */
   markGatesForReview: (decisionId: string, previous: DecisionQuestion, next: DecisionQuestion) => void
+  /** Unsaved binding edits by {@link gateKey}, shared by every mounted copy of a row. */
+  bindingDrafts: Readonly<Record<string, DecisionBindingDraft>>
+  /** Replace, update, or (with null) drop one draft; a functional update sees the latest draft. */
+  setBindingDraft: (key: string, next: DraftUpdate) => void
+  /** Remember which draft an inline Create decision should return to. */
+  beginInlineCreate: (key: string) => void
+  /** Select a just-created Decision on the draft that started the inline create. */
+  completeInlineCreate: (decision: DecisionDefinition) => void
 }
 
 const DecisionsContext = createContext<DecisionsPrototype | null>(null)
@@ -82,6 +106,8 @@ export function DecisionsPrototypeProvider({ children }: { children: ReactNode }
     return created
   }, [apis, orgId])
   const [gates, setGates] = useState<Record<string, StoredGate>>({})
+  const [bindingDrafts, setBindingDrafts] = useState<Record<string, DecisionBindingDraft>>({})
+  const [pendingCreate, setPendingCreate] = useState<string | null>(null)
   // Disabled features and an unresolved organization must not make API requests.
   const { data, error, isLoading, mutate } = useSWR(
     orgId && featureFlagEnabled('decisions') ? ['decisions', api.mode, orgId] : null,
@@ -121,6 +147,26 @@ export function DecisionsPrototypeProvider({ children }: { children: ReactNode }
     },
     [orgId]
   )
+  const setBindingDraft = useCallback((key: string, next: DraftUpdate) => {
+    setBindingDrafts((current) => {
+      const resolved = typeof next === 'function' ? next(current[key]) : next
+      if (resolved === (current[key] ?? null)) return current
+      if (resolved) return { ...current, [key]: resolved }
+      return Object.fromEntries(Object.entries(current).filter(([entry]) => entry !== key))
+    })
+  }, [])
+  const beginInlineCreate = useCallback((key: string) => setPendingCreate(key), [])
+  const completeInlineCreate = useCallback(
+    (decision: DecisionDefinition) => {
+      if (!pendingCreate) return
+      setBindingDrafts((current) => ({
+        ...current,
+        [pendingCreate]: { decisionId: decision.id, when: defaultConditionFor(decision), phase: 'editing' }
+      }))
+      setPendingCreate(null)
+    },
+    [pendingCreate]
+  )
   const value = useMemo<DecisionsPrototype>(
     () => ({
       api,
@@ -134,7 +180,11 @@ export function DecisionsPrototypeProvider({ children }: { children: ReactNode }
       clearGate,
       gateUsages: gateUsagesFor,
       orgId,
-      markGatesForReview
+      markGatesForReview,
+      bindingDrafts,
+      setBindingDraft,
+      beginInlineCreate,
+      completeInlineCreate
     }),
     [
       api,
@@ -148,7 +198,11 @@ export function DecisionsPrototypeProvider({ children }: { children: ReactNode }
       clearGate,
       gateUsagesFor,
       orgId,
-      markGatesForReview
+      markGatesForReview,
+      bindingDrafts,
+      setBindingDraft,
+      beginInlineCreate,
+      completeInlineCreate
     ]
   )
   return <DecisionsContext.Provider value={value}>{children}</DecisionsContext.Provider>
@@ -216,6 +270,14 @@ export function gateUsagesIn(
       when: binding.when,
       needsReview: binding.needsReview === true
     }))
+}
+
+/** A repair's starting condition: nothing selected, or null for Score, which has no empty interval. */
+export function emptyConditionFor(decision: DecisionDefinition): DecisionCondition | null {
+  const question = decision.question
+  if (question.type === 'boolean') return { type: 'boolean', values: [] }
+  if (question.type === 'choice') return { type: 'choice', thresholds: {} }
+  return null
 }
 
 /** Fresh mock gates accept every Choice key at 50%, both Booleans, or the whole Score rubric. */

@@ -2,7 +2,7 @@
 // Ported from the AgentConnect design (static demo content for the console UI).
 
 import type { AgentIcon } from '@/lib/agent-icon'
-import type { AgentModelSelection } from '@agentconnect.md/protocol/decision'
+import type { AgentModelSelection, ChannelDecisionBinding } from '@agentconnect.md/protocol/decision'
 import type { NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import { gitRepoHostname, managedGitlabRepoPath } from './git-url-tile'
 import {
@@ -15,6 +15,7 @@ import {
 import { CODE_HOST_PROJECTION } from './code-hosts'
 import type { DaemonLifecyclePhase, McpAppCsp, McpAppDimensions, McpAppOutcome } from '@agentconnect.md/protocol'
 import type {
+  ChannelDecisionView,
   DaemonSessionRetention,
   ManagedMemoryHome,
   ManagedMemoryScope,
@@ -2152,8 +2153,10 @@ export interface IntegrationChannelRow {
   url?: string
   /** 'im' = a DM conversation row, 'mpim' = a Slack group DM; absent = channel. */
   kind?: 'channel' | 'im' | 'mpim'
-  /** 'decision' is By decision; it is displayed but never written back by the trigger controls. */
+  /** 'decision' is By decision; its binding and readiness ride along in decisionBinding/decision. */
   trigger: 'off' | 'mention' | 'any' | 'decision'
+  decisionBinding?: ChannelDecisionBinding | null
+  decision?: ChannelDecisionView | null
   /** Which session a message here joins: a new one per thread, or the conversation's one
    *  ongoing session. Channel rows only — a direct conversation is not a place this choice
    *  means anything. */

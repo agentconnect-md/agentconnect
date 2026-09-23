@@ -569,12 +569,8 @@ export interface WebChannelListSemantics {
   cannotLeaveRowHint?: WebChannelListMessage
   /** `'observed'` (default): rows record rooms the bot was seen in and can be dropped; `'derived'`: the platform's own roster, nothing added or removed here. */
   roster?: 'observed' | 'derived'
-  /**
-   * The room row's trigger vocabulary, host order preserved. Absent ⇒ all three
-   * (`off` / `any` / `mention`). A platform that emits no unaddressed traffic drops
-   * `any`, because nothing would ever match it. DM rows keep their binary control.
-   */
-  triggers?: readonly ('off' | 'mention' | 'any')[]
+  /** Room-row triggers (absent ⇒ all); drop `any` without unaddressed traffic, and omitting `decision` withholds By decision. */
+  triggers?: readonly ('off' | 'mention' | 'any' | 'decision')[]
   /** Session modes this platform's channel rows offer. Absent ⇒ both, which is every
    *  platform that has channels. A platform opts out by omitting one rather than core
    *  branching on a platform name. */

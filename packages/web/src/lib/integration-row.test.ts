@@ -47,6 +47,20 @@ describe('integrationRowFromDto', () => {
     expect(row.channels[0]).toMatchObject({ trigger: 'any', agentId: 'agent-2' })
   })
 
+  it('carries a By decision binding and its readiness, and null stays null', () => {
+    const decisionBinding = {
+      type: 'gate' as const,
+      decisionId: 'dec-1',
+      when: { type: 'boolean' as const, values: [true] }
+    }
+    const decision = { id: 'dec-1', name: 'Needs a response', enabled: true, readiness: { status: 'ready' as const } }
+    const row = integrationRowFromDto(dto({ trigger: 'decision', decisionBinding, decision }), new Map(), new Map())
+    expect(row.channels[0]).toMatchObject({ trigger: 'decision', decisionBinding, decision })
+    const plain = integrationRowFromDto(dto(), new Map(), new Map()).channels[0]!
+    expect(plain.decisionBinding).toBeNull()
+    expect(plain.decision).toBeNull()
+  })
+
   it('marks a revoked integration as revoked, and only that status', () => {
     expect(integrationRowFromDto(dto({}, 'revoked'), new Map(), new Map()).revoked).toBe(true)
     expect(integrationRowFromDto(dto({}, 'active'), new Map(), new Map()).revoked).toBe(false)

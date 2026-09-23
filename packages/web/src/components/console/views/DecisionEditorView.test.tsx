@@ -10,6 +10,7 @@ import * as decisionProvider from '@/lib/decisions/provider'
 import * as decisionMock from '@/lib/decisions/mock-api'
 import { createDecisionMockSeed } from '@/lib/decisions/fixtures'
 import type { MemberSetRow } from '@/lib/data'
+import { ApiError } from '@/lib/api'
 
 const { DecisionsPrototypeProvider, useDecisionsPrototype } = decisionProvider
 const push = vi.fn()
@@ -23,7 +24,9 @@ function StoreProbe() {
   return null
 }
 
-vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ members: [], memberSets }) }))
+vi.mock('@/lib/data-context', () => ({
+  useConsoleData: () => ({ members: [], memberSets, integrations: [{ id: 'int-1', agentId: 'agent-1' }] })
+}))
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push, replace: vi.fn() }),
   useParams: () => params,
@@ -236,8 +239,65 @@ describe('DecisionEditorView', () => {
     await click(byText('Delete'))
     const dialog = document.body.querySelector('[role="dialog"]')!
     expect(dialog.textContent).toContain('Delete Support category')
+    // The dialog already lists the usage the detail read returned.
+    expect(dialog.textContent).toContain('This decision is still used. Remove it from these places before deleting it:')
+    expect(dialog.textContent).toContain('Support bot')
     await click([...dialog.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'Delete'))
-    expect(dialog.textContent).toContain('This Decision is still used. Remove its bindings before deleting it.')
+    expect(dialog.textContent).toContain('This decision is still used. Remove its bindings before deleting it.')
+    expect(dialog.textContent).toContain('Support bot')
+    expect(push).not.toHaveBeenCalled()
+  })
+
+  // The live refusal lists the visible usages, linked to their consoles, and counts the rest.
+  it('renders a 409 delete refusal with its linked usages and the hidden count', async () => {
+    params = { id: 'needs-response' }
+    await render()
+    vi.spyOn(store.api, 'getDecision').mockResolvedValue({
+      decision: store.decisions.find((entry) => entry.id === 'needs-response')!,
+      usages: []
+    })
+    vi.spyOn(store.api, 'deleteDecision').mockRejectedValue(
+      new ApiError('in use', 409, undefined, {
+        usages: [
+          { kind: 'gate', id: 'int-1:C1', label: '#general · Support', integrationId: 'int-1', channelId: 'C1' },
+          { kind: 'agent_tool', id: 'agent-2', label: 'Reviewer' }
+        ],
+        hiddenUsageCount: 2
+      })
+    )
+    await click(byText('Delete'))
+    const dialog = document.body.querySelector('[role="dialog"]')!
+    expect(dialog.textContent).toContain('This decision is not used anywhere. This can’t be undone.')
+    await click([...dialog.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'Delete'))
+    const link = (label: string) => [...dialog.querySelectorAll('a')].find((node) => node.textContent?.trim() === label)
+    expect(link('#general · Support')?.getAttribute('href')).toBe('/agents/agent-1')
+    expect(link('Reviewer')?.getAttribute('href')).toBe('/agents/agent-2?tab=tools')
+    expect(dialog.textContent).toContain('2 more you cannot see')
+    expect(dialog.textContent).toContain('This decision is still used. Remove its bindings before deleting it.')
+    expect(push).not.toHaveBeenCalled()
+  })
+
+  // A refusal whose only references are hidden must never fall back to the unused copy.
+  it.each([
+    { hiddenUsageCount: 2, line: '2 more you cannot see' },
+    { hiddenUsageCount: 0, line: 'Used by items you cannot see' }
+  ])('keeps a 409 with no visible usages in use (hidden $hiddenUsageCount)', async ({ hiddenUsageCount, line }) => {
+    params = { id: 'needs-response' }
+    await render()
+    vi.spyOn(store.api, 'getDecision').mockResolvedValue({
+      decision: store.decisions.find((entry) => entry.id === 'needs-response')!,
+      usages: []
+    })
+    vi.spyOn(store.api, 'deleteDecision').mockRejectedValue(
+      new ApiError('in use', 409, undefined, { usages: [], hiddenUsageCount })
+    )
+    await click(byText('Delete'))
+    const dialog = document.body.querySelector('[role="dialog"]')!
+    await click([...dialog.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'Delete'))
+    expect(dialog.textContent).not.toContain('This decision is not used anywhere.')
+    expect(dialog.textContent).toContain('This decision is still used. Remove it from these places before deleting it:')
+    expect(dialog.textContent).toContain(line)
+    expect(document.body.textContent).not.toContain('Not used anywhere yet.')
     expect(push).not.toHaveBeenCalled()
   })
 
@@ -297,6 +357,50 @@ describe('DecisionEditorView', () => {
     expect(update).toHaveBeenCalledOnce()
   })
 
+  // A gated conversation is named before a criteria edit can leave its condition Needs review.
+  it('names the gated conversations before saving changed answers', async () => {
+    params = { id: 'support-category' }
+    await render()
+    const getDecision = store.api.getDecision.bind(store.api)
+    vi.spyOn(store.api, 'getDecision').mockImplementation(async (id) => ({
+      ...(await getDecision(id)),
+      usages: [{ kind: 'gate', id: 'int-1:C1', label: '#general · Support', integrationId: 'int-1', channelId: 'C1' }]
+    }))
+    const update = vi.spyOn(store.api, 'updateDecision')
+    await type('input[placeholder="What this answer means"]', 0, 'Updated answer')
+    await click(byText('Save'))
+    expect(byText('Review where this decision is used')).toBeTruthy()
+    expect(
+      byText(
+        'Conversations whose conditions no longer fit the new answers are marked Needs review and stay off until repaired: #general · Support'
+      )
+    ).toBeTruthy()
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it('links each visible usage to where the console edits it', async () => {
+    params = { id: 'support-category' }
+    const api = decisionMock.createDecisionMockApi()
+    const getDecision = api.getDecision.bind(api)
+    api.getDecision = async (id) => ({
+      ...(await getDecision(id)),
+      usages: [
+        { kind: 'gate', id: 'int-1:C1', label: '#general · Support', integrationId: 'int-1', channelId: 'C1' },
+        { kind: 'agent_tool', id: 'agent-2', label: 'Reviewer' },
+        { kind: 'shared_bot_routing', id: 'support-bot', label: 'Support bot' }
+      ]
+    })
+    vi.spyOn(decisionMock, 'createDecisionMockApi').mockReturnValue(api)
+    await render()
+    await act(async () => {})
+    const link = (label: string) =>
+      [...document.body.querySelectorAll('a')].find((node) => node.textContent?.trim() === label)
+    expect(link('#general · Support')?.getAttribute('href')).toBe('/agents/agent-1')
+    expect(link('Reviewer')?.getAttribute('href')).toBe('/agents/agent-2?tab=tools')
+    expect(link('Support bot')).toBeUndefined()
+    expect(byText('Support bot')).toBeTruthy()
+  })
+
   it('replaces the criteria wholesale when the question type changes', async () => {
     await render()
     await click(byText('Score'))
@@ -305,6 +409,23 @@ describe('DecisionEditorView', () => {
     expect(document.body.querySelectorAll('input[placeholder="key"]')).toHaveLength(0)
     await click(byText('Boolean'))
     expect(document.body.querySelectorAll('input[placeholder="When this answer applies"]')).toHaveLength(2)
+  })
+
+  // Created from a binding strip, the new Decision is handed back to the draft that asked for it.
+  it('seeds the pending binding draft with an inline-created decision', async () => {
+    searchParams = new URLSearchParams('returnTo=/agents/a1')
+    await render()
+    await act(async () => store.beginInlineCreate('org-test|bot|C1'))
+    await fillValidChoice()
+    await click(byText('Create'))
+    await act(async () => {})
+    expect(push).toHaveBeenCalledWith('/agents/a1')
+    const draft = store.bindingDrafts['org-test|bot|C1']
+    expect(draft).toMatchObject({
+      phase: 'editing',
+      when: { type: 'choice', thresholds: { deploy: 0.5, review: 0.5 } }
+    })
+    expect(store.decisions.find((entry) => entry.id === draft?.decisionId)?.name).toBe('Request type')
   })
 
   // `returnTo` is attacker-controllable, so only a console-relative target is honoured.
