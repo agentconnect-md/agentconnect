@@ -40,7 +40,7 @@ vi.mock('@/components/console/RuntimeModelSelect', () => ({
       ['effort', 'Effort'],
       ['approval', 'Permission']
     ] as const) {
-      const control = props.settings?.[key]
+      const control = props.decision?.selected ? undefined : props.settings?.[key]
       if (control) mocks.menus.push({ title, value: control.value, options: control.options.map((o) => o.value) })
     }
     return (
@@ -188,6 +188,8 @@ describe('HomeView run-selectors (catalog-aware)', () => {
     mocks.daemons = [daemon()]
     await render()
     expect(menu('Model')?.value).toBe('By decision')
+    expect(menu('Effort')).toBeUndefined()
+    expect(menu('Permission')).toBeUndefined()
     if (manual) await act(async () => host.querySelector<HTMLButtonElement>('[data-runtime-choice]')!.click())
     const textarea = host.querySelector('textarea')!
     await act(async () => {

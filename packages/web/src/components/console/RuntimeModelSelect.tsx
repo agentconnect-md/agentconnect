@@ -95,6 +95,7 @@ export function RuntimeModelSelect({
   dense = false,
   runSettings = false,
   settings,
+  pending = false,
   decision,
   allowRuntimeOnly = false,
   runInSandbox = false,
@@ -112,6 +113,7 @@ export function RuntimeModelSelect({
   runSettings?: boolean
   /** Caller-owned run settings, shown in the same footer when `runSettings` is off. */
   settings?: RunSettingsControls
+  pending?: boolean
   allowRuntimeOnly?: boolean
   runInSandbox?: boolean
   readOnly?: boolean
@@ -122,6 +124,22 @@ export function RuntimeModelSelect({
   const registry = useAcpRegistry()
   const [provider, setProvider] = useState(value.runtime)
   const [search, setSearch] = useState('')
+  if (pending) {
+    return (
+      <span
+        role="status"
+        aria-label={ariaLabel ?? t('title')}
+        className={
+          compact
+            ? 'inline-flex h-7 items-center gap-2 rounded-full px-[10px] text-[12.5px] text-(--text-tertiary)'
+            : 'inp flex items-center gap-2 text-(--text-tertiary)'
+        }
+      >
+        <Icon name="clock" size={16} />
+        {t('pending')}
+      </span>
+    )
+  }
   const label = (runtime: string) => runtimeLabel(runtime, acpRuntime(registry, runtime)?.name)
   const ids = runtimes ?? (source ? selectableRuntimeIds(source, value.runtime) : [])
   const profiles = ids

@@ -1335,6 +1335,8 @@ export interface Session {
   agentId?: string
   agentName?: string
   model?: string
+  // A new Decision-driven playground has not received its runtime/model selection yet.
+  runtimePending?: boolean
   /** Selectable models for the in-session model switch (webchat status frame). */
   availableModels?: string[]
   /** Current reasoning effort + the selectable levels for the in-session effort switch

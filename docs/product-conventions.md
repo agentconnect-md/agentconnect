@@ -199,6 +199,12 @@ startup updates and clearing.
 Each observer belongs to its turn. Turns joining a shared host start see its current
 phase, and a cancelled or displaced turn cannot publish late updates into its successor.
 
+A Decision-driven chat shows **By decision** before the first message and **Pending**
+after submission until its runtime and model are reported. The composer and session
+details must not present the configured fallback as a completed selection. Effort and
+permission controls appear only after the runtime is known; an explicit manual
+runtime/model choice remains visible immediately.
+
 ## A settings change does not cut a running answer
 
 Changing an agent setting that needs a fresh agent process — its model, reasoning

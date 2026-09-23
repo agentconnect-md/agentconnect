@@ -42,6 +42,9 @@ const wire = vi.hoisted(() => ({
   prGate: null as null | Array<() => void>,
   /** A synthetic playground session the daemon has not created yet — its route id names no canonical session the lease could be keyed by. */
   playground: false,
+  runtimeSession: {} as Partial<Session>,
+  runtimeChanges: false,
+  byDecision: false,
   /** Overrides the session's steps: a playground session renders these instead of fetching a transcript. */
   steps: undefined as unknown[] | undefined,
   /** Every draft the composer wrote through `setPgInput`, newest last; the mocked `usePgDraft` reads the newest. */
@@ -198,6 +201,8 @@ vi.mock('@/lib/data-context', () => ({
     agents: [
       {
         ...agent,
+        allowRuntimeChangesInChat: wire.runtimeChanges,
+        modelSelection: wire.byDecision ? { decisionId: 'decision-1', rules: [] } : undefined,
         workspace:
           wire.workspaceMode === 'scratch'
             ? { mode: 'scratch' }
@@ -211,7 +216,8 @@ vi.mock('@/lib/data-context', () => ({
         contentPurgedAt: wire.contentPurgedAt,
         ...(wire.agentless ? { agentId: '', agentName: '' } : {}),
         ...(wire.playground ? { platform: 'playground' } : {}),
-        ...(wire.steps ? { steps: wire.steps } : {})
+        ...(wire.steps ? { steps: wire.steps } : {}),
+        ...wire.runtimeSession
       }
     ],
     getSessions: () => [session],
@@ -345,6 +351,9 @@ beforeEach(() => {
   org.role = 'collaborator'
   wire.agentless = false
   wire.playground = false
+  wire.runtimeSession = {}
+  wire.runtimeChanges = false
+  wire.byDecision = false
   wire.steps = undefined
   wire.drafts = []
   wire.rail = []
@@ -384,6 +393,58 @@ describe('the session page in conversation mode', () => {
     expect(viewer()).toBeNull()
     expect(pane()?.className).toBe('contents')
   })
+})
+
+it.each([false, true])('keeps Decision runtime details pending until resolved (editable=%s)', async (editable) => {
+  wire.playground = true
+  wire.byDecision = true
+  wire.runtimeChanges = editable
+  wire.steps = []
+  wire.runtimeSession = { runtime: 'claude', model: 'sonnet', effort: 'high', runtimePending: true }
+  await render()
+  const details = () => container?.querySelector('[role="tooltip"]')?.textContent ?? ''
+  const effort = () => document.querySelector('select[aria-label="Effort"]')
+  const approval = () => document.querySelector('select[aria-label="Approval"]')
+  expect(container?.querySelector('[aria-label="Model"]')?.textContent).toBe('By decision')
+  expect(details()).toContain('RuntimeBy decision')
+  await act(async () => container?.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
+  expect(effort()).toBeNull()
+  expect(approval()).toBeNull()
+  await act(async () => container?.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
+
+  wire.steps = [{ kind: 'msg', who: '@you', text: 'Review this change' }]
+  await render()
+  expect(container?.querySelector('[role="status"][aria-label="Model"]')?.textContent).toBe('Pending')
+  expect(details()).toContain('RuntimePending')
+  expect(details()).toContain('ModelPending')
+  expect(details()).not.toContain('sonnet')
+  expect(effort()).toBeNull()
+  expect(approval()).toBeNull()
+
+  wire.runtimeSession = {
+    runtime: 'codex',
+    model: 'model-capable',
+    runtimePending: false,
+    effort: 'high',
+    availableEfforts: ['low', 'high'],
+    permissionMode: 'auto',
+    availablePermissionModes: ['auto']
+  }
+  await render()
+  const model = container?.querySelector<HTMLButtonElement>('button[aria-label="Model"]')
+  expect(model?.textContent).toBe('model-capable · High · Auto')
+  expect(details()).toContain('RuntimeCodex')
+  expect(details()).toContain('Modelmodel-capable')
+  expect(details()).not.toContain('Pending')
+  await act(async () => model?.click())
+  if (editable) {
+    expect(effort()).not.toBeNull()
+    expect(approval()).not.toBeNull()
+  } else {
+    expect(effort()).toBeNull()
+    expect(approval()).toBeNull()
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('Runtime changes are disabled')
+  }
 })
 
 describe('the composer recalls earlier prompts', () => {
