@@ -323,6 +323,96 @@ are unchanged: one pod per agent, in the primary checkout. Admission still
 counts agents (`maxAgents`); session pods are bounded by session admission and
 the idle sweep.
 
+### Toward an isolated session that needs only its own pod (#1896)
+
+**Target.** An isolated session runs on its session pod alone. The agent pod is
+woken only for work that is genuinely the agent's: `shared` sessions, console
+views of the agent's primary checkout, skills tab, dream and commit-message wand,
+a workspace conversion that is actually due, and opt-in `autoDistill` until it
+moves (below). A plain message to an agent whose sessions are isolated starts
+exactly one pod.
+
+**Why the companion cannot simply be dropped.** Managed memory no longer needs
+the agent pod (§11), but the companion also hides reads that were never listed
+as reasons. With the agent pod unbound they fail or wake it:
+
+| Dependency                                                                                                                                                    | When                                                                            | Without the agent pod                                          | Decision                                                                                                                           |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Standing context lists `<mount>/repos/*/*` for the session's `.session-cwd-<id>.json` (`sessionAdditionalRoots` → `sessionCwdSubtree`)                        | every turn, every git-repo agent; also `session/new`/`load`, review preparation | the turn fails ("no bound channel")                            | build the standing context only when consumed (new, load, first prompt, restate); move the marker into the session's own directory |
+| Turn file links read `repos/<a>/<b>/.materialization.json` (`consoleSecondaryRoot`)                                                                           | every turn, agents with additional repositories                                 | all of the turn's links are dropped                            | resolve a location without I/O; read the marker only for push/pull, per root                                                       |
+| Secondary _reference_ roots are materialized on the agent pod for their default branch and repository-id attestation                                          | every preparation, per additional repository                                    | a reviewed root fails preparation                              | resolve on the session side at clone time (decision 1)                                                                             |
+| `withSandboxVolume(agentPod, …)` around every isolated preparation                                                                                            | every preparation                                                               | wakes the agent pod                                            | wake it only when the member-local conversion check says a conversion is due                                                       |
+| Model-session host start under a key server, and a review host's cold start with a pre-prepared cwd, prepare the agent's own checkout with no session request | per cold host start                                                             | wakes the agent pod; pure overhead                             | prepare the session's workspace, not the agent's                                                                                   |
+| Post-turn memory distillation runs on the `internal:memory:<agent>` or agent host                                                                             | after each turn, `autoDistill` only                                             | wakes the agent pod                                            | keep for now (decision 2)                                                                                                          |
+| Retention's legacy worktree half; the hourly retired-roots sweep                                                                                              | hourly                                                                          | wakes the agent pod                                            | judge only when the agent pod is already bound                                                                                     |
+| Attachment writes and image reads decide "pod workspace?" from the agent pod's recorded mount                                                                 | per attachment                                                                  | a member that never bound the agent pod writes to its own disk | decide from the session's own scope and mount                                                                                      |
+| Merge-when-ready watcher                                                                                                                                      | while armed                                                                     | the watcher dies with the pod                                  | an armed watcher holds its pod (#2290); later it moves into the session pod that armed it                                          |
+
+**Fail closed first.** `WorkspaceManager.runnerFor` falls back to a local git runner
+whenever the plane gives none, and the plane gives none for an agent-pod path
+whose pod is unbound; `resolveRemoteDefaultBranch` would then run `ls-remote` in
+the daemon's own working directory. Every such caller sits inside the preparation
+wrapper today. Before the wrapper narrows, an off-disk scope with no runner must
+refuse with `sandbox-unavailable`, and a routed file read whose owning pod is
+unbound must throw the same typed refusal instead of a plain error (which the
+console now shows as "the daemon may be offline", with no Start button).
+
+**What stays with the agent pod.** The conversion itself (it must stay atomic
+with its fail-closed marker, and it is rare), console views of the agent's
+checkout, the skills tab, dream staging, and the commit-message wand. These wake
+it on demand, as memory reads once did (#1077).
+
+**Why the executor plane's answer does not transfer.** A spread session
+(session-executors.md §7) has no companion because the agent's environment stays
+on the holder's disk, which is up whenever the holder is. On the pool the only
+place the agent is materialized is the agent pod, and a member's state root is an
+`emptyDir`. So facts that belong to the session move into the session's own
+directory, where the same code also serves executors and local confined sessions;
+facts that belong to the agent are either re-derived on the session side or
+fetched by waking the agent pod on demand.
+
+**Merge-when-ready moves last.** Once the companion is gone, a PR armed from an
+isolated session is watched in that session's pod. Arm carries the session;
+`shared` sessions keep arming in the agent pod. Reads ask every bound pod of the
+agent, which is complete because an armed pod is held against the sweep. A
+session's retirement deletes its pod and its watcher with it, and the box reads
+back unchecked. Nothing is persisted, as before.
+
+**Order**, each change shippable on its own:
+
+1. Fail closed off-disk (git runner, routed file reads).
+2. Build the standing context only when consumed.
+3. Per-turn hygiene: file links without the marker read, attachment scope,
+   retired-roots sweep gated on the agent pod being bound, `gitpull` stopping only
+   hosts under the pulled root.
+4. Move `.session-cwd` into the session directory, with a migrating read while
+   preparation still wakes the agent pod.
+5. No agent-checkout preparation for a confined session's host start.
+6. Session-side default branch and attestation for secondary roots.
+7. The preparation wrapper wakes the agent pod only when a conversion is due;
+   retention's legacy half runs only when the agent pod is bound.
+8. Drop the companion; the idle sweep keeps the agent pod only for hosts that run
+   in it, and judges its idleness by its own use, not by isolated sessions' traffic.
+9. Merge-when-ready into the session pod.
+10. A session-scoped wake, so the console can resume a sleeping session pod
+    without the agent pod.
+
+**Decisions.**
+
+1. _Secondary-root default branch for an isolated session: the remote's current
+   default._ The agent checkout pins a repository's default branch when it first
+   materializes it; a session resolves it at clone time instead and follows the
+   remote's **current** default. The session clones from the remote anyway, and
+   this saves a full clone on the agent pod per additional repository. A
+   shared-store cache keyed by `(agentId, repoId)` would have kept the pinned
+   value, at the cost of another store record.
+2. _Distillation stays on the agent pod for now._ Nothing forces it there: memory
+   is in the Control Plane and its working directory is throwaway, so its
+   placement falls out of the host key. Moving it to the session's own host needs
+   its extraction session cache keyed per host and a place to drain the capture
+   outbox after that host has gone. It is opt-in, so it is revisited after
+   step 10.
+
 ### Orphan reconciliation
 
 Teardown is best-effort and a member can die mid-way — a rollout, an OOM, a
