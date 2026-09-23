@@ -22,6 +22,7 @@ export default defineConfig({
       'test/store-concurrency.test.ts',
       'test/memory-capture-outbox.test.ts',
       'test/store-retention.test.ts',
+      'test/decision-verdict-store.test.ts',
       'test/postgres-async-database.int.test.ts',
       'test/postgres-pool-store.int.test.ts',
       'test/postgres-transcript-org.int.test.ts',

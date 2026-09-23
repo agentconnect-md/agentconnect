@@ -122,7 +122,8 @@ import {
   type TranscriptSessionScope,
   type TranscriptMutation,
   type TranscriptRow,
-  type StoredUsage
+  type StoredUsage,
+  type ChannelRecordRef
 } from './store/local-store.js'
 import {
   AcpHost,
@@ -470,6 +471,17 @@ import {
 } from './runtimes/model-provider-config.js'
 import { KeyServerClient, type KeyGrant } from './key-server/client.js'
 import { DecisionEvaluator, type DecisionEvaluationInput } from './decisions/evaluator.js'
+import { backgroundConversationText, decisionEvidenceText } from './decisions/evidence.js'
+import {
+  DecisionGate,
+  DEFAULT_DECISION_GATE_LIMITS,
+  decisionReceiptId,
+  type CurrentGate,
+  type DecisionDelivery,
+  type DecisionGateHost,
+  type DecisionReleaseRequest,
+  type DecisionReleaseResult
+} from './decisions/gate.js'
 import {
   evaluateSessionModel,
   modelSelectionConfiguration,
@@ -838,6 +850,16 @@ const RELAY_ACK_SLOW_MS = 4000
 
 /** The step a relay delivery is in, read by the slow-ack watchdog when it fires. */
 type RelayAckTrace = { stage: string }
+
+/** How a released verdict rides the ordinary tail: a durable receipt, its admission ACK, and last-moment fences. */
+interface GateDispatchOptions {
+  receiptId: string
+  onAdmission: (result: { accepted: boolean; reason?: string; duplicate?: boolean }) => void
+  /** Checked immediately before dispatch; false refuses the release. */
+  beforeDispatch: () => boolean
+  /** The dispatch promise, so a dispatch that ends before admission still settles the release. */
+  onDispatched: (turn: Promise<unknown>) => void
+}
 
 export class Daemon {
   // This daemon's workspace execution plane. Owned per instance, so two daemons in one process
@@ -1331,6 +1353,9 @@ export class Daemon {
   /** Owns the per-session model-credential lifecycle: key-server handle, grants, confined hosts. */
   private readonly modelSessions: ModelSessionHostPool
   private readonly decisionEvaluator: DecisionEvaluator
+  private readonly decisionGate: DecisionGate
+  /** Distinguishes this process's verdict ownership from an earlier one's on the same daemon id. */
+  private readonly decisionBootNonce = randomUUID()
   /** Deployment codex session-config floor, daemon-applied at spawn so it also reaches agents
    *  whose sandbox pod spec predates the value (the pod-env copy is a frozen snapshot). */
   private readonly codexSessionFloor?: string
@@ -1643,6 +1668,7 @@ export class Daemon {
       now: modelKeyNow,
       warn: (message) => this.log.warn(message)
     })
+    this.decisionGate = new DecisionGate(this.decisionGateHost())
     this.codexSessionFloor = this.k8s ? configuredCodexSessionFloor(process.env) : undefined
     // Self-hosted launches inherit the host environment already; only a pod launch needs these carried.
     this.claudeModelAliases = this.k8s ? configuredClaudeModelAliases(process.env) : undefined
@@ -1764,6 +1790,8 @@ export class Daemon {
       log: () => this.log,
       store: () => this.store,
       agents: () => this.agents,
+      cancelDecisionVerdicts: (agentId, msg, kind) =>
+        this.decisionGate.cancelForAgent(agentId, transcriptChannelKey(msg.channel, msg.transportScope), kind),
       pending: () => this.pending,
       inflight: () => this.inflight,
       serialQueue: () => this.serialQueue,
@@ -2975,7 +3003,7 @@ export class Daemon {
       this.agentsDir,
       {
         warn: (m) => this.log.warn(m),
-        onDecisionConfigApplied: (id, previous, next) => this.onDecisionConfigApplied(id, previous, next)
+        onDecisionConfigApplied: (id, previous, next, modes) => this.onDecisionConfigApplied(id, previous, next, modes)
       },
       () =>
         void this.reconcile().catch((err) =>
@@ -3981,6 +4009,8 @@ export class Daemon {
   /** Phase 30 — durable inbox replay, orchestration deadlines, the startup retention pass and dream crash recovery. */
   private async replayDurableWork(): Promise<void> {
     await this.replayInbox()
+    // After the inbox replay, whose receipts tell recovery which verdicts were already admitted.
+    await this.decisionGate.recover()
     await this.collab.syncOrchestrationDeadlines()
     // #485 startup retention pass: reconcile what accumulated (or was orphaned by a
     // crash) while the daemon was down. Best-effort — never blocks readiness. Runs
@@ -4149,6 +4179,11 @@ export class Daemon {
       const agentIds = new Set(this.pendingInboxReplayAgents)
       this.pendingInboxReplayAgents.clear()
       await this.replayInbox(agentIds)
+      await this.decisionGate.recover(agentIds)
+    }
+    if (!this.reconcileRun && !this.reconcilePending) {
+      this.decisionGate.retainAgents(new Set(this.agents.keys()))
+      this.decisionGate.kick()
     }
   }
 
@@ -7937,7 +7972,23 @@ export class Daemon {
     // produces the physical thread step 1 writes, and it has no store writes. No-op elsewhere.
     await this.canonicalizeTelegramThread(msg)
     // Step 1 (message-intake.md §5): the channel record is written before anything may drop the message.
-    await this.recordChannelInbound(msg, srcIntegrationIds)
+    const record = await this.recordChannelInbound(msg, srcIntegrationIds)
+    // Later rows of this conversation wait behind this one until the ladder has placed it (§5.1).
+    const closeIngress = record ? this.decisionGate.openIngress(record) : () => {}
+    try {
+      return await this.routeRecordedInbound(msg, agentAuthored, record, srcIntegrationIds)
+    } finally {
+      closeIngress()
+    }
+  }
+
+  /** Steps 2–6 of message-intake.md §5 for one recorded inbound message. */
+  private async routeRecordedInbound(
+    msg: NormalizedMessage,
+    agentAuthored: boolean,
+    record: ChannelRecordRef | undefined,
+    srcIntegrationIds?: string[]
+  ): Promise<{ kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle }> {
     // Drain gate (§2.5/§5.3): once the daemon is draining (SIGTERM or a scope:daemon drain) it
     // accepts no new turns (the platform redelivers / the user retries against the new owner).
     if (this.draining) {
@@ -8036,7 +8087,9 @@ export class Daemon {
     // owner. In a real multi-agent thread `threadOwner` intentionally returns null; the
     // joined agents (and every newly mentioned or channel-auto agent) still hear the
     // message as separate deliveries with target-specific trigger/mute handling.
-    const peerOutcomes = msg.sender.isBot ? [] : await this.fanOutToThreadPeers(msg, routingRules, result?.agentId)
+    const peerOutcomes = msg.sender.isBot
+      ? []
+      : await this.fanOutToThreadPeers(msg, routingRules, result?.agentId, undefined, record)
     const dispatchedPeer = peerOutcomes.find((outcome) => outcome.kind === 'dispatched')
     if (!result) {
       if (dispatchedPeer) return dispatchedPeer
@@ -8050,68 +8103,91 @@ export class Daemon {
       )
       return { kind: 'rejected', reason: 'unrouted' }
     }
-    if (this.decisionCandidate(result.integrationId, msg) === 'held')
-      return dispatchedPeer ?? { kind: 'rejected', reason: 'gated' }
+    // Trigger stamped BEFORE the gate: a verdict freezes the target's own copy of the message.
     const targetMsg = { ...msg }
     if (result.via === 'mention') targetMsg.trigger = 'mention'
     else delete targetMsg.trigger
-    const primaryCoordinate = await this.sessionCoordinateFor(result.agentId, result.integrationId, targetMsg)
-    if (primaryCoordinate !== undefined) targetMsg.sessionThread = primaryCoordinate
-    // Agent-scoped drain (scope:agent): this agent is being reclaimed/rebalanced —
-    // drop new turns for it while its in-flight turns finish.
-    if (this.drainingAgents.has(result.agentId)) {
-      this.log.debug(`routing: dropping ${msg.msgId} for agent "${result.agentId}" (draining)`)
-      if (dispatchedPeer) return dispatchedPeer
+    const via: 'mention' | 'implicit' = result.via === 'mention' ? 'mention' : 'implicit'
+    const decision = await this.decisionCandidate(result.integrationId, result.agentId, targetMsg, {
+      record,
+      delivery: { origin: 'direct', primary: true, via, integrationId: result.integrationId, msg: targetMsg }
+    })
+    if (decision.kind === 'held') return dispatchedPeer ?? { kind: 'rejected', reason: 'gated' }
+    if (decision.kind === 'duplicate') return dispatchedPeer ?? { kind: 'rejected', reason: 'deduplicated' }
+    if (decision.kind === 'pending') return { kind: 'dispatched', handle: decision.handle }
+    const outcome = await this.admitLadderTarget({
+      agentId: result.agentId,
+      integrationId: result.integrationId,
+      msg: targetMsg,
+      via,
+      primary: true
+    })
+    return outcome.kind === 'rejected' ? (dispatchedPeer ?? outcome) : outcome
+  }
+
+  /** Step 6 for one ladder target: its coordinate, drain and mute fences, promotion, then dispatch. */
+  private async admitLadderTarget(
+    target: {
+      agentId: string
+      integrationId: string
+      msg: NormalizedMessage
+      via: 'mention' | 'implicit'
+      primary: boolean
+    },
+    gate?: GateDispatchOptions
+  ): Promise<{ kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle }> {
+    const { agentId, integrationId, msg: targetMsg, via, primary } = target
+    const coordinate = await this.sessionCoordinateFor(agentId, integrationId, targetMsg)
+    if (coordinate !== undefined) targetMsg.sessionThread = coordinate
+    // Agent-scoped drain: the agent is being reclaimed, so new turns drop while in-flight ones finish.
+    if (this.drainingAgents.has(agentId)) {
+      this.log.debug(`routing: dropping ${targetMsg.msgId} for agent "${agentId}" (draining)`)
       return { kind: 'rejected', reason: 'gated' }
     }
-    // `!stop` thread mute: while muted, implicit routing (thread affinity / keyword /
-    // auto / dm) never dispatches — only an explicit @mention does, and it clears the
-    // mute. Muted-thread traffic is already in the channel record (step 1), with no admission.
-    const muteKey = sessionKey(
-      targetMsg.platform,
-      targetMsg.channel,
-      sessionThreadOf(targetMsg),
-      result.agentId,
-      targetMsg.transportScope
-    )
-    // A conversation that appends is never muted: `!stop` there interrupts the turn and
-    // sets no latch (§6.3), and a latch left over from before the flip must not silence the
-    // one session the whole room now shares.
-    if (!isAppendCoordinate(sessionThreadOf(targetMsg)) && (await this.commands.isSessionMuted(muteKey))) {
-      if (result.via !== 'mention') {
+    // `!stop` mute: only an explicit @mention dispatches (and clears it); muted traffic stays an observation.
+    const targetThread = sessionThreadOf(targetMsg)
+    const muteKey = sessionKey(targetMsg.platform, targetMsg.channel, targetThread, agentId, targetMsg.transportScope)
+    // An append conversation is never muted (§6.3): a leftover latch must not silence the room's one session.
+    if (!isAppendCoordinate(targetThread) && (await this.commands.isSessionMuted(muteKey))) {
+      if (via !== 'mention') {
         this.log.debug(
-          `routing: dropping ${msg.msgId} for agent "${result.agentId}" (muted by !stop; awaiting @mention)`
+          `routing: dropping ${targetMsg.msgId} for agent "${agentId}" (muted by !stop; awaiting @mention)`
         )
-        return dispatchedPeer ?? { kind: 'rejected', reason: 'gated' }
+        return { kind: 'rejected', reason: 'gated' }
       }
       await this.commands.setSessionMuted(muteKey, false)
-      this.log.info(`routing: agent "${result.agentId}" un-muted in ch=${msg.channel} (explicit @mention)`)
+      this.log.info(`routing: agent "${agentId}" un-muted in ch=${targetMsg.channel} (explicit @mention)`)
     }
-    this.log.info(`routing: ch=${msg.channel} → agent "${result.agentId}" (integration ${result.integrationId})`)
-    // A top-level channel @mention on a platform with thread promotion (§7.4
-    // openThreadForTopLevel — Discord): open a thread off it first, then dispatch
-    // into that thread (Slack-parity). Async (a REST call), so it runs on its own
-    // path; dispatch is fire-and-forget either way.
-    const promotion = threadPromotionFor(targetMsg.platform)
+    if (primary) this.log.info(`routing: ch=${targetMsg.channel} → agent "${agentId}" (integration ${integrationId})`)
+    const gateOpts = gate ? { requireDurable: true, receiptId: gate.receiptId, onAdmission: gate.onAdmission } : {}
+    // Thread promotion (§7.4, Discord): open a thread off a top-level mention, then dispatch into it.
+    const promotion = primary ? threadPromotionFor(targetMsg.platform) : undefined
     if (promotion?.wants(targetMsg)) {
-      const topLevel = this.dispatchPromotedTopLevel(promotion, result.agentId, targetMsg, result.integrationId)
-      topLevel.catch((err) => this.log.error(`dispatch failed for agent "${result.agentId}": ${formatErr(err)}`))
-      // The re-threaded dispatch owns its own admission; expose a coarse handle
-      // (virtual ingress never produces promotion-seeking messages).
+      if (gate && !gate.beforeDispatch()) return { kind: 'rejected', reason: 'gated' }
+      const topLevel = this.dispatchPromotedTopLevel(
+        promotion,
+        agentId,
+        targetMsg,
+        integrationId,
+        gate ? gateOpts : undefined
+      )
+      gate?.onDispatched(topLevel)
+      topLevel.catch((err) => this.log.error(`dispatch failed for agent "${agentId}": ${formatErr(err)}`))
+      // The re-threaded dispatch owns its admission; virtual ingress never promotes, so a coarse handle suffices.
       return {
         kind: 'dispatched',
         handle: {
           admission: Promise.resolve({
             admitted: true,
-            agentId: result.agentId,
+            agentId,
             sessionKey: sessionKey(
               targetMsg.platform,
               targetMsg.channel,
               sessionThreadOf(targetMsg),
-              result.agentId,
+              agentId,
               targetMsg.transportScope
             ),
-            turnId: stableTurnId(result.agentId, msg)
+            turnId: stableTurnId(agentId, targetMsg)
           }),
           completion: topLevel.then(
             () => ({ status: 'not_admitted' }),
@@ -8120,15 +8196,15 @@ export class Daemon {
         }
       }
     }
-    const { handle, turn } = this.evalHooks.dispatchHandle(
-      result.agentId,
-      targetMsg,
-      result.integrationId,
-      undefined,
-      undefined,
-      { deliveryId: `${stableMessageId(targetMsg)}#${result.agentId}` }
+    if (gate && !gate.beforeDispatch()) return { kind: 'rejected', reason: 'gated' }
+    const { handle, turn } = this.evalHooks.dispatchHandle(agentId, targetMsg, integrationId, undefined, undefined, {
+      deliveryId: `${stableMessageId(targetMsg)}#${agentId}`,
+      ...gateOpts
+    })
+    gate?.onDispatched(turn)
+    turn.catch((err) =>
+      this.log.error(`${primary ? 'dispatch' : 'thread fan-out'} failed for agent "${agentId}": ${formatErr(err)}`)
     )
-    turn.catch((err) => this.log.error(`dispatch failed for agent "${result.agentId}": ${formatErr(err)}`))
     return { kind: 'dispatched', handle }
   }
 
@@ -8156,7 +8232,9 @@ export class Daemon {
     agentCall?: {
       verified: NonNullable<ReturnType<Daemon['verifyAgentAuthor']>>
       hopCount: number
-    }
+    },
+    /** The step-1 row, which a By decision peer reserves its verdict at. */
+    record?: ChannelRecordRef
   ): Promise<
     Array<{ kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle }>
   > {
@@ -8201,36 +8279,36 @@ export class Daemon {
         continue
       }
 
-      if (this.decisionCandidate(rule.integrationId, msg) === 'held') {
-        outcomes.push({ kind: 'rejected', reason: 'gated' })
-        continue
-      }
       const via: 'mention' | 'implicit' = explicitlyMentioned.has(agentId) ? 'mention' : 'implicit'
       const targetMsg = { ...msg }
       if (via === 'mention') targetMsg.trigger = 'mention'
       else delete targetMsg.trigger
-      const peerCoordinate = await this.sessionCoordinateFor(agentId, rule.integrationId, targetMsg)
-      if (peerCoordinate !== undefined) targetMsg.sessionThread = peerCoordinate
-      const targetThread = sessionThreadOf(targetMsg)
-      const muteKey = sessionKey(targetMsg.platform, targetMsg.channel, targetThread, agentId, targetMsg.transportScope)
-      if (!isAppendCoordinate(targetThread) && (await this.commands.isSessionMuted(muteKey))) {
-        if (via === 'implicit') {
-          outcomes.push({ kind: 'rejected', reason: 'gated' })
-          continue
-        }
-        await this.commands.setSessionMuted(muteKey, false)
-        this.log.info(`routing: agent "${agentId}" un-muted in ch=${msg.channel} (explicit @mention)`)
+      // Fan-out cannot bypass a gate (decisions.md §10.3): each peer is its own candidate.
+      const decision = await this.decisionCandidate(rule.integrationId, agentId, targetMsg, {
+        record,
+        delivery: { origin: 'direct', primary: false, via, integrationId: rule.integrationId, msg: targetMsg }
+      })
+      if (decision.kind === 'held') {
+        outcomes.push({ kind: 'rejected', reason: 'gated' })
+        continue
       }
-      const { handle, turn } = this.evalHooks.dispatchHandle(
-        agentId,
-        targetMsg,
-        rule.integrationId,
-        undefined,
-        undefined,
-        { deliveryId: `${stableMessageId(targetMsg)}#${agentId}` }
+      if (decision.kind === 'duplicate') {
+        outcomes.push({ kind: 'rejected', reason: 'deduplicated' })
+        continue
+      }
+      if (decision.kind === 'pending') {
+        outcomes.push({ kind: 'dispatched', handle: decision.handle })
+        continue
+      }
+      outcomes.push(
+        await this.admitLadderTarget({
+          agentId,
+          integrationId: rule.integrationId,
+          msg: targetMsg,
+          via,
+          primary: false
+        })
       )
-      turn.catch((err) => this.log.error(`thread fan-out failed for agent "${agentId}": ${formatErr(err)}`))
-      outcomes.push({ kind: 'dispatched', handle })
     }
     return outcomes
   }
@@ -8250,7 +8328,8 @@ export class Daemon {
     promotion: NonNullable<ReturnType<typeof threadPromotionFor>>,
     agentId: string,
     msg: NormalizedMessage,
-    integrationId: string
+    integrationId: string,
+    dispatchOpts?: Parameters<Daemon['dispatch']>[5]
   ): Promise<void> {
     await promotion.promote(
       {
@@ -8260,7 +8339,8 @@ export class Daemon {
       this.connForIntegration(integrationId),
       msg
     )
-    await this.dispatch(agentId, msg, integrationId)
+    if (dispatchOpts) await this.dispatch(agentId, msg, integrationId, undefined, undefined, dispatchOpts)
+    else await this.dispatch(agentId, msg, integrationId)
   }
 
   // Restore Agent policy, retaining the model pinned for this session.
@@ -8623,7 +8703,22 @@ export class Daemon {
     if (feishuConn) this.channelNameResolver?.noteMessage(feishuConn, normalized)
     // Step 1 (§5/§6): a relay-forwarded IM records exactly like direct ingress. Pre-addressed, so
     // the owning org is known outright and no conversation-row scan is needed.
-    await this.recordChannelInbound(normalized, [msg.integrationId], { orgAgentId: msg.agentId })
+    const record = await this.recordChannelInbound(normalized, [msg.integrationId], { orgAgentId: msg.agentId })
+    const closeIngress = record ? this.decisionGate.openIngress(record) : () => {}
+    try {
+      return await this.routeRecordedRelayIm(msg, normalized, trace, record)
+    } finally {
+      closeIngress()
+    }
+  }
+
+  /** The recorded half of {@link handleRelayIm}: agent ladder, gating, commands, the decision gate, then admission. */
+  private async routeRecordedRelayIm(
+    msg: RdMsgIm,
+    normalized: NormalizedMessage,
+    trace: RelayAckTrace,
+    record: ChannelRecordRef | undefined
+  ): Promise<RdAck> {
     // HTTP-bot ingress is pre-addressed and bypasses onInbound(), so the verified-agent
     // ladder has to be repeated here — this path never reaches `onInboundOutcome`.
     //
@@ -8676,9 +8771,29 @@ export class Daemon {
       await this.commands.handleCommand(command, normalized, target)
       return { msgId: msg.msgId, accepted: true }
     }
-    // Consumed, not retried: the candidate is recorded (step 1) and held until the gate runs.
-    if (this.decisionCandidate(msg.integrationId, normalized, msg.decisionId) === 'held')
+    // The ACK follows the durable reservation (decisions.md §8.3); a record the gate cannot use is retried.
+    const { searchActionToken: _searchActionToken, ...rd } = msg
+    const decision = await this.decisionCandidate(msg.integrationId, msg.agentId, normalized, {
+      record,
+      relayDecisionId: msg.decisionId,
+      delivery: { origin: 'relay', rd, msg: normalized }
+    })
+    if (decision.kind === 'held' && decision.reason === 'record_unavailable')
+      return { msgId: msg.msgId, accepted: false, reason: 'durability' }
+    if (decision.kind === 'held' && decision.reason === 'closed')
+      return { msgId: msg.msgId, accepted: false, reason: 'draining' }
+    if (decision.kind === 'held' || decision.kind === 'pending' || decision.kind === 'duplicate')
       return { msgId: msg.msgId, accepted: true }
+    return await this.admitRelayImTarget(msg, normalized, trace)
+  }
+
+  /** Step 6 for a pre-addressed relay IM: coordinate, mute, the platform's ingress strategy, then dispatch. */
+  private async admitRelayImTarget(
+    msg: RdMsgIm,
+    normalized: NormalizedMessage,
+    trace: RelayAckTrace,
+    gate?: GateDispatchOptions
+  ): Promise<RdAck> {
     // HTTP-bot ingress bypasses onInbound(), so repeat its `!stop` thread-mute gate:
     // while muted, implicit routing (thread affinity / keyword / auto / dm) never
     // dispatches — only an explicit @mention does, and it clears the mute. Muted traffic is
@@ -8720,9 +8835,18 @@ export class Daemon {
     // what an admission hook reports, and the entry this delivery creates is not that work.
     const onAdmitted = ingress?.onAdmitted
     const busy = onAdmitted ? this.inflight.has(muteKey) : false
+    if (gate && !gate.beforeDispatch()) return { msgId: msg.msgId, accepted: true }
     // A platform contributing no admission hook keeps the shared call exactly as it was.
     if (!onAdmitted) {
-      void this.dispatch(msg.agentId, normalized, msg.integrationId).catch((err) =>
+      const plain = gate
+        ? this.dispatch(msg.agentId, normalized, msg.integrationId, undefined, undefined, {
+            requireDurable: true,
+            receiptId: gate.receiptId,
+            onAdmission: gate.onAdmission
+          })
+        : this.dispatch(msg.agentId, normalized, msg.integrationId)
+      gate?.onDispatched(plain)
+      void plain.catch((err) =>
         this.log.error(`relay im dispatch failed for agent "${msg.agentId}": ${formatErr(err)}`)
       )
       return { msgId: msg.msgId, accepted: true }
@@ -8735,11 +8859,22 @@ export class Daemon {
     let report!: (ack: RdAck) => void
     const admitted = new Promise<RdAck>((resolve) => (report = resolve))
     const dispatched = this.dispatch(msg.agentId, normalized, msg.integrationId, undefined, undefined, {
-      ...(ingress?.requireDurable ? { requireDurable: true } : {}),
-      ...(ingress?.receiptId ? { receiptId: ingress.receiptId(normalized) } : {}),
+      ...(ingress?.requireDurable || gate ? { requireDurable: true } : {}),
+      // The gate's receipt wins: a By decision delivery must never be dispatched twice for its verdict.
+      ...(gate
+        ? { receiptId: gate.receiptId }
+        : ingress?.receiptId
+          ? { receiptId: ingress.receiptId(normalized) }
+          : {}),
       onAdmission: async (result) => {
         trace.stage = 'admitted'
-        if (result.accepted && !result.duplicate) await onAdmitted(msg, normalized, busy, result.steered === true)
+        try {
+          if (result.accepted && !result.duplicate) await onAdmitted(msg, normalized, busy, result.steered === true)
+        } catch (err) {
+          gate?.onAdmission({ accepted: false, reason: 'durability' })
+          throw err
+        }
+        gate?.onAdmission(result)
         // A durability refusal is the ONE outcome the provider must send again: nothing was
         // recorded, so nothing will replay it either. Every other non-acceptance is a
         // deliberate local gate — paused, draining, loop protection — whose delivery is
@@ -8751,6 +8886,7 @@ export class Daemon {
         )
       }
     })
+    gate?.onDispatched(dispatched)
     // Admission that never settles positively — a durability refusal, or a hook that could not
     // record the delivery — surfaces as the dispatch promise rejecting instead. A rejection
     // AFTER a settled admission (an ordinary turn failure) finds this already resolved.
@@ -10065,11 +10201,11 @@ export class Daemon {
     msg: NormalizedMessage,
     srcIntegrationIds?: readonly string[],
     opts?: { orgAgentId?: string }
-  ): Promise<void> {
+  ): Promise<ChannelRecordRef | undefined> {
     // A conversation no local integration holds has no row here, and on a shared store nothing to
     // attribute the write to — `transcriptOrg` would throw rather than guess an org.
     const orgAgentId = opts?.orgAgentId ?? this.conversationRowOwner(msg, srcIntegrationIds)
-    if (orgAgentId === undefined) return
+    if (orgAgentId === undefined) return undefined
     const mention = attachmentMention(msg.attachments)
     // Only the dedup `ts`: `transcriptCoords().thread` is the SESSION coordinate, never a row's.
     const { ts } = transcriptCoords(msg)
@@ -10100,8 +10236,53 @@ export class Daemon {
         ...(msg.quoted?.text ? { quoted: msg.quoted } : {})
       })
       this.log.debug(`transcript: recorded inbound msg ch=${msg.channel} thread=${thread} ts=${ts}`)
+      // A lookup, not the insert's id: a redelivery inserts nothing yet names the same row.
+      return await this.store.channelRecordRef(transcriptChannelKey(msg.channel, msg.transportScope), ts, orgAgentId)
     } catch (err) {
       this.log.error(`transcript: failed to record inbound msg ch=${msg.channel} ts=${ts}: ${formatErr(err)}`)
+      return undefined
+    }
+  }
+
+  /** A steered By decision delivery's background and evidence, rebuilt from its persisted intake (decisions.md §8.4). */
+  private async steerIntakeText(entry: QueueEntry): Promise<{ background?: string; evidence?: string }> {
+    const intake = entry.msg.channelIntake
+    if (!intake) return {}
+    const evidence = intake.evidence ? decisionEvidenceText(intake.evidence) : undefined
+    let background: string | undefined
+    if (intake.backgroundSeqs?.length) {
+      const transcriptChannel = transcriptChannelKey(entry.msg.channel, entry.msg.transportScope)
+      const rows = await this.store.transcriptRowsBySeq({ agentId: entry.agentId, transcriptChannel }, [
+        ...intake.backgroundSeqs,
+        intake.seq
+      ])
+      background = backgroundConversationText(
+        rows.filter((row) => row.seq !== intake.seq),
+        (event, replayed) => this.observedQuoteBlock(event, replayed),
+        rows.find((row) => row.seq === intake.seq)?.thread ?? undefined
+      )
+    }
+    return { ...(background ? { background } : {}), ...(evidence ? { evidence } : {}) }
+  }
+
+  /** Pick an admission's background rows (message-intake.md §5.2); a verdict keeps the first list chosen. */
+  private async assignBackground(agentId: string, msg: NormalizedMessage): Promise<void> {
+    const intake = msg.channelIntake!
+    try {
+      const coordinate = sessionThreadOf(msg)
+      let seqs = await this.store.backgroundSeqsForAdmission({
+        agentId,
+        transcriptChannel: transcriptChannelKey(msg.channel, msg.transportScope),
+        coordinate,
+        sessionKey: sessionKey(msg.platform, msg.channel, coordinate, agentId, msg.transportScope),
+        currentSeq: intake.seq,
+        limit: DEFAULT_DECISION_GATE_LIMITS.backgroundRows
+      })
+      if (intake.evidence) seqs = await this.store.claimVerdictBackground(intake.seq, agentId, seqs)
+      intake.backgroundSeqs = seqs
+    } catch (err) {
+      this.log.warn(`decision: background selection failed: ${formatErr(err)}`)
+      intake.backgroundSeqs = []
     }
   }
 
@@ -10402,7 +10583,7 @@ export class Daemon {
     let outcome: Awaited<ReturnType<AcpHost['steer']>>
     try {
       // `promptRequired`: a steer that races the turn end is declined, never a turn we did not admit.
-      outcome = await host.steer(target.acpSessionId, steerPromptBlocks(entry.msg), {
+      outcome = await host.steer(target.acpSessionId, steerPromptBlocks(entry.msg, await this.steerIntakeText(entry)), {
         idleBehavior: 'promptRequired'
       })
     } catch (err) {
@@ -11789,6 +11970,9 @@ export class Daemon {
     // Step 6 (message-intake.md §5), and ABOVE the QueueEntry below on purpose: a message queued
     // behind a running turn is already in the session the moment it is accepted. Ungated — the
     // turn-final refresh flag gates that refresh, not whether a message is in a session.
+    // §5.2 background is chosen once, before this row's own admission, and rides the persisted msg.
+    if (msg.channelIntake && msg.channelIntake.backgroundSeqs === undefined && originKindOf(msg.platform) === 'chat')
+      await this.assignBackground(agentId, msg)
     if (!opts?.deferObservedInbound && originKindOf(msg.platform) === 'chat') await this.admitInbound(msg, agentId)
     // Not an async executor: a rejection from any awaited admission/store step must settle
     // THIS promise, not vanish as an unhandled rejection while the caller waits forever.
@@ -17599,30 +17783,141 @@ export class Daemon {
     return this.mergedRules().filter((rule) => this.integrationBelongsToSource(rule.integrationId, srcIntegrationIds))
   }
 
-  // Stage 3a holds every human By decision candidate; Stage 3b replaces this with message-intake §5 step 5.
-  private decisionCandidate(
+  /** Step 5 (message-intake.md §5) for one ladder target; a bound conversation never falls back to Any. */
+  private async decisionCandidate(
     integrationId: string,
-    msg: NormalizedMessage,
-    relayDecisionId?: string
-  ): 'not_bound' | 'held' {
+    agentId: string,
+    targetMsg: NormalizedMessage,
+    ctx: { record?: ChannelRecordRef; relayDecisionId?: string; delivery: DecisionDelivery }
+  ): Promise<
+    | { kind: 'not_bound' }
+    | { kind: 'held'; reason?: string }
+    | { kind: 'admit' }
+    | { kind: 'pending'; handle: DeliveryHandle }
+    | { kind: 'duplicate' }
+  > {
     const int = this.integrationConfigById(integrationId)
     const routing = int ? integrationRouting(int) : undefined
-    if (!routing?.decisionBound(msg.channel)) {
-      if (relayDecisionId === undefined) return 'not_bound'
+    const { relayDecisionId } = ctx
+    if (!int || !routing?.decisionBound(targetMsg.channel)) {
+      if (relayDecisionId === undefined) return { kind: 'not_bound' }
       this.decisionHoldLog(
         integrationId,
-        msg.channel,
+        targetMsg.channel,
         `relay decision ${relayDecisionId} has no local binding (pending sync)`
       )
-      return 'held'
+      return { kind: 'held' }
     }
-    const local = routing.decisionBindingFor(msg.channel)?.binding.decisionId
-    if (local === undefined && relayDecisionId === undefined)
-      this.decisionHoldLog(integrationId, msg.channel, 'decision rule has no enabled binding')
-    else if (relayDecisionId !== undefined && relayDecisionId !== local)
-      this.decisionHoldLog(integrationId, msg.channel, `relay decision ${relayDecisionId} is stale (pending sync)`)
-    else this.decisionHoldLog(integrationId, msg.channel, 'gate not implemented yet')
-    return 'held'
+    const gate = routing.decisionBindingFor(targetMsg.channel)
+    if (!gate) {
+      this.decisionHoldLog(integrationId, targetMsg.channel, 'decision rule has no enabled binding')
+      return { kind: 'held' }
+    }
+    if (ctx.delivery.origin === 'relay' && relayDecisionId !== gate.binding.decisionId) {
+      this.decisionHoldLog(
+        integrationId,
+        targetMsg.channel,
+        relayDecisionId === undefined
+          ? 'relay delivery carried no decision (pending sync)'
+          : `relay decision ${relayDecisionId} is stale (pending sync)`
+      )
+      return { kind: 'held' }
+    }
+    if (!ctx.record) {
+      this.decisionHoldLog(integrationId, targetMsg.channel, 'channel record unavailable')
+      return { kind: 'held', reason: 'record_unavailable' }
+    }
+    const outcome = await this.decisionGate.candidate({
+      agentId,
+      integrationId,
+      rawChannel: targetMsg.channel,
+      record: ctx.record,
+      gate,
+      sessionMode: conversationSessionMode(int, targetMsg.channel),
+      target: targetMsg,
+      delivery: ctx.delivery
+    })
+    // Every admission in a By decision conversation carries its row, so background applies to it too.
+    if (outcome.kind === 'admit') targetMsg.channelIntake = { seq: ctx.record.seq }
+    return outcome
+  }
+
+  /** What the gate reads of this daemon; getters are lazy because the store opens later. */
+  private decisionGateHost(): DecisionGateHost {
+    return {
+      store: () => this.store,
+      ownerFence: () => `${this.cfg.daemonId ?? 'local'}:${this.decisionBootNonce}`,
+      now: () => this.clock.now(),
+      evaluate: (input, signal) => this.decisionEvaluator.evaluate(input, signal),
+      currentGate: (agentId, integrationId, channel) => this.currentDecisionGate(agentId, integrationId, channel),
+      configConverged: () => !this.cpClient || this.cpIntegrations?.hasConverged() === true,
+      servesAgent: (agentId) => this.agents.has(agentId) && !this.draining && !this.drainingAgents.has(agentId),
+      participates: async (agentId, msg) =>
+        msg.thread !== undefined &&
+        (await this.sessions.threadParticipants(msg.channel, msg.thread, msg.transportScope)).includes(agentId),
+      release: (request) => this.releaseDecisionDelivery(request),
+      log: {
+        debug: (message) => this.log.debug(message),
+        info: (message) => this.log.info(message),
+        warn: (message) => this.log.warn(message)
+      }
+    }
+  }
+
+  /** The locally applied gate a verdict is rechecked against right before release (decisions.md §8.3). */
+  private currentDecisionGate(agentId: string, integrationId: string, channel: string): CurrentGate {
+    const int = this.agents.get(agentId)?.integrations.find((candidate) => candidate.id === integrationId)
+    if (!int) return { status: 'unknown' }
+    const routing = integrationRouting(int)
+    if (!routing.decisionBound(channel)) return { status: 'unbound' }
+    const gate = routing.decisionBindingFor(channel)
+    if (!gate) {
+      const binding = integrationCore(int).decisions.bindings.find((candidate) => candidate.channel === channel)
+      return { status: 'disabled', reason: binding?.disabledReason ?? 'binding_disabled' }
+    }
+    return { status: 'enabled', gate, sessionMode: conversationSessionMode(int, channel) }
+  }
+
+  /** Release one verdict into the same tail the ladder would have run, and report its admission ACK. */
+  private async releaseDecisionDelivery(request: DecisionReleaseRequest): Promise<DecisionReleaseResult> {
+    const { verdict, delivery, evidence } = request
+    const agentId = verdict.agentId
+    const msg: NormalizedMessage = { ...delivery.msg, channelIntake: { seq: verdict.seq, evidence } }
+    type Raw = { accepted: boolean; reason?: string; duplicate?: boolean }
+    let settle!: (result: Raw) => void
+    const raw = new Promise<Raw>((resolve) => (settle = resolve))
+    let dispatched = false
+    const gate: GateDispatchOptions = {
+      receiptId: decisionReceiptId(verdict.seq, agentId),
+      onAdmission: (result) => settle(result),
+      beforeDispatch: () => (dispatched = request.beforeDispatch()),
+      // A dispatch that ends before settling admission must still release the lane.
+      onDispatched: (turn) =>
+        void turn.then(
+          () => settle({ accepted: false, reason: 'error' }),
+          () => settle({ accepted: false, reason: 'error' })
+        )
+    }
+    let handle: DeliveryHandle | undefined
+    let refused = 'gated'
+    if (delivery.origin === 'direct') {
+      const outcome = await this.admitLadderTarget(
+        { agentId, integrationId: delivery.integrationId, msg, via: delivery.via, primary: delivery.primary },
+        gate
+      )
+      if (outcome.kind === 'dispatched') handle = outcome.handle
+      else refused = outcome.reason
+    } else {
+      const ack = await this.admitRelayImTarget(delivery.rd as RdMsgIm, msg, { stage: 'decision-release' }, gate)
+      if (!ack.accepted) refused = ack.reason ?? refused
+    }
+    const result: Raw = dispatched ? await raw : { accepted: false, reason: refused }
+    if (result.accepted) return { kind: 'admitted', ...(handle ? { handle } : {}) }
+    return {
+      kind: 'rejected',
+      reason: result.reason ?? 'rejected',
+      recoverable: result.reason === 'draining' || this.draining || this.drainingAgents.has(agentId)
+    }
   }
 
   // At most one info line per (integration, channel) every 10 minutes.
@@ -17638,11 +17933,14 @@ export class Daemon {
   }
 
   private onDecisionConfigApplied(
-    _integrationId: string,
-    _previous: DecisionBundle | undefined,
-    _next: DecisionBundle | undefined
+    integrationId: string,
+    previous: DecisionBundle | undefined,
+    next: DecisionBundle | undefined,
+    sessionModes?: readonly { channel: string; mode: string }[]
   ): void {
-    // Stage 3b cancels pending decision verdicts whose binding or definition changed here.
+    void this.decisionGate
+      .onConfigApplied(integrationId, previous, next, sessionModes)
+      .catch((err) => this.log.warn(`decision: config cancellation failed: ${formatErr(err)}`))
   }
 
   /** Last-hop admission for a pre-addressed (relay) message. The relay arbitrated it,
@@ -18069,6 +18367,7 @@ export class Daemon {
       await this.storeRetention.sweepAgeOnly()
       // message-intake.md §8 rule 2's idle pass; the per-insert arming catches the hot path.
       await this.store.sweepAllObservations().catch(() => undefined)
+      await this.store.stripDecisionVerdictBodies(this.clock.now()).catch(() => undefined)
       if (!this.draining) this.armStoreRetentionSweep()
     }, SESSION_RETENTION_SWEEP_INTERVAL_MS)
   }
@@ -21642,6 +21941,7 @@ export class Daemon {
   }
 
   async stop(): Promise<void> {
+    this.decisionGate.close()
     this.decisionEvaluator.close()
     // Set the drain gate FIRST: it both blocks new turns and stops the idle sweep
     // from re-arming itself (its callback re-arms only `if (!this.draining)`), so a

@@ -38,6 +38,15 @@ describe('CpIntegrationRegistry (memory-only)', () => {
     expect(reg.forAgent(A1)[0]).toMatchObject({ id: 'i1', origin: 'cp', config: { botToken: 'xoxb-two' } })
   })
 
+  it('reports convergence only once a full roster arrived, not on a single upsert', () => {
+    const { reg } = makeReg()
+    expect(reg.hasConverged()).toBe(false)
+    reg.upsert(integration('i1'))
+    expect(reg.hasConverged()).toBe(false)
+    reg.converge([])
+    expect(reg.hasConverged()).toBe(true)
+  })
+
   it('keeps agent ownership, removes by id, and exact-prunes one agent only', () => {
     const { reg } = makeReg()
     reg.converge([integration('i1'), integration('i2'), integration('i3', A2)])
@@ -100,12 +109,17 @@ describe('CpIntegrationRegistry (memory-only)', () => {
     const first = integration('i1')
     const second = integration('i1', A1, 'xoxb-two')
     reg.upsert(first)
-    expect(applied).toHaveBeenLastCalledWith('i1', undefined, first.core.decisions)
+    expect(applied).toHaveBeenLastCalledWith('i1', undefined, first.core.decisions, first.core.sessionModes ?? [])
     reg.converge([second, integration('i2')])
-    expect(applied).toHaveBeenCalledWith('i1', first.core.decisions, second.core.decisions)
+    expect(applied).toHaveBeenCalledWith(
+      'i1',
+      first.core.decisions,
+      second.core.decisions,
+      second.core.sessionModes ?? []
+    )
     reg.remove('i1')
-    expect(applied).toHaveBeenLastCalledWith('i1', second.core.decisions, undefined)
+    expect(applied).toHaveBeenLastCalledWith('i1', second.core.decisions, undefined, undefined)
     reg.retainForAgent(A1, new Set())
-    expect(applied).toHaveBeenLastCalledWith('i2', expect.anything(), undefined)
+    expect(applied).toHaveBeenLastCalledWith('i2', expect.anything(), undefined, undefined)
   })
 })

@@ -816,6 +816,27 @@ describe('Daemon in-conversation commands', () => {
     await daemon.stop()
   })
 
+  it('!cancel and !stop cancel pending By decision verdicts first and report them as stopped work', async () => {
+    const blocked = blockingHost()
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    const cancelForAgent = vi.fn(async () => 1)
+    ;(daemon as any).decisionGate.cancelForAgent = cancelForAgent
+
+    await (daemon as any).onInboundOutcome({ ...dm('400', '!cancel'), thread: 'T9' })
+    expect(cancelForAgent).toHaveBeenLastCalledWith('bot-a', expect.stringMatching(/^C1/), 'cancel')
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', '🛑 Cancelled.', 'T9', CHROME_REPLY)
+    await (daemon as any).onInboundOutcome({ ...dm('500', '!stop'), thread: 'T9' })
+    expect(cancelForAgent).toHaveBeenLastCalledWith('bot-a', expect.stringMatching(/^C1/), 'stop')
+    expect(conn.postMessage).toHaveBeenLastCalledWith('C1', '🛑 Stopped.', 'T9', CHROME_REPLY)
+    await daemon.stop()
+  })
+
   it('!stop drops queued messages so they do not run after cancellation', async () => {
     const blocked = blockingHost()
     const daemon = new Daemon({

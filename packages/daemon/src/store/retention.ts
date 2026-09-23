@@ -1,5 +1,6 @@
 import { systemClock, type Clock } from '@agentconnect.md/connection'
 import type { LocalStore } from './local-store.js'
+import { DECISION_VERDICT_PENDING_STATES, DECISION_VERDICT_TERMINAL_STATES, sqlStates } from './decision-states.js'
 
 /**
  * The daemon store's ONE retention home (k8s-daemon-pool.md §4).
@@ -171,6 +172,26 @@ export const STORE_RETENTION_RULES: readonly StoreRetentionRule[] = [
     key: ['operationId'],
     clock: 'updatedAt',
     where: "state IN ('completed', 'failed', 'ambiguous')",
+    agentColumn: 'agentId',
+    horizonMs: DAY_MS
+  },
+  {
+    // A terminal verdict's minimal metadata: its body is already stripped (decisions.md §8.1).
+    id: 'decision-verdict',
+    table: 'decision_verdict',
+    key: ['seq', 'subject'],
+    clock: 'COALESCE(finishedAt, createdAt)',
+    where: `state IN ${sqlStates(DECISION_VERDICT_TERMINAL_STATES)}`,
+    agentColumn: 'agentId',
+    horizonMs: 7 * DAY_MS
+  },
+  {
+    // Pending work has a deadline and cannot pin its row forever, even when nothing ever recovers it.
+    id: 'decision-verdict-stale',
+    table: 'decision_verdict',
+    key: ['seq', 'subject'],
+    clock: 'createdAt',
+    where: `state IN ${sqlStates(DECISION_VERDICT_PENDING_STATES)}`,
     agentColumn: 'agentId',
     horizonMs: DAY_MS
   },

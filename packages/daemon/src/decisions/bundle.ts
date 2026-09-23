@@ -73,3 +73,50 @@ function disabledReason(
   if (!supportsDecision(definition)) return 'unsupported model'
   return undefined
 }
+
+/** Sorted-key JSON, so two equal configurations always serialize alike. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value && typeof value === 'object')
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`)
+      .join(',')}}`
+  return JSON.stringify(value)
+}
+
+/** What a pending verdict is bound to (decisions.md §8.3); a rename alone leaves it unchanged. */
+export function gateFingerprint(gate: ResolvedDecisionGate): string {
+  return canonicalJson({
+    decisionId: gate.definition.id,
+    providerId: gate.definition.providerId,
+    model: gate.definition.model,
+    question: gate.definition.question,
+    when: gate.binding.when
+  })
+}
+
+/** The frozen, credential-free configuration a verdict carries. */
+export interface FrozenGateConfig {
+  decisionId: string
+  providerId: string
+  model: string
+  question: ResolvedDecisionGate['definition']['question']
+  condition: ChannelDecisionGate['when']
+  binding: { channel: string; consumer: ChannelDecisionGate }
+  sessionMode: string
+  fingerprint: string
+}
+
+export function frozenGateConfig(gate: ResolvedDecisionGate, sessionMode: string): FrozenGateConfig {
+  return {
+    decisionId: gate.definition.id,
+    providerId: gate.definition.providerId,
+    model: gate.definition.model,
+    question: gate.definition.question,
+    condition: gate.binding.when,
+    binding: { channel: gate.channel, consumer: gate.binding },
+    sessionMode,
+    fingerprint: gateFingerprint(gate)
+  }
+}

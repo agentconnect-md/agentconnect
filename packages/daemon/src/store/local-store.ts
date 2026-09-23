@@ -30,6 +30,7 @@ import type { ScheduleRun } from '../scheduler/scheduler.js'
 import { isControlCommandText, queuePromptText } from '../commands/commands.js'
 import { AsyncMutex } from './async-mutex.js'
 import { STORE_RETENTION_SCAN_LIMIT, type StoreRetentionCandidate, type StoreRetentionRule } from './retention.js'
+import { DECISION_VERDICT_PENDING_STATES, DECISION_VERDICT_TERMINAL_STATES, sqlStates } from './decision-states.js'
 import {
   ClusterSkillLedgerSchema,
   type ClusterSkillLedger,
@@ -585,7 +586,7 @@ export function transcriptChannelKey(channel: string, transportScope?: string | 
 /** The U+001F that {@link transcriptChannelKey} joins a channel to its physical-bot scope with. */
 export const TRANSCRIPT_SCOPE_SEPARATOR = '\u001f'
 
-// One session's rows, binding (coordinate, sessionKey). The thread disjunct is a Stage 1 stopgap: a createNew coordinate IS the physical thread, keeping §8.5 cross-agent catch-up alive until Stage 3's admitted-history/background split (message-intake.md §5.2) retires it; append matches no thread, so there it is admissions alone.
+// One session's rows, binding (coordinate, sessionKey); the thread disjunct stays for mid-turn refresh (message-intake.md §3), and backgroundSeqsForAdmission excludes exactly its rows.
 const SESSION_ROW_SCOPE_SQL = `(transcript.thread = ? OR EXISTS (
         SELECT 1 FROM transcript_recipient tr_s
         WHERE tr_s.seq = transcript.seq AND tr_s.sessionKey = ?))`
@@ -599,9 +600,93 @@ const AGENT_DELIVERY_SCOPE_SQL = `(sender = ? OR EXISTS (
  *  row. Deliberately separate from §9's read window, which happens to share the number today. */
 export const OBSERVATION_FLOOR_TEXT_ROWS = 100
 
-/** §8 rule 2's third clause: rows a reserved/evaluating/unreleased verdict still needs. Stage 3
- *  fills this in; no verdict table exists yet, so nothing is held back. */
-export const RETAINED_BY_PENDING_VERDICT_SQL = ''
+export { DECISION_VERDICT_PENDING_STATES, DECISION_VERDICT_TERMINAL_STATES }
+const PENDING_VERDICT_SQL = sqlStates(DECISION_VERDICT_PENDING_STATES)
+const TERMINAL_VERDICT_SQL = sqlStates(DECISION_VERDICT_TERMINAL_STATES)
+
+/** §8 rule 2's third clause: only the candidate row needs pinning, since its history is frozen into inputJson. */
+export const RETAINED_BY_PENDING_VERDICT_SQL = `SELECT 1 FROM decision_verdict v WHERE v.seq = transcript.seq AND v.state IN ${PENDING_VERDICT_SQL}`
+
+/** Verdict bodies outlive their terminal transition this long, or until 20 newer terminal verdicts exist. */
+export const DECISION_BODY_RETENTION_MS = 24 * 3_600_000
+export const DECISION_BODY_RETAINED_VERDICTS = 20
+
+/** The step-1 row a delivery was recorded at (message-intake.md §3): the verdict's position. */
+export interface ChannelRecordRef {
+  seq: number
+  orgId: string
+  transcriptChannel: string
+  thread: string | null
+}
+
+export type DecisionVerdictState =
+  (typeof DECISION_VERDICT_PENDING_STATES)[number] | (typeof DECISION_VERDICT_TERMINAL_STATES)[number]
+
+/** One `decision_verdict` row (message-intake.md §4.3). */
+export interface DecisionVerdictRow {
+  seq: number
+  subject: string
+  orgId: string
+  channel: string
+  agentId: string
+  integrationId: string
+  decisionId: string
+  state: DecisionVerdictState
+  disposition: 'match' | 'skip' | 'unavailable' | null
+  unavailableReason: string | null
+  cancelReason: string | null
+  configJson: string
+  inputJson: string | null
+  answerJson: string | null
+  deliveryJson: string | null
+  suppliedSeqsJson: string | null
+  requestedModel: string
+  actualModel: string | null
+  latencyMs: number | null
+  inputTokens: number | null
+  outputTokens: number | null
+  deadlineAt: number
+  ownerFence: string
+  createdAt: number
+  settledAt: number | null
+  finishedAt: number | null
+  bodiesStrippedAt: number | null
+}
+
+export type DecisionVerdictReservation = Pick<
+  DecisionVerdictRow,
+  | 'seq'
+  | 'subject'
+  | 'orgId'
+  | 'channel'
+  | 'agentId'
+  | 'integrationId'
+  | 'decisionId'
+  | 'configJson'
+  | 'deliveryJson'
+  | 'requestedModel'
+  | 'deadlineAt'
+  | 'ownerFence'
+  | 'createdAt'
+>
+
+/** How a verdict settled; `skip` is terminal at once, `match`/`unavailable` wait for release. */
+export interface DecisionSettlement {
+  disposition: 'match' | 'skip' | 'unavailable'
+  unavailableReason?: string
+  answerJson?: string
+  actualModel?: string
+  latencyMs?: number
+  inputTokens?: number
+  outputTokens?: number
+  settledAt: number
+}
+
+/** A text row as a Decision state or a background block reads it. */
+export type ChannelTextRow = Pick<
+  TranscriptRow,
+  'seq' | 'thread' | 'ts' | 'sender' | 'text' | 'body' | 'quoteJson' | 'eventTimeUs' | 'kind'
+>
 
 /** How many inserts into one conversation arm an observation sweep for it. */
 export const OBSERVATION_SWEEP_INSERTS = 32
@@ -1050,7 +1135,52 @@ export const TRANSCRIPT_ADMISSION_BACKFILL = `
                             ELSE CONCAT(s.channel, '${TRANSCRIPT_SCOPE_SEPARATOR}', s.transportScope) END
 `
 
-export const SCHEMA_VERSION = 25
+// The Stage 1 gate's durable verdict and per-lane release cursor (message-intake.md §4.3, §5.1).
+const DECISION_SCHEMA = `
+      CREATE TABLE IF NOT EXISTS decision_verdict (
+        seq INTEGER NOT NULL,
+        subject TEXT NOT NULL,
+        orgId TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        agentId TEXT NOT NULL,
+        integrationId TEXT NOT NULL,
+        decisionId TEXT NOT NULL,
+        state TEXT NOT NULL,
+        disposition TEXT,
+        unavailableReason TEXT,
+        cancelReason TEXT,
+        configJson TEXT NOT NULL,
+        inputJson TEXT,
+        answerJson TEXT,
+        deliveryJson TEXT,
+        suppliedSeqsJson TEXT,
+        requestedModel TEXT NOT NULL,
+        actualModel TEXT,
+        latencyMs INTEGER,
+        inputTokens INTEGER,
+        outputTokens INTEGER,
+        deadlineAt INTEGER NOT NULL,
+        ownerFence TEXT NOT NULL,
+        createdAt INTEGER NOT NULL,
+        settledAt INTEGER,
+        finishedAt INTEGER,
+        bodiesStrippedAt INTEGER,
+        PRIMARY KEY (seq, subject)
+      );
+      CREATE INDEX IF NOT EXISTS decision_verdict_lane ON decision_verdict (orgId, channel, subject, seq);
+      CREATE INDEX IF NOT EXISTS decision_verdict_state ON decision_verdict (state, agentId);
+      CREATE INDEX IF NOT EXISTS decision_verdict_integration ON decision_verdict (integrationId);
+      CREATE TABLE IF NOT EXISTS decision_release (
+        orgId TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        releasedSeq INTEGER NOT NULL DEFAULT 0,
+        updatedAt INTEGER,
+        PRIMARY KEY (orgId, channel, subject)
+      );
+`
+
+export const SCHEMA_VERSION = 26
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1344,7 +1474,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
       DROP TABLE transcript_recipient_legacy;
     `)
   },
-  async (db) => await db.exec('ALTER TABLE sessions ADD COLUMN decisionModel TEXT')
+  async (db) => await db.exec('ALTER TABLE sessions ADD COLUMN decisionModel TEXT'),
+  // v26 adds decision_verdict and decision_release, which the CREATE block emits; the bump fences out older sweeps.
+  async () => undefined
 ]
 
 // The list and the version are two halves of one fact: step `i` moves a database from
@@ -1355,6 +1487,11 @@ if (SCHEMA_MIGRATIONS.length !== SCHEMA_VERSION - 1) {
   throw new Error(
     `local store schema is inconsistent: ${SCHEMA_MIGRATIONS.length} migration step(s) cannot reach v${SCHEMA_VERSION}`
   )
+}
+
+/** Keep `seq` numeric whichever backend read the row. */
+function normalizeVerdict(row: DecisionVerdictRow): DecisionVerdictRow {
+  return { ...row, seq: Number(row.seq) }
 }
 
 export class LocalStore {
@@ -1493,6 +1630,7 @@ export class LocalStore {
         PRIMARY KEY (agentId, sessionKey)
       );
       ${THREAD_PARTICIPATION_SCHEMA}
+      ${DECISION_SCHEMA}
       ${APPEND_RESERVATION_SCHEMA}
       -- Latest-wins session metadata awaiting a correlated CP persistence ACK.
       -- This is deliberately separate from sessions: an upgrade starts with an
@@ -3752,6 +3890,16 @@ export class LocalStore {
                                   WHERE o.seq = tr.seq AND o.sessionKey <> ?))`
         )
         .run(key, key)
+      // An admitted verdict keeps its minimal metadata past its session, never its content (decisions.md §8.1).
+      await tx
+        .prepare(
+          `UPDATE decision_verdict
+              SET inputJson = NULL, answerJson = NULL, deliveryJson = NULL, suppliedSeqsJson = NULL, bodiesStrippedAt = ?
+            WHERE state = 'admitted' AND bodiesStrippedAt IS NULL
+              AND EXISTS (SELECT 1 FROM transcript_recipient tr
+                           WHERE tr.seq = decision_verdict.seq AND tr.agentId = decision_verdict.subject AND tr.sessionKey = ?)`
+        )
+        .run(Date.now(), key)
       await tx.prepare('DELETE FROM transcript_recipient WHERE sessionKey = ?').run(key)
       // A reservation that survived its session would hand the next message a coordinate
       // whose transcript is still on disk — the inheritance the timestamp exists to prevent.
@@ -5270,6 +5418,386 @@ export class LocalStore {
     let deleted = 0
     for (const row of conversations) deleted += await this.sweepObservations(row.orgId, row.channel)
     return deleted
+  }
+
+  // ── decision verdicts (message-intake.md §4.3, §5.1; decisions.md §8.3) ──
+
+  /** The step-1 row a delivery was recorded at, found by its dedup key so a redelivery names the same row. */
+  async channelRecordRef(
+    transcriptChannel: string,
+    ts: string,
+    orgAgentId: string
+  ): Promise<ChannelRecordRef | undefined> {
+    const orgId = await this.transcriptOrg(transcriptChannel, undefined, orgAgentId)
+    const row = (await this.db
+      .prepare(`SELECT seq, thread FROM transcript WHERE orgId = ? AND channel = ? AND ts = ? AND kind = 'text'`)
+      .get(orgId, transcriptChannel, ts)) as { seq: number; thread: string | null } | undefined
+    return row ? { seq: Number(row.seq), orgId, transcriptChannel, thread: row.thread } : undefined
+  }
+
+  /** Reserve a verdict at a recorded row; a swept row cannot be reserved, and a second reserve reads the first. */
+  async reserveDecisionVerdict(
+    r: DecisionVerdictReservation
+  ): Promise<{ created: boolean; verdict: DecisionVerdictRow | undefined }> {
+    return await this.transaction(async (raw) => {
+      const tx = accessOf(raw)
+      const inserted = await tx
+        .prepare(
+          `INSERT OR IGNORE INTO decision_verdict
+             (seq, subject, orgId, channel, agentId, integrationId, decisionId, state, configJson, deliveryJson,
+              requestedModel, deadlineAt, ownerFence, createdAt)
+           SELECT t.seq, @subject, @orgId, @channel, @agentId, @integrationId, @decisionId, 'reserved', @configJson,
+                  @deliveryJson, @requestedModel, CAST(@deadlineAt AS INTEGER), @ownerFence, CAST(@createdAt AS INTEGER)
+             FROM transcript t WHERE t.seq = @seq AND t.orgId = @orgId AND t.channel = @channel AND t.kind = 'text'`
+        )
+        .run({ ...r })
+      await tx
+        .prepare(
+          'INSERT OR IGNORE INTO decision_release (orgId, channel, subject, releasedSeq, updatedAt) VALUES (?, ?, ?, 0, ?)'
+        )
+        .run(r.orgId, r.channel, r.subject, r.createdAt)
+      const verdict = (await tx
+        .prepare('SELECT * FROM decision_verdict WHERE seq = ? AND subject = ?')
+        .get(r.seq, r.subject)) as DecisionVerdictRow | undefined
+      return { created: inserted.changes === 1, verdict: verdict ? normalizeVerdict(verdict) : undefined }
+    })
+  }
+
+  async getDecisionVerdict(seq: number, subject: string): Promise<DecisionVerdictRow | undefined> {
+    const row = (await this.db
+      .prepare('SELECT * FROM decision_verdict WHERE seq = ? AND subject = ?')
+      .get(seq, subject)) as DecisionVerdictRow | undefined
+    return row ? normalizeVerdict(row) : undefined
+  }
+
+  /** reserved → evaluating under the owner fence, freezing the input the provider sees. */
+  async beginDecisionEvaluation(seq: number, subject: string, fence: string, inputJson: string): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE decision_verdict SET state = 'evaluating', inputJson = ?
+          WHERE seq = ? AND subject = ? AND ownerFence = ? AND state = 'reserved'`
+      )
+      .run(inputJson, seq, subject, fence)
+    return result.changes === 1
+  }
+
+  /** reserved|evaluating → settled, or straight to skipped (which advances the lane cursor at once). */
+  async settleDecisionVerdict(seq: number, subject: string, fence: string, s: DecisionSettlement): Promise<boolean> {
+    return await this.transaction(async (raw) => {
+      const tx = accessOf(raw)
+      const skip = s.disposition === 'skip'
+      const result = await tx
+        .prepare(
+          `UPDATE decision_verdict
+              SET state = @state, disposition = @disposition, unavailableReason = @unavailableReason,
+                  answerJson = @answerJson, actualModel = @actualModel, latencyMs = @latencyMs,
+                  inputTokens = @inputTokens, outputTokens = @outputTokens, settledAt = @settledAt,
+                  finishedAt = @finishedAt, deliveryJson = CASE WHEN @skip = 1 THEN NULL ELSE deliveryJson END
+            WHERE seq = @seq AND subject = @subject AND ownerFence = @fence AND state IN ('reserved', 'evaluating')`
+        )
+        .run({
+          state: skip ? 'skipped' : 'settled',
+          disposition: s.disposition,
+          unavailableReason: s.unavailableReason ?? null,
+          answerJson: s.answerJson ?? null,
+          actualModel: s.actualModel ?? null,
+          latencyMs: s.latencyMs ?? null,
+          inputTokens: s.inputTokens ?? null,
+          outputTokens: s.outputTokens ?? null,
+          settledAt: s.settledAt,
+          finishedAt: skip ? s.settledAt : null,
+          skip: skip ? 1 : 0,
+          seq,
+          subject,
+          fence
+        })
+      if (result.changes !== 1) return false
+      if (skip) await this.recomputeDecisionRelease(tx, seq, subject, s.settledAt)
+      return true
+    })
+  }
+
+  /** Any pending state → a terminal one; a null fence is the operator's (`!stop`, config cancel). */
+  async finishDecisionVerdict(
+    seq: number,
+    subject: string,
+    fence: string | null,
+    state: 'admitted' | 'canceled' | 'skipped',
+    cancelReason: string | null,
+    at: number
+  ): Promise<boolean> {
+    return await this.transaction(async (raw) => {
+      const tx = accessOf(raw)
+      const result = await tx
+        .prepare(
+          `UPDATE decision_verdict SET state = ?, cancelReason = ?, deliveryJson = NULL, finishedAt = ?
+            WHERE seq = ? AND subject = ? AND state IN ${PENDING_VERDICT_SQL}${fence === null ? '' : ' AND ownerFence = ?'}`
+        )
+        .run(state, cancelReason, at, seq, subject, ...(fence === null ? [] : [fence]))
+      if (result.changes !== 1) return false
+      await this.recomputeDecisionRelease(tx, seq, subject, at)
+      return true
+    })
+  }
+
+  /** The cursor passes only verdicts that are all terminal: up to the one just below the lane's pending head. */
+  private async recomputeDecisionRelease(tx: StoreAccess, seq: number, subject: string, at: number): Promise<void> {
+    const lane = (await tx
+      .prepare('SELECT orgId, channel FROM decision_verdict WHERE seq = ? AND subject = ?')
+      .get(seq, subject)) as { orgId: string; channel: string } | undefined
+    if (!lane) return
+    const head = (await tx
+      .prepare(
+        `SELECT MIN(seq) AS head FROM decision_verdict
+          WHERE orgId = ? AND channel = ? AND subject = ? AND state IN ${PENDING_VERDICT_SQL}`
+      )
+      .get(lane.orgId, lane.channel, subject)) as { head: number | null } | undefined
+    const target = (
+      head?.head != null
+        ? await tx
+            .prepare(
+              'SELECT MAX(seq) AS target FROM decision_verdict WHERE orgId = ? AND channel = ? AND subject = ? AND seq < ?'
+            )
+            .get(lane.orgId, lane.channel, subject, head.head)
+        : await tx
+            .prepare('SELECT MAX(seq) AS target FROM decision_verdict WHERE orgId = ? AND channel = ? AND subject = ?')
+            .get(lane.orgId, lane.channel, subject)
+    ) as { target: number | null } | undefined
+    if (target?.target == null) return
+    await tx
+      .prepare(
+        `UPDATE decision_release SET releasedSeq = ?, updatedAt = ?
+          WHERE orgId = ? AND channel = ? AND subject = ? AND releasedSeq < ?`
+      )
+      .run(target.target, at, lane.orgId, lane.channel, subject, target.target)
+  }
+
+  /** Move a pending verdict from a departed owner to this one; the old owner's late write then misses its fence. */
+  async adoptDecisionVerdict(seq: number, subject: string, fromFence: string, toFence: string): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE decision_verdict SET ownerFence = ?
+          WHERE seq = ? AND subject = ? AND ownerFence = ? AND state IN ${PENDING_VERDICT_SQL}`
+      )
+      .run(toFence, seq, subject, fromFence)
+    return result.changes === 1
+  }
+
+  /** The only verdict of a lane that may drain: its lowest pending one. */
+  async decisionLaneHead(orgId: string, channel: string, subject: string): Promise<DecisionVerdictRow | undefined> {
+    const row = (await this.db
+      .prepare(
+        `SELECT * FROM decision_verdict
+          WHERE orgId = ? AND channel = ? AND subject = ? AND state IN ${PENDING_VERDICT_SQL}
+          ORDER BY seq ASC LIMIT 1`
+      )
+      .get(orgId, channel, subject)) as DecisionVerdictRow | undefined
+    return row ? normalizeVerdict(row) : undefined
+  }
+
+  async decisionReleasedSeq(orgId: string, channel: string, subject: string): Promise<number | undefined> {
+    const row = (await this.db
+      .prepare('SELECT releasedSeq FROM decision_release WHERE orgId = ? AND channel = ? AND subject = ?')
+      .get(orgId, channel, subject)) as { releasedSeq: number } | undefined
+    return row ? Number(row.releasedSeq) : undefined
+  }
+
+  async listPendingDecisionVerdicts(
+    filter: { agentIds?: readonly string[]; integrationId?: string; subject?: string; channel?: string } = {}
+  ): Promise<DecisionVerdictRow[]> {
+    const where = [`state IN ${PENDING_VERDICT_SQL}`]
+    const params: unknown[] = []
+    if (filter.agentIds) {
+      if (filter.agentIds.length === 0) return []
+      where.push(`agentId IN (${filter.agentIds.map(() => '?').join(', ')})`)
+      params.push(...filter.agentIds)
+    }
+    for (const column of ['integrationId', 'subject', 'channel'] as const) {
+      const value = filter[column]
+      if (value === undefined) continue
+      where.push(`${column} = ?`)
+      params.push(value)
+    }
+    const rows = (await this.db
+      .prepare(`SELECT * FROM decision_verdict WHERE ${where.join(' AND ')} ORDER BY seq ASC LIMIT ?`)
+      .all(...params, STORE_RETENTION_SCAN_LIMIT)) as DecisionVerdictRow[]
+    return rows.map(normalizeVerdict)
+  }
+
+  /** Cancel every pending verdict a `!stop` or a config change covers; returns the keys it moved. */
+  async cancelPendingDecisionVerdicts(
+    filter: { subject: string; channel: string } | { integrationId: string },
+    reason: string,
+    at: number
+  ): Promise<{ seq: number; subject: string }[]> {
+    const pending = await this.listPendingDecisionVerdicts(filter)
+    const canceled: { seq: number; subject: string }[] = []
+    for (const row of pending) {
+      if (await this.finishDecisionVerdict(row.seq, row.subject, null, 'canceled', reason, at))
+        canceled.push({ seq: row.seq, subject: row.subject })
+    }
+    return canceled
+  }
+
+  /** First writer wins: a re-release after a crash reuses the background list the first release chose. */
+  async claimVerdictBackground(seq: number, subject: string, seqs: readonly number[]): Promise<number[]> {
+    await this.db
+      .prepare(
+        'UPDATE decision_verdict SET suppliedSeqsJson = ? WHERE seq = ? AND subject = ? AND suppliedSeqsJson IS NULL'
+      )
+      .run(JSON.stringify(seqs), seq, subject)
+    const row = (await this.db
+      .prepare('SELECT suppliedSeqsJson FROM decision_verdict WHERE seq = ? AND subject = ?')
+      .get(seq, subject)) as { suppliedSeqsJson: string | null } | undefined
+    if (!row?.suppliedSeqsJson) return [...seqs]
+    try {
+      const parsed: unknown = JSON.parse(row.suppliedSeqsJson)
+      return Array.isArray(parsed) ? parsed.filter((n): n is number => typeof n === 'number') : [...seqs]
+    } catch {
+      return [...seqs]
+    }
+  }
+
+  /** Integration removal on an exclusively owned store (decisions.md §8.1). */
+  async purgeDecisionVerdicts(filter: { integrationId: string }): Promise<number> {
+    const result = await this.db
+      .prepare('DELETE FROM decision_verdict WHERE integrationId = ?')
+      .run(filter.integrationId)
+    await this.deleteOrphanDecisionReleases()
+    return Number(result.changes)
+  }
+
+  private async deleteOrphanDecisionReleases(): Promise<void> {
+    await this.db
+      .prepare(
+        `DELETE FROM decision_release WHERE NOT EXISTS (
+           SELECT 1 FROM decision_verdict v
+            WHERE v.orgId = decision_release.orgId AND v.channel = decision_release.channel
+              AND v.subject = decision_release.subject)`
+      )
+      .run()
+  }
+
+  /** The state cut at a verdict's row (message-intake.md §9): the row, newest-first history, and gap evidence. */
+  async decisionWindow(
+    orgId: string,
+    channel: string,
+    seq: number,
+    limit = 100,
+    rootTsOf?: (thread: string) => string | undefined
+  ): Promise<{ current: ChannelTextRow | undefined; history: ChannelTextRow[]; full: boolean; rootMissing: boolean }> {
+    const columns = 'seq, thread, ts, sender, text, body, quoteJson, eventTimeUs, kind'
+    const current = (await this.db
+      .prepare(`SELECT ${columns} FROM transcript WHERE seq = ? AND orgId = ? AND channel = ? AND kind = 'text'`)
+      .get(seq, orgId, channel)) as ChannelTextRow | undefined
+    const rows = (await this.db
+      .prepare(
+        `SELECT ${columns} FROM transcript
+          WHERE orgId = ? AND channel = ? AND kind = 'text' AND seq < ? ORDER BY seq DESC LIMIT ?`
+      )
+      .all(orgId, channel, seq, limit + 1)) as ChannelTextRow[]
+    const oldest = (await this.db
+      .prepare(
+        `SELECT ts, thread FROM transcript WHERE orgId = ? AND channel = ? AND kind = 'text' ORDER BY seq ASC LIMIT 1`
+      )
+      .get(orgId, channel)) as { ts: string | null; thread: string | null } | undefined
+    let rootMissing = false
+    if (oldest?.thread && oldest.thread !== oldest.ts) {
+      // The platform names the root; without it, only a conversation with some thread = ts row threads by root ts.
+      const rootTs = rootTsOf
+        ? rootTsOf(oldest.thread)
+        : (await this.db
+              .prepare(
+                `SELECT 1 FROM transcript WHERE orgId = ? AND channel = ? AND kind = 'text' AND thread = ts LIMIT 1`
+              )
+              .get(orgId, channel)) !== undefined
+          ? oldest.thread
+          : undefined
+      rootMissing =
+        rootTs !== undefined &&
+        rootTs !== oldest.ts &&
+        (await this.db
+          .prepare(`SELECT 1 FROM transcript WHERE orgId = ? AND channel = ? AND kind = 'text' AND ts = ?`)
+          .get(orgId, channel, rootTs)) === undefined
+    }
+    const history = rows.slice(0, limit).map((row) => ({ ...row, seq: Number(row.seq) }))
+    return {
+      current: current ? { ...current, seq: Number(current.seq) } : undefined,
+      history,
+      full: rows.length > limit,
+      rootMissing
+    }
+  }
+
+  /** §5.2 background for one admission: this conversation's rows since the session's last admitted row that it never received. */
+  async backgroundSeqsForAdmission(input: {
+    agentId: string
+    transcriptChannel: string
+    coordinate: string
+    sessionKey: string
+    currentSeq: number
+    limit: number
+    orgId?: string
+  }): Promise<number[]> {
+    const rows = (await this.db
+      .prepare(
+        `SELECT t.seq AS seq, t.text AS text FROM transcript t
+          WHERE t.orgId = @org AND t.channel = @channel AND t.kind = 'text' AND t.seq < @cur
+            AND t.seq > COALESCE((SELECT MAX(tr.seq) FROM transcript_recipient tr JOIN transcript t2 ON t2.seq = tr.seq
+                                   WHERE tr.sessionKey = @key AND t2.kind = 'text' AND tr.seq < @cur), 0)
+            AND t.sender <> @agent
+            AND (t.thread IS NULL OR t.thread <> @coordinate)
+            AND NOT EXISTS (SELECT 1 FROM transcript_recipient r WHERE r.seq = t.seq AND r.sessionKey = @key)
+          ORDER BY t.seq DESC LIMIT @cap`
+      )
+      .all({
+        org: this.orgForRead(input.agentId, input.orgId),
+        channel: input.transcriptChannel,
+        cur: input.currentSeq,
+        key: input.sessionKey,
+        agent: input.agentId,
+        coordinate: input.coordinate,
+        cap: input.limit + 16
+      })) as { seq: number; text: string }[]
+    return rows
+      .filter((row) => !isControlCommandText(row.text))
+      .slice(0, input.limit)
+      .map((row) => Number(row.seq))
+      .reverse()
+  }
+
+  /** The persisted background of one admission, read back inside its own conversation only. */
+  async transcriptRowsBySeq(
+    scope: { agentId: string; transcriptChannel: string; orgId?: string },
+    seqs: readonly number[]
+  ): Promise<ChannelTextRow[]> {
+    if (seqs.length === 0) return []
+    const rows = (await this.db
+      .prepare(
+        `SELECT seq, thread, ts, sender, text, body, quoteJson, eventTimeUs, kind FROM transcript
+          WHERE kind = 'text' AND orgId = ? AND channel = ? AND seq IN (${seqs.map(() => '?').join(', ')})
+          ORDER BY seq ASC`
+      )
+      .all(this.orgForRead(scope.agentId, scope.orgId), scope.transcriptChannel, ...seqs)) as ChannelTextRow[]
+    return rows.map((row) => ({ ...row, seq: Number(row.seq) }))
+  }
+
+  /** decisions.md §8.1: terminal bodies go after 24 h or once 20 newer terminal verdicts share the lane. */
+  async stripDecisionVerdictBodies(now: number): Promise<number> {
+    const result = await this.db
+      .prepare(
+        `UPDATE decision_verdict
+            SET inputJson = NULL, answerJson = NULL, deliveryJson = NULL, suppliedSeqsJson = NULL, bodiesStrippedAt = @now
+          WHERE bodiesStrippedAt IS NULL AND state IN ${TERMINAL_VERDICT_SQL}
+            AND (COALESCE(finishedAt, createdAt) < @cutoff
+                 OR (SELECT COUNT(*) FROM decision_verdict n
+                      WHERE n.orgId = decision_verdict.orgId AND n.channel = decision_verdict.channel
+                        AND n.subject = decision_verdict.subject AND n.state IN ${TERMINAL_VERDICT_SQL}
+                        AND n.seq > decision_verdict.seq) >= @kept)`
+      )
+      .run({ now, cutoff: now - DECISION_BODY_RETENTION_MS, kept: DECISION_BODY_RETAINED_VERDICTS })
+    await this.deleteOrphanDecisionReleases()
+    return Number(result.changes)
   }
 
   /** Arm a sweep for one conversation: every {@link OBSERVATION_SWEEP_INSERTS} inserts, from a

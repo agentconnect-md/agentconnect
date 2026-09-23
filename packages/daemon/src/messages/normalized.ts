@@ -4,6 +4,7 @@ import type {
   SessionImageAttachment,
   UserTurnBody
 } from '@agentconnect.md/protocol'
+import type { ChannelIntake } from '../decisions/evidence.js'
 
 /**
  * A file shared alongside a message. Platform ingresses carry metadata + a
@@ -114,6 +115,8 @@ export interface NormalizedMessage extends Omit<
    * webhook delivery's trusted metadata, so the row keeps the binding it already carries.
    */
   adoptedSession?: boolean
+  /** By decision admission context (decisions.md §8.4): daemon-local, persisted with the inbox row, never a trigger. */
+  channelIntake?: ChannelIntake
 }
 
 /**

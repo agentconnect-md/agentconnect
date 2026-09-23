@@ -88,6 +88,8 @@ export interface CommandHost {
   sessionLinkSource(platform: string, integrationId?: string): string | undefined
   /** Thread affinity for the routing ladder a command reuses. */
   threadOwner(channel: string, thread: string, transportScope?: string | null): Promise<string | null>
+  /** Cancel the agent's pending By decision verdicts in the message's conversation; returns how many. */
+  cancelDecisionVerdicts?(agentId: string, msg: NormalizedMessage, kind: 'stop' | 'cancel'): Promise<number>
   /** The session coordinate a target keys on, when it is not the delivery thread
    *  (channel-session-mode.md §3.1). Undefined ⇒ the session belongs to the thread. */
   sessionCoordinateFor(
@@ -752,6 +754,8 @@ export class CommandHandlers {
 
   private async runStop(ctx: CommandContext): Promise<boolean> {
     const { target, key, thread, rec, acpSessionId, inflight, reply } = ctx
+    // decisions.md §8.3: a stop never waits on Jev, so pending verdicts go first.
+    const canceled = (await this.host.cancelDecisionVerdicts?.(target.agentId, ctx.msg, 'stop')) ?? 0
     // A conversation that appends has ONE session, so the mute latch would silence the
     // whole room until someone @mentions — a blast radius nobody typing `!stop` in a thread
     // is asking for. There it interrupts the turn and nothing else (channel-session-mode.md
@@ -765,7 +769,8 @@ export class CommandHandlers {
       ? 'Muted in this thread — @mention me to resume.'
       : 'This conversation keeps one session, so nothing is muted.'
     if (!inflight) {
-      reply(rec ? `${mutes ? '🔇 ' : ''}Nothing is running. ${muteNote}` : 'Nothing is running to stop.')
+      if (canceled > 0) reply(`🛑 Stopped.${rec ? ` ${muteNote}` : ''}`)
+      else reply(rec ? `${mutes ? '🔇 ' : ''}Nothing is running. ${muteNote}` : 'Nothing is running to stop.')
       return true
     }
     await this.host.interruptTurn(target.agentId, key, mutes ? 'stop' : 'cancel', acpSessionId ?? undefined, {
@@ -778,10 +783,11 @@ export class CommandHandlers {
   /** `!cancel` — interrupt the in-flight turn without muting the session. */
   private async runCancel(ctx: CommandContext): Promise<boolean> {
     const { target, key, acpSessionId, inflight, reply } = ctx
+    const canceled = (await this.host.cancelDecisionVerdicts?.(target.agentId, ctx.msg, 'cancel')) ?? 0
     // `!cancel` interrupts the in-flight turn but does NOT mute — the session stays
     // live so a follow-up message dispatches normally. No-op (with a note) when idle.
     if (!inflight) {
-      reply('Nothing is running to cancel.')
+      reply(canceled > 0 ? '🛑 Cancelled.' : 'Nothing is running to cancel.')
       return true
     }
     await this.host.interruptTurn(target.agentId, key, 'cancel', acpSessionId ?? undefined, {

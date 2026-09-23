@@ -204,4 +204,26 @@ describe('daemon Decision evaluator', () => {
     evaluator.close()
     await expect(evaluator.evaluate(input)).rejects.toMatchObject({ name: 'AbortError' })
   })
+
+  it('shortens the timeout to the decision-stage deadline and times out a past one without I/O', async () => {
+    const { evaluator, providerFetch, credentials } = setup({ timeoutMs: 5_000 })
+    expect(await evaluator.evaluate({ ...input, deadlineAt: Date.now() - 1 })).toEqual({
+      status: 'unavailable',
+      reason: 'timeout'
+    })
+    expect(credentials).not.toHaveBeenCalled()
+    expect(providerFetch).not.toHaveBeenCalled()
+    providerFetch.mockImplementation(
+      (_url, options) =>
+        new Promise((_resolve, reject) => {
+          options!.signal!.addEventListener('abort', () => reject(options!.signal!.reason), { once: true })
+        })
+    )
+    const started = Date.now()
+    expect(await evaluator.evaluate({ ...input, deadlineAt: Date.now() + 40 })).toEqual({
+      status: 'unavailable',
+      reason: 'timeout'
+    })
+    expect(Date.now() - started).toBeLessThan(2_000)
+  })
 })

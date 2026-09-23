@@ -7,11 +7,7 @@ import { transcriptChannelKey } from '../src/store/local-store.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
-/**
- * Stage 3a By decision hold (decisions.md §3.1, §7.1): a human candidate in a bound conversation is
- * recorded (message-intake.md §5 step 1) and never dispatched, whatever rung selected it, until the
- * Stage 3b gate lands. Commands and agent-authored traffic keep their own paths.
- */
+// By decision hold: a bound conversation whose binding cannot run is recorded and never dispatched, never Any.
 
 const DECISION = 'd-1'
 const gate = { type: 'gate', decisionId: DECISION, when: { type: 'boolean', values: [true] } }
@@ -26,8 +22,8 @@ const definition = {
 
 interface AgentSpec {
   id: string
-  /** 'decision' binds C1 with a bundle; 'orphan' is an unscoped decision rule with no bundle; 'auto' is Any. */
-  trigger: 'decision' | 'auto' | 'orphan'
+  /** 'decision' binds C1 with a bundle; 'disabled' binds it needing review; 'orphan' has no bundle; 'auto' is Any. */
+  trigger: 'decision' | 'disabled' | 'auto' | 'orphan'
 }
 
 function scaffold(agents: AgentSpec[]): string {
@@ -58,12 +54,18 @@ function scaffold(agents: AgentSpec[]): string {
             core: {
               bindRules: [
                 { match: { kind: 'mention' } },
-                a.trigger === 'orphan' ? { match: { kind: 'decision' } } : { match: { kind: a.trigger }, channel: 'C1' }
+                a.trigger === 'orphan'
+                  ? { match: { kind: 'decision' } }
+                  : { match: { kind: a.trigger === 'disabled' ? 'decision' : a.trigger }, channel: 'C1' }
               ],
-              ...(a.trigger === 'decision'
+              ...(a.trigger === 'decision' || a.trigger === 'disabled'
                 ? {
                     decisions: {
-                      bindings: [{ channel: 'C1', consumer: gate, enabled: true }],
+                      bindings: [
+                        a.trigger === 'decision'
+                          ? { channel: 'C1', consumer: gate, enabled: true }
+                          : { channel: 'C1', consumer: gate, enabled: false, disabledReason: 'needs_review' }
+                      ],
                       definitions: [definition]
                     }
                   }
@@ -128,7 +130,7 @@ const human = (over: Record<string, unknown> = {}) => {
 const route = async (daemon: Daemon, msg: unknown, on: string[]): Promise<any> =>
   await (daemon as any).onInboundOutcome(msg, on)
 
-describe('Stage 3a By decision hold', () => {
+describe('By decision hold', () => {
   it('advertises decision-trigger-v1 to the control plane', async () => {
     const { daemon } = await boot([{ id: 'bot-a', trigger: 'decision' }])
     expect((daemon as any).registrationFeatures()).toContain('decision-trigger-v1')
@@ -136,7 +138,7 @@ describe('Stage 3a By decision hold', () => {
   })
 
   it('records and holds an unaddressed message, an explicit @mention, and a thread reply', async () => {
-    const { daemon, store, channel, dispatch } = await boot([{ id: 'bot-a', trigger: 'decision' }])
+    const { daemon, store, channel, dispatch } = await boot([{ id: 'bot-a', trigger: 'disabled' }])
     ;(daemon as any).sessions.threadOwner = async () => 'bot-a'
 
     const unaddressed = await route(daemon, human({ text: 'anyone?' }), ['int-bot-a'])
@@ -163,7 +165,7 @@ describe('Stage 3a By decision hold', () => {
   })
 
   it('logs the hold once per window', async () => {
-    const { daemon } = await boot([{ id: 'bot-a', trigger: 'decision' }])
+    const { daemon } = await boot([{ id: 'bot-a', trigger: 'disabled' }])
     const info = vi.spyOn((daemon as any).log, 'info')
     await route(daemon, human(), ['int-bot-a'])
     await route(daemon, human(), ['int-bot-a'])
@@ -201,7 +203,7 @@ describe('Stage 3a By decision hold', () => {
 
   it('still dispatches a peer whose own conversation is Any', async () => {
     const { daemon, store, channel } = await boot([
-      { id: 'bot-a', trigger: 'decision' },
+      { id: 'bot-a', trigger: 'disabled' },
       { id: 'bot-b', trigger: 'auto' }
     ])
     await route(daemon, human({ text: 'both of you' }), ['int-bot-a', 'int-bot-b'])
@@ -228,16 +230,17 @@ describe('Stage 3a By decision hold', () => {
       }
     }
 
-    it('consumes a matching, a mismatched, and an absent-binding decisionId without dispatching', async () => {
+    it('consumes a mismatched, an absent, and an unbound decisionId, and any on a disabled binding', async () => {
       const { daemon, store, channel, dispatch } = await boot([
         { id: 'bot-a', trigger: 'decision' },
-        { id: 'bot-b', trigger: 'auto' }
+        { id: 'bot-b', trigger: 'auto' },
+        { id: 'bot-c', trigger: 'disabled' }
       ])
       for (const frame of [
-        relayFrame('bot-a', { decisionId: DECISION }),
         relayFrame('bot-a', { decisionId: 'other' }),
         relayFrame('bot-a'),
-        relayFrame('bot-b', { decisionId: DECISION })
+        relayFrame('bot-b', { decisionId: DECISION }),
+        relayFrame('bot-c', { decisionId: DECISION })
       ])
         expect(await (daemon as any).handleRelayIm(frame)).toMatchObject({ accepted: true })
       expect(await rowsOf(store, channel)).toHaveLength(4)

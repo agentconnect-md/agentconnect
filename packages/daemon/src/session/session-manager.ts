@@ -29,6 +29,7 @@ import { ingestInboundTranscript } from './turn/transcript-ingest.js'
 import { matchSkillInvocation, renderSkillInvocation } from './skill-invocation.js'
 import type { RuntimeCommand } from '@agentconnect.md/protocol'
 import { deriveTitle } from './derive-title.js'
+import { backgroundConversationText, decisionEvidenceText } from '../decisions/evidence.js'
 
 // The recall lifecycle contract lives with the collaborator that emits it; re-exported
 // here because SessionManagerDeps is the seam production wires its observer through.
@@ -795,6 +796,23 @@ export class SessionManager {
     // a sibling must never see another child's role/task delivery or report.
     const blocks: ContentBlock[] = []
     let contextEvents: { ts: string; text?: string }[] = []
+    // By decision background and evidence (decisions.md §8.4), rebuilt byte-identically from the persisted intake.
+    const intake = msg.channelIntake
+    let backgroundBlock: string | undefined
+    if (intake?.backgroundSeqs?.length) {
+      const rows = await this.deps.store.transcriptRowsBySeq({ agentId, transcriptChannel }, [
+        ...intake.backgroundSeqs,
+        intake.seq
+      ])
+      const currentThread = rows.find((row) => row.seq === intake.seq)?.thread ?? undefined
+      backgroundBlock = backgroundConversationText(
+        rows.filter((row) => row.seq !== intake.seq),
+        this.deps.quoteForContextEvent,
+        currentThread
+      )
+    }
+    const evidenceBlock = intake?.evidence ? decisionEvidenceText(intake.evidence) : undefined
+    let evidenceAt = -1
     // The session's own read scope: the coordinate matches a createNew session's rows directly,
     // the key matches every row admitted into it (message-intake.md §3).
     const readScope = { transcriptChannel, coordinate: thread, sessionKey: key, agentId }
@@ -836,6 +854,7 @@ export class SessionManager {
       const context = plan.context
       if (plan.shape === 'batch') {
         blocks.push({ type: 'text', text: `${plan.head}\n${renderContext(context)}` })
+        evidenceAt = blocks.length
         contextEvents = context.map((entry) => ({ ts: entry.ts, text: entry.text }))
       } else {
         if (context.length > 0) blocks.push({ type: 'text', text: `${plan.head}\n${renderContext(context)}` })
@@ -868,6 +887,7 @@ export class SessionManager {
           type: 'text',
           text: withMarker(msg.source === 'user' ? `[${msg.sender.id}] ${triggerText}` : promptText)
         })
+        evidenceAt = blocks.length
         contextEvents = [...context.map((entry) => ({ ts: entry.ts, text: entry.text })), { ts, text: msg.text }]
       }
       rec.lastDeliveredTs = plan.deliveredThrough ?? ts
@@ -892,6 +912,11 @@ export class SessionManager {
     // prompt exists. Its result is appended as a trailing, explicitly untrusted
     // reference block — never as the first user block/title seed (#398).
     const captureInput = recallQueryFromBlocks(blocks)
+    // After captureInput, so recall and memory capture never read background or evidence.
+    if (evidenceAt >= 0) {
+      if (evidenceBlock) blocks.splice(evidenceAt, 0, { type: 'text', text: evidenceBlock })
+      if (backgroundBlock) blocks.splice(0, 0, { type: 'text', text: backgroundBlock })
+    }
     // Platform message ids are stable across redelivery within one physical bot
     // and therefore make a durable operation fence once bot-scoped. Webchat
     // deliberately reuses one msgId for the whole conversation, so use its

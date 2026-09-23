@@ -5,7 +5,7 @@
  * SECURITY: specs carry PLAINTEXT platform tokens. Never log a spec or an
  * entry — ids only.
  */
-import type { DecisionBundle, IntegrationSpec } from '@agentconnect.md/protocol'
+import type { DecisionBundle, IntegrationSessionMode, IntegrationSpec } from '@agentconnect.md/protocol'
 import type { Integration } from '../agents/agent-schema.js'
 import { resolveDecisionBundle } from '../decisions/bundle.js'
 import { integrationConfig, integrationCore } from '../platforms/integration-config.js'
@@ -17,7 +17,8 @@ export interface WriteIntegrationDeps {
   onDecisionConfigApplied?: (
     integrationId: string,
     previous: DecisionBundle | undefined,
-    next: DecisionBundle | undefined
+    next: DecisionBundle | undefined,
+    nextSessionModes?: readonly IntegrationSessionMode[]
   ) => void
 }
 
@@ -60,6 +61,7 @@ interface Entry {
 
 export class CpIntegrationRegistry {
   private readonly entries = new Map<string, Entry>()
+  private converged = false
 
   constructor(
     _agentsDir: string,
@@ -91,7 +93,13 @@ export class CpIntegrationRegistry {
       if (integration) this.apply(spec.integrationId, { agentId: spec.agentId, integration })
       else this.deps.warn?.(`cp: integration ${spec.integrationId} carried no usable platform payload — ignored`)
     }
+    this.converged = true
     this.onChange()
+  }
+
+  /** True once a full roster arrived, so an integration absent here is really gone rather than unsynced. */
+  hasConverged(): boolean {
+    return this.converged
   }
 
   // Validates the new bundle once (logging disabled bindings) before it replaces the old one.
@@ -106,7 +114,8 @@ export class CpIntegrationRegistry {
     this.deps.onDecisionConfigApplied?.(
       integrationId,
       previous ? integrationCore(previous.integration).decisions : undefined,
-      next ? integrationCore(next.integration).decisions : undefined
+      next ? integrationCore(next.integration).decisions : undefined,
+      next ? integrationCore(next.integration).sessionModes : undefined
     )
   }
 
