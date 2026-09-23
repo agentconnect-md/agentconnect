@@ -56,6 +56,15 @@ export class MemberSetInUse extends Error {
   }
 }
 
+// Thrown by `DecisionRepo.delete` when a conversation gate still references the Decision (FK RESTRICT).
+export class DecisionInUse extends Error {
+  readonly code = 'DECISION_IN_USE' as const
+  constructor(readonly decisionId: string) {
+    super(`decision ${decisionId} is still used by a conversation or an agent`)
+    this.name = 'DecisionInUse'
+  }
+}
+
 /**
  * Thrown by `enrollOperator` when the daemon still has agents pinned directly to it. A set member
  * serves only what it holds a lease for, so those agents would be placed and unservable the moment

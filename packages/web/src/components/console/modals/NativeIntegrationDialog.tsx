@@ -167,8 +167,10 @@ function EditChannels({
     setError('')
     try {
       for (const row of integration.channels) {
-        if (draft[row.channelId] !== row.trigger)
-          await updateIntegrationChannel(integration.id!, row.channelId, { trigger: draft[row.channelId] }, orgId)
+        const next = draft[row.channelId]
+        // By decision is written only with its binding, never from this trigger picker.
+        if (next !== row.trigger && next !== undefined && next !== 'decision')
+          await updateIntegrationChannel(integration.id!, row.channelId, { trigger: next }, orgId)
       }
       await refresh()
       onCompleted(t('updatedTriggers', { name: integration.name }))

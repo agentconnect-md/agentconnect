@@ -16,7 +16,8 @@ import { MAX_AGENT_CALL_HOPS, hasReachedAgentCallHopLimit, manifestFor } from '@
 
 /** A routing rule's trigger — structurally identical to the daemon's
  *  `BindMatch` (agent.json bindRules) and the wire route match. */
-export type RuleMatch = { kind: 'mention' } | { kind: 'dm' } | { kind: 'keyword'; value: string } | { kind: 'auto' }
+export type RuleMatch =
+  { kind: 'mention' } | { kind: 'dm' } | { kind: 'keyword'; value: string } | { kind: 'auto' } | { kind: 'decision' }
 
 /**
  * One resolved routing rule of the merged (local ∪ CP) set. Structurally
@@ -56,7 +57,7 @@ export interface ActivationMessageFacts {
 
 // ─── routeRules: arbitration ladder over the merged (local ∪ CP) rule set ───
 
-const KIND_ORDER = ['mention', 'dm', 'keyword', 'auto'] as const
+const KIND_ORDER = ['mention', 'dm', 'keyword', 'auto', 'decision'] as const
 
 function channelInScope(scopeChannel: string | undefined, msg: ActivationMessageFacts): boolean {
   if (scopeChannel === undefined) return true
@@ -89,13 +90,15 @@ function kindMatches(r: ActivationRule, msg: ActivationMessageFacts): boolean {
       return msg.text.toLowerCase().includes(r.match.value.toLowerCase())
     case 'auto':
       return true
+    case 'decision':
+      return !msg.sender.isBot // human-only Any-message candidate, never a bot-to-bot rung
   }
 }
 
 /** Which ladder rung matched. `mention` is the only *explicit address* — the daemon
  *  uses it to clear (and bypass) a `!stop` thread mute; everything else is implicit
  *  routing and is suppressed while the session is muted. */
-export type RouteVia = 'mention' | 'thread' | 'dm' | 'keyword' | 'auto'
+export type RouteVia = 'mention' | 'thread' | 'dm' | 'keyword' | 'auto' | 'decision'
 
 const pickRule = (r: ActivationRule, via: RouteVia) => ({ agentId: r.agentId, integrationId: r.integrationId, via })
 
@@ -127,14 +130,17 @@ export function participantAgents(
   return participants.filter((id) => id !== exclude && servable.has(id))
 }
 
-/** Agents whose `auto` rule makes them participants in every conversation covered by
- * that rule. Unlike `routeRules`, this returns the whole set: channel-wide participation
- * is not an arbitration tie that should collapse to whichever rule happens to be first. */
+/** Every agent whose `auto` rule (or, for a human, `decision` rule) covers the conversation — a set, not an arbitration. */
 export function automaticAgents(msg: ActivationMessageFacts, rules: ActivationRule[], exclude?: string): string[] {
   return [
     ...new Set(
       rules
-        .filter((r) => r.match.kind === 'auto' && scopeMatches(r, msg) && r.agentId !== exclude)
+        .filter(
+          (r) =>
+            (r.match.kind === 'auto' || (r.match.kind === 'decision' && !msg.sender.isBot)) &&
+            scopeMatches(r, msg) &&
+            r.agentId !== exclude
+        )
         .map((r) => r.agentId)
     )
   ]
@@ -506,6 +512,8 @@ function sharedBotKindMatches(r: SharedBotRoute, msg: SharedBotMessageFacts, bot
       return msg.text.toLowerCase().includes(r.match.value.toLowerCase())
     case 'auto':
       return true
+    case 'decision':
+      return !msg.sender.isBot
   }
 }
 
@@ -607,6 +615,10 @@ export function arbitrateSharedBotResult(
   if (ownedKeyword) return hit(sharedBotTarget(ownedKeyword))
   const ownedAuto = scoped.find((r) => r.match.kind === 'auto')
   if (ownedAuto) return hit(sharedBotTarget(ownedAuto))
+  // By decision owns a human message, including an @mention, since the compile emits no scoped mention route there.
+  const ownedDecision =
+    verifiedAgentAuthor === undefined && !msg.sender.isBot ? scoped.find((r) => r.match.kind === 'decision') : undefined
+  if (ownedDecision) return hit(sharedBotTarget(ownedDecision))
 
   // This channel's own default (linear-integration.md §6.2) — read here for the gate
   // below, applied as a rung further down. On an `ownerAsDefault` platform it is also

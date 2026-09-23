@@ -8,7 +8,7 @@ import {
   type CpRule
 } from '../src/router/routing-rule.js'
 import { configuredBotSelfId, integrationConfig, integrationCore } from '../src/platforms/integration-config.js'
-import type { Agent, Integration } from '../src/agents/agent-schema.js'
+import { BindMatchSchema, type Agent, type Integration } from '../src/agents/agent-schema.js'
 
 function agent(over: Partial<Agent> = {}): Agent {
   return {
@@ -84,7 +84,7 @@ describe('integrationRouting (§6.4 core-envelope read)', () => {
 
   it('reads identical core knobs from every platform, and the self id from the module config', () => {
     for (const { int, selfId, parsedConfig } of cases) {
-      expect(integrationRouting(int)).toEqual({
+      expect(integrationRouting(int)).toMatchObject({
         staticBotUserId: selfId,
         bindRules,
         mutedChannels: ['C9'],
@@ -97,7 +97,8 @@ describe('integrationRouting (§6.4 core-envelope read)', () => {
         bindRules,
         mutedChannels: ['C9'],
         gated: true,
-        sessionModes: []
+        sessionModes: [],
+        decisions: { bindings: [], definitions: [] }
       })
       expect(configuredBotSelfId(int)).toBe(selfId)
       // The opaque config is the MODULE-VALIDATED parse (schema defaults applied),
@@ -110,7 +111,14 @@ describe('integrationRouting (§6.4 core-envelope read)', () => {
     const foreign = {
       id: 'i-x',
       platform: 'mastodon',
-      core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
+      core: {
+        mode: 'direct',
+        bindRules: [],
+        mutedChannels: [],
+        gated: false,
+        sessionModes: [],
+        decisions: { bindings: [], definitions: [] }
+      },
       config: { botToken: 'x' }
     } as unknown as Integration
     expect(integrationConfig(foreign)).toBeUndefined()
@@ -119,14 +127,28 @@ describe('integrationRouting (§6.4 core-envelope read)', () => {
     const legacy = {
       id: 'i-legacy',
       platform: 'slack',
-      core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] }
+      core: {
+        mode: 'direct',
+        bindRules: [],
+        mutedChannels: [],
+        gated: false,
+        sessionModes: [],
+        decisions: { bindings: [], definitions: [] }
+      }
     } as unknown as Integration
     expect(integrationConfig(legacy)).toBeUndefined()
     // Malformed payload (missing the required botToken) => no config, no self id.
     const malformed = {
       id: 'i-bad',
       platform: 'slack',
-      core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
+      core: {
+        mode: 'direct',
+        bindRules: [],
+        mutedChannels: [],
+        gated: false,
+        sessionModes: [],
+        decisions: { bindings: [], definitions: [] }
+      },
       config: { botUserId: 'U-ONLY' }
     } as unknown as Integration
     expect(integrationConfig(malformed)).toBeUndefined()
@@ -138,7 +160,14 @@ describe('integrationRouting (§6.4 core-envelope read)', () => {
       const proto = {
         id: `i-${platform}`,
         platform,
-        core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
+        core: {
+          mode: 'direct',
+          bindRules: [],
+          mutedChannels: [],
+          gated: false,
+          sessionModes: [],
+          decisions: { bindings: [], definitions: [] }
+        },
         config: { botToken: 'x' }
       } as unknown as Integration
       expect(integrationConfig(proto)).toBeUndefined()
@@ -156,13 +185,51 @@ describe('integrationRouting (§6.4 core-envelope read)', () => {
       core: { bindRules: [] },
       config: { botToken: 'x' }
     } as unknown as Integration
-    expect(integrationRouting(int)).toEqual({
+    expect(integrationRouting(int)).toMatchObject({
       staticBotUserId: undefined,
       bindRules: [],
       mutedChannels: [],
       gated: false
     })
     expect(integrationCore(int).mode).toBe('direct')
+    expect(integrationCore(int).decisions).toEqual({ bindings: [], definitions: [] })
+  })
+
+  it('exposes the enabled By decision gate and every bound conversation', () => {
+    const definition = {
+      id: 'd1',
+      orgId: 'o',
+      name: 'Help',
+      providerId: 'typesafe',
+      model: 'jev-1.13.0',
+      question: { type: 'boolean', instructions: 'Help?', criteria: { true: 'Yes', false: 'No' } }
+    }
+    const gate = { type: 'gate', decisionId: 'd1', when: { type: 'boolean', values: [true] } }
+    const int = {
+      id: 'i',
+      platform: 'slack',
+      core: {
+        bindRules: [{ channel: 'C1', match: { kind: 'decision' } }],
+        decisions: {
+          bindings: [
+            { channel: 'C1', consumer: gate, enabled: true },
+            { channel: 'C2', consumer: gate, enabled: false, disabledReason: 'needs_review' }
+          ],
+          definitions: [definition]
+        }
+      },
+      config: { botToken: 'x' }
+    } as unknown as Integration
+    const routing = integrationRouting(int)
+    expect(routing.decisionBindingFor('C1')).toEqual({ channel: 'C1', binding: gate, definition })
+    expect(routing.decisionBindingFor('C2')).toBeUndefined()
+    expect([routing.decisionBound('C1'), routing.decisionBound('C2'), routing.decisionBound('C3')]).toEqual([
+      true,
+      true,
+      false
+    ])
+    expect(rulesFromAgent(agent({ integrations: [int] }), {}).map((r) => r.match)).toEqual([{ kind: 'decision' }])
+    expect(BindMatchSchema.parse({ kind: 'decision' })).toEqual({ kind: 'decision' })
   })
 })
 
@@ -214,7 +281,14 @@ describe('resolveAgentIntegration', () => {
         {
           id: 'int1',
           platform: 'slack',
-          core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
+          core: {
+            mode: 'direct',
+            bindRules: [],
+            mutedChannels: [],
+            gated: false,
+            sessionModes: [],
+            decisions: { bindings: [], definitions: [] }
+          },
           config: { botToken: 'x', botUserId: 'STATIC' } as any
         }
       ]
@@ -243,13 +317,27 @@ describe('resolveAgentIntegration', () => {
         {
           id: 'slack1',
           platform: 'slack',
-          core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
+          core: {
+            mode: 'direct',
+            bindRules: [],
+            mutedChannels: [],
+            gated: false,
+            sessionModes: [],
+            decisions: { bindings: [], definitions: [] }
+          },
           config: { botToken: 'x', botUserId: 'BSLACK' } as any
         },
         {
           id: 'tg1',
           platform: 'telegram',
-          core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
+          core: {
+            mode: 'direct',
+            bindRules: [],
+            mutedChannels: [],
+            gated: false,
+            sessionModes: [],
+            decisions: { bindings: [], definitions: [] }
+          },
           config: { botToken: 'x', botUserId: 'BTG' } as any
         }
       ]

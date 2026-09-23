@@ -5055,7 +5055,19 @@ export interface ChannelPlacementRecord {
 // and ids are control metadata, never message content.
 // ───────────────────────────────────────────────────────────────────────────
 
-export type ChannelTrigger = 'off' | 'mention' | 'any'
+export type ChannelTrigger = 'off' | 'mention' | 'any' | 'decision'
+
+/** A trigger a row can be seeded or defaulted to; By decision is only ever chosen, with its binding. */
+export type SeedTrigger = Exclude<ChannelTrigger, 'decision'>
+
+/** A trigger write: By decision carries its gate, so a decision trigger without a binding is unrepresentable. */
+export type ChannelActivation =
+  | { trigger: SeedTrigger }
+  | {
+      trigger: 'decision'
+      decisionBinding: import('@agentconnect.md/protocol').ChannelDecisionGate
+      decisionNeedsReview: boolean
+    }
 
 /** Which session an activation in a conversation joins (channel-session-mode.md §5). */
 export type ChannelSessionMode = 'createNew' | 'append'
@@ -5094,6 +5106,12 @@ export interface IntegrationChannelRecord {
   trigger: ChannelTrigger
   /** Which session a message here joins. Replicated across sibling rows like `trigger`. */
   sessionMode: ChannelSessionMode
+  /** The By decision gate; non-null exactly when `trigger` is 'decision' (null if it no longer parses). */
+  decisionBinding: import('@agentconnect.md/protocol').ChannelDecisionGate | null
+  /** A Decision edit invalidated this gate; replicated across sibling rows like `trigger`. */
+  decisionNeedsReview: boolean
+  /** The bound Decision's executable definition, joined on read; null without a binding. */
+  decisionDefinition: import('@agentconnect.md/protocol').DecisionBundleDefinition | null
   /** The 1:1 DM counterpart's platform member id (§14.8); null on rooms and on rows
    *  discovered before the reporter carried it. */
   dmUserId: string | null
@@ -5160,10 +5178,10 @@ export interface IntegrationChannelRepo {
     integrationId: IntegrationId,
     channels: ReportedChannel[],
     opts?: {
-      defaultTrigger?: ChannelTrigger
+      defaultTrigger?: SeedTrigger
       /** Per-conversation seed overriding `defaultTrigger` on a NEW row (§14.8: a gated
        *  agent's DM with a member of its own audience). Existing rows are unaffected. */
-      defaultTriggerByChannel?: ReadonlyMap<string, ChannelTrigger>
+      defaultTriggerByChannel?: ReadonlyMap<string, SeedTrigger>
       authoritative?: boolean
       removed?: string[]
     }
@@ -5179,18 +5197,16 @@ export interface IntegrationChannelRepo {
   upsertConversation(
     integrationId: IntegrationId,
     conversation: ReportedChannel,
-    opts?: { defaultTrigger?: ChannelTrigger }
+    opts?: { defaultTrigger?: SeedTrigger }
   ): Promise<IntegrationChannelRecord>
   /** Conversations across EVERY integration of a shared bot — the route compiler's
    *  ownership source. */
   listForBot(botId: BotId): Promise<IntegrationChannelRecord[]>
-  /** Per-conversation trigger choice; returns null when the row doesn't exist.
-   *  `chosen` records that a HUMAN picked this value (§14.8) — omitted leaves the flag
-   *  as it was, so orchestration mirroring a trigger never fabricates a decision. */
+  /** Trigger + Decision binding in one UPDATE (null if no row); `chosen` marks a human pick (§14.8), omitted leaves it. */
   setTrigger(
     integrationId: IntegrationId,
     channelId: string,
-    trigger: ChannelTrigger,
+    activation: ChannelActivation,
     opts?: { chosen?: boolean }
   ): Promise<IntegrationChannelRecord | null>
   /** Per-conversation session mode; returns null when the row doesn't exist. No `chosen`
@@ -5216,7 +5232,7 @@ export interface IntegrationChannelRepo {
     integrationId: IntegrationId,
     channelId: string,
     agentId: AgentId,
-    opts?: { defaultTrigger?: ChannelTrigger; kind?: ConversationKind }
+    opts?: { defaultTrigger?: SeedTrigger; kind?: ConversationKind }
   ): Promise<IntegrationChannelRecord>
   /**
    * The org's conversation-name directory for the given coordinates — the read a
@@ -5226,6 +5242,18 @@ export interface IntegrationChannelRepo {
    * the caller wants a name or nothing.
    */
   namesForOrg(orgId: OrgId, conversations: readonly ConversationCoordinate[]): Promise<IntegrationChannelNameRecord[]>
+  /** Every org conversation row gated by one of these Decisions (all of the org's when omitted). */
+  listDecisionUsages(orgId: OrgId, decisionIds?: readonly string[]): Promise<DecisionChannelUsage[]>
+}
+
+/** One conversation row whose By decision gate references a Decision. */
+export interface DecisionChannelUsage {
+  decisionId: string
+  integrationId: IntegrationId
+  agentId: AgentId
+  botId: BotId
+  channelId: string
+  channelName: string | null
 }
 
 /** One conversation addressed the way a session key addresses it, not by integration. */
@@ -5399,7 +5427,12 @@ export interface DecisionRepo {
     id: string,
     draft: import('@agentconnect.md/protocol').DecisionDraftInput,
     actor: ViewCtx
-  ): Promise<import('@agentconnect.md/protocol').DecisionDefinition | null>
+  ): Promise<{
+    decision: import('@agentconnect.md/protocol').DecisionDefinition
+    /** Every integration with a gate on this Decision; incompatible gates are marked Needs review in the same tx. */
+    consumerIntegrationIds: IntegrationId[]
+  } | null>
+  /** Throws {@link DecisionInUse} while a conversation still references it. */
   delete(orgId: OrgId, id: string, actor: ViewCtx): Promise<void>
 }
 

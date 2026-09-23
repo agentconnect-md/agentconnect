@@ -4,7 +4,13 @@ import { AgentDelivery } from './agentDelivery.js'
 import type { PlacementResolver } from './placementResolver.js'
 import type { GatedDmSeedResolver } from './linkedDm.js'
 import { RelayRegistry, type RelayChannel } from '../ws/relay-registry.js'
-import type { RcBotAssign, RcRoutes, RelayCpFrameType } from '@agentconnect.md/protocol'
+import {
+  DECISION_TRIGGER_V1_FEATURE,
+  type DecisionBundleDefinition,
+  type RcBotAssign,
+  type RcRoutes,
+  type RelayCpFrameType
+} from '@agentconnect.md/protocol'
 import { AgentId, BotId, DaemonId, IntegrationId, OrgId } from '../domain/ids.js'
 import type {
   BotRepo,
@@ -54,7 +60,10 @@ const INT_B = IntegrationId('66666666-6666-4666-8666-666666666662')
 // ── a recording relay channel + a control-sender spy ──────────────────────────
 class FakeChannel implements RelayChannel {
   sends: { type: RelayCpFrameType; payload: unknown }[] = []
-  constructor(readonly relayId: string) {}
+  constructor(
+    readonly relayId: string,
+    readonly features?: readonly string[]
+  ) {}
   send(type: RelayCpFrameType, payload: unknown): void {
     this.sends.push({ type, payload })
   }
@@ -116,6 +125,9 @@ function channel(over: Partial<IntegrationChannelRecord>): IntegrationChannelRec
     dmUserId: null,
     sessionMode: 'createNew',
     triggerChosen: false,
+    decisionBinding: null,
+    decisionNeedsReview: false,
+    decisionDefinition: null,
     agentId: null,
     ...over
   } as IntegrationChannelRecord
@@ -159,6 +171,9 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
   // gate's message and its bindings ARE the contract for an operator debugging
   // "why is my bot not receiving anything".
   let warns: { bindings: Record<string, unknown>; message: string }[]
+  // What each daemon advertised (ControlSender.daemonFeatures) and the Decisions the channel join resolves.
+  let daemonFeatures: Record<string, readonly string[]>
+  let decisionDefinitions: Record<string, DecisionBundleDefinition>
 
   /** `placement` stands in for the duty ledger: absent ⇒ placement alone, which is what every
    *  expectation predating the pool was written against. */
@@ -268,10 +283,17 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         row.sessionMode = sessionMode
         return row
       },
-      setTrigger: async (integrationId, channelId, trigger, opts) => {
+      setTrigger: async (integrationId, channelId, activation, opts) => {
         const row = channels.find((c) => c.integrationId === integrationId && c.channelId === channelId)
         if (!row) return null
-        row.trigger = trigger
+        row.trigger = activation.trigger
+        // One write for the trigger and its binding, exactly like the repo; the definition is the join.
+        row.decisionBinding = activation.trigger === 'decision' ? activation.decisionBinding : null
+        row.decisionNeedsReview = activation.trigger === 'decision' ? activation.decisionNeedsReview : false
+        row.decisionDefinition =
+          activation.trigger === 'decision'
+            ? (decisionDefinitions[activation.decisionBinding.decisionId] ?? null)
+            : null
         // Set-only, exactly like the repo: a decision does not expire.
         if (opts?.chosen) row.triggerChosen = true
         return row
@@ -311,6 +333,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       }
     }
     const control = {
+      daemonFeatures: (daemonId: string) => daemonFeatures[daemonId],
       integrationUpsert: async (daemonId: string, spec: unknown) =>
         void upserts.push({ daemonId, spec: spec as never }),
       integrationRemove: async (daemonId: string, r: { integrationId: string }) =>
@@ -389,6 +412,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     credentialChecks = []
     removals = []
     warns = []
+    daemonFeatures = {}
+    decisionDefinitions = {}
   })
 
   describe('lookupThread — SessionMeta fallback on affinity miss (§7.2 case 2a)', () => {
@@ -1774,6 +1799,176 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       expect(assign.gatedAgentIds).toEqual([BOB])
       expect(assign.defaultAgentId).toBe(ALICE)
       expect(assign.routes.some((r) => r.agentId === BOB && r.match.kind === 'keyword')).toBe(false)
+    })
+  })
+
+  describe('By decision conversations (decisions.md §7.1)', () => {
+    const DECISION = '99999999-9999-4999-8999-999999999999'
+    const gate = { type: 'gate' as const, decisionId: DECISION, when: { type: 'boolean' as const, values: [true] } }
+    const definition: DecisionBundleDefinition = {
+      id: DECISION,
+      orgId: ORG,
+      name: 'Needs help',
+      providerId: 'typesafe',
+      model: 'jev-1.13.0',
+      question: { type: 'boolean', instructions: 'Is help needed?', criteria: { true: 'Yes', false: 'No' } }
+    }
+    const decisionChannel = (over: Partial<IntegrationChannelRecord> = {}) =>
+      channel({
+        integrationId: INT_B,
+        channelId: 'C1',
+        agentId: BOB,
+        trigger: 'decision',
+        decisionBinding: gate,
+        decisionDefinition: definition,
+        ...over
+      })
+    let modern: FakeChannel
+    const lastOf = (relay: FakeChannel, type: RelayCpFrameType) =>
+      relay.sends.filter((send) => send.type === type).at(-1)?.payload as RcBotAssign | RcRoutes | undefined
+
+    beforeEach(() => {
+      decisionDefinitions = { [DECISION]: definition }
+      modern = new FakeChannel('55555555-5555-4555-8555-555555555556', [DECISION_TRIGGER_V1_FEATURE])
+      relayReg.add(modern)
+      channels = [decisionChannel()]
+    })
+
+    it('compiles a decision candidate route with its decisionId for a capable daemon', async () => {
+      daemonFeatures = { [D2]: [DECISION_TRIGGER_V1_FEATURE] }
+      await makeOrch().syncBot(BOT)
+      const assign = lastOf(modern, 'rc/bot-assign')!
+      expect(assign.routes.filter((r) => r.scope?.channel === 'C1')).toEqual([
+        {
+          agentId: BOB,
+          daemonId: D2,
+          integrationId: INT_B,
+          scope: { channel: 'C1' },
+          match: { kind: 'decision' },
+          decisionId: DECISION
+        }
+      ])
+      expect(assign.mutedChannels).not.toContain('C1')
+      // The relay that predates the feature gets the route stripped and the conversation held.
+      const legacy = lastOf(ch, 'rc/bot-assign')!
+      expect(legacy.routes.some((r) => r.match.kind === 'decision')).toBe(false)
+      expect(legacy.mutedChannels).toContain('C1')
+      // The send-only spec still carries the bundle for the daemon's hold.
+      const pushed = upserts.find((u) => u.daemonId === D2)?.spec as unknown as {
+        core: { decisions: { bindings: unknown[] } }
+      }
+      expect(pushed.core.decisions.bindings).toHaveLength(1)
+    })
+
+    it('holds the conversation when the target daemon lacks the feature or the gate needs review', async () => {
+      daemonFeatures = { [D2]: [] }
+      await makeOrch().syncBot(BOT)
+      expect(lastOf(modern, 'rc/bot-assign')!.mutedChannels).toContain('C1')
+      expect(lastOf(modern, 'rc/bot-assign')!.routes.some((r) => r.match.kind === 'decision')).toBe(false)
+
+      daemonFeatures = { [D2]: [DECISION_TRIGGER_V1_FEATURE] }
+      channels = [decisionChannel({ decisionNeedsReview: true })]
+      await makeOrch().syncRoutes(BOT)
+      const routes = lastOf(modern, 'rc/routes')!
+      expect(routes.mutedChannels).toContain('C1')
+      expect(routes.routes.some((r) => r.match.kind === 'decision' || r.match.kind === 'auto')).toBe(false)
+    })
+
+    it('keeps the decision route for an offline daemon, since only a connected one is known to lack the feature', async () => {
+      await makeOrch().syncBot(BOT)
+      const assign = lastOf(modern, 'rc/bot-assign')!
+      expect(assign.routes.filter((r) => r.scope?.channel === 'C1')).toMatchObject([
+        { daemonId: D2, match: { kind: 'decision' }, decisionId: DECISION }
+      ])
+      expect(assign.mutedChannels).not.toContain('C1')
+    })
+
+    it('recompiles a held conversation once its daemon reconnects with the feature', async () => {
+      daemonFeatures = { [D2]: [] }
+      const orch = makeOrch()
+      await orch.syncBot(BOT)
+      expect(lastOf(modern, 'rc/bot-assign')!.mutedChannels).toContain('C1')
+      const before = modern.sends.length
+      // Still without the feature: nothing to recompile.
+      await orch.daemonReady(D2)
+      expect(modern.sends).toHaveLength(before)
+      daemonFeatures = { [D2]: [DECISION_TRIGGER_V1_FEATURE] }
+      await orch.daemonReady(D2)
+      const routes = lastOf(modern, 'rc/routes')!
+      expect(routes.mutedChannels).not.toContain('C1')
+      expect(routes.routes.some((r) => r.match.kind === 'decision' && r.decisionId === DECISION)).toBe(true)
+      // The hold is consumed: a second ready is a no-op.
+      const after = modern.sends.length
+      await orch.daemonReady(D2)
+      expect(modern.sends).toHaveLength(after)
+    })
+
+    it('replays a stripped assignment to a relay without the feature and a full one otherwise', async () => {
+      daemonFeatures = { [D2]: [DECISION_TRIGGER_V1_FEATURE] }
+      const orch = makeOrch()
+      await orch.replayTo(ch)
+      await orch.replayTo(modern)
+      expect(lastOf(ch, 'rc/bot-assign')!.routes.some((r) => r.match.kind === 'decision')).toBe(false)
+      expect(lastOf(modern, 'rc/bot-assign')!.routes.some((r) => r.match.kind === 'decision')).toBe(true)
+    })
+
+    it('replicates the trigger and binding to every sibling, including a backfilled one, and Mention clears all', async () => {
+      channels = [channel({ integrationId: INT_B, channelId: 'C1', agentId: BOB, trigger: 'mention' })]
+      const orch = makeOrch()
+      const updated = await orch.updateConversation(BOT, 'C1', { trigger: 'decision', decisionBinding: gate })
+      expect(updated).toMatchObject({ trigger: 'decision', decisionBinding: gate, decisionDefinition: definition })
+      for (const integrationId of [INT_A, INT_B]) {
+        expect(channels.find((c) => c.integrationId === integrationId && c.channelId === 'C1')).toMatchObject({
+          trigger: 'decision',
+          decisionBinding: gate,
+          decisionNeedsReview: false,
+          triggerChosen: true
+        })
+      }
+      await orch.updateConversation(BOT, 'C1', { trigger: 'mention' })
+      for (const row of channels.filter((c) => c.channelId === 'C1'))
+        expect(row).toMatchObject({ trigger: 'mention', decisionBinding: null, decisionNeedsReview: false })
+    })
+
+    it('keeps the binding on a sibling backfilled before the owner integration is removed', async () => {
+      const orch = makeOrch()
+      await orch.prepareIntegrationRemoval(BOT)
+      channels = channels.filter((c) => c.integrationId !== INT_B)
+      integrations = integrations.filter((i) => i.id !== INT_B)
+      await orch.syncBot(BOT)
+      expect(channels.find((c) => c.integrationId === INT_A && c.channelId === 'C1')).toMatchObject({
+        trigger: 'decision',
+        decisionBinding: gate
+      })
+    })
+
+    it('keeps a session-mode-only patch from dropping the binding', async () => {
+      await makeOrch().updateConversation(BOT, 'C1', { sessionMode: 'append' })
+      for (const row of channels.filter((c) => c.channelId === 'C1'))
+        expect(row).toMatchObject({ trigger: 'decision', decisionBinding: gate, sessionMode: 'append' })
+    })
+  })
+
+  describe('By decision on an ownerAsDefault platform', () => {
+    const LINEAR_PLATFORMS = buildCpPlatformRegistry([
+      { ...createSlackCpProvider({}), platformId: 'linear' } as CpPlatformProvider
+    ])
+    it('mutes the row and leaves it out of conversationDefaults', async () => {
+      botRow = bot({ platform: 'linear' } as Partial<BotRecord>)
+      integrations = [{ ...integration(INT_B, BOB), platform: 'linear' }]
+      channels = [
+        channel({
+          integrationId: INT_B,
+          channelId: 'T1',
+          agentId: BOB,
+          trigger: 'decision',
+          decisionBinding: { type: 'gate', decisionId: 'd1', when: { type: 'boolean', values: [true] } }
+        })
+      ]
+      await makeOrch(LINEAR_PLATFORMS).syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload as RcBotAssign
+      expect(assign.conversationDefaults).toEqual([])
+      expect(assign.mutedChannels).toContain('T1')
     })
   })
 })

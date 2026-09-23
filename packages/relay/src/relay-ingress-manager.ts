@@ -19,6 +19,7 @@ import {
   hasReachedAgentCallHopLimit,
   MAX_AGENT_CALL_HOPS,
   RD_AGENT_IMPLICIT_ROUTING_V1,
+  DECISION_TRIGGER_V1_FEATURE,
   RD_ACK_NOT_HOLDER
 } from '@agentconnect.md/protocol'
 import type {
@@ -1008,12 +1009,18 @@ export class RelayIngressManager {
       // records discovery and posts the notice; its terminal gate still prevents a turn.
       if (conversationTargets.length === 0) conversationTargets = [{ target: tgt, via: 'mention' }]
     }
+    // A By decision conversation: every delivery names its Decision, and only a daemon that can hold it receives one.
+    const decisionId = this.router.decisionIdFor(botId, msg.channel)
     for (const { target: participant, via } of conversationTargets) {
       const daemon = this.deps.getDaemon(participant.daemonId)
       if (!daemon) {
         const n = (this.dropped.get(botId) ?? 0) + 1
         this.dropped.set(botId, n)
         this.deps.log.warn(`relay-ingress(${botId}): daemon ${participant.daemonId} offline — dropped (total ${n})`)
+        continue
+      }
+      if (decisionId && !daemon.supports(DECISION_TRIGGER_V1_FEATURE)) {
+        this.deps.log.debug(`relay-ingress(${botId}): daemon ${participant.daemonId} predates decision-trigger-v1`)
         continue
       }
       if (
@@ -1034,6 +1041,7 @@ export class RelayIngressManager {
         chatId: msg.channel,
         payload: msg,
         ...(sidecar?.searchActionToken ? { searchActionToken: sidecar.searchActionToken } : {}),
+        ...(decisionId ? { decisionId } : {}),
         trustedRouteVia: via
       }
       try {

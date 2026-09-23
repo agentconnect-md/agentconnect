@@ -110,11 +110,42 @@ export const DecisionCondition = z
   })
 export type DecisionCondition = z.infer<typeof DecisionCondition>
 
+export const ChannelDecisionGate = z.strictObject({ type: z.literal('gate'), decisionId: Id, when: DecisionCondition })
+export type ChannelDecisionGate = z.infer<typeof ChannelDecisionGate>
+
 export const ChannelDecisionBinding = z.discriminatedUnion('type', [
-  z.strictObject({ type: z.literal('gate'), decisionId: Id, when: DecisionCondition }),
+  ChannelDecisionGate,
   z.strictObject({ type: z.literal('shared_bot_routing') })
 ])
 export type ChannelDecisionBinding = z.infer<typeof ChannelDecisionBinding>
+
+// Only the executable fields travel; visibility, audience, and audit fields are CP authorization metadata.
+export const DecisionBundleDefinition = z.object({
+  id: Id,
+  orgId: z.string().min(1).max(64),
+  name: Text.max(120),
+  providerId: Id,
+  model: Id,
+  question: DecisionQuestion
+})
+export type DecisionBundleDefinition = z.infer<typeof DecisionBundleDefinition>
+
+export const DecisionBundleBinding = z.object({
+  channel: z.string().min(1),
+  consumer: ChannelDecisionBinding,
+  enabled: z.boolean(),
+  disabledReason: z.enum(['needs_review', 'access_revoked']).optional()
+})
+export type DecisionBundleBinding = z.infer<typeof DecisionBundleBinding>
+
+// The complete per-integration Decision configuration (decisions.md §7.1); an empty bundle clears.
+export const DecisionBundle = z.object({
+  bindings: z.array(DecisionBundleBinding).max(1000).default([]),
+  definitions: z.array(DecisionBundleDefinition).max(1000).default([])
+})
+export type DecisionBundle = z.infer<typeof DecisionBundle>
+
+export const EMPTY_DECISION_BUNDLE: DecisionBundle = { bindings: [], definitions: [] }
 
 export const DecisionChannelSettings = z.discriminatedUnion('trigger', [
   z.strictObject({ trigger: z.enum(['off', 'mention', 'auto']) }),

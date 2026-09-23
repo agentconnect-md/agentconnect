@@ -47,7 +47,14 @@ function linearIntegration(config: unknown, id = 'int-1'): Integration {
   return {
     id,
     platform: 'linear',
-    core: { mode: 'shared', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
+    core: {
+      mode: 'shared',
+      bindRules: [],
+      mutedChannels: [],
+      gated: false,
+      sessionModes: [],
+      decisions: { bindings: [], definitions: [] }
+    },
     config
   } as Integration
 }

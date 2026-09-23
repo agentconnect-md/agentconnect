@@ -9,8 +9,20 @@
  * plaintext; an encrypting provider stores ciphertext without changing
  * routes/protocol/daemon.
  */
-import type { Platform, FeishuRegion } from '@agentconnect.md/protocol'
-import type { Bot, Integration, IntegrationChannel, Prisma, User } from '../../generated/prisma/client.js'
+import {
+  ChannelDecisionGate,
+  DecisionBundleDefinition,
+  type Platform,
+  type FeishuRegion
+} from '@agentconnect.md/protocol'
+import {
+  Prisma,
+  type Bot,
+  type Decision,
+  type Integration,
+  type IntegrationChannel,
+  type User
+} from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import { BotExternalIdentityTaken, BotMissing, BotStillShared } from '../errors.js'
 import type {
@@ -35,6 +47,9 @@ import type {
   ConversationCoordinate,
   ReportedChannel,
   ChannelTrigger,
+  SeedTrigger,
+  ChannelActivation,
+  DecisionChannelUsage,
   ConversationKind,
   ViewCtx,
   ChannelSessionMode
@@ -756,7 +771,29 @@ export class PgIntegrationRepo implements IntegrationRepo {
   }
 }
 
-function toChannelRecord(c: IntegrationChannel): IntegrationChannelRecord {
+// Every record read joins the bound Decision so its definition rides each projection.
+const CHANNEL_INCLUDE = { decision: true } as const
+
+// Fail closed: an unparseable binding or definition reads as null, which projection holds.
+function gateOf(value: unknown): ChannelDecisionGate | null {
+  const parsed = ChannelDecisionGate.safeParse(value)
+  return parsed.success ? parsed.data : null
+}
+
+function definitionOf(d: Decision | null | undefined): DecisionBundleDefinition | null {
+  if (!d) return null
+  const parsed = DecisionBundleDefinition.safeParse({
+    id: d.id,
+    orgId: d.orgId,
+    name: d.name,
+    providerId: d.providerId,
+    model: d.model,
+    question: d.question
+  })
+  return parsed.success ? parsed.data : null
+}
+
+function toChannelRecord(c: IntegrationChannel & { decision?: Decision | null }): IntegrationChannelRecord {
   return {
     integrationId: IntegrationId(c.integrationId),
     channelId: c.channelId,
@@ -771,6 +808,9 @@ function toChannelRecord(c: IntegrationChannel): IntegrationChannelRecord {
     kind: c.kind as ConversationKind,
     trigger: c.trigger as ChannelTrigger,
     sessionMode: c.sessionMode as ChannelSessionMode,
+    decisionBinding: c.decisionBinding === null ? null : gateOf(c.decisionBinding),
+    decisionNeedsReview: c.decisionNeedsReview,
+    decisionDefinition: c.decisionBinding === null ? null : definitionOf(c.decision),
     dmUserId: c.dmUserId,
     triggerChosen: c.triggerChosen,
     agentId: c.agentId ? AgentId(c.agentId) : null
@@ -799,8 +839,8 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
     integrationId: IntegrationId,
     channels: ReportedChannel[],
     opts?: {
-      defaultTrigger?: ChannelTrigger
-      defaultTriggerByChannel?: ReadonlyMap<string, ChannelTrigger>
+      defaultTrigger?: SeedTrigger
+      defaultTriggerByChannel?: ReadonlyMap<string, SeedTrigger>
       authoritative?: boolean
       removed?: string[]
     }
@@ -828,7 +868,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       const direct = c.kind === 'im' || c.kind === 'mpim'
       // A per-conversation seed (§14.8) outranks the install-wide default; both seed a
       // NEW row only, and a late channel→direct conversion re-applies whichever won.
-      const createTrigger: ChannelTrigger =
+      const createTrigger: SeedTrigger =
         opts?.defaultTriggerByChannel?.get(c.id) ?? opts?.defaultTrigger ?? (c.kind === 'im' ? 'any' : 'mention')
       await this.db.$executeRaw`
         INSERT INTO "integration_channel"
@@ -886,6 +926,19 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
               THEN ${createTrigger}::"ChannelTrigger"
             ELSE "integration_channel"."trigger"
           END,
+          -- The same conversion clears a By decision binding, or the trigger/binding CHECK fails.
+          "decisionBinding" = CASE
+            WHEN ${direct}::boolean AND "integration_channel"."kind" <> EXCLUDED."kind" THEN NULL
+            ELSE "integration_channel"."decisionBinding"
+          END,
+          "decisionId" = CASE
+            WHEN ${direct}::boolean AND "integration_channel"."kind" <> EXCLUDED."kind" THEN NULL
+            ELSE "integration_channel"."decisionId"
+          END,
+          "decisionNeedsReview" = CASE
+            WHEN ${direct}::boolean AND "integration_channel"."kind" <> EXCLUDED."kind" THEN false
+            ELSE "integration_channel"."decisionNeedsReview"
+          END,
           "updatedAt" = NOW()
       `
     }
@@ -906,9 +959,10 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
   async upsertConversation(
     integrationId: IntegrationId,
     conversation: ReportedChannel,
-    opts?: { defaultTrigger?: ChannelTrigger }
+    opts?: { defaultTrigger?: SeedTrigger }
   ): Promise<IntegrationChannelRecord> {
     const row = await this.db.integrationChannel.upsert({
+      include: CHANNEL_INCLUDE,
       where: { integrationId_channelId: { integrationId, channelId: conversation.id } },
       create: {
         integrationId,
@@ -947,6 +1001,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
   async listForIntegration(integrationId: IntegrationId): Promise<IntegrationChannelRecord[]> {
     const rows = await this.db.integrationChannel.findMany({
       where: { integrationId },
+      include: CHANNEL_INCLUDE,
       orderBy: [{ name: 'asc' }, { channelId: 'asc' }]
     })
     return rows.map(toChannelRecord)
@@ -956,6 +1011,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
     // Channels across every active integration of the bot (shared-bot route source).
     const rows = await this.db.integrationChannel.findMany({
       where: { integration: { botId, status: 'active' } },
+      include: CHANNEL_INCLUDE,
       orderBy: [{ name: 'asc' }, { channelId: 'asc' }]
     })
     return rows.map(toChannelRecord)
@@ -972,7 +1028,8 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
     })
     if (res.count === 0) return null
     const row = await this.db.integrationChannel.findUnique({
-      where: { integrationId_channelId: { integrationId, channelId } }
+      where: { integrationId_channelId: { integrationId, channelId } },
+      include: CHANNEL_INCLUDE
     })
     return row ? toChannelRecord(row) : null
   }
@@ -981,9 +1038,10 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
     integrationId: IntegrationId,
     channelId: string,
     agentId: AgentId,
-    opts?: { defaultTrigger?: ChannelTrigger; kind?: ConversationKind }
+    opts?: { defaultTrigger?: SeedTrigger; kind?: ConversationKind }
   ): Promise<IntegrationChannelRecord> {
     const row = await this.db.integrationChannel.upsert({
+      include: CHANNEL_INCLUDE,
       where: { integrationId_channelId: { integrationId, channelId } },
       create: {
         integrationId,
@@ -1000,19 +1058,30 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
   async setTrigger(
     integrationId: IntegrationId,
     channelId: string,
-    trigger: ChannelTrigger,
+    activation: ChannelActivation,
     opts?: { chosen?: boolean }
   ): Promise<IntegrationChannelRecord | null> {
+    const gate = activation.trigger === 'decision' ? activation.decisionBinding : null
+    // Backstop for untyped callers; the DB CHECK enforces the same invariant.
+    if (activation.trigger === 'decision' && !ChannelDecisionGate.safeParse(gate).success)
+      throw new Error('trigger decision requires a gate decisionBinding')
     // updateMany → no throw on a missing row (the bot may have just left the channel).
     // `triggerChosen` is only ever set, never cleared: a decision does not expire, and
     // orchestration mirroring an owner's trigger must not unmark one either.
     const res = await this.db.integrationChannel.updateMany({
       where: { integrationId, channelId },
-      data: { trigger, ...(opts?.chosen ? { triggerChosen: true } : {}) }
+      data: {
+        trigger: activation.trigger,
+        decisionBinding: gate ? (gate as Prisma.InputJsonValue) : Prisma.DbNull,
+        decisionId: gate?.decisionId ?? null,
+        decisionNeedsReview: activation.trigger === 'decision' ? activation.decisionNeedsReview : false,
+        ...(opts?.chosen ? { triggerChosen: true } : {})
+      }
     })
     if (res.count === 0) return null
     const row = await this.db.integrationChannel.findUnique({
-      where: { integrationId_channelId: { integrationId, channelId } }
+      where: { integrationId_channelId: { integrationId, channelId } },
+      include: CHANNEL_INCLUDE
     })
     return row ? toChannelRecord(row) : null
   }
@@ -1029,7 +1098,8 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
     })
     if (res.count === 0) return null
     const row = await this.db.integrationChannel.findUnique({
-      where: { integrationId_channelId: { integrationId, channelId } }
+      where: { integrationId_channelId: { integrationId, channelId } },
+      include: CHANNEL_INCLUDE
     })
     return row ? toChannelRecord(row) : null
   }
@@ -1062,5 +1132,31 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       named.set(key, { platform: row.integration.platform, channelId: row.channelId, name: row.name! })
     }
     return [...named.values()]
+  }
+
+  async listDecisionUsages(orgId: OrgId, decisionIds?: readonly string[]): Promise<DecisionChannelUsage[]> {
+    if (decisionIds?.length === 0) return []
+    const rows = await this.db.integrationChannel.findMany({
+      where: {
+        decisionId: decisionIds ? { in: [...decisionIds] } : { not: null },
+        integration: { orgId }
+      },
+      select: {
+        decisionId: true,
+        integrationId: true,
+        channelId: true,
+        name: true,
+        integration: { select: { agentId: true, botId: true } }
+      },
+      orderBy: [{ integrationId: 'asc' }, { channelId: 'asc' }]
+    })
+    return rows.map((r) => ({
+      decisionId: r.decisionId!,
+      integrationId: IntegrationId(r.integrationId),
+      agentId: AgentId(r.integration.agentId),
+      botId: BotId(r.integration.botId),
+      channelId: r.channelId,
+      channelName: r.name
+    }))
   }
 }

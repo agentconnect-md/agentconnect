@@ -358,6 +358,8 @@ export const RdMsgIm = z.object({
   // it after a restart, and a credential must never be written there. The target parks it in
   // memory, scoped to the message it arrived with, and forwards it to nobody.
   searchActionToken: z.string().min(1).optional(),
+  // The bound Decision of a By decision candidate; only daemons advertising decision-trigger-v1 receive one.
+  decisionId: z.string().min(1).max(128).optional(),
   // The author the relay VERIFIED after checking the provider event, the sending app's
   // AgentConnect ownership in this org+conversation, and that the claimed author is one
   // of the agents that identity represents. Absent ⇒ not an agent-authored message, or

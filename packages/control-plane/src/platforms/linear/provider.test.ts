@@ -166,7 +166,8 @@ const CORE: IntegrationCoreEnvelope = {
   bindRules: [],
   mutedChannels: [],
   gated: false,
-  sessionModes: []
+  sessionModes: [],
+  decisions: { bindings: [], definitions: [] }
 }
 
 describe('validateConfig — the credential path is refused, not validated', () => {

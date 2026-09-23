@@ -2,6 +2,8 @@ import { z } from 'zod'
 import { DecisionDraft, DecisionEvaluation, DecisionQuestion } from '../decision.js'
 
 export const DECISION_PREVIEW_V1_FEATURE = 'decision-preview-v1'
+// The peer understands BindMatch{kind:'decision'}, core.decisions and rd/msg.decisionId, and never treats them as Any.
+export const DECISION_TRIGGER_V1_FEATURE = 'decision-trigger-v1'
 export const DECISION_TOOLS_V1_FEATURE = 'decision-tools-v1'
 export const DECISION_LIST_MAX_BYTES = 32 * 1024
 

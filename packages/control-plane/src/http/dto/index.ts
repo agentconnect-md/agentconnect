@@ -10,6 +10,7 @@ import { RESERVED_AGENT_SLUGS } from '../../domain/reserved-agent-slugs.js'
 import {
   AgentDecisionIds,
   AgentMemoryBinding,
+  ChannelDecisionGate,
   DaemonLifecyclePhase,
   AgentPermissionRequestRecord,
   ExternalMemoryBinding,
@@ -946,7 +947,22 @@ export const IntegrationChannelDto = z.object({
   url: z.string().nullable(),
   isPrivate: z.boolean(),
   kind: z.enum(['channel', 'im', 'mpim']),
-  trigger: z.enum(['off', 'mention', 'any']),
+  trigger: z.enum(['off', 'mention', 'any', 'decision']),
+  /** The By decision gate; present exactly when `trigger` is 'decision'. */
+  decisionBinding: ChannelDecisionGate.nullable(),
+  /** The effective By decision consumer and its deployment readiness; null for any other trigger. */
+  decision: z
+    .object({
+      id: z.string(),
+      name: z.string().nullable(), // null when the caller cannot view the Decision
+      enabled: z.boolean(),
+      disabledReason: z.enum(['needs_review', 'access_revoked']).optional(),
+      readiness: z.object({
+        status: z.enum(['ready', 'pending_sync', 'needs_review', 'daemon_offline', 'unsupported']),
+        reason: z.string().optional()
+      })
+    })
+    .nullable(),
   /** Which session a message here joins (channel-session-mode.md): a new one per thread,
    *  or the conversation's one long-lived session. */
   sessionMode: z.enum(['createNew', 'append']),
@@ -1825,12 +1841,18 @@ export const SlackAppFinalizeBody = z.object({
  *  At least one field; an active shared channel always has an owner. */
 export const UpdateIntegrationChannelBody = z
   .object({
-    trigger: z.enum(['off', 'mention', 'any']).optional(),
+    trigger: z.enum(['off', 'mention', 'any', 'decision']).optional(),
+    // The complete By decision gate; required with, and only with, trigger 'decision'.
+    decisionBinding: ChannelDecisionGate.extend({ decisionId: z.string().uuid() }).optional(),
     sessionMode: z.enum(['createNew', 'append']).optional(),
     agentId: z.string().min(1).optional()
   })
   .refine((b) => b.trigger !== undefined || b.sessionMode !== undefined || b.agentId !== undefined, {
     message: 'provide trigger, sessionMode and/or agentId'
+  })
+  .refine((b) => (b.trigger === 'decision') === (b.decisionBinding !== undefined), {
+    message: "decisionBinding is required with, and only with, trigger 'decision'",
+    path: ['decisionBinding']
   })
 
 /**
@@ -4032,7 +4054,9 @@ export const ErrorDto = z.object({
   message: z.string(),
   /** Machine-readable denial reason where the console branches on it (e.g.
    *  github user-authz: GITHUB_IDENTITY_REQUIRED vs USER_NO_ACCESS). */
-  code: z.string().optional()
+  code: z.string().optional(),
+  /** Field-level validation problems, e.g. a Decision condition that does not fit its question. */
+  issues: z.array(z.object({ path: z.array(z.union([z.string(), z.number()])), message: z.string() })).optional()
 })
 
 /** The Slack install funnels' error shape. A refusal carrying

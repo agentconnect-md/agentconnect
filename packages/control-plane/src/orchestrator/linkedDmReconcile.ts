@@ -84,7 +84,7 @@ async function openDirectRows(
     if (allowed.size === 0) continue
     for (const row of candidates) {
       if (!allowed.has(row.dmUserId!)) continue
-      await deps.channels.setTrigger(IntegrationId(integration.id), row.channelId, 'any')
+      await deps.channels.setTrigger(IntegrationId(integration.id), row.channelId, { trigger: 'any' })
       opened += 1
     }
   }

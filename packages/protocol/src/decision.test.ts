@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  ChannelDecisionGate,
+  DecisionBundle,
+  DecisionBundleDefinition,
   DecisionDraft,
   DecisionQuestion,
   decisionConditionIssues,
@@ -172,5 +175,41 @@ describe('Decision contracts and consumer matching', () => {
         ]
       })
     ).not.toHaveLength(0)
+  })
+})
+
+describe('Decision wire bundle', () => {
+  const gate = { type: 'gate', decisionId: 'd1', when: { type: 'boolean', values: [true] } }
+  const definition = {
+    id: 'd1',
+    orgId: 'org1',
+    name: 'Needs help',
+    providerId: 'typesafe',
+    model: 'jev-1.13.0',
+    question: { type: 'boolean', instructions: 'Is help needed?', criteria: { true: 'Yes', false: 'No' } }
+  }
+
+  it('accepts a gate and rejects an incomplete one', () => {
+    expect(ChannelDecisionGate.parse(gate)).toEqual(gate)
+    expect(ChannelDecisionGate.safeParse({ type: 'gate', decisionId: 'd1' }).success).toBe(false)
+    expect(ChannelDecisionGate.safeParse({ ...gate, extra: true }).success).toBe(false)
+  })
+
+  it('accepts only executable definition fields and strips the rest', () => {
+    expect(DecisionBundleDefinition.parse({ ...definition, visibility: 'org' })).toEqual(definition)
+    expect(DecisionBundleDefinition.safeParse({ ...definition, question: { type: 'score' } }).success).toBe(false)
+  })
+
+  it('defaults an empty bundle and accepts shared-bot routing structurally', () => {
+    expect(DecisionBundle.parse({})).toEqual({ bindings: [], definitions: [] })
+    const parsed = DecisionBundle.parse({
+      bindings: [{ channel: 'C1', consumer: { type: 'shared_bot_routing' }, enabled: false }],
+      definitions: [definition]
+    })
+    expect(parsed.bindings[0]?.consumer).toEqual({ type: 'shared_bot_routing' })
+    expect(
+      DecisionBundle.safeParse({ bindings: [{ channel: 'C1', consumer: gate, enabled: false, disabledReason: 'x' }] })
+        .success
+    ).toBe(false)
   })
 })

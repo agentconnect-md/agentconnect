@@ -2522,6 +2522,7 @@ enum ChannelTrigger {
   off
   mention
   any
+  decision
 }
 
 // Which session an activation in a conversation joins (channel-session-mode.md §5).
@@ -2591,13 +2592,21 @@ model IntegrationChannel {
   // integration row per shared conversation carries the owner; sibling rows are null.
   // Irrelevant for a classic integration, where its agent is the only target.
   agentId       String?          @db.Uuid
+  // The By decision consumer (decisions.md §6.2); present exactly when trigger is decision (DB CHECK).
+  decisionBinding     Json?
+  // Denormalized gate Decision id: blocks deleting a used Decision and indexes usage lookups.
+  decisionId          String?  @db.Uuid
+  // A Decision edit invalidated this gate; only a successful re-save of the binding clears it.
+  decisionNeedsReview Boolean  @default(false)
   firstSeenAt   DateTime         @default(now()) @db.Timestamptz(6)
   updatedAt     DateTime         @updatedAt @db.Timestamptz(6)
 
   integration Integration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  decision    Decision?   @relation(fields: [decisionId], references: [id], onDelete: Restrict)
 
   @@id([integrationId, channelId])
   @@index([agentId])
+  @@index([decisionId])
   @@map("integration_channel")
 }
 
@@ -3928,6 +3937,7 @@ model Decision {
   updatedAt       DateTime           @updatedAt @db.Timestamptz(6)
   org             Org                @relation(fields: [orgId], references: [id], onDelete: Cascade)
   createdBy       User?              @relation("DecisionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  channelBindings IntegrationChannel[]
 
   @@index([orgId])
   @@index([sharedWith], type: Gin)

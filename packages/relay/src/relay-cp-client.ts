@@ -16,6 +16,7 @@ import {
   buildRelayCpFrame,
   decodeRelayCpFrame,
   GITEA_V1_FEATURE,
+  DECISION_TRIGGER_V1_FEATURE,
   GITLAB_COM_V1_FEATURE,
   GITLAB_INSTANCE_V1_FEATURE,
   PULL_REQUEST_FEEDBACK_FEATURE,
@@ -573,7 +574,9 @@ export class RelayCpClient {
           GITLAB_COM_V1_FEATURE,
           GITLAB_INSTANCE_V1_FEATURE,
           PULL_REQUEST_FEEDBACK_FEATURE,
-          GITEA_V1_FEATURE
+          GITEA_V1_FEATURE,
+          // This relay arbitrates `decision` routes as human-only candidates and forwards their decisionId.
+          DECISION_TRIGGER_V1_FEATURE
         ]
       })
     )

@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import { MAX_AGENT_CALL_HOPS } from '@agentconnect.md/protocol'
 import {
+  arbitrateSharedBot,
+  automaticAgents,
   conversationAdmitsAgent,
   conversationPeers,
   hopTransition,
   isUsableSourceDepth,
   routeRules,
   type ActivationMessageFacts,
-  type ActivationRule
+  type ActivationRule,
+  type SharedBotAssignmentFacts,
+  type SharedBotMessageFacts
 } from '../src/index.js'
 
 // The deep ladder behavior is pinned where it always was — the daemon's
@@ -152,5 +156,68 @@ describe('conversationPeers (§2.3/§6 delivery selection)', () => {
       {}
     )
     expect(peers).toEqual(['p1'])
+  })
+})
+
+describe('By decision candidates (decisions.md §7.1)', () => {
+  const decision = rule({ agentId: 'gate', scope: { channel: 'C1' }, match: { kind: 'decision' }, source: 'cp' })
+
+  it('is a candidate for a human unaddressed message', () => {
+    expect(routeRules(msg(), [decision], () => null)).toMatchObject({ agentId: 'gate', via: 'decision' })
+  })
+
+  it('ranks after auto', () => {
+    const auto = rule({ agentId: 'auto', scope: { channel: 'C1' }, match: { kind: 'auto' }, source: 'cp' })
+    expect(routeRules(msg(), [decision, auto], () => null)).toMatchObject({ agentId: 'auto', via: 'auto' })
+  })
+
+  it('never matches a bot sender or a verified agent author', () => {
+    expect(routeRules(msg({ sender: { isBot: true } }), [decision], () => null)).toBeNull()
+    expect(routeRules(msg({ sender: { isBot: true } }), [decision], () => null, undefined, 'author')).toBeNull()
+  })
+
+  it('makes decision agents automatic peers for humans only', () => {
+    expect(automaticAgents(msg(), [decision])).toEqual(['gate'])
+    expect(automaticAgents(msg({ sender: { isBot: true } }), [decision])).toEqual([])
+    expect(conversationPeers(msg(), [decision], [], { primaryAgentId: 'other' }).peers).toEqual(['gate'])
+    const verified = { authorAgentId: 'author', recipients: [] }
+    expect(conversationPeers(msg({ sender: { isBot: true } }), [decision], [], { verified }).peers).toEqual([])
+  })
+
+  it('covers its channel for command and collaboration admission', () => {
+    expect(conversationAdmitsAgent([decision], 'gate', 'C1')).toBe(true)
+  })
+})
+
+describe('arbitrateSharedBot decision ownership', () => {
+  const target = { agentId: 'gate', daemonId: 'd1', integrationId: 'i1' }
+  const assignment: SharedBotAssignmentFacts = {
+    botUserId: 'UBOT',
+    routes: [{ ...target, scope: { channel: 'C1' }, match: { kind: 'decision' } }],
+    members: [{ daemonId: 'd1', agentIds: ['gate'] }]
+  }
+  const shared = (over: Partial<SharedBotMessageFacts> = {}): SharedBotMessageFacts => ({
+    platform: 'slack',
+    channel: 'C1',
+    text: 'hello',
+    isDm: false,
+    mentionedBots: [],
+    sender: { id: 'U7', isBot: false },
+    ...over
+  })
+
+  it('routes a human message and a human @mention to the decision owner', () => {
+    expect(arbitrateSharedBot(assignment, shared(), new Map())).toEqual(target)
+    expect(arbitrateSharedBot(assignment, shared({ mentionedBots: ['UBOT'] }), new Map())).toEqual(target)
+  })
+
+  it('does not route a verified agent author through the decision rung', () => {
+    const peerAssignment: SharedBotAssignmentFacts = {
+      ...assignment,
+      members: [{ daemonId: 'd1', agentIds: ['gate', 'author'] }]
+    }
+    expect(
+      arbitrateSharedBot(peerAssignment, shared({ sender: { id: 'UBOT', isBot: true } }), new Map(), 'author')
+    ).toBeNull()
   })
 })
