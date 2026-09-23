@@ -1650,6 +1650,8 @@ export class Daemon {
       log: () => this.log,
       clock: () => this.clock,
       shutdownDrainMs: () => this.cfg.limits.shutdownDrainMs,
+      shutdownDrainBudgetMs: () => this.shutdownDrainBudgetMs(),
+      raceDeadline: (work, ms) => this.raceDeadline(work, ms),
       supervisor: () => this.opts.supervisor,
       k8s: () => this.k8s,
       root: () => this.opts.root,

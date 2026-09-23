@@ -480,7 +480,11 @@ The daemon accepts `daemon/restart` only when:
 
 After acknowledging, it drains local work, stops, and exits with
 `RESERVED_RESTART_CODE`. The supervisor resolves `current` and starts the
-selected daemon.
+selected daemon. The wait for the stop is bounded by the shutdown drain budget
+plus a 30-second teardown allowance. A host that failed to stop would otherwise
+hold the shutdown open indefinitely, so past that bound the daemon exits with
+`RESERVED_RESTART_CODE` anyway. This path has no service-manager kill timeout
+to fall back on.
 
 ### 6.2 Daemon upgrade
 
