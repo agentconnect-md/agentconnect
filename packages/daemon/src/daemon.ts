@@ -252,7 +252,7 @@ import {
   isUsableSourceDepth,
   routeRules
 } from './router/routing-table.js'
-import { parseCommand, requiresTrustedActor } from './commands/commands.js'
+import { isControlCommandText, parseCommand, requiresTrustedActor } from './commands/commands.js'
 import { CommandHandlers, type CommandHost } from './commands/handlers.js'
 import {
   rulesFromAgent,
@@ -283,7 +283,7 @@ import type { InteractionActor } from './platforms/contract.js'
 import { compoundMentionAddressesFor } from './platforms/mention-address.js'
 import { rootPostNeedsThreadMaterialization, rootPostThreadName, threadKeyForPost } from './platforms/thread-keys.js'
 import { isMalformedPlatformTurn } from './platforms/malformed-turn.js'
-import { registerThreadPromotion, threadPromotionFor } from './platforms/thread-promotion.js'
+import { physicalThreadOf, registerThreadPromotion, threadPromotionFor } from './platforms/thread-promotion.js'
 import { discordThreadPromotion } from './platforms/discord/thread-promotion.js'
 import { sessionLinkSourceFor } from './platforms/link-source.js'
 import { sessionThreadUrlFor } from './platforms/session-links.js'
@@ -7421,7 +7421,7 @@ export class Daemon {
     srcIntegrationIds?: string[]
   ): Promise<{ kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle }> {
     const transcriptOnly = async (why: string): Promise<{ kind: 'rejected'; reason: DeliveryRejectionReason }> => {
-      await this.recordUnrouted(msg)
+      // The message is already in the channel record (step 1); "transcript only" now means "not admitted".
       this.log.debug(`routing: agent-authored ${msg.msgId} is transcript-only (${why})`)
       return { kind: 'rejected', reason: 'unrouted' }
     }
@@ -7492,7 +7492,7 @@ export class Daemon {
     srcIntegrationIds?: string[]
   ): Promise<{ kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle }> {
     const transcriptOnly = async (why: string): Promise<{ kind: 'rejected'; reason: DeliveryRejectionReason }> => {
-      await this.recordUnrouted(msg)
+      // The message is already in the channel record (step 1); "transcript only" now means "not admitted".
       this.log.debug(`routing: agent-authored ${msg.msgId} is transcript-only (${why})`)
       return { kind: 'rejected', reason: 'unrouted' }
     }
@@ -7643,7 +7643,6 @@ export class Daemon {
     // one session the whole room now shares.
     const appendSession = isAppendCoordinate(sessionThreadOf(msg))
     if (!appendSession && via === 'implicit' && (await this.commands.isSessionMuted(muteKey))) {
-      await this.recordUnrouted(msg)
       this.log.debug(
         `routing: agent-authored ${msg.msgId} → "${targetAgentId}" dropped (muted by !stop; awaiting @mention)`
       )
@@ -7660,7 +7659,6 @@ export class Daemon {
         },
         expiresAt
       )
-      await this.recordUnrouted(msg)
       this.log.debug(
         `routing: paired agent-call ${verified.agentCallDeliveryId} observed for "${targetAgentId}" (state ${record.state}) — awaiting the internal wake`
       )
@@ -7682,7 +7680,6 @@ export class Daemon {
     const deliveryId = `${msg.msgId}#${targetAgentId}`
     const claimed = await this.store.attachActivationEnvelope(key, envelope, expiresAt, deliveryId)
     if (!claimed.dispatch) {
-      await this.recordUnrouted(msg)
       this.log.debug(
         `routing: agent-authored ${msg.msgId} → "${targetAgentId}" already admitted (${claimed.record.state})`
       )
@@ -7768,7 +7765,11 @@ export class Daemon {
   }
 
   private onInbound(msg: NormalizedMessage, srcIntegrationIds?: string[]): void {
-    void this.onInboundOutcome(msg, srcIntegrationIds)
+    // Caught, not `void`d: the ladder now writes to the store before its first gate, and a
+    // rejection from a fire-and-forget callback would surface as an unhandled rejection.
+    void this.onInboundOutcome(msg, srcIntegrationIds).catch((err) =>
+      this.log.error(`routing: inbound ${msg.msgId} failed: ${formatErr(err)}`)
+    )
   }
 
   /**
@@ -7782,18 +7783,22 @@ export class Daemon {
     msg: NormalizedMessage,
     srcIntegrationIds?: string[]
   ): Promise<{ kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle }> {
-    // Drain gate (§2.5/§5.3): once the daemon is draining (SIGTERM or a scope:daemon
-    // drain) it accepts no new turns — in-flight turns finish, new arrivals are
-    // dropped (the platform redelivers / the user retries against the new owner).
-    if (this.draining) {
-      this.log.debug(`routing: dropping inbound ${msg.msgId} (daemon draining)`)
-      return { kind: 'rejected', reason: 'gated' }
-    }
     const agentAuthored = this.isAgentBotMessage(msg)
     await this.observedChannelsSync.clearRetractionOnTraffic(msg, srcIntegrationIds)
     msg.transportScope ??= this.transportScopeForIntegrationIds(srcIntegrationIds)
     if (msg.sender.avatarUrl && msg.transportScope)
       await this.store.setProfileAvatar(msg.transportScope, msg.sender.id, msg.sender.avatarUrl, Date.now())
+    // Telegram reply-based session threading, ABOVE the record: it is the normalization that
+    // produces the physical thread step 1 writes, and it has no store writes. No-op elsewhere.
+    await this.canonicalizeTelegramThread(msg)
+    // Step 1 (message-intake.md §5): the channel record is written before anything may drop the message.
+    await this.recordChannelInbound(msg, srcIntegrationIds)
+    // Drain gate (§2.5/§5.3): once the daemon is draining (SIGTERM or a scope:daemon drain) it
+    // accepts no new turns (the platform redelivers / the user retries against the new owner).
+    if (this.draining) {
+      this.log.debug(`routing: dropping inbound ${msg.msgId} (daemon draining)`)
+      return { kind: 'rejected', reason: 'gated' }
+    }
     // A mention in a watched Slack channel can arrive via both `message.*` and
     // `app_mention`; both share channel:ts, so dedup the double-fire from ONE bot
     // connection. Do not dedup across bot connections: several Slack apps receive
@@ -7814,11 +7819,12 @@ export class Daemon {
     if (this.seenMsgIds.size > 2000) this.seenMsgIds.clear()
 
     // A typed elicitation answer is an ANSWER, never a prompt: a reply to the box one of this
-    // conversation's live cards opened settles that card and stops here, before thread
-    // canonicalization would read it as continuing the session and before command parsing would
-    // read `!stop` typed into the box as a control. No-op on every surface that asks for no typing.
+    // conversation's live cards opened settles that card and stops here, before command parsing
+    // would read `!stop` typed into the box as a control. No-op on surfaces that ask for no typing.
     // Human traffic only: an agent bot replying in the same chat takes its own ladder below, and
     // an agent answering another agent's question is not what "anyone who can see it" meant.
+    // The answer is a channel message, so step 1 recorded it: until Stage 3 retires the thread
+    // disjunct, a createNew session can still read it as context on top of the card's own answer.
     if (
       !agentAuthored &&
       (await this.permissions.claimElicitReply({
@@ -7834,12 +7840,6 @@ export class Daemon {
       return { kind: 'rejected', reason: 'suppressed' }
     }
 
-    // Telegram reply-based session threading: derive the session thread from the reply
-    // chain BEFORE command parsing / routing, so both see the canonical thread (an
-    // @mention opens a fresh session; a reply to any message already in a session
-    // continues it). No-op on other platforms.
-    await this.canonicalizeTelegramThread(msg)
-
     // send-message-routing-rework.md §2.3/§6: an AgentConnect-authored platform message
     // takes its OWN ladder rather than continuing into the human one below. That
     // placement is what keeps control commands and gated-conversation discovery
@@ -7853,8 +7853,7 @@ export class Daemon {
       if (!verified) {
         // Ours by app identity, but not provably authored by a specific agent (a
         // streaming post, an old daemon's metadata-less reply, chrome, or a shared bot
-        // with no exact claim). §4 fails closed: recorded, never routed.
-        await this.recordUnrouted(msg)
+        // with no exact claim). §4 fails closed: recorded (step 1), never routed.
         this.log.debug(`routing: unverified AgentConnect message ${msg.msgId} is transcript-only`)
         return { kind: 'rejected', reason: 'suppressed' }
       }
@@ -7896,14 +7895,7 @@ export class Daemon {
     const dispatchedPeer = peerOutcomes.find((outcome) => outcome.kind === 'dispatched')
     if (!result) {
       if (dispatchedPeer) return dispatchedPeer
-      // §8.5: a message that activates no agent (a human @human reply, or one
-      // addressed to another bot) must still enter the transcript when a session
-      // is live in this thread, so that agent "catches up" on it when next
-      // activated. Gated on an open session to bound growth in idle channels;
-      // platform ingresses already skipped their own bot echoes. Same (thread, ts)
-      // coords as SessionManager → INSERT OR IGNORE
-      // dedups rather than double-recording.
-      await this.recordUnrouted(msg)
+      // A message that activates no agent is already in the channel record — step 1 wrote it.
       // Conversation gating (§14): if this unrouted message explicitly addressed a
       // GATED integration's bot (mention or DM), answer once per conversation and
       // surface DM conversations to the console instead of appearing silently broken.
@@ -7918,10 +7910,6 @@ export class Daemon {
     else delete targetMsg.trigger
     const primaryCoordinate = await this.sessionCoordinateFor(result.agentId, result.integrationId, targetMsg)
     if (primaryCoordinate !== undefined) targetMsg.sessionThread = primaryCoordinate
-    // Observation precedes activation gates and queue admission. A clarification
-    // arriving while this logical thread is busy must be visible to the running
-    // turn's final refresh even though its own SessionManager.handle() has not begun.
-    if (this.cfg.features.turnFinalContextRefresh) await this.recordObservedInbound(targetMsg, result.agentId)
     // Agent-scoped drain (scope:agent): this agent is being reclaimed/rebalanced —
     // drop new turns for it while its in-flight turns finish.
     if (this.drainingAgents.has(result.agentId)) {
@@ -7931,8 +7919,7 @@ export class Daemon {
     }
     // `!stop` thread mute: while muted, implicit routing (thread affinity / keyword /
     // auto / dm) never dispatches — only an explicit @mention does, and it clears the
-    // mute. Muted-thread traffic still enters the transcript (recordUnrouted) so the
-    // agent catches up on it when re-activated (§8.5).
+    // mute. Muted-thread traffic is already in the channel record (step 1), with no admission.
     const muteKey = sessionKey(
       targetMsg.platform,
       targetMsg.channel,
@@ -7945,7 +7932,6 @@ export class Daemon {
     // one session the whole room now shares.
     if (!isAppendCoordinate(sessionThreadOf(targetMsg)) && (await this.commands.isSessionMuted(muteKey))) {
       if (result.via !== 'mention') {
-        await this.recordUnrouted(targetMsg)
         this.log.debug(
           `routing: dropping ${msg.msgId} for agent "${result.agentId}" (muted by !stop; awaiting @mention)`
         )
@@ -8074,12 +8060,10 @@ export class Daemon {
       else delete targetMsg.trigger
       const peerCoordinate = await this.sessionCoordinateFor(agentId, rule.integrationId, targetMsg)
       if (peerCoordinate !== undefined) targetMsg.sessionThread = peerCoordinate
-      if (this.cfg.features.turnFinalContextRefresh) await this.recordObservedInbound(targetMsg, agentId)
       const targetThread = sessionThreadOf(targetMsg)
       const muteKey = sessionKey(targetMsg.platform, targetMsg.channel, targetThread, agentId, targetMsg.transportScope)
       if (!isAppendCoordinate(targetThread) && (await this.commands.isSessionMuted(muteKey))) {
         if (via === 'implicit') {
-          await this.recordObservedInbound(targetMsg, agentId, this.cfg.features.turnFinalContextRefresh)
           outcomes.push({ kind: 'rejected', reason: 'gated' })
           continue
         }
@@ -8392,7 +8376,6 @@ export class Daemon {
       via === 'implicit' &&
       (await this.commands.isSessionMuted(muteKey))
     ) {
-      await this.recordUnrouted(normalized)
       this.log.debug(`relay: dropping agent-authored ${msg.msgId} for "${msg.agentId}" (muted by !stop)`)
       return false
     }
@@ -8483,6 +8466,9 @@ export class Daemon {
     }
     const feishuConn = this.fsConnByIntegration.get(msg.integrationId)
     if (feishuConn) this.channelNameResolver?.noteMessage(feishuConn, normalized)
+    // Step 1 (§5/§6): a relay-forwarded IM records exactly like direct ingress. Pre-addressed, so
+    // the owning org is known outright and no conversation-row scan is needed.
+    await this.recordChannelInbound(normalized, [msg.integrationId], { orgAgentId: msg.agentId })
     // HTTP-bot ingress is pre-addressed and bypasses onInbound(), so the verified-agent
     // ladder has to be repeated here — this path never reaches `onInboundOutcome`.
     //
@@ -8537,8 +8523,8 @@ export class Daemon {
     }
     // HTTP-bot ingress bypasses onInbound(), so repeat its `!stop` thread-mute gate:
     // while muted, implicit routing (thread affinity / keyword / auto / dm) never
-    // dispatches — only an explicit @mention does, and it clears the mute. Muted traffic
-    // still enters the transcript so the agent catches up when re-activated (§8.5).
+    // dispatches — only an explicit @mention does, and it clears the mute. Muted traffic is
+    // already in the channel record (step 1), with no admission.
     // Pre-addressed to exactly one agent, so the coordinate resolves for it here — the
     // relay path never reaches the per-target fan-out that resolves it for direct ingress.
     const imCoordinate = await this.sessionCoordinateFor(msg.agentId, msg.integrationId, normalized)
@@ -8556,7 +8542,6 @@ export class Daemon {
     // one session the whole room now shares.
     if (!isAppendCoordinate(sessionThreadOf(normalized)) && (await this.commands.isSessionMuted(muteKey))) {
       if (normalized.trigger !== 'mention') {
-        await this.recordUnrouted(normalized)
         this.log.debug(`relay: dropping ${msg.msgId} for agent "${msg.agentId}" (muted by !stop; awaiting @mention)`)
         return { msgId: msg.msgId, accepted: true }
       }
@@ -9892,115 +9877,103 @@ export class Daemon {
     }
   }
 
-  /** Record an unrouted inbound message into the transcript iff a session is
-   *  *recently active* in its thread (§8.5 catch-up). Platform ingresses have already
-   *  removed their own echoes. The recency gate bounds
-   *  transcript growth to threads with live work — without it, a thread that ever
-   *  held a session would record forever (no session-`closed` lifecycle yet). */
-  private async recordUnrouted(msg: NormalizedMessage): Promise<void> {
-    // One row for the conversation, unconditionally: a channel may hold both session modes, and
-    // this is the only row a `createNew` agent's in-flight turn can catch up on. Read-only — a
-    // message that routed to nobody must not create a conversation by being observed.
-    await this.recordObservedInbound(msg, undefined, this.cfg.features.turnFinalContextRefresh)
-    // One ADMISSION per agent whose session here belongs to no thread; the row above dedups.
-    for (const { agentId, coordinate } of await this.appendAgentsIn(msg))
-      await this.recordObservedInbound(
-        { ...msg, sessionThread: coordinate },
-        agentId,
-        this.cfg.features.turnFinalContextRefresh
-      )
-  }
-
-  /** Agents already holding an append session in this conversation, with the coordinate it
-   *  keys on. Empty for every conversation on `createNew`, which is the common case. */
-  private async appendAgentsIn(msg: NormalizedMessage): Promise<{ agentId: string; coordinate: string }[]> {
-    const out: { agentId: string; coordinate: string }[] = []
+  /** The agent whose org owns this conversation's channel record — and thereby whether the daemon
+   *  has a row for it at all. Deliberately NOT `conversationAdmitted`: a `trigger = off` channel is
+   *  still a row the record must carry (message-intake.md §5 step 1). */
+  private conversationRowOwner(msg: NormalizedMessage, srcIntegrationIds?: readonly string[]): string | undefined {
     for (const [agentId, agent] of this.agents) {
-      const int = agent.integrations?.find(
-        (candidate) =>
-          candidate.platform === msg.platform && conversationSessionMode(candidate, msg.channel) === 'append'
-      )
-      if (!int) continue
-      // The coordinate is per transport scope, so an integration on another physical bot
-      // answers a different conversation even at the same channel id.
-      if ((this.transportScopeForIntegrationIds([int.id]) ?? '') !== (msg.transportScope ?? '')) continue
-      const coordinate = await this.store.currentAppendCoordinate(agentId, msg.channel, msg.transportScope)
-      if (coordinate !== undefined) out.push({ agentId, coordinate })
+      for (const integration of agent.integrations ?? []) {
+        if (integration.platform !== msg.platform) continue
+        if (!this.integrationBelongsToSource(integration.id, srcIntegrationIds)) continue
+        const routing = integrationRouting(integration)
+        // A direct conversation is always one the bot has; a non-gated install sees whatever its connection does.
+        if (
+          msg.isDm === true ||
+          msg.isGroupDm === true ||
+          !routing.gated ||
+          routing.bindRules.some((rule) => rule.channel === msg.channel) ||
+          routing.mutedChannels.includes(msg.channel)
+        )
+          return agentId
+      }
     }
-    return out
+    return undefined
   }
 
-  /** Persist one conversational ingress for a live physical thread before routing
-   * can delay or suppress its activation. Stable transcript coordinates make the
-   * later SessionManager append an idempotent delivery/provenance upgrade. */
-  private async recordObservedInbound(
+  /** Step 1 (message-intake.md §5): the channel record for one inbound message — written once,
+   *  before commands, suppression or routing may drop it, with no admission and no coordinate.
+   *  `INSERT OR IGNORE` on `(orgId, channel, ts)` makes a redelivery a no-op. */
+  private async recordChannelInbound(
     msg: NormalizedMessage,
-    recipient?: string,
-    includeAttachment = true
+    srcIntegrationIds?: readonly string[],
+    opts?: { orgAgentId?: string }
   ): Promise<void> {
+    // A conversation no local integration holds has no row here, and on a shared store nothing to
+    // attribute the write to — `transcriptOrg` would throw rather than guess an org.
+    const orgAgentId = opts?.orgAgentId ?? this.conversationRowOwner(msg, srcIntegrationIds)
+    if (orgAgentId === undefined) return
+    const mention = attachmentMention(msg.attachments)
+    // Only the dedup `ts`: `transcriptCoords().thread` is the SESSION coordinate, never a row's.
+    const { ts } = transcriptCoords(msg)
+    // The PHYSICAL thread (§4.1) — including the one a pending promotion will open, which the
+    // registry predicts, so a root and the replies inside its thread carry one thread here.
+    const thread = physicalThreadOf(msg)
+    // Best-effort, and it has to be: this now runs on EVERY inbound, so a store hiccup must not
+    // stop a `!stop` from interrupting a turn or reject out of the fire-and-forget ingress call.
+    try {
+      await this.threadContext.observeInbound({
+        channel: transcriptChannelKey(msg.channel, msg.transportScope),
+        thread,
+        ts,
+        sender: msg.sender.id,
+        orgAgentId,
+        // The canonical webchat post identity must survive whichever writer wins the first insert.
+        ...(msg.transcriptPostId ? { postId: msg.transcriptPostId } : {}),
+        // The provider send time must ride the FIRST write or non-chronological-id platforms
+        // (Telegram/Feishu) keep the broken derived axis.
+        ...(msg.platformTimeMs ? { eventTimeUs: msg.platformTimeMs * 1000 } : {}),
+        // The closing edit of a streamed reply shares its post's coordinates, so it refreshes that
+        // row to the completed text instead of being ignored as a duplicate.
+        ...(msg.ingressEventTag === SLACK_RESPONSE_FINAL_EVENT_TAG ? { authoritative: true } : {}),
+        kind: 'text',
+        text: mention ? `${msg.text}\n${mention}`.trim() : msg.text,
+        // Deliberately BODYLESS: the body is first-wins, and the authoritative ingest — which runs
+        // after the review batch and workspace finish rewriting the prompt — is the writer that persists it.
+        ...(msg.quoted?.text ? { quoted: msg.quoted } : {})
+      })
+      this.log.debug(`transcript: recorded inbound msg ch=${msg.channel} thread=${thread} ts=${ts}`)
+    } catch (err) {
+      this.log.error(`transcript: failed to record inbound msg ch=${msg.channel} ts=${ts}: ${formatErr(err)}`)
+    }
+  }
+
+  /** Step 6 (message-intake.md §5): the step-1 row plus THIS agent's admission at its own session
+   *  coordinate — an idempotent upgrade, since the row dedups and the admission is INSERT OR IGNORE. */
+  private async admitInbound(msg: NormalizedMessage, agentId: string): Promise<void> {
     const { thread, ts } = transcriptCoords(msg)
-    const transcriptChannel = transcriptChannelKey(msg.channel, msg.transportScope)
-    // Active = a session touched within the idle window OR a turn in flight right
-    // now. The in-flight check is load-bearing: session.updatedAt is stamped at
-    // turn START, so a single long turn (> idle timeout — common for coding agents)
-    // would otherwise look stale and we'd wrongly drop a message that arrives while
-    // the agent is still working, defeating the catch-up it's meant to enable.
-    const sinceTs = Date.now() - this.cfg.limits.agentIdleTimeoutMs
-    const recentlyActive =
-      (await this.store.activeSessionCountSince(msg.channel, thread, sinceTs, msg.transportScope)) > 0
-    // Compared against the SESSION coordinate `transcriptCoords` just returned, not the
-    // chrome target: in a conversation whose session belongs to no thread the two differ,
-    // and matching on `statusThread` would miss the very turn this row is catch-up for.
-    const inFlightAgent = [...this.pending.values()].find(
-      (p) => p.plan.transcriptChannel === transcriptChannel && p.plan.sessionThread === thread
-    )?.plan.agentId
-    const initializingAgent = [...this.activeGateEntries.values()].find((entry) => {
-      const coords = transcriptCoords(entry.msg)
-      return (
-        transcriptChannelKey(entry.msg.channel, entry.msg.transportScope) === transcriptChannel &&
-        coords.thread === thread
-      )
-    })?.agentId
-    if (!recentlyActive && !inFlightAgent && !initializingAgent) return
-    const mention = includeAttachment ? attachmentMention(msg.attachments) : ''
-    // The row is observed before routing names a recipient, so the org that owns it comes
-    // from whichever agent made the thread live — a shared store has no other partition.
-    const owner = recipient ?? inFlightAgent ?? initializingAgent
+    const mention = attachmentMention(msg.attachments)
     await this.threadContext.observeInbound({
-      channel: transcriptChannel,
-      // The row carries the PHYSICAL thread; the session coordinate rides the admission.
-      thread: msg.thread ?? msg.msgId,
-      ...(recipient
-        ? {
-            admission: {
-              agentId: recipient,
-              sessionKey: sessionKey(msg.platform, msg.channel, thread, recipient, msg.transportScope)
-            }
-          }
-        : {}),
+      channel: transcriptChannelKey(msg.channel, msg.transportScope),
+      thread: physicalThreadOf(msg),
+      // `sessionThreadOf` via `transcriptCoords`, byte-identical to the key `dispatch` computes a
+      // few lines later and to SessionManager's — a divergence here would mint a second session.
+      admission: {
+        agentId,
+        sessionKey: sessionKey(msg.platform, msg.channel, thread, agentId, msg.transportScope)
+      },
       ts,
       sender: msg.sender.id,
-      ...(owner ? { orgAgentId: owner } : {}),
-      // The canonical webchat post identity must survive whichever writer wins the
-      // first insert, or the browser's live frame cannot reconcile against the row.
+      orgAgentId: agentId,
+      recipient: agentId,
       ...(msg.transcriptPostId ? { postId: msg.transcriptPostId } : {}),
-      ...(recipient ? { recipient } : {}),
-      // The observer often wins the INSERT race against SessionManager's
-      // authoritative append — the provider send time must ride the FIRST
-      // write or non-chronological-id platforms (Telegram/Feishu) keep the
-      // broken derived axis.
       ...(msg.platformTimeMs ? { eventTimeUs: msg.platformTimeMs * 1000 } : {}),
-      // The closing edit of a streamed reply shares its post's coordinates, so it
-      // refreshes that row to the completed text instead of being ignored as a duplicate.
       ...(msg.ingressEventTag === SLACK_RESPONSE_FINAL_EVENT_TAG ? { authoritative: true } : {}),
       kind: 'text',
       text: mention ? `${msg.text}\n${mention}`.trim() : msg.text,
-      // Deliberately BODYLESS: this observation can run before the review batch and the review
-      // workspace finish rewriting the prompt, and the body is first-wins on the row. The
-      // authoritative ingest, which runs after both, is the one writer that persists it.
+      // Bodyless for the same reason as step 1: the authoritative ingest persists the prompt.
       ...(msg.quoted?.text ? { quoted: msg.quoted } : {})
     })
-    this.log.debug(`transcript: observed inbound msg ch=${msg.channel} thread=${thread} ts=${ts} (live session)`)
+    this.log.debug(`transcript: admitted inbound msg ch=${msg.channel} thread=${thread} ts=${ts} agent=${agentId}`)
   }
 
   /**
@@ -10177,8 +10150,10 @@ export class Daemon {
         // turn — a sibling's private delivery is not its context (#967).
         await this.store.transcriptSinceRevisionForAgent(this.planReadScope(pending.plan), afterRevision)
       : await this.store.transcriptSinceRevision(this.planReadScope(pending.plan), afterRevision)
+    // A recorded control (§5 step 2) never invalidates a candidate answer: `!status` typed while
+    // the agent works is not the conversation changing under it.
     return rows
-      .filter((row) => row.kind === 'text' && row.sender !== pending.plan.agentId)
+      .filter((row) => row.kind === 'text' && row.sender !== pending.plan.agentId && !isControlCommandText(row.text))
       .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
   }
 
@@ -11653,13 +11628,10 @@ export class Daemon {
     }
     if (msg.sender.avatarUrl && msg.transportScope)
       await this.store.setProfileAvatar(msg.transportScope, msg.sender.id, msg.sender.avatarUrl, Date.now())
-    if (
-      !opts?.deferObservedInbound &&
-      this.cfg.features.turnFinalContextRefresh &&
-      originKindOf(msg.platform) === 'chat'
-    ) {
-      await this.recordObservedInbound(msg, agentId)
-    }
+    // Step 6 (message-intake.md §5), and ABOVE the QueueEntry below on purpose: a message queued
+    // behind a running turn is already in the session the moment it is accepted. Ungated — the
+    // turn-final refresh flag gates that refresh, not whether a message is in a session.
+    if (!opts?.deferObservedInbound && originKindOf(msg.platform) === 'chat') await this.admitInbound(msg, agentId)
     // Not an async executor: a rejection from any awaited admission/store step must settle
     // THIS promise, not vanish as an unhandled rejection while the caller waits forever.
     return new Promise<string | null>((resolve, reject) => {
@@ -12418,7 +12390,7 @@ export class Daemon {
           const runAdmittedEntry = entry.admissionWait === undefined || (await entry.admissionWait)
           entry.admissionWait = undefined
           if (runAdmittedEntry) {
-            if (entry.deferObservedInbound) await this.recordObservedInbound(entry.msg, entry.agentId)
+            if (entry.deferObservedInbound) await this.admitInbound(entry.msg, entry.agentId)
             const releaseDispatch = await this.admitActiveDispatch(entry.agentId, key)
             let sessionId: string | null
             try {
@@ -19116,7 +19088,7 @@ export class Daemon {
     }
     // §7.2 ready→provisioned: reclaim a host whose agent has no recent session
     // activity AND no in-flight turn (a long turn stamps no activity, so the
-    // in-flight guard is load-bearing — see recordUnrouted).
+    // in-flight guard is load-bearing).
     for (const [key] of [...this.hosts]) {
       const agentId = hostKeyAgentId(key)
       const sessionKey = hostKeySessionKey(key)

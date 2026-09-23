@@ -204,7 +204,10 @@ conversations whose trigger is `off`: a Decision enabled later, or an agent acti
 not start blind. The write carries `thread` (physical), `ts`, `sender`, text, quote, attachment
 mention, `eventTimeUs`, and `postId` exactly as today; it carries no recipient and no coordinate.
 `INSERT OR IGNORE` on `(orgId, channel, ts)` makes a redelivery a no-op, and the closing edit of a
-streamed reply still refreshes its row through the `authoritative` path.
+streamed reply still refreshes its row through the `authoritative` path. The write runs after the
+platform's own thread normalization, which is what produces the physical thread it records; where a
+platform opens a root's thread only at dispatch (Discord's promotion, §7.4), the record asks that
+strategy for the thread it is about to open, so a root and the replies inside it group alike.
 
 **Step 2 — commands.** `parseCommand` runs on the recorded message. A command is never judged and,
 with one exception, never admitted; it acts on the target's session as today. The exception is
@@ -216,8 +219,8 @@ the same prompt. `!stop` additionally cancels every pending
 `decision_verdict` for that agent in that conversation, so a stop never waits on Jev (decisions.md
 §8.3). The row stays in the record: a Decision may well want to know someone said stop.
 
-**Step 3 — suppression.** Per-connection dedup, agent-echo suppression, Telegram thread
-canonicalization, `discoverConversations`, and the drain gate run where they do now. A message the
+**Step 3 — suppression.** Per-connection dedup, agent-echo suppression, `discoverConversations`, and
+the drain gate run where they do now. A message the
 ladder later drops has already been recorded; that is the point.
 
 **Step 4 — candidates.** `routeRules` and the peer fan-out produce the same target set they produce

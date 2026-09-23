@@ -427,6 +427,14 @@ describe('§4.5 the teams as the observed conversations', () => {
   it('reports nothing for a delivery whose bag names no team at all', async () => {
     const { daemon, reports } = await boot()
     ;(daemon as any).dispatch = vi.fn(async () => null)
+    // Boot fires TWO reconciles and each detaches its team report (§4.5), so wait for the
+    // emission count to settle — otherwise a late boot report reads as this delivery's.
+    let seen = -1
+    await vi.waitFor(() => {
+      const settled = reports.length === seen
+      seen = reports.length
+      expect(settled).toBe(true)
+    })
     const before = reports.length
     await im(daemon, delivery({}, { team: undefined }))
     expect(reports.length).toBe(before)

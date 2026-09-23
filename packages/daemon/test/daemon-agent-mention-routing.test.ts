@@ -1068,3 +1068,56 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     })
   })
 })
+
+// message-intake.md §7: a verified agent author is recorded in the channel record like any sender
+// and still walks the collaboration ladder; an unverifiable echo is recorded and not routed.
+describe('the channel record on the agent-authored ladder', () => {
+  const rows = async (daemon: Daemon): Promise<{ ts: string; sender: string; text: string }[]> =>
+    (await (daemon as any).store.db.prepare('SELECT ts, sender, text FROM transcript ORDER BY seq').all()) as {
+      ts: string
+      sender: string
+      text: string
+    }[]
+
+  const admissions = async (daemon: Daemon): Promise<{ agentId: string }[]> =>
+    (await (daemon as any).store.db.prepare('SELECT agentId FROM transcript_recipient ORDER BY agentId').all()) as {
+      agentId: string
+    }[]
+
+  it('records a verified agent-authored message once and still routes it to the peer', async () => {
+    const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+
+    const outcome = await route(daemon, agentMessage({}, { hopCount: 2 }))
+
+    expect(outcome.kind).toBe('dispatched')
+    expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
+    // `ts` is the msgId's trailing segment, so a finalized post records under `…:final`.
+    expect(await rows(daemon)).toEqual([{ ts: 'final', sender: 'UBOT', text: 'please verify the rollout' }])
+    await daemon.stop()
+  })
+
+  it('records an unverifiable AgentConnect echo exactly once and routes it nowhere', async () => {
+    const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+
+    // Ours by app identity, with no authorship claim to verify: §4 fails closed.
+    const { agentAuthorship: _claim, ...echo } = agentMessage()
+    const outcome = await route(daemon, echo)
+
+    expect(outcome).toEqual({ kind: 'rejected', reason: 'suppressed' })
+    expect(calls).toHaveLength(0)
+    expect(await rows(daemon)).toHaveLength(1)
+    expect(await admissions(daemon)).toEqual([])
+    await daemon.stop()
+  })
+
+  it('records the visible half of a paired agent call and admits nobody until the internal wake', async () => {
+    const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }], { realDispatch: true })
+
+    expect((await route(daemon, agentMessage({}, { agentCallDeliveryId: 'd-1' }))).kind).toBe('rejected')
+
+    expect(calls).toHaveLength(0)
+    expect(await rows(daemon)).toHaveLength(1)
+    expect(await admissions(daemon)).toEqual([])
+    await daemon.stop()
+  })
+})

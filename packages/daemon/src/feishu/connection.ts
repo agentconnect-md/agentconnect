@@ -718,8 +718,8 @@ export class FeishuConnection implements PlatformConnection {
     const log = this.deps.log
     // Resolve the bot's own open_id BEFORE opening the socket so the self-echo skip is
     // armed for the very first event. Config value wins; bot/info is a best-effort
-    // fallback (a failure just leaves botOpenId '', and recordUnrouted's own check plus
-    // the CP-seeded value still guard against self-triggering).
+    // fallback (a failure just leaves botOpenId '', and the ingress echo check plus the
+    // CP-seeded value still guard against self-triggering).
     this.botOpenId = this.deps.group.botOpenId ?? ''
     if (!this.botOpenId) {
       try {

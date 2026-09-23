@@ -43,6 +43,10 @@ export interface ThreadPromotion<TMsg extends ThreadPromotionMessage> {
    *  failure the message keeps its channel coordinates and the reply lands
    *  in-channel. */
   promote(host: ThreadPromotionHost, conn: unknown, msg: TMsg): Promise<void>
+  /** The thread a wanted promotion WILL produce, where the platform makes it predictable —
+   *  read before `promote` runs, since the channel record files the row first (message-intake.md
+   *  §5 step 1). Absent, or undefined, means "unpredictable": the row keeps the message's own id. */
+  physicalThread?(msg: TMsg): string | undefined
 }
 
 const PROMOTIONS = new Map<string, ThreadPromotion<ThreadPromotionMessage>>()
@@ -55,4 +59,12 @@ export function registerThreadPromotion(promotion: ThreadPromotion<ThreadPromoti
  *  top-level posts reply in place, every non-Discord platform's behavior. */
 export function threadPromotionFor(platform: string): ThreadPromotion<ThreadPromotionMessage> | undefined {
   return PROMOTIONS.get(platform)
+}
+
+/** The PHYSICAL thread one message's channel-record row carries (§4.1): its own thread, or the one
+ *  a wanted promotion is about to give it, or — for a root nothing threads — its own id. Core asks
+ *  the registry rather than knowing which platform threads its roots. */
+export function physicalThreadOf(msg: ThreadPromotionMessage): string {
+  const promotion = PROMOTIONS.get(msg.platform)
+  return msg.thread ?? (promotion?.wants(msg) ? promotion.physicalThread?.(msg) : undefined) ?? msg.msgId
 }

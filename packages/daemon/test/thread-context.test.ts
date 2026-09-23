@@ -203,6 +203,48 @@ describe('ThreadContextCoordinator', () => {
     expect(prompt).toContain(`[U1] message-${MAX_CONTEXT_REFRESH_EVENTS + 1}`)
     await db.close()
   })
+  it('leaves a recorded control out of the refresh, so it cannot discard a candidate answer', async () => {
+    // Step 1 records `!status` before it is intercepted (message-intake.md §5); a control acted on
+    // the session rather than being said to it, so it is no reason to re-run the turn.
+    const db = await store()
+    const coordinator = new ThreadContextCoordinator(db)
+    await coordinator.observeInbound(text('100.1', 'U1', '!status'))
+    const quiet = await coordinator.refresh({
+      scope: readScope('scope:C1', 'T1', 'bot-a'),
+      deliveryThread: 'T1',
+      afterRevision: 0
+    })
+    expect(quiet.events).toEqual([])
+    // …and the fence still advances past it, so the next real row is not re-observed forever.
+    await coordinator.observeInbound(text('100.2', 'U1', 'a real clarification'))
+    const next = await coordinator.refresh({
+      scope: readScope('scope:C1', 'T1', 'bot-a'),
+      deliveryThread: 'T1',
+      afterRevision: quiet.revision
+    })
+    expect(next.events.map((e) => e.text)).toEqual(['a real clarification'])
+    await db.close()
+  })
+
+  it('renders an admitted `!queue` row as the text the agent was asked to run', async () => {
+    // The row keeps the command as typed; the strip is prompt assembly's (message-intake.md §5 step 2).
+    const db = await store()
+    const coordinator = new ThreadContextCoordinator(db)
+    await coordinator.observeInbound(text('100.1', 'U1', '!queue do the thing'))
+    await coordinator.observeInbound(text('100.2', 'U2', 'plain follow-up'))
+    const refresh = await coordinator.refresh({
+      scope: readScope('scope:C1', 'T1', 'bot-a'),
+      deliveryThread: 'T1',
+      afterRevision: 0
+    })
+    for (const rendered of [contextUpdateText(refresh.events), initialContextDeltaText(refresh.events)]) {
+      expect(rendered).toContain('[U1] do the thing')
+      expect(rendered).not.toContain('!queue')
+      expect(rendered).toContain('[U2] plain follow-up')
+    }
+    await db.close()
+  })
+
   it('renders a refresh from the prompt behind a row, never from the text the console shows', async () => {
     const db = await store()
     const coordinator = new ThreadContextCoordinator(db)

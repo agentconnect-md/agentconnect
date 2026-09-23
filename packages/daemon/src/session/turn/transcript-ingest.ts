@@ -90,6 +90,8 @@ export async function ingestInboundTranscript(input: TranscriptIngestInput): Pro
   const mention = attachmentMention(msg.attachments)
   const transcriptAttachments = transcriptImageAttachments(msg.attachments)
   const transcriptText = mention ? `${msg.text}\n${mention}`.trim() : msg.text
+  // Webchat only, so it never collides with a step-1 row: chat ingress is what writes those, and
+  // webchat is not chat ingress (message-intake.md §5 step 1).
   const ts =
     msg.platform === 'webchat'
       ? await probeWebchatSlot(

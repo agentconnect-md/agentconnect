@@ -10,7 +10,8 @@ import {
   type SessionRecord,
   type StoreDatabase,
   OBSERVATION_SWEEP_INSERTS,
-  SCHEMA_VERSION
+  SCHEMA_VERSION,
+  transcriptPromptText
 } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { memoryStoreDatabase, openTestStore, usingPostgresStore } from './store-support.js'
@@ -2342,12 +2343,8 @@ describe('LocalStore webchat MCP grant ledger', () => {
     await s.close()
   })
   it('an authoritative event time upgrades a row the derived-axis observer wrote first', async () => {
-    // Regression (merged-conversation-view.md §6 / PR review): with
-    // turnFinalContextRefresh on, recordObservedInbound races SessionManager
-    // and wins the INSERT — a Telegram row ts="4821" landed at the derived
-    // 4_821_000_000µs axis, and the later authoritative append was
-    // INSERT-OR-IGNOREd without repair. Explicit eventTimeUs must upgrade the
-    // deduped row (and bump its revision); derived recomputes never flap it.
+    // Regression (merged-conversation-view.md §6): the step-1 channel record wins the INSERT over
+    // SessionManager, so an explicit eventTimeUs must upgrade the deduped row and bump its revision.
     const s = await store()
     await s.appendTranscript({ channel: 'C1', thread: 'T', ts: '4821', sender: 'U1', kind: 'text', text: 'hi' })
     const before = (await s.transcriptSince(readScope('C1', 'T', 'bot-a'), null))[0] as { eventTimeUs?: number }
@@ -3366,6 +3363,34 @@ describe('the channel record and its admissions', () => {
       )
       .all(sessionKeyValue)) as { seq: number; kind: string }[]
 
+  it('upgrades the step-1 row in place when the turn ingest appends it (message-intake.md §5 step 6)', async () => {
+    const s = await store()
+    const step1 = { channel: 'C1', thread: 'T1', ts: '1', sender: 'U1', kind: 'text' as const, text: 'do it' }
+    await s.appendTranscript(step1)
+    // What `ingestInboundTranscript` writes: the same coordinates, plus the body/postId/eventTime
+    // /attachments it alone has, plus the admission.
+    const ingest = {
+      ...step1,
+      body: JSON.stringify({ prompt: 'do it (assembled)' }),
+      postId: 'p-1',
+      eventTimeUs: 1_700_000,
+      attachments: [{ name: 'a.png', mimeType: 'image/png' as const, data: 'AA==' }],
+      recipient: 'bot-a',
+      admission: { agentId: 'bot-a', sessionKey: 'k:C1:T1:bot-a' }
+    }
+    await s.appendTranscript(ingest)
+    await s.appendTranscript(ingest)
+
+    const rows = await s.threadTranscript('C1', 'T1')
+    expect(rows).toHaveLength(1)
+    // The step-1 text wins (first writer); everything the ingest alone knows is added beside it.
+    expect(rows[0]).toMatchObject({ text: 'do it', postId: 'p-1', eventTimeUs: 1_700_000 })
+    expect(JSON.parse(rows[0]!.body!).prompt).toBe('do it (assembled)')
+    expect(rows[0]!.attachmentsJson).toContain('a.png')
+    expect(await admissionsOf(s, 'k:C1:T1:bot-a')).toHaveLength(1)
+    await s.close()
+  })
+
   it('is one row per (orgId, channel, ts) however many agents admit it, with one admission each', async () => {
     const s = await store()
     const row = { channel: 'C1', thread: 'T1', ts: '1', sender: 'U1', kind: 'text' as const, text: 'shared' }
@@ -3512,6 +3537,19 @@ describe('deleteSession reclaims its own rows (message-intake.md §8 rule 1)', (
   })
 })
 
+// message-intake.md §5 step 2: the row keeps `!queue …` as typed, the prompt is the stripped text.
+describe('transcriptPromptText', () => {
+  it('strips an admitted !queue prefix from the row a step-1 write recorded', () => {
+    expect(transcriptPromptText({ kind: 'text', text: '!queue ship it' })).toBe('ship it')
+    expect(transcriptPromptText({ kind: 'text', text: 'ship it' })).toBe('ship it')
+  })
+
+  it('still prefers a persisted prompt body, which is already stripped', () => {
+    const body = JSON.stringify({ prompt: 'the assembled prompt' })
+    expect(transcriptPromptText({ kind: 'text', text: '!queue ship it', body })).toBe('the assembled prompt')
+  })
+})
+
 describe('the observation floor (message-intake.md §8 rule 2)', () => {
   const text = (ts: number) => ({
     channel: 'CF',
@@ -3542,6 +3580,17 @@ describe('the observation floor (message-intake.md §8 rule 2)', () => {
     expect(kept).not.toContain('m1')
     expect(kept).not.toContain('m21')
     expect(kept).toContain('m22')
+    await s.close()
+  })
+
+  it('keeps a row that gained its admission after being written as an observation', async () => {
+    const s = await store()
+    // The step-1 row first, then the admission a target's dispatch attaches to it.
+    await s.appendTranscript(text(1))
+    await s.appendTranscript({ ...text(1), admission: { agentId: 'bot-a', sessionKey: 'k:CF:TF:bot-a' } })
+    for (let i = 2; i <= 120; i++) await s.appendTranscript(text(i))
+    await s.sweepObservations('', 'CF')
+    expect((await s.threadTranscript('CF', 'TF')).map((r) => r.text)).toContain('m1')
     await s.close()
   })
 

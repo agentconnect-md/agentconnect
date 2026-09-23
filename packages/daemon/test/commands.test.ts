@@ -1,7 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseCommand } from '../src/commands/commands.js'
-
-import { requiresTrustedActor } from '../src/commands/commands.js'
+import { isControlCommandText, parseCommand, queuePromptText, requiresTrustedActor } from '../src/commands/commands.js'
 
 // One predicate, asked by every ingress path that parses a command. The failure it exists to
 // prevent is a gate applied on direct ingress but not on relay — which is where the HTTP
@@ -101,5 +99,35 @@ describe('parseCommand', () => {
     expect(parseCommand('! stop')).toBeNull() // space after prefix
     expect(parseCommand('!stopnow')).toBeNull() // unknown word, not a prefix match
     expect(parseCommand('!deploy')).toBeNull() // unknown command
+  })
+})
+
+// message-intake.md §5 step 2: the row keeps the command as typed; the prompt is the stripped text.
+describe('queuePromptText', () => {
+  it('strips an admitted !queue prefix, in either prefix and with Telegram group addressing', () => {
+    expect(queuePromptText('!queue hello')).toBe('hello')
+    expect(queuePromptText('/queue@mybot hello')).toBe('hello')
+  })
+
+  it('keeps the attachment mention the row carries', () => {
+    expect(queuePromptText('!queue hello\n[attached: a.png (image/png)]')).toBe('hello\n[attached: a.png (image/png)]')
+  })
+
+  it('leaves everything that is not an admitted !queue alone', () => {
+    // A bare `!queue` draws a usage reply and is never admitted — blanking it would empty its row.
+    expect(queuePromptText('!queue')).toBe('!queue')
+    expect(queuePromptText('!stop')).toBe('!stop')
+    expect(queuePromptText('remember to !queue the deploy')).toBe('remember to !queue the deploy')
+  })
+})
+
+// The read-side twin of the strip: a recorded control is never session context (§5 step 2).
+describe('isControlCommandText', () => {
+  it('names every control but `!queue`, whose row IS admitted', () => {
+    expect(isControlCommandText('!stop')).toBe(true)
+    expect(isControlCommandText('/status@mybot')).toBe(true)
+    expect(isControlCommandText('!queue hello')).toBe(false)
+    expect(isControlCommandText('hello!')).toBe(false)
+    expect(isControlCommandText('!deploy the thing')).toBe(false)
   })
 })
