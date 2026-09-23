@@ -4,7 +4,7 @@
 // mappers translate the lean wire DTOs into the richer UI shapes from `./data`,
 // filling fields the API does not (yet) expose with placeholders.
 
-import type { DecisionApi } from '@agentconnect.md/protocol/decision-api'
+import type { DecisionApi, DecisionConversationRef } from '@agentconnect.md/protocol/decision-api'
 import type { AgentModelSelection, ChannelDecisionGate } from '@agentconnect.md/protocol/decision'
 import type {
   Agent,
@@ -6376,6 +6376,8 @@ export function deleteProviderKey(orgId: string, provider: ProviderKeyProvider):
 export function createDecisionApi(orgId: string): DecisionApi {
   const base = () => `${orgBase(orgId)}/decisions`
   const path = (id: string) => `${base()}/${encodeURIComponent(id)}`
+  const conversation = (ref: DecisionConversationRef) =>
+    `${orgBase(orgId)}/integrations/${encodeURIComponent(ref.integrationId)}/channels/${encodeURIComponent(ref.channelId)}`
   // Live bindings save through updateIntegrationChannel; these consumer methods back only the mock.
   const unsupported = async (): Promise<never> => {
     throw new ApiError('This Decision consumer API is only available in mock mode.', 501)
@@ -6390,6 +6392,15 @@ export function createDecisionApi(orgId: string): DecisionApi {
     updateDecision: (id, draft) => apiPatch(path(id), draft),
     deleteDecision: (id) => apiDelete(path(id)),
     preview: (input) => apiPost(`${base()}/preview`, input),
+    previewGate: (ref, input) => apiPost(`${conversation(ref)}/decision-preview`, input),
+    listEvaluations: (ref, page = {}) => {
+      const query = new URLSearchParams()
+      if (page.cursor !== undefined) query.set('cursor', String(page.cursor))
+      if (page.limit !== undefined) query.set('limit', String(page.limit))
+      const suffix = query.toString()
+      return apiGet(`${conversation(ref)}/decision-evaluations${suffix ? `?${suffix}` : ''}`)
+    },
+    getEvaluation: (ref, seq) => apiGet(`${conversation(ref)}/decision-evaluations/${encodeURIComponent(String(seq))}`),
     listBots: unsupported,
     listChannels: unsupported,
     saveChannel: unsupported,

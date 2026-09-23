@@ -1,6 +1,9 @@
 import type {
+  DecisionCondition,
   DecisionDefinition,
   DecisionEvaluation,
+  DecisionEvaluationEntry,
+  DecisionEvaluationRecordDetail,
   SharedBotDecisionRouting
 } from '@agentconnect.md/protocol/decision'
 import type {
@@ -19,6 +22,8 @@ export interface DecisionMockSeed {
   bots: DecisionBot[]
   channels: DecisionChannel[]
   routings: Array<{ botId: string; config: SharedBotDecisionRouting; readiness: DecisionReadiness }>
+  /** Canned Recent evaluations, newest first, shown for any conversation in mock mode. */
+  evaluations: DecisionEvaluationRecordDetail[]
 }
 
 export type DecisionMockScenario =
@@ -191,7 +196,8 @@ export function createDecisionMockSeed(scenario: DecisionMockScenario = 'ready')
         agents: [{ id: 'moderator-agent', name: 'Moderator', available: true }]
       }
     ],
-    routings: [{ botId: bot.id, config, readiness }]
+    routings: [{ botId: bot.id, config, readiness }],
+    evaluations: mockEvaluations(decisions)
   })
   if (scenario === 'needs_review') {
     seed.channels[3]!.settings = {
@@ -264,3 +270,140 @@ export const evaluateRepeatedMentionFixture: DecisionPreviewEvaluator = (decisio
   answer: { type: 'boolean', value: false, probability: 0.1 },
   usage: { inputTokens: 100, outputTokens: 0 }
 })
+
+const entry = (id: string, sender: string, text: string): DecisionEvaluationEntry => ({
+  id,
+  sender: { id: sender },
+  text,
+  threadId: null,
+  time: '2026-01-01T10:00:00.000Z'
+})
+
+// One of each Recent evaluations outcome, plus a row whose bodies retention already stripped.
+function mockEvaluations(decisions: DecisionDefinition[]): DecisionEvaluationRecordDetail[] {
+  const [category, response] = [decisions[0]!, decisions[1]!]
+  const snapshot = (decision: DecisionDefinition, condition: DecisionCondition) => ({
+    decisionId: decision.id,
+    providerId: decision.providerId,
+    model: decision.model,
+    question: decision.question,
+    condition,
+    sessionMode: 'createNew'
+  })
+  const yesGate = snapshot(response, { type: 'boolean', values: [true] })
+  const input = (text: string): NonNullable<DecisionEvaluationRecordDetail['input']> => ({
+    currentMessage: entry('1767261660.000600', 'U-customer', text),
+    history: [
+      entry('1767261600.000100', 'U-customer', 'Is anyone around to help with an invoice?'),
+      entry('1767261630.000200', 'U-moderator', 'Someone from billing will reply shortly.')
+    ],
+    historyOmitted: 0,
+    context: { partial: false, reasons: [], omittedMessages: 0 }
+  })
+  const base = {
+    reason: null,
+    matchedKeys: [],
+    latencyMs: 640,
+    requestedModel: 'jev-1.13.0',
+    actualModel: 'jev-1.13.0',
+    usage: { inputTokens: 412, outputTokens: 3 },
+    detailsExpired: false
+  }
+  return [
+    {
+      ...base,
+      seq: 106,
+      at: '2026-01-01T10:06:00.000Z',
+      messageId: '1767261960.000600',
+      decisionId: response.id,
+      outcome: 'triggered',
+      answer: { type: 'boolean', value: true, probability: 0.86 },
+      snapshot: yesGate,
+      input: input('Our invoice charged us twice this month.'),
+      fullAnswer: { type: 'boolean', value: true, probability: 0.86 },
+      evidence: { snapshotSeq: 106, suppliedBackground: 2 }
+    },
+    {
+      ...base,
+      seq: 105,
+      at: '2026-01-01T10:05:00.000Z',
+      messageId: '1767261900.000500',
+      decisionId: category.id,
+      outcome: 'skipped',
+      answer: { type: 'choice', value: 'sales', confidence: 0.62 },
+      snapshot: snapshot(category, { type: 'choice', thresholds: { billing: 0.5 } }),
+      input: input('Do you offer an annual plan?'),
+      fullAnswer: {
+        type: 'choice',
+        value: 'sales',
+        probabilities: { billing: 0.2, technical: 0.18, sales: 0.62 },
+        confidence: 0.62
+      },
+      evidence: null
+    },
+    {
+      ...base,
+      seq: 104,
+      at: '2026-01-01T10:04:00.000Z',
+      messageId: '1767261840.000400',
+      decisionId: response.id,
+      outcome: 'unavailable',
+      reason: 'timeout',
+      answer: null,
+      latencyMs: 5000,
+      actualModel: null,
+      usage: null,
+      snapshot: yesGate,
+      input: input('Still waiting on that refund.'),
+      fullAnswer: null,
+      evidence: { snapshotSeq: 104, suppliedBackground: 0 }
+    },
+    {
+      ...base,
+      seq: 103,
+      at: '2026-01-01T10:03:00.000Z',
+      messageId: '1767261780.000300',
+      decisionId: response.id,
+      outcome: 'canceled',
+      reason: 'stop',
+      answer: null,
+      latencyMs: null,
+      actualModel: null,
+      usage: null,
+      snapshot: yesGate,
+      input: input('Never mind, found it.'),
+      fullAnswer: null,
+      evidence: null
+    },
+    {
+      ...base,
+      seq: 102,
+      at: '2026-01-01T10:02:00.000Z',
+      messageId: '1767261720.000200',
+      decisionId: response.id,
+      outcome: 'pending',
+      answer: null,
+      latencyMs: null,
+      actualModel: null,
+      usage: null,
+      snapshot: yesGate,
+      input: input('Can someone check order 4411?'),
+      fullAnswer: null,
+      evidence: null
+    },
+    {
+      ...base,
+      seq: 101,
+      at: '2025-12-24T09:00:00.000Z',
+      messageId: '1766566800.000100',
+      decisionId: response.id,
+      outcome: 'triggered',
+      answer: null,
+      detailsExpired: true,
+      snapshot: yesGate,
+      input: null,
+      fullAnswer: null,
+      evidence: { snapshotSeq: 101, suppliedBackground: null }
+    }
+  ]
+}

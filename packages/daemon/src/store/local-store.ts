@@ -5471,6 +5471,40 @@ export class LocalStore {
     return row ? normalizeVerdict(row) : undefined
   }
 
+  /** One lane's verdicts newest-first for Recent evaluations, each with its row's platform ts; one extra row signals more. */
+  async listDecisionVerdicts(filter: {
+    orgId: string
+    integrationId: string
+    channel: string
+    subject: string
+    before?: number
+    seq?: number
+    limit: number
+  }): Promise<Array<DecisionVerdictRow & { ts: string | null }>> {
+    const params: unknown[] = [
+      this.orgForRead(filter.subject, filter.orgId),
+      filter.channel,
+      filter.subject,
+      filter.integrationId
+    ]
+    let bound = ''
+    if (filter.seq !== undefined) {
+      bound = ' AND v.seq = ?'
+      params.push(filter.seq)
+    } else if (filter.before !== undefined) {
+      bound = ' AND v.seq < ?'
+      params.push(filter.before)
+    }
+    const rows = (await this.db
+      .prepare(
+        `SELECT v.*, t.ts AS ts FROM decision_verdict v LEFT JOIN transcript t ON t.seq = v.seq
+          WHERE v.orgId = ? AND v.channel = ? AND v.subject = ? AND v.integrationId = ?${bound}
+          ORDER BY v.seq DESC LIMIT ?`
+      )
+      .all(...params, filter.limit + 1)) as Array<DecisionVerdictRow & { ts: string | null }>
+    return rows.map((row) => ({ ...normalizeVerdict(row), ts: row.ts ?? null }))
+  }
+
   /** reserved → evaluating under the owner fence, freezing the input the provider sees. */
   async beginDecisionEvaluation(seq: number, subject: string, fence: string, inputJson: string): Promise<boolean> {
     const result = await this.db

@@ -48,6 +48,22 @@ export function intervalText(condition: Extract<DecisionCondition, { type: 'scor
   return `${condition.min} ≤ score ${condition.max >= maximum ? '≤ ' : '< '}${condition.max}`
 }
 
+/** How a condition reads in one line — the summary the collapsed strip, Try, and evaluation details print. */
+export function conditionSummary(
+  question: DecisionQuestion,
+  when: DecisionCondition,
+  labels: { yes: string; no: string; none: string }
+): string {
+  if (when.type === 'boolean') {
+    if (!when.values.length) return labels.none
+    return when.values.map((value) => (value ? labels.yes : labels.no)).join(' or ')
+  }
+  if (when.type === 'score') return intervalText(when, question.type === 'score' ? question.criteria.length : 2)
+  const keys = Object.keys(when.thresholds)
+  if (!keys.length) return labels.none
+  return keys.map((key) => `${key} ≥ ${Math.round((when.thresholds[key] ?? 0) * 100)}%`).join(', ')
+}
+
 export function DecisionConditionFields({
   question,
   value,

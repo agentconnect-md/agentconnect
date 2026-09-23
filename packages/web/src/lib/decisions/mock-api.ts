@@ -1,7 +1,9 @@
 import {
+  ChannelDecisionGate,
   DecisionChannelSettings,
   DecisionDraft,
   DecisionEvaluation,
+  DecisionPreviewSample,
   SharedBotDecisionRouting,
   decisionConditionIssues,
   decisionConditionNeedsReview,
@@ -10,11 +12,13 @@ import {
   matchDecisionRouting,
   parseDecisionAnswer,
   type DecisionDefinition,
+  type DecisionEvaluationRecord,
   type DecisionValidationIssue
 } from '@agentconnect.md/protocol/decision'
 import type {
   DecisionApi,
   DecisionApiErrorBody,
+  DecisionGatePreviewResult,
   DecisionPreviewEvaluator,
   DecisionPreviewResult,
   DecisionReadiness,
@@ -110,6 +114,33 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
       return { status: 'unsupported' }
     return copy(provider.readiness)
   }
+
+  // Canned output is validated first, so an invalid fixture reads as unavailable, never as a No.
+  async function evaluateDraft(draft: DecisionDraft, state: Record<string, unknown>): Promise<DecisionEvaluation> {
+    let evaluation: DecisionEvaluation
+    try {
+      const parsed = DecisionEvaluation.safeParse(await evaluate(copy(draft), copy(state)))
+      evaluation = parsed.success ? parsed.data : { status: 'unavailable', reason: 'invalid_response' }
+    } catch {
+      evaluation = { status: 'unavailable', reason: 'provider' }
+    }
+    if (evaluation.status === 'answered') {
+      try {
+        parseDecisionAnswer(draft.question, evaluation.answer)
+      } catch {
+        evaluation = { status: 'unavailable', reason: 'invalid_response' }
+      }
+    }
+    return evaluation
+  }
+
+  const evaluations = [...seed.evaluations].sort((a, b) => b.seq - a.seq)
+  const offline = () =>
+    new DecisionMockApiError(503, {
+      error: 'unavailable',
+      code: 'DAEMON_OFFLINE',
+      message: 'The daemon serving this conversation is offline.'
+    })
 
   function usages(id: string): DecisionUsage[] {
     const result: DecisionUsage[] = []
@@ -402,20 +433,7 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
         }
       }
       if (readiness.status !== 'ready') return result
-      let evaluation: DecisionEvaluation
-      try {
-        const parsed = DecisionEvaluation.safeParse(await evaluate(copy(draft), copy(input.state)))
-        evaluation = parsed.success ? parsed.data : { status: 'unavailable', reason: 'invalid_response' }
-      } catch {
-        evaluation = { status: 'unavailable', reason: 'provider' }
-      }
-      if (evaluation.status === 'answered') {
-        try {
-          parseDecisionAnswer(draft.question, evaluation.answer)
-        } catch {
-          evaluation = { status: 'unavailable', reason: 'invalid_response' }
-        }
-      }
+      const evaluation = await evaluateDraft(draft, input.state)
       result.evaluation = copy(evaluation)
       if (!result.consumer) return result
       const defaultAgentId = channel?.agentId ?? bot?.defaultAgentId
@@ -449,6 +467,75 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
         (id) => !bot?.agents.some((agent) => agent.id === id && agent.available)
       )
       return copy(result)
+    },
+    async previewGate(ref, input) {
+      input = copy(input)
+      const binding = parse(ChannelDecisionGate, input.decisionBinding)
+      const state = parse(DecisionPreviewSample, input.state)
+      const definition = definitions.get(binding.decisionId)
+      if (!definition) throw new DecisionMockApiError(404, { error: 'not_found', message: 'Decision not found.' })
+      invalid(decisionConditionIssues(definition.question, binding.when))
+      const channel = channels.get(ref.channelId)
+      const bot = channel ? bots.get(channel.botId) : seed.bots[0]
+      const agentId = channel?.agentId ?? bot?.defaultAgentId ?? ''
+      const target = { agentId, name: bot?.agents.find((agent) => agent.id === agentId)?.name ?? agentId }
+      const consumer = (
+        outcome: DecisionGatePreviewResult['consumer']['outcome'],
+        extra: Partial<DecisionGatePreviewResult['consumer']> = {}
+      ): DecisionGatePreviewResult['consumer'] => ({
+        type: 'gate',
+        outcome,
+        matched: false,
+        matchedKeys: [],
+        target,
+        ...extra
+      })
+      if (options.scenario === 'needs_review')
+        return {
+          mode: 'mock',
+          readiness: { status: 'needs_review' },
+          evaluation: null,
+          consumer: consumer('not_applied', { notAppliedReason: 'needs_review' })
+        }
+      if (options.scenario === 'daemon_offline') throw offline()
+      const evaluation = await evaluateDraft(definition, { ...state })
+      if (evaluation.status !== 'answered')
+        return copy({ mode: 'mock', readiness: { status: 'ready' }, evaluation, consumer: consumer('unavailable') })
+      try {
+        const match = matchDecisionCondition(definition.question, binding.when, evaluation.answer)
+        return copy({
+          mode: 'mock',
+          readiness: { status: 'ready' },
+          evaluation,
+          consumer: consumer(match.matched ? 'trigger' : 'skip', {
+            matched: match.matched,
+            matchedKeys: match.matchedKeys
+          })
+        })
+      } catch {
+        return {
+          mode: 'mock',
+          readiness: { status: 'ready' },
+          evaluation: { status: 'unavailable', reason: 'invalid_response' },
+          consumer: consumer('unavailable')
+        }
+      }
+    },
+    async listEvaluations(_ref, page = {}) {
+      if (options.scenario === 'daemon_offline') throw offline()
+      const limit = Math.min(50, Math.max(1, page.limit ?? 20))
+      const after = evaluations.filter((entry) => page.cursor === undefined || entry.seq < page.cursor)
+      const items: DecisionEvaluationRecord[] = after.slice(0, limit).map((entry) => {
+        const { snapshot: _snapshot, input: _input, fullAnswer: _fullAnswer, evidence: _evidence, ...summary } = entry
+        return summary
+      })
+      return copy({ items, nextCursor: after.length > limit ? (items.at(-1)?.seq ?? null) : null })
+    },
+    async getEvaluation(_ref, seq) {
+      if (options.scenario === 'daemon_offline') throw offline()
+      const found = evaluations.find((entry) => entry.seq === seq)
+      if (!found) throw missing()
+      return copy(found)
     }
   }
 }

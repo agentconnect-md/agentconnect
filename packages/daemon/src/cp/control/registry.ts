@@ -1,4 +1,10 @@
-import { decisionCatalog, decisionPreview, type DecisionControlDeps } from './decision.js'
+import {
+  decisionCatalog,
+  decisionEvaluation,
+  decisionEvaluations,
+  decisionPreview,
+  type DecisionControlDeps
+} from './decision.js'
 import { memoryEntriesWrite, memoryEntriesRead } from './memory.js'
 import {
   agentActivate,
@@ -117,6 +123,8 @@ export interface ControlDeps
 export const CONTROL_HANDLERS: Map<string, ControlHandler<ControlDeps>> = new Map<string, ControlHandler<ControlDeps>>([
   ['decision/catalog', decisionCatalog],
   ['decision/preview', decisionPreview],
+  ['decision/evaluations', decisionEvaluations],
+  ['decision/evaluation', decisionEvaluation],
   ['config/push', configPush],
   ['duty/grant', dutyGrant],
   ['duty/renewed', dutyRenewed],

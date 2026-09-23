@@ -12,7 +12,8 @@ import { createDecisionMockSeed } from '@/lib/decisions/fixtures'
 import { ApiError, type ChannelDecisionView } from '@/lib/api'
 import type { IntegrationChannelRow } from '@/lib/data'
 
-const env = vi.hoisted(() => ({ mock: false, flag: true }))
+const env = vi.hoisted(() => ({ mock: false, flag: true, role: 'owner' }))
+const evals = vi.hoisted(() => ({ listEvaluations: vi.fn() }))
 const data = vi.hoisted(() => ({
   setChannelTrigger: vi.fn(async () => undefined),
   setChannelDecision: vi.fn(async () => undefined)
@@ -31,7 +32,7 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams()
 }))
 vi.mock('@/lib/org-context', () => ({
-  useOrgs: () => ({ activeOrg: { id: 'org-test' }, myRole: 'owner', orgPath: (path: string) => path })
+  useOrgs: () => ({ activeOrg: { id: 'org-test' }, myRole: env.role, orgPath: (path: string) => path })
 }))
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
@@ -71,7 +72,10 @@ vi.mock('@/lib/api', async (original) => {
     saveChannel: refuse,
     getRouting: refuse,
     saveRouting: refuse,
-    preview: refuse
+    preview: refuse,
+    previewGate: refuse,
+    listEvaluations: evals.listEvaluations,
+    getEvaluation: refuse
   }
   return { ...actual, createDecisionApi: () => live }
 })
@@ -86,6 +90,8 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 beforeEach(() => {
   env.mock = false
   env.flag = true
+  env.role = 'owner'
+  evals.listEvaluations.mockReset().mockResolvedValue({ items: [], nextCursor: null })
   data.setChannelTrigger.mockReset().mockResolvedValue(undefined)
   data.setChannelDecision.mockReset().mockResolvedValue(undefined)
 })
@@ -198,6 +204,36 @@ describe('IntegrationChannelList By decision', () => {
     expect(byText('Activates Billing')).toBeTruthy()
     expect(document.body.querySelector('[role="status"]')).toBeNull()
     expect(byText('Trigger when')).toBeUndefined()
+  })
+
+  it('lets a read-only viewer open Recent evaluations for the conversation but not edit the gate', async () => {
+    env.role = 'viewer'
+    evals.listEvaluations.mockResolvedValue({
+      items: [
+        {
+          seq: 9,
+          at: '2026-01-01T10:00:00.000Z',
+          messageId: 'm9',
+          decisionId: 'support-category',
+          outcome: 'skipped',
+          reason: null,
+          answer: { type: 'choice', value: 'sales', confidence: 0.6 },
+          matchedKeys: [],
+          latencyMs: 300,
+          requestedModel: 'jev-1.13.0',
+          actualModel: 'jev-1.13.0',
+          usage: { inputTokens: 1, outputTokens: 1 },
+          detailsExpired: false
+        }
+      ],
+      nextCursor: null
+    })
+    await render([gated()])
+    expect(byText('Edit')).toBeUndefined()
+    await click(byText('Recent evaluations'))
+    await act(async () => {})
+    expect(evals.listEvaluations).toHaveBeenCalledWith({ integrationId: 'int-1', channelId: 'C1' }, { limit: 20 })
+    expect(document.body.textContent).toContain('sales · 60%')
   })
 
   it.each([

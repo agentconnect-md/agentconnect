@@ -44,13 +44,13 @@ export function gateStatus(view: ChannelDecisionView | null | undefined): GateSt
 }
 
 /** Status, machine code and body of either the live or the mock API's error. */
-function errorParts(
+export function errorParts(
   cause: unknown
 ): { status: number; code?: string; body: Record<string, unknown>; message: string } | null {
   if (cause instanceof ApiError)
     return { status: cause.status, code: cause.code, body: cause.details ?? {}, message: cause.message }
   if (cause instanceof DecisionMockApiError)
-    return { status: cause.status, body: { ...cause.body }, message: cause.message }
+    return { status: cause.status, code: cause.body.code, body: { ...cause.body }, message: cause.message }
   return null
 }
 

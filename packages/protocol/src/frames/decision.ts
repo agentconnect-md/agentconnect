@@ -1,12 +1,23 @@
 import { z } from 'zod'
-import { DecisionDraft, DecisionEvaluation, DecisionQuestion } from '../decision.js'
+import {
+  DecisionDraft,
+  DecisionEvaluation,
+  DecisionEvaluationRecordDetail,
+  DecisionEvaluationRecordPage,
+  DecisionQuestion
+} from '../decision.js'
 
 export const DECISION_PREVIEW_V1_FEATURE = 'decision-preview-v1'
 // The peer understands BindMatch{kind:'decision'}, core.decisions and rd/msg.decisionId, and never treats them as Any.
 export const DECISION_TRIGGER_V1_FEATURE = 'decision-trigger-v1'
 export const DECISION_TOOLS_V1_FEATURE = 'decision-tools-v1'
 export const DECISION_MODEL_SELECTION_V1_FEATURE = 'decision-model-selection-v1'
+// The peer answers decision/evaluations and decision/evaluation from its decision_verdict rows.
+export const DECISION_EVALUATIONS_V1_FEATURE = 'decision-evaluations-v1'
 export const DECISION_LIST_MAX_BYTES = 32 * 1024
+export const DECISION_EVALUATION_DETAIL_MAX_BYTES = 64 * 1024
+
+const encodedBytes = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).byteLength
 
 // Saved configuration only: agent evaluation inputs and results never travel on these frames.
 export const DecisionToolDefinition = z.strictObject({
@@ -77,3 +88,42 @@ export const DecisionPreviewRequest = z
 export type DecisionPreviewRequest = z.infer<typeof DecisionPreviewRequest>
 export const DecisionPreviewReply = z.object({ evaluation: DecisionEvaluation })
 export type DecisionPreviewReply = z.infer<typeof DecisionPreviewReply>
+
+// Bounded, daemon-owned Recent evaluations reads; the CP proxies them and never persists the bodies.
+const EvaluationLane = {
+  agentId: z.string().uuid(),
+  integrationId: z.string().min(1).max(128),
+  channel: z.string().min(1).max(512)
+}
+export const DecisionEvaluationsRequest = z.strictObject({
+  ...EvaluationLane,
+  cursor: z.number().int().positive().optional(),
+  limit: z.number().int().min(1).max(50).default(20)
+})
+export type DecisionEvaluationsRequest = z.infer<typeof DecisionEvaluationsRequest>
+export type DecisionEvaluationsRequestInput = z.input<typeof DecisionEvaluationsRequest>
+// The lane's durable session namespace (platform, tenantScope), so the CP checks that install's audience only.
+export const DecisionEvaluationConversation = z.strictObject({
+  platform: z.string().min(1).max(64),
+  tenantScope: z.string().min(1).max(256).nullable()
+})
+export type DecisionEvaluationConversation = z.infer<typeof DecisionEvaluationConversation>
+// Optional only so a reply without it parses and the CP can fail closed on it; the cap covers the whole reply.
+export const DecisionEvaluationsReply = DecisionEvaluationRecordPage.extend({
+  conversation: DecisionEvaluationConversation.optional()
+}).refine((page) => encodedBytes(page) <= DECISION_LIST_MAX_BYTES, {
+  message: 'The evaluation page must fit within 32 KiB.'
+})
+export type DecisionEvaluationsReply = z.infer<typeof DecisionEvaluationsReply>
+
+export const DecisionEvaluationRequest = z.strictObject({ ...EvaluationLane, seq: z.number().int().nonnegative() })
+export type DecisionEvaluationRequest = z.infer<typeof DecisionEvaluationRequest>
+export const DecisionEvaluationReply = z
+  .strictObject({
+    evaluation: DecisionEvaluationRecordDetail.nullable(),
+    conversation: DecisionEvaluationConversation.optional()
+  })
+  .refine((reply) => encodedBytes(reply) <= DECISION_EVALUATION_DETAIL_MAX_BYTES, {
+    message: 'The evaluation detail must fit within 64 KiB.'
+  })
+export type DecisionEvaluationReply = z.infer<typeof DecisionEvaluationReply>

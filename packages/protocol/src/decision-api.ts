@@ -1,10 +1,14 @@
 import type {
   ChannelDecisionBinding,
+  ChannelDecisionGate,
   DecisionChannelSettings,
   DecisionDefinition,
   DecisionDraft,
   DecisionDraftInput,
   DecisionEvaluation,
+  DecisionEvaluationRecordDetail,
+  DecisionEvaluationRecordPage,
+  DecisionPreviewSample,
   DecisionQuestion,
   DecisionValidationIssue,
   SharedBotDecisionRouting
@@ -127,6 +131,33 @@ export interface DecisionPreviewResult {
   }
 }
 
+/** One live conversation: the integration install and its platform channel id. */
+export interface DecisionConversationRef {
+  integrationId: string
+  channelId: string
+}
+
+export interface DecisionGatePreviewInput {
+  decisionBinding: ChannelDecisionGate
+  state: DecisionPreviewSample
+}
+
+// Gate Try on the conversation's serving daemon; `unavailable` continues to the target and is never a skip.
+export interface DecisionGatePreviewResult {
+  mode: 'mock' | 'live'
+  readiness: DecisionReadiness
+  evaluation: DecisionEvaluation | null
+  consumer: {
+    type: 'gate'
+    outcome: 'trigger' | 'skip' | 'unavailable' | 'not_applied'
+    notAppliedReason?: 'off' | 'unsupported' | 'needs_review'
+    reason?: string
+    matched: boolean
+    matchedKeys: string[]
+    target: { agentId: string; name: string }
+  }
+}
+
 export interface DecisionApi {
   mode: 'mock' | 'live'
   listProviders(daemonId?: string): Promise<DecisionProviderOption[]>
@@ -142,11 +173,19 @@ export interface DecisionApi {
   getRouting(botId: string): Promise<DecisionRoutingDetail>
   saveRouting(botId: string, input: DecisionRoutingSave): Promise<DecisionRoutingDetail>
   preview(input: DecisionPreviewInput): Promise<DecisionPreviewResult>
+  previewGate(ref: DecisionConversationRef, input: DecisionGatePreviewInput): Promise<DecisionGatePreviewResult>
+  listEvaluations(
+    ref: DecisionConversationRef,
+    page?: { cursor?: number; limit?: number }
+  ): Promise<DecisionEvaluationRecordPage>
+  getEvaluation(ref: DecisionConversationRef, seq: number): Promise<DecisionEvaluationRecordDetail>
 }
 
 export interface DecisionApiErrorBody {
   error: 'invalid_input' | 'not_found' | 'conflict' | 'unavailable'
   message: string
+  // The machine code the live API sends, such as DAEMON_OFFLINE.
+  code?: string
   issues?: DecisionValidationIssue[]
   // A delete refused while in use lists the visible usages and counts the hidden ones.
   usages?: DecisionUsage[]

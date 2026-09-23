@@ -96,7 +96,11 @@ import {
   DecisionCatalogRequest,
   DecisionCatalogReply,
   DecisionPreviewRequest,
-  DecisionPreviewReply
+  DecisionPreviewReply,
+  DecisionEvaluationsRequest,
+  DecisionEvaluationsReply,
+  DecisionEvaluationRequest,
+  DecisionEvaluationReply
 } from './frames/decision.js'
 import { SecretsRequest, SecretsGrant, SecretsRenew, SecretsRevoke, ScopeAttestation } from './frames/secrets.js'
 import {
@@ -368,6 +372,10 @@ export const FRAME_SCHEMAS = {
   'decision/catalog/result': DecisionCatalogReply,
   'decision/preview': DecisionPreviewRequest,
   'decision/preview/result': DecisionPreviewReply,
+  'decision/evaluations': DecisionEvaluationsRequest,
+  'decision/evaluations/page': DecisionEvaluationsReply,
+  'decision/evaluation': DecisionEvaluationRequest,
+  'decision/evaluation/result': DecisionEvaluationReply,
   'provider-credentials/request': ProviderCredentialsRequest,
   'provider-credentials/reply': ProviderCredentialsReply,
   'provider-credentials/changed': ProviderCredentialsChanged,
@@ -688,6 +696,10 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('decision/catalog/result', FRAME_SCHEMAS['decision/catalog/result']),
   frame('decision/preview', FRAME_SCHEMAS['decision/preview']),
   frame('decision/preview/result', FRAME_SCHEMAS['decision/preview/result']),
+  frame('decision/evaluations', FRAME_SCHEMAS['decision/evaluations']),
+  frame('decision/evaluations/page', FRAME_SCHEMAS['decision/evaluations/page']),
+  frame('decision/evaluation', FRAME_SCHEMAS['decision/evaluation']),
+  frame('decision/evaluation/result', FRAME_SCHEMAS['decision/evaluation/result']),
   frame('provider-credentials/request', FRAME_SCHEMAS['provider-credentials/request']),
   frame('provider-credentials/reply', FRAME_SCHEMAS['provider-credentials/reply']),
   frame('provider-credentials/changed', FRAME_SCHEMAS['provider-credentials/changed']),

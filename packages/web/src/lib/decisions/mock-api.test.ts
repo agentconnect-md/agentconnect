@@ -323,4 +323,91 @@ describe('Decision mock API', () => {
         .status
     ).toBe('insufficient_credits')
   })
+
+  it('previews a gate on the conversation target: trigger, skip, unavailable, and Not applied', async () => {
+    const ref = { integrationId: 'int-1', channelId: 'moderation-channel' }
+    const sample = { history: [{ sender: 'U1', text: 'Earlier' }], currentMessage: { text: 'Help?' } }
+    const gate = (values: boolean[]) => ({
+      decisionBinding: {
+        type: 'gate' as const,
+        decisionId: 'needs-response',
+        when: { type: 'boolean' as const, values }
+      },
+      state: sample
+    })
+    const api = createDecisionMockApi()
+    expect(await api.previewGate(ref, gate([true]))).toMatchObject({
+      mode: 'mock',
+      evaluation: { status: 'answered' },
+      consumer: {
+        type: 'gate',
+        outcome: 'trigger',
+        matched: true,
+        target: { agentId: 'moderator-agent', name: 'Moderator' }
+      }
+    })
+    expect((await api.previewGate(ref, gate([false]))).consumer).toMatchObject({ outcome: 'skip', matched: false })
+    const choice = await api.previewGate(
+      { integrationId: 'int-1', channelId: 'unknown' },
+      {
+        decisionBinding: {
+          type: 'gate',
+          decisionId: 'support-category',
+          when: { type: 'choice', thresholds: { billing: 0.3, sales: 0.3 } }
+        },
+        state: sample
+      }
+    )
+    expect(choice.consumer).toMatchObject({
+      outcome: 'trigger',
+      matchedKeys: ['billing'],
+      target: { agentId: 'billing-agent' }
+    })
+    const failed = await createDecisionMockApi({ scenario: 'provider_unavailable' }).previewGate(ref, gate([false]))
+    expect(failed).toMatchObject({ evaluation: { status: 'unavailable' }, consumer: { outcome: 'unavailable' } })
+    expect(await createDecisionMockApi({ scenario: 'needs_review' }).previewGate(ref, gate([true]))).toMatchObject({
+      evaluation: null,
+      consumer: { outcome: 'not_applied', notAppliedReason: 'needs_review' }
+    })
+    await expect(
+      createDecisionMockApi({ scenario: 'daemon_offline' }).previewGate(ref, gate([true]))
+    ).rejects.toMatchObject({
+      status: 503
+    })
+    await expect(
+      api.previewGate(ref, {
+        ...gate([true]),
+        decisionBinding: { ...gate([true]).decisionBinding, decisionId: 'gone' }
+      })
+    ).rejects.toMatchObject({ status: 404 })
+    await expect(
+      api.previewGate(ref, {
+        ...gate([true]),
+        decisionBinding: { type: 'gate', decisionId: 'needs-response', when: { type: 'score', min: 0, max: 1 } }
+      })
+    ).rejects.toMatchObject({ status: 400 })
+  })
+
+  it('pages canned Recent evaluations newest-first and keeps an expired row to its summary', async () => {
+    const api = createDecisionMockApi()
+    const ref = { integrationId: 'int-1', channelId: 'C1' }
+    const first = await api.listEvaluations(ref, { limit: 4 })
+    expect(first.items.map((item) => item.seq)).toEqual([106, 105, 104, 103])
+    expect(first.nextCursor).toBe(103)
+    expect(first.items[0]).not.toHaveProperty('input')
+    const rest = await api.listEvaluations(ref, { cursor: first.nextCursor!, limit: 4 })
+    expect(rest).toMatchObject({ nextCursor: null })
+    expect(rest.items.map((item) => item.seq)).toEqual([102, 101])
+    expect(rest.items.map((item) => item.outcome)).toEqual(['pending', 'triggered'])
+    expect(await api.getEvaluation(ref, 101)).toMatchObject({
+      detailsExpired: true,
+      input: null,
+      fullAnswer: null,
+      snapshot: { decisionId: 'needs-response' }
+    })
+    const detail = await api.getEvaluation(ref, 106)
+    detail.input!.currentMessage.text = 'edited'
+    expect((await api.getEvaluation(ref, 106)).input!.currentMessage.text).not.toBe('edited')
+    await expect(api.getEvaluation(ref, 1)).rejects.toMatchObject({ status: 404 })
+  })
 })
