@@ -51,7 +51,7 @@ import {
   type HookDto,
   type HookRunDto
 } from '@/lib/api'
-import { useDecisionsPrototype } from '@/lib/decisions/provider'
+import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
@@ -262,7 +262,7 @@ function rowSettingsTitle(hook: HookDto): string {
 
 export default function AgentDetailView() {
   const t = useTranslations('Agents.detail')
-  const { decisions } = useDecisionsPrototype()
+  const { decisions = [] } = useOptionalDecisionsPrototype() ?? {}
   const permissionT = useTranslations('Common.permissionModes')
   const { orgPath, activeOrg } = useOrgs()
   const { me } = useProfile()

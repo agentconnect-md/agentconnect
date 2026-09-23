@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import type { AgentModelSelection } from '@agentconnect.md/protocol/decision'
 
 vi.mock('@/lib/decisions/provider', () => ({
-  useDecisionsPrototype: () => ({
+  useOptionalDecisionsPrototype: () => ({
     api: { mode: 'mock' },
     orgId: 'example-org',
     loading: false,

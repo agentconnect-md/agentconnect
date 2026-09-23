@@ -11,7 +11,7 @@ import {
   type DecisionRuntimeTarget
 } from '@agentconnect.md/protocol/decision'
 import { fetchAgentDecisions } from '@/lib/api'
-import { useDecisionsPrototype } from '@/lib/decisions/provider'
+import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { useOrgs } from '@/lib/org-context'
 import { RuntimeModelSelect, type RuntimeModelSource } from '@/components/console/RuntimeModelSelect'
 import { DecisionConditionFields } from './DecisionConditionFields'
@@ -59,12 +59,12 @@ export function ModelSelectionField({
 }) {
   const t = useTranslations('Agents.dialog.modelSelection')
   const { orgPath } = useOrgs()
-  const { api, orgId, decisions, loading, error } = useDecisionsPrototype()
+  const { api, orgId, decisions = [], loading, error } = useOptionalDecisionsPrototype() ?? {}
   const [decisionMode, setDecisionMode] = useState(!!value)
   const active = !!value || decisionMode
   const decision = decisions.find((decision) => decision.id === value?.decisionId)
   const { data: retained } = useSWR(
-    agentId && orgId && value && !decision && api.mode === 'live' ? ['agent-model-decision', orgId, agentId] : null,
+    agentId && orgId && value && !decision && api?.mode === 'live' ? ['agent-model-decision', orgId, agentId] : null,
     ([, org, id]) => fetchAgentDecisions(id, org, 'model_selection')
   )
   const issues = value && decision ? decisionModelSelectionIssues(decision.question, value) : []
@@ -117,7 +117,7 @@ export function ModelSelectionField({
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-3">
         <h3 className="m-0 text-[14px] font-semibold">{t('title')}</h3>
-        {enabled && (
+        {enabled && api && (
           <div className="pillbar" role="group" aria-label={t('title')}>
             <button
               type="button"
