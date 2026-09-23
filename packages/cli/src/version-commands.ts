@@ -5,7 +5,7 @@
  * install / upgrade modules and are what index.ts wires to commander.
  */
 import { installTarget, resolveTarget } from './install.js'
-import { commandSelector } from './service/instance.js'
+import { cliCommand } from './invocation.js'
 import { realUpgradeDeps, upgrade } from './upgrade.js'
 import { withVersionLock } from './version-lock.js'
 import { autoPrune, DEFAULT_KEEP_VERSIONS, pruneVersions, useVersion } from './version-ops.js'
@@ -19,8 +19,8 @@ export function versionList(root: string): void {
   const cur = currentVersion(root)
   console.log(`channel: ${meta.channel}`)
   if (installed.length === 0) {
-    const sel = commandSelector({ root })
-    console.log(`installed: none — run \`agentconnect${sel} install\` (or \`agentconnect${sel} run\` to auto-install)`)
+    const sel = cliCommand({ root })
+    console.log(`installed: none — run \`${sel} install\` (or \`${sel} run\` to auto-install)`)
     return
   }
   console.log('installed:')

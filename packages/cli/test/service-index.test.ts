@@ -264,6 +264,24 @@ describe('named instance root resolution', () => {
 })
 
 describe('installService conflicts', () => {
+  it('refuses to re-point the default service from a bare --root, even while it is stopped', async () => {
+    const scope = linuxScope()
+    const [defaultRoot, otherRoot] = [tmp('ac-root-'), tmp('ac-root-')]
+    await installService({ root: defaultRoot, ...scope }, opts)
+    // A second daemon on another root must be named; silently moving the default one would orphan its root.
+    const refused = installService({ root: otherRoot, ...scope }, opts)
+    await expect(refused).rejects.toThrow(/--instance <name> --root \S+ install-service/)
+    await expect(installService({ root: otherRoot, ...scope }, opts)).rejects.toThrow(/uninstall-service` first/)
+    expect(listInstances(scope).map((u) => [u.label, u.root])).toEqual([['agentconnect.service', defaultRoot]])
+    expect(existsSync(join(defaultRoot, 'service.json'))).toBe(true)
+
+    await installService({ root: otherRoot, instance: 'cp2', ...scope }, opts)
+    expect(listInstances(scope).map((u) => [u.label, u.root])).toEqual([
+      ['agentconnect.service', defaultRoot],
+      ['agentconnect@cp2.service', otherRoot]
+    ])
+  })
+
   it('refuses a second unit on a root another instance already owns', async () => {
     const scope = linuxScope()
     const root = tmp('ac-root-')

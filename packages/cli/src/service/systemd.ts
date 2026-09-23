@@ -4,6 +4,7 @@
  *  on existing hosts, unchanged, so they stay stoppable and removable. */
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { cliCommand } from '../invocation.js'
 import { currentDistEntry, defaultRoot } from '../paths.js'
 import { isElevated, type ServiceAccount } from './account.js'
 import { POLKIT_RULES_DIR, polkitRulesSupported, removePolkitRule, writePolkitRule } from './polkit.js'
@@ -287,8 +288,8 @@ export class SystemdController implements ServiceController {
     const text = stderr.trim()
     if (!DENIED.test(text)) return text
     const why = polkitRulesSupported(this.polkitDir)
-      ? `reinstall with \`agentconnect install-service\` to refresh the polkit rule for ${this.label}`
-      : `this host has no polkit rules.d backend and no sudoers grant for ${this.label} — reinstall with \`agentconnect install-service\` to write one`
+      ? `reinstall with \`${cliCommand({ root: this.deps.root, ...(this.deps.instance ? { instance: this.deps.instance } : {}) })} install-service\` to refresh the polkit rule for ${this.label}`
+      : `this host has no polkit rules.d backend and no sudoers grant for ${this.label} — reinstall with \`${cliCommand({ root: this.deps.root, ...(this.deps.instance ? { instance: this.deps.instance } : {}) })} install-service\` to write one`
     return `${text} — ${why}, or run \`sudo systemctl ${this.scope === 'system' ? '' : '--user '}start ${this.label}\``
   }
 

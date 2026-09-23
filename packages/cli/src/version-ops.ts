@@ -6,7 +6,7 @@ import { existsSync, renameSync, rmSync, statSync, symlinkSync } from 'node:fs'
 import { basename } from 'node:path'
 import { liveDaemonPid } from './daemon-live.js'
 import { currentLink, versionDir } from './paths.js'
-import { commandSelector } from './service/instance.js'
+import { cliCommand } from './invocation.js'
 import { currentVersion, isInstalled, listInstalled, readMeta, writeMeta } from './version-store.js'
 
 /**
@@ -17,7 +17,7 @@ import { currentVersion, isInstalled, listInstalled, readMeta, writeMeta } from 
 export function useVersion(root: string, version: string): void {
   if (!isInstalled(root, version)) {
     throw new Error(
-      `daemon ${version} is not installed — run \`agentconnect${commandSelector({ root })} version install ${version}\` first`
+      `daemon ${version} is not installed — run \`${cliCommand({ root })} version install ${version}\` first`
     )
   }
   const prev = currentVersion(root)

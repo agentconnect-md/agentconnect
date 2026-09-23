@@ -85,7 +85,7 @@ export function commandSelector(target: { root?: string; instance?: string }): s
 }
 
 /** Quote a path for a command line the operator will paste back into a shell. */
-function shellArg(value: string): string {
+export function shellArg(value: string): string {
   return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`
 }
 

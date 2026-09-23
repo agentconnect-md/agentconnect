@@ -15,7 +15,8 @@ import { createInterface } from 'node:readline'
 import { resolveRoot, configPath } from './paths.js'
 import { CLI_VERSION } from './version.js'
 import { probeAuth, type ProbeResult } from './cp/auth-probe.js'
-import { commandSelector, resolveController, shouldBakeRootEnv, type InstallOpts } from './service/index.js'
+import { cliCommand } from './invocation.js'
+import { resolveController, shouldBakeRootEnv, type InstallOpts } from './service/index.js'
 import { performInstallService } from './install-service.js'
 import { ensureDaemonInstalled, runShell } from './run-shell.js'
 
@@ -238,11 +239,11 @@ export async function runLogin(opts: RunLoginOpts, partial: Partial<LoginDeps> =
       await deps.installService()
       // Repeat the selector: after `login --instance dev`, a bare `agentconnect
       // status` would report the DEFAULT instance, not the one just installed.
-      const sel = commandSelector({
+      const sel = cliCommand({
         root: resolveRoot(opts.root),
         ...(opts.instance !== undefined ? { instance: opts.instance } : {})
       })
-      out.write(`Service installed and started. Manage it with \`agentconnect${sel} up\` / \`down\` / \`status\`.\n`)
+      out.write(`Service installed and started. Manage it with \`${sel} up\` / \`down\` / \`status\`.\n`)
       return
     }
     out.write('Starting in the foreground (Ctrl-C to stop)…\n')

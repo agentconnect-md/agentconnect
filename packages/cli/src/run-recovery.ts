@@ -9,7 +9,7 @@
  */
 import { createInterface } from 'node:readline'
 import type { ChildResult } from './delegate.js'
-import { commandSelector } from './service/instance.js'
+import { cliCommand } from './invocation.js'
 import { versionReinstallLatest, versionRollback } from './version-commands.js'
 import { currentVersion, isInstalled, readMeta } from './version-store.js'
 
@@ -63,13 +63,13 @@ export function recoveryOptions(o: { previous: string | null; channel: string })
 /** The manual-recovery commands, carrying the selector for the root being
  *  recovered so a paste does not act on the default instance instead. */
 export function manualVersionHelp(root: string): string {
-  const sel = commandSelector({ root })
+  const sel = cliCommand({ root })
   return [
     'Pick a daemon version manually:',
-    `  agentconnect${sel} version list               # installed versions (current / previous)`,
-    `  agentconnect${sel} version install <version>  # download a specific version`,
-    `  agentconnect${sel} version use <version>      # activate it`,
-    `  agentconnect${sel} run                        # start again`
+    `  ${sel} version list               # installed versions (current / previous)`,
+    `  ${sel} version install <version>  # download a specific version`,
+    `  ${sel} version use <version>      # activate it`,
+    `  ${sel} run                        # start again`
   ].join('\n')
 }
 
