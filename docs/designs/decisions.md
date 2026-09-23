@@ -1678,12 +1678,13 @@ This consumer is independent of MCP Decision attachments and live message trigge
 
 The Agent create/edit **Runtime** section has two modes, **Fixed** and **By decision**.
 Both use the same Provider · model picker: runtimes on the left, their advertised
-models on the right, and search across every runtime. In By decision mode, each
-rule and the fallback picker has a **Run settings** section below the model list:
-model-specific Effort, runtime-specific Approval, and Fast mode. Selecting a model
-keeps the picker open so these settings can be adjusted together. The closed
-trigger shows the model, a compact effort/approval summary, and the FAST badge when
-enabled. The separate Effort and Permission mode fields remain in Fixed mode only.
+models on the right, and search across every runtime. The Fixed picker and each
+By decision rule and fallback picker have a **Run settings** section below the model
+list: model-specific Effort, runtime-specific Approval, and Fast mode, which appears
+only when the chosen model offers it. There are no separate Effort or Permission mode
+fields. Selecting a model keeps the picker open so these settings can be adjusted
+together. The closed trigger shows the model with its effort in parentheses, for
+example `5.6 Sol (Extra High)`, and the FAST badge when enabled.
 Catalog contents come from the selected daemon, group, or managed pool;
 screenshots do not define a static model catalog. Login and missing
 installation states remain visible. A runtime with no model selector can still be
@@ -1720,8 +1721,8 @@ rule does not change another rule or the fallback.
 
 The picker uses the existing model catalog to show supported settings. A deliberate
 model change resolves effort using the model's offered levels and default, and
-disables Fast mode when unsupported. Changing runtime selects its own approval
-vocabulary and default. Merely receiving an updated catalog does not edit the draft.
+turns Fast mode off when the new model does not offer it. Changing runtime selects
+its own approval vocabulary and default. Merely receiving an updated catalog does not edit the draft.
 `modelSelection: null` removes the binding. Each rule needs a runtime and one of
 its advertised models. The fallback model is required while a binding exists.
 Launch-time model configuration is supported because selection precedes host start.

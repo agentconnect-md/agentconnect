@@ -3,20 +3,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import {
-  effortChoicesFor,
-  effortField,
-  effortLabel,
   FALLBACK_RUNTIME_IDS,
   selectableRuntimeIds,
   modelCapability,
-  displayedEffort,
   preferredModelFor,
   resolveEffortForModel,
-  permissionModeChoicesFor,
   permissionModeDefault,
-  permissionModeLabel,
   runtimeLabel,
-  supportsModes,
   agentLabel,
   poolLabel,
   poolTagline,
@@ -29,7 +22,6 @@ import {
   type AgentCallPolicy
 } from '@/lib/data'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
-import { permissionModeLabelKey } from '@/lib/permission-mode-i18n'
 import { fetchAgentDto, type AgentCallPolicyInput, type UpdateAgentInput } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import { featureFlagEnabled } from '@/lib/feature-flags'
@@ -113,7 +105,6 @@ export default function EditAgentModal({
   onClose: () => void
 }) {
   const t = useTranslations('Agents.dialog')
-  const permissionT = useTranslations('Common.permissionModes')
   const acpRegistry = useAcpRegistry()
   const {
     updateAgent,
@@ -498,40 +489,8 @@ export default function EditAgentModal({
   // so Save can require an explicit compatible choice.
   const runtimeProfile = daemon?.runtimeModels.find((r) => r.runtime === runtime)
   const reportedModels = runtimeProfile?.models ?? []
-  const modelCatalog = runtimeProfile?.modelCatalog ?? undefined
   const selectedModel =
     model && (reportedModels.includes(model) || daemonChanged) ? model : preferredModelFor(daemon, runtime)
-  const runtimeSupportsModes = supportsModes(runtime)
-  // Dynamic-first vocabularies (runtime-model-catalog.md §7): the SELECTED
-  // model's discovered capability drives the effort/fast controls, the catalog's
-  // runtime-level list the permission modes; the static tables stay the fallback
-  // when the catalog is absent. Discovered efforts decide visibility themselves
-  // ([] ⇒ the model has no effort selector); the static fallback keeps the
-  // legacy per-runtime supportsModes gate. A catalog arriving mid-edit only
-  // swaps the option lists — a stored/selected value it no longer offers stays
-  // visible as unavailable (the stale-model idiom above), never auto-cleared,
-  // so the diff-based PATCH can't write a field the user didn't touch.
-  const capability = modelCapability(daemon, runtime, selectedModel)
-  const effortChoices = effortChoicesFor(runtime, capability)
-  const showEffort = capability?.efforts ? effortChoices.length > 0 : runtimeSupportsModes
-  const effortOptions =
-    capability?.efforts && effort && !effortChoices.some((o) => o.value === effort)
-      ? [...effortChoices, { value: effort, label: `${effortLabel(runtime, effort)} (unavailable)` }]
-      : effortChoices
-  const permissionChoices = permissionModeChoicesFor(runtime, modelCatalog)
-  // Visibility follows the resolved vocabulary, which is empty for a runtime without permission modes.
-  const showPermission = permissionChoices.length > 0
-  const permissionModeOptions =
-    modelCatalog?.permissionModes?.length && !permissionChoices.some((o) => o.v === permissionMode)
-      ? [
-          ...permissionChoices,
-          { v: permissionMode, l: `${permissionModeLabel(runtime, permissionMode)} (unavailable)` }
-        ]
-      : permissionChoices
-  const permissionOptions = permissionModeOptions.map((option) => {
-    const key = permissionModeLabelKey(option.v)
-    return key ? { ...option, l: permissionT(key) } : option
-  })
   const runtimeUnavailable = daemonChanged && reportedRuntimeIds.length > 0 && !reportedRuntimeIds.includes(runtime)
   const modelUnavailable =
     daemonChanged && !!selectedModel && reportedModels.length > 0 && !reportedModels.includes(selectedModel)
@@ -859,8 +818,6 @@ export default function EditAgentModal({
                 runtimes={runtimeOptions}
                 enabled={featureFlagEnabled('decisions')}
                 runInSandbox={effectiveRunInSandbox}
-                fastMode={fastMode}
-                onFastModeChange={setFastMode}
                 onFallbackChange={(target) => {
                   if (target.runtime !== runtime) onRuntimeChange(target.runtime)
                   setModel(target.model)
@@ -878,56 +835,6 @@ export default function EditAgentModal({
                 }}
               />
               <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
-                {!modelSelection && (showEffort || showPermission) && (
-                  <div className="fld desktop:col-span-2">
-                    <div className="grid grid-cols-1 gap-x-7 gap-y-[14px] desktop:grid-cols-[minmax(0,1fr)_auto]">
-                      {showEffort && (
-                        <div className="flex min-w-0 flex-col gap-[6px]">
-                          <span className="fldlbl">{effortField(runtime).label}</span>
-                          <div className="pillbar self-start">
-                            {effortOptions.map((o) => (
-                              <button
-                                key={o.value}
-                                type="button"
-                                title={o.description}
-                                className={
-                                  displayedEffort(effort, effortChoices, capability?.defaultEffort) === o.value
-                                    ? 'pill on px-[10px] py-1 text-[12px]'
-                                    : 'pill px-[10px] py-1 text-[12px]'
-                                }
-                                onClick={() => setEffort(o.value)}
-                              >
-                                {o.label}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      {showPermission && (
-                        <div className="flex min-w-0 flex-col gap-[6px] desktop:col-span-2">
-                          <span className="fldlbl">{t('permissionMode')}</span>
-                          <div className="pillbar max-w-full overflow-x-auto self-start">
-                            {permissionOptions.map((o) => (
-                              <button
-                                key={o.v}
-                                type="button"
-                                title={o.description}
-                                className={
-                                  permissionMode === o.v
-                                    ? 'pill on whitespace-nowrap px-[10px] py-1 text-[12px]'
-                                    : 'pill whitespace-nowrap px-[10px] py-1 text-[12px]'
-                                }
-                                onClick={() => setPermissionMode(o.v)}
-                              >
-                                {o.l}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
                 <RuntimeChatField checked={allowRuntimeChangesInChat} onChange={setAllowRuntimeChangesInChat} />
                 <SandboxField
                   checked={effectiveRunInSandbox}

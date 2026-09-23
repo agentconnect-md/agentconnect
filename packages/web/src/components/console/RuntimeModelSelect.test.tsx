@@ -107,8 +107,7 @@ it('opens read-only chat settings to the notice alone, without runtime or Fast c
   expect(dialog.querySelectorAll('button, input')).toHaveLength(0)
 })
 
-it('keeps Fast mode visible but disabled when the selected model does not offer it', async () => {
-  const onFastModeChange = vi.fn()
+it('hides Fast mode when the selected model does not offer it', async () => {
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -119,7 +118,7 @@ it('keeps Fast mode visible but disabled when the selected model does not offer 
         onChange={vi.fn()}
         fastMode
         fastModeAvailable={false}
-        onFastModeChange={onFastModeChange}
+        onFastModeChange={vi.fn()}
         source={{ runtimeModels: [{ runtime: 'codex', version: '', models: ['model-standard'] }] }}
       />
     )
@@ -127,10 +126,7 @@ it('keeps Fast mode visible but disabled when the selected model does not offer 
   const trigger = container.querySelector('button')!
   expect(trigger.textContent).not.toContain('FAST')
   await act(async () => trigger.click())
-  const fast = document.querySelector<HTMLButtonElement>('[aria-label="Fast mode"]')!
-  expect([fast.disabled, fast.getAttribute('aria-checked')]).toEqual([true, 'false'])
-  await act(async () => fast.click())
-  expect(onFastModeChange).not.toHaveBeenCalled()
+  expect(document.querySelector('[aria-label="Fast mode"]')).toBeNull()
 })
 
 it('edits run settings in the open picker and adapts them when choosing another model or runtime', async () => {
@@ -211,7 +207,8 @@ it('edits run settings in the open picker and adapts them when choosing another 
     fastMode: true
   })
   expect(document.querySelector('[role="dialog"]')).not.toBeNull()
-  expect(trigger.textContent).toContain('High · Plan')
+  expect(trigger.textContent).toContain('capable (High)')
+  expect(trigger.textContent).not.toContain('Plan')
   expect(trigger.textContent).toContain('FAST')
   await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Claude Code · small"]')!.click())
   expect(selected).toEqual({
@@ -222,7 +219,8 @@ it('edits run settings in the open picker and adapts them when choosing another 
     fastMode: false
   })
   expect(document.querySelector('[role="dialog"]')).not.toBeNull()
-  expect(document.querySelector<HTMLButtonElement>('[aria-label="Fast mode"]')!.disabled).toBe(true)
+  expect(document.querySelector('[aria-label="Fast mode"]')).toBeNull()
+  expect(trigger.textContent).toContain('small (Low)')
   const search = document.querySelector<HTMLInputElement>('[aria-label="Search all providers"]')!
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'other')

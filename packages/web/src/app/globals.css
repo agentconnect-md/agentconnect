@@ -1724,6 +1724,20 @@
   .dstoggle.on .dstoggle-knob {
     transform: translateX(18px);
   }
+  /* The design's in-menu switch (the model picker's run settings). */
+  .dstoggle.sm {
+    width: 26px;
+    height: 15px;
+    border-radius: 8px;
+    padding: 1px;
+  }
+  .dstoggle.sm .dstoggle-knob {
+    width: 13px;
+    height: 13px;
+  }
+  .dstoggle.sm.on .dstoggle-knob {
+    transform: translateX(11px);
+  }
 
   /* design-system Input */
   .dsinput {

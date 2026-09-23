@@ -27,6 +27,12 @@ import type { DecisionRuntimeTarget } from '@agentconnect.md/protocol/decision'
 
 export type RuntimeModelSource = Pick<DaemonRow, 'runtimeModels'>
 
+// Run-settings rows: a label column beside a segmented control sized for the menu, not a form.
+const SETTING_ROW = 'grid grid-cols-[64px_minmax(0,1fr)] items-center gap-2'
+const SETTING_LABEL = 'font-sans text-[11.5px] leading-normal text-(--text-secondary)'
+const SEGMENTS = 'pillbar flex-wrap justify-self-start gap-px rounded-[6px] p-[2px]'
+const SEGMENT = 'whitespace-nowrap rounded-xs px-2 py-[2px] text-[11.5px] leading-normal'
+
 // A runtime mark centred in its box; the bare <AgentMark> img otherwise sits at the box's top-left.
 function RuntimeMark({ runtime, box }: { runtime: string; box: string }) {
   return (
@@ -67,7 +73,7 @@ export function RuntimeModelSelect({
   readOnly?: boolean
   decision?: { name: string; selected: boolean; onSelect(): void }
   fastMode?: boolean
-  /** Whether the selected model offers Fast mode; the row stays visible but disabled when not. */
+  /** Whether the selected model offers Fast mode; the row is hidden when it does not. */
   fastModeAvailable?: boolean
   onFastModeChange?(value: boolean): void
 }) {
@@ -115,16 +121,11 @@ export function RuntimeModelSelect({
   )
   const permission =
     value.permissionMode ?? current?.modelCatalog?.defaultPermissionMode ?? permissionModeDefault(value.runtime)
-  const settingsSummary = runSettings
-    ? [
-        showEffort ? (effortChoices.find((option) => option.value === effort)?.label ?? effort) : undefined,
-        permissionChoices.length
-          ? (permissionChoices.find((option) => option.v === permission)?.l ?? permission)
-          : undefined
-      ]
-        .filter(Boolean)
-        .join(' · ')
-    : ''
+  // The trigger names the chosen effort after the model; the runtime's own default needs no label.
+  const effortLabel =
+    runSettings && showEffort && effort && effort !== 'default'
+      ? (effortChoices.find((option) => option.value === effort)?.label ?? effort)
+      : ''
   const fastAvailable = runSettings ? fastModeAvailableFor(value.runtime, capability) : fastModeAvailable
   const fastOn = !!(runSettings ? value.fastMode : fastMode) && fastAvailable
   const selectModel = (runtime: string, model: string) => {
@@ -181,15 +182,10 @@ export function RuntimeModelSelect({
           )}
           <span className="min-w-0 flex-1 truncate text-left">
             {decision?.selected ? t('byDecision') : modelName || label(value.runtime) || t('choose')}
+            {effortLabel && !decision?.selected && (
+              <span className="font-normal text-(--text-tertiary)"> ({effortLabel})</span>
+            )}
           </span>
-          {settingsSummary && (
-            <span
-              className="max-w-[38%] truncate font-mono text-[10.5px] font-normal leading-normal text-(--text-tertiary)"
-              title={settingsSummary}
-            >
-              {settingsSummary}
-            </span>
-          )}
           {!decision?.selected && selectedWarning && (
             <span className="flex flex-none" title={warningLabel(selectedWarning)}>
               <Icon name="triangle-alert" size={13} color="var(--status-paused)" />
@@ -325,19 +321,19 @@ export function RuntimeModelSelect({
               </div>
             </div>
             {runSettings ? (
-              <div className="flex flex-col gap-[9px] border-t border-(--border-subtle) bg-(--surface-app) px-3 py-[10px]">
+              <div className="flex flex-col gap-[6px] border-t border-(--border-subtle) bg-(--surface-app) px-[11px] pt-[7px] pb-2">
                 <div className="truncate font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[0.06em] text-(--text-tertiary)">
                   {t('runSettings', { model: modelName || label(value.runtime) })}
                 </div>
                 {showEffort && (
-                  <div className="grid grid-cols-[76px_minmax(0,1fr)] items-center gap-2">
-                    <span className="font-sans text-[12px] leading-normal text-(--text-secondary)">{t('effort')}</span>
-                    <div className="pillbar flex-wrap justify-self-start" role="group" aria-label={t('effort')}>
+                  <div className={SETTING_ROW}>
+                    <span className={SETTING_LABEL}>{t('effort')}</span>
+                    <div className={SEGMENTS} role="group" aria-label={t('effort')}>
                       {effortChoices.map((option) => (
                         <button
                           key={option.value}
                           type="button"
-                          className={`pill px-[10px] py-1 text-[12px] leading-normal ${effort === option.value ? 'on' : ''}`}
+                          className={`pill ${SEGMENT} ${effort === option.value ? 'on' : ''}`}
                           aria-pressed={effort === option.value}
                           title={option.description}
                           onClick={() => onChange({ ...value, effort: option.value })}
@@ -349,16 +345,14 @@ export function RuntimeModelSelect({
                   </div>
                 )}
                 {permissionChoices.length > 0 && (
-                  <div className="grid grid-cols-[76px_minmax(0,1fr)] items-center gap-2">
-                    <span className="font-sans text-[12px] leading-normal text-(--text-secondary)">
-                      {t('approval')}
-                    </span>
-                    <div className="pillbar flex-wrap justify-self-start" role="group" aria-label={t('approval')}>
+                  <div className={SETTING_ROW}>
+                    <span className={SETTING_LABEL}>{t('approval')}</span>
+                    <div className={SEGMENTS} role="group" aria-label={t('approval')}>
                       {permissionChoices.map((option) => (
                         <button
                           key={option.v}
                           type="button"
-                          className={`pill whitespace-nowrap px-[10px] py-1 text-[12px] leading-normal ${permission === option.v ? 'on' : ''}`}
+                          className={`pill ${SEGMENT} ${permission === option.v ? 'on' : ''}`}
                           aria-pressed={permission === option.v}
                           title={option.description}
                           onClick={() => onChange({ ...value, permissionMode: option.v })}
@@ -369,33 +363,29 @@ export function RuntimeModelSelect({
                     </div>
                   </div>
                 )}
-                <div className="grid grid-cols-[76px_minmax(0,1fr)] items-center gap-2">
-                  <span className="font-sans text-[12px] leading-normal text-(--text-secondary)">{t('fastMode')}</span>
-                  <div className="flex items-center gap-[9px]">
-                    <Toggle
-                      checked={fastOn}
-                      disabled={!fastAvailable}
-                      onChange={(fastMode) => onChange({ ...value, fastMode })}
-                      ariaLabel={t('fastMode')}
-                    />
-                    <span className="font-sans text-[11.5px] leading-normal text-(--text-tertiary)">
-                      {t('lowerLatency')}
-                    </span>
+                {fastAvailable && (
+                  <div className={`${SETTING_ROW} min-h-6`}>
+                    <span className={SETTING_LABEL}>{t('fastMode')}</span>
+                    <div className="flex items-center gap-2">
+                      <Toggle
+                        size="sm"
+                        checked={fastOn}
+                        onChange={(fastMode) => onChange({ ...value, fastMode })}
+                        ariaLabel={t('fastMode')}
+                      />
+                      <span className="font-sans text-[11.5px] leading-normal text-(--text-tertiary)">
+                        {t('lowerLatency')}
+                      </span>
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             ) : (
-              onFastModeChange && (
+              onFastModeChange &&
+              fastModeAvailable && (
                 <div className="flex items-center gap-[10px] border-t border-(--border-subtle) px-[11px] pt-[7px] pb-2">
-                  <Toggle
-                    checked={fastOn}
-                    disabled={!fastModeAvailable}
-                    onChange={onFastModeChange}
-                    ariaLabel={t('fastMode')}
-                  />
-                  <span
-                    className={`flex-1 font-sans text-[13px] font-medium leading-normal ${fastModeAvailable ? 'text-(--text-primary)' : 'text-(--text-disabled)'}`}
-                  >
+                  <Toggle size="sm" checked={fastOn} onChange={onFastModeChange} ariaLabel={t('fastMode')} />
+                  <span className="flex-1 font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
                     {t('fastMode')}
                   </span>
                   <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">

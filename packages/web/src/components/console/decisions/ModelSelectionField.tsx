@@ -11,7 +11,6 @@ import {
   type DecisionRuntimeTarget
 } from '@agentconnect.md/protocol/decision'
 import { fetchAgentDecisions } from '@/lib/api'
-import { fastModeAvailableFor, modelCapability } from '@/lib/data'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { useOrgs } from '@/lib/org-context'
 import { RuntimeModelSelect, type RuntimeModelSource } from '@/components/console/RuntimeModelSelect'
@@ -47,9 +46,7 @@ export function ModelSelectionField({
   source,
   runtimes,
   runInSandbox,
-  enabled = true,
-  fastMode,
-  onFastModeChange
+  enabled = true
 }: {
   agentId?: string
   value: AgentModelSelection | null
@@ -61,8 +58,6 @@ export function ModelSelectionField({
   runtimes: readonly string[]
   runInSandbox?: boolean
   enabled?: boolean
-  fastMode?: boolean
-  onFastModeChange?(value: boolean): void
 }) {
   const t = useTranslations('Agents.dialog.modelSelection')
   const { orgPath } = useOrgs()
@@ -99,21 +94,17 @@ export function ModelSelectionField({
     ;[rules[index], rules[index + step]] = [rules[index + step]!, rules[index]!]
     onChange({ ...value, rules })
   }
-  const fastAvailable = (target: DecisionRuntimeTarget) =>
-    fastModeAvailableFor(target.runtime, modelCapability(source, target.runtime, target.model))
+  // Fixed and By decision share one control: the fallback's run settings are the agent's own.
   const fallbackPicker = (dense: boolean) => (
     <RuntimeModelSelect
       dense={dense}
-      runSettings={active}
+      runSettings
       allowRuntimeOnly={!active}
       value={fallback}
       onChange={onFallbackChange}
       source={source}
       runtimes={runtimes}
       runInSandbox={runInSandbox}
-      fastMode={fastMode}
-      fastModeAvailable={fastAvailable(fallback)}
-      onFastModeChange={onFastModeChange}
     />
   )
   const fallbackPanel = (

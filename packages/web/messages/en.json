@@ -2031,7 +2031,6 @@
       "fastMode": "Fast mode",
       "on": "On",
       "off": "Off",
-      "permissionMode": "Permission mode",
       "sessionIsolation": "Session isolation",
       "worktree": "Worktree",
       "githubRepository": "GitHub repository",
@@ -2043,7 +2042,6 @@
       "cancel": "Cancel",
       "creating": "Creating…",
       "create": "Create",
-      "unavailableSuffix": "{label} (unavailable)",
       "workspace": {
         "codeHostHint": "The repository is cloned onto the machine; the agent runs from the directory you pick.",
         "gitUrlHint": "Cloned with the daemon host's own git credentials; the agent runs from the directory you pick.",

@@ -119,7 +119,6 @@ it('selects a complete answer in the themed menu while preserving its probabilit
 })
 
 it('changes a rule without changing sibling or fallback run settings', async () => {
-  const onFastModeChange = vi.fn()
   const onChange = vi.fn()
   const onFallbackChange = vi.fn()
   container = document.createElement('div')
@@ -161,8 +160,6 @@ it('changes a rule without changing sibling or fallback run settings', async () 
           fastMode: false
         }}
         onFallbackChange={onFallbackChange}
-        fastMode={false}
-        onFastModeChange={onFastModeChange}
       />
     )
   )
@@ -188,7 +185,6 @@ it('changes a rule without changing sibling or fallback run settings', async () 
       fastMode: false
     }
   ])
-  expect(onFastModeChange).not.toHaveBeenCalled()
   expect(onFallbackChange).not.toHaveBeenCalled()
   await act(async () =>
     container.querySelector<HTMLButtonElement>('[aria-label="Provider and model for rule 1"]')!.click()
@@ -203,4 +199,32 @@ it('changes a rule without changing sibling or fallback run settings', async () 
     fastMode: true
   })
   expect(onChange).toHaveBeenCalledOnce()
+})
+
+it('edits the agent run settings from the fixed picker', async () => {
+  const onFallbackChange = vi.fn()
+  container = document.createElement('div')
+  document.body.appendChild(container)
+  root = createRoot(container)
+  await act(async () =>
+    root!.render(
+      <ModelSelectionField
+        value={null}
+        onChange={vi.fn()}
+        onValidityChange={vi.fn()}
+        source={{ runtimeModels: [{ runtime: 'claude', version: '', models: ['model-standard'] }] }}
+        runtimes={['claude']}
+        fallback={{ runtime: 'claude', model: 'model-standard', effort: 'medium', permissionMode: 'default' }}
+        onFallbackChange={onFallbackChange}
+      />
+    )
+  )
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Provider and model"]')!.click())
+  await act(async () =>
+    document.querySelector<HTMLButtonElement>('[role="group"][aria-label="Approval"] [aria-pressed="false"]')!.click()
+  )
+  expect(onFallbackChange).toHaveBeenCalledWith(
+    expect.objectContaining({ runtime: 'claude', model: 'model-standard', effort: 'medium' })
+  )
+  expect(onFallbackChange.mock.calls[0]![0].permissionMode).not.toBe('default')
 })
