@@ -865,7 +865,7 @@ describe('one pod per session on the plane (git-workspace-model §11)', () => {
     await expect(sessionPodOf(scope, plane, 'agent-a', 'outward-shared')).resolves.toBe('agent-a')
     await expect(sessionPodOf(scope, plane, 'agent-a', 'outward-unknown')).resolves.toBeUndefined()
     // The premise: no primary root to route by, while the page's own scope reads a clone in the session's directory.
-    await expect(scope.gitRoot('agent-a', 'outward-1')).resolves.toBeUndefined()
+    await expect(scope.location('agent-a', 'outward-1')).resolves.toBeUndefined()
     expect((await scope.location('agent-a', 'outward-1', repo))?.root).toBe(
       `/agent/sessions/${hostKeyDirName(sessionHostKey('agent-a', KEY))}/repos/${repo}`
     )

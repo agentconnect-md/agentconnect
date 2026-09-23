@@ -376,8 +376,12 @@ export class ExecutorPlane implements ExecutionPlane {
     return { driver: this.driver, hostKey }
   }
 
-  gitRunnerFor(agentId: string, cwd?: string, abort?: AbortSignal): GitRunner | undefined {
-    const session = this.sessionForScope({ agentId, ...(cwd === undefined ? {} : { path: cwd }) })
+  gitRunnerFor(agentId: string, cwd?: string, abort?: AbortSignal, sessionKey?: string): GitRunner | undefined {
+    const session = this.sessionForScope({
+      agentId,
+      ...(cwd === undefined ? {} : { path: cwd }),
+      ...(sessionKey === undefined ? {} : { sessionKey })
+    })
     return session ? new ShimGitRunner(session, cwd, undefined, abort) : undefined
   }
 

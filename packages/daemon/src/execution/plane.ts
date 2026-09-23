@@ -27,8 +27,8 @@ export interface ExecutionPlane {
   /** Whether a workspace placed here is off this daemon's disk, its paths in the plane's own coordinates: true for a cluster's pods, false for microsandbox, whose VMs mount directories of this host. */
   workspacesOffDisk: boolean
   spawnFor: (launch: PlaneLaunch) => PlaneSpawn
-  /** A git runner where the path lives; undefined keeps an on-disk caller on its local runner and refuses an off-disk one. */
-  gitRunnerFor: (agentId: string, cwd?: string, abort?: AbortSignal) => GitRunner | undefined
+  /** A git runner where the path lives, or where the named session runs; undefined keeps an on-disk caller on its local runner and refuses an off-disk one. */
+  gitRunnerFor: (agentId: string, cwd?: string, abort?: AbortSignal, sessionKey?: string) => GitRunner | undefined
   /** The filesystem and mount the agent's workspace files live in; undefined keeps the caller on this daemon's disk. The scope narrows it where one plane holds a session apart from its agent, and a plane that places every scope alike ignores it. */
   workspaceFsFor: (agentId: string, scope?: Omit<PlaneScope, 'agentId'>) => WorkspacePlacement | undefined
   /** Empty a directory no `rmSync` here can reach, answering why not instead of throwing; absent where the files are on this daemon's disk. */

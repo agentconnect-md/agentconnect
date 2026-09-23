@@ -835,9 +835,11 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
       runtimeRootOf: () => undefined
     })
 
-    expect(await scope.gitRoot(agent.id, 'sid-1')).toBe(join(leafOf(agent), 'workspace'))
-    expect(await scope.gitRoot(agent.id, 'sid-1', 'acme/infra')).toBe(join(leafOf(agent), 'repos', 'acme', 'infra'))
-    expect(await scope.gitRoot(agent.id)).toBe(agent.workspace.path)
+    expect((await scope.location(agent.id, 'sid-1'))?.root).toBe(join(leafOf(agent), 'workspace'))
+    expect((await scope.location(agent.id, 'sid-1', 'acme/infra'))?.root).toBe(
+      join(leafOf(agent), 'repos', 'acme', 'infra')
+    )
+    expect((await scope.location(agent.id))?.root).toBe(agent.workspace.path)
   })
 
   it('grants a confined session its own directory alone as a workspace write root', async () => {

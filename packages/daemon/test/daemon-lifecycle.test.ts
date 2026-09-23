@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -297,6 +298,79 @@ describe('Daemon session lifecycle (#118)', () => {
       } finally {
         await daemon.stop()
         rmSync(executorClone, { recursive: true, force: true })
+      }
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'reads a spread session’s Git on its executor through the console, and never off this holder',
+    async () => {
+      const root = scaffold()
+      const daemon = new Daemon({ root, hostFactory: () => quietHost() as never })
+      try {
+        await daemon.start()
+        const d = daemon as any
+        await vi.waitFor(() => expect(d.sessionRetentionSweepInFlight).toBe(false))
+        const agent = d.agents.get('bot-a')
+        agent.workspace.mode = 'git-repo'
+        agent.workspace.gitRepo = 'https://github.com/example-org/example-repo'
+        execFileSync('git', ['init', '-q', '-b', 'on-holder', agent.workspace.path])
+        const row = { key: KEY, sessionId: 'outward-1', workspaceIsolation: 'session' }
+        vi.spyOn(d.store, 'getSessionByOutwardId').mockImplementation(async (id: any) =>
+          id === 'outward-1' ? row : undefined
+        )
+        const plane = new ExecutorPlane({
+          prepare: async () => ({ status: 'refused', reason: 'draining' }),
+          release: async () => ({ status: 'released' }),
+          replace: async () => undefined,
+          log: { info: () => {}, warn: () => {} }
+        })
+        const { subject } = plane.place({
+          agentId: 'bot-a',
+          sessionKey: KEY,
+          executorDaemonId: 'exec-a',
+          strategy: 'host'
+        })
+        d.executorPlane = plane
+        d.wirePlaneResolver()
+        // Its pipe up: the executor's shim runs git in that machine's clone, which is on a branch of its own.
+        const asked: Array<{ cwd?: string; args: string[] }> = []
+        const pipe = {
+          request: async (capability: string, payload: any) => {
+            expect(capability).toBe('exec')
+            asked.push({ cwd: payload.cwd, args: payload.args })
+            if (payload.args[0] === 'rev-parse') return { code: 0, stdout: '\n', stderr: '' }
+            if (payload.args[0] === 'status') return { code: 0, stdout: '# branch.head on-executor\0', stderr: '' }
+            if (payload.args[0] === 'diff') return { code: 0, stdout: '', stderr: '' }
+            if (payload.args[0] === 'ls-files') return { code: 0, stdout: 'notes.md\0', stderr: '' }
+            return { code: 128, stdout: '', stderr: 'fatal: no commits yet' }
+          }
+        }
+        const bound = vi
+          .spyOn(plane as any, 'boundSession')
+          .mockImplementation((s) => (s === subject ? pipe : undefined))
+        const deps = buildCpClientDeps(d.cpClientDepsHost(root, 'wss://cp.example.test', () => {}))
+        const status = (sessionId?: string) => deps.workspaceGit!.status('bot-a', sessionId)
+
+        await expect(status('outward-1')).resolves.toMatchObject({ isRepo: true, branch: 'on-executor' })
+        expect(asked[0]).toEqual({
+          cwd: expect.stringMatching(`/sessions/${sessionKeyDirName(KEY)}/workspace$`),
+          args: ['rev-parse', '--show-prefix']
+        })
+        // An unchanged file's existence is asked of git there as well, never of this disk, where the session's directory is not.
+        const diff = { agentId: 'bot-a', sessionId: 'outward-1', path: 'notes.md', staged: false }
+        await expect(deps.workspaceGit!.diff(diff)).resolves.toMatchObject({ isRepo: true, exists: true })
+        // The agent's own checkout stays on this holder (§7).
+        const seen = asked.length
+        await expect(status()).resolves.toMatchObject({ isRepo: true, branch: 'on-holder' })
+        expect(asked).toHaveLength(seen)
+
+        // Its pipe closed: refused, rather than git run on this holder at the session's path.
+        bound.mockReturnValue(undefined)
+        await expect(status('outward-1')).rejects.toMatchObject({ reason: 'sandbox-unavailable' })
+        expect(asked).toHaveLength(seen)
+      } finally {
+        await daemon.stop()
       }
     }
   )
