@@ -11,7 +11,7 @@ import { useDecisionsPrototype } from '@/lib/decisions/provider'
 import { errorParts } from '@/lib/decisions/binding'
 import { answerText, cancelReasonKey, latencyText } from '@/lib/decisions/evaluations'
 import { ROUTING_OUTCOME_BADGE, routingOutcomeTone, targetName } from '@/lib/decisions/routing-evaluations'
-import { ruleNumbers } from '@/lib/decisions/routing-draft'
+import { displayOrder, ruleNumbers } from '@/lib/decisions/routing-draft'
 import type {
   DecisionAnswer,
   DecisionEvaluationEntry,
@@ -277,15 +277,18 @@ export function DecisionRoutingEvaluationSheet({
           )}
           {snapshot && (
             <Section title={t('evaluations.sheet.routing')}>
-              {snapshot.routing.rules.map((rule, index) => (
-                <Row
-                  key={rule.id}
-                  label={t('rules.number', { number: index + 1 })}
-                  value={`${conditionSummary(snapshot.question, rule.when, words)} → ${
-                    rule.action.type === 'agent' ? targetName(rule.action, agentNames) : t('action.skip')
-                  }`}
-                />
-              ))}
+              {displayOrder(snapshot.question, snapshot.routing.rules).map((index) => {
+                const rule = snapshot.routing.rules[index]!
+                return (
+                  <Row
+                    key={rule.id}
+                    label={t('rules.number', { number: numbers.get(rule.id) ?? index + 1 })}
+                    value={`${conditionSummary(snapshot.question, rule.when, words)} → ${
+                      rule.action.type === 'agent' ? targetName(rule.action, agentNames) : t('action.skip')
+                    }`}
+                  />
+                )
+              })}
               <Row
                 label={t('otherwise.label')}
                 value={

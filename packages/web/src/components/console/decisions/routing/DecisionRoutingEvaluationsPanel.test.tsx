@@ -122,6 +122,40 @@ describe('DecisionRoutingEvaluationsPanel', () => {
     expect(expired.textContent).not.toContain('Evaluated message')
   })
 
+  it('numbers frozen Score rules by lower bound, the same order the summary uses', async () => {
+    const api = decisionMock.createDecisionMockApi()
+    const original = api.getRoutingEvaluation.bind(api)
+    vi.spyOn(api, 'getRoutingEvaluation').mockImplementation(async (...args) => {
+      const detail = await original(...args)
+      if (!detail.snapshot) return detail
+      const question = {
+        type: 'score' as const,
+        instructions: 'How urgent?',
+        criteria: ['calm', 'uneasy', 'upset', 'angry']
+      }
+      const rules = [
+        {
+          id: 'high',
+          when: { type: 'score' as const, min: 2, max: 3 },
+          action: { type: 'agent' as const, agentId: 'technical-agent' }
+        },
+        {
+          id: 'low',
+          when: { type: 'score' as const, min: 0, max: 2 },
+          action: { type: 'agent' as const, agentId: 'billing-agent' }
+        }
+      ]
+      return { ...detail, snapshot: { ...detail.snapshot, question, routing: { ...detail.snapshot.routing, rules } } }
+    })
+    const view = await render(api)
+    await click(rows(view)[2])
+    const sheet = document.body.querySelector('[role="dialog"]')!
+    const text = sheet.textContent ?? ''
+    expect(text.indexOf('Billing')).toBeGreaterThan(-1)
+    expect(text.indexOf('Rule 1')).toBeLessThan(text.indexOf('Billing', text.indexOf('Rule 1')))
+    expect(text.indexOf('Billing', text.indexOf('Rule 1'))).toBeLessThan(text.indexOf('Rule 2'))
+  })
+
   it('keeps Load more while the cursor continues, even after an audience-filtered empty page', async () => {
     const api = decisionMock.createDecisionMockApi()
     const all = await api.listRoutingEvaluations('support-bot')
