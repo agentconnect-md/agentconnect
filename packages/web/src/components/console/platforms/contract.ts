@@ -625,30 +625,16 @@ export interface WebChannelListMessage {
   values?: Record<string, string>
 }
 
-/**
- * What one integration card on the AGENT page renders under its header, in place
- * of the host's generic conversation list.
- *
- * The generic list assumes the platform's rooms are enumerable things the bot was
- * ADDED to, each with a trigger and a way out. A module whose card has a repair of its
- * own — Linear's Reconnect, which restores a workspace grant — puts it in the header's
- * action track and keeps the rows beneath it generic.
- *
- * The host keeps the card CHROME (mark, name, connected badge, unlink) and never draws
- * a second one: the workspace name is the header's, not the body's. The Body gets the
- * integration row — which names its own agent, so there is no second prop for the
- * page's — and reaches the console data layer itself, exactly as the list does.
- */
+/** A module's additions to one integration card on the agent page; the host keeps the chrome (mark, name, state pill, unlink). */
 export interface WebAgentIntegrationCardFacet {
-  /** Mounts card-scope state around BOTH the header actions and the body — the
-   *  {@link WebBotSettingsFragments.lifecycleActions} idiom: a state carrier, not chrome. */
+  /** Card-scope state around the header actions, the notice and the body — a state carrier, not chrome. */
   CardProvider?: ComponentType<{ integration: IntegrationRow; children: ReactNode }>
-  /** Controls for the header's action track, beside the host's own unlink — Linear's
-   *  Reconnect and the badge that says why it is lit. Absent ⇒ the host's actions alone. */
+  /** Controls for the header's action track, beside the host's unlink. Absent ⇒ the host's actions alone. */
   HeaderActions?: ComponentType<{ integration: IntegrationRow }>
-  /** `padX` lines the rows up with the host card that mounts them (16 mobile / 14
-   *  desktop detail), the generic list's own prop. */
-  Body: ComponentType<{ integration: IntegrationRow; padX: number }>
+  /** A line directly under the header, above the rows — a repair's progress or failure. Absent ⇒ nothing. */
+  Notice?: ComponentType<{ integration: IntegrationRow; padX: number }>
+  /** Replaces the generic conversation list and the header's first-channel subline; `padX` is the list's. Absent ⇒ both stay. */
+  Body?: ComponentType<{ integration: IntegrationRow; padX: number }>
 }
 
 /**
@@ -744,9 +730,7 @@ export interface WebPlatformModule<TApi = unknown> {
    *  {@link agentCard} still spends these, because that card mounts the same
    *  generic list under its chrome. */
   channelList?: WebChannelListSemantics
-  /** The agent page's card body, wrapping the generic conversation list in the
-   *  platform's own chrome. Absent ⇒ the bare list, which is every platform
-   *  with nothing to say above its rooms. */
+  /** A module's additions to its integration cards on the agent page. Absent ⇒ the host's card alone. */
   agentCard?: WebAgentIntegrationCardFacet
   /**
    * Per-platform transcript text renderer — the §14 defect-3 seam, ADOPTED:

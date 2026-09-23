@@ -1,35 +1,24 @@
 'use client'
 
-// Slack's Settings → Bots fragments (§10 `settingsFragments`): the transport
-// badge, the app-settings deep link, and the whole manifest-refresh /
-// builtin-reinstall machinery that used to be ~180 lines of card-scoped state in
-// SettingsView's `BotsCard`.
-//
-// 'use client' here, unlike the rest of this directory: these fragments are
-// reached from a VIEW rather than from ModalProvider's tree, and they own state,
-// effects and a context of their own.
+// Slack's Integrations-page bot fragments (§10 `settingsFragments`): the transport badge, the app-settings link, and the refresh/reinstall card state.
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon, Toggle } from '@/components/ui'
-import { ApiError, type BotDto, type SlackBotRefreshDto } from '@/lib/api'
+import type { BotDto, SlackBotRefreshDto } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import type { WebBotSettingsFragments } from '../contract'
 import { slackApi } from './api'
-import { SLACK_MISSING_SCOPES_REASON, slackMissingScopesMessage } from './install-failure'
 import { slackAppSettingsUrl } from './manifest'
 import { SlackMark } from './mark'
 import { slackRefreshNoticeState } from './refresh-notice'
+import { SlackReinstallButton, useSlackBuiltinReinstall } from './reinstall'
 import { SlackReplaceTokenAction } from './replace-token'
 
-/** One bot's last refresh outcome — a result, an error, or (mid-flight) neither. */
-type SlackRefreshEntry = { result?: SlackBotRefreshDto; error?: string }
+/** One bot's last outcome — a refresh result or error, a reinstall failure, or (mid-flight) none of them. */
+type SlackRefreshEntry = { result?: SlackBotRefreshDto; error?: string; reinstallError?: string }
 
-/**
- * The Slack card's cross-row state. Card-scoped, not row-scoped, on purpose:
- * one refresh may be in flight per card and one reinstall poll per card, so the
- * busy ids are single values while the outcomes are a per-bot map.
- */
+/** Card-scoped on purpose: one refresh and one reinstall in flight per card, outcomes per bot. */
 interface SlackBotCardState {
   entryFor(botId: string): SlackRefreshEntry | undefined
   refreshingBot(botId: string): boolean
@@ -52,131 +41,61 @@ function SlackBotCardProvider({ children }: { children: ReactNode }) {
   const { refresh } = useConsoleData()
   const [refreshBusyId, setRefreshBusyId] = useState<string | null>(null)
   const [entries, setEntries] = useState<Record<string, SlackRefreshEntry>>({})
-  const [reinstall, setReinstall] = useState<{ botId: string; installId: string } | null>(null)
 
-  const refreshApp = useCallback(
-    async (b: BotDto) => {
-      if (refreshBusyId) return
-      setRefreshBusyId(b.id)
-      setEntries((current) => ({ ...current, [b.id]: {} }))
+  // Re-read one app and record the outcome — the refresh button and a finished reinstall both land here.
+  const readApp = useCallback(
+    async (botId: string) => {
+      setRefreshBusyId(botId)
       try {
-        const result = await slackApi.refreshBot(b.id)
-        setEntries((current) => ({ ...current, [b.id]: { result } }))
+        const result = await slackApi.refreshBot(botId)
+        setEntries((current) => ({ ...current, [botId]: { result } }))
         refresh()
       } catch (e) {
         setEntries((current) => ({
           ...current,
-          [b.id]: { error: e instanceof Error ? e.message : String(e) }
+          [botId]: { error: e instanceof Error ? e.message : String(e) }
         }))
       } finally {
         setRefreshBusyId(null)
       }
     },
-    [refresh, refreshBusyId]
+    [refresh]
   )
 
-  const reinstallBuiltin = useCallback(
-    async (b: BotDto) => {
-      if (reinstall || refreshBusyId) return
-      setEntries((current) => {
-        const result = current[b.id]?.result
-        return { ...current, [b.id]: result ? { result } : {} }
-      })
-      try {
-        const started = await slackApi.startPlatformInstall({ botId: b.id })
-        setReinstall({ botId: b.id, installId: started.id })
-        window.open(started.installUrl, '_blank', 'noopener,width=680,height=760')
-      } catch (e) {
-        setEntries((current) => {
-          const result = current[b.id]?.result
-          const error = e instanceof Error ? e.message : String(e)
-          return { ...current, [b.id]: result ? { result, error } : { error } }
-        })
-      }
+  const refreshApp = useCallback(
+    (b: BotDto) => {
+      if (refreshBusyId) return
+      setEntries((current) => ({ ...current, [b.id]: {} }))
+      void readApp(b.id)
     },
-    [refreshBusyId, reinstall]
+    [readApp, refreshBusyId]
   )
 
-  // Poll the reinstall row to a terminal state, then re-read the app so the
-  // notice reflects the freshly rotated authorization. The ROW is the signal, not
-  // "did an integration appear": a reauthorization only rotates the token.
-  useEffect(() => {
-    if (!reinstall) return
-    const { botId, installId } = reinstall
-    let stopped = false
+  // A reinstall's failure sits beside the bot's last refresh result rather than replacing it.
+  const setReinstallError = useCallback((botId: string, reinstallError?: string) => {
+    setEntries((current) => {
+      const result = current[botId]?.result
+      return { ...current, [botId]: { ...(result ? { result } : {}), ...(reinstallError ? { reinstallError } : {}) } }
+    })
+  }, [])
 
-    const stop = () => {
-      stopped = true
-      clearInterval(timer)
-    }
-    const fail = (message: string) => {
-      stop()
-      setReinstall(null)
-      setEntries((current) => {
-        const result = current[botId]?.result
-        return { ...current, [botId]: result ? { result, error: message } : { error: message } }
-      })
-    }
-    const tick = async () => {
-      try {
-        const status = await slackApi.getPlatformInstall(installId)
-        if (stopped || status.status === 'pending') return
-        if (status.status === 'failed') {
-          fail(
-            status.failureReason === 'denied'
-              ? 'The reinstall was cancelled in Slack.'
-              : status.failureReason === 'workspace_mismatch'
-                ? 'Slack authorized a different workspace. Try again and choose this bot’s workspace.'
-                : // A reinstall is the remedy for a short permission grant, so a
-                  // reinstall that is ITSELF short has to name what is still
-                  // absent — the generic line below would hide exactly that.
-                  status.failureReason === SLACK_MISSING_SCOPES_REASON
-                  ? slackMissingScopesMessage(status.missingScopes)
-                  : 'Slack could not complete the reinstall. Please try again.'
-          )
-          return
-        }
-        if (status.botId !== botId) {
-          fail('Slack reauthorized a different bot. Please try again.')
-          return
-        }
-
-        stop()
-        setReinstall(null)
-        setRefreshBusyId(botId)
-        try {
-          const result = await slackApi.refreshBot(botId)
-          setEntries((current) => ({ ...current, [botId]: { result } }))
-          refresh()
-        } catch (e) {
-          setEntries((current) => ({
-            ...current,
-            [botId]: { error: e instanceof Error ? e.message : String(e) }
-          }))
-        } finally {
-          setRefreshBusyId(null)
-        }
-      } catch (e) {
-        if (!stopped && e instanceof ApiError && e.status === 404) {
-          fail('This reinstall link expired. Please try again.')
-        }
-      }
-    }
-
-    const timer = setInterval(() => void tick(), 2500)
-    void tick()
-    return stop
-  }, [refresh, reinstall])
+  const reinstall = useSlackBuiltinReinstall({
+    onStart: (botId) => setReinstallError(botId),
+    onFailed: setReinstallError,
+    onInstalled: (botId) => void readApp(botId)
+  })
 
   const value = useMemo<SlackBotCardState>(
     () => ({
       entryFor: (botId) => entries[botId],
-      refreshingBot: (botId) => refreshBusyId === botId || reinstall?.botId === botId,
-      reinstallingBot: (botId) => reinstall?.botId === botId,
-      refreshApp: (bot) => void refreshApp(bot),
-      reinstallBuiltin: (bot) => void reinstallBuiltin(bot)
+      refreshingBot: (botId) => refreshBusyId === botId || reinstall.botId === botId,
+      reinstallingBot: (botId) => reinstall.botId === botId,
+      refreshApp,
+      reinstallBuiltin: (bot) => {
+        if (!refreshBusyId) reinstall.start(bot.id)
+      }
     }),
-    [entries, refreshApp, refreshBusyId, reinstall, reinstallBuiltin]
+    [entries, refreshApp, refreshBusyId, reinstall]
   )
 
   return <SlackBotCard.Provider value={value}>{children}</SlackBotCard.Provider>
@@ -219,8 +138,17 @@ function SlackRowActions({ bot, canWrite }: { bot: BotDto; canWrite: boolean }) 
     ? slackRefreshNoticeState(entry.result, { builtin: bot.prebuilt }).needsAttention
     : false
   const refreshing = card.refreshingBot(bot.id)
+  const reinstalling = card.reinstallingBot(bot.id)
   return (
     <>
+      {/* A revoked built-in app is repaired by reinstalling it, straight from the row; a pending one can be restarted. */}
+      {bot.prebuilt && bot.revokedAt && (
+        <SlackReinstallButton
+          busy={reinstalling}
+          disabled={refreshing && !reinstalling}
+          onClick={() => card.reinstallBuiltin(bot)}
+        />
+      )}
       {/* A built-in app's token comes from its workspace install, so only a custom app takes a pasted one. */}
       {!bot.prebuilt && (
         <SlackReplaceTokenAction
@@ -259,14 +187,16 @@ function SlackCardNotice({ bot }: { bot: BotDto }) {
   const card = useSlackBotCard()
   const entry = card.entryFor(bot.id)
   if (!entry) return null
+  // Only a refresh failure is framed as one; a reinstall failure is already its own sentence.
+  const failure = entry.error ? t('refreshFailed', { error: entry.error }) : entry.reinstallError
   return (
     <>
-      {entry.error && (
+      {failure && (
         <div
           role="alert"
           className="border-b border-(--border-subtle) bg-(--status-error-soft) px-4 py-2 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)"
         >
-          {t('refreshFailed', { error: entry.error })}
+          {failure}
         </div>
       )}
       {entry.result && (

@@ -23,6 +23,7 @@ import { useOrgs } from '@/lib/org-context'
 import { creatorLabel, type BotDto, type MeDto } from '@/lib/api'
 import { agentLabel, isDirectConversation, type IntegrationRow } from '@/lib/data'
 import { roomGlyph, roomPlural, rowLabelParts, rowName } from '@/components/console/IntegrationChannelList'
+import { RevokedMarkDot } from '@/components/console/IntegrationMarks'
 import {
   botCardCopy,
   botSharingEditable,
@@ -82,6 +83,15 @@ function botRosterRows(bots: BotDto[], unavailableLabel: string): BotRosterRow[]
     { kind: 'workspace', key: `workspace:${workspaceKey}`, label: group.label },
     ...group.bots.map((bot) => ({ kind: 'bot' as const, key: bot.id, bot }))
   ])
+}
+
+// The agents a revoked bot served: `agentIds` counts active installs only, while the revoked rows still name theirs.
+function revokedAgentIds(bot: BotDto, integrations: IntegrationRow[]): string[] {
+  const ids = new Set<string>()
+  for (const i of integrations) {
+    if (i.botId === bot.id && i.revoked && i.agentId && !bot.agentIds.includes(i.agentId)) ids.add(i.agentId)
+  }
+  return [...ids]
 }
 
 // One merged conversation row for a bot's expandable roster.
@@ -388,6 +398,10 @@ function BotsCard({
           }
           const b = row.bot
           const free = b.agentIds.length === 0
+          const served = [
+            ...b.agentIds.map((id) => ({ id, revoked: false })),
+            ...revokedAgentIds(b, integrations).map((id) => ({ id, revoked: true }))
+          ]
           const open = openBotId === b.id
           const channels = open ? botChannels(b, integrations) : []
           // One member is no choice — the column would name that agent on every row and offer nothing.
@@ -472,22 +486,25 @@ function BotsCard({
                     />
                   )}
                 </span>
-                <div className="flex min-w-0 items-center">
-                  {b.agentIds.length > 0 ? (
-                    b.agentIds.map((id, idx) => {
+                {/* `isolate` keeps a revoked agent's dot above the next overlapping avatar. */}
+                <div className="isolate flex min-w-0 items-center">
+                  {served.length > 0 ? (
+                    served.map(({ id, revoked }, idx) => {
                       const ag = getAgent(id)
+                      const name = ag ? agentLabel(ag) : id
                       return (
                         <Link
                           key={id}
                           href={orgPath(`/agents/${encodeURIComponent(id)}?tab=config`)}
-                          aria-label={`Open ${ag ? agentLabel(ag) : id} configuration`}
-                          title={ag ? agentLabel(ag) : id}
+                          aria-label={`Open ${name} configuration`}
+                          title={revoked ? t('revokedAgent', { agent: name }) : name}
                           className={`av h-[22px] w-[22px] rounded-[6px] no-underline focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand) ${
                             idx > 0 ? '-ml-[6px] shadow-[-1px_0_0_0_var(--surface-card)]' : ''
                           }`}
                           onClick={(e) => e.stopPropagation()}
                         >
                           <AgentIconView icon={ag?.icon} runtime={ag?.runtime || ag?.model || ''} size={22} />
+                          {revoked && <RevokedMarkDot />}
                         </Link>
                       )
                     })

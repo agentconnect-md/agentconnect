@@ -2,6 +2,7 @@
 
 import type { WebPlatformModule } from '../contract'
 import { identityCards, inviteBotHint } from '../wizard-chrome'
+import { SlackAgentCardHeaderActions, SlackAgentCardNotice, SlackAgentCardProvider } from './agent-card'
 import { slackApi, type SlackApi } from './api'
 import { SlackWizardBody, SLACK_TRANSPORT_LABEL } from './Body'
 import { SlackMark } from './mark'
@@ -54,6 +55,12 @@ export const slackModule: WebPlatformModule<SlackApi> = {
     roomGlyph: '#',
     // `conversations.leave` needs `channels:manage` (a re-authorize for every workspace); removing the bot in Slack clears the row instead.
     leave: 'none'
+  },
+  // No Body: the rows stay generic; a revoked app's repair sits in the header, its progress beneath it.
+  agentCard: {
+    CardProvider: SlackAgentCardProvider,
+    HeaderActions: SlackAgentCardHeaderActions,
+    Notice: SlackAgentCardNotice
   },
   messageIdentity: (row) => (SLACK_NATIVE_TS.test(row.ts) ? `ts:${row.ts}` : null),
   // Slack rows carry the workspace's own send-time, and a page must present

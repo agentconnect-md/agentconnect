@@ -105,10 +105,10 @@ describe('the linear transcript and card semantics', () => {
   it('wraps that list in its own card body, and is the only module that does', () => {
     expect(linearModule.agentCard?.Body).toBeDefined()
     expect(platformAgentCard('linear')?.Body).toBe(linearModule.agentCard?.Body)
-    const withOwnCard = platformRegistry.all().filter((m) => m.agentCard)
-    expect(withOwnCard.map((m) => m.platformId)).toEqual(['linear'])
+    const withOwnBody = platformRegistry.all().filter((m) => m.agentCard?.Body)
+    expect(withOwnBody.map((m) => m.platformId)).toEqual(['linear'])
     for (const m of platformRegistry.all()) {
-      if (m.platformId !== 'linear') expect(platformAgentCard(m.platformId), m.platformId).toBeUndefined()
+      if (m.platformId !== 'linear') expect(platformAgentCard(m.platformId)?.Body, m.platformId).toBeUndefined()
     }
   })
 
