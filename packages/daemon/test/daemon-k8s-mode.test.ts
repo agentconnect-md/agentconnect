@@ -826,82 +826,86 @@ describe('daemon --k8s mode', () => {
     }
   })
 
-  it('places an arm by the arming session’s tier: an isolated session’s own pod, a shared one’s agent pod (§4)', async () => {
-    const ISOLATED = 'slack:C1:T1:bot-a'
-    const SHARED = 'slack:C1:T2:bot-a'
-    const LEGACY = 'slack:C1:T3:bot-a'
-    const sessionPod = sandboxSubjectFor(sessionHostKey('bot-a', ISOLATED))
-    const claimAsked: string[] = []
-    const pod = () => {
-      const ops: string[] = []
-      return {
-        ops,
-        arm: async (call: { prNumber: number }) => {
-          ops.push(`arm #${call.prNumber}`)
-          return { armed: true }
-        },
-        disarm: async () => ({ armed: false }),
-        state: async () => ({ armed: false }),
-        watching: async () => ({ armed: false })
-      }
-    }
-    const pods: Record<string, ReturnType<typeof pod>> = { 'bot-a': pod(), [sessionPod]: pod() }
-    const k8sDaemon = daemon({
-      root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
-      k8s: true,
-      plane: {
-        // The routing every read uses: a path under the session directory is that session's pod.
-        subjectForPath: (agentId: string, path?: string) =>
-          sandboxSubjectForPath(agentId, path, DEFAULT_SHIM_WORKSPACE_ROOT),
-        workspaceFsFor: () => undefined,
-        workspaceRootFor: () => undefined,
-        autoMergeSubjects: () => Object.keys(pods),
-        autoMergeAt: async (subject: string) => pods[subject],
-        holdIfBound: () => () => {},
-        // Only the isolated session has a claim: the other isolated one predates its own pod.
-        hasSandbox: async (subject: string) => {
-          claimAsked.push(subject)
-          return subject === sessionPod
+  // POSIX-only: a session directory is composed with the host's path module, and pod routing reads POSIX paths (the pool runs on Linux).
+  it.skipIf(process.platform === 'win32')(
+    'places an arm by the arming session’s tier: an isolated session’s own pod, a shared one’s agent pod (§4)',
+    async () => {
+      const ISOLATED = 'slack:C1:T1:bot-a'
+      const SHARED = 'slack:C1:T2:bot-a'
+      const LEGACY = 'slack:C1:T3:bot-a'
+      const sessionPod = sandboxSubjectFor(sessionHostKey('bot-a', ISOLATED))
+      const claimAsked: string[] = []
+      const pod = () => {
+        const ops: string[] = []
+        return {
+          ops,
+          arm: async (call: { prNumber: number }) => {
+            ops.push(`arm #${call.prNumber}`)
+            return { armed: true }
+          },
+          disarm: async () => ({ armed: false }),
+          state: async () => ({ armed: false }),
+          watching: async () => ({ armed: false })
         }
       }
-    })
-    try {
-      await k8sDaemon.start()
-      const inner = k8sDaemon as any
-      inner.agents.set('bot-a', poolAgent('session'))
-      // The pre-arm GitHub probe cannot reach GitHub here, which never blocks an arm.
-      inner.gitCreds = {
-        get: async () => {
-          throw new Error('no GitHub in this test')
+      const pods: Record<string, ReturnType<typeof pod>> = { 'bot-a': pod(), [sessionPod]: pod() }
+      const k8sDaemon = daemon({
+        root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
+        k8s: true,
+        plane: {
+          // The routing every read uses: a path under the session directory is that session's pod.
+          subjectForPath: (agentId: string, path?: string) =>
+            sandboxSubjectForPath(agentId, path, DEFAULT_SHIM_WORKSPACE_ROOT),
+          workspaceFsFor: () => undefined,
+          workspaceRootFor: () => undefined,
+          autoMergeSubjects: () => Object.keys(pods),
+          autoMergeAt: async (subject: string) => pods[subject],
+          holdIfBound: () => () => {},
+          // Only the isolated session has a claim: the other isolated one predates its own pod.
+          hasSandbox: async (subject: string) => {
+            claimAsked.push(subject)
+            return subject === sessionPod
+          }
         }
-      }
-      const rows: Record<string, unknown> = {
-        'outward-isolated': { key: ISOLATED, sessionId: 'outward-isolated', workspaceIsolation: 'session' },
-        'outward-shared': { key: SHARED, sessionId: 'outward-shared', workspaceIsolation: 'shared' },
-        'outward-legacy': { key: LEGACY, sessionId: 'outward-legacy', workspaceIsolation: 'session' }
-      }
-      vi.spyOn(inner.store, 'getSessionByOutwardId').mockImplementation(async (id: unknown) => rows[id as string])
-      const arm = (prNumber: number, sessionId?: string) =>
-        inner.autoMergeWatcher.set({ agentId: 'bot-a', repoFullName: 'acme/app', prNumber }, true, sessionId)
+      })
+      try {
+        await k8sDaemon.start()
+        const inner = k8sDaemon as any
+        inner.agents.set('bot-a', poolAgent('session'))
+        // The pre-arm GitHub probe cannot reach GitHub here, which never blocks an arm.
+        inner.gitCreds = {
+          get: async () => {
+            throw new Error('no GitHub in this test')
+          }
+        }
+        const rows: Record<string, unknown> = {
+          'outward-isolated': { key: ISOLATED, sessionId: 'outward-isolated', workspaceIsolation: 'session' },
+          'outward-shared': { key: SHARED, sessionId: 'outward-shared', workspaceIsolation: 'shared' },
+          'outward-legacy': { key: LEGACY, sessionId: 'outward-legacy', workspaceIsolation: 'session' }
+        }
+        vi.spyOn(inner.store, 'getSessionByOutwardId').mockImplementation(async (id: unknown) => rows[id as string])
+        const arm = (prNumber: number, sessionId?: string) =>
+          inner.autoMergeWatcher.set({ agentId: 'bot-a', repoFullName: 'acme/app', prNumber }, true, sessionId)
 
-      expect(await arm(1, 'outward-isolated')).toMatchObject({ armed: true, placement: 'sandbox' })
-      await arm(2, 'outward-shared')
-      // No session (an older Control Plane), or one this member does not know: the agent pod, as before.
-      await arm(3)
-      await arm(4, 'outward-unknown')
-      // An isolated session with no pod of its own keeps its workspace, and its watcher, on the agent pod.
-      await arm(5, 'outward-legacy')
+        expect(await arm(1, 'outward-isolated')).toMatchObject({ armed: true, placement: 'sandbox' })
+        await arm(2, 'outward-shared')
+        // No session (an older Control Plane), or one this member does not know: the agent pod, as before.
+        await arm(3)
+        await arm(4, 'outward-unknown')
+        // An isolated session with no pod of its own keeps its workspace, and its watcher, on the agent pod.
+        await arm(5, 'outward-legacy')
 
-      expect(pods[sessionPod]!.ops).toEqual(['arm #1'])
-      expect(pods['bot-a']!.ops).toEqual(['arm #2', 'arm #3', 'arm #4', 'arm #5'])
-      // Only an isolated session's pod is looked up, never the agent's own.
-      expect(claimAsked).toEqual([sessionPod, sandboxSubjectFor(sessionHostKey('bot-a', LEGACY))])
-      // The sweep's own hold is renewed on the pod that runs the watcher.
-      expect(inner.sandboxHolds.reasons(sessionPod)).toEqual(['auto-merge-armed'])
-    } finally {
-      await k8sDaemon.stop()
+        expect(pods[sessionPod]!.ops).toEqual(['arm #1'])
+        expect(pods['bot-a']!.ops).toEqual(['arm #2', 'arm #3', 'arm #4', 'arm #5'])
+        // Only an isolated session's pod is looked up, never the agent's own.
+        expect(claimAsked).toEqual([sessionPod, sandboxSubjectFor(sessionHostKey('bot-a', LEGACY))])
+        // The sweep's own hold is renewed on the pod that runs the watcher.
+        expect(inner.sandboxHolds.reasons(sessionPod)).toEqual(['auto-merge-armed'])
+      } finally {
+        await k8sDaemon.stop()
+      }
     }
-  })
+  )
 
   it('counts idleness from when the launch was taken over when no activity is recorded', async () => {
     const suspended: string[] = []
