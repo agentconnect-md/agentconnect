@@ -111,6 +111,9 @@ export const RUNTIME_COMMANDS_FEATURE = 'runtime-commands-v1'
  * nothing to wake, and the CP answers `unsupported` without sending a frame it would ignore. */
 export const AGENT_WAKE_FEATURE = 'agent-wake-v1'
 
+/** Daemon honours `agent/wake.sessionId` — resume that session's own pod, never the agent's; an older daemon strips the field and wakes the agent pod, so the CP sends it only to one advertising this. */
+export const SESSION_WAKE_FEATURE = 'session-wake-v1'
+
 /** Relay reports body-free GitHub feedback and daemon durably continues the linked session. */
 export const PULL_REQUEST_FEEDBACK_FEATURE = 'pull-request-feedback-v1'
 

@@ -408,7 +408,11 @@ binds the shim — **no host and no ACP session** — answering `starting`. That
 workspace `read` channel serves on, so a woken sandbox is exactly a readable one, and the
 launch it records gets a full idle window before the sweep may suspend it again. A GET still
 wakes nothing: the refusal is transient by design and the console re-issues the read behind
-the press.
+the press. With a `sessionId` the press names one isolated session's own pod instead
+(`session-wake-v1`), which is only ever resumed onto the claim it already has: a session whose
+claim is gone refuses as `sandbox-removed` (404 `WORKSPACE_SANDBOX_REMOVED`, the same answer
+its read gets) rather than answering `starting` for a volume that no longer exists, and a
+member without the feature is sent the agent wake.
 
 **The generation belongs to the agent, not to the daemon process.** A sandbox pod's shim
 records the highest generation it has ever bound and refuses anything below it for the rest of

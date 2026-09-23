@@ -7,7 +7,7 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const wire = vi.hoisted(() => ({
-  answers: [] as Array<{ state: 'running' | 'starting' | 'unsupported' } | { status: number }>
+  answers: [] as Array<{ state: 'running' | 'starting' | 'unsupported' } | { status: number; code?: string }>
 }))
 
 vi.mock('@/lib/api', () => {
@@ -24,13 +24,21 @@ vi.mock('@/lib/api', () => {
     ApiError,
     wakeAgent: vi.fn(() => {
       const next = wire.answers.shift() ?? { state: 'starting' as const }
-      return 'status' in next ? Promise.reject(new ApiError(next.status)) : Promise.resolve(next)
+      return 'status' in next
+        ? Promise.reject(new ApiError(next.status, `HTTP ${next.status}`, next.code))
+        : Promise.resolve(next)
     })
   }
 })
 
 import { wakeAgent } from '@/lib/api'
-import { SANDBOX_WAKE_BOUND_MS, SANDBOX_WAKE_POLL_MS, useSandboxWake, type SandboxReadState } from './sandbox-wake'
+import {
+  SANDBOX_REMOVED_CODE,
+  SANDBOX_WAKE_BOUND_MS,
+  SANDBOX_WAKE_POLL_MS,
+  useSandboxWake,
+  type SandboxReadState
+} from './sandbox-wake'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -46,19 +54,27 @@ function Harness({
   agentId,
   read,
   sandboxed,
-  active
+  active,
+  sessionId
 }: {
   agentId: string
   read: SandboxReadState
   sandboxed?: boolean
   active?: boolean
+  sessionId?: string
 }) {
-  const wake = useSandboxWake(agentId, read, retry, { sandboxed, active })
+  const wake = useSandboxWake(agentId, read, retry, { sandboxed, active, ...(sessionId ? { sessionId } : {}) })
   lastStart = wake.start
   return <span data-phase={wake.phase}>{wake.phase}</span>
 }
 
-async function render(props: { agentId?: string; read: SandboxReadState; sandboxed?: boolean; active?: boolean }) {
+async function render(props: {
+  agentId?: string
+  read: SandboxReadState
+  sandboxed?: boolean
+  active?: boolean
+  sessionId?: string
+}) {
   if (!container) {
     container = document.createElement('div')
     document.body.append(container)
@@ -71,6 +87,7 @@ async function render(props: { agentId?: string; read: SandboxReadState; sandbox
         read={props.read}
         sandboxed={props.sandboxed}
         active={props.active}
+        {...(props.sessionId ? { sessionId: props.sessionId } : {})}
       />
     )
     await Promise.resolve()
@@ -215,5 +232,40 @@ describe('useSandboxWake', () => {
     await elapse(SANDBOX_WAKE_POLL_MS[1])
     expect(retries).toBe(2)
     expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('useSandboxWake for one session', () => {
+  it("presses that session's own wake, and re-arms for another session", async () => {
+    await render({ read: 'asleep', sessionId: 'session-1' })
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledExactlyOnceWith('agent-a', 'session-1')
+    expect(phase()).toBe('starting')
+
+    // Another session is another sandbox: the scope resets and its own refusal earns its own press.
+    await render({ read: 'asleep', sessionId: 'session-2' })
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(wakeAgent)).toHaveBeenLastCalledWith('agent-a', 'session-2')
+  })
+
+  it('a removed sandbox re-reads at once rather than giving up with Start, and the read settles the press', async () => {
+    wire.answers = [{ status: 404, code: SANDBOX_REMOVED_CODE }]
+    await render({ read: 'asleep', sessionId: 'session-1' })
+    // Not `gave-up`, which is what a 404 otherwise means and what draws Start.
+    expect(phase()).toBe('starting')
+    expect(retries).toBe(1)
+
+    await render({ read: 'removed', sessionId: 'session-1' })
+    expect(phase()).toBe('idle')
+    await elapse(60_000)
+    expect(retries).toBe(1)
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(1)
+  })
+
+  it('never presses for a removed read, even for an agent known to be sandboxed', async () => {
+    await render({ read: 'removed', sandboxed: true, sessionId: 'session-1' })
+    await elapse(60_000)
+    expect(vi.mocked(wakeAgent)).not.toHaveBeenCalled()
+    expect(phase()).toBe('idle')
+    expect(retries).toBe(0)
   })
 })

@@ -10,6 +10,7 @@ import { Icon } from '@/components/ui'
 import { FileBrowserRow, formatFileMtime, formatFileSize } from '@/components/console/FileBrowser'
 import {
   SANDBOX_ASLEEP_CODE,
+  SESSION_SANDBOX_REMOVED_NOTICE,
   sessionWorktreeAbsentNotice,
   StatusBadge,
   useWorkspaceGitStatus,
@@ -97,7 +98,9 @@ export function FilesPanel({
     intervalMs: DOCK_POLL_MS,
     onRefresh: () => setAutoTick((n) => n + 1)
   })
-  const wake = useSandboxWake(agentId, workspaceRootReadState(root), retryRoot, { active })
+  // A session's page wakes that session's own sandbox, never the agent's.
+  const readState = workspaceRootReadState(root)
+  const wake = useSandboxWake(agentId, readState, retryRoot, { active, ...(sessionId ? { sessionId } : {}) })
   const [query, setQuery] = useState('')
   const scope = `${agentId}:${sessionId ?? 'primary'}`
   // Latched per scope, so the tab reports `ready` once and a refresh keeps the panel — and the reader's filter text — on screen behind an in-tree spinner.
@@ -211,6 +214,7 @@ export function FilesPanel({
   // Which of the tree's states the body draws. Every branch here is data — none of them may take the panel, the dock or the transcript down (§2).
   const body = (): ReactNode => {
     if (root?.err && !root.entries) {
+      if (readState === 'removed') return <PanelNotice text={SESSION_SANDBOX_REMOVED_NOTICE} />
       if (wake.phase === 'starting') return <SandboxStartingNotice compact />
       return (
         <SandboxAsleepNotice
@@ -267,14 +271,17 @@ export function FilesPanel({
   const branchTitle = sessionId
     ? "Branch of the agent's primary checkout; this session's worktree is detached from it"
     : 'Current branch of the workspace checkout'
+  // A removed sandbox's one line is the whole story, so no git note beside it.
   const gitNote =
-    outcome === 'none'
-      ? 'Not a git checkout — no branch or file status'
-      : outcome === 'asleep'
-        ? 'Git status unavailable — this agent’s sandbox could not answer'
-        : outcome === 'unavailable'
-          ? 'Git status unavailable — the daemon may be offline'
-          : null
+    readState === 'removed'
+      ? null
+      : outcome === 'none'
+        ? 'Not a git checkout — no branch or file status'
+        : outcome === 'asleep'
+          ? 'Git status unavailable — this agent’s sandbox could not answer'
+          : outcome === 'unavailable'
+            ? 'Git status unavailable — the daemon may be offline'
+            : null
 
   return (
     <div data-files-panel="" className="flex min-h-0 flex-1 flex-col">

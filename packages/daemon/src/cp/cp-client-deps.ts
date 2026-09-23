@@ -422,15 +422,20 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       : {}),
     // §16 desired projection generations, converged by the only GitLab Notes writer for this surface.
     codeHostNoteProjection: (desired, orgId) => host.noteProjector().apply(desired, orgId),
-    // The console's "start this agent's sandbox": duty claim + channel bind, no host — the same
-    // condition the file reader serves on, reached without a turn. Local daemons have no plane.
+    // The console's "start this sandbox": duty claim + channel bind, no host, reached without a turn; local daemons have no plane.
     agentWake: createAgentWaker({
       ...(host.k8sPlane()
         ? {
-            // The agent's OWN pod: the console browses the primary checkout there, whatever session pods are up.
             sandbox: {
-              isRunning: (id) => host.k8sPlane()!.sandboxBound(id),
-              ensureChannel: (id) => host.k8sPlane()!.ensureChannel(id)
+              isRunning: (subject) => host.k8sPlane()!.sandboxBound(subject),
+              ensureChannel: (subject) => host.k8sPlane()!.ensureChannel(subject),
+              // The pod a session's page reads, through the SAME scope and routing its reads and its keep-alive use (§11).
+              sessionPod: async (id, sessionId) => {
+                const root = await workspaceScope.gitRoot(id, sessionId)
+                return root === undefined ? undefined : host.k8sPlane()!.subjectForPath(id, root)
+              },
+              claimUidFor: (subject) => host.k8sPlane()!.claimUidFor(subject),
+              resumeChannel: (subject, claimUid) => host.k8sPlane()!.resumeChannel(subject, claimUid)
             }
           }
         : {}),

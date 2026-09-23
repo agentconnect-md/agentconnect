@@ -1,15 +1,15 @@
 'use client'
 
-// The console's "start this agent's sandbox" (#1070): a cluster agent's files live on its pod's volume and are
-// only readable through a running sandbox, so a read that refuses with the asleep code is answered by WAKING
-// the sandbox — once, debounced — and polling the read with backoff until it answers or a bound passes. A GET
-// never wakes anything; this hook is the one place that presses the explicit wake.
+// The console's "start this sandbox" (#1070): a read refused as asleep is answered by ONE wake, then polled with backoff; a GET never wakes anything, so this is the one press.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, wakeAgent } from '@/lib/api'
 
-/** What the read this hook watches has resolved to. `failed` is any refusal other than the sleeping sandbox — kept polling while a wake is under way, because a pool agent nobody serves reads that way until the member the wake reached has claimed it. */
-export type SandboxReadState = 'pending' | 'ready' | 'asleep' | 'failed'
+/** What the read this hook watches has resolved to. `removed` is a session whose own sandbox is gone, final for the hook; `failed` is any other refusal, kept polling while a wake is under way because a pool agent nobody serves reads that way until the member the wake reached has claimed it. */
+export type SandboxReadState = 'pending' | 'ready' | 'asleep' | 'removed' | 'failed'
+
+/** The CP's code, on a read and on a wake alike, for a session whose own sandbox was removed: nothing to start, since no wake recreates it. */
+export const SANDBOX_REMOVED_CODE = 'WORKSPACE_SANDBOX_REMOVED'
 
 /** `starting` = a wake was pressed and the read is being polled; `gave-up` = the bound passed without an answer, so the terminal copy shows with a Start button; `unsupported` = the daemon had nothing to wake, so the terminal copy shows without one. */
 export type SandboxWakePhase = 'idle' | 'starting' | 'gave-up' | 'unsupported'
@@ -30,6 +30,8 @@ export interface SandboxWakeOptions {
   sandboxed?: boolean
   /** Whether the surface is actually on screen. A mounted-but-hidden panel (a dock tab that is not selected) neither presses the wake nor polls: a pod start is never a side effect of a page whose reader has not asked for the files. Defaults to true. */
   active?: boolean
+  /** The isolated session whose own sandbox the press resumes; omit for the agent's (its checkout, memory, dreams). */
+  sessionId?: string
 }
 
 /**
@@ -40,10 +42,12 @@ export function useSandboxWake(
   agentId: string,
   read: SandboxReadState,
   retry: () => void,
-  { sandboxed = false, active = true }: SandboxWakeOptions = {}
+  { sandboxed = false, active = true, sessionId }: SandboxWakeOptions = {}
 ): SandboxWake {
   const [phase, setPhase] = useState<SandboxWakePhase>('idle')
-  // Which agent the automatic press already ran for: once per agent, so a refusal after a give-up does not re-press.
+  // The sandbox a press names: the agent's, or one session's own.
+  const scope = sessionId === undefined ? agentId : `${agentId}:${sessionId}`
+  // Which scope the automatic press already ran for: once per scope, so a refusal after a give-up does not re-press.
   const autoPressed = useRef<string | null>(null)
   // The press under way, if any — a ref rather than the phase, so a double-invoked updater cannot press twice.
   const pressing = useRef(false)
@@ -69,7 +73,8 @@ export function useSandboxWake(
     wakeSettled.current = false
     setPhase('starting')
     const pressed = generation.current
-    wakeAgent(agentId).then(
+    const press = sessionId === undefined ? wakeAgent(agentId) : wakeAgent(agentId, sessionId)
+    press.then(
       (ok) => {
         if (pressed !== generation.current) return
         wakeSettled.current = true
@@ -78,37 +83,43 @@ export function useSandboxWake(
       },
       (err: unknown) => {
         if (pressed !== generation.current) return
+        // A removed session sandbox has nothing to start: re-read at once, and the read's own answer ends the press.
+        if (err instanceof ApiError && err.code === SANDBOX_REMOVED_CODE) {
+          wakeSettled.current = true
+          retry()
+          setTick((t) => t + 1)
+        }
         // A refused press (viewer, vanished agent) has no polling to do; anything else may have raced, so the read decides.
-        if (err instanceof ApiError && (err.status === 403 || err.status === 404)) settle('gave-up')
+        else if (err instanceof ApiError && (err.status === 403 || err.status === 404)) settle('gave-up')
         else {
           wakeSettled.current = true
           setTick((t) => t + 1)
         }
       }
     )
-  }, [agentId, settle])
+  }, [agentId, retry, sessionId, settle])
 
-  // A new agent is a new panel: nothing pressed, nothing under way. Declared before the automatic press so the reset never lands on top of it, and keyed on the agent actually changing so a re-run for the same one is inert.
-  const shownAgent = useRef(agentId)
+  // A new scope is a new panel: nothing pressed, nothing under way. Declared before the automatic press so the reset never lands on top of it, and keyed on the scope actually changing so a re-run for the same one is inert.
+  const shownScope = useRef(scope)
   useEffect(() => {
-    if (shownAgent.current === agentId) return
-    shownAgent.current = agentId
+    if (shownScope.current === scope) return
+    shownScope.current = scope
     settle('idle')
-  }, [agentId, settle])
+  }, [scope, settle])
 
   // The automatic press: on a refusal, or on open for an agent known to be sandboxed — and only while on screen.
   useEffect(() => {
-    if (!active || autoPressed.current === agentId) return
-    if (read === 'asleep' || (sandboxed && read !== 'ready')) {
-      autoPressed.current = agentId
+    if (!active || autoPressed.current === scope) return
+    if (read === 'asleep' || (sandboxed && read !== 'ready' && read !== 'removed')) {
+      autoPressed.current = scope
       start()
     }
-  }, [active, agentId, read, sandboxed, start])
+  }, [active, read, sandboxed, scope, start])
 
-  // The poll: after the wake answered, re-issue the read with backoff until it is ready or the bound passes.
+  // The poll: after the wake answered, re-issue the read with backoff until it is ready, removed, or the bound passes.
   useEffect(() => {
     if (phase !== 'starting') return
-    if (read === 'ready') {
+    if (read === 'ready' || read === 'removed') {
       settle('idle')
       return
     }

@@ -3928,6 +3928,9 @@ export const AgentTasksDto = z.object({
  *  machine-placed agent, or a daemon that runs no sandboxes). */
 export const AgentWakeDto = z.object({ state: z.enum(['running', 'starting', 'unsupported']) })
 
+/** `POST /agents/:id/wake` query — the isolated session whose own sandbox to wake; omit for the agent's. */
+export const AgentWakeQueryDto = z.object({ sessionId: z.string().min(1).optional() })
+
 // ── usage report ingress (the non-daemon adapter of the report interface) ──
 /** The batch body of the service-authenticated usage endpoint. Its element IS the
  *  daemon EVT's payload schema, deliberately: one payload, two authenticated

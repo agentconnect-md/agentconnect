@@ -1,19 +1,43 @@
-// `createAgentWaker` — the daemon half of the console's "start this agent's sandbox" (#1070).
+// `createAgentWaker` — the daemon half of the console's "start this sandbox" (#1070), agent- or session-scoped.
 import { describe, expect, it, vi } from 'vitest'
 import { createAgentWaker, AgentWakeViolationError } from '../../src/cp/agent-wake.js'
 
 const silent = { warn: vi.fn() }
 const tick = () => new Promise((r) => setImmediate(r))
 
-function sandbox(running = false) {
-  const state = { running }
+const SESSION_POD = 'a1/session-0123456789abcdef01234567'
+
+/** A plane whose binds wait for `release`; `claims` is what the cluster holds, by subject. */
+function sandbox(running = false, claims: Record<string, string> = { [SESSION_POD]: 'claim-uid-1' }) {
+  const bound = new Set<string>(running ? ['a1'] : [])
   let release: () => void = () => {}
-  const bound = new Promise<void>((resolve) => (release = resolve))
-  const ensureChannel = vi.fn(async () => {
-    await bound
-    state.running = true
+  const gate = new Promise<void>((resolve) => (release = resolve))
+  const ensureChannel = vi.fn(async (subject: string) => {
+    await gate
+    bound.add(subject)
   })
-  return { plane: { isRunning: () => state.running, ensureChannel }, ensureChannel, release, state }
+  const resumeChannel = vi.fn(async (subject: string, _claimUid: string) => {
+    await gate
+    bound.add(subject)
+  })
+  const sessionPod = vi.fn(async (_agentId: string, sessionId: string) =>
+    sessionId === 'unknown' ? undefined : sessionId === 'legacy' ? 'a1' : SESSION_POD
+  )
+  const claimUidFor = vi.fn(async (subject: string) => claims[subject])
+  return {
+    plane: {
+      isRunning: (subject: string) => bound.has(subject),
+      ensureChannel,
+      sessionPod,
+      claimUidFor,
+      resumeChannel
+    },
+    ensureChannel,
+    resumeChannel,
+    claimUidFor,
+    release,
+    bound
+  }
 }
 
 describe('createAgentWaker', () => {
@@ -21,6 +45,10 @@ describe('createAgentWaker', () => {
     const claimDuty = vi.fn(async () => true)
     const waker = createAgentWaker({ knowsAgent: () => false, claimDuty, log: silent })
     await expect(waker.wake({ agentId: 'a1' })).resolves.toEqual({ agentId: 'a1', state: 'unsupported' })
+    await expect(waker.wake({ agentId: 'a1', sessionId: 's1' })).resolves.toEqual({
+      agentId: 'a1',
+      state: 'unsupported'
+    })
     expect(claimDuty).not.toHaveBeenCalled()
   })
 
@@ -65,23 +93,75 @@ describe('createAgentWaker', () => {
       log: silent
     })
     await expect(waker.wake({ agentId: 'a1' })).rejects.toBeInstanceOf(AgentWakeViolationError)
+    await expect(waker.wake({ agentId: 'a1', sessionId: 's1' })).rejects.toMatchObject({ reason: 'unknown-agent' })
     expect(box.ensureChannel).not.toHaveBeenCalled()
+    expect(box.resumeChannel).not.toHaveBeenCalled()
   })
 
   it('a failed bind is logged and forgotten, so the next wake tries again', async () => {
-    const ensureChannel = vi.fn(async () => {
+    const box = sandbox()
+    box.ensureChannel.mockImplementation(async () => {
       throw new Error('pod never became ready')
     })
     const log = { warn: vi.fn() }
-    const waker = createAgentWaker({
-      sandbox: { isRunning: () => false, ensureChannel },
-      knowsAgent: () => true,
-      log
-    })
+    const waker = createAgentWaker({ sandbox: box.plane, knowsAgent: () => true, log })
     await waker.wake({ agentId: 'a1' })
     await tick()
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('pod never became ready'))
     await waker.wake({ agentId: 'a1' })
-    expect(ensureChannel).toHaveBeenCalledTimes(2)
+    expect(box.ensureChannel).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('createAgentWaker for one session', () => {
+  it("resumes only that session's pod, onto the claim it just observed, and leaves the agent pod alone", async () => {
+    const box = sandbox()
+    const waker = createAgentWaker({ sandbox: box.plane, knowsAgent: () => true, log: silent })
+    await expect(waker.wake({ agentId: 'a1', sessionId: 's1' })).resolves.toEqual({ agentId: 'a1', state: 'starting' })
+    expect(box.resumeChannel).toHaveBeenCalledExactlyOnceWith(SESSION_POD, 'claim-uid-1')
+    // The agent pod is neither ensured nor resumed: a session's page wakes one pod.
+    expect(box.ensureChannel).not.toHaveBeenCalled()
+
+    // A burst joins the resume in flight rather than observing and resuming again.
+    await expect(waker.wake({ agentId: 'a1', sessionId: 's1' })).resolves.toEqual({ agentId: 'a1', state: 'starting' })
+    expect(box.resumeChannel).toHaveBeenCalledTimes(1)
+    box.release()
+    await tick()
+    await expect(waker.wake({ agentId: 'a1', sessionId: 's1' })).resolves.toEqual({ agentId: 'a1', state: 'running' })
+    expect([...box.bound]).toEqual([SESSION_POD])
+  })
+
+  it('refuses as sandbox-removed when the cluster holds no claim for it, and creates or resumes nothing', async () => {
+    const box = sandbox(false, {})
+    const waker = createAgentWaker({ sandbox: box.plane, knowsAgent: () => true, log: silent })
+    const refused = await waker.wake({ agentId: 'a1', sessionId: 's1' }).catch((err: unknown) => err)
+    expect(refused).toBeInstanceOf(AgentWakeViolationError)
+    expect(refused).toMatchObject({ reason: 'sandbox-removed' })
+    expect(box.claimUidFor).toHaveBeenCalledWith(SESSION_POD)
+    expect(box.resumeChannel).not.toHaveBeenCalled()
+    // Ensuring is what claims: a removed session must never be handed to it, nor fall back to the agent pod.
+    expect(box.ensureChannel).not.toHaveBeenCalled()
+  })
+
+  it("ensures the agent pod when that is where the session's workspace lives", async () => {
+    const box = sandbox()
+    const waker = createAgentWaker({ sandbox: box.plane, knowsAgent: () => true, log: silent })
+    await expect(waker.wake({ agentId: 'a1', sessionId: 'legacy' })).resolves.toEqual({
+      agentId: 'a1',
+      state: 'starting'
+    })
+    expect(box.ensureChannel).toHaveBeenCalledExactlyOnceWith('a1')
+    expect(box.resumeChannel).not.toHaveBeenCalled()
+  })
+
+  it('refuses a session with no workspace here as unknown-agent, touching no pod', async () => {
+    const box = sandbox()
+    const waker = createAgentWaker({ sandbox: box.plane, knowsAgent: () => true, log: silent })
+    await expect(waker.wake({ agentId: 'a1', sessionId: 'unknown' })).rejects.toMatchObject({
+      reason: 'unknown-agent'
+    })
+    expect(box.claimUidFor).not.toHaveBeenCalled()
+    expect(box.ensureChannel).not.toHaveBeenCalled()
+    expect(box.resumeChannel).not.toHaveBeenCalled()
   })
 })

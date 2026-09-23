@@ -673,10 +673,12 @@ export const AgentPermissionDecision = z.object({
 })
 export type AgentPermissionDecision = z.infer<typeof AgentPermissionDecision>
 
-// `agent/wake` (C→D REQ → `agent/wake/ok`): bring a cluster agent's sandbox to Running WITHOUT a turn.
-// The daemon claims the agent's duty on receipt like any trigger, so a set agent with no holder is
-// served by whichever member the wake reached; it answers with what it observed, never a promise.
-export const AgentWakeReq = z.object({ agentId: z.string().min(1) })
+// `agent/wake` (C→D REQ → `agent/wake/ok`): bring a sandbox to Running WITHOUT a turn, claiming the agent's duty on receipt; the answer is what was observed.
+export const AgentWakeReq = z.object({
+  agentId: z.string().min(1),
+  // The outward session id whose own pod to resume instead of the agent's (`session-wake-v1`); a claim is never created for it.
+  sessionId: z.string().min(1).optional()
+})
 export type AgentWakeReq = z.infer<typeof AgentWakeReq>
 
 // `running` = the sandbox channel is bound; `starting` = the resume is in flight and the next read may

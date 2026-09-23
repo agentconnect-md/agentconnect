@@ -160,9 +160,7 @@ export interface K8sRuntimePlane extends ExecutionPlane {
   probeRuntimes: (sweep?: ProbeSandboxSweep) => Promise<K8sRuntimeTable>
   /** A git runner on the pod that owns the path (a sleeping session pod is woken beside a bound agent pod), or undefined with no channel to it, which callers refuse. */
   gitRunnerFor: (agentId: string, cwd?: string, abort?: AbortSignal) => GitRunner | undefined
-  /** The console's file operations for the agent's workspaces, each root on the pod that owns it. Separate
-   *  from the git runner because they are separate capabilities (`read` vs `exec`) and a channel is not a
-   *  blanket permission — not because the two ever disagree about which filesystem to use. */
+  /** The console's file operations, each root on the pod that owns it and refused per call while that pod is unbound; separate from git because `read` and `exec` are separate capabilities. */
   workspaceFilesFor: (agentId: string) => WorkspaceFiles | undefined
   /** Where the agent's WORKSPACE files live and which coordinates they are addressed in — the
    *  filesystem twin of `gitRunnerFor`, answering while any pod of the agent is bound and routing
@@ -226,6 +224,10 @@ export interface K8sRuntimePlane extends ExecutionPlane {
   discardSession: (agentId: string, leaf: string) => Promise<void>
   /** Whether the cluster holds a claim for a subject at all, read without waking anything. */
   hasSandbox: (subject: string) => Promise<boolean>
+  /** The uid of the claim the cluster holds for a subject, the fence a resume travels with; undefined when it holds none. */
+  claimUidFor: (subject: string) => Promise<string | undefined>
+  /** Resume a sleeping pod onto the claim whose uid was just observed and bind its channel, creating nothing; a claim gone or replaced since refuses. */
+  resumeChannel: (subject: string, claimUid: string) => Promise<void>
   stop: () => Promise<void>
 }
 
@@ -296,23 +298,26 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
   // The one condition that means "this agent's work happens in a pod" — ANY of its pods. Defined once
   // because two callers must agree on it: the git runner, and the credential pointers that git will read.
   const runsInSandbox = (agentId: string): boolean => boundSubjectsOf(agentId).length > 0
-  // The claim a sleeping session pod may be resumed on, or undefined when it may not be woken: only beside a bound agent pod, since the console's wake is agent-scoped and that is the press a read has, and only onto a claim the cluster already holds — whose UID travels to the resume as its fence.
-  const wakeableSessionClaim = async (subject: SandboxSubject): Promise<string | undefined> => {
-    if (sandboxSubjectSessionLeaf(subject) === undefined) return undefined
-    if (!boundSession(agentSandboxSubject(sandboxSubjectAgentId(subject)))) return undefined
-    return await driver.claimUidFor(subject)
+  // A session pod's claim uid, the fence a resume travels with; none refuses as `sandbox-removed`, since that claim IS the session's volume and a read or wake never creates one.
+  const sessionClaimOf = async (subject: SandboxSubject): Promise<string> => {
+    const claimUid = await driver.claimUidFor(subject)
+    if (claimUid === undefined) {
+      throw new WorkspaceViolationError(
+        `sandbox "${subject}" no longer exists, so this workspace was removed`,
+        'sandbox-removed'
+      )
+    }
+    return claimUid
   }
-  /** The session that owns `path`, resuming a sleeping session pod beside a bound agent pod; otherwise the typed `sandbox-unavailable` refusal the console can wake on. */
+  /** The session that owns `path`: a removed session pod refuses as such, a sleeping one resumes beside a bound agent pod (its own press is the waker's), and otherwise the typed `sandbox-unavailable` refusal the console can wake on. */
   const sessionForPath = async (agentId: string, path: string): Promise<ShimSession> => {
     const subject = subjectForPath(agentId, path)
     let session = boundSession(subject)
-    if (!session) {
+    if (!session && sandboxSubjectSessionLeaf(subject) !== undefined) {
       // Resume-only, fenced on the claim just observed: the two reads are not atomic, so a retirement landing between them refuses rather than creating a fresh claim and an empty volume.
-      const claimUid = await wakeableSessionClaim(subject)
-      if (claimUid !== undefined) {
-        await driver.resumeBoundChannel(subject, claimUid)
-        session = boundSession(subject)
-      }
+      const claimUid = await sessionClaimOf(subject)
+      if (boundSession(agentSandboxSubject(agentId))) await driver.resumeBoundChannel(subject, claimUid)
+      session = boundSession(subject)
     }
     // Path-free: the message rides the wire to the Control Plane, and the subject already names the pod.
     if (!session) {
@@ -454,10 +459,9 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       }
       return deferredGitRunner(async () => new ShimGitRunner(await sessionForPath(agentId, cwd), cwd, undefined, abort))
     },
-    workspaceFilesFor: (agentId) => {
-      if (!runsInSandbox(agentId)) return undefined
-      return new RoutedWorkspaceFiles(async (root) => new ShimWorkspaceFiles(await sessionForPath(agentId, root)))
-    },
+    // Routed even with no pod bound, so each root refuses on its own terms: a session's can say its sandbox was removed.
+    workspaceFilesFor: (agentId) =>
+      new RoutedWorkspaceFiles(async (root) => new ShimWorkspaceFiles(await sessionForPath(agentId, root))),
     workspaceFsFor: (agentId) => {
       // Paths are composed on the mount the agent's own pod reported; a session pod's is asked for its own paths.
       const [first] = boundSubjectsOf(agentId)
@@ -555,6 +559,10 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       }
     },
     hasSandbox: (subject) => driver.hasClaim(subject as SandboxSubject),
+    claimUidFor: (subject) => driver.claimUidFor(subject as SandboxSubject),
+    resumeChannel: async (subject, claimUid) => {
+      await driver.resumeBoundChannel(subject as SandboxSubject, claimUid)
+    },
     stop: async () => {
       if (stampRefresh) clearInterval(stampRefresh)
       lossWatcher.cancelAll()

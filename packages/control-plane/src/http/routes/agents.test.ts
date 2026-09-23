@@ -23,6 +23,7 @@ import {
   toWorkspaceGitPushDto,
   toWorkspaceGitMessageDto,
   toAgentTasksDto,
+  agentWakeFailure,
   workspaceGitConfigOf,
   workspaceErrorCode,
   workspaceFailure,
@@ -351,6 +352,15 @@ describe('workspaceErrorCode / workspaceFailure', () => {
     })
   })
 
+  it('answers a removed session sandbox 404 with its own code, never the asleep one the console offers Start for', () => {
+    expect(workspaceFailure(badPayload('sandbox-removed'))).toEqual({
+      status: 404,
+      error: 'Not Found',
+      message: 'workspace/read failed: path escapes the workspace root',
+      code: 'WORKSPACE_SANDBOX_REMOVED'
+    })
+  })
+
   it('keeps the 503 for a reasonless rejection (an older daemon says nothing to branch on)', () => {
     expect(workspaceFailure(badPayload())).toEqual({
       status: 503,
@@ -366,6 +376,35 @@ describe('workspaceErrorCode / workspaceFailure', () => {
       message: 'owning daemon is offline'
     })
     expect(workspaceFailure(new TypeError('cfg.repo is not a function'))).toBeNull()
+  })
+})
+
+describe('agentWakeFailure', () => {
+  const refused = (reason: string): ProtocolError =>
+    new ProtocolError('BAD_PAYLOAD', 'agent/wake failed: refused', { details: { reason } })
+
+  it('answers a removed session sandbox with the read’s own 404 and code, so the console stops offering Start', () => {
+    expect(agentWakeFailure(refused('sandbox-removed'))).toEqual({
+      status: 404,
+      error: 'Not Found',
+      message: 'agent/wake failed: refused',
+      code: 'WORKSPACE_SANDBOX_REMOVED'
+    })
+  })
+
+  it('keeps every other refusal a 503, so a pool agent still being claimed is polled rather than given up on', () => {
+    // A 404 here would end the console's press: an unclaimed pool agent reads this way until its member takes it.
+    expect(agentWakeFailure(refused('unknown-agent'))).toEqual({
+      status: 503,
+      error: 'Service Unavailable',
+      message: 'daemon rejected the request: agent/wake failed: refused'
+    })
+    expect(agentWakeFailure(new Error('connection closed'))).toEqual({
+      status: 503,
+      error: 'Service Unavailable',
+      message: 'owning daemon is offline'
+    })
+    expect(agentWakeFailure(new TypeError('not a daemon failure'))).toBeNull()
   })
 })
 

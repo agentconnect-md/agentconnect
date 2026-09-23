@@ -326,12 +326,16 @@ secondary roots (managed memory is in the CP database, §11), and a session runt
 binds and holds it as its companion for the runtime's life, so a running runtime
 still implies a reachable agent pod. Every workspace path is routed to the pod that owns it,
 read off the **path** rather than off the live-launch registry, so a suspended
-session pod stays addressable; a read that names one RESUMES it, only beside a
-bound agent pod and only onto the claim whose uid the router just observed. The
-resume creates nothing: the observation and the wake are two round trips, and the
-uid is re-judged against the object after that gap, so a retirement landing in
-between refuses instead of claiming a fresh empty volume for a session that no
-longer has one — a read can lose a race with a retirement, never win one.
+session pod stays addressable; a read that names one RESUMES it only beside a
+bound agent pod, the session's own page resumes it alone with the session-scoped
+wake (below), and either way only onto the claim whose uid the router just
+observed. The resume creates nothing: the observation and the wake are two round
+trips, and the uid is re-judged against the object after that gap, so a
+retirement landing in between refuses instead of claiming a fresh empty volume for
+a session that no longer has one — a read can lose a race with a retirement, never
+win one. A session pod with no claim at all is not asleep but removed, so a read
+or a wake of it refuses as `sandbox-removed`, which no press can undo; the
+session's next message creates a new one.
 Sleep is per pod — a quiet session pod suspends on its own session's activity
 while its siblings and the agent pod stay — and the claim goes with the
 session's row: retention deletes it (volume and all) once the clone has passed
@@ -377,6 +381,21 @@ working directory. An off-disk scope with no runner now refuses with
 the same typed refusal instead of a plain error, which the console showed as "the
 daemon may be offline" with no Start button. Every such caller still sits inside
 the preparation wrapper; this is what lets the wrapper narrow.
+
+**A session's page wakes its own pod.** `agent/wake` carries an optional
+`sessionId` (`session-wake-v1`). The member holding the agent's duty resolves the
+pod that session's workspace lives on through the same scope and routing its reads
+use, answers `running` when it is bound, and otherwise observes its claim and
+resumes onto that uid; the agent pod is neither claimed nor bound. A session whose
+workspace is still on the agent pod (a pre-§11 worktree) wakes the agent pod as
+before. With no claim the wake refuses as `sandbox-removed`, and the Control Plane
+answers it, for a wake as for a read, with 404 `WORKSPACE_SANDBOX_REMOVED`: a
+workspace replacement retires every other session pod of the agent while the
+session rows remain, and offering Start there would loop until it gave up. The
+console's file views press the session wake in session scope and show that state
+in one line with no Start; the agent's checkout, skills tab and dream keep the
+agent-scoped wake. A member without the feature is sent the agent wake, which is
+what the console pressed before.
 
 **What stays with the agent pod.** The conversion itself (it must stay atomic
 with its fail-closed marker, and it is rare), console views of the agent's
