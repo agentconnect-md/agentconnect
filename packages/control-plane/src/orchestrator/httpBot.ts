@@ -264,28 +264,7 @@ export class HttpBotOrchestrator {
     )
   }
 
-  /**
-   * `rc/bot-revoked` — the workspace uninstalled the app / revoked its tokens
-   * (preset-agents.md §5.3 lifecycle). The bot's credential is dead: mark the Bot
-   * + its installs revoked, release the relay ingest, and pull the send-only
-   * specs from member daemons (mirrors the integration DELETE route's push).
-   * Idempotent — a duplicate report finds no active installs and only re-stamps.
-   *
-   * GENERATION-FENCED. Slack does not order `app_uninstalled`/`tokens_revoked`,
-   * so a delayed event from a prior install can arrive after the workspace has
-   * re-installed; applying it would revoke a live, freshly-authorized bot and
-   * silently kill its integrations. The compare-and-set refuses that report, and
-   * the rest of this method — which is what actually tears the bot down — is
-   * skipped with it.
-   *
-   * The decision and the integration flip are ONE transaction serialized on the
-   * bot row (`BotCredentialWriter.revoke`). Committing them separately let a
-   * re-install slip in between: it would bump to N+1 and re-activate an install,
-   * and the flip would then revoke that FRESH install, leaving a live bot with
-   * nothing installed. The external effects below run only after that commit,
-   * and re-check the generation first — a re-install that won the row lock
-   * broadcasts its own assign, which our `bot-unassign` must not race past.
-   */
+  /** A workspace uninstalled the app or revoked its tokens (`rc/bot-revoked` from a relay, `integration/revoked` from a daemon socket): revoke the bot + its installs in one fenced transaction (preset-agents.md §5.3), then release its relay ingest if it has one and pull the specs off member daemons. */
   async revokeBot(
     botId: string,
     reason: 'app_uninstalled' | 'tokens_revoked',
@@ -321,12 +300,8 @@ export class HttpBotOrchestrator {
       // The revocation itself DID commit, so the report is settled.
       return { applied: true }
     }
-    // The re-read above narrows the race but cannot close it: a re-install can
-    // still commit N+1 and broadcast its assign between that read and this send.
-    // Stamping the revoked generation moves the decision to the point of
-    // APPLICATION — the relay drops this release if it already holds a newer
-    // assignment, so a stale teardown can never kill a live ingest.
-    await this.unassign(bot, { credentialRevision: bot.credentialRevision })
+    // Only an http bot has relay ingest; the stamped generation lets a relay holding a newer assignment drop this release.
+    if (bot.transport === 'http') await this.unassign(bot, { credentialRevision: bot.credentialRevision })
     for (const integration of installs) {
       const agent = await this.agents.getUnscoped(integration.agentId)
       if (!agent) continue
@@ -335,7 +310,10 @@ export class HttpBotOrchestrator {
         this.log.debug?.({ integrationId: integration.id }, 'http-bot: revoke spec removal skipped — daemon offline')
       })
     }
-    this.log.info({ botId: bot.id, reason, installs: installs.length }, 'http-bot: bot revoked by workspace')
+    this.log.info(
+      { botId: bot.id, reason, transport: bot.transport, installs: installs.length },
+      'http-bot: bot revoked by workspace'
+    )
     return { applied: true }
   }
 

@@ -34,6 +34,7 @@ import { handleDaemonRuntimes } from './daemon-runtimes.js'
 import { handleMemoryConnections } from './memory-connections.js'
 import { handleUsageReport } from './usage-report.js'
 import { handleIntegrationChannels } from './integration-channels.js'
+import { handleIntegrationRevoked } from './integration-revoked.js'
 import { handleCronReport } from './cron-report.js'
 import { handleDutyRelease } from './duty-release.js'
 import { handleDutyClaim } from './duty-claim.js'
@@ -92,6 +93,7 @@ export class FrameRouter {
       'facts/memory-connections': handleMemoryConnections,
       'usage/report': handleUsageReport,
       'integration/channels': handleIntegrationChannels,
+      'integration/revoked': handleIntegrationRevoked,
       'cron/report': handleCronReport,
       'duty/release': handleDutyRelease,
       'duty/claim': handleDutyClaim,
@@ -155,6 +157,7 @@ export {
   handleMemoryConnections,
   handleUsageReport,
   handleIntegrationChannels,
+  handleIntegrationRevoked,
   handleCronReport,
   handleHookReport,
   handleHookStart,

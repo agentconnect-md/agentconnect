@@ -2212,7 +2212,7 @@ export function buildContainer(
 
   // ── daemon WS edge (mounted on the live http.Server after listen) ──────────
   const wsDeps: DaemonWsServerDeps = {
-    log: { error: (o, m) => http.log.error(o, m) },
+    log: { error: (o, m) => http.log.error(o, m), warn: (o, m) => http.log.warn(o, m) },
     auth,
     placementResolver,
     lifecycleOps: repos.daemonLifecycleOp,
@@ -2229,6 +2229,11 @@ export function buildContainer(
     usageWriter,
     integration: repos.integration,
     bot: repos.bot,
+    // A daemon socket's lifecycle report takes the same fenced revocation as the relay's, minus a relay release it never had.
+    socketBotRevocation: {
+      matches: (bot, reported) => platforms.get(bot.platform)?.socketLifecycleRevocation?.(bot, reported) === true,
+      revoke: (botId, reason, eventAtMs) => httpBot.revokeBot(botId, reason, { eventAtMs })
+    },
     githubInstallation: repos.githubInstallation,
     integrationChannel: repos.integrationChannel,
     slackSessionAccess,

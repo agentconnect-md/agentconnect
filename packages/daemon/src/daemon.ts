@@ -20234,6 +20234,7 @@ export class Daemon {
       memoryConnections: () => this.memoryConnections,
       replayHookTerminalReports: () => this.replayHookTerminalReports(),
       replayChannelSnapshots: () => this.replayChannelSnapshots(),
+      replayCredentialRevocations: () => this.connections.replayCredentialRevocations(),
       replayApprovalActivity: () => this.permissions.replayApprovalActivity(),
       sessionMetadataOutbox: () => this.sessionMetadataOutbox,
       webchatMcpRevocations: () => this.webchatMcpRevocations,

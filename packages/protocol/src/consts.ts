@@ -138,6 +138,9 @@ export const SESSION_PURGE_FEATURE = 'session-purge-v1'
  */
 export const SESSION_METADATA_ACK_FEATURE = 'session-metadata-ack-v1'
 
+/** CP accepts `integration/revoked`, a daemon socket's explicit credential-lifecycle report; an older CP rejects the frame, so the daemon keeps its reports instead. */
+export const INTEGRATION_REVOKED_FEATURE = 'integration-revoked-v1'
+
 /**
  * Daemon understands the `session/visibility` gate pushes + register-time
  * snapshot replay (session-visibility.md §5.1). Advertised by the daemon in

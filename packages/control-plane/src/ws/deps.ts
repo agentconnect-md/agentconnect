@@ -27,13 +27,14 @@ import type {
   GithubInstallationRepo,
   DaemonLifecycleOpRepo,
   AgentRecord,
+  BotRecord,
   AgentMemoryHistoryRepo,
   ProviderKeyStore
 } from '../persistence/ports.js'
 import type { AgentMemoryStoreService } from '../agent-memory/store.service.js'
 import type { UsageWriter } from '../usage/writer.js'
 import type { SessionVisibilityPushService } from '../orchestrator/visibilityPush.js'
-import type { DutyAgentBundle, RelayRosterEntry } from '@agentconnect.md/protocol'
+import type { DutyAgentBundle, IntegrationRevoked, RelayRosterEntry } from '@agentconnect.md/protocol'
 import type { GithubService } from '../github/service.js'
 import type { GitlabGitcredService } from '../gitlab/gitcred.service.js'
 import type { GiteaGitcredService } from '../gitea/gitcred.service.js'
@@ -53,11 +54,19 @@ import type { CollabRoutesService } from '../orchestrator/collabRoutes.service.j
 import type { GatedDmSeedResolver } from '../orchestrator/linkedDm.js'
 import type { ApprovalRouteResolver } from '../orchestrator/approvalRoute.js'
 import type { DutyLeaseService } from '../orchestrator/dutyLease.js'
-import type { AgentId, DaemonId } from '../domain/ids.js'
+import type { AgentId, BotId, DaemonId } from '../domain/ids.js'
 import type { WebchatRemoteMcpService } from '../registry/webchatRemoteMcpService.js'
 import type { SlackSessionAccessService } from '../http/slack-session-access.js'
 import type { SessionAccessWarmer } from '../http/session-access-warmer.js'
 import type { SessionPullRequestFeedbackService } from '../github/session-pull-request-feedback.service.js'
+
+/** The two CP facts an `integration/revoked` report needs beyond the repositories. */
+export interface SocketBotRevocation {
+  /** The platform provider's verdict that the reporting socket's identity is this bot's current one. */
+  matches(bot: BotRecord, reported: Pick<IntegrationRevoked, 'botUserId' | 'workspaceId'>): boolean
+  /** The fenced revocation `rc/bot-revoked` applies, fenced here by the event time alone. */
+  revoke(botId: BotId, reason: IntegrationRevoked['reason'], eventAtMs: number): Promise<{ applied: boolean }>
+}
 
 /** Config slice the WS edge reads. */
 export interface WsConfig {
@@ -69,7 +78,10 @@ export interface WsConfig {
 
 export interface DaemonWsDeps {
   /** Structured server log sink for failures handled at the daemon WS edge. */
-  log: { error: (obj: Record<string, unknown>, message: string) => void }
+  log: {
+    error: (obj: Record<string, unknown>, message: string) => void
+    warn?: (obj: Record<string, unknown>, message: string) => void
+  }
   auth: DaemonAuth
   /** Durable lifecycle intent exposed during auth-only bootstrap. */
   lifecycleOps: DaemonLifecycleOpRepo
@@ -100,6 +112,8 @@ export interface DaemonWsDeps {
   /** Validates a daemon-reported external credential locator before a Session is bound to its
    *  immutable provider scope, and resolves the workspace bot behind a `linearcred/request`. */
   bot?: BotRepo
+  /** Applies a daemon socket's `integration/revoked`; absent ⇒ the frame is refused and `register/ok` does not advertise it. */
+  socketBotRevocation?: SocketBotRevocation
   /** Resolves a trusted GitHub delivery's installation id to this org's
    * durable credential locator before binding a repository ExternalScope. */
   githubInstallation?: GithubInstallationRepo
