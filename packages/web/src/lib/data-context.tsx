@@ -151,6 +151,8 @@ interface ConsoleData {
   revalidateSessionLists: () => Promise<unknown>
   crons: CronDto[]
   integrations: IntegrationRow[]
+  /** Whether the integration list has returned successfully at least once. */
+  integrationsLoaded: boolean
   /** Durable bot identities (freed + in-use) — Add-integration picker + Settings Bots card. */
   bots: BotDto[]
   /** Org MCP-provider registry (metadata + header names) — the MCP Servers admin view
@@ -299,6 +301,8 @@ interface ConsoleData {
   /** Per-model first-load flags — each clears when ITS pull settles, so a slow
    *  `/sessions` fan-out never keeps the Daemons/Agents/Schedules spinners up. */
   agentsLoading: boolean
+  /** Whether the agent roster has returned successfully at least once; a failed first pull is not an empty roster. */
+  agentsLoaded: boolean
   sessionsLoading: boolean
   sessionsLoadingMore: boolean
   daemonsLoading: boolean
@@ -811,7 +815,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const orgKey = waitingForOrg ? null : (activeOrg?.id ?? null)
 
   const {
-    data: realAgents = [],
+    data: realAgents,
     error: agentsError,
     isLoading: agentsIsLoading,
     mutate: mutateAgents
@@ -863,7 +867,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     refreshInterval: RESOURCE_REFRESH_MS
   })
   const {
-    data: realIntegrations = [],
+    data: realIntegrations,
     error: integrationsError,
     isLoading: integrationsIsLoading,
     mutate: mutateIntegrations
@@ -1067,12 +1071,13 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
 
   // agents: live rows, plus the demo rows in mock mode. daemons: live fleet only.
   const agents = useMemo(() => {
-    if (!MOCK_MODE) return realAgents
+    const live = realAgents ?? []
+    if (!MOCK_MODE) return live
     const demo = AGENTS.map((a) => {
       const override = mockCallPolicy[a.id]
       return override ? { ...a, ...override } : a
     })
-    return [...realAgents, ...demo]
+    return [...live, ...demo]
   }, [realAgents, mockCallPolicy])
   // One `DaemonRow` again: views never learn the read was split. `modelCatalog` is absent
   // here by design — `useDaemonDetail` fetches the one daemon that needs it.
@@ -1127,9 +1132,10 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const integrations = useMemo(() => {
     const byId = new Map(agents.map((a) => [a.id, a]))
     const botsById = new Map(bots.map((b) => [b.id, b]))
-    const live = realIntegrations.map((d) => integrationRowFromDto(d, byId, botsById))
+    const live = (realIntegrations ?? []).map((d) => integrationRowFromDto(d, byId, botsById))
     return MOCK_MODE ? [...live, ...INTEGRATIONS] : live
   }, [realIntegrations, agents, bots])
+  const integrationsLoaded = realIntegrations !== undefined
 
   const createAgent = useCallback(
     async (input: CreateAgentInput): Promise<string> => {
@@ -1670,6 +1676,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     orgError ?? agentsError ?? sessionsError ?? sessionFacetsError ?? daemonsError ?? cronsError ?? integrationsError
   const error = coreError ? (coreError instanceof Error ? coreError.message : String(coreError)) : null
   const agentsLoading = waitingForOrg || agentsIsLoading
+  const agentsLoaded = realAgents !== undefined
   const sessionsLoading = waitingForOrg || sessionsIsLoading || sessionFacetsIsLoading
   // Capability is part of a complete daemon row here, so a view that gates on this never
   // renders a fleet row as "runs nothing" in the window before that read lands.
@@ -1707,6 +1714,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       revalidateSessionLists,
       crons,
       integrations,
+      integrationsLoaded,
       bots,
       mcpProviders,
       mcpProvidersLoading,
@@ -1774,6 +1782,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       refreshDaemons,
       loading,
       agentsLoading,
+      agentsLoaded,
       sessionsLoading,
       daemonsLoading,
       cronsLoading,
@@ -1793,6 +1802,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       revalidateSessionLists,
       crons,
       integrations,
+      integrationsLoaded,
       bots,
       mcpProviders,
       mcpProvidersLoading,
@@ -1857,6 +1867,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       refreshDaemons,
       loading,
       agentsLoading,
+      agentsLoaded,
       sessionsLoading,
       sessionsLoadingMore,
       loadMoreSessions,
