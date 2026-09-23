@@ -211,6 +211,14 @@ spec:
               value: {{ toJson . | quote }}
             {{- end }}
             {{- end }}
+            - name: AC_RUNTIME_PROBE_INTERVAL_MINUTES
+              value: {{ .Values.daemonPool.runtimeProbeIntervalMinutes | quote }}
+            {{- if not .Values.features.managed }}
+            # A self-hosted pool is the operator's own: its console may ask for a probe. Managed
+            # Cloud refreshes on the timer above alone.
+            - name: AC_RUNTIME_PROBE_ON_DEMAND
+              value: 'true'
+            {{- end }}
             {{- if not .Values.daemonPool.usageReporting }}
             # One writer per session: an upstream collector meters these sessions, so the member
             # must not also report them. Env, not config file — an in-cluster member has no file
@@ -237,6 +245,9 @@ spec:
             {{- range $k, $v := .Values.daemonPool.extraEnv }}
             - name: {{ $k }}
               value: {{ $v | quote }}
+            {{- end }}
+            {{- if or (hasKey .Values.daemonPool.extraEnv "AC_RUNTIME_PROBE_INTERVAL_MINUTES") (hasKey .Values.daemonPool.extraEnv "AC_RUNTIME_PROBE_ON_DEMAND") }}
+            {{- fail "daemonPool.extraEnv collides with the chart-owned runtime probe settings: state daemonPool.runtimeProbeIntervalMinutes, and features.managed for on-demand probes" }}
             {{- end }}
             {{- if hasKey .Values.daemonPool.extraEnv "AC_WORKSPACE_GIT_ALLOWED_ORIGINS" }}
             {{- fail "daemonPool.extraEnv.AC_WORKSPACE_GIT_ALLOWED_ORIGINS collides with the chart-owned clone-origin policy: state it via daemonPool.workspaceGitAllowedOrigins (with features.gitUrl on), so the policy cannot come from two sources" }}

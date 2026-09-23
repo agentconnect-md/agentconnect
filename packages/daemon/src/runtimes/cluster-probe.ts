@@ -167,17 +167,7 @@ export interface K8sProbePayload {
 export const K8S_PROBE_CLAIM_TTL_MS = K8S_PROBE_SWEEP_CEILING_MS
 export const K8S_PROBE_WAIT_MS = K8S_PROBE_SWEEP_CEILING_MS
 export const K8S_PROBE_POLL_MS = 5_000
-/**
- * How long a published answer may be adopted before a member probes again.
- *
- * The image reference is the key, and a reference is not always immutable: a template pinned to a
- * moving tag (`runtime-sandbox:latest`) keeps one key across rebuilds, and adopting there would
- * serve the PREVIOUS build's runtime versions and mcpBridge spec — the exact "module to retry
- * forever" failure the bridge comment warns about. The answer also depends on the deployment's
- * credentials, so a newly configured provider pair would otherwise never take effect. Nothing
- * re-probes on a timer: this only decides whether a member STARTING now inherits the answer, so a
- * short window costs at most one probe pod per hour per pool and self-heals both.
- */
+/** How long a starting member may adopt a published answer: a moving tag or changed credentials must be re-asked (k8s-daemon-pool.md). */
 export const K8S_PROBE_FRESH_MS = 60 * 60_000
 
 /**
