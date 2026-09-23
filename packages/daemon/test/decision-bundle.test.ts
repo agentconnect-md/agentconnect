@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { DecisionBundle } from '@agentconnect.md/protocol'
-import { resolveDecisionBundle } from '../src/decisions/bundle.js'
+import { resolveDecisionBundle, routerFingerprint } from '../src/decisions/bundle.js'
 
 const definition = {
   id: 'd1',
@@ -127,5 +127,22 @@ describe('resolveDecisionBundle — shared-bot routing (decisions.md §7.1)', ()
     expect(warn).toHaveBeenCalledWith(
       'decision: shared-bot routing failed validation; holding every routed conversation'
     )
+  })
+
+  it('fingerprints the router: stable across a rename, changed by rule, Otherwise, model or default edits', () => {
+    const base = resolveDecisionBundle(routed()).routed.get('R1')!.routing!
+    const print = (over: Partial<typeof base>) => routerFingerprint({ ...base, ...over }, 'R1')
+    const same = print({ definition: { ...definition, name: 'Renamed' } })
+    expect(same).toBe(routerFingerprint(base, 'R1'))
+    const edits = [
+      print({ config: { ...config, otherwise: { type: 'skip' } } }),
+      print({
+        config: { ...config, rules: [{ ...config.rules[0]!, when: { type: 'choice', thresholds: { billing: 0.6 } } }] }
+      }),
+      print({ definition: { ...definition, model: 'jev-latest' } }),
+      print({ defaultAgentId: undefined }),
+      routerFingerprint(base, 'R2')
+    ]
+    for (const edited of edits) expect(edited).not.toBe(same)
   })
 })

@@ -549,3 +549,123 @@ export function decisionConditionNeedsReview(
     (previous.type === 'score' && next.type === 'score' && previous.criteria.length !== next.criteria.length)
   )
 }
+
+/** A constrained recipient as the host received it; `participant` is the relay's participant flag. */
+export interface RoutingConstraintInput {
+  agentId: string
+  participant: boolean
+  daemonId?: string | null
+  integrationId?: string
+  via?: 'mention' | 'implicit'
+}
+
+export interface RoutingCandidate {
+  agentId: string
+  daemonId: string
+  integrationId?: string
+}
+
+export type RoutingTargetEffect =
+  'participant' | 'kept' | 'selected' | 'default_agent' | 'fallback_constrained' | 'fallback_default'
+
+export interface RoutingTarget {
+  agentId: string
+  daemonId: string | null
+  integrationId?: string
+  participant: boolean
+  effect: RoutingTargetEffect
+  via: 'mention' | 'implicit'
+  unavailableReason?: 'not_member'
+}
+
+/** message-intake.md §6 step 3: participants are unconditional, the rest decision-eligible; evaluate iff unconstrained or any eligible. */
+export function partitionRoutingConstraint<T extends RoutingConstraintInput>(
+  constraint: readonly T[]
+): { participants: T[]; eligible: T[]; evaluate: boolean } {
+  const byAgent = new Map<string, T>()
+  for (const entry of constraint) {
+    const prior = byAgent.get(entry.agentId)
+    // One entry per agent; participation wins over an eligible duplicate.
+    if (!prior || (!prior.participant && entry.participant)) byAgent.set(entry.agentId, entry)
+  }
+  const entries = [...byAgent.values()]
+  const participants = entries.filter((entry) => entry.participant)
+  const eligible = entries.filter((entry) => !entry.participant)
+  return { participants, eligible, evaluate: entries.length === 0 || eligible.length > 0 }
+}
+
+export interface RoutingSettlement {
+  evaluate: boolean
+  targets: RoutingTarget[]
+  disposition: 'match' | 'skip' | 'unavailable'
+  fallback?: 'constrained' | 'default' | 'none'
+  match?: DecisionRoutingMatch
+}
+
+/** decisions.md §3.2 settlement of one router verdict: the frozen, deduplicated target set, or skip. */
+export function resolveRoutingTargets(input: {
+  question: DecisionQuestion
+  routing: SharedBotDecisionRouting
+  answer: DecisionAnswer | 'unavailable' | undefined
+  constraint: readonly RoutingConstraintInput[]
+  defaultAgentId?: string
+  candidates: readonly RoutingCandidate[]
+}): RoutingSettlement {
+  const { participants, eligible, evaluate } = partitionRoutingConstraint(input.constraint)
+  const constrained = participants.length + eligible.length > 0
+  const fromEntry = (entry: RoutingConstraintInput, effect: RoutingTargetEffect): RoutingTarget => ({
+    agentId: entry.agentId,
+    daemonId: entry.daemonId ?? null,
+    ...(entry.integrationId ? { integrationId: entry.integrationId } : {}),
+    participant: entry.participant,
+    effect,
+    via: entry.via ?? 'implicit'
+  })
+  const kept = participants.map((entry) => fromEntry(entry, 'participant'))
+  const fromCandidate = (agentId: string, effect: RoutingTargetEffect): RoutingTarget => {
+    const candidate = input.candidates.find((c) => c.agentId === agentId)
+    // A selected agent missing from the directory is Target unavailable, never a reroute (§3.3).
+    if (!candidate)
+      return { agentId, daemonId: null, participant: false, effect, via: 'implicit', unavailableReason: 'not_member' }
+    return {
+      agentId,
+      daemonId: candidate.daemonId,
+      ...(candidate.integrationId ? { integrationId: candidate.integrationId } : {}),
+      participant: false,
+      effect,
+      via: 'implicit'
+    }
+  }
+  // Every recipient participates: the set settles with no model call.
+  if (!evaluate) return { evaluate, targets: kept, disposition: 'match' }
+  // An eligible message with no answer is an evaluation failure: keep the constrained, or use the default.
+  if (input.answer === 'unavailable' || input.answer === undefined) {
+    if (constrained) {
+      const targets = [...kept, ...eligible.map((entry) => fromEntry(entry, 'fallback_constrained'))]
+      return { evaluate, targets, disposition: 'unavailable', fallback: 'constrained' }
+    }
+    if (!input.defaultAgentId) return { evaluate, targets: [], disposition: 'unavailable', fallback: 'none' }
+    return {
+      evaluate,
+      targets: [fromCandidate(input.defaultAgentId, 'fallback_default')],
+      disposition: 'unavailable',
+      fallback: 'default'
+    }
+  }
+  const match = matchDecisionRouting(input.question, input.routing, input.answer, input.defaultAgentId)
+  let targets: RoutingTarget[]
+  if (constrained) {
+    // An activating result keeps the eligible recipients; it never adds or replaces them (§3.2 step 5).
+    targets = match.activates ? [...kept, ...eligible.map((entry) => fromEntry(entry, 'kept'))] : kept
+  } else {
+    const ruleAgents = new Set(
+      input.routing.rules
+        .filter((rule) => match.matchedRuleIds.includes(rule.id) && rule.action.type === 'agent')
+        .map((rule) => (rule.action as { agentId: string }).agentId)
+    )
+    targets = match.agentIds.map((agentId) =>
+      fromCandidate(agentId, ruleAgents.has(agentId) ? 'selected' : 'default_agent')
+    )
+  }
+  return { evaluate, targets, disposition: targets.length > 0 ? 'match' : 'skip', match }
+}

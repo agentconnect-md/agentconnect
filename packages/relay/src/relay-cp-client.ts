@@ -17,6 +17,7 @@ import {
   buildRelayCpFrame,
   decodeRelayCpFrame,
   GITEA_V1_FEATURE,
+  DECISION_ROUTING_FORWARD_V1_FEATURE,
   DECISION_ROUTING_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
   GITLAB_COM_V1_FEATURE,
@@ -609,8 +610,10 @@ export class RelayCpClient {
           GITEA_V1_FEATURE,
           // This relay arbitrates `decision` routes as human-only candidates and forwards their decisionId.
           DECISION_TRIGGER_V1_FEATURE,
-          // Parses routedConversations only; decision-routing-forward-v1 (host forwarding) is withheld until 5b.
-          DECISION_ROUTING_V1_FEATURE
+          // Parses routedConversations, never as Any.
+          DECISION_ROUTING_V1_FEATURE,
+          // Forwards a routed conversation once to its evaluation host and serves rd/route and rd/route/report.
+          DECISION_ROUTING_FORWARD_V1_FEATURE
         ]
       })
     )

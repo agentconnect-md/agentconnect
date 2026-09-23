@@ -33,12 +33,20 @@ import {
   RD_HOOK_NOTICE_V1,
   GITLAB_COM_V1_FEATURE,
   GITLAB_INSTANCE_V1_FEATURE,
-  DECISION_TRIGGER_V1_FEATURE
+  DECISION_ROUTING_V1_FEATURE,
+  DECISION_TRIGGER_V1_FEATURE,
+  RD_DECISION_ROUTE_V1,
+  type RdRoute,
+  type RdRouteAck,
+  type RdRouteReport,
+  type RdRouteReportAck
 } from '@agentconnect.md/protocol'
 import { Backoff, ReqRep, WireError, type Clock, type TimerHandle, type Transport } from '@agentconnect.md/connection'
 import type { Logger } from '../log.js'
 
 const ACK_TIMEOUT_MS = 5000
+/** Longer than the relay's inner 5 s forward, so a slow target reads as the relay's `retry`, never a lost request. */
+const ROUTE_REQUEST_TIMEOUT_MS = 12_000
 /** rd/hello definitively rejected (bad/revoked key, daemonId mismatch) → stop dialing THIS relay. */
 const CLOSE_AUTH_FAILED = 4401
 
@@ -64,7 +72,9 @@ const DAEMON_RD_CAPABILITIES: readonly string[] = [
   // The relay sends a `notice` delivery only here: a daemon without it would run the fixed-text post as a prompt.
   RD_HOOK_NOTICE_V1,
   // The relay forwards By decision candidates only to daemons that list this.
-  DECISION_TRIGGER_V1_FEATURE
+  DECISION_TRIGGER_V1_FEATURE,
+  // The relay sends trustedRouting / trustedRouteSelection only here; an older daemon would read them as plain deliveries.
+  DECISION_ROUTING_V1_FEATURE
 ]
 
 export type RelayClientState = 'CONNECTING' | 'HELLO' | 'READY' | 'CLOSED' | 'DEGRADED'
@@ -85,7 +95,7 @@ export interface RelayClientDeps {
   /** Backoff jitter in [0,1); defaults to Math.random. Injected as `() => 0` in tests. */
   jitter?: () => number
   /** Admit one relay delivery; chat streams over this socket, while completed posts fan out through RelayManager. */
-  onRelayMsg: (msg: RdMsg, chat: (event: RdChatEvent) => void) => RdAck | Promise<RdAck>
+  onRelayMsg: (msg: RdMsg, chat: (event: RdChatEvent) => void, relayId?: string) => RdAck | Promise<RdAck>
   /**
    * Handle a forwarded cross-daemon agent-call (`rd/agentmsg/fwd`, agent-collaboration
    * P2): the relay validated the caller and minted a TRUSTED claim. The daemon
@@ -156,6 +166,42 @@ export class RelayClient {
     if (rep.type !== 'rd/agentmsg/ack') {
       throw new WireError('INTERNAL', `expected rd/agentmsg/ack, got ${rep.type}`, false)
     }
+    return rep.payload
+  }
+
+  /** Did this relay advertise the routed-forward leg (`rd/route`, `rd/route/report`)? */
+  supportsRoute(): boolean {
+    return this.isReady() && this.relayCapabilities.has(RD_DECISION_ROUTE_V1)
+  }
+
+  /** One frozen router target to the relay, single-shot with a timeout above the relay's own forward bound. */
+  async sendRoute(payload: RdRoute): Promise<RdRouteAck> {
+    if (this.state !== 'READY') throw new WireError('INTERNAL', `rd link not ready (${this.state})`, true)
+    if (!this.relayCapabilities.has(RD_DECISION_ROUTE_V1))
+      return { deliveryId: payload.deliveryId, disposition: 'rejected', reason: 'unsupported' }
+    const rep = await this.correlator.request(
+      buildRelayDaemonFrame('rd/route', payload),
+      (e) => this.transport!.send(e),
+      {
+        maxTries: 1,
+        ackTimeoutMs: ROUTE_REQUEST_TIMEOUT_MS
+      }
+    )
+    if (rep.type !== 'rd/route/ack') throw new WireError('INTERNAL', `expected rd/route/ack, got ${rep.type}`, false)
+    return rep.payload
+  }
+
+  /** A finished selection's owner and participants, for the relay's rc/thread-assign / rc/thread-participant legs. */
+  async sendRouteReport(payload: RdRouteReport): Promise<RdRouteReportAck> {
+    if (this.state !== 'READY') throw new WireError('INTERNAL', `rd link not ready (${this.state})`, true)
+    if (!this.relayCapabilities.has(RD_DECISION_ROUTE_V1)) return { accepted: false, reason: 'unsupported' }
+    const rep = await this.correlator.request(
+      buildRelayDaemonFrame('rd/route/report', payload),
+      (e) => this.transport!.send(e),
+      { maxTries: 1, ackTimeoutMs: ROUTE_REQUEST_TIMEOUT_MS }
+    )
+    if (rep.type !== 'rd/route/report/ack')
+      throw new WireError('INTERNAL', `expected rd/route/report/ack, got ${rep.type}`, false)
     return rep.payload
   }
 
@@ -277,7 +323,7 @@ export class RelayClient {
   private async handleMsg(reqId: string, msg: RdMsg): Promise<void> {
     const chat =
       msg.source === 'webchat' ? (event: RdChatEvent) => this.sendChat(msg.chatId, event) : (): void => undefined
-    const ack = await this.deps.onRelayMsg(msg, chat)
+    const ack = await this.deps.onRelayMsg(msg, chat, this.relayId)
     this.transport?.send(JSON.stringify(buildRelayDaemonFrame('rd/ack', ack, { corr: reqId })))
   }
 

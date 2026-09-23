@@ -3727,7 +3727,7 @@ describe.skipIf(pg)('the v25 → v26 decision tables', () => {
   }
 
   it('creates both tables on a fresh store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(26)
+    expect(SCHEMA_VERSION).toBe(27)
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v26-')), 'local.sqlite')
     await (await LocalStore.open(path)).close()
     expect(tables(path)).toEqual(['decision_release', 'decision_verdict'])
@@ -3745,6 +3745,28 @@ describe.skipIf(pg)('the v25 → v26 decision tables', () => {
     await upgraded.close()
     expect(tables(path)).toEqual(['decision_release', 'decision_verdict'])
     expect(userVersion(path)).toBe(SCHEMA_VERSION)
+  })
+})
+
+// message-intake.md §4.3: v27 adds a router verdict's frozen target set.
+describe.skipIf(pg)('the v26 → v27 router targets column', () => {
+  it('adds targetsJson to a v26 store without touching its verdicts', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v26b-')), 'local.sqlite')
+    await (await LocalStore.open(path)).close()
+    const old = new DatabaseSync(path)
+    old.exec('ALTER TABLE decision_verdict DROP COLUMN targetsJson; PRAGMA user_version = 26')
+    old.close()
+    const upgraded = await LocalStore.open(path)
+    expect(await upgraded.listPendingDecisionVerdicts({ consumer: 'router' })).toEqual([])
+    await upgraded.close()
+    const check = new DatabaseSync(path)
+    const columns = (check.prepare('PRAGMA table_info(decision_verdict)').all() as { name: string }[]).map(
+      (c) => c.name
+    )
+    const version = (check.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
+    check.close()
+    expect(columns).toContain('targetsJson')
+    expect(version).toBe(27)
   })
 })
 

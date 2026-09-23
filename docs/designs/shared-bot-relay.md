@@ -298,8 +298,14 @@ rd/msg {
   msgId,
   // source-specific routing identifiers and payload
 }
-rd/ack  { msgId, accepted, turnId?, reason? }
+rd/ack  { msgId, accepted, turnId?, reason?, routeAdmission?, recoverable? }
 rd/chat { chatId, seq, event }
+
+// By decision routing (message-intake.md §6)
+rd/route            { deliveryId, botId, sessionKey, toAgentId, frozenDaemonId, payload, selection, via?, backfill? }
+rd/route/ack        { deliveryId, disposition: 'admitted' | 'rejected' | 'retry', reason?, daemonId? }
+rd/route/report     { botId, sessionKey, channel, owner?, participants }
+rd/route/report/ack { accepted, reason? }
 ```
 
 `rd/msg` already names the destination agent. IM payloads contain normalized
@@ -310,6 +316,22 @@ PNG, JPEG, or WebP image: the browser rasterizes and compresses it to at most
 frame ceiling. The relay forwards those bytes without storing them. `rd/chat`
 is used only to return webchat output to the browser connection held by that
 relay.
+
+In a By decision routed conversation the relay sends each human message once,
+as an `rd/msg` carrying a relay-minted `trustedRouting` (the constraint with
+participant flags and the bot's candidate directory), to the evaluation host
+only; it never falls back to per-candidate delivery. The host distributes a
+frozen remote target with `rd/route`: the relay checks the socket is the named
+host, resolves the target from its own directory, and forwards an `rd/msg` with
+a relay-stamped `trustedRouteSelection` whose `hostDaemonId` comes from the
+authenticated socket. Once every target of a selection is terminal, the host's
+`rd/route/report` names the owner (set only where no affinity exists) and the
+admitted participants, which the relay persists through `rc/thread-assign` and
+`rc/thread-participant`; an unaccepted report is resent with backoff for a bounded
+window (a converged `not_host` ends it), and the relay's affinity guard makes a
+resend idempotent. The relay advertises `decision-routing-forward-v1`
+in `rd/hello/ok`, and sends either routed field only to a daemon advertising
+`decision-routing-v1`.
 
 The same authenticated data plane also carries cross-daemon collaboration
 frames. Their authorization rules are defined in

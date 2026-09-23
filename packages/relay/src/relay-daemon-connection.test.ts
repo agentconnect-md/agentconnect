@@ -3,11 +3,12 @@ import {
   buildRelayDaemonFrame,
   RELAY_DAEMON_SUBPROTOCOL,
   RD_CODEHOST_REPLY_TARGET_V1,
+  RD_DECISION_ROUTE_V1,
   type RelayDaemonFrame,
   type RcVerifyResult
 } from '@agentconnect.md/protocol'
 import { FakeClock, type ServerTransport } from '@agentconnect.md/connection'
-import { RelayDaemonConnection } from './relay-daemon-connection.js'
+import { RelayDaemonConnection, type RelayDaemonConnDeps } from './relay-daemon-connection.js'
 import type { Logger } from './log.js'
 
 const RELAY_ID = '11111111-1111-4111-8111-111111111111'
@@ -36,7 +37,7 @@ class FakeServerTransport implements ServerTransport {
     this.closed = { code, reason }
     this.closeCb?.(code, reason)
   }
-  feed(type: 'rd/hello' | 'rd/ack', payload: unknown): void {
+  feed(type: 'rd/hello' | 'rd/ack' | 'rd/route' | 'rd/route/report', payload: unknown): void {
     this.msgCb?.(JSON.stringify(buildRelayDaemonFrame(type, payload as never)))
   }
   lastRep(type: string): RelayDaemonFrame | undefined {
@@ -44,7 +45,14 @@ class FakeServerTransport implements ServerTransport {
   }
 }
 
-function build(opts: { verify?: () => Promise<RcVerifyResult>; relayId?: string | undefined } = {}) {
+function build(
+  opts: {
+    verify?: () => Promise<RcVerifyResult>
+    relayId?: string | undefined
+    onRoute?: RelayDaemonConnDeps['onRoute']
+    onRouteReport?: RelayDaemonConnDeps['onRouteReport']
+  } = {}
+) {
   const verify = vi.fn(opts.verify ?? (async () => ({ ok: true, daemonId: DAEMON_ID, orgId: 'org-1' })))
   const onReady = vi.fn()
   const onClosed = vi.fn()
@@ -56,6 +64,8 @@ function build(opts: { verify?: () => Promise<RcVerifyResult>; relayId?: string 
     onChat: () => {},
     onWebchatPost: () => {},
     onAgentMsg: async () => ({ deliveryId: 'unused', delivered: false }),
+    onRoute: opts.onRoute ?? (async (_from, msg) => ({ deliveryId: msg.deliveryId, disposition: 'admitted' as const })),
+    onRouteReport: opts.onRouteReport ?? (() => ({ accepted: true })),
     onReady,
     onClosed,
     log: silentLog
@@ -73,7 +83,7 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
     expect(verify).toHaveBeenCalledWith('daemon-key', 'the-key', DAEMON_ID)
     expect(transport.lastRep('rd/hello/ok')!.payload).toEqual({
       relayId: RELAY_ID,
-      capabilities: [RD_CODEHOST_REPLY_TARGET_V1]
+      capabilities: [RD_CODEHOST_REPLY_TARGET_V1, RD_DECISION_ROUTE_V1]
     })
     expect(conn.state).toBe('READY')
     expect(conn.daemonId).toBe(DAEMON_ID)
@@ -173,5 +183,61 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
     await Promise.resolve()
     conn.close(4409, 'revoked')
     expect(onClosed).toHaveBeenCalledWith(DAEMON_ID, conn)
+  })
+
+  it('answers rd/route and rd/route/report bound to the authenticated daemon', async () => {
+    const onRoute = vi.fn(async (_from: string, msg: { deliveryId: string }) => ({
+      deliveryId: msg.deliveryId,
+      disposition: 'retry' as const,
+      reason: 'offline' as const
+    }))
+    const onRouteReport = vi.fn((_from: string, _msg: unknown) => ({ accepted: false, reason: 'not_host' }))
+    const { transport } = build({ onRoute, onRouteReport })
+    transport.feed('rd/hello', { apiKey: 'k', daemonId: DAEMON_ID })
+    await Promise.resolve()
+    await Promise.resolve()
+    const payload = {
+      msgId: 'Ev1',
+      traceId: 't',
+      source: 'user',
+      platform: 'slack',
+      channel: 'C1',
+      sender: { id: 'U1', isBot: false },
+      text: 'hi',
+      mentionedBots: [],
+      isDm: false
+    }
+    transport.feed('rd/route', {
+      deliveryId: 'b:Ev1#a',
+      botId: RELAY_ID,
+      sessionKey: 'C1/C1',
+      toAgentId: OTHER_DAEMON,
+      frozenDaemonId: OTHER_DAEMON,
+      payload,
+      selection: {
+        selectionId: '1:router:b',
+        hostSeq: 1,
+        decisionId: 'd-1',
+        question: { type: 'boolean', instructions: 'Q?', criteria: { true: 'Yes', false: 'No' } },
+        requestedModel: 'jev-1.13.0',
+        result: { status: 'not_evaluated', reason: 'all_participants' },
+        effect: 'participant',
+        constrained: true,
+        targetAgentIds: [OTHER_DAEMON],
+        evaluatedMessageId: 'Ev1',
+        partial: { partial: false, reasons: [], omittedMessages: 0 }
+      }
+    })
+    transport.feed('rd/route/report', { botId: RELAY_ID, sessionKey: 'C1/C1', channel: 'C1', participants: [] })
+    await vi.waitFor(() => expect(transport.lastRep('rd/route/report/ack')).toBeDefined())
+    await vi.waitFor(() => expect(transport.lastRep('rd/route/ack')).toBeDefined())
+    expect(onRoute.mock.calls[0]![0]).toBe(DAEMON_ID)
+    expect(onRouteReport.mock.calls[0]![0]).toBe(DAEMON_ID)
+    expect(transport.lastRep('rd/route/ack')!.payload).toEqual({
+      deliveryId: 'b:Ev1#a',
+      disposition: 'retry',
+      reason: 'offline'
+    })
+    expect(transport.lastRep('rd/route/report/ack')!.payload).toEqual({ accepted: false, reason: 'not_host' })
   })
 })

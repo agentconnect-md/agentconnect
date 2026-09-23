@@ -196,6 +196,7 @@ export const canonicalColumns = [
   'answerJson',
   'deliveryJson',
   'suppliedSeqsJson',
+  'targetsJson',
   'requestedModel',
   'actualModel',
   'latencyMs',

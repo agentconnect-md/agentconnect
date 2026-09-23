@@ -641,6 +641,8 @@ export interface DecisionVerdictRow {
   answerJson: string | null
   deliveryJson: string | null
   suppliedSeqsJson: string | null
+  /** A router verdict's frozen target set with each target's disposition; null for a gate. */
+  targetsJson: string | null
   requestedModel: string
   actualModel: string | null
   latencyMs: number | null
@@ -680,8 +682,26 @@ export interface DecisionSettlement {
   latencyMs?: number
   inputTokens?: number
   outputTokens?: number
+  /** A router's frozen target set, written in the same CAS as the answer and usage. */
+  targetsJson?: string
   settledAt: number
 }
+
+/** One pending → terminal move of a router target (message-intake.md §4.3). */
+export interface RouterTargetUpdate {
+  agentId: string
+  disposition: 'pending' | 'admitted' | 'rejected' | 'unavailable'
+  reason?: string
+  backgroundSeqs?: number[]
+  retryUntil?: number
+  attempts?: number
+  daemonId?: string | null
+}
+
+/** Which consumer's rows a pending-verdict query reads: gate subjects are agent ids, router subjects `router:<botId>`. */
+export type DecisionConsumer = 'gate' | 'router'
+const ROUTER_SUBJECT_LIKE = "subject LIKE 'router:%'"
+const GATE_SUBJECT_LIKE = "subject NOT LIKE 'router:%'"
 
 /** A text row as a Decision state or a background block reads it. */
 export type ChannelTextRow = Pick<
@@ -1155,6 +1175,7 @@ const DECISION_SCHEMA = `
         answerJson TEXT,
         deliveryJson TEXT,
         suppliedSeqsJson TEXT,
+        targetsJson TEXT,
         requestedModel TEXT NOT NULL,
         actualModel TEXT,
         latencyMs INTEGER,
@@ -1181,7 +1202,7 @@ const DECISION_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 26
+export const SCHEMA_VERSION = 27
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1477,7 +1498,17 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   },
   async (db) => await db.exec('ALTER TABLE sessions ADD COLUMN decisionModel TEXT'),
   // v26 adds decision_verdict and decision_release, which the CREATE block emits; the bump fences out older sweeps.
-  async () => undefined
+  async () => undefined,
+  // v27: a router verdict's frozen target set (message-intake.md §4.3); a v25 store gets the column from the CREATE block.
+  async (db, store) => {
+    if (store.postgres) {
+      await db.exec('ALTER TABLE IF EXISTS decision_verdict ADD COLUMN IF NOT EXISTS targetsJson TEXT')
+      return
+    }
+    const columns = (await db.query('PRAGMA table_info(decision_verdict)', [])).rows as { name: string }[]
+    if (columns.length > 0 && !columns.some((c) => c.name === 'targetsJson'))
+      await db.exec('ALTER TABLE decision_verdict ADD COLUMN targetsJson TEXT')
+  }
 ]
 
 // The list and the version are two halves of one fact: step `i` moves a database from
@@ -1488,6 +1519,19 @@ if (SCHEMA_MIGRATIONS.length !== SCHEMA_VERSION - 1) {
   throw new Error(
     `local store schema is inconsistent: ${SCHEMA_MIGRATIONS.length} migration step(s) cannot reach v${SCHEMA_VERSION}`
   )
+}
+
+/** A router verdict's targetsJson, or undefined when it is absent or unreadable. */
+function parseTargets(
+  text: string | null | undefined
+): Array<Record<string, unknown> & { agentId: string; disposition: string; backgroundSeqs?: number[] }> | undefined {
+  if (!text) return undefined
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return Array.isArray(parsed) ? (parsed as never) : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /** Keep `seq` numeric whichever backend read the row. */
@@ -5512,14 +5556,20 @@ export class LocalStore {
     return rows.map((row) => ({ ...normalizeVerdict(row), ts: row.ts ?? null }))
   }
 
-  /** reserved → evaluating under the owner fence, freezing the input the provider sees. */
-  async beginDecisionEvaluation(seq: number, subject: string, fence: string, inputJson: string): Promise<boolean> {
+  /** reserved → evaluating under the owner fence, freezing the input the provider sees (and, for the router, its delivery). */
+  async beginDecisionEvaluation(
+    seq: number,
+    subject: string,
+    fence: string,
+    inputJson: string,
+    deliveryJson?: string
+  ): Promise<boolean> {
     const result = await this.db
       .prepare(
-        `UPDATE decision_verdict SET state = 'evaluating', inputJson = ?
+        `UPDATE decision_verdict SET state = 'evaluating', inputJson = ?, deliveryJson = COALESCE(?, deliveryJson)
           WHERE seq = ? AND subject = ? AND ownerFence = ? AND state = 'reserved'`
       )
-      .run(inputJson, seq, subject, fence)
+      .run(inputJson, deliveryJson ?? null, seq, subject, fence)
     return result.changes === 1
   }
 
@@ -5534,6 +5584,7 @@ export class LocalStore {
               SET state = @state, disposition = @disposition, unavailableReason = @unavailableReason,
                   answerJson = @answerJson, actualModel = @actualModel, latencyMs = @latencyMs,
                   inputTokens = @inputTokens, outputTokens = @outputTokens, settledAt = @settledAt,
+                  targetsJson = COALESCE(@targetsJson, targetsJson),
                   finishedAt = @finishedAt, deliveryJson = CASE WHEN @skip = 1 THEN NULL ELSE deliveryJson END
             WHERE seq = @seq AND subject = @subject AND ownerFence = @fence AND state IN ('reserved', 'evaluating')`
         )
@@ -5546,6 +5597,7 @@ export class LocalStore {
           latencyMs: s.latencyMs ?? null,
           inputTokens: s.inputTokens ?? null,
           outputTokens: s.outputTokens ?? null,
+          targetsJson: s.targetsJson ?? null,
           settledAt: s.settledAt,
           finishedAt: skip ? s.settledAt : null,
           skip: skip ? 1 : 0,
@@ -5645,9 +5697,16 @@ export class LocalStore {
   }
 
   async listPendingDecisionVerdicts(
-    filter: { agentIds?: readonly string[]; integrationId?: string; subject?: string; channel?: string } = {}
+    filter: {
+      agentIds?: readonly string[]
+      integrationId?: string
+      subject?: string
+      channel?: string
+      consumer?: DecisionConsumer
+    } = {}
   ): Promise<DecisionVerdictRow[]> {
     const where = [`state IN ${PENDING_VERDICT_SQL}`]
+    if (filter.consumer) where.push(filter.consumer === 'router' ? ROUTER_SUBJECT_LIKE : GATE_SUBJECT_LIKE)
     const params: unknown[] = []
     if (filter.agentIds) {
       if (filter.agentIds.length === 0) return []
@@ -5668,7 +5727,7 @@ export class LocalStore {
 
   /** Cancel every pending verdict a `!stop` or a config change covers; returns the keys it moved. */
   async cancelPendingDecisionVerdicts(
-    filter: { subject: string; channel: string } | { integrationId: string },
+    filter: ({ subject: string; channel: string } | { integrationId: string }) & { consumer?: DecisionConsumer },
     reason: string,
     at: number
   ): Promise<{ seq: number; subject: string }[]> {
@@ -5682,7 +5741,15 @@ export class LocalStore {
   }
 
   /** First writer wins: a re-release after a crash reuses the background list the first release chose. */
-  async claimVerdictBackground(seq: number, subject: string, seqs: readonly number[]): Promise<number[]> {
+  async claimVerdictBackground(
+    seq: number,
+    subject: string,
+    seqs: readonly number[],
+    agentId?: string
+  ): Promise<number[]> {
+    // A router verdict freezes background per target, inside that target's targetsJson entry.
+    if (agentId !== undefined && subject.startsWith('router:'))
+      return await this.claimRouterBackground(seq, subject, seqs, agentId)
     await this.db
       .prepare(
         'UPDATE decision_verdict SET suppliedSeqsJson = ? WHERE seq = ? AND subject = ? AND suppliedSeqsJson IS NULL'
@@ -5697,6 +5764,127 @@ export class LocalStore {
       return Array.isArray(parsed) ? parsed.filter((n): n is number => typeof n === 'number') : [...seqs]
     } catch {
       return [...seqs]
+    }
+  }
+
+  private async claimRouterBackground(
+    seq: number,
+    subject: string,
+    seqs: readonly number[],
+    agentId: string
+  ): Promise<number[]> {
+    return await this.transaction(async (raw) => {
+      const tx = accessOf(raw)
+      // Locked like updateRouterTargets: a plain read would let a concurrent target move be overwritten.
+      const lock = this.postgres ? ' FOR UPDATE' : ''
+      const row = (await tx
+        .prepare(`SELECT targetsJson FROM decision_verdict WHERE seq = ? AND subject = ?${lock}`)
+        .get(seq, subject)) as { targetsJson: string | null } | undefined
+      const targets = parseTargets(row?.targetsJson)
+      const target = targets?.find((t) => t.agentId === agentId)
+      if (!targets || !target) return [...seqs]
+      if (Array.isArray(target.backgroundSeqs)) return target.backgroundSeqs.filter((n) => typeof n === 'number')
+      target.backgroundSeqs = [...seqs]
+      await tx
+        .prepare('UPDATE decision_verdict SET targetsJson = ? WHERE seq = ? AND subject = ?')
+        .run(JSON.stringify(targets), seq, subject)
+      return [...seqs]
+    })
+  }
+
+  /** Move router targets pending → terminal under the owner fence while the verdict is settled; undefined when the CAS missed. */
+  async updateRouterTargets(
+    seq: number,
+    subject: string,
+    fence: string,
+    updates: readonly RouterTargetUpdate[]
+  ): Promise<Array<Record<string, unknown> & { agentId: string; disposition: string }> | undefined> {
+    return await this.transaction(async (raw) => {
+      const tx = accessOf(raw)
+      const lock = this.postgres ? ' FOR UPDATE' : ''
+      const row = (await tx
+        .prepare(
+          `SELECT targetsJson FROM decision_verdict WHERE seq = ? AND subject = ? AND ownerFence = ? AND state = 'settled'${lock}`
+        )
+        .get(seq, subject, fence)) as { targetsJson: string | null } | undefined
+      const targets = parseTargets(row?.targetsJson)
+      if (!targets) return undefined
+      for (const update of updates) {
+        const target = targets.find((t) => t.agentId === update.agentId)
+        // Only a pending target moves: a terminal disposition is never rewritten.
+        if (!target || target.disposition !== 'pending') continue
+        target.disposition = update.disposition
+        if (update.reason !== undefined) target.reason = update.reason
+        if (update.backgroundSeqs !== undefined) target.backgroundSeqs = update.backgroundSeqs
+        if (update.retryUntil !== undefined) target.retryUntil = update.retryUntil
+        if (update.attempts !== undefined) target.attempts = update.attempts
+        if (update.daemonId !== undefined) target.daemonId = update.daemonId
+      }
+      const written = await tx
+        .prepare(
+          `UPDATE decision_verdict SET targetsJson = ? WHERE seq = ? AND subject = ? AND ownerFence = ? AND state = 'settled'`
+        )
+        .run(JSON.stringify(targets), seq, subject, fence)
+      return written.changes === 1 ? targets : undefined
+    })
+  }
+
+  /** Earlier router verdicts of one physical thread (the root and its replies), newest first. */
+  async routerVerdictsInThread(input: {
+    orgId: string
+    channel: string
+    subject: string
+    thread: string
+    beforeSeq: number
+    limit?: number
+  }): Promise<Array<{ seq: number; state: DecisionVerdictState; targetsJson: string | null }>> {
+    const rows = (await this.db
+      .prepare(
+        `SELECT v.seq AS seq, v.state AS state, v.targetsJson AS targetsJson FROM decision_verdict v
+           JOIN transcript t ON t.seq = v.seq
+          WHERE v.orgId = ? AND v.channel = ? AND v.subject = ? AND v.seq < ?
+            AND (t.thread = ? OR t.ts = ?)
+            AND v.state IN ('reserved', 'evaluating', 'settled', 'admitted')
+          ORDER BY v.seq DESC LIMIT ?`
+      )
+      .all(
+        input.orgId,
+        input.channel,
+        input.subject,
+        input.beforeSeq,
+        input.thread,
+        input.thread,
+        input.limit ?? 20
+      )) as Array<{ seq: number; state: DecisionVerdictState; targetsJson: string | null }>
+    return rows.map((row) => ({ ...row, seq: Number(row.seq) }))
+  }
+
+  /** Step-1 rows a routed forward carries from the host's window; INSERT OR IGNORE, and a no-op on a shared store. */
+  async recordObservations(
+    orgAgentId: string,
+    transcriptChannel: string,
+    rows: ReadonlyArray<{
+      ts: string
+      thread: string | null
+      sender: string
+      text: string
+      eventTimeUs?: number
+      quoted?: { sender?: string; text: string }
+    }>
+  ): Promise<void> {
+    if (this.shared) return
+    for (const row of rows) {
+      await this.appendTranscript({
+        channel: transcriptChannel,
+        ...(row.thread !== null ? { thread: row.thread } : {}),
+        ts: row.ts,
+        sender: row.sender,
+        kind: 'text',
+        text: row.text,
+        orgAgentId,
+        ...(row.eventTimeUs !== undefined ? { eventTimeUs: row.eventTimeUs } : {}),
+        ...(row.quoted ? { quoted: row.quoted } : {})
+      })
     }
   }
 

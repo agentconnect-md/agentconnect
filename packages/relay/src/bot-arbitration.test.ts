@@ -798,7 +798,7 @@ describe('By decision candidate routes (decisions.md §7.1)', () => {
     r.upsert({ ...base, routedConversations: [host] })
     expect(r.evaluationDaemonIdFor('bot-1', 'C9')).toBe(D2)
     const routed = r.routeResult('bot-1', msg({ channel: 'C9', text: 'anyone?' }))
-    // The forwarding target is still the ladder's owner; the host only rides along until 5b.
+    // routeResult still names the ladder's owner; routed human messages no longer take this path.
     expect(routed).toMatchObject({ kind: 'target', target: { agentId: ALICE, daemonId: D1 }, evaluationDaemonId: D2 })
     const elsewhere = r.routeResult('bot-1', msg({ channel: 'C1', text: '<@UBOT> bob hi', mentionedBots: [BOTUSER] }))
     expect(elsewhere).not.toHaveProperty('evaluationDaemonId')
@@ -819,6 +819,68 @@ describe('By decision candidate routes (decisions.md §7.1)', () => {
     expect(r.evaluationDaemonIdFor('bot-1', 'C9')).toBe(D1)
     r.updateRoutes('bot-1', { ...patch, routedConversations: [] })
     expect(r.evaluationDaemonIdFor('bot-1', 'C9')).toBeUndefined()
+  })
+
+  describe('routed-conversation reads (message-intake.md §6)', () => {
+    const routedBot = (): BotAssignment => ({
+      ...decisionAssignment(),
+      agents: [
+        { agentId: ALICE, name: 'Alice', daemonId: D1, integrationId: 'iA' },
+        { agentId: BOB, name: 'Bob', daemonId: D2, integrationId: 'iB' }
+      ],
+      routedConversations: [{ channel: 'C9', decisionId: 'dec-1', evaluationDaemonId: D2 }]
+    })
+
+    it('names a routed conversation only for a human, non-muted message with a matching decision', () => {
+      const r = new BotArbitrationRouter()
+      r.upsert(routedBot())
+      expect(r.routedConversationFor('bot-1', msg({ channel: 'C9' }))).toEqual({
+        decisionId: 'dec-1',
+        evaluationDaemonId: D2
+      })
+      expect(
+        r.routedConversationFor('bot-1', msg({ channel: 'C9', sender: { id: 'UX', isBot: true } }))
+      ).toBeUndefined()
+      expect(
+        r.routedConversationFor('bot-1', msg({ channel: 'C9', sender: { id: BOTUSER, isBot: false } }))
+      ).toBeUndefined()
+      expect(r.routedConversationFor('bot-1', msg({ channel: 'C1' }))).toBeUndefined()
+      r.upsert({ ...routedBot(), mutedChannels: ['C9'] })
+      expect(r.routedConversationFor('bot-1', msg({ channel: 'C9' }))).toBeUndefined()
+      r.upsert({
+        ...routedBot(),
+        routedConversations: [{ channel: 'C9', decisionId: 'dec-2', evaluationDaemonId: D2 }]
+      })
+      expect(r.routedConversationFor('bot-1', msg({ channel: 'C9' }))).toBeUndefined()
+    })
+
+    it('flags participants and the owner as participants, a keyword selection as eligible, and mutates nothing', () => {
+      const r = new BotArbitrationRouter()
+      r.upsert(routedBot())
+      const m = msg({ channel: 'C9', thread: 'ts1', text: '<@UBOT> bob look', mentionedBots: [BOTUSER] })
+      r.setAffinity('bot-1', 'C9/ts1', { agentId: ALICE, daemonId: D1, integrationId: 'iA' })
+      expect(r.routedConstraint('bot-1', m)).toEqual([
+        { agentId: ALICE, daemonId: D1, integrationId: 'iA', participant: true, via: 'implicit' },
+        { agentId: BOB, daemonId: D2, integrationId: 'iB', participant: false, via: 'mention' }
+      ])
+      expect(r.conversationParticipants('bot-1', 'C9/ts1', 'C9').map((t) => t.agentId)).toEqual([ALICE])
+      // A bare @bot and an unaddressed slug name nobody.
+      expect(r.routedConstraint('bot-1', msg({ channel: 'C9', thread: 'ts2', mentionedBots: [BOTUSER] }))).toEqual([])
+      expect(r.routedConstraint('bot-1', msg({ channel: 'C9', thread: 'ts2', text: 'bob?' }))).toEqual([])
+    })
+
+    it('applies the mute and gating fences to the directory and picks a carrier on the host', () => {
+      const r = new BotArbitrationRouter()
+      r.upsert({ ...routedBot(), gatedAgentIds: [BOB] })
+      expect(r.routedCandidates('bot-1', 'C9').map((t) => t.agentId)).toEqual([ALICE])
+      r.upsert(routedBot())
+      expect(r.routedCandidates('bot-1', 'C9').map((t) => t.agentId)).toEqual([ALICE, BOB])
+      expect(r.hostCarrier('bot-1', 'C9', D2)).toEqual({ agentId: BOB, daemonId: D2, integrationId: 'iB' })
+      expect(r.hostCarrier('bot-1', 'C9', D1)?.agentId).toBe(ALICE)
+      expect(r.hostCarrier('bot-1', 'C9', 'd3')).toBeUndefined()
+      r.upsert({ ...routedBot(), mutedChannels: ['C9'] })
+      expect(r.routedCandidates('bot-1', 'C9')).toEqual([])
+    })
   })
 
   it('drops a routed conversation whose channel has no decision route with the same Decision', () => {

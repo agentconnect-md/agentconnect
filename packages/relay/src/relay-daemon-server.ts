@@ -30,6 +30,9 @@ export interface RelayDaemonServerDeps {
   onWebchatPost: RelayDaemonConnDeps['onWebchatPost']
   /** Route an inbound cross-daemon `rd/agentmsg` (agent-collaboration P2). */
   onAgentMsg: RelayDaemonConnDeps['onAgentMsg']
+  /** Route an evaluation host's `rd/route` and `rd/route/report` (message-intake.md §6). */
+  onRoute: RelayDaemonConnDeps['onRoute']
+  onRouteReport: RelayDaemonConnDeps['onRouteReport']
   log: RelayDaemonConnDeps['log']
   /** Half-open ping/pong sweep cadence (ms). */
   keepaliveMs?: number
@@ -69,6 +72,8 @@ export function createRelayDaemonServer(app: FastifyInstance, deps: RelayDaemonS
     onChat: deps.onChat,
     onWebchatPost: deps.onWebchatPost,
     onAgentMsg: deps.onAgentMsg,
+    onRoute: deps.onRoute,
+    onRouteReport: deps.onRouteReport,
     log: deps.log,
     onReady: (daemonId, conn) => {
       const set = byDaemon.get(daemonId) ?? new Set()

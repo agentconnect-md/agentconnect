@@ -28,6 +28,8 @@ import { CronTarget } from './cron.js'
 import { Platform } from './route.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
+import { DecisionAnswer, DecisionQuestion } from '../decision.js'
+import { DECISION_ROUTING_FORWARD_V1_FEATURE } from './decision.js'
 
 /**
  * relay↔daemon frames (`rd/*`) — shared-bot-relay.md §7.2.
@@ -40,6 +42,8 @@ import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResult
  *  - `rd/hello` (+ `rd/hello/ok`)  D→R REQ / R→D REP — authenticate the dial-in
  *  - `rd/msg`                      R→D REQ — one inbound item, already routed
  *  - `rd/ack`                      D→R REP — receipt (+ webchat turn verdict)
+ *  - `rd/route` (+ `/ack`)          D→R REQ / R→D REP — a routed target forward (§6)
+ *  - `rd/route/report` (+ `/ack`)   D→R REQ / R→D REP — a selection's owner + participants
  *  - `rd/chat`                     D→R EVT — webchat output stream back to the
  *                                  browser (webchat is the one BIDIRECTIONAL
  *                                  source: its far end hangs off the relay)
@@ -322,6 +326,109 @@ export type RdMsgWebchat = z.infer<typeof RdMsgWebchat>
 
 // ── shared-bot inbound (`im`) ────────────────────────────────────────────────
 
+// ── shared-bot By decision routing (message-intake.md §6, decisions.md §7.4) ──
+
+/** The relay advertises this in `rd/hello/ok` once it forwards routed conversations and serves `rd/route`. */
+export const RD_DECISION_ROUTE_V1 = DECISION_ROUTING_FORWARD_V1_FEATURE
+
+/** One agent placement on a shared bot as the relay resolved it from its own directory. */
+export const RdRouteAgentRef = z.object({
+  agentId: z.string().uuid(),
+  daemonId: z.string().uuid(),
+  integrationId: z.string().uuid()
+})
+export type RdRouteAgentRef = z.infer<typeof RdRouteAgentRef>
+
+/** A constrained recipient, flagged participant from the relay's participant set (message-intake.md §6 step 3). */
+export const RdRoutingConstraintEntry = RdRouteAgentRef.extend({
+  participant: z.boolean(),
+  via: z.enum(['mention', 'implicit'])
+})
+export type RdRoutingConstraintEntry = z.infer<typeof RdRoutingConstraintEntry>
+
+/** Relay-minted on the one copy of a routed human message sent to its evaluation host. */
+export const RdRoutingDisposition = z.object({
+  evaluationDaemonId: z.string().uuid(),
+  decisionId: z.string().min(1).max(128),
+  constraint: z.array(RdRoutingConstraintEntry).max(64),
+  // The bot's member directory for this conversation after the mute and gating fences.
+  candidates: z.array(RdRouteAgentRef).max(64),
+  relayId: z.string().uuid().optional()
+})
+export type RdRoutingDisposition = z.infer<typeof RdRoutingDisposition>
+
+export const RdRouteEffect = z.enum([
+  'participant',
+  'kept',
+  'selected',
+  'default_agent',
+  'fallback_constrained',
+  'fallback_default'
+])
+export type RdRouteEffect = z.infer<typeof RdRouteEffect>
+
+export const RdRouteResult = z.discriminatedUnion('status', [
+  z.object({
+    status: z.literal('answered'),
+    answer: DecisionAnswer,
+    matchedRuleIds: z.array(z.string().min(1).max(128)).max(32),
+    matchedKeys: z.array(z.string().min(1).max(64)).max(64),
+    usedOtherwise: z.boolean()
+  }),
+  z.object({
+    status: z.literal('unavailable'),
+    reason: z.enum(['timeout', 'capacity', 'credentials', 'provider', 'invalid_response', 'unsupported_input']),
+    recovered: z.boolean().optional()
+  }),
+  z.object({ status: z.literal('not_evaluated'), reason: z.literal('all_participants') })
+])
+export type RdRouteResult = z.infer<typeof RdRouteResult>
+
+/** The host's selection evidence for one forwarded target; usage stays on the host verdict so it counts once. */
+export const RdRouteSelectionBody = z.object({
+  selectionId: z.string().min(1).max(256),
+  hostSeq: z.number().int().nonnegative(),
+  decisionId: z.string().min(1).max(128),
+  question: DecisionQuestion,
+  requestedModel: z.string().min(1).max(128),
+  actualModel: z.string().max(256).optional(),
+  result: RdRouteResult,
+  effect: RdRouteEffect,
+  constrained: z.boolean(),
+  targetAgentIds: z.array(z.string().min(1).max(128)).max(64),
+  evaluatedMessageId: z.string().max(256),
+  partial: z.object({
+    partial: z.boolean(),
+    reasons: z.array(z.string().max(64)).max(8),
+    omittedMessages: z.number().int().nonnegative()
+  })
+})
+export type RdRouteSelectionBody = z.infer<typeof RdRouteSelectionBody>
+
+const BACKFILL_TEXT_MAX_BYTES = 16 * 1024
+const BACKFILL_MAX_BYTES = 32 * 1024
+const utf8Bytes = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).byteLength
+
+/** One observation-window row the host resends so a remote target's §5.2 background is complete. */
+export const RdRouteBackfillRow = z.object({
+  ts: z.string().min(1).max(128),
+  thread: z.string().max(512).nullable(),
+  sender: z.string().min(1).max(256),
+  text: z.string().refine((text) => new TextEncoder().encode(text).byteLength <= BACKFILL_TEXT_MAX_BYTES),
+  eventTimeUs: z.number().int().nonnegative().optional(),
+  quoted: z.object({ sender: z.string().max(256).optional(), text: z.string().max(BACKFILL_TEXT_MAX_BYTES) }).optional()
+})
+export type RdRouteBackfillRow = z.infer<typeof RdRouteBackfillRow>
+
+export const RdRouteBackfill = z
+  .array(RdRouteBackfillRow)
+  .max(50)
+  .refine((rows) => utf8Bytes(rows) <= BACKFILL_MAX_BYTES, { message: 'Backfill must fit within 32 KiB.' })
+
+/** Stamped by the relay on the target's `rd/msg`; `hostDaemonId` comes from the authenticated socket, never a frame. */
+export const RdRouteSelection = RdRouteSelectionBody.extend({ hostDaemonId: z.string().uuid() })
+export type RdRouteSelection = z.infer<typeof RdRouteSelection>
+
 // Provider attachment metadata. The bytes NEVER cross this wire (or the relay):
 // the daemon fetches them directly with its assigned provider token.
 export const WireAttachment = PlatformAttachmentSchema
@@ -387,7 +494,13 @@ export const RdMsgIm = z.object({
   // while existing peers receive implicit copies. The causes are not interchangeable at
   // `!stop`: a human mention clears the named target's mute, while implicit participants
   // stay silenced. Absent ⇒ 'mention' for compatibility with older relay frames.
-  trustedRouteVia: z.enum(['mention', 'implicit']).optional()
+  trustedRouteVia: z.enum(['mention', 'implicit']).optional(),
+  // Routed conversation, relay → evaluation host only: the host records, evaluates once, and distributes.
+  trustedRouting: RdRoutingDisposition.optional(),
+  // Routed forward, relay → target: admit without evaluating; only daemons advertising decision-routing-v1 get one.
+  trustedRouteSelection: RdRouteSelection.optional(),
+  // With a routed forward: the host's observation-window rows, recorded before the message itself.
+  backfill: RdRouteBackfill.optional()
 })
 export type RdMsgIm = z.infer<typeof RdMsgIm>
 
@@ -613,7 +726,11 @@ export const RdAck = z.object({
    *  toast, Slack block_suggestion options). Decoded only by the platform
    *  module. (The Feishu-named `feishuCardAction` slot retired with the legacy
    *  interaction members.) */
-  response: z.unknown().optional()
+  response: z.unknown().optional(),
+  /** A routed forward's target-side verdict: admitted, or rejected with `reason`. */
+  routeAdmission: z.enum(['admitted', 'rejected']).optional(),
+  /** Set with a routed rejection the host may retry with the same delivery id. */
+  recoverable: z.boolean().optional()
 })
 export type RdAck = z.infer<typeof RdAck>
 
@@ -882,6 +999,80 @@ export function isRetryableAgentMsgAck(ack: Pick<RdAgentMsgAck, 'delivered' | 'r
   return !ack.delivered && ack.reason === RD_AGENTMSG_NOT_READY
 }
 
+// ── host → target routed forward (`rd/route`) ────────────────────────────────
+
+// D→R REQ → rd/route/ack: the host asks the relay to deliver one frozen target; the relay stores no content, so it rides here.
+export const RdRoute = z.object({
+  // `<botId>:<payload.msgId>#<agentId>`, identical on every retry of this target.
+  deliveryId: z.string().min(1).max(640),
+  botId: z.string().uuid(),
+  sessionKey: z.string().min(1),
+  toAgentId: z.string().uuid(),
+  frozenDaemonId: z.string().uuid(),
+  payload: WireNormalizedMessage,
+  selection: RdRouteSelectionBody,
+  // The target's own cause: a mention clears its `!stop` mute, an implicit selection never does.
+  via: z.enum(['mention', 'implicit']).optional(),
+  backfill: RdRouteBackfill.optional()
+})
+export type RdRoute = z.infer<typeof RdRoute>
+
+export const RdRouteReason = z.enum([
+  'not_host',
+  'not_member',
+  'stale',
+  'unsupported',
+  'offline',
+  'not_ready',
+  'muted',
+  'stopped',
+  'off',
+  'routing_disabled',
+  'capacity',
+  'durability',
+  'draining',
+  'no_agent',
+  'rejected'
+])
+export type RdRouteReason = z.infer<typeof RdRouteReason>
+
+export const RdRouteAck = z.object({
+  deliveryId: z.string().min(1).max(640),
+  disposition: z.enum(['admitted', 'rejected', 'retry']),
+  reason: RdRouteReason.optional(),
+  // The daemon the relay resolved and delivered to.
+  daemonId: z.string().uuid().optional()
+})
+export type RdRouteAck = z.infer<typeof RdRouteAck>
+
+const RETRYABLE_ROUTE_REASONS: ReadonlySet<RdRouteReason> = new Set(['offline', 'not_ready', 'durability', 'draining'])
+
+/** Should the host re-send this target with the same delivery id? `not_host` only while its config still converges. */
+export function isRetryableRouteAck(
+  ack: Pick<RdRouteAck, 'disposition' | 'reason'>,
+  opts: { converging?: boolean } = {}
+): boolean {
+  if (ack.disposition === 'admitted') return false
+  if (ack.disposition === 'retry') return true
+  if (ack.reason === 'not_host') return opts.converging === true
+  return ack.reason !== undefined && RETRYABLE_ROUTE_REASONS.has(ack.reason)
+}
+
+const RouteMember = z.object({ agentId: z.string().uuid(), daemonId: z.string().uuid() })
+
+/** D→R REQ → `rd/route/report/ack`: a finished selection's owner and admitted participants, via rc/thread-assign and rc/thread-participant. */
+export const RdRouteReport = z.object({
+  botId: z.string().uuid(),
+  sessionKey: z.string().min(1),
+  channel: z.string().min(1),
+  owner: RouteMember.optional(),
+  participants: z.array(RouteMember).max(64)
+})
+export type RdRouteReport = z.infer<typeof RdRouteReport>
+
+export const RdRouteReportAck = z.object({ accepted: z.boolean(), reason: z.string().max(64).optional() })
+export type RdRouteReportAck = z.infer<typeof RdRouteReportAck>
+
 // ── webchat output stream (D→R) ──────────────────────────────────────────────
 
 // One item of a webchat reply stream. Reuses the webchat frame payloads verbatim
@@ -935,6 +1126,10 @@ export const RELAY_DAEMON_SCHEMAS = {
   'rd/agentmsg': RdAgentMsg,
   'rd/agentmsg/fwd': RdAgentMsgFwd,
   'rd/agentmsg/ack': RdAgentMsgAck,
+  'rd/route': RdRoute,
+  'rd/route/ack': RdRouteAck,
+  'rd/route/report': RdRouteReport,
+  'rd/route/report/ack': RdRouteReportAck,
   'rd/chat': RdChat,
   'rd/webchat-post': RdWebchatPost,
   error: ErrorFrame
@@ -955,6 +1150,10 @@ export const RelayDaemonFrame = z.discriminatedUnion('type', [
   frameSchema('rd/agentmsg', RELAY_DAEMON_SCHEMAS['rd/agentmsg']),
   frameSchema('rd/agentmsg/fwd', RELAY_DAEMON_SCHEMAS['rd/agentmsg/fwd']),
   frameSchema('rd/agentmsg/ack', RELAY_DAEMON_SCHEMAS['rd/agentmsg/ack']),
+  frameSchema('rd/route', RELAY_DAEMON_SCHEMAS['rd/route']),
+  frameSchema('rd/route/ack', RELAY_DAEMON_SCHEMAS['rd/route/ack']),
+  frameSchema('rd/route/report', RELAY_DAEMON_SCHEMAS['rd/route/report']),
+  frameSchema('rd/route/report/ack', RELAY_DAEMON_SCHEMAS['rd/route/report/ack']),
   frameSchema('rd/chat', RELAY_DAEMON_SCHEMAS['rd/chat']),
   frameSchema('rd/webchat-post', RELAY_DAEMON_SCHEMAS['rd/webchat-post']),
   frameSchema('error', RELAY_DAEMON_SCHEMAS['error'])
