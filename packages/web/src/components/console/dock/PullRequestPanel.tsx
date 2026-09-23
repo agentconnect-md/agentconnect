@@ -228,7 +228,7 @@ export function PullRequestPanel({
   base?: string | null
   /** Posts one webchat message into the open session (§5.2's browser→relay→daemon path — no CP route), returning whether the send was ACCEPTED. Absent when the session has no usable composer (none at all, or a persisted webchat that cannot resume), and the Auto-fix and Create-pull-request actions render ABSENT with it, not disabled. */
   onPostTurn?: (text: string) => boolean
-  /** Presses the wake of the pod an isolated session's merge-when-ready watcher runs in — that session's own; absent for any other session, whose asleep arm keeps its refusal. A press, not an agent id, so nothing here can re-key the read. */
+  /** Presses an isolated session's own wake; used only when the read says an arm from this session names it (`autoMergeSessionPlaced`), since otherwise the refusing pod is another agent's. A press, not an agent id, so nothing here can re-key the read. */
   wakeSandbox?: () => Promise<AgentWakeDto>
   /** The inputs to {@link pullRequestTabStatus}, the tab's badge and its external-link action. */
   onVerdictChange?: (verdict: PullRequestPanelVerdict) => void
@@ -352,12 +352,14 @@ export function PullRequestPanel({
     mergeRun.current = run
     setMerge({ busy: true, waking: false, err: null })
     const write = () => setSessionPullRequestAutoMerge(sessionId, enabled)
+    // Only an arm that names this session is refused for this session's pod; another agent's run arms in that agent's pod, which this press cannot start.
+    const wakeable = enabled && view?.autoMergeSessionPlaced === true ? wakeSandbox : undefined
     write()
       .catch((e: unknown) => {
         // The reader asked for the watcher, so a sleeping pod it belongs in is woken and the arm re-sent once that pod answers.
-        if (!enabled || !wakeSandbox || !armAsleep(e) || run.signal.aborted) throw e
+        if (!wakeable || !armAsleep(e) || run.signal.aborted) throw e
         setMerge({ busy: true, waking: true, err: null })
-        return retryAfterWake(write, armAsleep, wakeSandbox, e, run.signal)
+        return retryAfterWake(write, armAsleep, wakeable, e, run.signal)
       })
       .then(
         () => {

@@ -3064,7 +3064,7 @@ export default function SessionDetailView() {
     MOCK_MODE || !session || (syntheticPlayground && !session.realSessionId)
       ? null
       : (session.realSessionId ?? session.id)
-  // An isolated session's merge-when-ready watcher runs in that session's own pod, so an arm refused as asleep wakes it with this session's agent; any other session keeps the refusal.
+  // An isolated session's own wake, with its own agent; the panel presses it only when the read says this session's arm places the watcher.
   const prSessionIsolation =
     currentSessionDetail && currentSessionDetail.id === prSessionId
       ? currentSessionDetail.workspaceIsolation

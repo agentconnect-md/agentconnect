@@ -3486,6 +3486,8 @@ export interface SessionPullRequestDto {
   autoMergeWaitingOn?: string | null
   /** A GitHub refusal or unreachable GitHub on the last tick. The watcher stays armed through it. */
   autoMergeError?: string | null
+  /** Whether an arm from this session names it, so this session's own wake starts the pod a sleeping arm is refused for; absent from a CP that predates it, which reads as no. */
+  autoMergeSessionPlaced?: boolean
   canArmAutoMerge: boolean // the owning agent's clamp allows the write; false renders a disabled control
   degraded: boolean
   degradedReason: 'rate_limited' | 'denied' | 'unreachable' | null

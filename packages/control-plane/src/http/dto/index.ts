@@ -3880,6 +3880,8 @@ export const SessionPullRequestDto = z.object({
   // A GitHub refusal or an unreachable GitHub on the last tick. The watcher stays ARMED through it:
   // the usual cure is the next commit, so this is a status line, not a terminal state.
   autoMergeError: z.string().nullable(),
+  // true ⇒ an arm from this session names it (its agent is the pull request's and the serving daemon places arms by session), so this session's wake starts the pod a sleeping arm is refused for.
+  autoMergeSessionPlaced: z.boolean(),
   // Whether THIS caller may arm auto-merge: the owning agent is write-tier and the installation accepted
   // pull_requests:write. Postgres-only, so a read-tier agent renders a disabled control, not a failed call.
   canArmAutoMerge: z.boolean(),

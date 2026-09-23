@@ -487,14 +487,17 @@ and only when the session belongs to the watcher's agent; an older member would
 strip it and arm in the agent pod, as it did before. A session's retirement
 deletes its pod and its watcher with it, and the box reads back unchecked.
 Nothing is persisted, as before. An arm while the pod that would run it is asleep
-still answers 409 `AUTO_MERGE_SANDBOX_ASLEEP`. For an isolated session the panel
-then presses that session's wake, which resolves the pod by the same
-`sessionPodOf` the placement uses, and re-sends the arm on the read wake's backoff
-until it lands, another refusal answers, or the same 90 s bound passes. A removed
-session sandbox, a refused press or nothing to wake ends it at once, and a disarm
-never wakes anything. A member without `session-wake-v1` predates session
-placement, so its watcher is in the agent pod, which is exactly what the Control
-Plane's fallback wakes for it.
+still answers 409 `AUTO_MERGE_SANDBOX_ASLEEP`. The pull-request read says whether
+an arm from this session names it (`autoMergeSessionPlaced`, computed by the same
+rule the arm uses): the pull request's agent is the session's, and the serving
+member advertises `auto-merge-session-v1`. Only then, and only for an isolated
+session, does the panel press that session's wake. That wake resolves the pod by
+the same `sessionPodOf` the placement uses, and the panel re-sends the arm on the
+read wake's backoff until it lands, another refusal answers, or the same 90 s
+bound passes. A removed session sandbox, a refused press or nothing to wake ends
+it at once, and a disarm never wakes anything. An arm in another agent's pod (a
+run that agent owns) or from an older member keeps its refusal, because this
+session's wake would start a different pod.
 
 **Order**, each change shippable on its own:
 

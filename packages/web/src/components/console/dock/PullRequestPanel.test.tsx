@@ -725,6 +725,11 @@ describe('PullRequestPanel merge-when-ready wake', () => {
       await vi.advanceTimersByTimeAsync(ms)
     })
   }
+  // The read says an arm from this session names it: the one case its own wake starts the pod that refuses.
+  const placed = (overrides: Partial<SessionPullRequestDto> = {}) => pr({ autoMergeSessionPlaced: true, ...overrides })
+  beforeEach(() => {
+    wire.data = placed()
+  })
 
   it('wakes the sleeping pod once and re-sends the arm when it answers, instead of dead-ending', async () => {
     vi.useFakeTimers()
@@ -818,6 +823,31 @@ describe('PullRequestPanel merge-when-ready wake', () => {
     expect(wire.mergeCalls).toHaveLength(2)
   })
 
+  it('never wakes when the arm is not placed by this session, so no other pod is started for it', async () => {
+    vi.useFakeTimers()
+    const wakeSandbox = woken()
+    wire.mergeFailure = asleep()
+    // Another agent's run owns the pull request: the arm lands in that agent's pod, which this session's wake would not start.
+    wire.data = pr({ autoMergeSessionPlaced: false })
+    await render({ wakeSandbox })
+    await press('[data-pr-automerge]')
+    await advance(SANDBOX_WAKE_BOUND_MS)
+    expect(wakeSandbox).not.toHaveBeenCalled()
+    expect(wire.mergeCalls).toHaveLength(1)
+    expect(mergeError()).toContain('sandbox is not running')
+    expect(status()).not.toContain('Starting the agent’s sandbox')
+
+    // A control plane that predates the field says nothing about placement, which reads as the same no.
+    wire.data = pr()
+    await rerender({ sessionId: 'session-2', wakeSandbox })
+    await advance(0)
+    await press('[data-pr-automerge]')
+    await advance(SANDBOX_WAKE_BOUND_MS)
+    expect(wakeSandbox).not.toHaveBeenCalled()
+    expect(wire.mergeCalls).toHaveLength(2)
+    expect(mergeError()).toContain('sandbox is not running')
+  })
+
   it('never wakes for a disarm, and drops a pending wake when the panel moves to another session', async () => {
     vi.useFakeTimers()
     const wakeSandbox = woken()
@@ -829,7 +859,7 @@ describe('PullRequestPanel merge-when-ready wake', () => {
     expect(wire.mergeCalls).toEqual([{ sessionId: 'session-1', enabled: false }])
     expect(wakeSandbox).not.toHaveBeenCalled()
 
-    wire.data = pr()
+    wire.data = placed()
     wire.mergeFailure = asleep()
     await rerender({ sessionId: 'session-2', wakeSandbox })
     await advance(0)

@@ -297,6 +297,8 @@ describe('GET /sessions/:id/pull-request', () => {
       autoMergePlacement: null,
       autoMergeWaitingOn: null,
       autoMergeError: null,
+      // Nobody to ask either whether an arm would name this session, so the console offers no wake.
+      autoMergeSessionPlaced: false,
       canArmAutoMerge: false,
       degraded: false,
       degradedReason: null,
@@ -653,6 +655,42 @@ describe('POST /sessions/:id/pull-request/auto-merge', () => {
 
     expect((await post(running, session)).statusCode).toBe(200)
     expect(edge.calls).toEqual([{ op: 'set', enabled: true, daemonId: DAEMON }])
+  })
+
+  it('tells the panel an arm names this session only for its own agent’s pull request on a daemon placing arms by session', async () => {
+    // The console wakes this session's own pod for a sleeping arm only then; otherwise the refusing pod is another one.
+    const OTHER = 'b5b5b5b5-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    await seedDaemon(prisma, DAEMON, {
+      capabilities: { ...EDGE_CAPABILITIES, features: [AUTO_MERGE_FEATURE, AUTO_MERGE_SESSION_FEATURE] }
+    })
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedAgent(prisma, OTHER, { daemonId: DAEMON })
+    const own = await seedSessionMeta(prisma, randomUUID(), AGENT, { daemonId: DAEMON })
+    await seedPullRequestRun(own)
+    const foreign = await seedSessionMeta(prisma, randomUUID(), AGENT, { daemonId: DAEMON })
+    await seedPullRequestRun(foreign, { agentId: OTHER })
+    const github = githubStub([graphqlOk(fullAnswer()), graphqlOk(fullAnswer())])
+    const running = app(github.view, undefined, fakeGithub(), undefined, fakeEdge().control)
+    const read = async (session: string) =>
+      (await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${session}/pull-request` })).json()
+
+    expect(await read(own)).toMatchObject({ autoMergeArmed: false, autoMergeSessionPlaced: true })
+    expect(await read(foreign)).toMatchObject({ autoMergeArmed: false, autoMergeSessionPlaced: false })
+  })
+
+  it('tells the panel no arm names the session on an older daemon, which arms in the agent pod', async () => {
+    const session = await seedAgentAndSession()
+    await seedPullRequestRun(session)
+    const running = app(
+      githubStub([graphqlOk(fullAnswer())]).view,
+      undefined,
+      fakeGithub(),
+      undefined,
+      fakeEdge().control
+    )
+
+    const read = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${session}/pull-request` })
+    expect(read.json()).toMatchObject({ autoMergeArmed: false, autoMergeSessionPlaced: false })
   })
 
   it('refuses a read-tier agent with 403 before reaching the edge — the disabled-control contract', async () => {

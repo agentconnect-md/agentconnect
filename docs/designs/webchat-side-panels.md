@@ -1060,8 +1060,10 @@ Decisions recorded while building it:
   `clusterPlaced` — a property of the DAEMON (`--k8s` runs every agent in a pod)
   — and a cluster agent with no live channel refuses to arm with `sandbox-asleep`
   rather than arming somewhere else; the console's own wake action is the fix. For
-  an isolated session the panel presses that session's wake itself and re-sends
-  the arm once its pod answers, bounded like a read's wake.
+  an isolated session whose arm names it, which the read reports as
+  `autoMergeSessionPlaced`, the panel presses that session's wake itself and
+  re-sends the arm once its pod answers, bounded like a read's wake. An arm placed
+  in another agent's pod keeps its refusal.
   WHICH pod is decided once per arm by the same rule: the arming session's tier,
   read off its own directory as its wake is routed and off whether its own pod's
   claim exists, never whichever pod is attached. The watcher stays keyed by the
