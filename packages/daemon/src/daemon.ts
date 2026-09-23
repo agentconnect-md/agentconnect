@@ -8799,6 +8799,7 @@ export class Daemon {
     }
     trace.stage = 'normalize'
     const normalized = fromPlatformMessage(msg.payload, this.transportScopeForIntegrationIds([msg.integrationId]))
+    normalized.forwardedHistory = !this.store.isShared && !msg.trustedRouting
     // Direct ingress resolves provider ids before onInbound(); HTTP ingress
     // bypasses that callback, but its send-only connection exposes the same API.
     // Mirror the lookup here so session metadata/history can label the sender.
@@ -13566,7 +13567,7 @@ export class Daemon {
             undefined,
             threadRootResolver(msg.platform, msg.isDm)
           )
-          if (!window.current) return undefined
+          if (!window.current) return modelSelectionState('chat', msg.text)
           const built = buildDecisionState({
             source: 'chat',
             ...window,
@@ -13575,11 +13576,11 @@ export class Daemon {
               mentions: msg.mentionedBots,
               target: { agentId: agent.id, via: msg.trigger === 'mention' ? 'mention' : 'implicit' }
             },
-            forwardedHistory: msg.channelIntake?.forwardedHistory,
+            forwardedHistory: msg.forwardedHistory,
             question: decision.question,
             model: decision.model
           })
-          return built.unsupported ? undefined : built.state
+          return built.unsupported ? modelSelectionState('chat', msg.text) : built.state
         },
         evaluate: (input, signal) => this.decisionEvaluator.evaluate(input, signal)
       })
@@ -18631,11 +18632,7 @@ export class Daemon {
     if (!record) return reject('durability', true)
     if (this.draining || this.drainingAgents.has(msg.agentId)) return reject('draining', true)
     const { searchActionToken: _searchActionToken, ...rd } = msg
-    normalized.channelIntake = {
-      seq: record.seq,
-      forwardedHistory: !this.store.isShared,
-      evidence: routeSelectionEvidence(selection, record.seq)
-    }
+    normalized.channelIntake = { seq: record.seq, evidence: routeSelectionEvidence(selection, record.seq) }
     const result = await this.admitWithReceipt(
       msg.agentId,
       { origin: 'relay', rd, msg: normalized },

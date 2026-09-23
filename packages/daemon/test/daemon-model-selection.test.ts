@@ -252,18 +252,25 @@ describe('session-pinned Decision model', () => {
     await daemon.waitForEvaluationIdle()
     expect(evaluate).toHaveBeenCalledOnce()
     expect(prompted).toEqual(['model-capable', 'model-capable'])
+    const oversized = await route(message(8, 'A large error log\n'.repeat(3000), { mentionedBots: ['U_FAKE_BOT'] }))
+    expect(await oversized.handle.completion).toMatchObject({ status: 'completed' })
+    await daemon.waitForEvaluationIdle()
+    expect(evaluate).toHaveBeenCalledTimes(2)
+    expect(evaluate.mock.calls[1]![0].state).toMatchObject({ history: [], truncated: true })
+    expect(prompted.at(-1)).toBe('model-capable')
   })
 
-  it('uses a routed forward’s history for model selection and marks its bounded snapshot partial', async () => {
+  it.each([true, false])('marks independent relay history as partial (Decision routed=%s)', async (routed) => {
     const { daemon, internal, evaluate, prompted } = await start(scaffold(true))
     const { decision } = await internal.cpClient.decisionGet()
-    internal.agents.get(agentId).integrations[0].core = {
-      bindRules: [{ channel: 'C1', match: { kind: 'decision' } }],
-      decisions: {
-        bindings: [{ channel: 'C1', consumer: { type: 'shared_bot_routing' }, enabled: true }],
-        definitions: []
+    if (routed)
+      internal.agents.get(agentId).integrations[0].core = {
+        bindRules: [{ channel: 'C1', match: { kind: 'decision' } }],
+        decisions: {
+          bindings: [{ channel: 'C1', consumer: { type: 'shared_bot_routing' }, enabled: true }],
+          definitions: []
+        }
       }
-    }
     const ack = await internal.handleRelayIm({
       source: 'im',
       agentId,
@@ -283,32 +290,36 @@ describe('session-pinned Decision model', () => {
         mentionedBots: [],
         isDm: false
       },
-      trustedRouteSelection: {
-        selectionId: '2:router:example-bot',
-        hostSeq: 2,
-        decisionId,
-        question: decision.question,
-        requestedModel: decision.model,
-        result: { status: 'not_evaluated', reason: 'all_participants' },
-        effect: 'participant',
-        constrained: false,
-        targetAgentIds: [agentId],
-        evaluatedMessageId: 'slack:C1:1720000000.000002',
-        partial: { partial: false, reasons: [], omittedMessages: 0 },
-        hostDaemonId: '44444444-4444-4444-8444-444444444444'
-      },
-      backfill: [
-        { ts: '1720000000.000001', thread: '1720000000.000001', sender: 'U2', text: 'The migration broke login' }
-      ]
+      ...(routed
+        ? {
+            trustedRouteSelection: {
+              selectionId: '2:router:example-bot',
+              hostSeq: 2,
+              decisionId,
+              question: decision.question,
+              requestedModel: decision.model,
+              result: { status: 'not_evaluated', reason: 'all_participants' },
+              effect: 'participant',
+              constrained: false,
+              targetAgentIds: [agentId],
+              evaluatedMessageId: 'slack:C1:1720000000.000002',
+              partial: { partial: false, reasons: [], omittedMessages: 0 },
+              hostDaemonId: '44444444-4444-4444-8444-444444444444'
+            },
+            backfill: [
+              { ts: '1720000000.000001', thread: '1720000000.000001', sender: 'U2', text: 'The migration broke login' }
+            ]
+          }
+        : {})
     })
-    expect(ack).toMatchObject({ accepted: true, routeAdmission: 'admitted' })
+    expect(ack).toMatchObject({ accepted: true, ...(routed ? { routeAdmission: 'admitted' } : {}) })
     await vi.waitFor(() => expect(prompted).toEqual(['model-capable']), WAIT)
     await daemon.waitForEvaluationIdle()
     expect(evaluate).toHaveBeenCalledOnce()
     expect(evaluate.mock.calls[0]![0].state).toMatchObject({
       source: 'chat',
       currentMessage: { text: 'Can you fix that?' },
-      history: [{ text: 'The migration broke login', sender: { id: 'U2' } }],
+      history: routed ? [{ text: 'The migration broke login', sender: { id: 'U2' } }] : [],
       context: { partial: true, reasons: ['forwarded_history'] }
     })
   })

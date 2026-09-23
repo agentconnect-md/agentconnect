@@ -92,8 +92,6 @@ export interface ChannelIntake {
   seq: number
   /** Background rows chosen once at admission, so a replay builds the same prompt. */
   backgroundSeqs?: number[]
-  /** This store has only the bounded history forwarded by another daemon. */
-  forwardedHistory?: boolean
   evidence?: DecisionEvidence
 }
 

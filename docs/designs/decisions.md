@@ -1764,16 +1764,17 @@ window and state builder (§8.2): at most 100 prior messages, newest context ret
 within the full-request budget and presented oldest-first with sender, physical
 thread, timestamp, and quote information. Messages recorded after the opening row
 are excluded. The state adds `source: "chat"`; `currentMessage.text` remains the
-opening text, not the assembled agent prompt. An oversized current message that
-cannot fit the request uses the configured fallback without evaluating a prefix.
+opening text, not the assembled agent prompt.
 
 Shared-bot routing already records its bounded forwarded history before the current
-message on a remote daemon. Model selection reads those same observations; an
-independent target store marks `context.partial` with `forwarded_history`, because
-the forwarded window may omit older observations. A shared data-plane store reads
-the common observation window directly. No platform history request or agent turn
-is needed. When no recorded opening row is available, including a fresh Console
-chat, the existing opening-only state remains
+message on a remote daemon. Model selection reads those same observations. An
+independent relay target marks `context.partial` with `forwarded_history`, because
+the forwarded window may omit observations; ordinary relay deliveries without
+Decision routing may contain only messages addressed to that target. The routing
+host and shared data-plane stores read their observation windows directly. No
+platform history request or agent turn is needed. When no recorded opening row is
+available, including a fresh Console chat, or the current message cannot fit the
+request budget, the existing opening-only state remains
 `{ source: "chat", currentMessage: { text }, history: [], truncated }`, with text
 bounded to an 8 KiB UTF-8 prefix. An empty history does not cause a later re-evaluation.
 
