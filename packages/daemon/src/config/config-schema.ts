@@ -33,10 +33,8 @@ export const RuntimeDefSchema = z.object({
   // launches like any unsandboxed runtime (admission probes still use a
   // disposable isolated HOME). `security.requireSandbox` refuses it outright.
   externalExecution: z.boolean().optional(),
-  // 'unsupported': the runtime rejects any non-empty session/new|load mcpServers
-  // list (OpenClaw's bridge does), so the daemon must not inject the AgentConnect
-  // bridge or configured MCP servers — such sessions run without those tools.
-  sessionMcpServers: z.literal('unsupported').optional()
+  // Scope of session/new|load mcpServers: 'per-session' (default), 'per-process' (the last session's serve them all, so each session gets its own host), or 'unsupported' (rejected: sessions run without MCP tools, as on OpenClaw).
+  sessionMcpServers: z.enum(['per-session', 'per-process', 'unsupported']).optional()
 })
 export type RuntimeDef = z.infer<typeof RuntimeDefSchema>
 

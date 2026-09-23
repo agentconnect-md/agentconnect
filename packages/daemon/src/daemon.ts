@@ -452,6 +452,7 @@ import { ModelCatalogService } from './runtimes/model-catalog.js'
 import { makeModelEnumerator } from './runtimes/model-enumerator.js'
 import { clusterProbeHostFactory, defaultProbeHostFactory } from './acp/probe-host-factory.js'
 import { runtimeHomePath } from './runtimes/runtime-home.js'
+import { sessionMcpServersScope } from './runtimes/session-mcp-servers.js'
 import { planRuntimeInstallRepair, repairRuntimeInstall } from './runtimes/runtime-install-repair.js'
 import { RuntimeStore, parseNpxLaunch, storedRuntimeDef } from './runtimes/runtime-store.js'
 import { ArchiveStore, parseArchiveLaunch, storedArchiveRuntimeDef } from './runtimes/archive-store.js'
@@ -4809,13 +4810,15 @@ export class Daemon {
     return effectiveSessionIsolation(agent) === 'session'
   }
 
-  // Microsandbox sessions own their runtime even when they share workspace files.
+  // Microsandbox sessions, and sessions of a runtime whose session MCP servers are per-process, own their runtime even when they share workspace files.
   private hostKeyFor(agentId: string, sessionKey?: string): HostKey {
     const agent = this.agents.get(agentId)
     if (sessionKey === undefined || !agent) return agentHostKey(agentId)
     const key = sessionHostKey(agentId, sessionKey)
-    return this.confinedSession(agent, sessionKey) ||
-      (this.usesMicrosandbox(agent) && !this.legacyMicrosandboxSessions.has(key))
+    if (this.confinedSession(agent, sessionKey)) return key
+    if (this.usesMicrosandbox(agent)) return this.legacyMicrosandboxSessions.has(key) ? agentHostKey(agentId) : key
+    // Sharing one would hand every session's MCP tool calls the bridge token of whichever session registered last.
+    return sessionMcpServersScope(agent.runtime, this.runtimes[agent.runtime]) === 'per-process'
       ? key
       : agentHostKey(agentId)
   }

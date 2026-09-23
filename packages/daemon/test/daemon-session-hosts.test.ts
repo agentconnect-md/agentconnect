@@ -1237,3 +1237,61 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     await daemon.stop()
   })
 })
+
+/** Merge runtime definitions into the scaffold's config. */
+function withRuntimes(root: string, runtimes: Record<string, Record<string, unknown>>): string {
+  const path = join(root, 'config.json')
+  const config = JSON.parse(readFileSync(path, 'utf8'))
+  writeFileSync(path, JSON.stringify({ ...config, runtimes: { ...config.runtimes, ...runtimes } }))
+  return root
+}
+
+/** The AgentConnect bridge token a `session/new` handed the runtime. */
+function bridgeToken(call: unknown[]): string {
+  const servers = call[1] as { name: string; env: { name: string; value: string }[] }[]
+  const bridge = servers.find((server) => server.name === 'agentconnect')!
+  return bridge.env.find((entry) => entry.name === 'AC_MCP_TOKEN')!.value
+}
+
+// OpenCode keeps session mcpServers per working directory by name, so on a shared host every session's tool calls would carry the token of whichever session registered last.
+describe('one ACP host per session for a runtime whose session MCP servers are per-process', () => {
+  it('gives each session its own host in the shared workspace, holding only that session’s bridge token', async () => {
+    const opencode = { command: 'node', args: ['unused'] }
+    const root = withRuntimes(scaffold({ runtime: 'opencode', runInSandbox: false }, 'shared'), { opencode })
+    const { daemon, hosts, factory } = await startDaemon(root)
+    await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+    await (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
+
+    expect(factory).toHaveBeenCalledTimes(2)
+    expect((daemon as any).hosts.get(agentHostKey('bot-a'))).toBeUndefined()
+    for (const [index, thread] of ['T1', 'T2'].entries()) {
+      const key = sessionHostKey('bot-a', KEY(thread))
+      expect((daemon as any).hosts.get(key)).toBe(hosts[index])
+      expect((daemon as any).hostLaunch.get(key).cwd).toBe(join(root, 'agents', 'bot-a', 'workspace'))
+      expect(hosts[index]!.newSession).toHaveBeenCalledTimes(1)
+      const token = bridgeToken(hosts[index]!.newSession.mock.calls[0] as unknown[])
+      expect((daemon as any).mcp.sessions.get(token)).toMatchObject({ agentId: 'bot-a', channel: 'C1', thread })
+    }
+
+    // A reaped session resumes its runtime session on a host of its own again.
+    await (daemon as any).stopHost('bot-a')
+    await (daemon as any).dispatch('bot-a', dm('300', 'resume', 'T1'), 'int-a')
+    expect((daemon as any).hosts.get(sessionHostKey('bot-a', KEY('T1')))).toBe(hosts[2])
+    expect(hosts[2]!.loadSession).toHaveBeenCalled()
+    expect(hosts[2]!.newSession).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+
+  it('follows what a RuntimeDef declares over the audited scope of its id', async () => {
+    const opencode = { command: 'node', args: ['unused'], sessionMcpServers: 'per-session' }
+    const root = withRuntimes(scaffold({ runtime: 'opencode', runInSandbox: false }, 'shared'), { opencode })
+    const { daemon } = await startDaemon(root)
+    expect((daemon as any).hostKeyFor('bot-a', KEY('T1'))).toBe(agentHostKey('bot-a'))
+    // Undeclared, the audited scope of the id applies.
+    delete (daemon as any).runtimes.opencode.sessionMcpServers
+    expect((daemon as any).hostKeyFor('bot-a', KEY('T1'))).toBe(sessionHostKey('bot-a', KEY('T1')))
+    // Internal passes keep the agent's host: only a session key names a session-bound one.
+    expect((daemon as any).hostKeyFor('bot-a')).toBe(agentHostKey('bot-a'))
+    await daemon.stop()
+  })
+})
