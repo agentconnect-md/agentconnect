@@ -71,7 +71,7 @@ import {
   type SecondarySubtree
 } from './secondary-layout.js'
 import { authorizeWorkspaceGitUrl } from './git-origin-policy.js'
-import { isSessionBranch, sessionBranchName } from './session-branch.js'
+import { blockingBranchRefs, isSessionBranch, sessionBranchName } from './session-branch.js'
 import {
   confinedSessionDirIn,
   hasSessionsDirIn,
@@ -1950,14 +1950,14 @@ export class WorkspaceManager {
     await git().raw(['worktree', 'add', '-b', branch, '--no-track', cwd, target])
   }
 
-  /** A session branch name the repository `git` runs in does not hold yet — word pairs first, random bytes once the draws are spent; not `--quiet`, whose silent exit 1 the runner resolves as if the ref existed, which made every draw read as taken. */
+  /** A session branch name no ref in the repository `git` runs in blocks — word pairs first, random bytes once the draws are spent; only a printed ref counts, since a miss exits 1 silently, which one runner resolves and the other throws. */
   private async drawSessionBranch(git: GitRunner, initiatedBy?: string): Promise<string> {
     for (let attempt = 0; ; attempt++) {
       const branch = sessionBranchName(initiatedBy, attempt >= SESSION_BRANCH_DRAWS)
       if (attempt >= SESSION_BRANCH_DRAWS) return branch
       const taken = await git
-        .raw(['show-ref', '--verify', `refs/heads/${branch}`])
-        .then(() => true)
+        .raw(['show-ref', ...blockingBranchRefs(branch)])
+        .then((out) => out.trim() !== '')
         .catch(() => false)
       if (!taken) return branch
     }

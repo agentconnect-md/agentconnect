@@ -299,7 +299,7 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
     expect(leaf).toBe(join(home, 'sessions', hostKeyDirName(sessionHostKey(agent.id, KEY))))
     expect(cwd).toBe(realpathSync(join(leaf, 'workspace')))
     expect(statSync(join(cwd, '.git')).isDirectory()).toBe(true)
-    expect(git(cwd, ['symbolic-ref', '--short', 'HEAD'])).toMatch(/^dev\/ada-lovelace\/[a-z]+-[a-z]+$/)
+    expect(git(cwd, ['symbolic-ref', '--short', 'HEAD'])).toMatch(/^a10t\/ada-lovelace\/[a-z]+-[a-z]+$/)
     expect(git(cwd, ['rev-parse', 'HEAD'])).toBe(git(primary!.seed, ['rev-parse', 'origin/main']))
     // A blobless partial clone straight from the remote: no alternates, no upstream on the session branch.
     expect(git(cwd, ['config', '--get', 'remote.origin.partialclonefilter'])).toBe('blob:none')
@@ -579,7 +579,7 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
 
     const infra = join(leafOf(agent), 'repos', 'acme', 'infra')
     expect(statSync(join(infra, '.git')).isDirectory()).toBe(true)
-    expect(git(infra, ['symbolic-ref', '--short', 'HEAD'])).toMatch(/^dev\/ada-lovelace\//)
+    expect(git(infra, ['symbolic-ref', '--short', 'HEAD'])).toMatch(/^a10t\/ada-lovelace\//)
     expect(git(infra, ['rev-parse', 'HEAD'])).toBe(git(served['acme/infra']!.seed, ['rev-parse', 'origin/trunk']))
     expect(git(infra, ['config', '--get', 'remote.origin.partialclonefilter'])).toBe('blob:none')
     expect(existsSync(join(infra, '.git', 'objects', 'info', 'alternates'))).toBe(false)
@@ -596,6 +596,16 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
       branch: 'trunk'
     })
     expect(existsSync(join(home, 'repos'))).toBe(false)
+  })
+
+  it('branches a clone whose base is `dev`, which Git refused every `dev/…` session branch beside (#2341)', async () => {
+    const agent = agentFixture({ additionalRepos: [{ repoFullName: 'acme/infra', repoId: '42' }] })
+    serveAll(agent, { 'acme/infra': 'dev' })
+
+    await workspaces.prepareSessionWorkspace(agent, confined())
+
+    const infra = join(leafOf(agent), 'repos', 'acme', 'infra')
+    expect(git(infra, ['symbolic-ref', '--short', 'HEAD'])).toMatch(/^a10t\/ada-lovelace\/[a-z]+-[a-z]+$/)
   })
 
   it('keeps a scratch primary as the cwd while its secondaries get session clones', async () => {
@@ -1294,7 +1304,7 @@ describe('the confined tier issues only Git the sandbox admits (k8s-daemon-pool.
     const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
 
     expect(cwd).toBe(realpathSync(join(leafOf(agent), 'workspace')))
-    expect(git(cwd, ['symbolic-ref', '--short', 'HEAD'])).toMatch(/^dev\/ada-lovelace\/[a-z]+-[a-z]+$/)
+    expect(git(cwd, ['symbolic-ref', '--short', 'HEAD'])).toMatch(/^a10t\/ada-lovelace\/[a-z]+-[a-z]+$/)
     expect(git(cwd, ['rev-parse', 'HEAD'])).toBe(git(primary!.seed, ['rev-parse', 'origin/main']))
     // Materialized, not merely pointed at: the tree is the half `checkout` was doing.
     expect(readFileSync(join(cwd, 'README.md'), 'utf8')).toBe('seed\n')

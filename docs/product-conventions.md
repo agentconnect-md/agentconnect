@@ -1222,13 +1222,15 @@ GitHub workspace settings expose one boolean named `Worktree`. When enabled, eac
 logical session runs in its own stable Git worktree under the Agent directory, so one
 Agent can work on several sessions concurrently without sharing branch or file state.
 When disabled, sessions use the primary checkout. Each worktree checks out its own
-generated branch, `dev/<user>/<word>-<word>`, naming the user who opened the session, so
+generated branch, `a10t/<user>/<word>-<word>`, naming the user who opened the session, so
 the work a session produces can be pushed and reviewed under a name a human recognizes.
-Retention cleanup deletes that branch with the worktree, and only ever one under `dev/`
-whose commits are all already reachable from a remote. New GitHub Agents default to enabled;
-existing Agents retain the shared-checkout behavior after upgrade. A fresh manual
-Playground may override `Worktree` before its first turn without changing the Agent;
-automatic triggers use the Agent setting.
+The `a10t` namespace is one no project names a branch, because Git refuses `x/…` beside an
+existing branch `x`; a repository's own `dev` or `feature` branch never blocks a session.
+Retention cleanup deletes that branch with the worktree, and only ever one under `a10t/`
+(or the earlier `dev/`) whose commits are all already reachable from a remote. New GitHub
+Agents default to enabled; existing Agents retain the shared-checkout behavior after
+upgrade. A fresh manual Playground may override `Worktree` before its first turn without
+changing the Agent; automatic triggers use the Agent setting.
 
 The Workspace tab lets an authorized viewer switch between the primary checkout
 and the stable worktree of any visible, unpurged session. Session details place a

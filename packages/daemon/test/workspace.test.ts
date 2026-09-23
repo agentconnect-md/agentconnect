@@ -336,7 +336,7 @@ describe('prepareSessionWorkspace', () => {
       .map((call) => call[0] as string[])
       .find((args) => args[0] === 'worktree' && args[1] === 'add')
     expect(addCall?.slice(0, 3)).toEqual(['worktree', 'add', '-b'])
-    expect(addCall?.[3]).toMatch(/^dev\/[^/]+\/[a-z]+-[a-z]+$/)
+    expect(addCall?.[3]).toMatch(/^a10t\/[^/]+\/[a-z]+-[a-z]+$/)
     // --no-track, or git makes the remote-tracking start point this branch's upstream.
     expect(addCall?.[4]).toBe('--no-track')
     expect(realpathSync(addCall!.at(-2)!)).toBe(cwd)
@@ -426,8 +426,7 @@ describe('prepareSessionWorkspace', () => {
     ).toEqual([realpathSync(workspaces.sessionWorktreePath(agent, 'session-b'))])
   })
 
-  /** A session worktree on `dev/<user>/<words>`, with control over which branch
-   *  names the repository already holds. */
+  /** A session worktree on `a10t/<user>/<words>`, with control over which refs the repository already holds. */
   function branchFixture(taken: string[] = []) {
     const root = mkdtempSync(join(tmpdir(), 'ac-session-branch-'))
     const path = join(root, 'workspace')
@@ -436,10 +435,11 @@ describe('prepareSessionWorkspace', () => {
     agent.workspace.pullOnNewSession = false
     rawMock.mockImplementation(async (args: string[]) => {
       if (args[0] === 'remote' && args[1] === 'get-url') return 'https://github.com/acme/repo.git\n'
-      // `show-ref --verify --quiet` exits non-zero for a ref that does not exist.
+      // `show-ref <patterns>` prints the refs that exist and exits 1, silently, when none do.
       if (args[0] === 'show-ref') {
-        if (!taken.includes(args.at(-1)!.replace('refs/heads/', ''))) throw new Error('no such ref')
-        return ''
+        const held = args.slice(1).filter((ref) => taken.includes(ref.replace('refs/heads/', '')))
+        if (held.length === 0) throw new Error('git show-ref failed with code 1')
+        return held.map((ref) => `${'c'.repeat(40)} ${ref}\n`).join('')
       }
       if (args[0] === 'worktree' && args[1] === 'add') mkdirSync(join(args.at(-2)!, '.git'), { recursive: true })
       return args[0] === 'rev-parse' ? `${'c'.repeat(40)}\n` : ''
@@ -459,7 +459,7 @@ describe('prepareSessionWorkspace', () => {
     })
 
     expect(addCall()?.[2]).toBe('-b')
-    expect(addCall()?.[3]).toMatch(/^dev\/yu-long\/[a-zA-Z]+-[a-zA-Z]+$/)
+    expect(addCall()?.[3]).toMatch(/^a10t\/yu-long\/[a-zA-Z]+-[a-zA-Z]+$/)
   })
 
   it('draws another name when the repository already holds the one it drew', async () => {
@@ -467,6 +467,7 @@ describe('prepareSessionWorkspace', () => {
     const { agent, addCall } = branchFixture()
     rawMock.mockImplementation(async (args: string[]) => {
       if (args[0] === 'remote' && args[1] === 'get-url') return 'https://github.com/acme/repo.git\n'
+      if (args[0] === 'show-ref') return `${'c'.repeat(40)} ${args.at(-1)}\n`
       if (args[0] === 'worktree' && args[1] === 'add') mkdirSync(join(args.at(-2)!, '.git'), { recursive: true })
       return args[0] === 'rev-parse' ? `${'c'.repeat(40)}\n` : ''
     })
@@ -478,7 +479,21 @@ describe('prepareSessionWorkspace', () => {
     })
 
     expect(rawMock.mock.calls.filter(([args]) => (args as string[])[0] === 'show-ref')).toHaveLength(5)
-    expect(addCall()?.[3]).toMatch(/^dev\/yulong\/[a-zA-Z]+-[a-zA-Z]+-[0-9a-f]{6}$/)
+    expect(addCall()?.[3]).toMatch(/^a10t\/yulong\/[a-zA-Z]+-[a-zA-Z]+-[0-9a-f]{6}$/)
+  })
+
+  it('counts a branch at a parent path as taking the name, since Git cannot nest a branch under one', async () => {
+    const { agent } = branchFixture(['a10t/yulong'])
+
+    await workspaces.prepareSessionWorkspace(agent, {
+      sessionKey: 'session-a',
+      isolation: 'session',
+      initiatedBy: 'yulong'
+    })
+
+    const probes = rawMock.mock.calls.map(([args]) => args as string[]).filter((args) => args[0] === 'show-ref')
+    expect(probes).toHaveLength(5)
+    expect(probes[0]?.slice(1, 3)).toEqual(['refs/heads/a10t', 'refs/heads/a10t/yulong'])
   })
 })
 
@@ -534,7 +549,7 @@ describe('workspaces.removeSessionWorktree(#485 retention GC)', () => {
     const { agent, cwd } = fixture()
     rawMock.mockImplementation(async (args: string[]) => {
       if (args[0] === 'rev-list') return '0\n'
-      if (args[0] === 'symbolic-ref') return 'dev/yulong/brave-otter\n'
+      if (args[0] === 'symbolic-ref') return 'a10t/yulong/brave-otter\n'
       return ''
     })
 
@@ -547,7 +562,7 @@ describe('workspaces.removeSessionWorktree(#485 retention GC)', () => {
     expect(readAt).toBeGreaterThanOrEqual(0)
     expect(readAt).toBeLessThan(removeAt)
     expect(calls.findIndex((args) => args[0] === 'branch')).toBeGreaterThan(removeAt)
-    expect(calls).toContainEqual(['branch', '-D', 'dev/yulong/brave-otter'])
+    expect(calls).toContainEqual(['branch', '-D', 'a10t/yulong/brave-otter'])
   })
 
   it('never deletes a branch outside the session namespace, nor one on a retained worktree', async () => {
@@ -565,7 +580,7 @@ describe('workspaces.removeSessionWorktree(#485 retention GC)', () => {
     rawMock.mockClear()
     rawMock.mockImplementation(async (args: string[]) => {
       if (args[0] === 'rev-list') return '3\n'
-      if (args[0] === 'symbolic-ref') return 'dev/yulong/brave-otter\n'
+      if (args[0] === 'symbolic-ref') return 'a10t/yulong/brave-otter\n'
       return ''
     })
     expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({
@@ -626,14 +641,14 @@ describe('workspaces.removeSessionWorktree(#485 retention GC)', () => {
     rawMock.mockImplementation(async (args: string[]) => {
       if (args[0] === 'rev-list') return '3\n'
       if (args[0] === 'show-ref') return `${'c'.repeat(40)} refs/agentconnect/reviews/${id}/head\n`
-      if (args[0] === 'symbolic-ref') return 'dev/yulong/brave-otter\n'
+      if (args[0] === 'symbolic-ref') return 'a10t/yulong/brave-otter\n'
       return ''
     })
 
     expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
     expect(gitCalls()).toContainEqual(['worktree', 'remove', '--force', cwd])
     // The next delivery's reset would discard these commits anyway; the generated branch goes too.
-    expect(gitCalls()).toContainEqual(['branch', '-D', 'dev/yulong/brave-otter'])
+    expect(gitCalls()).toContainEqual(['branch', '-D', 'a10t/yulong/brave-otter'])
   })
 
   it('never probes for review refs on a clean fully-pushed worktree', async () => {

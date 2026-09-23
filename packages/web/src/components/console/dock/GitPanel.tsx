@@ -285,7 +285,7 @@ export function GitPanel({
         ? `Branch ${git.branch} tracks no remote branch, so the daemon has no ref to push it to.`
         : null
 
-  // A session worktree checks out its own generated `dev/<user>/<words>` branch, so its OWN branch is the answer when it has one; only a detached worktree falls back to naming the primary checkout's.
+  // A session worktree checks out its own generated `a10t/<user>/<words>` branch, so its OWN branch is the answer when it has one; only a detached worktree falls back to naming the primary checkout's.
   const branch = git?.branch ?? (settled ? answer.branch : null) ?? (sessionId ? primaryBranch : null)
   const branchTitle = !sessionId
     ? 'Current branch of the workspace checkout'

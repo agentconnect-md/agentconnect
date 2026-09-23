@@ -1,17 +1,22 @@
 import { describe, expect, it } from 'vitest'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { initiatorLabel, isSessionBranch, sessionBranchName } from '../src/workspace/session-branch.js'
+import {
+  blockingBranchRefs,
+  initiatorLabel,
+  isSessionBranch,
+  sessionBranchName
+} from '../src/workspace/session-branch.js'
 
-/** The user segment of `dev/<user>/<adjective>-<animal>`. */
+/** The user segment of `a10t/<user>/<adjective>-<animal>`. */
 const userOf = (branch: string) => branch.split('/')[1]!
 
 describe('sessionBranchName', () => {
-  it('names the session worktree dev/<user>/<two words>', () => {
+  it('names the session worktree a10t/<user>/<two words>', () => {
     const branch = sessionBranchName('yulong')
-    expect(branch).toMatch(/^dev\/yulong\/[a-zA-Z]+-[a-zA-Z]+$/)
+    expect(branch).toMatch(/^a10t\/yulong\/[a-zA-Z]+-[a-zA-Z]+$/)
   })
 
   it('draws a different word pair per call', () => {
@@ -21,7 +26,7 @@ describe('sessionBranchName', () => {
   })
 
   it('appends random bytes only when asked for a unique name', () => {
-    expect(sessionBranchName('yulong', true)).toMatch(/^dev\/yulong\/[a-zA-Z]+-[a-zA-Z]+-[0-9a-f]{6}$/)
+    expect(sessionBranchName('yulong', true)).toMatch(/^a10t\/yulong\/[a-zA-Z]+-[a-zA-Z]+-[0-9a-f]{6}$/)
   })
 
   it('turns a display name into one ref path component', () => {
@@ -31,7 +36,7 @@ describe('sessionBranchName', () => {
   })
 
   it('reduces a sign-in address to its local part — the domain names nobody', () => {
-    // What webchat carries for a user who set no display name; `dev/jane-example-com/…` is the branch this avoids.
+    // What webchat carries for a user who set no display name; `a10t/jane-example-com/…` is the branch this avoids.
     expect(userOf(sessionBranchName('jane.doe@example.com'))).toBe('jane-doe')
     expect(userOf(sessionBranchName('Jane.Doe@Example.co.uk'))).toBe('jane-doe')
     // Not an address: a handle that merely starts with `@` keeps every character it has.
@@ -116,6 +121,44 @@ describe('the worktree branch git actually creates', () => {
     // push authorizes against and a plain `push.default=simple` push then refuses by name mismatch.
     expect(upstreamOf(wt)).toBeNull()
   })
+
+  it('creates and pushes beside a `dev` branch the project already has (#2341)', () => {
+    const { root, dir } = clone()
+    // The project's own `dev`, on the remote and local: Git refused every `dev/…` session branch beside it.
+    execFileSync('git', ['push', '-q', 'origin', 'HEAD:dev'], { cwd: dir, env, stdio: 'ignore' })
+    execFileSync('git', ['branch', 'dev', 'HEAD'], { cwd: dir, env, stdio: 'ignore' })
+    const branch = sessionBranchName('yulong')
+    const wt = join(root, 'wt')
+
+    execFileSync('git', ['worktree', 'add', '-b', branch, '--no-track', wt, 'refs/remotes/origin/main'], {
+      cwd: dir,
+      env,
+      stdio: 'ignore'
+    })
+
+    expect(() => execFileSync('git', ['push', '-q', 'origin', branch], { cwd: wt, env, stdio: 'ignore' })).not.toThrow()
+  })
+
+  it('finds a parent ref blocking the name, which an exact `show-ref --verify` misses', () => {
+    const { dir } = clone()
+    const branch = sessionBranchName('yulong')
+    const blocking = () =>
+      spawnSync('git', ['show-ref', ...blockingBranchRefs(branch)], { cwd: dir, env }).stdout.toString()
+
+    expect(blockingBranchRefs('a10t/yulong/brave-otter')).toEqual([
+      'refs/heads/a10t',
+      'refs/heads/a10t/yulong',
+      'refs/heads/a10t/yulong/brave-otter'
+    ])
+    // Another session's branch beside it is no obstacle.
+    execFileSync('git', ['branch', 'a10t/yulong/other-session', 'HEAD'], { cwd: dir, env, stdio: 'ignore' })
+    expect(blocking()).toBe('')
+    execFileSync('git', ['branch', '-D', 'a10t/yulong/other-session'], { cwd: dir, env, stdio: 'ignore' })
+    execFileSync('git', ['branch', 'a10t/yulong', 'HEAD'], { cwd: dir, env, stdio: 'ignore' })
+    expect(blocking()).toContain('refs/heads/a10t/yulong\n')
+    expect(spawnSync('git', ['show-ref', '--verify', `refs/heads/${branch}`], { cwd: dir, env }).status).not.toBe(0)
+    expect(() => execFileSync('git', ['branch', branch, 'HEAD'], { cwd: dir, env, stdio: 'ignore' })).toThrow()
+  })
 })
 
 describe('isSessionBranch (the retention GC delete guard)', () => {
@@ -124,8 +167,23 @@ describe('isSessionBranch (the retention GC delete guard)', () => {
     expect(isSessionBranch(sessionBranchName('张伟', true))).toBe(true)
   })
 
-  it('refuses anything outside the three-component dev namespace', () => {
-    for (const branch of ['main', 'dev', 'dev/yulong', 'dev/yulong/a/b', 'devel/yulong/x', 'feature/dev/x/y', '']) {
+  it('still accepts one an earlier daemon drew under `dev/`, so retention can delete it', () => {
+    expect(isSessionBranch('dev/yulong/brave-otter')).toBe(true)
+    expect(isSessionBranch('dev/yulong/brave-otter-0a1b2c')).toBe(true)
+  })
+
+  it('refuses anything outside the three-component session namespaces', () => {
+    for (const branch of [
+      'main',
+      'dev',
+      'a10t',
+      'dev/yulong',
+      'a10t/yulong',
+      'a10t/yulong/a/b',
+      'devel/yulong/x',
+      'feature/yulong/brave-otter',
+      ''
+    ]) {
       expect(isSessionBranch(branch)).toBe(false)
     }
     expect(isSessionBranch(undefined)).toBe(false)
@@ -136,6 +194,7 @@ describe('isSessionBranch (the retention GC delete guard)', () => {
     for (const branch of [
       'dev/yulong/gurnard',
       'dev/yulong/fix-parser',
+      'a10t/yulong/fix-parser',
       'dev/yulong/brave-otter-x',
       'dev/yulong/brave-otter-12345',
       'dev/yulong/otter-brave',

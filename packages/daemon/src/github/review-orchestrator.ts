@@ -572,8 +572,7 @@ export class GithubReviewOrchestrator {
     }
   }
 
-  /** Display label of the user a session is opened by — it names the session
-   * worktree's branch (`dev/<user>/<words>`). Presentation only. */
+  /** Display label of the user a session is opened by, which names its branch (`a10t/<user>/<words>`); presentation only. */
   async sessionInitiatorLabel(msg: NormalizedMessage): Promise<string> {
     // The routing identity a session is keyed by, which for a GitHub hook is the hook —
     // `initiatorLabel` then falls through to the actor who fired it.
