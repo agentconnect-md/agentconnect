@@ -155,6 +155,8 @@ interface ConsoleData {
   integrationsLoaded: boolean
   /** Durable bot identities (freed + in-use) — Add-integration picker + Settings Bots card. */
   bots: BotDto[]
+  /** Whether the bot list has returned successfully at least once; the integration rows' rejected mark is read from it. */
+  botsLoaded: boolean
   /** Org MCP-provider registry (metadata + header names) — the MCP Servers admin view
    *  and the per-agent enable-list candidate set both read this. */
   mcpProviders: McpProviderDto[]
@@ -318,6 +320,9 @@ const DAEMON_REFRESH_MS = 15_000
  *  fleet, so this is a backstop rather than the way a change is noticed. */
 const DAEMON_CAPABILITY_REFRESH_MS = 300_000
 const RESOURCE_REFRESH_MS = 30_000
+// A stable empty bot list while the first pull is outstanding, so memos keyed on it do not recompute every render.
+const NO_BOTS: BotDto[] = []
+
 const EMPTY_SESSION_FACETS: SessionFacets = {
   agentIds: [],
   agentNames: {},
@@ -878,10 +883,12 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     refreshInterval: RESOURCE_REFRESH_MS
   })
   const {
-    data: realBots = [],
+    data: botsData,
     isLoading: botsIsLoading,
     mutate: mutateBots
   } = useSWR<BotDto[]>(consoleKeys.bots(orgKey), ([, orgId]) => fetchBots(orgId as string))
+  const realBots = botsData ?? NO_BOTS
+  const botsLoaded = botsData !== undefined
   const {
     data: realMcpProviders = [],
     isLoading: mcpProvidersIsLoading,
@@ -1719,6 +1726,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       integrations,
       integrationsLoaded,
       bots,
+      botsLoaded,
       mcpProviders,
       mcpProvidersLoading,
       createMcpProvider,
@@ -1807,6 +1815,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       integrations,
       integrationsLoaded,
       bots,
+      botsLoaded,
       mcpProviders,
       mcpProvidersLoading,
       createMcpProvider,

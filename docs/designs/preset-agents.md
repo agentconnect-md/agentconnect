@@ -353,7 +353,10 @@ installed via standard OAuth v2. Verified gaps against current code:
   sends the check and the new `rc/bot-revoked` fields only to a Control Plane
   that advertises `bot-credential-check-v1`. The console shows a marked bot's
   integrations as `rejected`, ranked after `revoked` and before `offline`, with
-  Slack's code in the tooltip and the same repairs a revoked app offers.
+  Slack's code in the tooltip and the same repairs a revoked app offers. Members
+  who can edit the agent also get a notification for it, keyed apart from the
+  revoked one, so a later revocation resolves the rejected item and opens a
+  revoked item in its place.
 
 - **Transport.** Distributed apps are Events-API-only — a socket-mode app token is
   per-app and cannot be demuxed per workspace — so this path hard-depends on the relay

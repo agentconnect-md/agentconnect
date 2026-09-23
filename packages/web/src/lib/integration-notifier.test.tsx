@@ -4,7 +4,7 @@ import { act, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 import { describe, expect, it, vi } from 'vitest'
 import type { IntegrationRow } from '@/lib/data'
-import { revokedIntegrationSourceKey } from '@/lib/integration-notifications'
+import { rejectedIntegrationSourceKey, revokedIntegrationSourceKey } from '@/lib/integration-notifications'
 import { syncIntegrationNotifications, useIntegrationNotifier } from '@/lib/integration-notifier'
 import { NotificationProvider, useNotifications } from '@/lib/notifications'
 
@@ -26,24 +26,44 @@ const revokedRow: IntegrationRow = {
 }
 
 describe('syncIntegrationNotifications', () => {
-  it('syncs nothing until both integrations and the agent roster have loaded successfully', () => {
+  it('syncs nothing until integrations, bots and the agent roster have all loaded successfully', () => {
     const sync = vi.fn()
     syncIntegrationNotifications(
-      { integrations: [], integrationsLoaded: false, agents, agentsLoaded: true, orgPath },
+      { integrations: [], integrationsLoaded: false, botsLoaded: true, agents, agentsLoaded: true, orgPath },
       sync
     )
     syncIntegrationNotifications(
-      { integrations: [revokedRow], integrationsLoaded: true, agents: [], agentsLoaded: false, orgPath },
+      {
+        integrations: [revokedRow],
+        integrationsLoaded: true,
+        botsLoaded: true,
+        agents: [],
+        agentsLoaded: false,
+        orgPath
+      },
+      sync
+    )
+    // Without the bot list every rejected mark reads as cleared, which would resolve an open rejected item.
+    syncIntegrationNotifications(
+      { integrations: [revokedRow], integrationsLoaded: true, botsLoaded: false, agents, agentsLoaded: true, orgPath },
       sync
     )
     expect(sync).not.toHaveBeenCalled()
 
     syncIntegrationNotifications(
-      { integrations: [revokedRow], integrationsLoaded: true, agents, agentsLoaded: true, orgPath },
+      {
+        integrations: [revokedRow, { ...revokedRow, id: 'int-2', revoked: false, rejected: true }],
+        integrationsLoaded: true,
+        botsLoaded: true,
+        agents,
+        agentsLoaded: true,
+        orgPath
+      },
       sync
     )
     expect(sync).toHaveBeenCalledWith('integrations', [
-      expect.objectContaining({ sourceKey: revokedIntegrationSourceKey('int-1') })
+      expect.objectContaining({ sourceKey: revokedIntegrationSourceKey('int-1') }),
+      expect.objectContaining({ sourceKey: rejectedIntegrationSourceKey('int-2') })
     ])
   })
 })
@@ -61,7 +81,7 @@ describe('useIntegrationNotifier', () => {
       agentsLoaded: boolean
       roster?: typeof agents
     }) {
-      useIntegrationNotifier({ ...props, agents: roster, orgPath })
+      useIntegrationNotifier({ ...props, botsLoaded: true, agents: roster, orgPath })
       const notifications = useNotifications()
       useEffect(() => {
         latest.current = notifications
