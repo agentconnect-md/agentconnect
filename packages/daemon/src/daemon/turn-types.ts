@@ -305,6 +305,8 @@ export interface QueueEntry {
   /** True when this entry was buffered via the user `!queue` command (ACK wording only —
    *  it is one and the same admission queue as ordinary inbound, per §6.9 #390). */
   isQueueCmd?: boolean
+  /** Re-admitted from the durable inbox, so an earlier attempt may have stopped partway. */
+  fromInboxReplay?: boolean
   /** Settles the `dispatch()` promise for THIS message: resolve with its ACP sessionId
    *  (or null when a gate skipped it), reject with its own turn error. */
   resolve: (sessionId: string | null) => void
