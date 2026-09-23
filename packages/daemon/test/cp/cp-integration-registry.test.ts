@@ -109,12 +109,17 @@ describe('CpIntegrationRegistry (memory-only)', () => {
     const first = integration('i1')
     const second = integration('i1', A1, 'xoxb-two')
     reg.upsert(first)
-    expect(applied).toHaveBeenLastCalledWith('i1', undefined, first.core.decisions)
+    expect(applied).toHaveBeenLastCalledWith('i1', undefined, first.core.decisions, first.core.sessionModes ?? [])
     reg.converge([second, integration('i2')])
-    expect(applied).toHaveBeenCalledWith('i1', first.core.decisions, second.core.decisions)
+    expect(applied).toHaveBeenCalledWith(
+      'i1',
+      first.core.decisions,
+      second.core.decisions,
+      second.core.sessionModes ?? []
+    )
     reg.remove('i1')
-    expect(applied).toHaveBeenLastCalledWith('i1', second.core.decisions, undefined)
+    expect(applied).toHaveBeenLastCalledWith('i1', second.core.decisions, undefined, undefined)
     reg.retainForAgent(A1, new Set())
-    expect(applied).toHaveBeenLastCalledWith('i2', expect.anything(), undefined)
+    expect(applied).toHaveBeenLastCalledWith('i2', expect.anything(), undefined, undefined)
   })
 })

@@ -454,9 +454,7 @@ describe('DecisionGate', () => {
     h.calls[0]!.resolve(yes)
     await vi.waitFor(() => expect(h.releases).toHaveLength(1), WAIT)
     const fence = h.releases[0]!.request.beforeDispatch
-    await h.gate.onConfigApplied('int-a', bundle(), bundle(), [
-      { channel: 'C1', mode: 'append' }
-    ])
+    await h.gate.onConfigApplied('int-a', bundle(), bundle(), [{ channel: 'C1', mode: 'append' }])
     expect(fence()).toBe(false)
     h.releases[0]!.resolve({ kind: 'rejected', reason: 'gated', recoverable: false })
     await h.gate.idle()
