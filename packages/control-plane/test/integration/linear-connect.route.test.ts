@@ -682,11 +682,17 @@ describe('the orphan-token sweeper — org-scoped selection, global revoke (§7.
     return winnerOrg
   }
 
-  const putGrant = (h: Harness, orgId: string, organizationId: string) =>
-    h.app.deps.repos.linearToken.put(
+  // Backdated: a millisecond-precision `updatedAt` equal to an immediate `staleBefore` fails its strict `<`.
+  async function putGrant(h: Harness, orgId: string, organizationId: string): Promise<void> {
+    await h.app.deps.repos.linearToken.put(
       { orgId: OrgId(orgId), clientId: APP.clientId, organizationId },
       { accessToken: `access-${orgId}`, refreshToken: 'r', expiresAt: new Date(Date.now() + 86_400_000) }
     )
+    await prisma.linearToken.updateMany({
+      where: { orgId, clientId: APP.clientId, organizationId },
+      data: { updatedAt: new Date(Date.now() - 1_000) }
+    })
+  }
 
   it('sweeps the cross-org loser’s row WITHOUT revoking the live winner’s grant', async () => {
     const h = await harness()
