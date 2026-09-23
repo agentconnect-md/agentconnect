@@ -52,6 +52,7 @@ import {
   SANDBOX_KEEP_ALIVE_FEATURE,
   RUNTIME_COMMANDS_FEATURE,
   AGENT_WAKE_FEATURE,
+  SESSION_WAKE_FEATURE,
   PULL_REQUEST_FEEDBACK_FEATURE,
   WORKSPACE_GIT_V1_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
@@ -5990,7 +5991,7 @@ export class Daemon {
       ...(this.k8s ? [SANDBOX_KEEP_ALIVE_FEATURE] : []),
       RUNTIME_COMMANDS_FEATURE,
       // Only a cluster daemon has a sandbox to wake; elsewhere the CP answers `unsupported` unsent.
-      ...(this.k8s ? [AGENT_WAKE_FEATURE] : []),
+      ...(this.k8s ? [AGENT_WAKE_FEATURE, SESSION_WAKE_FEATURE] : []),
       WORKSPACE_GIT_MESSAGE_FEATURE,
       WORKSPACE_GIT_REVIEW_FEATURE,
       WORKSPACE_GIT_WRITE_FEATURE,

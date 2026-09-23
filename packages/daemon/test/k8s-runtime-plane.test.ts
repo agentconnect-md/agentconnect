@@ -17,6 +17,9 @@ import { wireWorkspacePlane, type PlaneLaunch } from '../src/execution/plane.js'
 import type { ControlWire } from '../src/cp/control/context.js'
 import { workspaceError } from '../src/cp/control/workspace.js'
 import { createWorkspaceReader } from '../src/cp/workspace-reader.js'
+import { createAgentWaker, sessionPodOf } from '../src/cp/agent-wake.js'
+import { createWorkspaceScope } from '../src/cp/workspace-scope.js'
+import { AgentSchema } from '../src/agents/agent-schema.js'
 import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
@@ -675,8 +678,7 @@ describe('one pod per session on the plane (git-workspace-model §11)', () => {
   })
 
   it('refuses a suspended session path rather than waking its pod with the agent pod down', async () => {
-    // The console's wake is agent-scoped, so a bound agent pod IS the press that admits a session pod.
-    // With nothing bound there is no press, and a read must refuse instead of claiming a pod of its own.
+    // A read resumes a session pod only beside a bound agent pod; with nothing bound it refuses, and the session's own press is the waker's.
     const cluster = fakeCluster()
     const plane = await planeUnderTest(cluster as never)
     const port = shimPort(plane)
@@ -694,15 +696,237 @@ describe('one pod per session on the plane (git-workspace-model §11)', () => {
     await binding
     expect(await plane.suspendIdle(session)).toBe('suspended')
 
-    // No pod of this agent is bound, so the workspace seams hand the caller nothing at all.
+    // No pod of this agent is bound: the file port still routes, and the session's root refuses as asleep, the reason the console wakes on.
     expect(plane.runsInSandbox('agent-a')).toBe(false)
     expect(plane.workspaceFsFor('agent-a')).toBeUndefined()
-    expect(plane.workspaceFilesFor('agent-a')).toBeUndefined()
+    await expect(
+      plane.workspaceFilesFor('agent-a')!.list(sessionPath, { agentId: 'agent-a', path: '', limit: 50 })
+    ).rejects.toMatchObject({ name: 'WorkspaceViolationError', reason: 'sandbox-unavailable' })
     expect(plane.gitRunnerFor('agent-a', sessionPath)).toBeUndefined()
     expect(await plane.clearPath('agent-a', sessionPath)).toMatch(/no bound sandbox channel/)
     // And nothing was woken behind the refusal: the claim is untouched and no launch was recorded.
     expect(plane.launched()).toEqual([])
     expect(cluster.claims.has(plane.driver.claimName(session))).toBe(true)
+  })
+
+  it('tells a removed session sandbox apart from a sleeping one on a read, whether or not the agent pod is up', async () => {
+    const cluster = fakeCluster()
+    const plane = await planeUnderTest(cluster as never)
+    const port = shimPort(plane)
+    const T1 = sessionHostKey('agent-a', 'slack:C1:T1:agent-a')
+    const session = sandboxSubjectFor(T1)
+    const sessionPath = `/agent/sessions/${hostKeyDirName(T1)}/workspace`
+    const reader = createWorkspaceReader(
+      new WorkspaceManager(),
+      async () => ({ root: sessionPath, scratch: false }),
+      async (_agentId, write) => await write(),
+      (agentId) => plane.workspaceFilesFor(agentId)
+    )
+    const list = () => reader.list({ agentId: 'agent-a', path: '', limit: 50 }).catch((err: unknown) => err)
+
+    // Asleep: the claim stands, so the read refuses as the console wakes on, and wakes nothing.
+    await plane.driver.ensureSandbox(session)
+    expect(await plane.suspendIdle(session)).toBe('suspended')
+    expect(await list()).toMatchObject({ reason: 'sandbox-unavailable' })
+
+    // A workspace replacement retires the claim, its volume with it, while the session row stays.
+    cluster.claims.delete(plane.driver.claimName(session))
+    const removed = {
+      name: 'WorkspaceViolationError',
+      reason: 'sandbox-removed',
+      message: expect.not.stringContaining(sessionPath)
+    }
+    const refusal = await list()
+    expect(refusal).toMatchObject(removed)
+    // Beside a bound agent pod too, where a read used to resume: there is no claim to resume onto.
+    const agentBinding = plane.driver.ensureBoundChannel('agent-a')
+    shimAgainst(port, { workspaceRoot: '/agent', token: 'pod-agent', handle: async () => ({ ok: true, value: 'dir' }) })
+    await agentBinding
+    expect(await list()).toMatchObject(removed)
+
+    // It rides the wire under its own reason, never the asleep one the console would offer Start for.
+    const sendError = vi.fn()
+    workspaceError({ sendError, log: { warn: vi.fn() } } as unknown as ControlWire, 'req-1', 'workspace/list', refusal)
+    expect(sendError).toHaveBeenCalledWith('req-1', 'BAD_PAYLOAD', expect.any(String), false, {
+      reason: 'sandbox-removed'
+    })
+    // Nothing was created behind either refusal.
+    expect([...cluster.claims.keys()]).toEqual(['agent-agent-a'])
+    expect(plane.launched().map((launch) => launch.subject)).toEqual(['agent-a'])
+  })
+
+  /** The session wake's plane half, wired as the daemon wires it, for one session pod. */
+  function sessionWaker(plane: K8sRuntimePlane, session: string, warn: (message: string) => void = () => {}) {
+    return createAgentWaker({
+      sandbox: {
+        isRunning: (subject) => plane.sandboxBound(subject),
+        ensureChannel: (subject) => plane.ensureChannel(subject),
+        sessionPod: async () => session,
+        claimUidFor: (subject) => plane.claimUidFor(subject),
+        resumeChannel: (subject, claimUid) => plane.resumeChannel(subject, claimUid)
+      },
+      knowsAgent: () => true,
+      log: { warn }
+    })
+  }
+
+  it('resumes a sleeping session pod through the session wake, never claiming or binding the agent pod', async () => {
+    const cluster = fakeCluster()
+    const plane = await planeUnderTest(cluster as never)
+    const port = shimPort(plane)
+    const T1 = sessionHostKey('agent-a', 'slack:C1:T1:agent-a')
+    const session = sandboxSubjectFor(T1)
+    const sessionPath = `/agent/sessions/${hostKeyDirName(T1)}/workspace`
+    const handle = async () => ({ ok: true, value: 'dir' })
+
+    // The session pod ran and was swept as idle; the agent pod was never up on this member.
+    const binding = plane.driver.ensureBoundChannel(session)
+    shimAgainst(port, { workspaceRoot: '/agent', token: 'pod-session', handle })
+    await binding
+    expect(await plane.suspendIdle(session)).toBe('suspended')
+    expect(plane.sandboxBound(session)).toBe(false)
+
+    // The resumed pod answers the member's next dial.
+    shimAgainst(port, { workspaceRoot: '/agent', token: 'pod-session-resumed', handle })
+    const waker = sessionWaker(plane, session)
+    await expect(waker.wake({ agentId: 'agent-a', sessionId: 'outward-1' })).resolves.toEqual({
+      agentId: 'agent-a',
+      state: 'starting'
+    })
+    expect(await until(() => plane.sandboxBound(session))).toBe(true)
+    await expect(waker.wake({ agentId: 'agent-a', sessionId: 'outward-1' })).resolves.toEqual({
+      agentId: 'agent-a',
+      state: 'running'
+    })
+
+    // One pod: the agent's was neither claimed nor bound, and the session's is the claim it already had.
+    expect(plane.sandboxBound('agent-a')).toBe(false)
+    expect([...cluster.claims.keys()]).toEqual([plane.driver.claimName(session)])
+    expect(plane.launched().map((launch) => launch.subject)).toEqual([session])
+    // And the page's read is now served from it.
+    expect(await plane.workspaceFsFor('agent-a')!.fs.stat(sessionPath)).toBe('dir')
+  })
+
+  it("wakes a scratch agent's isolated session whose only roots are additional-repository clones, and says when its claim is gone", async () => {
+    // A scratch primary has no Git root, so a pod located off it would be none at all; the session's clones are on its own pod (§11).
+    const cluster = fakeCluster()
+    const plane = await planeUnderTest(cluster as never)
+    const port = shimPort(plane)
+    const KEY = 'slack:C1:T1:agent-a'
+    const session = sandboxSubjectFor(sessionHostKey('agent-a', KEY))
+    const repo = 'example-org/example-repo'
+    const agent = AgentSchema.parse({
+      id: 'agent-a',
+      name: 'agent-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: {
+        mode: 'from-scratch',
+        path: '/home/agent/workspace',
+        additionalRepos: [{ repoFullName: repo, repoId: '4242' }]
+      },
+      integrations: [],
+      output: { mode: 'low' }
+    })
+    const workspaces = new WorkspaceManager()
+    wireWorkspacePlane(workspaces, plane)
+    const scope = createWorkspaceScope({
+      workspaces,
+      agentOf: (id) => (id === 'agent-a' ? agent : undefined),
+      sessionOf: async (_id, sessionId) =>
+        sessionId === 'outward-1'
+          ? { key: KEY, workspaceIsolation: 'session' as const }
+          : sessionId === 'outward-shared'
+            ? { key: 'slack:C1:T2:agent-a', workspaceIsolation: 'shared' as const }
+            : undefined,
+      runtimeRootOf: (id) => plane.workspaceRootFor(id)
+    })
+    // A shared session's roots are the agent's checkout, so it names the agent's pod; an unknown one names none.
+    await expect(sessionPodOf(scope, plane, 'agent-a', 'outward-shared')).resolves.toBe('agent-a')
+    await expect(sessionPodOf(scope, plane, 'agent-a', 'outward-unknown')).resolves.toBeUndefined()
+    // The premise: no primary root to route by, while the page's own scope reads a clone in the session's directory.
+    await expect(scope.gitRoot('agent-a', 'outward-1')).resolves.toBeUndefined()
+    expect((await scope.location('agent-a', 'outward-1', repo))?.root).toBe(
+      `/agent/sessions/${hostKeyDirName(sessionHostKey('agent-a', KEY))}/repos/${repo}`
+    )
+
+    const handle = async () => ({ ok: true, value: 'dir' })
+    const binding = plane.driver.ensureBoundChannel(session)
+    shimAgainst(port, { workspaceRoot: '/agent', token: 'pod-session', handle })
+    await binding
+    expect(await plane.suspendIdle(session)).toBe('suspended')
+
+    const waker = createAgentWaker({
+      sandbox: {
+        isRunning: (subject) => plane.sandboxBound(subject),
+        ensureChannel: (subject) => plane.ensureChannel(subject),
+        sessionPod: (id, sessionId) => sessionPodOf(scope, plane, id, sessionId),
+        claimUidFor: (subject) => plane.claimUidFor(subject),
+        resumeChannel: (subject, claimUid) => plane.resumeChannel(subject, claimUid)
+      },
+      knowsAgent: () => true,
+      log: { warn: () => {} }
+    })
+    shimAgainst(port, { workspaceRoot: '/agent', token: 'pod-session-resumed', handle })
+    await expect(waker.wake({ agentId: 'agent-a', sessionId: 'outward-1' })).resolves.toEqual({
+      agentId: 'agent-a',
+      state: 'starting'
+    })
+    expect(await until(() => plane.sandboxBound(session))).toBe(true)
+    // The session's pod alone: the agent's was neither claimed nor bound.
+    expect(plane.sandboxBound('agent-a')).toBe(false)
+    expect([...cluster.claims.keys()]).toEqual([plane.driver.claimName(session)])
+
+    // Retired while its row stays: the wake says so rather than creating a claim.
+    expect(await plane.suspendIdle(session)).toBe('suspended')
+    cluster.claims.delete(plane.driver.claimName(session))
+    await expect(waker.wake({ agentId: 'agent-a', sessionId: 'outward-1' })).rejects.toMatchObject({
+      reason: 'sandbox-removed'
+    })
+    expect([...cluster.claims.keys()]).toEqual([])
+    expect(plane.launched()).toEqual([])
+  })
+
+  it('refuses a session wake whose claim was replaced after it was observed, binding and creating nothing', async () => {
+    // The observation and the resume are two round trips: a conversion and a new message can swap the claim between them.
+    const cluster = fakeCluster()
+    const plane = await planeUnderTest(cluster as never)
+    const port = shimPort(plane)
+    const session = sandboxSubjectFor(sessionHostKey('agent-a', 'slack:C1:T1:agent-a'))
+    const binding = plane.driver.ensureBoundChannel(session)
+    shimAgainst(port, {
+      workspaceRoot: '/agent',
+      token: 'pod-session',
+      handle: async () => ({ ok: true, value: 'dir' })
+    })
+    await binding
+    expect(await plane.suspendIdle(session)).toBe('suspended')
+
+    const sessionClaim = plane.driver.claimName(session)
+    const read = cluster.api.getClaim
+    let observed = 0
+    cluster.api.getClaim = async (name: string) => {
+      const claim = await read(name)
+      if (name === sessionClaim && ++observed === 1) {
+        cluster.claims.set(name, { ...claim, metadata: { ...claim.metadata, uid: 'claim-replacement' } })
+      }
+      return claim
+    }
+
+    const warn = vi.fn()
+    await expect(
+      sessionWaker(plane, session, warn).wake({ agentId: 'agent-a', sessionId: 'outward-1' })
+    ).resolves.toEqual({
+      agentId: 'agent-a',
+      state: 'starting'
+    })
+    expect(await until(() => warn.mock.calls.length > 0)).toBe(true)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no longer holds claim'))
+    // The replacement is left as it is: nothing resumed onto it, nothing bound, and no claim of the wake's own.
+    expect(plane.sandboxBound(session)).toBe(false)
+    expect(plane.launched()).toEqual([])
+    expect([...cluster.claims.keys()]).toEqual([sessionClaim])
+    expect(cluster.claims.get(sessionClaim)?.metadata?.uid).toBe('claim-replacement')
   })
 
   it('hands the driver a host key only for a confined session host, so every other host lands in the agent pod', async () => {

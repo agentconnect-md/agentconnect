@@ -1,7 +1,28 @@
-// `AgentWakeCoordinator` — the per-agent debounce in front of `agent/wake` (#1070).
+// `agent/wake` from the CP: which frame a wake sends, and the per-pod debounce in front of it (#1070).
 import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '../../test/fakes/fake-clock.js'
-import { AGENT_WAKE_DEBOUNCE_MS, AgentWakeCoordinator } from './agentWake.js'
+import { AGENT_WAKE_FEATURE, SESSION_WAKE_FEATURE } from '@agentconnect.md/protocol'
+import { AGENT_WAKE_DEBOUNCE_MS, AgentWakeCoordinator, agentWakeRequest } from './agentWake.js'
+
+describe('agentWakeRequest', () => {
+  it("names the session's own pod for a daemon that can wake one, debounced apart from the agent's", () => {
+    expect(agentWakeRequest('a1', 's1', [AGENT_WAKE_FEATURE, SESSION_WAKE_FEATURE])).toEqual({
+      req: { agentId: 'a1', sessionId: 's1' },
+      key: 'a1:s1'
+    })
+  })
+
+  it('falls back to the agent wake for an older daemon, which would strip the session and wake the agent pod anyway', () => {
+    expect(agentWakeRequest('a1', 's1', [AGENT_WAKE_FEATURE])).toEqual({ req: { agentId: 'a1' }, key: 'a1' })
+  })
+
+  it('keeps the agent wake byte-identical when no session is named', () => {
+    expect(agentWakeRequest('a1', undefined, [AGENT_WAKE_FEATURE, SESSION_WAKE_FEATURE])).toEqual({
+      req: { agentId: 'a1' },
+      key: 'a1'
+    })
+  })
+})
 
 const ok = (state: 'running' | 'starting' | 'unsupported') => ({ agentId: 'a1', state })
 

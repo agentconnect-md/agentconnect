@@ -12,7 +12,7 @@ import {
   type WorkspaceGitStatusDto
 } from '@/lib/api'
 import { fileBrowserGlyph } from '@/components/console/FileBrowser'
-import type { SandboxReadState } from '@/components/console/sandbox-wake'
+import { SANDBOX_REMOVED_CODE, type SandboxReadState } from '@/components/console/sandbox-wake'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 // The CP's status separates an offline daemon (503) from one too old for session worktrees (409) and a session whose worktree the viewer cannot read (404); a consumer that wants those apart needs the number, not the flattened message.
@@ -249,15 +249,20 @@ export function sessionWorktreeAbsentNotice(repo?: string): string {
   return `No checkout${of} for this session — it may have been cleaned up, or this session may not have one${repo ? ' for this repository' : ' of its own'}.`
 }
 
+/** The one line a session's file surfaces show once its own sandbox was removed, with nothing to start. */
+export const SESSION_SANDBOX_REMOVED_NOTICE =
+  'This session’s workspace was removed — the next message to this session recreates it.'
+
 /** Whether a failed workspace read was the sandbox being asleep rather than anything being wrong. */
 export function isSandboxAsleep(err: unknown): boolean {
   return err instanceof ApiError && err.code === SANDBOX_ASLEEP_CODE
 }
 
-/** The root listing as the sandbox wake reads it: `pending` until the first answer, `ready` on any answer that is data (an empty or absent workspace included), `asleep` on the sleeping-sandbox refusal, `failed` on any other. */
+/** The root listing as the sandbox wake reads it: `pending` until the first answer, `ready` on any answer that is data (an empty or absent workspace included), `asleep` / `removed` on those two sandbox refusals, `failed` on any other. */
 export function workspaceRootReadState(root: WorkspaceDirState | undefined): SandboxReadState {
   if (!root || (root.loading && !root.entries && !root.err)) return 'pending'
   if (!root.err) return 'ready'
+  if (root.errCode === SANDBOX_REMOVED_CODE) return 'removed'
   return root.errCode === SANDBOX_ASLEEP_CODE ? 'asleep' : 'failed'
 }
 

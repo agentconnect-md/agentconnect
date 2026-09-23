@@ -1,8 +1,21 @@
-// The console's "start this agent's sandbox" (`POST /agents/:id/wake`), debounced per agent: one wake
-// in flight is joined by every caller, and a wake settled within the debounce window is answered from
-// its result rather than re-sent — a Files and a Memory tab opened together cost the daemon one frame.
-import type { AgentWakeOk, AgentWakeState } from '@agentconnect.md/protocol'
+// The console's "start this sandbox" (`POST /agents/:id/wake`), debounced per pod: one wake in flight is joined, and one settled within the window answers repeats.
+import {
+  SESSION_WAKE_FEATURE,
+  type AgentWakeOk,
+  type AgentWakeReq,
+  type AgentWakeState
+} from '@agentconnect.md/protocol'
 import type { Clock } from '../domain/clock.js'
+
+/** The frame a wake sends and the key it is debounced under: a session's own pod when the daemon can wake one, else the agent's, as before session wakes existed. */
+export function agentWakeRequest(
+  agentId: string,
+  sessionId: string | undefined,
+  features: readonly string[]
+): { req: AgentWakeReq; key: string } {
+  if (sessionId === undefined || !features.includes(SESSION_WAKE_FEATURE)) return { req: { agentId }, key: agentId }
+  return { req: { agentId, sessionId }, key: `${agentId}:${sessionId}` }
+}
 
 /** How long a settled wake keeps answering repeat callers before the daemon is asked again. */
 export const AGENT_WAKE_DEBOUNCE_MS = 30_000
@@ -27,19 +40,19 @@ export class AgentWakeCoordinator {
     private readonly debounceMs = AGENT_WAKE_DEBOUNCE_MS
   ) {}
 
-  /** Wake `agentId` through `send`, or answer from the wake already in flight / just settled. */
-  async wake(agentId: string, send: () => Promise<AgentWakeOk>): Promise<AgentWakeOutcome> {
-    const running = this.inflight.get(agentId)
+  /** Wake the pod `key` names through `send`, or answer from the wake already in flight / just settled. */
+  async wake(key: string, send: () => Promise<AgentWakeOk>): Promise<AgentWakeOutcome> {
+    const running = this.inflight.get(key)
     if (running) return { state: await running, coalesced: true }
-    const recent = this.settled.get(agentId)
+    const recent = this.settled.get(key)
     if (recent && this.clock.now() - recent.at < this.debounceMs) return { state: recent.state, coalesced: true }
     const attempt = send()
       .then((ok) => {
-        this.settled.set(agentId, { state: ok.state, at: this.clock.now() })
+        this.settled.set(key, { state: ok.state, at: this.clock.now() })
         return ok.state
       })
-      .finally(() => this.inflight.delete(agentId))
-    this.inflight.set(agentId, attempt)
+      .finally(() => this.inflight.delete(key))
+    this.inflight.set(key, attempt)
     return { state: await attempt, coalesced: false }
   }
 }

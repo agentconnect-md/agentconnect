@@ -6,10 +6,11 @@
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import { AGENT_WAKE_FEATURE } from '@agentconnect.md/protocol'
+import { AGENT_WAKE_FEATURE, SESSION_WAKE_FEATURE } from '@agentconnect.md/protocol'
 import type { AgentWakeOk, AgentWakeReq, AgentWakeState } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
-import { seedAgent, seedDaemon } from '../fixtures/seed.js'
+import { seedAgent, seedDaemon, seedSessionMeta } from '../fixtures/seed.js'
+import { ProtocolError } from '../../src/domain/errors.js'
 import { joinPool, poolSetId } from '../fakes/member-set.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { NoConnection, type ControlSender } from '../../src/orchestrator/outbound.js'
@@ -75,8 +76,8 @@ async function makeUser(sub: string, role: OrgMemberRole): Promise<string> {
 }
 
 /** An install-wide pool member that advertises the wake: an org-less row enrolled in the pool. */
-async function poolMember(daemonId: string): Promise<void> {
-  await seedDaemon(prisma, daemonId, { capabilities: CAPS })
+async function poolMember(daemonId: string, caps: typeof CAPS = CAPS): Promise<void> {
+  await seedDaemon(prisma, daemonId, { capabilities: caps })
   await prisma.daemon.update({ where: { id: daemonId }, data: { orgId: null, clusterIdentity: `cluster/${daemonId}` } })
   await joinPool(prisma, daemonId)
 }
@@ -205,5 +206,74 @@ describe('POST /agents/:id/wake', () => {
     expect((await wake(app(control, { userId: outsider }), restricted)).statusCode).toBe(404)
     expect((await wake(app(control), randomUUID())).statusCode).toBe(404)
     expect(control.calls).toHaveLength(0)
+  })
+})
+
+describe('POST /agents/:id/wake?sessionId= — one session’s own sandbox', () => {
+  const SESSION_CAPS = { ...CAPS, features: [AGENT_WAKE_FEATURE, SESSION_WAKE_FEATURE] }
+  const wakeSession = (running: HttpApp, sessionId: string) =>
+    running.app.inject({ method: 'POST', url: `${ORG}/agents/${AGENT}/wake?sessionId=${sessionId}` })
+
+  async function isolatedSession(): Promise<string> {
+    return await seedSessionMeta(prisma, randomUUID(), AGENT, { workspaceIsolation: 'session' })
+  }
+
+  it('forwards the session to a member that can wake one, debounced apart from the agent’s own wake', async () => {
+    await poolMember(HOLDER, SESSION_CAPS)
+    await seedPoolAgent()
+    await grantDuty(HOLDER, AGENT)
+    const session = await isolatedSession()
+    const control = new WakeSpy()
+    const running = app(control)
+
+    expect((await wakeSession(running, session)).statusCode).toBe(202)
+    expect((await wakeSession(running, session)).statusCode).toBe(202)
+    // The agent's own wake is another pod, so it is another frame.
+    expect((await wake(running)).statusCode).toBe(202)
+    expect(control.calls.map((c) => c.req)).toEqual([{ agentId: AGENT, sessionId: session }, { agentId: AGENT }])
+  })
+
+  it('wakes the agent’s sandbox as before on a member too old to wake one session', async () => {
+    await poolMember(HOLDER)
+    await seedPoolAgent()
+    await grantDuty(HOLDER, AGENT)
+    const session = await isolatedSession()
+    const control = new WakeSpy()
+
+    expect((await wakeSession(app(control), session)).statusCode).toBe(202)
+    expect(control.calls.map((c) => c.req)).toEqual([{ agentId: AGENT }])
+  })
+
+  it('reads a session the caller cannot browse as absent, and sends nothing', async () => {
+    await poolMember(HOLDER, SESSION_CAPS)
+    await seedPoolAgent()
+    await grantDuty(HOLDER, AGENT)
+    const shared = await seedSessionMeta(prisma, randomUUID(), AGENT, { workspaceIsolation: 'shared' })
+    const control = new WakeSpy()
+    const running = app(control)
+
+    expect((await wakeSession(running, shared)).statusCode).toBe(404)
+    expect((await wakeSession(running, randomUUID())).statusCode).toBe(404)
+    expect(control.calls).toHaveLength(0)
+  })
+
+  it('answers a removed session sandbox with the read’s own 404 and code, without caching it', async () => {
+    await poolMember(HOLDER, SESSION_CAPS)
+    await seedPoolAgent()
+    await grantDuty(HOLDER, AGENT)
+    const session = await isolatedSession()
+    const control = new WakeSpy()
+    control.failure = new ProtocolError('BAD_PAYLOAD', 'agent/wake failed: the sandbox was removed', {
+      details: { reason: 'sandbox-removed' }
+    })
+    const running = app(control)
+
+    const res = await wakeSession(running, session)
+    expect(res.statusCode).toBe(404)
+    expect(res.json()).toMatchObject({ code: 'WORKSPACE_SANDBOX_REMOVED' })
+    // The session's next message makes a new sandbox, so the next press asks again.
+    control.failure = null
+    expect((await wakeSession(running, session)).statusCode).toBe(202)
+    expect(control.calls).toHaveLength(2)
   })
 })

@@ -39,6 +39,7 @@ import {
   type FileBrowserEditorDraft
 } from '@/components/console/FileBrowser'
 import {
+  SESSION_SANDBOX_REMOVED_NOTICE,
   sessionWorktreeAbsentNotice,
   StatusBadge,
   useWorkspaceGitStatus,
@@ -184,7 +185,11 @@ export function WorkspaceFiles({
   const { git, primaryBranch } = useWorkspaceGitStatus(agentId, sessionId, refreshTick, repo)
   // The sandbox wake: pressed once when the root read refuses with the asleep code (or on open for a sandboxed agent), then the read is polled through this same refresh until it answers.
   const retryRoot = useCallback(() => setRefreshTick((tick) => tick + 1), [])
-  const wake = useSandboxWake(agentId, workspaceRootReadState(dirs['']), retryRoot, { sandboxed })
+  // A session's worktree wakes that session's own sandbox, never the agent's.
+  const wake = useSandboxWake(agentId, workspaceRootReadState(dirs['']), retryRoot, {
+    sandboxed,
+    ...(sessionId ? { sessionId } : {})
+  })
   // One-shot: on first entry, auto-preview the project guide (CLAUDE.md / README.md).
   const autoOpenedRef = useRef(false)
   // A path check alone cannot distinguish A → B → A requests. Sequence every file
@@ -687,7 +692,9 @@ export function WorkspaceFiles({
         {!editor &&
           root?.err &&
           !root.entries &&
-          (wake.phase === 'starting' ? (
+          (workspaceRootReadState(root) === 'removed' ? (
+            <EmptyNote text={SESSION_SANDBOX_REMOVED_NOTICE} />
+          ) : wake.phase === 'starting' ? (
             <SandboxStartingNotice />
           ) : (
             <SandboxAsleepNotice

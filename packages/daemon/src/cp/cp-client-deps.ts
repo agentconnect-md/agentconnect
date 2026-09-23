@@ -28,7 +28,7 @@ import { createSessionReader } from './session-reader.js'
 import { createWorkspaceReader } from './workspace-reader.js'
 import { createWorkspaceScope } from './workspace-scope.js'
 import { createWorkspaceGit, type CommitMessagePass } from './workspace-git.js'
-import { createAgentWaker } from './agent-wake.js'
+import { createAgentWaker, sessionPodOf } from './agent-wake.js'
 import { createMemoryReader, type AgentMemoryAdminResolver } from './memory-reader.js'
 import { createDreamReader } from './dream-reader.js'
 import { createLocalSkillsReader } from './local-skills-reader.js'
@@ -422,15 +422,17 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       : {}),
     // §16 desired projection generations, converged by the only GitLab Notes writer for this surface.
     codeHostNoteProjection: (desired, orgId) => host.noteProjector().apply(desired, orgId),
-    // The console's "start this agent's sandbox": duty claim + channel bind, no host — the same
-    // condition the file reader serves on, reached without a turn. Local daemons have no plane.
+    // The console's "start this sandbox": duty claim + channel bind, no host, reached without a turn; local daemons have no plane.
     agentWake: createAgentWaker({
       ...(host.k8sPlane()
         ? {
-            // The agent's OWN pod: the console browses the primary checkout there, whatever session pods are up.
             sandbox: {
-              isRunning: (id) => host.k8sPlane()!.sandboxBound(id),
-              ensureChannel: (id) => host.k8sPlane()!.ensureChannel(id)
+              isRunning: (subject) => host.k8sPlane()!.sandboxBound(subject),
+              ensureChannel: (subject) => host.k8sPlane()!.ensureChannel(subject),
+              // The pod a session's page reads, off the session's own directory and the same routing its reads use (§11).
+              sessionPod: (id, sessionId) => sessionPodOf(workspaceScope, host.k8sPlane()!, id, sessionId),
+              claimUidFor: (subject) => host.k8sPlane()!.claimUidFor(subject),
+              resumeChannel: (subject, claimUid) => host.k8sPlane()!.resumeChannel(subject, claimUid)
             }
           }
         : {}),

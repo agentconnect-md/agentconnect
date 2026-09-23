@@ -3391,16 +3391,15 @@ export interface AgentTasksDto {
 // Read one ACP session's background tasks. `sessionId` is REQUIRED, unlike the workspace reads:
 // the lease is per (agent, ACP session) and there is no per-agent aggregate to answer with. There
 // is no cancel counterpart — no agent-protocol primitive can address a single background task.
-// POST /agents/:id/wake — bring a cluster agent's sandbox to Running WITHOUT a turn, so a Files read that
-// refused with the sandbox-asleep code has something to press. What the daemon observed, never a promise:
-// `starting` means poll the read; `unsupported` means there was nothing to wake (a machine-placed agent).
+// POST /agents/:id/wake — bring a sandbox to Running WITHOUT a turn: the agent's, or with `sessionId` that isolated session's own; `starting` means poll the read.
 export type AgentWakeState = 'running' | 'starting' | 'unsupported'
 export interface AgentWakeDto {
   state: AgentWakeState
 }
 
-export async function wakeAgent(agentId: string): Promise<AgentWakeDto> {
-  return apiPost<AgentWakeDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/wake`, {})
+export async function wakeAgent(agentId: string, sessionId?: string): Promise<AgentWakeDto> {
+  const q = sessionId ? `?${new URLSearchParams({ sessionId }).toString()}` : ''
+  return apiPost<AgentWakeDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/wake${q}`, {})
 }
 
 export async function fetchAgentTasks(agentId: string, sessionId: string): Promise<AgentTasksDto> {

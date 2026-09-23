@@ -95,7 +95,7 @@ export const agentWake: ControlHandler<AgentControlDeps> = (frame: AnyFrame, dep
   answer.then((result) => wire.reply(frame, 'agent/wake/ok', result)).catch((err) => wakeError(wire, frame.id, err))
 }
 
-/** Unknown agent → BAD_PAYLOAD with the machine reason (the CP maps it like a workspace read's); else INTERNAL. */
+/** A refused wake (unknown agent, removed session sandbox) → BAD_PAYLOAD with the machine reason the CP maps like a workspace read's; else INTERNAL. */
 function wakeError(wire: ControlWire, corr: string, err: unknown): void {
   if (err instanceof AgentWakeViolationError) {
     wire.sendError(corr, 'BAD_PAYLOAD', `agent/wake failed: ${err.message}`, false, { reason: err.reason })

@@ -42,11 +42,8 @@ export const WorkspaceErrorReason = z.enum([
   'binary', // the target is not UTF-8 text
   'not-utf8', // the supplied content is not valid UTF-8
   'stale', // optimistic-concurrency failure (CONFLICT)
-  // The workspace is on a sandbox volume no bound channel can reach right now (a suspended or
-  // not-yet-launched pod). The one reason here that is TRANSIENT rather than a bad request, so the
-  // CP answers it 503-with-a-code: retrying is the right move, and it must not read as "there is no
-  // repository here" or "this directory is empty", which is what the panels said before it existed.
-  'sandbox-unavailable'
+  'sandbox-unavailable', // no bound channel reaches the pod right now; the one TRANSIENT reason, so the CP answers 503 with a code
+  'sandbox-removed' // a session's own sandbox claim and volume are gone, so no wake brings them back; its next message creates new ones
 ])
 export type WorkspaceErrorReason = z.infer<typeof WorkspaceErrorReason>
 

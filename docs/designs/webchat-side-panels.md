@@ -59,8 +59,10 @@ put in both modes. No work is planned there.
   `requireSessionWorkspaceRead` in `control-plane/src/http/routes/agents.ts`).
 - **A degraded panel is data, not an error.** An offline daemon is 503, a
   non-repo workspace is `isRepo:false`, a session with no linked PR is an empty
-  state, and a cluster agent whose sandbox pod is not running is a 503 carrying
-  `WORKSPACE_SANDBOX_UNAVAILABLE`. None of these may take down the dock, the
+  state, a cluster agent whose sandbox pod is not running is a 503 carrying
+  `WORKSPACE_SANDBOX_UNAVAILABLE`, and a session whose own sandbox was removed is
+  a 404 carrying `WORKSPACE_SANDBOX_REMOVED`, drawn without Start because its next
+  message is what brings it back. None of these may take down the dock, the
   viewer, or the transcript — and none may be drawn as another one. That last
   clause is not decoration: a suspended pod once answered `isRepo:false` and an
   empty file tree, so both panels described an intact workspace as absent, which

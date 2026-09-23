@@ -128,7 +128,7 @@ import { resolveShareSet } from '../sharing.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { AgentMoveConflict, AgentMoveFailed } from '../../orchestrator/agentMove.js'
-import { AgentWakeCoordinator } from '../../orchestrator/agentWake.js'
+import { AgentWakeCoordinator, agentWakeRequest } from '../../orchestrator/agentWake.js'
 import { convergeIntegrationGating } from '../../orchestrator/integrationPush.js'
 import { reconcileAgentLinkedDms } from '../../orchestrator/linkedDmReconcile.js'
 import { ProtocolError } from '../../domain/errors.js'
@@ -181,6 +181,7 @@ import {
   AgentTasksQueryDto,
   AgentTasksDto,
   AgentWakeDto,
+  AgentWakeQueryDto,
   AgentMemoryDto,
   MemoryFilesDto,
   MemoryFilesQueryDto,
@@ -779,11 +780,11 @@ export function workspaceErrorCode(err: ProtocolError): string | null {
   return reason.success ? `WORKSPACE_${reason.data.toUpperCase().replaceAll('-', '_')}` : null
 }
 
-/** The one workspace reason that is TRANSIENT rather than a bad request: the agent's sandbox is not
- *  running, so its files are unreachable until it is. 503 like an offline daemon, because that is
- *  what it is — but WITH the code, which is how the console tells "come back in a moment" from a
- *  daemon that may never come back, and from an empty workspace. */
+/** The one TRANSIENT workspace reason: 503 like an offline daemon, but with the code that tells "come back in a moment" apart from an outage. */
 const SANDBOX_UNAVAILABLE = SANDBOX_UNAVAILABLE_CODE
+
+/** A session whose own sandbox was removed: absent until its next message creates a new one, so a 404 with nothing to wake. */
+const SANDBOX_REMOVED_CODE = 'WORKSPACE_SANDBOX_REMOVED'
 
 /** Status a console can act on instead of the 503 that reads as an offline daemon:
  *  a worktree the daemon lacks is 404 (as when the CP pre-empts the read), a bad path
@@ -798,6 +799,7 @@ export function workspaceFailure(
       if (code === 'WORKSPACE_UNKNOWN_AGENT') {
         return { status: 404, error: 'Not Found', message: 'workspace not found', code }
       }
+      if (code === SANDBOX_REMOVED_CODE) return { status: 404, error: 'Not Found', message: err.message, code }
       // Ahead of the 400: the daemon reports it as a refused request (it carries a reason), but
       // nothing about the request was wrong, and a 400 tells a console to stop retrying.
       if (code === SANDBOX_UNAVAILABLE) {
@@ -805,6 +807,17 @@ export function workspaceFailure(
       }
       return { status: 400, error: 'Bad Request', message: err.message, code }
     }
+  }
+  const unavailable = daemonEdgeFailure(err)
+  return unavailable === null ? null : { status: 503, error: 'Service Unavailable', message: unavailable }
+}
+
+/** A wake's failure: a removed session sandbox is the read's own 404 and code, so the console stops offering Start; any other daemon-edge failure is 503; null ⇒ rethrow. */
+export function agentWakeFailure(
+  err: unknown
+): { status: 404 | 503; error: string; message: string; code?: string } | null {
+  if (err instanceof ProtocolError && workspaceErrorCode(err) === SANDBOX_REMOVED_CODE) {
+    return { status: 404, error: 'Not Found', message: err.message, code: SANDBOX_REMOVED_CODE }
   }
   const unavailable = daemonEdgeFailure(err)
   return unavailable === null ? null : { status: 503, error: 'Service Unavailable', message: unavailable }
@@ -3832,8 +3845,7 @@ export function agentRoutes(deps: HttpDeps) {
       }
     )
 
-    // Wake: bring a cluster agent's sandbox to Running WITHOUT a turn, so a Files read that refused
-    // with `sandbox-unavailable` has something explicit to press (#1070). A GET never wakes anything.
+    // Wake: bring a cluster sandbox to Running WITHOUT a turn, so a read refused as `sandbox-unavailable` has an explicit press (#1070); a GET never wakes anything.
     const wakes = new AgentWakeCoordinator(deps.clock)
     r.post(
       '/agents/:id/wake',
@@ -3842,9 +3854,10 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Wake the agent’s sandbox',
           description:
-            'Ask the daemon serving this agent to bring its cluster sandbox to Running without starting a turn, so the workspace reads become available again. Answers with what the daemon observed: 202 with running (reachable now) or starting (resume in flight — poll the workspace read); 200 with unsupported when there is nothing to wake (a machine-placed agent, or a daemon that runs no sandboxes). Wakes are debounced per agent: one in flight is joined, and one settled within the last 30 s is answered from its result. For a pool agent nobody currently serves, the wake reaches a live member, which claims the agent the way a turn would. Requires edit access; 503 when no daemon can be reached.',
+            'Ask the daemon serving this agent to bring its cluster sandbox to Running without starting a turn, so the workspace reads become available again. Pass sessionId to wake that isolated session’s own sandbox instead of the agent’s: it is only ever resumed onto the claim it already has, so a session whose sandbox was removed answers 404 with code WORKSPACE_SANDBOX_REMOVED (its next message creates a new one), and a daemon too old to wake one session wakes the agent’s sandbox as before. A sessionId the caller cannot browse reads 404. Answers with what the daemon observed: 202 with running (reachable now) or starting (resume in flight — poll the workspace read); 200 with unsupported when there is nothing to wake (a machine-placed agent, or a daemon that runs no sandboxes). Wakes are debounced per sandbox: one in flight is joined, and one settled within the last 30 s is answered from its result. For a pool agent nobody currently serves, the wake reaches a live member, which claims the agent the way a turn would. Requires edit access; 503 when no daemon can be reached.',
           operationId: 'wakeAgent',
           params: IdParam,
+          querystring: AgentWakeQueryDto,
           response: { 200: AgentWakeDto, 202: AgentWakeDto, 403: ErrorDto, 404: ErrorDto, 503: ErrorDto }
         }
       },
@@ -3854,6 +3867,11 @@ export function agentRoutes(deps: HttpDeps) {
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
+        }
+        // A session's own sandbox holds that session's worktree, so it is gated like the worktree's read.
+        const sessionId = req.query.sessionId
+        if (!(await canReadWorkspaceScope(req, agent.id, sessionId))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'workspace not found' })
         }
         // DISPATCH, not serving: a set agent whose lease lapsed is served by nobody for one horizon,
         // and the wake is exactly the trigger that gives it a holder again.
@@ -3867,15 +3885,19 @@ export function agentRoutes(deps: HttpDeps) {
         const daemon = await deps.registry.getAvailable(agent.orgId, daemonId)
         if (!daemon?.capabilities.features.includes(AGENT_WAKE_FEATURE))
           return reply.code(200).send({ state: 'unsupported' })
+        const wake = agentWakeRequest(agent.id, sessionId, daemon.capabilities.features)
         try {
-          const outcome = await wakes.wake(agent.id, () =>
-            deps.control.agentWake(daemonId, { agentId: agent.id }, agent.orgId)
-          )
+          const outcome = await wakes.wake(wake.key, () => deps.control.agentWake(daemonId, wake.req, agent.orgId))
           return reply.code(outcome.state === 'unsupported' ? 200 : 202).send({ state: outcome.state })
         } catch (err) {
-          const unavailable = daemonEdgeFailure(err)
-          if (unavailable === null) throw err
-          return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
+          const failure = agentWakeFailure(err)
+          if (failure === null) throw err
+          return reply.code(failure.status).send({
+            error: failure.error,
+            statusCode: failure.status,
+            message: failure.message,
+            ...(failure.code ? { code: failure.code } : {})
+          })
         }
       }
     )

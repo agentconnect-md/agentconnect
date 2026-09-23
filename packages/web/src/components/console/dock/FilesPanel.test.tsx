@@ -64,7 +64,8 @@ vi.mock('@/lib/api', () => {
 import { FilesPanel, filesTabStatus } from './FilesPanel'
 import { DOCK_POLL_MS } from './auto-refresh'
 import { SessionDock, type DockTab } from './SessionDock'
-import { fetchWorkspaceFiles, fetchWorkspaceGitStatus, wakeAgent } from '@/lib/api'
+import { ApiError, fetchWorkspaceFiles, fetchWorkspaceGitStatus, wakeAgent } from '@/lib/api'
+import { SESSION_SANDBOX_REMOVED_NOTICE } from '@/components/console/workspace-tree'
 import type { WorkspaceGitFileDto, WorkspaceGitStatusDto } from '@/lib/api'
 
 vi.mock('@/lib/org-context', () => ({
@@ -668,9 +669,8 @@ describe('FilesPanel degraded states', () => {
     wire.wake = 'unsupported'
     await render()
 
-    // The refusal pressed the wake once; a daemon with nothing to wake leaves the terminal copy, without Start.
-    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(wakeAgent)).toHaveBeenCalledWith('agent-a')
+    // The refusal pressed the wake once — the session's own sandbox, not the agent's; a daemon with nothing to wake leaves the terminal copy, without Start.
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledExactlyOnceWith('agent-a', 'session-1')
     expect(text()).toContain('its pod is not running')
     expect(text()).not.toContain('the owning daemon may be offline')
     expect(text()).not.toContain('Start')
@@ -704,6 +704,48 @@ describe('FilesPanel degraded states', () => {
     await rerender({ active: false })
     await rerender({ active: true })
     expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(1)
+  })
+
+  it("wakes the agent's sandbox for the primary checkout, which lives there", async () => {
+    wire.failures = { '': { status: 503, code: 'WORKSPACE_SANDBOX_UNAVAILABLE' } }
+    await render({ sessionId: undefined })
+
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledExactlyOnceWith('agent-a')
+  })
+
+  it("says a session's removed sandbox in one line, with no Start and nothing pressed", async () => {
+    // A workspace replacement retired the session's pod: Start could never bring it back, so it is not offered.
+    wire.failures = { '': { status: 404, code: 'WORKSPACE_SANDBOX_REMOVED' } }
+    wire.gitFails = true
+    await render()
+
+    expect(text()).toContain(SESSION_SANDBOX_REMOVED_NOTICE)
+    expect(text()).not.toContain('Start')
+    expect(text()).not.toContain('its pod is not running')
+    // The one line is the whole story: no git note beside it, and not the generic 404 copy either.
+    expect(text()).not.toContain('Git status unavailable')
+    expect(text()).not.toContain('may have been cleaned up')
+    expect(vi.mocked(wakeAgent)).not.toHaveBeenCalled()
+    expect(settledReports.at(-1)).toBe(true)
+  })
+
+  it('ends a press the daemon refuses as removed on that line, never on Start', async () => {
+    // Asleep when read, retired before the press landed.
+    const removed = { status: 404, code: 'WORKSPACE_SANDBOX_REMOVED' }
+    wire.failures = { '': { status: 503, code: 'WORKSPACE_SANDBOX_UNAVAILABLE' } }
+    vi.mocked(wakeAgent).mockImplementationOnce(() => {
+      wire.failures = { '': removed }
+      return Promise.reject(Object.assign(new ApiError('HTTP 404', removed.status, removed.code), removed))
+    })
+    await render()
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(1)
+    expect(text()).toContain(SESSION_SANDBOX_REMOVED_NOTICE)
+    expect(text()).not.toContain('Start')
+    expect(text()).not.toContain('Starting the agent’s sandbox')
   })
 
   it('does not press the wake for an offline daemon — only the sleeping-sandbox code earns one', async () => {

@@ -50,13 +50,22 @@ vi.mock('@/lib/api', () => ({
     })
   ),
   fetchWorkspaceGitStatus: vi.fn(() => Promise.resolve({ isRepo: false })),
+  wakeAgent: vi.fn(() => Promise.resolve({ state: 'starting' })),
   writeWorkspaceFile: vi.fn(),
   workspaceGitPull: vi.fn()
 }))
 vi.mock('@/lib/use-is-mobile', () => ({ useIsMobile: () => mobile.value }))
 
 import { WorkspaceFiles, workspaceReadModelKey } from './WorkspaceFiles'
-import { deleteWorkspaceFile, fetchWorkspaceFiles, fetchWorkspaceGitStatus, writeWorkspaceFile } from '@/lib/api'
+import {
+  ApiError,
+  deleteWorkspaceFile,
+  fetchWorkspaceFiles,
+  fetchWorkspaceGitStatus,
+  wakeAgent,
+  writeWorkspaceFile
+} from '@/lib/api'
+import { SESSION_SANDBOX_REMOVED_NOTICE } from './workspace-tree'
 import type { Agent } from '@/lib/data'
 
 let container: HTMLDivElement | undefined
@@ -108,6 +117,7 @@ afterEach(async () => {
   vi.mocked(deleteWorkspaceFile).mockClear()
   vi.mocked(fetchWorkspaceFiles).mockClear()
   vi.mocked(fetchWorkspaceGitStatus).mockClear()
+  vi.mocked(wakeAgent).mockClear()
   vi.mocked(fetchWorkspaceGitStatus).mockImplementation(() =>
     Promise.resolve({
       isRepo: false,
@@ -481,6 +491,34 @@ it('explains a selected session that has no checkout, without inventing why', as
   expect(container.textContent).toContain('No checkout for this session')
   expect(container.textContent).toContain('may not have one of its own')
   expect(container.textContent).not.toContain('The workspace has no files yet')
+})
+
+it("wakes a pool agent's selected session on its own, and says its removed sandbox in one line with no Start", async () => {
+  const removed = { status: 404, code: 'WORKSPACE_SANDBOX_REMOVED' }
+  vi.mocked(fetchWorkspaceFiles).mockImplementationOnce(() =>
+    Promise.reject(Object.assign(new ApiError('HTTP 404', removed.status, removed.code), removed))
+  )
+  container = document.createElement('div')
+  document.body.append(container)
+  root = createRoot(container)
+  await act(async () => {
+    root?.render(
+      <WorkspaceFiles
+        agentId="agent-a"
+        sessionId="session-a"
+        workdir="/workspace"
+        canEdit={false}
+        sandboxed
+        renderHeader={() => null}
+      />
+    )
+    await Promise.resolve()
+  })
+
+  // A pool agent's tab presses on open, and the press names the session's own sandbox, never the agent's.
+  expect(wakeAgent).toHaveBeenCalledExactlyOnceWith('agent-a', 'session-a')
+  expect(container.textContent).toContain(SESSION_SANDBOX_REMOVED_NOTICE)
+  expect(container.textContent).not.toContain('Start')
 })
 
 it('speaks about the SESSION, not the agent, when a session scope selects an additional repository', async () => {
