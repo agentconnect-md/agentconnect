@@ -864,7 +864,10 @@ describe('review of a secondary root (decisions 5, 6 and 11)', () => {
     const shared = realpathSync(worktreeOf(agent, 'example-co/shared-library', 'session-review'))
     expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([primaryWorktree, shared])
     // And the same answer without the request naming the review, which is how a session's later
-    // hand-outs ask: the reviewed root's own subtree attests that it took the cwd.
+    // hand-outs ask: on the worktree tier the reviewed root's own subtree attests that it took the cwd.
+    const subtree = join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra')
+    expect(existsSync(join(subtree, `.session-cwd-${workspaces.sessionWorktreeId('session-review')}.json`))).toBe(true)
+    expect(existsSync(join(workspaces.agentRootFor(agent), 'sessions'))).toBe(false)
     expect(
       await workspaces.additionalWorkspaceDirectories(agent, cwd, {
         sessionKey: 'session-review',

@@ -64,6 +64,11 @@ export function sessionHomeIn(sessionDir: string): string {
   return join(sessionDir, 'home')
 }
 
+/** `<sessionDir>/.session-cwd.json` — which secondary root's clone is the session's cwd, kept with the session wherever it runs and gone with the leaf. */
+export function sessionCwdRecordIn(sessionDir: string): string {
+  return join(sessionDir, '.session-cwd.json')
+}
+
 /** Every `repos/<a>/<b>` clone ON DISK in a session directory, sorted by name; symlinks are skipped. */
 export function sessionSecondaryClonesIn(sessionDir: string): { subtreeName: string; path: string }[] {
   const parent = join(sessionDir, SECONDARY_ROOTS_DIR)
