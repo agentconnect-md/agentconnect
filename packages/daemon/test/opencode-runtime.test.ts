@@ -7,11 +7,28 @@ import { Daemon } from '../src/daemon.js'
 import { readOnlyExtractionMode } from '../src/memory/distill.js'
 import {
   applyOpenCodeReadOnlyMode,
+  openCodeAcpPortArgs,
   OPENCODE_READ_ONLY_MODE,
   OPENCODE_READ_ONLY_PERMISSION
 } from '../src/runtime-defs/opencode-runtime.js'
 
 const opencode = { runtime: 'opencode' as const }
+
+describe('openCodeAcpPortArgs', () => {
+  it('asks every OpenCode-lineage acp launch for an ephemeral port unless it names one', () => {
+    expect(openCodeAcpPortArgs('opencode', ['acp'])).toEqual(['--port', '0'])
+    expect(openCodeAcpPortArgs('kilo', ['/store/kilo/bin/kilo', 'acp'])).toEqual(['--port', '0'])
+    expect(openCodeAcpPortArgs('opencode', ['acp', '--port', '4096'])).toEqual([])
+    expect(openCodeAcpPortArgs('opencode', ['acp', '--port=4096'])).toEqual([])
+  })
+
+  it('leaves other runtimes and non-acp invocations alone', () => {
+    expect(openCodeAcpPortArgs('claude-acp', ['acp'])).toEqual([])
+    expect(openCodeAcpPortArgs(undefined, ['acp'])).toEqual([])
+    expect(openCodeAcpPortArgs('opencode', ['serve'])).toEqual([])
+    expect(openCodeAcpPortArgs('opencode', ['acp', '--', 'extra'])).toEqual([])
+  })
+})
 
 describe('applyOpenCodeReadOnlyMode', () => {
   it('authors a primary read-only agent whose ACP mode the extraction gate prefers over plan', () => {

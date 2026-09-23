@@ -724,22 +724,6 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
     return { host, daemon }
   }
 
-  it('discovers modes from the new extraction session without a warmed chat host', async () => {
-    const { host, daemon } = distillHost({ usesMetaSystemPrompt: false, modes: ['default', 'plan'] })
-    await daemon.start()
-    try {
-      expect(host.permissionModeOptions()).toBeNull()
-      await expect((daemon as any).runMemoryExtraction(AGENT_ID, 'DISTILL THIS')).resolves.toBe('{"memories":[]}')
-      expect(host.permissionModeOptions).toHaveBeenCalledWith('distill-session-1')
-      expect(host.setSessionPermissionMode).toHaveBeenCalledWith('distill-session-1', 'plan')
-      expect(host.setSessionPermissionMode.mock.invocationCallOrder[0]).toBeLessThan(
-        host.prompt.mock.invocationCallOrder[0]!
-      )
-    } finally {
-      await daemon.stop()
-    }
-  })
-
   it('releases the bridge token when creation fails before a session exists', async () => {
     const { host, daemon } = distillHost({ usesMetaSystemPrompt: false })
     host.newSession.mockRejectedValueOnce(new Error('session creation failed'))

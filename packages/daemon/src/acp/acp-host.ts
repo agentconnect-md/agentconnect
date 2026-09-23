@@ -31,6 +31,7 @@ import {
   ULTRACODE_EFFORT
 } from '../runtime-defs/claude-runtime.js'
 import { isCodexRuntimeDef, runtimeExecutableHints } from '../runtime-defs/executable-hints.js'
+import { openCodeAcpPortArgs } from '../runtime-defs/opencode-runtime.js'
 import { codexConfigWithUserInputTool } from '../runtimes/codex-config.js'
 import {
   LocalDriver,
@@ -736,15 +737,13 @@ export class AcpHost {
         this.opts.log?.warn(`acp: leaving Codex's request_user_input tool off — ${(err as Error).message}`)
       }
     }
-    // NOTE: the memory-backend env (disable the runtime's own memory for `managed`,
-    // or redirect it under the private runtime HOME for `native`) is assembled by the daemon
-    // in ensureHost via memoryProviderFor(agent).runtimeEnv() and passed in through
-    // `opts.env` — it is NOT set here, so it stays per-agent-configurable. The
-    // runtime prober / chat CLI construct AcpHost without that env and therefore get
-    // the runtime's default memory behavior.
-    // appendArgs carries any account-app-isolation flags (e.g. Copilot's
-    // --disable-builtin-mcps) that must reach the adapter as CLI args.
-    const spawnArgs = [...this.runtime.args, ...(isolateAccountApps ? appIsolation.appendArgs : [])]
+    // Memory-backend env arrives in opts.env from the daemon (never set here), so the prober and chat CLI keep the runtime's own memory.
+    // Appended CLI args: an OpenCode-lineage `--port 0`, and account-app isolation flags such as Copilot's --disable-builtin-mcps.
+    const spawnArgs = [
+      ...this.runtime.args,
+      ...openCodeAcpPortArgs(this.opts.runtimeId, this.runtime.args),
+      ...(isolateAccountApps ? appIsolation.appendArgs : [])
+    ]
     const driver = this.opts.driver ?? new LocalDriver({ log: this.opts.log })
     const hints = runtimeExecutableHints(this.runtime)
     const spawned = await driver.launch({

@@ -166,6 +166,23 @@ describe('SpawnDriver seam', () => {
       await codexHost.stop(10)
     }
   })
+
+  // A global `server.port` pins OpenCode's `acp` listener with no fallback, so a second concurrent process could not bind.
+  it('asks an OpenCode-lineage acp launch for an ephemeral port, and no other runtime', async () => {
+    for (const [runtimeId, args] of [
+      ['opencode', ['acp', '--port', '0']],
+      ['claude-acp', ['acp']]
+    ] as const) {
+      const driver = new InMemoryDriver(inMemoryRuntime().runtime)
+      const host = new AcpHost(
+        { command: 'opencode', args: ['acp'], env: [] },
+        { driver, runtimeId, onUpdate: () => {} }
+      )
+      await host.start()
+      expect(driver.requests[0]?.args).toEqual(args)
+      await host.stop(10)
+    }
+  })
 })
 
 /**

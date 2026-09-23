@@ -171,7 +171,6 @@ export function composeRuntimeLaunch(opts: {
   hostPackageCache?: boolean
   microsandbox?: {
     mounts: SandboxMount[]
-    homeKey?: HostKey
     trustedSessionDir?: string
     trustedMounts?: SandboxMount[]
   }

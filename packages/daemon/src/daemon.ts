@@ -1440,6 +1440,8 @@ export class Daemon {
   private safetyDrainRuns = new Map<string, symbol>()
   private safetyDrainAdmissionKeys = new Map<string, Set<string>>()
   private safetyDrainReviewLanes = new Map<string, Set<string>>()
+  // The host starts each drain fences: its interrupted sessions', or the whole agent's under an agent-wide interrupt or stop.
+  private safetyDrainScopes = new Map<string, Set<string> | 'agent'>()
   // Cold-move staging is distinct from an ordinary agent/stop gate: staged
   // agents are excluded from the effective roster, so restoring an old archive
   // during bootstrap cannot reopen stale platform credentials before activate
@@ -3441,19 +3443,14 @@ export class Daemon {
           this.transportScopeForIntegrationIds(integrationId ? [integrationId] : [])
         ),
       store: this.store,
-      // Must hand back a *started* host: handle() calls host.newSession() immediately,
-      // which needs the ACP connection that start() establishes.
-      hostFor: (agentId, request, cwd) =>
-        this.ensureHostAsync(this.hostKeyForRequest(agentId, request), { session: { workspace: request, cwd } }),
+      // Must hand back a started host: handle() calls host.newSession() on it immediately.
+      hostFor: (agentId, request, cwd) => this.sessionHostFor(agentId, request, cwd),
       // A constructed AcpHost is not yet running. Keep the session on the cold
       // path until initialize succeeds so concurrent waiters consume hostFor's
       // single preparation rather than starting a warm preparation afterward.
       isHostRunning: (agentId, request) => this.readyHosts.has(this.hostKeyForRequest(agentId, request)),
       // A session-bound host was launched in the session's directory; the runtime session opens there.
-      boundHostCwd: (agentId, request) => {
-        const key = this.hostKeyForRequest(agentId, request)
-        return hostKeySessionKey(key) === undefined ? undefined : this.hostLaunch.get(key)?.cwd
-      },
+      boundHostCwd: (agentId, request) => this.boundHostCwd(this.hostKeyForRequest(agentId, request)),
       agentById: (id) => this.agents.get(id),
       // Skill-invocation translation reads what the runtime itself advertised (runtime-commands.ts).
       advertisedCommandsFor: (agentId) => this.runtimeCommands.get(agentId).commands,
@@ -4444,14 +4441,10 @@ export class Daemon {
     agent: LoadedAgent,
     cwd: string,
     key?: HostKey
-  ): { id: string; trustedSessionDir?: string; homeKey?: HostKey } {
+  ): { id: string; trustedSessionDir?: string } {
     const parts = relative(agent.dir, cwd).split(sep)
     if (parts[0] === 'sessions' && /^session-[a-f0-9]{24}$/.test(parts[1] ?? '')) {
       return { id: `${agent.id}/${parts[1]}`, trustedSessionDir: join(agent.dir, 'sessions', parts[1]!) }
-    }
-    // A legacy session keeps its VM and HOME even when its MCP scope requires a separate ACP process.
-    if (key && this.legacyMicrosandboxSessions.has(key)) {
-      return { id: `${agent.id}/agent`, homeKey: agentHostKey(agent.id) }
     }
     return { id: `${agent.id}/${hostKeyDirName(key)}` }
   }
@@ -4507,9 +4500,7 @@ export class Daemon {
       scopeDir: agent.dir,
       daemonRoot: this.root,
       agentsRoot: this.cfg.agentsDir,
-      cwd:
-        placement.trustedSessionDir ??
-        (key && hostKeySessionKey(key) && !placement.homeKey ? cwd : agent.workspace.path),
+      cwd: placement.trustedSessionDir ?? (key && hostKeySessionKey(key) ? cwd : agent.workspace.path),
       hostKey: key,
       ...placement,
       trustedWorkspaceWriteRoots: placement.trustedSessionDir
@@ -4839,10 +4830,11 @@ export class Daemon {
     if (sessionKey === undefined || !agent) return agentHostKey(agentId)
     const key = sessionHostKey(agentId, sessionKey)
     if (this.sessionRuntimes.has(sessionKey) || this.confinedSession(agent, sessionKey)) return key
-    // Process-local MCP registrations cannot share a host, even inside a legacy shared VM.
-    if (sessionMcpServersScope(agent.runtime, this.runtimes[agent.runtime]) === 'per-process') return key
     if (this.usesMicrosandbox(agent)) return this.legacyMicrosandboxSessions.has(key) ? agentHostKey(agentId) : key
-    return agentHostKey(agentId)
+    // Sharing one would hand every session's MCP tool calls the bridge token of whichever session registered last.
+    return sessionMcpServersScope(agent.runtime, this.runtimes[agent.runtime]) === 'per-process'
+      ? key
+      : agentHostKey(agentId)
   }
 
   /** {@link hostKeyFor} for a caller holding the session's workspace request, which is where its isolation is learned. */
@@ -4852,6 +4844,23 @@ export class Daemon {
   ): HostKey {
     this.sessionIsolation.set(request.sessionKey, request.isolation)
     return this.hostKeyFor(agentId, request.sessionKey)
+  }
+
+  /** The cwd a session-bound host launched in, which every runtime session it opens stands in. */
+  private boundHostCwd(key: HostKey): string | undefined {
+    return hostKeySessionKey(key) === undefined ? undefined : this.hostLaunch.get(key)?.cwd
+  }
+
+  /** The started host a session's turn runs on, relaunched first when bound to a cwd other than this turn's prepared one (a formal review's own checkout). */
+  private async sessionHostFor(
+    agentId: string,
+    request: PrepareSessionWorkspaceRequest,
+    cwd?: string
+  ): Promise<AcpHost> {
+    const key = this.hostKeyForRequest(agentId, request)
+    const bound = this.boundHostCwd(key)
+    if (cwd !== undefined && bound !== undefined && bound !== cwd) await this.stopHostByKey(key)
+    return this.ensureHostAsync(key, { session: { workspace: request, cwd } })
   }
 
   /** The pod a session-bound host launches into, or undefined for one that shares the agent's (a dream, a model-session host). */
@@ -5695,11 +5704,7 @@ export class Daemon {
             dir:
               remoteHome ??
               (microPlacement
-                ? microsandboxRuntimeHome(
-                    agent.dir,
-                    microPlacement.homeKey ?? opts.hostKey,
-                    microPlacement.trustedSessionDir
-                  )
+                ? microsandboxRuntimeHome(agent.dir, opts.hostKey, microPlacement.trustedSessionDir)
                 : privateRuntimeHomeFor(agent.dir, opts.hostKey))
           }
         : agent
@@ -5825,8 +5830,7 @@ export class Daemon {
         runtime: launchDef,
         provider: memoryKindOf(agent),
         scopeDir: agent.dir,
-        // Legacy shared VMs keep their original mount set; session/new still receives the session's own cwd.
-        cwd: microPlacement?.homeKey ? agent.workspace.path : opts.cwd,
+        cwd: opts.cwd,
         hostKey: opts.hostKey,
         runInSandbox,
         daemonRoot: this.root,
@@ -12208,14 +12212,14 @@ export class Daemon {
   private beginSafetyDrain(
     agentId: string,
     reason: TurnInterruptReason,
-    keys?: Iterable<string>,
+    keys?: readonly string[],
     admissionKeys?: Iterable<string>,
     admissionReviewLanes?: Iterable<string>
   ): void {
     const selected =
       keys === undefined
         ? [...(this.activeDispatchesByAgent.get(agentId) ?? [])]
-        : [...keys]
+        : keys
             .map((key) => this.activeDispatchDoneByKey.get(key))
             .filter((done): done is Promise<void> => done !== undefined)
     if (selected.length === 0) return
@@ -12224,6 +12228,7 @@ export class Daemon {
     const waits = this.safetyDrainWaits.get(agentId) ?? new Set<Promise<void>>()
     for (const done of selected) waits.add(done)
     this.safetyDrainWaits.set(agentId, waits)
+    this.widenSafetyDrainScope(agentId, keys)
     this.safetyDrainingAgents.add(agentId)
     if (this.safetyDrainRuns.has(agentId)) return
     const token = Symbol(agentId)
@@ -12246,6 +12251,7 @@ export class Daemon {
         this.safetyDrainingAgents.delete(agentId)
         this.safetyDrainAdmissionKeys.delete(agentId)
         this.safetyDrainReviewLanes.delete(agentId)
+        this.safetyDrainScopes.delete(agentId)
         this.log.info(`${reason}: interrupted turns fully stopped for agent "${agentId}"`)
       }
     })()
@@ -12255,6 +12261,26 @@ export class Daemon {
     const waits = this.safetyDrainWaits.get(agentId) ?? new Set<Promise<void>>()
     waits.add(wait)
     this.safetyDrainWaits.set(agentId, waits)
+  }
+
+  /** Add the interrupted sessions to the drain's fence, or fence the whole agent when none are named. */
+  private widenSafetyDrainScope(agentId: string, keys?: readonly string[]): void {
+    const scope = this.safetyDrainScopes.get(agentId)
+    if (scope === 'agent' || keys === undefined) this.safetyDrainScopes.set(agentId, 'agent')
+    else this.safetyDrainScopes.set(agentId, new Set([...(scope ?? []), ...keys]))
+  }
+
+  /** Whether a fresh start of `key` waits out the drain: any under an agent-wide one, else the shared host and the interrupted sessions' own. */
+  private safetyDrainFences(agentId: string, key: HostKey): boolean {
+    const scope = this.safetyDrainScopes.get(agentId)
+    const sessionKey = hostKeySessionKey(key)
+    return scope === undefined || scope === 'agent' || sessionKey === undefined || scope.has(sessionKey)
+  }
+
+  /** A backstop's agent-wide force-stop, which reaches every host, so it fences every fresh start until the drain ends. */
+  private stopAgentHostsUnderDrain(agentId: string): Promise<void> {
+    if (this.safetyDrainingAgents.has(agentId)) this.widenSafetyDrainScope(agentId)
+    return this.stopHost(agentId, 0)
   }
 
   private async dispatchGateReason(entry: QueueEntry): Promise<TurnInterruptReason | undefined> {
@@ -15031,7 +15057,7 @@ export class Daemon {
         // A successor that reused the ACP id is not the turn this backstop was armed for.
         if (!turn || (only && turn !== only)) return
         // Force-stop the exact process selected for this turn.
-        const cleanup = turn.selectedHost?.stop(0) ?? this.stopHost(agentId, 0)
+        const cleanup = turn.selectedHost?.stop(0) ?? this.stopAgentHostsUnderDrain(agentId)
         const stopped = cleanup.catch((err) => {
           return this.fenceLifecycleCleanupFailure(agentId, key, turn.entry, err)
         })
@@ -15072,7 +15098,7 @@ export class Daemon {
       this.log.warn(
         `${reason}: agent "${agentId}" did not finish cold initialization within ${ms}ms — force-stopping host (${key})`
       )
-      const cleanup = entry.lifecycleCleanup ?? entry.selectedHost?.stop(0) ?? this.stopHost(agentId, 0)
+      const cleanup = entry.lifecycleCleanup ?? entry.selectedHost?.stop(0) ?? this.stopAgentHostsUnderDrain(agentId)
       entry.lifecycleCleanup ??= cleanup
       const stopped = cleanup.catch((err) => {
         return this.fenceLifecycleCleanupFailure(agentId, key, entry, err)
@@ -16810,10 +16836,8 @@ export class Daemon {
     const label = hostKeyLabel(key)
     const assertStartAllowed = (): void => {
       if (this.draining) throw new Error(`host start blocked while daemon is draining (${label})`)
-      // Already-admitted work in another logical session may keep using the warm
-      // host while a conversation-scoped interrupt drains. It may not allocate a
-      // replacement after that host/start generation has been evicted.
-      if (this.safetyDrainingAgents.has(agentId) && !this.hostStarts.has(key)) {
+      // Admitted work keeps a warm host through a drain; a fresh start waits only where the drain reaches (another session's own host does not).
+      if (this.safetyDrainingAgents.has(agentId) && !this.hostStarts.has(key) && this.safetyDrainFences(agentId, key)) {
         throw new Error(`host start blocked while interrupted turns are stopping (${label})`)
       }
       if (!opts.allowAgentDrain && this.drainingAgents.has(agentId)) {

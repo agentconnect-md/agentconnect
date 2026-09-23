@@ -5,6 +5,16 @@ import type { ModelProviderTarget } from '../runtimes/model-provider-config.js'
 /** The OpenCode agent the daemon authors for its own extraction passes, advertised as the ACP `read-only` mode. */
 export const OPENCODE_READ_ONLY_MODE = 'read-only'
 
+// OpenCode and its Kilo fork (audited: opencode 1.18.25–1.18.32, kilo 7.5.6) register ACP session mcpServers per cwd by name, closing an earlier session's, and serve `acp` on a listener a global `server.port` pins with no fallback.
+export const OPENCODE_LINEAGE_RUNTIMES: ReadonlySet<string> = new Set(['opencode', 'kilo'])
+
+/** `--port 0` for an OpenCode-lineage `acp` launch naming no port, so its processes never collide on a configured `server.port`. */
+export function openCodeAcpPortArgs(runtimeId: string | undefined, args: readonly string[]): string[] {
+  if (runtimeId === undefined || !OPENCODE_LINEAGE_RUNTIMES.has(runtimeId)) return []
+  if (!args.includes('acp') || args.includes('--')) return []
+  return args.some((arg) => arg === '--port' || arg.startsWith('--port=')) ? [] : ['--port', '0']
+}
+
 // OpenCode's `plan` keeps bash allowed and tells the model to change nothing, so `writeMemory` is never called under it.
 // An allow-list instead, in precedence order (last match wins): future tools are denied, the daemon's bridge tools stay callable.
 export const OPENCODE_READ_ONLY_PERMISSION = {

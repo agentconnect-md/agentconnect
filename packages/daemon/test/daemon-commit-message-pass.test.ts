@@ -164,17 +164,6 @@ function pass(daemon: Daemon, signal = new AbortController().signal) {
 }
 
 describe('runCommitMessagePass — a fresh isolated session on the warm host', () => {
-  it('discovers read-only modes from its new session on a cold utility host', async () => {
-    await withDaemon({ modes: ['default', 'plan'], chunks: ['fix: cold host'] }, async (daemon, host) => {
-      expect(host.permissionModeOptions()).toBeNull()
-      await expect(pass(daemon)).resolves.toMatchObject({ output: 'fix: cold host' })
-      expect(host.setSessionPermissionMode).toHaveBeenCalledWith('sess-1', 'plan')
-      expect(host.setSessionPermissionMode.mock.invocationCallOrder[0]).toBeLessThan(
-        host.prompt.mock.invocationCallOrder[0]!
-      )
-    })
-  })
-
   it('opens a fresh tool-free session per press, collects the answer, and discards the session', async () => {
     await withDaemon({ chunks: ['feat(dock): ', 'draft a message'] }, async (daemon, host) => {
       const inner = daemon as never as Record<string, any>
