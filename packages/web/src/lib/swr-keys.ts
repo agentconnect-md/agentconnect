@@ -39,6 +39,8 @@ export const consoleKeys = {
     orgId: string | null | undefined,
     state: State
   ) => consoleKey(orgId, 'organization-suggestions', state),
+  organizationSuggestionContent: (orgId: string | null | undefined, id: string) =>
+    consoleKey(orgId, 'organization-suggestion-content', id),
   organizationEnvironment: (orgId: string | null | undefined) => consoleKey(orgId, 'organization-environment'),
   /** The install wizard's deployment-capability probe (`GET /slack/config`) —
    *  Slack-NAMED but answered per organization AND per caller, so it is
