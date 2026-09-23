@@ -829,7 +829,9 @@ describe('daemon --k8s mode', () => {
   it('places an arm by the arming session’s tier: an isolated session’s own pod, a shared one’s agent pod (§4)', async () => {
     const ISOLATED = 'slack:C1:T1:bot-a'
     const SHARED = 'slack:C1:T2:bot-a'
+    const LEGACY = 'slack:C1:T3:bot-a'
     const sessionPod = sandboxSubjectFor(sessionHostKey('bot-a', ISOLATED))
+    const claimAsked: string[] = []
     const pod = () => {
       const ops: string[] = []
       return {
@@ -855,7 +857,12 @@ describe('daemon --k8s mode', () => {
         workspaceRootFor: () => undefined,
         autoMergeSubjects: () => Object.keys(pods),
         autoMergeAt: async (subject: string) => pods[subject],
-        holdIfBound: () => () => {}
+        holdIfBound: () => () => {},
+        // Only the isolated session has a claim: the other isolated one predates its own pod.
+        hasSandbox: async (subject: string) => {
+          claimAsked.push(subject)
+          return subject === sessionPod
+        }
       }
     })
     try {
@@ -870,7 +877,8 @@ describe('daemon --k8s mode', () => {
       }
       const rows: Record<string, unknown> = {
         'outward-isolated': { key: ISOLATED, sessionId: 'outward-isolated', workspaceIsolation: 'session' },
-        'outward-shared': { key: SHARED, sessionId: 'outward-shared', workspaceIsolation: 'shared' }
+        'outward-shared': { key: SHARED, sessionId: 'outward-shared', workspaceIsolation: 'shared' },
+        'outward-legacy': { key: LEGACY, sessionId: 'outward-legacy', workspaceIsolation: 'session' }
       }
       vi.spyOn(inner.store, 'getSessionByOutwardId').mockImplementation(async (id: unknown) => rows[id as string])
       const arm = (prNumber: number, sessionId?: string) =>
@@ -881,9 +889,13 @@ describe('daemon --k8s mode', () => {
       // No session (an older Control Plane), or one this member does not know: the agent pod, as before.
       await arm(3)
       await arm(4, 'outward-unknown')
+      // An isolated session with no pod of its own keeps its workspace, and its watcher, on the agent pod.
+      await arm(5, 'outward-legacy')
 
       expect(pods[sessionPod]!.ops).toEqual(['arm #1'])
-      expect(pods['bot-a']!.ops).toEqual(['arm #2', 'arm #3', 'arm #4'])
+      expect(pods['bot-a']!.ops).toEqual(['arm #2', 'arm #3', 'arm #4', 'arm #5'])
+      // Only an isolated session's pod is looked up, never the agent's own.
+      expect(claimAsked).toEqual([sessionPod, sandboxSubjectFor(sessionHostKey('bot-a', LEGACY))])
       // The sweep's own hold is renewed on the pod that runs the watcher.
       expect(inner.sandboxHolds.reasons(sessionPod)).toEqual(['auto-merge-armed'])
     } finally {

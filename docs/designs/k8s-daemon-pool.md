@@ -435,13 +435,16 @@ facts that belong to the agent are either re-derived on the session side or
 fetched by waking the agent pod on demand.
 
 **Merge-when-ready moves into the session pod (done).** A PR armed from an
-isolated session is watched in that session's own pod; a `shared` session, or an
-arm that names no session, keeps arming in the agent pod. One predicate places
-each arm: the session's own directory, routed as its wake is (`sessionPodOf`),
-never whichever pod happens to be bound. The watcher stays keyed by (agent,
-repository, pull request), because two sessions can name the same pull request —
-the one that opened it and a later PR-triggered one — so there is one watcher per
-pull request wherever it runs. An arm first asks every pod of the agent this
+isolated session is watched in that session's own pod; a `shared` session, an
+isolated one with no pod of its own (a pre-§11 worktree, whose workspace is on
+the agent pod), or an arm that names no session keeps arming in the agent pod.
+One predicate places each arm: the session's own directory, routed as its wake
+is (`sessionPodOf`), and whether that pod's claim exists, as retention judges a
+session with a pod of its own — never whichever pod happens to be bound. The
+watcher stays keyed by (agent, repository, pull request), because two sessions
+can name the same pull request — the one that opened it and a later PR-triggered
+one — so there is one watcher per pull request wherever it runs. An arm first
+asks every pod of the agent this
 member holds and, if one already watches that pull request, answers its state and
 starts nothing; arms and disarms of one pull request are serialized in the daemon,
 so two concurrent arms cannot both find nothing, and a pod whose channel is lost

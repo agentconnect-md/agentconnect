@@ -1055,9 +1055,10 @@ Decisions recorded while building it:
   — and a cluster agent with no live channel refuses to arm with `sandbox-asleep`
   rather than arming somewhere else; the console's own wake action is the fix.
   WHICH pod is decided once per arm by the same rule: the arming session's tier,
-  read off its own directory as its wake is routed, never whichever pod is
-  attached. The watcher stays keyed by the pull request, so reads and disarm need
-  no placement at all — they ask every pod of the agent — and an arm first asks
+  read off its own directory as its wake is routed and off whether its own pod's
+  claim exists, never whichever pod is attached. The watcher stays keyed by the
+  pull request, so reads and disarm need no placement at all — they ask every pod
+  of the agent — and an arm first asks
   those pods whether any already watches it, one arm or disarm per pull request at
   a time, so the pull request has one watcher however many sessions name it.
 - **Arming refuses a pull request that is mergeable NOW (`already-mergeable`).**

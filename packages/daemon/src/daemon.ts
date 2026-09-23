@@ -19421,7 +19421,7 @@ export class Daemon {
     }
   }
 
-  /** Where an arm's watcher lives (k8s-daemon-pool §4): an isolated session's own pod, else the agent's — off the session's own directory as its wake and reads route, never off what is attached. */
+  /** Where an arm's watcher lives (k8s-daemon-pool §4): an isolated session's own pod when it has one, else the agent's — off the session's directory and its claim, never off what is attached. */
   private async autoMergePlacement(agentId: string, sessionId?: string): Promise<string> {
     const plane = this.k8sPlane
     const agentPod = agentSandboxSubject(agentId)
@@ -19433,7 +19433,10 @@ export class Daemon {
       runtimeRootOf: (id) => plane.workspaceRootFor(id)
     })
     // A session this member does not know names no pod of its own, so its arm lands where an unscoped one would.
-    return (await sessionPodOf(scope, plane, agentId, sessionId)) ?? agentPod
+    const pod = (await sessionPodOf(scope, plane, agentId, sessionId)) ?? agentPod
+    if (pod === agentPod) return agentPod
+    // No claim means no pod of its own — a pre-§11 worktree or a session not yet prepared keeps its workspace on the agent pod, as retention judges it.
+    return (await plane.hasSandbox(pod)) ? pod : agentPod
   }
 
   /** Suspend a quiet pod — the agent's or a session's — unless a merge-when-ready watcher is armed in it, by the pod's own registry; nothing about the watcher is stored, so a restarted or new holder learns it here. */
