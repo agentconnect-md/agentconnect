@@ -1,9 +1,4 @@
-/**
- * message-intake.md §10 on the PostgreSQL dialect. The SQLite fixture in `local-store.test.ts`
- * covers the copy-rename branch; this is the only thing that proves the other one — the in-place
- * `ALTER COLUMN thread DROP NOT NULL` plus its index drops — and that the U+001F literal the
- * admission backfill splits the transcript channel on survives the rewrite.
- */
+// Verify message-intake.md §10's PostgreSQL in-place migration and transcript admission backfill.
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { PostgresAsyncDatabase } from '../src/store/postgres-async-database.js'
@@ -13,6 +8,7 @@ const databaseUrl = process.env.DATA_PLANE_TEST_DATABASE_URL
 
 /** Put the schema back into the shape a v23 daemon left it in. */
 const V23_SHAPE = [
+  'ALTER TABLE sessions DROP COLUMN IF EXISTS decisionModel',
   'DROP INDEX IF EXISTS transcript_channel_seq',
   'DROP INDEX IF EXISTS transcript_text_ts',
   'DROP INDEX IF EXISTS transcript_channel_event_time',
@@ -44,7 +40,7 @@ describe.skipIf(!databaseUrl)('the v23 → v24 channel-record migration on Postg
     const org = `org-${suffix}`
     const orgForAgent = (): string => org
 
-    // A fresh v24 store, then rolled back onto the v23 shape with a v23 fixture in it.
+    // Roll a fresh store back to the v23 schema before inserting the old fixture.
     const bootstrap = await PostgresAsyncDatabase.open(config, () => undefined, schema)
     await bootstrap.finishSchemaInitialization()
     const first = await LocalStore.open({ database: bootstrap, shared: true, ownerId: 'm1', orgForAgent })

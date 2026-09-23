@@ -1,6 +1,10 @@
-import { selectDecisionModel, type AgentModelSelection, type DecisionGetReply } from '@agentconnect.md/protocol'
+import {
+  selectDecisionModel,
+  type AgentModelSelection,
+  type DecisionEvaluation,
+  type DecisionGetReply
+} from '@agentconnect.md/protocol'
 import type { DecisionEvaluationInput } from './evaluator.js'
-import type { DecisionEvaluation } from '@agentconnect.md/protocol'
 import type { LoadedAgent } from '../agents/load-agents.js'
 
 export function modelSelectionConfiguration(agent: LoadedAgent | undefined): string {
