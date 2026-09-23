@@ -15,7 +15,8 @@ import { SANDBOX_CHECKOUT_DIR } from '../src/shim/sandbox-paths.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { PodWorkspaceFs } from './fixtures/pod-workspace-fs.js'
 import { wireTestPlane } from './workspace-plane-support.js'
-import type { GitRunner } from '../src/workspace/git-runner.js'
+import { GitTransportError, type GitRunner } from '../src/workspace/git-runner.js'
+import { WorkspaceViolationError } from '../src/workspace/workspace-files.js'
 import type { Agent } from '../src/agents/agent-schema.js'
 
 /**
@@ -51,6 +52,8 @@ let calls: Invocation[] = []
 let cleared: string[] = []
 /** Answers the `rev-parse --git-dir` probe; false ⇒ the pod holds no usable checkout. */
 let checkoutExists = false
+/** A one-shot failure of that probe which never reached git; the channel is back for whatever runs next. */
+let probeFailure: Error | undefined
 let cloneFails = false
 /** What the pod's checkout reports as its origin — a resumed volume carries the previous launch's. */
 let originUrl = 'https://github.com/acme/private.git'
@@ -109,6 +112,9 @@ function recordingRunner(cwd: string | undefined, env: Record<string, string> = 
   const run = async (args: string[]): Promise<string> => {
     calls.push({ cwd, args, env })
     if (args[0] === 'rev-parse' && args[1] === '--git-dir') {
+      const failure = probeFailure
+      probeFailure = undefined
+      if (failure) throw failure
       if (!checkoutExists) throw new Error('cwd does not resolve: no checkout in the pod')
       return '.git'
     }
@@ -166,6 +172,8 @@ function recordingRunner(cwd: string | undefined, env: Record<string, string> = 
     clone: async (repo, target, options = []) => {
       calls.push({ cwd, args: ['clone', repo, target, ...options], env })
       if (cloneFails || cloneRefusals.has(repo)) throw new Error('remote hung up')
+      // What git does to a clone into the checkout that is already there.
+      if (target === SANDBOX_CHECKOUT_DIR && checkoutExists) throw new Error('destination path already exists')
       // A secondary root stages into an absolute path on the volume, and the seam has to SEE the
       // checkout appear there; the primary's target is relative and is probed through git instead.
       if (target.startsWith('/')) {
@@ -218,6 +226,7 @@ beforeEach(() => {
   calls = []
   cleared = []
   checkoutExists = false
+  probeFailure = undefined
   cloneFails = false
   originUrl = 'https://github.com/acme/private.git'
   headBranch = 'main'
@@ -415,6 +424,19 @@ describe('preparing a cluster git-repo workspace', () => {
     cloneFails = true
     await expect(workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT)).rejects.toThrow(/remote hung up/)
     expect(cleared).toEqual([CHECKOUT])
+  })
+
+  it.each([
+    ['the channel dropped', () => new GitTransportError('shim channel closed')],
+    ['the runner refused', () => new WorkspaceViolationError('no running sandbox', 'sandbox-unavailable')]
+  ])('neither clones nor empties the checkout when its probe never reached git (%s)', async (_label, failure) => {
+    // The checkout is there, so reading this as "clone it" would empty it through the failed clone's cleanup.
+    checkoutExists = true
+    const thrown = failure()
+    probeFailure = thrown
+    await expect(workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT)).rejects.toBe(thrown)
+    expect(calls.some((call) => call.args[0] === 'clone')).toBe(false)
+    expect(cleared).toEqual([])
   })
 
   it('does no git at all for a from-scratch cluster workspace', async () => {
