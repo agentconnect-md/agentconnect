@@ -57,6 +57,7 @@ import {
 } from './git-injection.js'
 import { GitTransportError, LocalGitRunner, type GitRunner } from './git-runner.js'
 import { localWorkspaceFs, type WorkspaceFs } from './workspace-fs.js'
+import { WorkspaceViolationError } from './workspace-files.js'
 import { githubSubmoduleRepo, gitmoduleRepos } from './gitmodules.js'
 import {
   PRIMARY_CHECKOUT_DIR,
@@ -905,11 +906,17 @@ export class WorkspaceManager {
     }
   }
 
+  /** The plane's runner for this path, else this daemon's own; an off-disk path with none refuses, since its local twin is another directory. */
   runnerFor(agentId: string, cwd?: string, abort?: AbortSignal): GitRunner {
-    return (
-      this.resolveGitRunner(agentId, cwd, abort) ??
-      new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort).env(env))
-    )
+    const remote = this.resolveGitRunner(agentId, cwd, abort)
+    if (remote) return remote
+    if (this.offDisk({ agentId, path: cwd })) {
+      throw new WorkspaceViolationError(
+        `agent "${agentId}" has no running sandbox, so its workspace cannot be reached`,
+        'sandbox-unavailable'
+      )
+    }
+    return new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort).env(env))
   }
 
   async clearSandboxPath(agentId: string, root: string): Promise<void> {
