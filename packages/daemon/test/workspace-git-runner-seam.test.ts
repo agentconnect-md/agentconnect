@@ -185,6 +185,34 @@ describe('workspace-manager git runner seam', () => {
     expect(existsSync(worktree)).toBe(true)
   })
 
+  it('kills in-flight and later Git once shutdown cancels it, on this disk and through a plane', async () => {
+    const manager = new WorkspaceManager()
+    const home = mkdtempSync(join(tmpdir(), 'ac-seam-shutdown-'))
+    roots.push(home)
+    // `hash-object --stdin` waits on a stdin nobody closes: the stand-in for a clone that would outlast the drain.
+    const inFlight = manager.runnerFor('bot-a', home).raw(['hash-object', '--stdin'])
+    const settled = inFlight.then(
+      () => 'resolved',
+      () => 'rejected'
+    )
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    let signal: AbortSignal | undefined
+    wireTestPlane(manager, {
+      gitRunnerFor: (_agentId, _cwd, abort) => {
+        signal = abort
+        return undefined
+      }
+    })
+    manager.resolveGitRunner('bot-a', '/pod/ws')
+    expect(signal?.aborted).toBe(false)
+
+    manager.cancelGitForShutdown()
+    await expect(settled).resolves.toBe('rejected')
+    expect(signal?.aborted).toBe(true)
+    manager.setPlaneResolver(undefined)
+    await expect(manager.runnerFor('bot-a', home).raw(['--version'])).rejects.toThrow()
+  })
+
   it('cannot be bypassed: a refusing resolver stops the operation instead of falling back', async () => {
     const { agent, worktree } = agentWithWorktree('session-3')
     // A site still reaching git directly would succeed despite the seam refusing everything.

@@ -263,6 +263,17 @@ export class WorkspaceManager {
   /** Secondary roots prepared for an agent's current sessions — what the synchronous hand-out reads. */
   private readonly readyRoots = new Map<string, SecondaryWorkspaceRoot[]>()
   private planeResolver: PlaneResolver | undefined
+  // Joins every Git this manager runs; aborted once, when shutdown stops waiting on work it could not otherwise cancel.
+  private readonly shutdown = new AbortController()
+
+  /** Shutdown's deadline: kill in-flight and later Git, admitted preparation included, which nothing else cancels. */
+  cancelGitForShutdown(): void {
+    this.shutdown.abort(new Error('daemon shutting down'))
+  }
+
+  private withShutdown(abort?: AbortSignal): AbortSignal {
+    return abort ? AbortSignal.any([abort, this.shutdown.signal]) : this.shutdown.signal
+  }
 
   /** Where each scope's workspace is placed; every question below asks it, and no resolver or no plane means this daemon's own host and disk. */
   setPlaneResolver(resolver: PlaneResolver | undefined): void {
@@ -280,7 +291,7 @@ export class WorkspaceManager {
 
   /** The agent's own runner; undefined means its workspace is reachable locally. */
   resolveGitRunner(agentId: string, cwd?: string, abort?: AbortSignal): GitRunner | undefined {
-    return this.planeFor({ agentId, path: cwd })?.gitRunnerFor(agentId, cwd, abort)
+    return this.planeFor({ agentId, path: cwd })?.gitRunnerFor(agentId, cwd, this.withShutdown(abort))
   }
 
   /** The filesystem this agent's workspace files live in — this daemon's own when nothing claims it. A caller holding a session's scope names it, so a session placed apart from its agent answers for itself. */
@@ -972,7 +983,7 @@ export class WorkspaceManager {
         'sandbox-unavailable'
       )
     }
-    return hostGitRunner(cwd, abort)
+    return hostGitRunner(cwd, this.withShutdown(abort))
   }
 
   async clearSandboxPath(agentId: string, root: string): Promise<void> {
@@ -991,7 +1002,7 @@ export class WorkspaceManager {
     const remote = this.resolveGitRunner(agentId, cwd, abort)
     if (remote) return remote
     if (this.offDisk({ agentId, path: cwd })) return undefined
-    return hostGitRunner(cwd, abort)
+    return hostGitRunner(cwd, this.withShutdown(abort))
   }
 
   async convergeWorkspaceOrigin(agent: Agent, cwd = agent.workspace.path): Promise<void> {
