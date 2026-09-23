@@ -18552,7 +18552,15 @@ export class Daemon {
     if (this.sessionRetentionSweepInFlight) return
     this.sessionRetentionSweepInFlight = true
     try {
-      await this.sweepExpiredSessions()
+      const discarded = await this.sweepExpiredSessions()
+      // A discarded VM may have been the last pin on a retired release's image, which startup alone keeps until a restart.
+      if (discarded && !this.draining) {
+        try {
+          await this.microsandbox?.collectImages()
+        } catch (err) {
+          this.log.warn(`retention: image collection failed (${formatErr(err)})`)
+        }
+      }
       // Decision 12's removal step rides the same sweep, but not the retention window: a retired
       // root is not an expired session, and an install that keeps sessions forever still retires.
       await this.sweepRetiredWorkspaceRoots()
@@ -18561,14 +18569,15 @@ export class Daemon {
     }
   }
 
-  private async sweepExpiredSessions(): Promise<void> {
+  /** Returns how many session VMs a completed pass discarded. */
+  private async sweepExpiredSessions(): Promise<number> {
     const windowMs = sessionRetentionMs(this.cfg.sessions.retention)
-    if (windowMs === null) return
+    if (windowMs === null) return 0
     // Holder-only on a shared store: the active-turn exclusions are member-local, so only the holder can judge a row.
     const expired = (await this.store.listExpiredSessions(this.clock.now() - windowMs)).filter((rec) =>
       this.judgesStoredSessions(rec.agentId)
     )
-    if (!expired.length) return
+    if (!expired.length) return 0
     // ONE stamp for the whole pass, not one per session: it is the sweep that
     // deleted them, and a shared value lets the drain report a pass as a single
     // frame while still carrying each row's true purge time (a per-session
@@ -18579,8 +18588,9 @@ export class Daemon {
     let retained = 0
     let active = 0
     let failed = 0
+    let discarded = 0
     for (const rec of expired) {
-      if (this.draining) return
+      if (this.draining) return 0
       const res = await this.cleanupSessionWorktree(rec)
       if (res.outcome === 'active') {
         active += 1
@@ -18611,6 +18621,7 @@ export class Daemon {
           try {
             await this.stopSessionHost(rec.agentId, rec.key, { ...sessionHost, row: rec })
             await this.discardSessionSandbox(rec.agentId, rec.key)
+            discarded += 1
           } catch (err) {
             failed += 1
             this.log.warn(`retention: keeping session ${rec.key} — VM cleanup failed (${(err as Error).message})`)
@@ -18653,6 +18664,7 @@ export class Daemon {
         (failed ? `, ${failed} failed` : '')
     )
     if (removed) void this.drainSessionPurges()
+    return discarded
   }
 
   /** Whether an agent still holds live work of ANY kind — the per-agent form of the retention

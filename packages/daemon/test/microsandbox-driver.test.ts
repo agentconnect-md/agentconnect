@@ -1,6 +1,7 @@
+import { spawnSync } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import { createHash } from 'node:crypto'
 import { decode, encode } from 'cborg'
@@ -78,13 +79,17 @@ function fakeSdk() {
   let onRun: ((process: FakeExec) => void | Promise<void>) | undefined
   const images = new Map<string, number | null>([['test-image', 4_194_304]])
   const imageDigests = new Map<string, string>()
+  const digestOf = (reference: string) =>
+    imageDigests.get(reference) ?? `sha256:${createHash('sha256').update(reference).digest('hex')}`
   const imageCache = {
     get: vi.fn(async (reference: string) => ({
-      manifestDigest: imageDigests.get(reference) ?? `sha256:${createHash('sha256').update(reference).digest('hex')}`,
+      manifestDigest: digestOf(reference),
       os: 'linux',
       architecture: 'amd64'
     })),
-    list: vi.fn(async () => [...images].map(([reference, sizeBytes]) => ({ reference, sizeBytes }))),
+    list: vi.fn(async () =>
+      [...images].map(([reference, sizeBytes]) => ({ reference, sizeBytes, manifestDigest: digestOf(reference) }))
+    ),
     remove: vi.fn(async (reference: string) => {
       if (!images.has(reference)) throw new Error(`image not found: ${reference}`)
       // The cache refuses an image any sandbox still boots from, stopped ones included.
@@ -383,6 +388,7 @@ function fakeSdk() {
     volumes,
     images,
     imageDigests,
+    digestOf,
     imageCache,
     removeVolume,
     claimed,
@@ -1058,6 +1064,125 @@ describe('microsandbox process and VM ownership', () => {
     imageCache.list.mockRejectedValueOnce(new Error('image cache is locked'))
     await expect(new MicrosandboxManager(options).prepare()).resolves.toBeDefined()
     expect(imageCache.remove).not.toHaveBeenCalled()
+  })
+
+  it('collects at runtime what a discarded VM unpinned, keeping the tag an upgrade pre-pulled', async () => {
+    const { manager, options, environment, request, images } = await fixture()
+    await (await manager.driverFor(environment).launch(request)).stop(0)
+    await manager.stopAll()
+    images.set('next-image', null)
+    const upgraded = new MicrosandboxManager({ ...options, config: { ...options.config, image: 'next-image' } })
+    await upgraded.prepare()
+    expect([...images.keys()]).toEqual(['test-image', 'next-image'])
+    // The next release's pre-pull, which runs in its own process beside this daemon.
+    images.set('pre-pulled-image', null)
+    await new MicrosandboxManager({
+      ...options,
+      config: { ...options.config, image: 'pre-pulled-image' }
+    }).prepareImage()
+    await upgraded.discard(environment.id)
+    await upgraded.collectImages()
+    expect([...images.keys()]).toEqual(['next-image', 'pre-pulled-image'])
+  })
+
+  it('keeps a pre-pulled tag that was already cached before this daemon prepared', async () => {
+    const { manager, options, environment, request, images } = await fixture()
+    await (await manager.driverFor(environment).launch(request)).stop(0)
+    await manager.stopAll()
+    images.set('next-image', null)
+    const upgraded = new MicrosandboxManager({ ...options, config: { ...options.config, image: 'next-image' } })
+    await upgraded.prepare()
+    // A rollback pre-pulls the tag the retained VM still pins; msb keeps that tag's original creation time.
+    await new MicrosandboxManager(options).prepareImage()
+    await upgraded.discard(environment.id)
+    await upgraded.collectImages()
+    expect([...images.keys()]).toEqual(['test-image', 'next-image'])
+  })
+
+  it('sweeps the flat rootfs refs and blobs no cached image names', async () => {
+    const { options, digestOf } = await fixture()
+    const flat = join(options.root, 'microsandbox', 'cache', 'flat')
+    await mkdir(join(flat, 'refs'), { recursive: true })
+    await mkdir(join(flat, 'blobs'), { recursive: true })
+    const file = (digest: string, extension: string) => `${digest.replace(':', '_')}.${extension}`
+    const live = { manifest_digest: digestOf('test-image'), artifact_digest: `sha256:${'a'.repeat(64)}` }
+    const orphan = { manifest_digest: `sha256:${'b'.repeat(64)}`, artifact_digest: `sha256:${'c'.repeat(64)}` }
+    for (const ref of [live, orphan]) {
+      await writeFile(join(flat, 'refs', file(ref.manifest_digest, 'json')), JSON.stringify({ schema: 1, ...ref }))
+      await writeFile(join(flat, 'blobs', file(ref.artifact_digest, 'raw')), 'ext4')
+    }
+    await writeFile(join(flat, 'blobs', file(`sha256:${'d'.repeat(64)}`, 'raw')), 'ext4')
+    await new MicrosandboxManager(options).prepare()
+    expect(await readdir(join(flat, 'refs'))).toEqual([file(live.manifest_digest, 'json')])
+    expect(await readdir(join(flat, 'blobs'))).toEqual([file(live.artifact_digest, 'raw')])
+  })
+
+  it('skips a runtime collection while another live process holds the image cache', async () => {
+    const { manager, options, images } = await fixture()
+    await manager.prepare()
+    images.set('previous-image', null)
+    const lock = join(options.root, 'microsandbox', 'image-cache.lock')
+    await writeFile(lock, `${process.ppid}\n`)
+    await manager.collectImages()
+    expect(images.has('previous-image')).toBe(true)
+    await rm(lock)
+    await manager.collectImages()
+    expect(images.has('previous-image')).toBe(false)
+  })
+
+  it('pulls only after a live holder releases the image cache', async () => {
+    const { manager, options } = await fixture()
+    const lock = join(options.root, 'microsandbox', 'image-cache.lock')
+    await mkdir(dirname(lock), { recursive: true })
+    await writeFile(lock, `${process.ppid}\n`)
+    const seen = join(options.root, 'seen')
+    options.msbCommand = {
+      command: process.execPath,
+      args: [
+        '-e',
+        `const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(seen)}, fs.readFileSync(${JSON.stringify(lock)}))`
+      ]
+    }
+    const pulling = manager.prepareImage()
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    await expect(readFile(seen, 'utf8')).rejects.toThrow()
+    await rm(lock)
+    await pulling
+    expect(await readFile(seen, 'utf8')).toBe(`${process.pid}\n`)
+    await expect(readdir(dirname(lock))).resolves.not.toContain('image-cache.lock')
+  })
+
+  it('fails a pull that outwaits a live holder instead of taking its lock', async () => {
+    const { manager, options } = await fixture()
+    const lock = join(options.root, 'microsandbox', 'image-cache.lock')
+    await mkdir(dirname(lock), { recursive: true })
+    await writeFile(lock, `${process.ppid}\n`)
+    vi.useFakeTimers({ toFake: ['Date'] })
+    // Jump the clock past the wait cap on every real tick, whenever the waiter took its deadline.
+    const advancing = setInterval(() => vi.setSystemTime(Date.now() + 11 * 60_000), 50)
+    try {
+      await expect(manager.prepareImage()).rejects.toThrow(`still held by pid ${process.ppid}`)
+    } finally {
+      clearInterval(advancing)
+      vi.useRealTimers()
+    }
+    expect(await readFile(lock, 'utf8')).toBe(`${process.ppid}\n`)
+    await expect(readFile(join(options.root, 'microsandbox', 'pulled-image'), 'utf8')).rejects.toThrow()
+  })
+
+  it('reclaims an image cache lock whose holder is gone', async () => {
+    const { options, images } = await fixture()
+    const lock = join(options.root, 'microsandbox', 'image-cache.lock')
+    await mkdir(dirname(lock), { recursive: true })
+    await writeFile(lock, `${spawnSync(process.execPath, ['-e', '']).pid}\n`)
+    const manager = new MicrosandboxManager(options)
+    await expect(manager.prepare()).resolves.toBeDefined()
+    images.set('previous-image', null)
+    // An earlier incarnation of this process, as a restarted container hands out the same pid.
+    await writeFile(lock, `${process.pid}\n`)
+    await manager.collectImages()
+    expect(images.has('previous-image')).toBe(false)
+    await expect(readdir(dirname(lock))).resolves.not.toContain('image-cache.lock')
   })
 
   it('keeps active executions and replaces idle VMs when mounts change', async () => {

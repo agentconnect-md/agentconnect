@@ -114,7 +114,8 @@ function useMicrosandbox(daemon: Daemon, environments: string[] = []) {
     suspend: vi.fn(async () => {}),
     suspendIdle: vi.fn(async () => {}),
     stopAll: vi.fn(async () => {}),
-    discard: vi.fn(async () => {})
+    discard: vi.fn(async () => {}),
+    collectImages: vi.fn(async () => {})
   }
   ;(daemon as any).cfg.sandbox.backend = 'microsandbox'
   ;(daemon as any).microsandbox = manager

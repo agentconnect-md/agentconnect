@@ -2688,7 +2688,7 @@ describe('Daemon session retention GC (#485)', () => {
     await daemon.stop()
   })
 
-  it('keeps the session row until VM destruction succeeds and retries the next sweep', async () => {
+  it('keeps the session row until VM destruction succeeds, retries the next sweep, then collects images', async () => {
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
       root: scaffold(),
@@ -2703,14 +2703,20 @@ describe('Daemon session retention GC (#485)', () => {
         expect((daemon as any).workspaceDispatchFences.has('bot-a')).toBe(true)
       })
       .mockRejectedValueOnce(new Error('temporary VM destroy failure'))
-    ;(daemon as any).microsandbox = { discard, stopAll: vi.fn(async () => {}) }
+    const collectImages = vi.fn(async () => {})
+    ;(daemon as any).microsandbox = { discard, collectImages, stopAll: vi.fn(async () => {}) }
     try {
       await seedSession(daemon, 'expired-vm', 'closed', -8 * 24 * 3_600_000)
       await sweepRetention(daemon)
       expect(await (daemon as any).store.getSession('expired-vm')).toBeDefined()
+      expect(collectImages).not.toHaveBeenCalled()
       await sweepRetention(daemon)
       expect(await (daemon as any).store.getSession('expired-vm')).toBeUndefined()
       expect(discard).toHaveBeenCalledTimes(2)
+      expect(collectImages).toHaveBeenCalledOnce()
+      // A pass that discards nothing leaves the cache alone.
+      await sweepRetention(daemon)
+      expect(collectImages).toHaveBeenCalledOnce()
     } finally {
       await daemon.stop()
     }
