@@ -829,6 +829,27 @@ function acpUpdateChainKey(owner: HostKey, sessionId: string): string {
 // One agent-discovery pass: what this daemon will serve, plus the whole active fleet on disk.
 type AgentListSnapshot = { agents: LoadedAgent[]; activeFleet: LoadedAgent[] }
 
+/** A cut turn's notice: `replayed` when its durable row survives, `lost` when nothing runs it again. */
+type TurnCutNotice = { replayed: string; lost: string }
+
+const CONFIG_CHANGE_NOTICE: TurnCutNotice = {
+  replayed: '⚠️ The agent is restarting to apply its new configuration — this message will be picked up again.',
+  lost: '⚠️ The agent restarted to apply its new configuration — this turn was stopped; send your message again.'
+}
+
+const SHUTDOWN_NOTICE: TurnCutNotice = {
+  replayed: '⚠️ The agent is restarting — this message will be picked up again.',
+  lost: '⚠️ The agent is restarting — this turn was stopped; send your message again once it is back.'
+}
+
+/** A runtime process a config change made stale while turns still ran on it (respawnHostsWhenIdle). */
+type HostRetirement = {
+  /** The turns it waits for. They run on the old process; every later turn waits for its successor. */
+  entries: ReadonlySet<QueueEntry>
+  /** Settles once the process is stopped (or the shutdown drain took over). */
+  retired: Promise<void>
+}
+
 /** How long a Linear delivery waits for the delegator's name before dispatching with the id. */
 const LINEAR_ACTOR_LOOKUP_MS = 1500
 
@@ -4130,6 +4151,9 @@ export class Daemon {
   // Register snapshots publish agents before integrations. Carry newly-owned (installed or
   // duty-gained) inbox rows across coalesced passes and replay only after convergence is idle.
   private readonly pendingInboxReplayAgents = new Set<string>()
+  private readonly retiringHosts = new Map<HostKey, HostRetirement>()
+  /** Turns parked in dispatchOne until their session's stale process retires. */
+  private readonly respawnHeldEntries = new Set<QueueEntry>()
   async reconcile(): Promise<void> {
     if (this.reconcileRun) {
       this.reconcilePending = true
@@ -4279,13 +4303,19 @@ export class Daemon {
       // host-spawn or workspace change → evict the cached host (once) so the next
       // session lazily re-spawns it with fresh env and/or re-materializes cwd via
       // prepareWorkspace. Soft-only and integration-only changes never touch the host.
-      if (change.hostRespawn || workspaceNeedsColdRecovery) {
-        // A config-triggered respawn keeps the agent in the roster, so install a
-        // temporary admission gate around the generation-safe teardown, preserving any
-        // older lifecycle gate intact.
+      // A runtime-only change with turns in flight waits for them instead of cutting them.
+      const deferRespawn =
+        change.hostRespawn && !workspaceNeedsColdRecovery && (this.activeDispatchesByAgent.get(a.id)?.size ?? 0) > 0
+      if (deferRespawn) {
+        this.runtimeCommands.forget(a.id)
+        void this.store.deleteRuntimeCommands(a.id).catch(() => undefined)
+        await this.respawnHostsWhenIdle(a.id)
+      } else if (change.hostRespawn || workspaceNeedsColdRecovery) {
+        // Gate admission around the generation-safe teardown, keeping any older lifecycle gate intact.
         const wasDraining = this.drainingAgents.has(a.id)
         this.drainingAgents.add(a.id)
-        await this.interruptAgentTurns(a.id, 'stop')
+        // Nothing else shows this interrupt, so the turn says why it ended instead of going quiet.
+        await this.interruptAgentTurns(a.id, 'stop', 'terminal', undefined, CONFIG_CHANGE_NOTICE)
         // The advertised command list belongs to the runtime and workspace being torn down — both
         // are in hostSpawnSig, so a runtime switch would otherwise keep serving the old harness's
         // commands until some later session/new replaced them.
@@ -12700,7 +12730,17 @@ export class Daemon {
       releaseReplyTransport()
       releaseEgressTransport()
     }
-    const opened = await this.observeSessionStartup(run, pendingWebchat, () => this.openSession(run, releaseReplyConn))
+    const opened = await this.observeSessionStartup(run, pendingWebchat, async () => {
+      const held = await this.waitForHostRetirement(entry, key)
+      if (
+        held &&
+        (await this.coldSessionFence(entry, key, 'admitted', { finishEvaluation: evaluation.finishEvaluation }))
+      ) {
+        this.clearTurnActivity(run)
+        return { kind: 'cancelled' as const }
+      }
+      return await this.openSession(run, releaseReplyConn)
+    })
     if (opened.kind === 'cancelled') return null
     const { handled, restoreDeliveryBinding } = opened
     const { sessionId, created } = handled
@@ -12845,7 +12885,8 @@ export class Daemon {
       sandbox: '⏳ Starting sandbox…',
       workspace: '⏳ Preparing workspace…',
       clone: '⏳ Cloning repository…',
-      runtime: '⏳ Starting agent…'
+      runtime: '⏳ Starting agent…',
+      restart: '⏳ Waiting for the agent to restart…'
     }
     const turnBar = turnChromeFor(plan.platform).statusSurface === 'turn-bar'
     if (!webchat && (!replyConn || turnBar || originKindOf(plan.platform) !== 'chat')) return await work()
@@ -14805,6 +14846,8 @@ export class Daemon {
       actor?: InteractionActor
       /** Interrupt only while THIS turn is still the live one under `acpSessionId` (the stall watchdog's exact target). */
       only?: Pending
+      /** Why the turn ended, posted into a live turn's conversation when no person raised the interrupt. */
+      notice?: TurnCutNotice
     } = {}
   ): Promise<void> {
     const matches = (entry: QueueEntry): boolean =>
@@ -14890,7 +14933,7 @@ export class Daemon {
         live.webchat.sink.done({
           conversationId: live.webchat.conversationId,
           turnId: live.webchat.turnId,
-          error: reason
+          error: opts.notice?.lost ?? reason
         })
       }
     } else if (activeEntry) {
@@ -14940,6 +14983,166 @@ export class Daemon {
       .catch((err) => this.log.error(`command ${reason}: cancel failed: ${(err as Error).message}`))
     this.armCancelBackstop(live.hostKey, liveSessionId, key, reason, opts.only)
     await this.recordOperatorInterrupt(agentId, reason, opts.actor, anchor)
+    // The browser frame above carried the notice; the post goes out only once the fence stands.
+    if (opts.notice) await this.postTurnCutNotice(live, opts.notice, opts.handoffInbox === true)
+  }
+
+  /** Tell a cut turn's conversation why it ended — posted directly, since its output is suppressed. */
+  private async postTurnCutNotice(p: Pending, notice: TurnCutNotice, rowKept: boolean): Promise<void> {
+    const text = rowKept && p.entry.inboxId !== undefined ? notice.replayed : notice.lost
+    const { msg } = p.entry
+    try {
+      if (p.conn && turnChromeFor(p.plan.platform).chromeMarkedNotices)
+        await (p.conn as SlackConnection).postMessage(msg.channel, text, msg.thread, {
+          ...(slackAgentIdentityOptions(p.plan) ?? {}),
+          chrome: true
+        })
+      else if (p.conn) await p.conn.postMessage(msg.channel, text, msg.thread)
+      await this.store.appendTranscript({
+        channel: p.plan.transcriptChannel,
+        thread: p.plan.sessionThread,
+        ts: monotonicTs(),
+        sender: p.plan.agentId,
+        kind: 'text',
+        text
+      })
+    } catch (err) {
+      this.log.warn(`turn cut notice not delivered for session ${p.plan.sessionKey}: ${formatErr(err)}`)
+    }
+  }
+
+  /** A runtime config change with turns in flight: idle processes stop now, busy ones once their turns settle. */
+  private async respawnHostsWhenIdle(agentId: string): Promise<void> {
+    const busy = new Map<HostKey, Map<string, { entry: QueueEntry; done: Promise<void> }>>()
+    const starting: string[] = []
+    const prompting = new Set([...this.pending.values()].map((p) => p.plan.sessionKey))
+    for (const [key, entry] of this.activeGateEntries) {
+      if (entry.agentId !== agentId || this.respawnHeldEntries.has(entry)) continue
+      const done = this.activeDispatchDoneByKey.get(key)
+      if (!done) continue
+      const owner = this.sessionOwnerKey(agentId, key)
+      // Already retiring from an earlier change: its successor reads the config current by then.
+      if (this.retiringHosts.has(owner)) continue
+      const turns = busy.get(owner) ?? new Map<string, { entry: QueueEntry; done: Promise<void> }>()
+      turns.set(key, { entry, done })
+      busy.set(owner, turns)
+      if (!prompting.has(key)) starting.push(key)
+    }
+    this.log.info(
+      `reconcile: agent "${agentId}" respawns once its turns settle — ${busy.size} busy runtime process(es)`
+    )
+    const busyModelSessions = new Set<string>()
+    for (const owner of busy.keys()) {
+      const sessionKey = hostKeySessionKey(owner)
+      if (sessionKey !== undefined && this.modelSessions.has(sessionKey)) busyModelSessions.add(sessionKey)
+    }
+    for (const key of this.hostKeysForAgent(agentId)) {
+      if (busy.has(key) || this.retiringHosts.has(key)) continue
+      try {
+        await this.stopHostByKey(key)
+      } catch (err) {
+        this.log.error(`reconcile: host teardown failed for "${agentId}" (${key}): ${formatErr(err)}`)
+      }
+    }
+    try {
+      await this.modelSessions.releaseForAgent(agentId, undefined, busyModelSessions)
+    } catch (err) {
+      this.log.error(`reconcile: model-session teardown failed for "${agentId}": ${formatErr(err)}`)
+    }
+    for (const key of starting) {
+      await this.interruptTurn(agentId, key, 'stop', undefined, { dropQueued: true, handoffInbox: true })
+    }
+    const retirements = [...busy].map(([owner, turns]) => this.retireHostWhenIdle(agentId, owner, turns))
+    void Promise.all(retirements).then(async (cut) => {
+      await this.webchatMcpRevocations.revokeRemoteWebchatGrantsForAgent(agentId, 'agent_detached')
+      if (starting.length > 0 || cut.some(Boolean)) this.replayRetainedInbox(agentId)
+    })
+  }
+
+  /** Stop `owner` once `turns` settle, cutting them for replay at the drain limit. Resolves whether it cut any. */
+  private retireHostWhenIdle(
+    agentId: string,
+    owner: HostKey,
+    turns: Map<string, { entry: QueueEntry; done: Promise<void> }>
+  ): Promise<boolean> {
+    let cut = false
+    const settled = Promise.all([...turns.values()].map((turn) => turn.done))
+    const retire = async (): Promise<void> => {
+      if ((await this.raceDeadline(settled, this.cfg.limits.configRespawnDrainMs)) === 'timeout' && !this.draining) {
+        cut = true
+        this.log.warn(`reconcile: turns of agent "${agentId}" outlived the respawn drain window — cutting for replay`)
+        for (const [key, turn] of turns) {
+          if (this.activeGateEntries.get(key) !== turn.entry) continue
+          await this.interruptTurn(agentId, key, 'stop', undefined, {
+            dropQueued: true,
+            handoffInbox: true,
+            notice: CONFIG_CHANGE_NOTICE
+          })
+        }
+        await settled
+      }
+      // A shutdown that began meanwhile owns what is left, this process included.
+      if (this.draining) return
+      const sessionKey = hostKeySessionKey(owner)
+      try {
+        if (sessionKey !== undefined && this.modelSessions.has(sessionKey)) await this.modelSessions.release(sessionKey)
+        else await this.stopHostByKey(owner)
+      } catch (err) {
+        this.log.error(`reconcile: host teardown failed for "${agentId}" (${owner}): ${formatErr(err)}`)
+      }
+    }
+    const record: HostRetirement = {
+      entries: new Set([...turns.values()].map((turn) => turn.entry)),
+      // Held turns wait on this, so it always settles: a failed retirement is logged, never thrown at them.
+      retired: retire()
+        .catch((err) => this.log.error(`reconcile: retiring "${owner}" failed: ${formatErr(err)}`))
+        .finally(() => {
+          if (this.retiringHosts.get(owner) === record) this.retiringHosts.delete(owner)
+        })
+    }
+    this.retiringHosts.set(owner, record)
+    return record.retired.then(() => cut)
+  }
+
+  /** Park a turn bound for a retiring process until its successor can start. True when it waited. */
+  private async waitForHostRetirement(entry: QueueEntry, key: string): Promise<boolean> {
+    let retiring = this.retiringHosts.get(this.sessionOwnerKey(entry.agentId, key))
+    if (!retiring || retiring.entries.has(entry)) return false
+    this.respawnHeldEntries.add(entry)
+    // An interrupt (pause, removal, shutdown) reaches a parked turn through closeStartup or initAbort.
+    let wake!: () => void
+    const woken = new Promise<void>((resolve) => (wake = resolve))
+    const closeStartup = entry.closeStartup
+    const wakeAndClose = (): void => {
+      wake()
+      closeStartup?.()
+    }
+    entry.closeStartup = wakeAndClose
+    entry.initAbort.signal.addEventListener('abort', wake, { once: true })
+    try {
+      await withStartupPhase('restart', async () => {
+        while (retiring && !entry.cancelledReason && !entry.initAbort.signal.aborted) {
+          await Promise.race([retiring.retired, woken])
+          retiring = this.retiringHosts.get(this.sessionOwnerKey(entry.agentId, key))
+        }
+      })
+    } finally {
+      if (entry.closeStartup === wakeAndClose) entry.closeStartup = closeStartup
+      entry.initAbort.signal.removeEventListener('abort', wake)
+      this.respawnHeldEntries.delete(entry)
+    }
+    return true
+  }
+
+  /** Re-admit an agent's retained durable rows now, or when the running reconcile settles. */
+  private replayRetainedInbox(agentId: string): void {
+    this.pendingInboxReplayAgents.add(agentId)
+    if (this.reconcileRun || this.reconcilePending) return
+    const agentIds = new Set(this.pendingInboxReplayAgents)
+    this.pendingInboxReplayAgents.clear()
+    void this.replayInbox(agentIds).catch((err) =>
+      this.log.warn(`durable inbox: replay after respawn failed: ${formatErr(err)}`)
+    )
   }
 
   /** Record an operator-raised interrupt in the transcript, so a cancel is visible in the
@@ -14994,7 +15197,8 @@ export class Daemon {
     agentId: string,
     reason: TurnInterruptReason,
     disposition: TurnInterruptDisposition = 'terminal',
-    integrationId?: string
+    integrationId?: string,
+    notice?: TurnCutNotice
   ): Promise<void> {
     const handoffInbox = disposition === 'handoff'
     const matches = (entry: QueueEntry): boolean =>
@@ -15021,7 +15225,12 @@ export class Daemon {
     if (targets.size > 0)
       this.log.info(`${reason}: interrupting ${targets.size} active session(s) for agent "${agentId}"`)
     for (const [key, acpSessionId] of targets) {
-      await this.interruptTurn(agentId, key, reason, acpSessionId, { dropQueued: true, handoffInbox, integrationId })
+      await this.interruptTurn(agentId, key, reason, acpSessionId, {
+        dropQueued: true,
+        handoffInbox,
+        integrationId,
+        notice
+      })
     }
   }
 
@@ -20186,14 +20395,13 @@ export class Daemon {
     const active = [...new Set([...this.activeDispatchesByAgent.values()].flatMap((runs) => [...runs]))]
     const pendingKeys = new Set([...this.pending.values()].map((p) => p.plan.sessionKey))
     const coldAgents = new Set<string>()
-    // A pre-Pending dispatch has no p.done for the old shutdown drain to observe.
-    // Latch + abort its whole SessionManager initialization path immediately, retaining
-    // its durable inbox row for startup replay. Stop its host/start generation too.
+    // A pre-Pending dispatch has no p.done to observe: abort its initialization now, keeping its row for replay.
     for (const [key, entry] of this.activeGateEntries) {
       if (pendingKeys.has(key)) continue
       entry.cancelledReason ??= 'shutdown'
       entry.initAbort.abort(new Error('daemon shutting down'))
-      coldAgents.add(entry.agentId)
+      // A turn parked for a respawn owns no host; stopping the agent's would cut the old process's turns early.
+      if (!this.respawnHeldEntries.has(entry)) coldAgents.add(entry.agentId)
     }
     const stopFailClosed = (agentId: string): Promise<void> =>
       Promise.all([this.stopHost(agentId, 0)])
@@ -20216,6 +20424,7 @@ export class Daemon {
       }
       for (const p of this.pending.values()) {
         if (!klass(p.plan.agentId)) continue
+        const cutHere = p.outputSuppressed === undefined
         p.outputSuppressed ??= 'shutdown'
         this.clearIdle(p)
         this.turnSurfaces.exact(p.plan.platform)?.onSuppress?.(p)
@@ -20223,6 +20432,8 @@ export class Daemon {
         await this.permissions.releaseChatPermissions(p.hostKey, p.acpSessionId)
         await this.permissions.releaseEditorPermissions(p.hostKey, p.acpSessionId)
         void (p.selectedHost?.host ?? this.hostForOwner(p.hostKey))?.cancel(p.acpSessionId).catch(() => {})
+        // Its durable row survives the drain, so the next holder replays the message.
+        if (cutHere) await this.postTurnCutNotice(p, SHUTDOWN_NOTICE, true)
       }
       return forceAgents
     }

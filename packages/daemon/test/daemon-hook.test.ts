@@ -3491,6 +3491,8 @@ describe('Daemon rd/msg hook fires', () => {
       const root = scaffold()
       const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => host as never })
       await daemon.start()
+      // A respawn lets running turns finish first; a zero window cuts the turn at once.
+      ;(daemon as any).cfg.limits.configRespawnDrainMs = 0
       // An unreachable CP keeps the report in the durable outbox (retryable
       // failure), without leaving an unresolved request alive during teardown.
       const emitHookReport = vi.fn(async () => {

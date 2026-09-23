@@ -402,9 +402,9 @@ export class ModelSessionHostPool {
     return [...this.entries.values()].some((candidate) => candidate.agentId === agentId)
   }
 
-  async releaseForAgent(agentId: string, deadlineMs?: number): Promise<void> {
+  async releaseForAgent(agentId: string, deadlineMs?: number, except?: ReadonlySet<string>): Promise<void> {
     const keys = [...this.entries.values()]
-      .filter((entry) => entry.agentId === agentId)
+      .filter((entry) => entry.agentId === agentId && !except?.has(entry.sessionKey))
       .map((entry) => entry.sessionKey)
     await Promise.all(keys.map((key) => this.release(key, deadlineMs)))
   }
