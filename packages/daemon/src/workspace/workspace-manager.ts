@@ -295,9 +295,14 @@ export class WorkspaceManager {
     return this.planeFor(scope)?.workspacesOffDisk ?? false
   }
 
-  /** The agent's own runner; undefined means its workspace is reachable locally. */
-  resolveGitRunner(agentId: string, cwd?: string, abort?: AbortSignal): GitRunner | undefined {
-    return this.planeFor({ agentId, path: cwd })?.gitRunnerFor(agentId, cwd, this.withShutdown(abort))
+  /** The plane's runner for this path, or for the session named, which answers for itself when placed apart from its agent; undefined means its workspace is reachable locally. */
+  resolveGitRunner(agentId: string, cwd?: string, abort?: AbortSignal, sessionKey?: string): GitRunner | undefined {
+    return this.planeFor({ agentId, path: cwd, ...(sessionKey === undefined ? {} : { sessionKey }) })?.gitRunnerFor(
+      agentId,
+      cwd,
+      this.withShutdown(abort),
+      sessionKey
+    )
   }
 
   /** The filesystem this agent's workspace files live in — this daemon's own when nothing claims it. A caller holding a session's scope names it, so a session placed apart from its agent answers for itself. */
@@ -1023,10 +1028,16 @@ export class WorkspaceManager {
     if (error) throw new Error(`workspace: could not replace ${root} for agent "${agentId}" (${error})`)
   }
 
-  consoleWorkspaceGitRunner(agentId: string, cwd?: string, abort?: AbortSignal): GitRunner | undefined {
-    const remote = this.resolveGitRunner(agentId, cwd, abort)
+  /** The console's runner, judged by the session's key when its root has one, as that root was composed; undefined refuses, never this disk in an off-disk runner's place. */
+  consoleWorkspaceGitRunner(
+    agentId: string,
+    cwd?: string,
+    abort?: AbortSignal,
+    sessionKey?: string
+  ): GitRunner | undefined {
+    const remote = this.resolveGitRunner(agentId, cwd, abort, sessionKey)
     if (remote) return remote
-    if (this.offDisk({ agentId, path: cwd })) return undefined
+    if (this.offDisk({ agentId, path: cwd, ...(sessionKey === undefined ? {} : { sessionKey }) })) return undefined
     return hostGitRunner(cwd, this.withShutdown(abort))
   }
 

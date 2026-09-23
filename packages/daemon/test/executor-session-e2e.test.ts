@@ -27,6 +27,7 @@ import { shimPaths } from '../src/shim/sandbox-paths.js'
 import { ShimServer } from '../src/shim/server.js'
 import { applyWorkspaceFilesPayload } from '../src/shim/workspace-files-channel.js'
 import { localWorkspaceFiles } from '../src/workspace/workspace-files.js'
+import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
 import type { ShimTransport } from '../src/shim/client.js'
 import { WAIT } from './wait-support.js'
 
@@ -304,6 +305,27 @@ describe('a session on another machine of the group', () => {
       name: 'WorkspaceViolationError',
       reason: 'sandbox-unavailable'
     })
+  })
+
+  it('runs the console’s git on the executor by its key, and refuses it rather than this disk once its pipe closes', async () => {
+    const executor = await machine(EXECUTOR_A)
+    const holder = holderPlane(HOLDER, new Relay(new Map([[EXECUTOR_A, executor]])))
+    await holder.prepareAt(AGENT, KEY, [choice(EXECUTOR_A)])
+    await holder.ensureChannel(SUBJECT)
+    // Resolved as the daemon wires it: a placed session's scope is this plane's, every other one this holder's disk.
+    const workspaces = new WorkspaceManager()
+    workspaces.setPlaneResolver((scope) => holder.planeFor(scope))
+    const cwd = join(executor.root, 'sessions', LEAF, 'workspace')
+    await mkdir(cwd, { recursive: true })
+
+    const runner = workspaces.consoleWorkspaceGitRunner(AGENT, cwd, undefined, KEY)
+    expect((await runner!.raw(['rev-parse', 'HEAD'])).trim()).toBe(HEAD)
+    expect(executor.exec.at(-1)).toMatchObject({ tool: 'git', cwd, args: ['rev-parse', 'HEAD'] })
+
+    // Idle closes the pipe and forgets the root, so its path alone is a path on this disk, and only the key refuses.
+    await expect(holder.suspendIdle(SUBJECT)).resolves.toBe('suspended')
+    expect(workspaces.consoleWorkspaceGitRunner(AGENT, cwd)).toBeDefined()
+    expect(workspaces.consoleWorkspaceGitRunner(AGENT, cwd, undefined, KEY)).toBeUndefined()
   })
 
   it("launches a real prepared runtime under the HOME its executor seeded, with none of the holder's environment", async () => {

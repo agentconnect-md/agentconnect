@@ -105,7 +105,7 @@ beforeAll(() => {
     runtimeRootOf: () => undefined
   })
   reader = createWorkspaceReader(workspaces, scope.location, (_id, write) => write())
-  seam = createWorkspaceGit(workspaces, scope.gitRoot, () => undefined, scope.target)
+  seam = createWorkspaceGit(workspaces, scope.location, () => undefined, scope.target)
 })
 
 afterAll(() => rmSync(base, { recursive: true, force: true }))
@@ -290,7 +290,7 @@ describe('the console git scope keys on the MANAGED credential, not the github-a
       sessionOf: async () => undefined,
       runtimeRootOf: () => undefined
     })
-    return createWorkspaceGit(workspaces, managedScope.gitRoot, () => undefined, managedScope.target)
+    return createWorkspaceGit(workspaces, managedScope.location, () => undefined, managedScope.target)
   }
 
   it('rides the helper for a gitlab primary, whose target host the remote builder derives from the URL', async () => {

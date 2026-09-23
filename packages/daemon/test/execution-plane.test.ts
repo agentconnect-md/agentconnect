@@ -18,11 +18,19 @@ describe('wireWorkspacePlane', () => {
 
     const abort = new AbortController()
     expect(workspaces.resolveGitRunner('agent-a', '/agent/checkout', abort.signal)).toBe(runner)
-    expect(gitRunnerFor).toHaveBeenCalledWith('agent-a', '/agent/checkout', expect.any(AbortSignal))
+    expect(gitRunnerFor).toHaveBeenCalledWith('agent-a', '/agent/checkout', expect.any(AbortSignal), undefined)
     // The plane gets the caller's abort joined with the shutdown cancel, so the caller's still ends its Git.
     const passed = gitRunnerFor.mock.calls[0]![2]!
     abort.abort()
     expect(passed.aborted).toBe(true)
+    // A session's key reaches the plane with its path, so a session placed apart from its agent answers for itself.
+    workspaces.resolveGitRunner('agent-a', '/agent/checkout', undefined, 'slack:C1:1700000000.000100')
+    expect(gitRunnerFor).toHaveBeenLastCalledWith(
+      'agent-a',
+      '/agent/checkout',
+      expect.any(AbortSignal),
+      'slack:C1:1700000000.000100'
+    )
     expect(workspaces.fsFor('agent-a')).toBe(fs)
     expect(workspaces.sandboxMountFor('agent-a')).toBe('/agent')
     expect(await workspaces.clearPath('agent-a', '/agent/checkout')).toBe('read-only volume')
@@ -102,6 +110,7 @@ describe('the scope each workspace question carries', () => {
 
   const session = { agentId: 'agent-a', sessionKey: KEY }
   const path = { agentId: 'agent-a', path: CWD }
+  const keyed = { agentId: 'agent-a', path: CWD, sessionKey: KEY }
   const whole = { agentId: 'agent-a' }
   // What each question asks FIRST: its own placement, before whatever it goes on to ask of the agent's mount or filesystem.
   const questions: Array<[string, PlaneScope[], (workspaces: WorkspaceManager) => unknown]> = [
@@ -115,6 +124,12 @@ describe('the scope each workspace question carries', () => {
     ],
     // The runner is resolved first, on the same path the refusal is then asked about.
     ['consoleWorkspaceGitRunner', [path, path], (w) => w.consoleWorkspaceGitRunner('agent-a', CWD)],
+    // A session's root is judged by its key, which still names it after its pipe no longer names the path.
+    [
+      'consoleWorkspaceGitRunner on a session’s root',
+      [keyed, keyed],
+      (w) => w.consoleWorkspaceGitRunner('agent-a', CWD, undefined, KEY)
+    ],
     ['the installed-skills exclusion', [path], (w) => w.withSkills(agent, CWD, { installSkills: async () => [] })],
     ['the local skills step', [path], (w) => (w as unknown as Internals).withLocalSkills(agent, CWD, {})],
     ['the widened cwd root', [path], (w) => w.additionalWorkspaceDirectories(agent, CWD)],

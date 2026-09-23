@@ -208,7 +208,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
 
   const workspaceGit = createWorkspaceGit(
     host.workspaces(),
-    workspaceScope.gitRoot,
+    workspaceScope.location,
     // Derived from the SCOPE's own target, not the primary workspace's credential mode: a manual
     // GitHub workspace may authorize an App-covered repository, whose secondary root then needs the
     // helper the primary does not. The helper itself is URL-routed, so it only answers for that root.

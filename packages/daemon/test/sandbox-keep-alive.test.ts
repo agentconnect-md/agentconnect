@@ -356,8 +356,7 @@ describe('sandbox keep-alive', () => {
     })
 
     it('a session page whose pod cannot be routed falls back to the agent’s own pod', async () => {
-      // `gitRoot` answers undefined for a shared session, and a rejection is not a reason to stop
-      // answering: an unrouted path lives on the agent's pod, which is what the old predicate assumed.
+      // A shared session has no location of its own and a rejection is no reason to stop answering: an unrouted path lives on the agent's pod.
       const { keepAlive, holds } = build({
         podOf: () => {
           throw new Error('no scope for this session')
