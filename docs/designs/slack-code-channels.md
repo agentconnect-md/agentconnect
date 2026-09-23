@@ -375,13 +375,13 @@ telemetry, nothing more.
 
 ### 6.4 Tabs and their ACP sources
 
-| Tab          | ACP source                                                                | Existing machinery                                                      | New in Phase 2                                                                                             |
-| ------------ | ------------------------------------------------------------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| Conversation | `agent_message_chunk`; tool chrome on the card stream                     | `OutputConverger` (`render.ts:2214`), the existing post / live-reply IR | Nothing if the tab is an ordinary channel; the streaming decision of §7 Q3                                 |
-| Plan         | `plan` updates with per-entry status                                      | `renderPlan`, `plan_update`, `upsertPlan`                               | A plan-tab writer fed from the same action                                                                 |
-| Diff         | No ACP diff kind; file edits are tool calls; the daemon owns the checkout | The console's unified-diff viewer (web only)                            | Daemon-side diff capture at tool-call boundaries or turn end; the repository and branch from the workspace |
-| PR           | The code-host seam (`CodeHostTurnFinal`, `turn-final.ts:71`)              | GitHub and GitLab posters                                               | PR coordinates from the seam instead of the §5.5 prose regex                                               |
-| Preview      | None                                                                      | None                                                                    | Only where a sandbox exposes a URL; otherwise the tab stays empty                                          |
+| Tab          | ACP source                                                                | Existing machinery                                         | New in Phase 2                                                                                             |
+| ------------ | ------------------------------------------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Conversation | `agent_message_chunk`; tool chrome on the card stream                     | `OutputConverger` (`render.ts:2214`), the existing post IR | Nothing if the tab is an ordinary channel; the streaming decision of §7 Q3                                 |
+| Plan         | `plan` updates with per-entry status                                      | `renderPlan`, `plan_update`, `upsertPlan`                  | A plan-tab writer fed from the same action                                                                 |
+| Diff         | No ACP diff kind; file edits are tool calls; the daemon owns the checkout | The console's unified-diff viewer (web only)               | Daemon-side diff capture at tool-call boundaries or turn end; the repository and branch from the workspace |
+| PR           | The code-host seam (`CodeHostTurnFinal`, `turn-final.ts:71`)              | GitHub and GitLab posters                                  | PR coordinates from the seam instead of the §5.5 prose regex                                               |
+| Preview      | None                                                                      | None                                                       | Only where a sandbox exposes a URL; otherwise the tab stays empty                                          |
 
 ### 6.5 Lifecycle mapping
 

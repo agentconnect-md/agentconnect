@@ -3,7 +3,9 @@
 **Status:** Implemented — **chrome only**. A Slack turn's TOOL-CALL CHROME rides one native
 `chat.startStream` card stream; the agent's answer does not, and the body pipeline is unchanged.
 What came back is the _progress message_, rendered as a native plan card instead of a
-`chat.postMessage` the daemon edits in place — not body streaming (§1). Layer 0's Agent Sessions
+`chat.postMessage` the daemon edits in place — not body streaming (§1). `minimal` mode later
+joined the stream with its INTERIM reply segments as history cards, posting only its final
+segment as a message (§5.2), which retired that mode's in-place live reply. Layer 0's Agent Sessions
 control surface ([#1462](https://github.com/agentconnect-md/agentconnect/pull/1462),
 [#1471](https://github.com/agentconnect-md/agentconnect/pull/1471),
 [#1563](https://github.com/agentconnect-md/agentconnect/pull/1563)) is untouched.
@@ -30,7 +32,7 @@ in order to move an answer between transports is gone with it (§9).
 ## 2. Goals / Non-goals
 
 **Goals.** Replace the in-place `progress` message with a native collapsed plan card on
-medium/high turns; change **nothing** about the body (post / live-reply / final-live-reply,
+medium/high turns; change **nothing** about the body (post,
 response finalization by edit, the attribution footer, the transcript, the status bar, the
 transient status text, permission and elicitation cards, attachments, the ACP plan message);
 degrade to today's `progress` message
@@ -51,19 +53,22 @@ the applier resolving those actions, and the connection members `startTurnStream
 `appendTurnStream` / `stopTurnStream` plus the `settleAndStop` unit of §6. The axis changes **one**
 production rule — `tool_call` / `tool_call_update` emits card chunks instead of a `progress`
 action — and adds a Thinking card on the thought branch; every other action, in every mode, is
-byte-identical.
+byte-identical. `minimal` has a rule of its own: a closed interim reply segment emits a card
+(§5.2), and nothing else does.
 
 **The axis is decided at turn start**, in `createConverger(ctx)`, from a synchronous
 `conn.streamingLikely()` read (§7) plus the two facts knowable in advance: the platform is Slack
-and the turn has a thread. Output mode is the converger's own gate — only `medium` and `high`
-render tool chrome at all.
+and the turn has a thread. Output mode is the converger's own gate — `medium` and `high` render
+tool chrome, `minimal` renders its interim replies (§5.2), and `none` / `low` never take the axis.
 
 **Opening is lazy.** `stream-start` is emitted by the first drain that has a card to show, so a
 turn that runs no tools never calls `chat.startStream` and produces exactly the bytes it produces
 today — which is why this is safe without a flag: the population it can affect is exactly the
 population that would have seen a `progress` message. The terminal settle opens one too when the
 turn's only tool ran and finished inside a single coalescing window, or such a turn would end with
-no chrome at all.
+no chrome at all — and that late open is emitted BEFORE the final body post, so the container is
+created above the answer it precedes (Slack orders a thread by ts). A stream already open settles
+after the body, as the stop always did.
 
 **Cadence.** All calls ride the connection's single `PlatformSendQueue`, one enqueue each, never
 calling another from inside a queued task (Layer 0's `setStatus` → `setSessionLifecycle` comment is
@@ -185,7 +190,7 @@ tighter one (below).
 
 | ACP `session/update`             | today                                              | with the chrome stream                                                                                                                                                                                                                                                                      |
 | -------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agent_message_chunk`            | buffered → `post` / `live-reply`                   | **unchanged**                                                                                                                                                                                                                                                                               |
+| `agent_message_chunk`            | buffered → `post`                                  | **unchanged** on medium/high; on `minimal` a CLOSED interim segment becomes one `complete` card, and the final segment is posted (§5.2)                                                                                                                                                     |
 | `tool_call` / `tool_call_update` | in-place `progress` message + rotating status text | `task_update` keyed by `toolCallId`; ACP `pending`/`in_progress` → `in_progress`, `completed` → `complete`, `failed` → `error`. The status text is unchanged; the `progress` message is replaced                                                                                            |
 | `agent_thought_chunk`            | `high`: in-place Thinking message; status text     | ONE `task_update` per thinking run, titled by the run's FIRST LINE, carrying the run itself as its body on `high`. The separate Thinking message is **dropped on a streaming turn** — the cards are it                                                                                      |
 | `plan`                           | in-place `plan` message (a native bulleted list)   | **unchanged** — an ACP plan is a full entry list with per-entry statuses, i.e. a checklist, not a one-line container label. It stays OFF the stream for a second reason too: cards render only in the terminal state, so a streamed plan would be invisible for the whole turn it describes |
@@ -303,6 +308,42 @@ So `error` is spent where red is the truth about the TURN, not about one step:
   `⚠️ Agent failed to respond` notice carries the reason in the body. A crash with nothing in
   flight rewrites no card: the label alone says how the turn ended.
 
+### 5.2 `minimal`: interim replies as history cards
+
+`minimal` promises ONE visible reply per turn. It used to keep that promise with an in-place live
+reply: a single `chat.postMessage` edited on every idle window and at every segment boundary, then
+settled with the final text. That path owned failure modes of its own — a dropped edit silently
+dropping the answer ([#1793](https://github.com/agentconnect-md/agentconnect/issues/1793)), the
+"(edited)" marker on every reply, a re-anchor below every human-input card, a footer that had to
+survive every edit — all so the reader could watch text they were about to see replaced.
+
+Now the stream holds what that message used to replace. Each interim segment — the text the model
+wrote before a tool call or a new message boundary — becomes one card when it CLOSES: id `reply-N`,
+title from its first line under the tool-title clamp, the segment itself as the `details` body under
+the body cap, `complete` from birth. That is a settled thinking card's shape, for the same reason: a
+closed segment is finished text, so the write-once body rule costs nothing. The final segment never
+becomes a card. It is posted at turn end exactly as `low` posts its answer — one message, split only
+past the block cap, born with the footer, terminal, never edited. The container's working label is
+the shared `Working…`; its closing label counts replies (`3 earlier replies`), not steps.
+
+What stays off a minimal stream: tool cards and thinking cards. The mode's rule that no tool name or
+command reaches the channel holds — the transient status stays the generic `is working…` — and a
+thinking run keeps to `is thinking…`. A minimal stream therefore opens only when the model narrated
+before working; a turn that runs its tools silently and then answers produces one message and no
+chrome at all.
+
+What is given up is the live view of the CURRENT segment. Card bodies append server-side, so a
+segment can be shown only once it has closed; mid-segment there is nothing but the status and the
+native working row, and the answer lands whole at the end. §1's single-recipient property applies as
+it does to any chrome: the initiator watches the cards arrive, everyone else sees the placeholder
+until the stop lands the folded history for all. Both are accepted for the reason the mode exists —
+interstitial text is by definition not the answer.
+
+Degrade needs no live-reply fallback. Off the axis — a channel-root turn, a workspace that cannot
+stream, a refused `chat.startStream` — an interim segment is transcript-only: the record-only posts
+still carry it to the web session, the append carries no legacy `progressText`, and the channel shows
+the final reply alone, which is the mode's own description of itself.
+
 ## 6. Stop
 
 **There is one stop event, and Layer 0 already handles it.** `agent_session_stopped` fires for
@@ -369,7 +410,7 @@ stream itself. A resolved `ts` is never left unowned; the alternative is a worki
 ever close.
 
 **Structural carve-outs**, decided before the call is attempted: no `thread_ts` (§4 fact 2), and
-output mode below `medium`. That is the whole list. There is no shareable-bot carve-out and no
+output mode `none` or `low` (§5.2 put `minimal` on the axis). That is the whole list. There is no shareable-bot carve-out and no
 non-human-turn carve-out — §4 fact 9 removed the reason for the second, and §1's split removed
 the reason for the first.
 
@@ -377,8 +418,9 @@ the reason for the first.
 back to today's `progress` message for the rest of the turn: each `stream-append`, and the
 terminal `stream-stop`, carries the legacy `progress` rendering it would have produced, so the
 applier renders that instead. Task chunks are NEVER rendered as prose — a thinking-only batch
-carries no legacy text and shows nothing, which is what it shows today. A mid-turn append failure
-is even cheaper: that card update is dropped and the handle is kept.
+carries no legacy text and shows nothing, which is what it shows today, and a `minimal` batch
+carries none either (§5.2). A mid-turn append failure is even cheaper: that card update is dropped
+and the handle is kept.
 
 ## 8. Backfill and ingress hygiene
 
@@ -421,7 +463,9 @@ change** — no frame member, no `SlackHttpIngest` branch, no schema, no DTO; bo
 this for free because it is egress plus two daemon-local ingress filters. **Unchanged:** the other
 platforms' convergers and appliers, webchat, `@agentconnect.md/message` normalization, the
 transcript contract, the session status bar, the status text and session enum, permission and
-elicitation cards, attachments, §5.5 routing semantics, and the body pipeline in full.
+elicitation cards, attachments, §5.5 routing semantics, and the body pipeline in full. §5.2 later
+removed the Slack applier's `live-reply` / `final-live-reply` actions and the `liveReplyReanchor`
+cursor; Telegram and Discord keep their own live replies.
 
 The **eval connection-surface guard** reflects over `SlackConnection.prototype`, so
 `VirtualSlackConnection` implements `startTurnStream` (returning "unsupported", which
@@ -434,7 +478,7 @@ erased). `collaboration-arena-baseline.md` pins that file's test count.
 
 One PR carries the code and this document; §10 establishes the manifest needs nothing. **No kill
 switch and no code flag:** the degrade path IS the design and is exercised on every arena turn,
-every channel-root turn, every `minimal`/`low` turn and every turn that runs no tools; the
+every channel-root turn, every `low` turn and every turn that runs no tools; the
 promotion gate already provides the temporal separation a flag would buy; and a flag's "off" state
 is indistinguishable from `streamingUnavailableUntil` being set.
 

@@ -935,56 +935,54 @@ describe('OutputConverger minimal mode', () => {
     ({ sessionUpdate: 'tool_call', toolCallId: id, title, status: 'pending' }) as any
   const think = (text: string) => ({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text } }) as any
 
-  it('collapses interstitial narration into one live-reply and records every segment', () => {
+  // Off the chrome stream (no axis taken): interim segments reach the transcript only, and the
+  // final segment is the turn's one visible reply. The on-axis history cards are covered in
+  // slack-streaming.test.ts.
+  it('keeps interim narration out of the channel, records every segment, and posts the final one', () => {
     const c = new OutputConverger('minimal')
     // A chunk on its own buffers silently — no per-token channel post.
     expect(c.onUpdate(chunk('step one '))).toEqual([])
-    // A tool boundary closes the segment: generic status + the single live message + a
-    // record-only transcript row (NOT a visible channel post). The concrete tool title stays
-    // out of minimal-mode channel chrome.
+    // A tool boundary closes the segment: generic status + a record-only transcript row (NOT a
+    // visible channel post). The concrete tool title stays out of minimal-mode channel chrome.
     expect(c.onUpdate(tool('t1', 'sleep 20; gh run list'))).toEqual([
       { kind: 'set-status', text: 'is working…' },
-      { kind: 'live-reply', text: 'step one ' },
       { kind: 'post', text: 'step one ', recordOnly: true }
     ])
-    // The next chunk starts a fresh segment that REPLACES the previous one in the live message.
+    // The next chunk starts a fresh segment.
     expect(c.onUpdate(chunk('final answer'))).toEqual([])
-    // The turn settles the live message, clears the status, then emits the attribution footer
-    // as a STANDALONE action — the daemon attaches it to the final live-reply section since that
-    // message carries no born-in footer.
+    // The turn posts the final segment as its ONE visible reply — terminal, born with the
+    // footer like any other body — then clears the status and closes the footer lifecycle.
     expect(c.onFinal(attribution())).toEqual([
-      { kind: 'final-live-reply', text: 'final answer' },
-      { kind: 'post', text: 'final answer', recordOnly: true },
+      { kind: 'post', text: 'final answer', terminal: true },
       { kind: 'set-status', text: '' },
-      { kind: 'attribution', standalone: true, ...buildAttributionBlocks(attribution()) }
+      { kind: 'attribution', ...buildAttributionBlocks(attribution()) }
     ])
   })
 
-  it('omits the standalone footer when no attribution info is provided', () => {
+  it('omits the attribution action when no attribution info is provided', () => {
     const c = new OutputConverger('minimal')
     c.onUpdate(chunk('answer'))
     expect(c.onFinal().some((a) => a.kind === 'attribution')).toBe(false)
   })
 
-  it('never emits a visible (non-recordOnly) post — every reply post is transcript-only', () => {
+  it('makes only the final reply a visible post — every interim post is transcript-only', () => {
     const c = new OutputConverger('minimal')
     const all: SlackAction[] = []
     c.onUpdate(chunk('a ')).forEach((x) => all.push(x))
     c.onUpdate(tool('t1', 'Read')).forEach((x) => all.push(x))
     c.onUpdate(chunk('b')).forEach((x) => all.push(x))
     c.onFinal().forEach((x) => all.push(x))
-    const posts = all.filter((a) => a.kind === 'post') as Extract<SlackAction, { kind: 'post' }>[]
-    expect(posts.length).toBeGreaterThan(0)
-    expect(posts.every((p) => p.recordOnly === true)).toBe(true)
+    expect(all.filter((a) => a.kind === 'post')).toEqual([
+      { kind: 'post', text: 'a ', recordOnly: true },
+      { kind: 'post', text: 'b', terminal: true }
+    ])
   })
 
-  it('idle flush streams the current segment as a live-reply (no record, no clear)', () => {
+  it('never arms the idle flush — nothing is delivered mid-segment', () => {
     const c = new OutputConverger('minimal')
     c.onUpdate(chunk('partial repl'))
-    expect(c.hasBuffered()).toBe(true)
-    expect(c.flushBuffered()).toEqual([{ kind: 'live-reply', text: 'partial repl' }])
-    // Still dirty — the segment isn't recorded until a boundary / onFinal.
-    expect(c.hasBuffered()).toBe(true)
+    expect(c.hasBuffered()).toBe(false)
+    expect(c.flushBuffered()).toEqual([])
   })
 
   it('does not re-record a segment already closed by a tool boundary', () => {
@@ -1004,25 +1002,28 @@ describe('OutputConverger minimal mode', () => {
     expect(c.onUpdate({ sessionUpdate: 'plan', entries: [{ content: 'x', status: 'pending' }] } as any)).toEqual([
       { kind: 'set-status', text: 'planning…' }
     ])
-    // The whole reply is still one segment, emitted once at the end.
+    // The whole reply is still one segment, posted once at the end.
     expect(c.onFinal()).toEqual([
-      { kind: 'final-live-reply', text: 'working' },
-      { kind: 'post', text: 'working', recordOnly: true },
+      { kind: 'post', text: 'working', terminal: true },
       { kind: 'set-status', text: '' }
     ])
   })
 
-  it('head-clamps a long segment in the live message but records it in full', () => {
+  it('splits an over-limit final reply across messages, only the last of them terminal', () => {
     const c = new OutputConverger('minimal')
     const long = 'x'.repeat(13000) // exceeds the 12000-char Slack markdown block cap
     c.onUpdate(chunk(long))
-    const fin = c.onFinal()
-    const live = fin.find((a) => a.kind === 'final-live-reply') as Extract<SlackAction, { kind: 'final-live-reply' }>
-    const recorded = fin.filter((a) => a.kind === 'post') as Extract<SlackAction, { kind: 'post' }>[]
-    expect(live.text).toBe(long)
-    // The untruncated text still reaches the transcript across the record-only posts.
-    expect(recorded.map((p) => p.text).join('')).toBe(long)
-    expect(recorded.every((p) => p.recordOnly === true)).toBe(true)
+    const posts = c.onFinal().filter((a) => a.kind === 'post') as Extract<SlackAction, { kind: 'post' }>[]
+    expect(posts.length).toBeGreaterThan(1)
+    expect(posts.map((p) => p.text).join('')).toBe(long)
+    expect(posts.every((p) => !p.recordOnly)).toBe(true)
+    expect(posts.map((p) => p.terminal === true)).toEqual(posts.map((_, i) => i === posts.length - 1))
+  })
+
+  it('delivers a crashed turn’s partial reply as a real post', () => {
+    const c = new OutputConverger('minimal')
+    c.onUpdate(chunk('partial'))
+    expect(c.flushTerminal()).toEqual([{ kind: 'post', text: 'partial' }])
   })
 })
 

@@ -16,14 +16,14 @@
  * eight would take or return a Slack type, which is a port in name only. Two
  * groups:
  *
- *  - Applier-private: `postSlackReply` (the born-with-its-footer post boundary),
- *    `updateSlackLiveReply`, `findExistingSlackStatusBarTs`.
+ *  - Applier-private: `postSlackReply` (the born-with-its-footer post boundary) and
+ *    `findExistingSlackStatusBarTs`.
  *  - Shared with core call sites: the four option builders and
  *    `clearStaleSlackReplyFooters`. These are PURE functions of the turn record,
  *    so they move as exported functions and core imports them back — the
  *    dependency points core → platform, which is the direction the design wants.
  *
- * WHAT DID NOT MOVE. `liveReplyTs` / `progressTs` / `statusBarTs` / `lastReply` /
+ * WHAT DID NOT MOVE. `progressTs` / `statusBarTs` / `lastReply` /
  * `attribution` and their `*Attempted` flags stay on the core turn record — now
  * clustered there as `chrome` and `reply`. They LOOK like Slack state, and
  * eventually most of them belong in the opaque slot beside `staleReplyFooters` —
@@ -40,7 +40,6 @@
  * options and posts without Slack identity decoration.
  */
 import type { SlackConnection, SlackPostOptions, SlackStatusOptions, SlackTurnStream } from '../../slack/connection.js'
-import { splitIntoSections } from '../../slack/formatter.js'
 import type { SlackAction } from '../../slack/render.js'
 
 /** Slack's opaque per-turn state (§7.3) — the footer edits still owed, plus the turn's
@@ -68,8 +67,8 @@ export interface SlackTurnState {
 
 /** The core turn, as Slack's applier sees it. `Pending` satisfies it structurally.
  *
- *  Wider than the other three surfaces because Slack's output anchors (live reply,
- *  progress/plan/reasoning rows, status bar, attribution footer) are still core
+ *  Wider than the other three surfaces because Slack's output anchors (progress/plan/
+ *  reasoning rows, status bar, attribution footer) are still core
  *  fields — see the module header. Read this list as the inventory for that
  *  follow-up, not as the port Slack wants. */
 export interface SlackTurn {
@@ -80,10 +79,6 @@ export interface SlackTurn {
   chrome: {
     /** Stored session title awaiting the turn's first registering write (status/stream). */
     sessionTitleToPush?: string
-    liveReplyTs?: string
-    liveReplyText?: string
-    liveReplyAttempted?: boolean
-    liveReplyReanchor?: boolean
     progressTs?: string
     progressAttempted?: boolean
     planTs?: string
@@ -458,37 +453,6 @@ async function applySlackProgress(
   }
 }
 
-/** Update minimal mode's live body without dropping its born-in footer. Returns whether
- *  Slack accepted the edit — the caller relies on that to know the body actually landed,
- *  since a failed in-place edit is the one way minimal mode can drop a turn's answer.
- *  Only records a footer-key transition after the edit is accepted so finalization can
- *  retry a failed metadata refresh. */
-async function updateSlackLiveReply(conn: SlackConnection, p: SlackTurn, text: string): Promise<boolean> {
-  if (!p.chrome.liveReplyTs) return false
-  const attribution = p.attribution
-  const ok = !attribution
-    ? await conn.updateMessage(p.plan.channel, p.chrome.liveReplyTs, text, false, p.plan.agentId)
-    : await conn.updateBlocks(
-        p.plan.channel,
-        p.chrome.liveReplyTs,
-        [{ type: 'markdown', text }, ...attribution.blocks],
-        text,
-        false,
-        p.plan.agentId
-      )
-  if (!ok) return false
-  // minimal mode edits ONE message as the answer streams, so the text finalization must
-  // re-send is the latest edit, not the text this message was born with (§5.5). Advance
-  // it only after the edit lands, so a dropped edit never masquerades as delivered.
-  if (p.reply.lastResponse?.ts === p.chrome.liveReplyTs) p.reply.lastResponse.text = text
-  if (p.reply.lastReply?.ts === p.chrome.liveReplyTs) {
-    p.reply.lastReply.text = text
-    if (attribution) p.reply.lastReply.footerKey = attribution.key
-    else delete p.reply.lastReply.footerKey
-  }
-  return true
-}
-
 /** Apply one converger action against the turn's Slack connection.
  *
  *  Also the CORE surface: webchat / hook / dream turns arrive here with no
@@ -569,33 +533,10 @@ export async function applySlackAction<TTurn extends SlackTurn>(
       await conn.postMessage(p.plan.channel, action.text, p.plan.thread, chromeOptions)
       return
     case 'attribution':
-      // Final metadata normally matches the footer already included in the initial post.
-      // Minimal mode also keeps that footer through its live updates, so finalization is
-      // a no-op unless the runtime published different session metadata during prompt.
+      // Final metadata normally matches the footer the latest section was born with, so this
+      // only retries stale-footer cleanup unless the runtime changed session metadata mid-prompt.
       p.attribution = { blocks: action.blocks, key: JSON.stringify(action.blocks) }
-      if (action.standalone) {
-        if (
-          p.chrome.liveReplyTs &&
-          p.chrome.liveReplyText !== undefined &&
-          p.reply.lastReply?.ts === p.chrome.liveReplyTs &&
-          p.reply.lastReply.footerKey !== p.attribution.key
-        ) {
-          const updated = await conn.updateBlocks(
-            p.plan.channel,
-            p.chrome.liveReplyTs,
-            [{ type: 'markdown', text: p.chrome.liveReplyText }, ...action.blocks],
-            p.chrome.liveReplyText,
-            false,
-            p.plan.agentId
-          )
-          if (updated !== false) {
-            p.reply.lastReply.text = p.chrome.liveReplyText
-            p.reply.lastReply.footerKey = p.attribution.key
-          }
-        }
-      } else {
-        await clearStaleSlackReplyFooters(host, conn, p, state)
-      }
+      await clearStaleSlackReplyFooters(host, conn, p, state)
       return
     case 'progress':
       await applySlackProgress(conn, p, chromeOptions, action.text)
@@ -679,77 +620,6 @@ export async function applySlackAction<TTurn extends SlackTurn>(
         p.chrome.reasoningTs = await conn.postMessage(p.plan.channel, action.text, p.plan.thread, chromeOptions)
       }
       return
-    case 'live-reply': {
-      // minimal mode's single agent reply: post once with its attribution footer, then
-      // update body + footer together as the turn streams. Skip an update when the text
-      // is unchanged; the paired `recordOnly` posts carry the transcript content.
-      if (p.chrome.liveReplyReanchor) {
-        // A human-input card was posted above this reply; start a FRESH reply below it so
-        // the post-answer stream reads after the question (the old reply stays frozen above).
-        p.chrome.liveReplyReanchor = false
-        p.chrome.liveReplyTs = undefined
-        p.chrome.liveReplyAttempted = false
-        p.chrome.liveReplyText = undefined
-      }
-      if (p.chrome.liveReplyText === action.text) return
-      // Advance liveReplyText only after the send is CONFIRMED. Setting it up front makes a
-      // dropped edit look delivered, and the terminal `final-live-reply` then de-dupes
-      // against text that never reached Slack — the silent-drop path (#1793).
-      if (p.chrome.liveReplyTs) {
-        if (await updateSlackLiveReply(conn, p, action.text)) p.chrome.liveReplyText = action.text
-      } else if (!p.chrome.liveReplyAttempted) {
-        p.chrome.liveReplyAttempted = true
-        p.chrome.liveReplyTs = await postSlackReply(host, conn, p, state, action.text)
-        if (p.chrome.liveReplyTs) p.chrome.liveReplyText = action.text
-      }
-      return
-    }
-    case 'final-live-reply': {
-      // Slack caps one markdown block at 12k characters. Settle the existing live reply
-      // with the first section, then post every overflow section as a continuation so
-      // minimal mode never drops the tail of a long final answer. Every successful next
-      // section is born with the footer before the prior section loses it, keeping the
-      // footer anchored to the last delivered response throughout the handoff.
-      const sections = splitIntoSections(action.text, undefined, p.plan.protectedAddresses)
-      const [first, ...rest] = sections
-      if (!first) return
-      if (p.chrome.liveReplyReanchor) {
-        p.chrome.liveReplyReanchor = false
-        p.chrome.liveReplyTs = undefined
-        p.chrome.liveReplyAttempted = false
-        p.chrome.liveReplyText = undefined
-      }
-      // This is the turn's LAST delivery opportunity, so it must not end in silence
-      // (#1793). Only skip when the exact text is already CONFIRMED on the live message;
-      // otherwise attempt the in-place edit, and if there is no live message or the edit
-      // is rejected, post the answer as a fresh message rather than dropping it.
-      if (p.chrome.liveReplyTs && p.chrome.liveReplyText === first) {
-        // Already delivered verbatim by a prior confirmed edit — nothing to do.
-      } else {
-        const edited = p.chrome.liveReplyTs ? await updateSlackLiveReply(conn, p, first) : false
-        if (edited) p.chrome.liveReplyText = first
-        else {
-          // No live message, or the edit was rejected: post the final section fresh. A
-          // single-section answer posted here is terminal, so it is born `final` (§5.5).
-          if (!p.chrome.liveReplyTs && p.chrome.liveReplyAttempted && rest.length === 0)
-            host.debug('slack: final-live-reply had no live message to settle; posting the answer as a new message')
-          const ts = await postSlackReply(host, conn, p, state, first, true, rest.length === 0)
-          if (ts) {
-            p.chrome.liveReplyTs = ts
-            p.chrome.liveReplyText = first
-            p.chrome.liveReplyAttempted = true
-          } else host.debug('slack: final-live-reply delivery failed; the turn answer was not posted')
-        }
-      }
-      for (const [index, section] of rest.entries()) {
-        const ts = await postSlackReply(host, conn, p, state, section, true, index === rest.length - 1)
-        if (ts) {
-          p.chrome.liveReplyTs = ts
-          p.chrome.liveReplyText = section
-        }
-      }
-      return
-    }
     case 'clear-status-bar': {
       const ts = p.chrome.statusBarTs ?? (await host.getStatusBarTs(p.plan.sessionKey))
       if (!ts) return
