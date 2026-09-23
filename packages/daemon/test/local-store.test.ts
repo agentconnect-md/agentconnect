@@ -41,6 +41,32 @@ async function store(): Promise<LocalStore> {
   return await openTestStore({ path: join(mkdtempSync(join(tmpdir(), 'ac-db-')), 'local.sqlite') })
 }
 
+it('pins a Decision model once, independently of manual overrides and subsequent session updates', async () => {
+  const s = await store()
+  const row = {
+    key: 'model-decision',
+    agentId: 'bot-a',
+    platform: 'webchat',
+    channel: 'conversation',
+    thread: 'thread',
+    acpSessionId: 'acp-1',
+    state: 'idle' as const,
+    lastDeliveredTs: null,
+    updatedAt: 1
+  }
+  await s.upsertSession(row)
+  await s.pinDecisionModel(row.key, 'claude', 'model-capable')
+  await s.pinDecisionModel(row.key, 'claude', 'model-standard')
+  await s.setModelOverride(row.key, 'model-manual')
+  await s.clearRuntimeConfigOverrides(row.agentId)
+  await s.upsertSession({ ...row, updatedAt: 2 })
+  expect((await s.getSession(row.key))?.decisionModel).toBe(
+    JSON.stringify({ runtime: 'claude', model: 'model-capable' })
+  )
+  expect(await s.getModelOverride(row.key)).toBeUndefined()
+  await s.close()
+})
+
 /** A second handle on the same durable store — a daemon restart, not a new store. */
 async function reopen(path: string): Promise<LocalStore> {
   return await openTestStore(path)
@@ -93,6 +119,7 @@ const revertSessionGateKey = (db: DatabaseSync): void => {
 /** Undo the v24 channel record, so a fixture looks like the transcript a v23 daemon wrote:
  *  `thread` NOT NULL, the dedup index on the full key, and a (channel, thread, ts, agent) delivery table. */
 const revertTranscriptAdmissions = (db: DatabaseSync): void => {
+  db.exec('ALTER TABLE sessions DROP COLUMN decisionModel')
   db.exec(`
     DROP INDEX transcript_channel_seq;
     DROP INDEX transcript_text_ts;
@@ -3650,8 +3677,8 @@ describe('the observation floor (message-intake.md §8 rule 2)', () => {
   })
 })
 
-// message-intake.md §4.3: v25 adds the verdict and release tables, created by the CREATE block on both paths.
-describe.skipIf(pg)('the v24 → v25 decision tables', () => {
+// message-intake.md §4.3: v26 adds the verdict and release tables, created by the CREATE block on both paths.
+describe.skipIf(pg)('the v25 → v26 decision tables', () => {
   const userVersion = (path: string): number => {
     const db = new DatabaseSync(path)
     const v = (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
@@ -3668,18 +3695,18 @@ describe.skipIf(pg)('the v24 → v25 decision tables', () => {
   }
 
   it('creates both tables on a fresh store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(25)
-    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v25-')), 'local.sqlite')
+    expect(SCHEMA_VERSION).toBe(26)
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v26-')), 'local.sqlite')
     await (await LocalStore.open(path)).close()
     expect(tables(path)).toEqual(['decision_release', 'decision_verdict'])
     expect(userVersion(path)).toBe(SCHEMA_VERSION)
   })
 
-  it('adds both tables to a v24 store', async () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v24-')), 'local.sqlite')
+  it('adds both tables to a v25 store', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v25-')), 'local.sqlite')
     await (await LocalStore.open(path)).close()
     const old = new DatabaseSync(path)
-    old.exec('DROP TABLE decision_verdict; DROP TABLE decision_release; PRAGMA user_version = 24')
+    old.exec('DROP TABLE decision_verdict; DROP TABLE decision_release; PRAGMA user_version = 25')
     old.close()
     const upgraded = await LocalStore.open(path)
     expect(await upgraded.listPendingDecisionVerdicts()).toEqual([])

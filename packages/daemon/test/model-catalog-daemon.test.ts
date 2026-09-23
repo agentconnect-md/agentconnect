@@ -155,6 +155,7 @@ describe('daemon model-catalog cache hydrate', () => {
       // The capability matrix rides the same first frame (raw efforts — non-claude
       // runtimes get no synthetic tiers).
       expect(fake.modelCatalog).toEqual({
+        modelSwitching: true,
         models: [
           { id: 'm-a', efforts: [{ value: 'low' }], defaultEffort: 'low', fastMode: false },
           { id: 'm-b', efforts: [] }
@@ -262,6 +263,7 @@ describe('daemon native catalog for a runtime with no ACP model selector', () =>
       await commitNative(daemon, clock, ['g-flash', 'g-pro'])
       expect(profile(daemon)).toMatchObject({ models: ['g-flash', 'g-pro'], modelsSource: 'cached' })
       expect(profile(daemon).modelCatalog?.source).toBe('native')
+      expect(profile(daemon).modelCatalog?.modelSwitching).toBe(false)
     } finally {
       await daemon.stop()
     }
@@ -864,6 +866,7 @@ describe('daemon sweep phase-1 catalog seeding', () => {
         const profile = emitted[0]![0]!
         expect(profile).toMatchObject({ runtime: 'probed', models: ['a', 'b'], modelsSource: 'probed' })
         expect(profile.modelCatalog).toEqual({
+          modelSwitching: true,
           models: [
             {
               id: 'a',

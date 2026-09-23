@@ -22,7 +22,6 @@ import {
   isSetPlacementKind,
   MOCK_MODE,
   MOCK_PREFIX,
-  runtimeLabel,
   status,
   supportsModes,
   workspaceStatus,
@@ -52,6 +51,7 @@ import {
   type HookDto,
   type HookRunDto
 } from '@/lib/api'
+import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
@@ -132,7 +132,6 @@ import { TrustedUsersField, type TrustedUsersFlush } from '@/components/console/
 import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
-import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { useSessionList } from '@/lib/use-session-list'
 import {
   GH_TRIGGER_MODES,
@@ -263,8 +262,8 @@ function rowSettingsTitle(hook: HookDto): string {
 
 export default function AgentDetailView() {
   const t = useTranslations('Agents.detail')
+  const { decisions = [] } = useOptionalDecisionsPrototype() ?? {}
   const permissionT = useTranslations('Common.permissionModes')
-  const acpRegistry = useAcpRegistry()
   const { orgPath, activeOrg } = useOrgs()
   const { me } = useProfile()
   const { id } = useParams<{ id: string }>()
@@ -860,12 +859,23 @@ export default function AgentDetailView() {
   // instead of the static tables. `owningDaemon` cannot answer that: a set placement names no
   // member, and the nothing it found is what showed every such agent an em-dash model even when
   // one was explicitly saved.
-  const runtimeMeta = acpRuntime(acpRegistry, da.runtime)
   // Config rows read the daemon-advertised runtime-model catalog so a placed
   // agent shows the SAME effective model / effort / permission the Edit modal
   // does (else a blank model reads "Default" here but its resolved default in the
   // editor). Falls back to the static labels when the daemon reports no catalog.
-  const modelText = agentModelDisplay(capabilitySource, da.runtime, da.model)
+  const defaultModelText = agentModelDisplay(capabilitySource, da.runtime, da.model)
+  const selectedDecision = decisions.find((item) => item.id === da.modelSelection?.decisionId)
+  const modelText = da.modelSelection ? (
+    <>
+      <span className="inline-flex items-center gap-1 rounded-full bg-(--brand-soft) px-2 py-1 text-[12px] font-semibold text-(--brand-soft-text)">
+        <Icon name="git-branch" size={13} />
+        {t('modelByDecision')}
+      </span>
+      {selectedDecision && <span>{selectedDecision.name}</span>}
+    </>
+  ) : (
+    defaultModelText
+  )
   const ds = status(effectiveAgentStatus(da, owningDaemon))
   // The agents list's own reading: an agent nothing is serving cannot answer on any integration.
   const agentOffline = ds.label === 'offline'
@@ -1302,25 +1312,15 @@ export default function AgentDetailView() {
                   </div>
                 )}
                 <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
-                  <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                    {t('basics.runtime')}
+                  <span className="text-[14px] text-(--text-tertiary) desktop:text-[13px]">
+                    {t('basics.runtimeAndModel')}
                   </span>
-                  <span className="inline-flex items-center gap-[7px] font-sans text-[12px] font-medium leading-normal desktop:text-[12.5px]">
-                    {/* Mobile shows the bare mark; desktop the bordered imark chip. */}
-                    <span className="inline-flex h-4 w-4 desktop:hidden">
-                      <AgentMark model={da.runtime} />
-                    </span>
-                    <span className="imark hidden h-6 w-6 desktop:flex">
-                      <AgentMark model={da.runtime} />
-                    </span>
-                    {runtimeLabel(da.runtime, runtimeMeta?.name)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
-                  <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                    {t('basics.model')}
-                  </span>
-                  <span className="mono text-[12px] font-medium leading-normal text-(--text-primary) desktop:text-[12.5px] desktop:leading-[1.5] desktop:font-normal">
+                  <span className="inline-flex items-center gap-2 text-[12.5px]">
+                    {!da.modelSelection && (
+                      <span className="imark h-6 w-6">
+                        <AgentMark model={da.runtime} />
+                      </span>
+                    )}
                     {modelText}
                   </span>
                 </div>

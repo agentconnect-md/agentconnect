@@ -5,6 +5,7 @@ export const DECISION_PREVIEW_V1_FEATURE = 'decision-preview-v1'
 // The peer understands BindMatch{kind:'decision'}, core.decisions and rd/msg.decisionId, and never treats them as Any.
 export const DECISION_TRIGGER_V1_FEATURE = 'decision-trigger-v1'
 export const DECISION_TOOLS_V1_FEATURE = 'decision-tools-v1'
+export const DECISION_MODEL_SELECTION_V1_FEATURE = 'decision-model-selection-v1'
 export const DECISION_LIST_MAX_BYTES = 32 * 1024
 
 // Saved configuration only: agent evaluation inputs and results never travel on these frames.
@@ -32,7 +33,8 @@ export type DecisionListReply = z.infer<typeof DecisionListReply>
 
 export const DecisionGetRequest = z.strictObject({
   requesterAgentId: z.string().uuid(),
-  decisionId: z.string().uuid()
+  decisionId: z.string().uuid(),
+  purpose: z.literal('model_selection').optional()
 })
 export type DecisionGetRequest = z.infer<typeof DecisionGetRequest>
 export const DecisionGetReply = z.strictObject({ decision: DecisionToolDefinition.nullable() })

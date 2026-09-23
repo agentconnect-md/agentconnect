@@ -1,3 +1,4 @@
+import { agentWithRuntime } from '../decisions/model-selection.js'
 import { isAppendCoordinate } from './append-coordinate.js'
 import { createMemoryEntryService } from '../memory/entries/factory.js'
 import { memoryActivationContext } from '../memory/entries/activation.js'
@@ -336,6 +337,7 @@ export class SessionManager {
     /** A self-authored channel-root post only establishes the new logical/runtime session.
      *  It is already recorded in the transcript and must not become a model activation. */
     options: {
+      runtimeTarget?: { runtime: string; model: string }
       initializeOnly?: boolean
       /** True only when the daemon attached trusted CallMeta for this turn.
        * `source: agent` alone is insufficient: background-task and orchestration
@@ -379,7 +381,8 @@ export class SessionManager {
      * the ordinary server set. Absent when no additional descriptors existed. */
     additionalMcpServersAttached?: boolean
   }> {
-    const agent = this.deps.agentById(agentId)
+    const configuredAgent = this.deps.agentById(agentId)
+    const agent = configuredAgent ? agentWithRuntime(configuredAgent, options.runtimeTarget) : undefined
     if (!agent) throw new Error(`unknown agent ${agentId}`)
     const memoryEnabled = this.deps.memoryEnabled !== false
     const currentMemoryProvider = memoryEnabled ? memoryKindOf(agent) : 'none'

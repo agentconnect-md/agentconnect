@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AGENT_WAKE_FEATURE, DAEMON_BOOTSTRAP_UPGRADE_FEATURE } from '@agentconnect.md/protocol'
+import { AGENT_WAKE_FEATURE, DAEMON_BOOTSTRAP_UPGRADE_FEATURE, RUNTIME_PROBE_FEATURE } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { agentHostKey, sessionHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
 import { wireWorkspacePlane } from '../src/execution/plane.js'
@@ -462,6 +462,25 @@ describe('daemon --k8s mode', () => {
       expect((k8sDaemon as any).registrationFeatures()).toContain(AGENT_WAKE_FEATURE)
     } finally {
       await k8sDaemon.stop()
+    }
+  })
+
+  it('advertises runtime probe requests only where the deployment opts in', async () => {
+    const managed = daemon({ root: root({ declared: { runtimes: [{ id: 'claude' }] } }), k8s: true })
+    try {
+      await managed.start()
+      expect((managed as any).registrationFeatures()).not.toContain(RUNTIME_PROBE_FEATURE)
+    } finally {
+      await managed.stop()
+    }
+    vi.stubEnv('AC_RUNTIME_PROBE_ON_DEMAND', 'true')
+    const selfHosted = daemon({ root: root({ declared: { runtimes: [{ id: 'claude' }] } }), k8s: true })
+    try {
+      await selfHosted.start()
+      expect((selfHosted as any).registrationFeatures()).toContain(RUNTIME_PROBE_FEATURE)
+    } finally {
+      await selfHosted.stop()
+      vi.unstubAllEnvs()
     }
   })
 
@@ -1127,6 +1146,52 @@ describe('daemon --k8s mode', () => {
     }
   })
 
+  // A request asks for an answer newer than itself, so a fresh pool answer no longer satisfies it.
+  it('probes again on request even while the pool answer is fresh, and publishes the new one', async () => {
+    const store = await LocalStore.open(':memory:')
+    await store.publishRuntimeImageProbe({
+      imageRef: 'runtime-sandbox:test',
+      now: Date.now(),
+      payload: JSON.stringify({
+        table: { runtimes: [{ id: 'claude', version: '1.2.3', command: 'claude-agent-acp' }] },
+        results: [{ runtime: 'claude', ok: true, models: ['sonnet'], acpProtocolVersion: 1 }]
+      })
+    })
+    const probeRuntimes = vi.fn(async (sweep: any) => {
+      const table = { runtimes: [{ id: 'claude', version: '1.2.3' }] }
+      await sweep?.(table, { agentId: 'ac-runtime-probe-abc', cwd: '/agent' })
+      return table
+    })
+    const k8sDaemon = daemon({
+      root: root(),
+      k8s: true,
+      store,
+      probeHostFactory: () =>
+        ({
+          start: async () => {},
+          newSession: async () => 's',
+          modelOptions: () => ({ models: ['sonnet', 'a-model-added-since'], current: 'sonnet' }),
+          acpProtocolVersion: () => 1,
+          stop: async () => {}
+        }) as never,
+      plane: { probeRuntimes }
+    })
+    try {
+      await k8sDaemon.start()
+      await vi.waitFor(() => expect((k8sDaemon as any).k8sRuntimeProbed).toBe(true))
+      await (k8sDaemon as any).k8sProbeSchedule.idle()
+      expect(probeRuntimes).not.toHaveBeenCalled()
+      ;(k8sDaemon as any).k8sProbeSchedule.request()
+      await (k8sDaemon as any).k8sProbeSchedule.idle()
+      expect(probeRuntimes).toHaveBeenCalledOnce()
+      expect((k8sDaemon as any).runtimeFacts.profileFor('claude').models).toEqual(['sonnet', 'a-model-added-since'])
+      const published = await store.readRuntimeImageProbe('runtime-sandbox:test')
+      expect(JSON.parse(published!.payload).results[0].models).toEqual(['sonnet', 'a-model-added-since'])
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
   it('probes for itself when the pool has published nothing for THIS image', async () => {
     // A template bump is a different key, so a member on a new image never adopts the old one's
     // answer — which is what makes one shared probe safe across a rollout.
@@ -1489,9 +1554,169 @@ describe("a host start in a session's own pod leaves the agent's checkout alone 
       const request = { sessionKey: KEY, isolation: 'session' as const }
       await pool.inner.sessions.deps.hostFor('bot-a', request)
       expect(pool.preparation.mock.calls.map((call) => call[1])).toEqual([request])
-      expect(pool.checkout.mock.calls).toEqual([[pool.agent, '/agent', { ...request, confined: true }]])
+      expect(pool.checkout.mock.calls).toEqual([
+        [pool.agent, '/agent', { ...request, confined: true }, expect.any(Function)]
+      ])
+      expect(pool.bound).toEqual([SESSION_POD])
       expect(pool.skills.mock.calls.map((call) => call[1])).toEqual([SESSION_POD])
       expect(pool.launches).toEqual([{ hostKey: sessionHostKey('bot-a', KEY), cwd: '/agent/checkout' }])
+    } finally {
+      await pool.instance.stop()
+    }
+  })
+})
+
+// An isolated session's preparation holds its own pod alone, and its retention judges the agent pod's legacy half only while that pod is bound (k8s-daemon-pool.md §4, step 7).
+describe('an isolated session reaches the agent pod only for work due there (#1896)', () => {
+  const KEY = 'slack:C1:T1:bot-a'
+  const AGENT_POD = agentSandboxSubject('bot-a')
+  const SESSION_POD = sandboxSubjectFor(sessionHostKey('bot-a', KEY))
+  const REQUEST = { sessionKey: KEY, isolation: 'session' as const }
+
+  /** A pool member whose plane records every pod it claims and binds, which it holds at each moment, and whether the agent pod is already bound. */
+  async function poolMember(opts: { agentPodBound?: boolean; sessionPod?: boolean } = {}) {
+    const bound: string[] = []
+    const held = new Set<string>()
+    const released: string[] = []
+    const instance = daemon({
+      root: root(),
+      k8s: true,
+      plane: {
+        withSandbox: async (subject: string, work: () => Promise<unknown>) => {
+          bound.push(subject)
+          held.add(subject)
+          try {
+            return await work()
+          } finally {
+            held.delete(subject)
+          }
+        },
+        ensureChannel: async () => {},
+        workspaceRootFor: () => '/agent',
+        hasSandbox: async (subject: string) => subject === SESSION_POD && opts.sessionPod !== false,
+        // A hold that claims and wakes nothing: granted only for a pod this member already has bound.
+        holdIfBound: (subject: string) => {
+          if (subject !== AGENT_POD || !opts.agentPodBound) return undefined
+          held.add(subject)
+          return () => {
+            held.delete(subject)
+            released.push(subject)
+          }
+        }
+      }
+    })
+    await instance.start()
+    const inner = instance as any
+    const agent = { ...poolAgent('session'), dir: mkdtempSync(join(tmpdir(), 'ac-k8s-agent-')) }
+    inner.agents.set('bot-a', agent)
+    const checkout = vi.spyOn(inner.workspaces, 'prepareClusterWorkspace').mockResolvedValue('/agent/checkout')
+    vi.spyOn(inner, 'reconcileClusterSkills').mockResolvedValue(undefined)
+    return { instance, inner, agent, bound, held, released, checkout }
+  }
+
+  it('prepares on the session pod alone, reaching the agent pod only through the workspace’s own call', async () => {
+    const pool = await poolMember()
+    try {
+      await pool.inner.runAgentWorkspacePreparation(pool.agent, REQUEST)
+      expect(pool.bound).toEqual([SESSION_POD])
+      expect(pool.checkout.mock.calls).toEqual([
+        [pool.agent, '/agent', { ...REQUEST, confined: true }, expect.any(Function)]
+      ])
+
+      // A due conversion or a one-time migration asks for it: the agent pod is claimed and held for that work, inside the session pod's hold.
+      let during: string[] = []
+      pool.checkout.mockImplementationOnce(async (...args: unknown[]) => {
+        const reach = args[3] as (work: () => Promise<string>) => Promise<string>
+        return await reach(async () => {
+          during = [...pool.held]
+          return '/agent/checkout'
+        })
+      })
+      pool.bound.length = 0
+      await pool.inner.runAgentWorkspacePreparation(pool.agent, REQUEST)
+      expect(pool.bound).toEqual([SESSION_POD, AGENT_POD])
+      expect(during).toEqual([SESSION_POD, AGENT_POD])
+      expect([...pool.held]).toEqual([])
+    } finally {
+      await pool.instance.stop()
+    }
+  })
+
+  it('keeps a shared session’s preparation in the agent pod, held throughout', async () => {
+    const pool = await poolMember()
+    try {
+      const shared = { sessionKey: KEY, isolation: 'shared' as const }
+      await pool.inner.runAgentWorkspacePreparation(pool.agent, shared)
+      await pool.inner.runAgentWorkspacePreparation(pool.agent, undefined)
+      expect(pool.bound).toEqual([AGENT_POD, AGENT_POD])
+      expect(pool.checkout.mock.calls).toEqual([
+        [pool.agent, '/agent', shared],
+        [pool.agent, '/agent', undefined]
+      ])
+    } finally {
+      await pool.instance.stop()
+    }
+  })
+
+  /** Retention of the session's row, with every exclusion clear, and each removal the workspace was asked for recorded by half. */
+  async function retire(pool: Awaited<ReturnType<typeof poolMember>>, legacy: 'removed' | 'retained' = 'removed') {
+    vi.spyOn(pool.inner, 'sessionRetentionActive').mockResolvedValue(false)
+    const roots = vi.spyOn(pool.inner.workspaces, 'hasSessionWorktreeRoots').mockResolvedValue(true)
+    const halves: string[] = []
+    let heldDuringLegacy: string[] = []
+    vi.spyOn(pool.inner.workspaces, 'removeSessionWorktree').mockImplementation(async (...args: unknown[]) => {
+      const scope = args[2] as string
+      halves.push(scope)
+      if (scope === 'worktrees') heldDuringLegacy = [...pool.held]
+      return scope === 'worktrees' && legacy === 'retained'
+        ? { outcome: 'retained', reason: 'dirty' }
+        : { outcome: 'removed' }
+    })
+    const result = await pool.inner.cleanupSessionWorktree({
+      key: KEY,
+      agentId: 'bot-a',
+      acpSessionId: null,
+      workspaceIsolation: 'session'
+    })
+    return { result, halves, roots, heldDuringLegacy }
+  }
+
+  it('retires a session with a pod of its own without waking an asleep agent pod', async () => {
+    const pool = await poolMember({ agentPodBound: false })
+    try {
+      const { result, halves, roots } = await retire(pool)
+      expect(result).toEqual({ outcome: 'removed' })
+      expect(halves).toEqual(['clones'])
+      expect(roots).not.toHaveBeenCalled()
+      expect(pool.bound).toEqual([SESSION_POD])
+    } finally {
+      await pool.instance.stop()
+    }
+  })
+
+  it('still judges the legacy half while the agent pod is bound, holding it without a claim', async () => {
+    const pool = await poolMember({ agentPodBound: true })
+    try {
+      const { result, halves, heldDuringLegacy } = await retire(pool, 'retained')
+      expect(halves).toEqual(['worktrees', 'clones'])
+      expect(heldDuringLegacy).toEqual([AGENT_POD])
+      expect(pool.released).toEqual([AGENT_POD])
+      expect(pool.bound).toEqual([SESSION_POD])
+      // A pre-§11 worktree holding work keeps the session, as it did.
+      expect(result).toMatchObject({ outcome: 'retained', reason: 'dirty' })
+    } finally {
+      await pool.instance.stop()
+    }
+  })
+
+  it('wakes the agent pod as before for a session with no pod of its own, whose workspace can only be there', async () => {
+    const pool = await poolMember({ agentPodBound: false, sessionPod: false })
+    try {
+      const { result, halves, heldDuringLegacy } = await retire(pool)
+      expect(halves).toEqual(['worktrees'])
+      expect(heldDuringLegacy).toEqual([AGENT_POD])
+      expect(pool.bound).toEqual([AGENT_POD])
+      expect(result).toEqual({ outcome: 'removed' })
     } finally {
       await pool.instance.stop()
     }

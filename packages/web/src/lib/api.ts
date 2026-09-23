@@ -5,6 +5,7 @@
 // filling fields the API does not (yet) expose with placeholders.
 
 import type { DecisionApi } from '@agentconnect.md/protocol/decision-api'
+import type { AgentModelSelection } from '@agentconnect.md/protocol/decision'
 import type {
   Agent,
   AgentCallPolicy,
@@ -352,6 +353,7 @@ export interface AgentDto {
   skills: string[] // enabled shared-skills "<source>/<skill>" / "<source>/*"; empty ⇒ none
   managedSkills?: string[] // enabled centrally accepted immutable skill ids; absent on older CPs
   decisionIds?: string[] // explicitly attached saved Decisions
+  modelSelection?: AgentModelSelection | null
   memory: AgentMemoryConfig | null // memory backend; null ⇒ managed default
   createdAt: string // ISO-8601
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for daemon/CLI-created
@@ -1032,6 +1034,7 @@ export interface UpdateAgentInput {
   /** Enabled centrally accepted managed skill ids; replaced wholesale. */
   managedSkills?: string[]
   decisionIds?: string[]
+  modelSelection?: AgentModelSelection | null
   /** Memory backend; null clears (revert to managed default). */
   memory?: AgentMemoryConfig | null
   /** Accept a change the CP otherwise refuses with a 409, such as moving the memory home back to `daemon` (keeps no memory). */
@@ -1069,6 +1072,7 @@ export interface DaemonCapabilitiesDto {
 // here). `efforts: []` = the model has no effort selector; absent = not yet
 // discovered. `fastMode` mirrors whether the fast toggle appears for the model.
 export interface RuntimeModelCatalogDto {
+  modelSwitching?: boolean
   models: Array<{
     id: string
     name?: string
@@ -1234,6 +1238,7 @@ export interface CreateAgentInput {
   /** Enabled centrally accepted managed skill ids; absent ⇒ none. */
   managedSkills?: string[]
   decisionIds?: string[]
+  modelSelection?: AgentModelSelection
   /** Memory backend; absent ⇒ managed default. */
   memory?: AgentMemoryConfig
   /** Request an OS sandbox for this agent; absent ⇒ false unless daemon policy requires it. */
@@ -1944,6 +1949,7 @@ export function agentFromDto(d: AgentDto): Agent {
     // Blank when the agent has no explicit model — the UI shows "Default" (runtime
     // default). Never fall back to the runtime id: that would fabricate a model.
     model: d.model ?? '',
+    modelSelection: d.modelSelection ?? null,
     // Blank when the runtime is deferred (an unplaced preset) — mirrors the
     // daemon '—' coalesce below; display sites render '—' for an empty runtime.
     runtime: d.runtime ?? '',
@@ -2273,6 +2279,9 @@ export function daemonFromDto(
 ): DaemonRow {
   // `cloud` is the CP DTO's field name (a REST contract); the console's own word is `pool`.
   const pool = d.cloud ?? false
+  // A relaunch that has not reconnected within the offline grace is an offline daemon, however long the op's deadline still runs.
+  const lifecycleOp =
+    d.status === 'offline' && lifecycleStatus(d.lifecycleOp) === 'restarting' ? null : (d.lifecycleOp ?? null)
   return {
     daemonId: d.daemonId,
     pool,
@@ -2287,8 +2296,8 @@ export function daemonFromDto(
     latestVersion: d.latestVersion,
     releaseChannel: d.releaseChannel,
     availableVersions: d.availableVersions ?? [],
-    lifecycleOp: d.lifecycleOp ?? null,
-    lifecycleStatus: lifecycleStatus(d.lifecycleOp) ?? null,
+    lifecycleOp,
+    lifecycleStatus: lifecycleStatus(lifecycleOp) ?? null,
     canManageLifecycle: d.canManageLifecycle ?? false,
     // Flag an available upgrade only when both versions parse and latest > running.
     upgradeAvailable: isUpgradeAvailable(d.agentVersion, d.latestVersion),
@@ -2652,8 +2661,14 @@ export interface AgentDecisionDto {
   questionType: 'boolean' | 'choice' | 'score'
 }
 
-export async function fetchAgentDecisions(agentId: string, orgId?: string): Promise<AgentDecisionDto[]> {
-  return apiGet(`${orgBase(orgId)}/agents/${encodeURIComponent(agentId)}/decisions`)
+export async function fetchAgentDecisions(
+  agentId: string,
+  orgId?: string,
+  purpose?: 'model_selection'
+): Promise<AgentDecisionDto[]> {
+  return apiGet(
+    `${orgBase(orgId)}/agents/${encodeURIComponent(agentId)}/decisions${purpose ? `?purpose=${purpose}` : ''}`
+  )
 }
 
 // ── workspace file browsing ─────────────────────────────────────────────────
@@ -3841,6 +3856,16 @@ export async function deleteDaemon(daemonId: string): Promise<void> {
 // 503 offline, 409 in-flight/declined.
 export async function restartDaemon(daemonId: string): Promise<DaemonLifecycleOpDto> {
   return apiPost<DaemonLifecycleOpDto>(`${orgBase()}/daemons/${encodeURIComponent(daemonId)}/restart`, {})
+}
+
+export interface PoolRuntimeProbeDto {
+  state: 'probing' | 'unsupported'
+  members: number
+}
+
+// Ask the self-hosted pool to re-probe its runtime image; the refreshed runtimes land in the capability read minutes later. Owner-only.
+export async function probePoolRuntimes(): Promise<PoolRuntimeProbeDto> {
+  return apiPost<PoolRuntimeProbeDto>(`${orgBase()}/daemons/pool/runtime-probe`, {})
 }
 
 // Command a daemon to install `version` via its CLI, then drain + relaunch onto it.

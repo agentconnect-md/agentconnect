@@ -6,6 +6,7 @@ import {
   DECISION_TRIGGER_V1_FEATURE,
   type DecisionBundle,
   DECISION_TOOLS_V1_FEATURE,
+  DECISION_MODEL_SELECTION_V1_FEATURE,
   MEMORY_ENTRIES_SEARCH_V1_FEATURE,
   MEMORY_ENTRIES_HISTORY_V1_FEATURE,
   MEMORY_ENTRIES_WRITE_V1_FEATURE,
@@ -53,6 +54,7 @@ import {
   RUNTIME_COMMANDS_FEATURE,
   AGENT_WAKE_FEATURE,
   SESSION_WAKE_FEATURE,
+  RUNTIME_PROBE_FEATURE,
   PULL_REQUEST_FEEDBACK_FEATURE,
   WORKSPACE_GIT_V1_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
@@ -428,7 +430,6 @@ import {
 } from './runtimes/k8s-runtimes.js'
 import {
   K8S_PROBE_CLAIM_TTL_MS,
-  K8S_PROBE_FRESH_MS,
   K8S_PROBE_POLL_MS,
   K8S_PROBE_WAIT_MS,
   parseK8sProbePayload,
@@ -436,6 +437,11 @@ import {
   probeClusterRuntimes,
   type K8sProbePayload
 } from './runtimes/cluster-probe.js'
+import {
+  ClusterProbeSchedule,
+  configuredRuntimeProbeIntervalMs,
+  configuredRuntimeProbeOnDemand
+} from './runtimes/cluster-probe-schedule.js'
 import { ensureNodeBinOnPath } from './runtimes/exec-path.js'
 import {
   isAuthRequiredError,
@@ -476,6 +482,15 @@ import {
   type DecisionReleaseRequest,
   type DecisionReleaseResult
 } from './decisions/gate.js'
+import {
+  evaluateSessionModel,
+  modelSelectionConfiguration,
+  pinnedDecisionTarget,
+  agentWithRuntime,
+  configuredRuntimeAgent,
+  modelSelectionState,
+  pinnedDecisionModel
+} from './decisions/model-selection.js'
 import { internalSessionKey, ModelSessionHostPool, type ModelSessionHostPoolHost } from './key-server/session-hosts.js'
 import { CuratedRuntimeAdmission } from './runtimes/curated-admission.js'
 import { RuntimeFactsRegistry, PROBE_TTL_MS, type RuntimeFactsHost } from './runtimes/facts-registry.js'
@@ -1258,6 +1273,10 @@ export class Daemon {
   /** The plane every scope of this daemon falls back to — its VMs or its pods; a spread session resolves to the executor plane instead. */
   private localPlane?: ExecutionPlane
   private k8sRuntimeProbed = false
+  /** Start-up, periodic and requested runtime probes of a cluster member, one at a time. */
+  private k8sProbeSchedule: ClusterProbeSchedule | undefined
+  /** Whether this deployment lets the control plane request a probe (`AC_RUNTIME_PROBE_ON_DEMAND`). */
+  private k8sProbeOnDemand = false
   private startupComplete = false
   // The shutdown duty drain in progress: its deadline, its counters, and the release of every grant
   // that landed after the latch, so the summary and `stop()` can wait for all of them.
@@ -1653,6 +1672,7 @@ export class Daemon {
     this.codexSessionFloor = this.k8s ? configuredCodexSessionFloor(process.env) : undefined
     // Self-hosted launches inherit the host environment already; only a pod launch needs these carried.
     this.claudeModelAliases = this.k8s ? configuredClaudeModelAliases(process.env) : undefined
+    this.k8sProbeOnDemand = this.k8s && configuredRuntimeProbeOnDemand(process.env)
     this.evalHooks = new DaemonEvaluationHooks(this.evaluationHost(), opts.evaluation)
     this.sessionMetadataOutbox = new SessionMetadataOutbox(this.sessionMetadataHost())
     this.observedChannelsSync = new ObservedChannelsSync(this.observedChannelsSyncHost())
@@ -2864,7 +2884,16 @@ export class Daemon {
     // immediately every time — a probe that never ran, and a daemon that silently advertised
     // nothing. Background because it needs a pod, and blocking boot on one would make a slow
     // cluster look like a hung daemon; `facts/daemon-runtimes` replaces, so the probed set wins.
-    if (this.k8sPlane) void this.probeK8sRuntimes()
+    if (this.k8sPlane) {
+      this.k8sProbeSchedule = new ClusterProbeSchedule({
+        clock: this.clock,
+        intervalMs: configuredRuntimeProbeIntervalMs(process.env, (message) => this.log.warn(message)),
+        run: (freshAfter) => this.probeK8sRuntimes(freshAfter),
+        paused: () => this.draining || this.shutdownDraining,
+        log: this.log
+      })
+      this.k8sProbeSchedule.start()
+    }
   }
 
   /** Phase 19 — model-catalog enumeration, wired to re-emit daemon runtimes whenever a catalog changes. */
@@ -3681,7 +3710,7 @@ export class Daemon {
     this.executorPlane = new ExecutorPlane({
       prepare: (launch) => {
         // Named so the executor can answer with its own install of it (§8).
-        const runtime = this.agents.get(launch.agentId)?.runtime
+        const runtime = this.sessionAgent(launch.agentId, launch.sessionKey)?.runtime
         return this.requireCp('executor/prepare').executorPrepare(
           {
             agentId: launch.agentId,
@@ -3872,7 +3901,7 @@ export class Daemon {
 
   /** The loss rule's second branch (§7): the executor has been out of touch past the grace, so the session is prepared elsewhere and the user is told the previous environment is gone. */
   private async replaceLostExecutor(placed: PlacedSession): Promise<PlacementChoice | undefined> {
-    const agent = this.agents.get(placed.agentId)
+    const agent = this.sessionAgent(placed.agentId, placed.sessionKey)
     if (!agent) return undefined
     const answer = await this.executorCandidates(placed.agentId, placed.sessionKey)
     const placement = placeSession({
@@ -4825,12 +4854,20 @@ export class Daemon {
     return effectiveSessionIsolation(agent) === 'session'
   }
 
-  // Microsandbox sessions own their runtime even when they share workspace files.
+  private readonly sessionRuntimes = new Map<string, { runtime: string; model: string }>()
+
+  private sessionAgent(agentId: string, key?: string): LoadedAgent | undefined {
+    const agent = this.agents.get(agentId)
+    return agent ? agentWithRuntime(agent, key ? this.sessionRuntimes.get(key) : undefined) : undefined
+  }
+
+  // Session-selected runtimes and confined workspaces own their host.
   private hostKeyFor(agentId: string, sessionKey?: string): HostKey {
     const agent = this.agents.get(agentId)
     if (sessionKey === undefined || !agent) return agentHostKey(agentId)
     const key = sessionHostKey(agentId, sessionKey)
-    return this.confinedSession(agent, sessionKey) ||
+    return this.sessionRuntimes.has(sessionKey) ||
+      this.confinedSession(agent, sessionKey) ||
       (this.usesMicrosandbox(agent) && !this.legacyMicrosandboxSessions.has(key))
       ? key
       : agentHostKey(agentId)
@@ -5007,27 +5044,27 @@ export class Daemon {
     }
     if (this.k8sPlane) {
       const plane = this.k8sPlane
-      // The pod's own preparation: clone and pull happen on its volume through the runner, and
-      // none of the local work below runs — its mkdir, `existsSync(.git)` and skills installation
-      // all land on this daemon's disk, describing a filesystem the runtime never reads.
+      // Every step runs on a pod's volume through its channel; none of the local work below may, since it would describe this daemon's disk.
       const agentPod = agentSandboxSubject(agent.id)
-      // §11: an isolated session prepares on ITS pod (its clones, its skills, its cwd record); the agent pod is held beside it for the secondary-root attestation and a cwd record an older daemon left beside the agent's subtree.
-      const pod =
-        request && this.confinedSession(agent, request.sessionKey)
-          ? sandboxSubjectFor(sessionHostKey(agent.id, request.sessionKey))
-          : agentPod
-      const prepare = async (): Promise<string> => {
+      if (!request || !this.confinedSession(agent, request.sessionKey)) {
+        return await this.withSandboxVolume(agentPod, async () => {
+          const cwd = await this.workspaces.prepareClusterWorkspace(agent, plane.workspaceRootFor(agentPod), request)
+          await this.reconcileClusterSkills(agent, agentPod)
+          return cwd
+        })
+      }
+      // §11: an isolated session prepares on ITS pod alone (its clones, skills and cwd record); the agent pod is woken only for work due there — a due conversion, or the one-time move of what an older daemon left beside the agent's subtree.
+      const pod = sandboxSubjectFor(sessionHostKey(agent.id, request.sessionKey))
+      return await this.withSandboxVolume(pod, async () => {
         const cwd = await this.workspaces.prepareClusterWorkspace(
           agent,
           plane.workspaceRootFor(pod),
-          pod === agentPod ? request : { ...request!, confined: true }
+          { ...request, confined: true },
+          (work) => this.withSandboxVolume(agentPod, work)
         )
         await this.reconcileClusterSkills(agent, pod)
         return cwd
-      }
-      return await this.withSandboxVolume(agentPod, () =>
-        pod === agentPod ? prepare() : this.withSandboxVolume(pod, prepare)
-      )
+      })
     }
     if (!this.opts.hostFactory) assertExclusiveAgentWorkspaces([agent as LoadedAgent])
     if (!request && this.microsandbox && this.usesMicrosandbox(agent)) {
@@ -5353,6 +5390,7 @@ export class Daemon {
   }
 
   private workspacePreparationAuthority(agent: Agent): string {
+    agent = configuredRuntimeAgent(agent)
     const dir = (agent as Agent & { dir?: string }).dir
     return JSON.stringify({
       dir,
@@ -5539,7 +5577,7 @@ export class Daemon {
     const host = this.hosts.get(key)
     if (host) return host
     const agentId = hostKeyAgentId(key)
-    const agent = this.agents.get(agentId)!
+    const agent = this.sessionAgent(agentId, hostKeySessionKey(key))!
     const launchCwd = cwd ?? agent.workspace.path
     const built = this.buildAcpHost(agent, cfg, {
       hostKey: key,
@@ -6015,6 +6053,7 @@ export class Daemon {
       DECISION_PREVIEW_V1_FEATURE,
       DECISION_TRIGGER_V1_FEATURE,
       DECISION_TOOLS_V1_FEATURE,
+      DECISION_MODEL_SELECTION_V1_FEATURE,
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
       'workspace-file-edit-v1',
       'workspace-file-delete-v1',
@@ -6027,6 +6066,8 @@ export class Daemon {
       RUNTIME_COMMANDS_FEATURE,
       // Only a cluster daemon has a sandbox to wake; elsewhere the CP answers `unsupported` unsent.
       ...(this.k8s ? [AGENT_WAKE_FEATURE, SESSION_WAKE_FEATURE] : []),
+      // A managed pool refreshes on its timer alone; only a deployment that opts in takes requests.
+      ...(this.k8sProbeOnDemand ? [RUNTIME_PROBE_FEATURE] : []),
       WORKSPACE_GIT_MESSAGE_FEATURE,
       WORKSPACE_GIT_REVIEW_FEATURE,
       WORKSPACE_GIT_WRITE_FEATURE,
@@ -6109,10 +6150,16 @@ export class Daemon {
   private modelSessionPoolHost(): ModelSessionHostPoolHost {
     return {
       log: () => this.log,
-      agent: (agentId) => this.agents.get(agentId),
+      agent: (agentId, key) => this.sessionAgent(agentId, key),
       runtime: (kind) => this.runtimes[kind],
       orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
-      modelOverride: async (sessionKey) => await this.store.getModelOverride(sessionKey),
+      modelOverride: async (sessionKey) => {
+        const session = await this.store.getSession(sessionKey)
+        const agent = session?.agentId ? this.sessionAgent(session.agentId, sessionKey) : undefined
+        return (
+          (await this.store.getModelOverride(sessionKey)) ?? pinnedDecisionModel(session?.decisionModel, agent?.runtime)
+        )
+      },
       acpSessionId: async (sessionKey) => (await this.store.getSession(sessionKey))?.acpSessionId,
       outwardSessionId: async (sessionKey, agentId) =>
         await this.store.ensureOutwardSessionId(sessionKey, agentId, this.clock.now()),
@@ -7373,8 +7420,8 @@ export class Daemon {
 
   /** Whether this agent is backed by Codex ACP. Registry ids are canonical, while
    *  command/args matching keeps user-defined runtime aliases working. */
-  private isCodexRuntime(agentId: string): boolean {
-    const agent = this.agents.get(agentId)
+  private isCodexRuntime(agentId: string, sessionKey?: string): boolean {
+    const agent = this.sessionAgent(agentId, sessionKey)
     if (!agent) return false
     const runtime = this.runtimes[agent.runtime]
     return [agent.runtime, runtime?.command, ...(runtime?.args ?? [])]
@@ -8266,14 +8313,17 @@ export class Daemon {
     else await this.dispatch(agentId, msg, integrationId)
   }
 
-  /** Apply the Agent's configured runtime policy to one live session. Callers that
-   *  fence a pending prompt await this; reconciliation fans it out in the background. */
-  private async applyConfiguredRuntimeSettings(agent: LoadedAgent, host: AcpHost, sessionId: string): Promise<void> {
+  // Restore Agent policy, retaining the model pinned for this session.
+  private async applyConfiguredRuntimeSettings(
+    agent: LoadedAgent,
+    host: AcpHost,
+    sessionId: string,
+    sessionModel?: string
+  ): Promise<void> {
     const catalog = this.runtimeFacts.modelCatalog(agent.runtime)
-    // A fresh ACP session may advertise its baseline as the literal `default`.
-    // Catalog metadata intentionally keeps defaultModel concrete, so fall back to
-    // that selectable entry when the Agent leaves its model unpinned.
+    // Catalog defaults resolve ACP's opaque `default` to a concrete selectable model.
     const model =
+      sessionModel ??
       agent.runtimeOverrides?.model ??
       catalog?.defaultModel ??
       catalog?.models.find((candidate) => candidate.id === 'default')?.id
@@ -8298,7 +8348,8 @@ export class Daemon {
       const host = this.hostForOwner(this.sessionOwnerKey(agent.id, session.key))
       if (!session.acpSessionId || host?.hasSession?.(session.acpSessionId) !== true) continue
       const sessionId = session.acpSessionId
-      void this.applyConfiguredRuntimeSettings(agent, host, sessionId)
+      const target = pinnedDecisionTarget(session.decisionModel)
+      void this.applyConfiguredRuntimeSettings(agentWithRuntime(agent, target), host, sessionId, target?.model)
         .then(async () => {
           await this.commands.refreshStatusBarForKey(session.key)
         })
@@ -13095,7 +13146,8 @@ export class Daemon {
   ): Promise<
     { kind: 'opened'; handled: HandledTurnSession; restoreDeliveryBinding: () => void } | { kind: 'cancelled' }
   > {
-    const { entry, key, plan, agent, replyConn, evaluation } = run
+    const { entry, key, plan, replyConn, evaluation } = run
+    let agent = run.agent
     const { agentId, msg, integrationId, webchat, callMeta, hookContext } = entry
     // The per-conversation Worktree choice this turn carries, in the isolation vocabulary the row, the host key and the pod claim all speak.
     const webchatIsolation =
@@ -13117,13 +13169,19 @@ export class Daemon {
     // §11: this session's OWN isolation, learned here because the model-session host below claims its pod before `sessions.handle` records the row — its row, else this turn's explicit choice, else the agent's default, which is the order SessionManager decides it in.
     this.sessionIsolation.set(key, persisted?.workspaceIsolation ?? effectiveSessionIsolation(agent, webchatIsolation))
     // …and WHERE it runs, which the host key below reads: decided once at birth, recorded, and kept for the session's life (session-executors.md §7).
-    await this.placeSessionOnExecutor(agent, key)
     let remoteMcpServer: import('@agentclientprotocol/sdk').McpServer | undefined
     try {
+      await this.selectSessionModel(run, persisted)
+      agent = run.agent = this.sessionAgent(agentId, key) ?? agent
+      await this.placeSessionOnExecutor(agent, key)
       const reviewWorkspace = await this.githubReviews.prepareGithubReviewWorkspace(entry, key, agent)
       if (this.modelSessions.enabled) {
-        const firstTurnModel = agent.allowRuntimeChangesInChat ? webchat?.runtime?.model : undefined
-        entry.selectedHost = await this.modelSessions.ensure(agent, key, firstTurnModel)
+        const currentAgent = this.sessionAgent(agentId, key) ?? agent
+        const manualModel = currentAgent.allowRuntimeChangesInChat
+          ? (webchat?.runtime?.model ?? (await this.store.getModelOverride(key)))
+          : undefined
+        const firstTurnModel = manualModel ?? this.selectedSessionModel(run)
+        entry.selectedHost = await this.modelSessions.ensure(currentAgent, key, firstTurnModel)
       }
       // A prior provider post-turn operation is serialized. Managed needs this
       // barrier before reading its index; external recordTurn only durably enqueues.
@@ -13165,6 +13223,7 @@ export class Daemon {
         callMeta?.needsReply,
         {
           initializeOnly: plan.initializeOnly,
+          runtimeTarget: this.sessionRuntimes.get(key),
           // CallMeta is the trusted distinction between a real A2A delivery and
           // synthetic `source: agent` wakes (background task/orchestration). A webchat
           // roster continuation carries CallMeta for its hop/rendezvous chain but is a
@@ -13180,6 +13239,8 @@ export class Daemon {
           ...reviewWorkspace
         }
       )
+      const target = this.sessionRuntimes.get(key)
+      if (target) await this.store.pinDecisionModel(key, target.runtime, target.model)
       if (remoteMcpServer && handled.additionalMcpServersAttached === false) {
         this.log.warn('remote MCP descriptor was rejected by the runtime; ordinary webchat continued without it')
       }
@@ -13238,6 +13299,95 @@ export class Daemon {
       throw err
     }
     return { kind: 'opened', handled, restoreDeliveryBinding }
+  }
+
+  private selectedSessionModel(run: TurnRun): string | undefined {
+    return this.sessionRuntimes.get(run.key)?.model
+  }
+
+  private async selectSessionModel(run: TurnRun, persisted: SessionRecord | undefined): Promise<void> {
+    const { entry, key, plan } = run
+    const agent = this.agents.get(entry.agentId)
+    if (!agent) return
+    const saved = pinnedDecisionTarget(persisted?.decisionModel)
+    if (saved) {
+      if (
+        agent.allowRuntimeChangesInChat &&
+        entry.webchat?.runtime?.runtime &&
+        entry.webchat.runtime.runtime !== saved.runtime
+      )
+        throw new Error('Choose a runtime before starting a new session.')
+      this.sessionRuntimes.set(key, saved)
+      return
+    }
+    this.sessionRuntimes.delete(key)
+    if (persisted && (await this.store.getObservedModel(key)) !== undefined) {
+      if (
+        agent.allowRuntimeChangesInChat &&
+        entry.webchat?.runtime?.runtime &&
+        entry.webchat.runtime.runtime !== agent.runtime
+      )
+        throw new Error('Choose a runtime before starting a new session.')
+      return
+    }
+    const manual = agent.allowRuntimeChangesInChat ? entry.webchat?.runtime : undefined
+    if (manual?.runtime) {
+      const target = { runtime: manual.runtime, model: manual.model ?? '' }
+      if (!this.sessionRuntimeSupported(agent, target))
+        throw new Error('The selected runtime and model are unavailable.')
+      this.sessionRuntimes.set(key, target)
+      return
+    }
+    const selection = agent.modelSelection
+    if (!selection || plan.initializeOnly || !agent.runtimeOverrides?.model) return
+    const configuration = modelSelectionConfiguration(agent)
+    const orgId = this.cpCollab.orgForAgent(agent.id)
+    const client = this.cpClient
+    let target: { runtime: string; model: string } | undefined
+    const manualModel =
+      manual?.model ?? (agent.allowRuntimeChangesInChat ? await this.store.getModelOverride(key) : undefined)
+    if (!manualModel && client?.supportsServerFeature(DECISION_MODEL_SELECTION_V1_FEATURE)) {
+      target = await evaluateSessionModel({
+        agentId: agent.id,
+        selection,
+        supported: (candidate) => this.sessionRuntimeSupported(agent, candidate),
+        signal: entry.initAbort.signal,
+        evaluationId: randomUUID(),
+        current: () =>
+          this.cpCollab.orgForAgent(agent.id) === orgId &&
+          modelSelectionConfiguration(this.agents.get(agent.id)) === configuration,
+        decision: () =>
+          client.decisionGet({
+            requesterAgentId: agent.id,
+            decisionId: selection.decisionId,
+            purpose: 'model_selection'
+          }),
+        state: async () => {
+          if (entry.hookContext) {
+            const description = await this.githubReviews.pullRequestDescription(
+              entry.hookContext,
+              AbortSignal.any([entry.initAbort.signal, AbortSignal.timeout(5_000)])
+            )
+            return description === undefined ? undefined : modelSelectionState('pull_request', description)
+          }
+          return entry.msg.source === 'user' ? modelSelectionState('chat', entry.msg.text) : undefined
+        },
+        evaluate: (input, signal) => this.decisionEvaluator.evaluate(input, signal)
+      })
+    }
+    entry.initAbort.signal.throwIfAborted()
+    const currentAgent = this.agents.get(agent.id)
+    if (!currentAgent || modelSelectionConfiguration(currentAgent) !== configuration) return
+    target ??= { runtime: agent.runtime, model: manualModel ?? agent.runtimeOverrides.model }
+    this.sessionRuntimes.set(key, target)
+  }
+
+  private sessionRuntimeSupported(agent: LoadedAgent, target: { runtime: string; model: string }): boolean {
+    return (
+      !!this.runtimes[target.runtime] &&
+      this.runtimeFacts.profileFor(target.runtime).models.includes(target.model) &&
+      !this.activationCapabilityError(agentWithRuntime(agent, target))
+    )
   }
 
   /** Persist the staged first-turn runtime choices a webchat composer sent with this message.
@@ -13677,25 +13827,32 @@ export class Daemon {
       entry.selectedHost = p.selectedHost
     }
     const host = p.selectedHost.host
-    const runtimeAgent = this.agents.get(agentId)
+    const runtimeAgent = this.sessionAgent(agentId, key)
     const allowRuntimeChangesInChat = runtimeAgent?.allowRuntimeChangesInChat === true
-    // Re-apply a sticky session model override (set via the console's in-session model
-    // switch) before the turn runs — the agent's default model was applied at
-    // session/new, so this layers the per-session choice on top each turn. Best-effort.
+    // Manual choices win over the model pinned when this session started.
     const override = allowRuntimeChangesInChat ? await this.store.getModelOverride(key) : undefined
-    if (override && this.modelSessions.crossesHostProvider(key, agentId, override)) {
-      // The host is bound to the provider it was started for — pushing a foreign one live
-      // would run the turn against options that never received a key or base URL.
-      this.log.debug(`model override "${override}" deferred — host is bound to its start-time provider`)
-    } else if (override) {
-      await host
-        .setSessionModel(sessionId, override)
-        .catch((err) => this.log.debug(`model override "${override}" not applied: ${(err as Error).message}`))
+    const automaticModel = runtimeAgent ? this.selectedSessionModel(run) : undefined
+    const selectedModel = override ?? automaticModel
+    if (selectedModel && this.modelSessions.crossesHostProvider(key, agentId, selectedModel)) {
+      // A live host can only use the provider credentials it started with.
+      this.log.debug('model selection deferred — host is bound to its start-time provider')
+    } else if (selectedModel) {
+      const applied =
+        host.modelOptions?.(sessionId)?.current === selectedModel ||
+        (await host.setSessionModel(sessionId, selectedModel).catch(() => false))
+      if (
+        !applied &&
+        !override &&
+        runtimeAgent?.runtimeOverrides?.model &&
+        !this.modelSessions.crossesHostProvider(key, agentId, runtimeAgent.runtimeOverrides.model)
+      ) {
+        await host.setSessionModel(sessionId, runtimeAgent.runtimeOverrides.model).catch(() => false)
+      }
     }
-    // Re-apply the remaining sticky controls. Effort is applied AFTER the model
-    // because the offered levels depend on it; `ultracode` rides session `_meta`
-    // at new/load instead (setSessionEffort returns false for it). Best-effort.
-    const effortOverride = allowRuntimeChangesInChat ? await this.store.getEffortOverride(key) : undefined
+    // Apply effort after the model, which determines the offered levels.
+    const effortOverride =
+      (allowRuntimeChangesInChat ? await this.store.getEffortOverride(key) : undefined) ??
+      (automaticModel ? runtimeAgent?.reasoningEffort : undefined)
     if (effortOverride) {
       await host
         .setSessionEffort(sessionId, effortOverride)
@@ -13724,12 +13881,17 @@ export class Daemon {
     // Runtime setters above await the adapter and can race another reconciliation.
     // Fence immediately before prompt; a revoked permission must be restored
     // synchronously here, not by reconcile's fire-and-forget live-session sweep.
-    const promptAgent = this.agents.get(agentId)
+    const promptAgent = this.sessionAgent(agentId, key)
     if (webchat?.runtime && promptAgent?.allowRuntimeChangesInChat !== true) {
       await this.store.clearRuntimeConfigOverrides(agentId)
-      await this.applyConfiguredRuntimeSettings(promptAgent ?? agent, host, sessionId)
+      await this.applyConfiguredRuntimeSettings(
+        promptAgent ?? agent,
+        host,
+        sessionId,
+        promptAgent ? this.selectedSessionModel(run) : undefined
+      )
     }
-    return { host, modelOverride: override }
+    return { host, modelOverride: promptAgent?.allowRuntimeChangesInChat ? override : undefined }
   }
 
   /** Capture the model for THIS session/turn after sticky overrides are applied, and observe it
@@ -13928,7 +14090,7 @@ export class Daemon {
     let regenerationStartedAt: number | undefined
     let regenerationApprovalWaitBaseline = 0
     let { promptBlocks, finalCaptureInput, baseRevision, providerCheckpoint } = turn
-    const codexUsageIsPerPrompt = plan.codexUsageIsPerPrompt
+    const codexUsageIsPerPrompt = this.isCodexRuntime(entry.agentId, key)
 
     while (true) {
       if (p.plan.stageAnswer) this.discardStagedAttempt(p)
@@ -15880,7 +16042,9 @@ export class Daemon {
     acpSessionId?: string,
     opts: { breakdown?: boolean } = {}
   ): Promise<StatusBarInfo> {
-    const agent = this.agents.get(agentId)
+    const saved = pinnedDecisionTarget((await this.store.getSession(sessionKey))?.decisionModel)
+    if (saved) this.sessionRuntimes.set(sessionKey, saved)
+    const agent = this.sessionAgent(agentId, sessionKey)
     const usage = await this.store.getUsage(sessionKey)
     const outwardSessionId = acpSessionId
       ? await this.store.ensureOutwardSessionId(sessionKey, agentId, this.clock.now())
@@ -15920,6 +16084,7 @@ export class Daemon {
       ? (permissionMode?.current ?? agent?.permissionMode)
       : (agent?.permissionMode ?? permissionMode?.current)
     return {
+      runtime: agent?.runtime,
       model: model?.current ?? modelOverride ?? agent?.runtimeOverrides?.model ?? fallbackModel,
       effort: effortOverride ?? effort?.current ?? agent?.reasoningEffort,
       permissionMode: permissionModeOverride ?? currentPermissionMode,
@@ -16923,7 +17088,7 @@ export class Daemon {
     const agentId = hostKeyAgentId(key)
     const label = hostKeyLabel(key)
     if (this.hostStartGeneration.get(key) !== generation) throw new Error(`host start superseded for ${label}`)
-    const agent = this.agents.get(agentId)
+    const agent = this.sessionAgent(agentId, hostKeySessionKey(key))
     if (!agent) throw new Error(`unknown agent ${agentId}`)
     // A session-bound host launches in its session's directory, so the cold gate below prepares it before the spawn.
     const bound = hostKeySessionKey(key) === undefined ? undefined : session
@@ -18914,16 +19079,10 @@ export class Daemon {
       }
       // A host bound to this session runs inside the directory about to go: stop it before the removal.
       await this.stopSessionHost(rec.agentId, rec.key, { ...this.sessionHostFence(rec.agentId, rec.key), row: rec })
-      // The volume has to be up and bound for the removal, as it was for the preparation — and for
-      // the question of WHICH roots exist, which is asked of the filesystem that holds them: on a
-      // suspended sandbox this daemon's own disk would answer "none" for a scratch agent whose pod
-      // volume carries secondary worktrees, and the session row would be deleted without them ever
-      // being judged. A pod that will not come up is THIS session's failure, never the whole
-      // sweep's — it retries next pass.
-      // A session directory of its own (§11) is judged even when no shared root remains to hang a worktree off.
-      const result = await this.withSandboxVolume(rec.agentId, () =>
-        this.judgeSessionDirectories(currentAgent, rec.key)
-      ).catch((err: unknown): SessionWorktreeRemoval => ({ outcome: 'failed', error: (err as Error).message }))
+      // A pod that will not come up is THIS session's failure, never the whole sweep's: it retries next pass.
+      const result = await this.judgeSessionDirectories(currentAgent, rec.key).catch(
+        (err: unknown): SessionWorktreeRemoval => ({ outcome: 'failed', error: (err as Error).message })
+      )
       if (result === undefined) return { outcome: 'not_applicable' }
       // `partial` too: a kept aggregate can still have removed another root's worktree, and a warm
       // attachment naming a directory that is gone would skip preparation on its next turn.
@@ -18941,7 +19100,7 @@ export class Daemon {
     })
   }
 
-  // Locally one call judges every root; on a pool the legacy worktrees are judged on the agent pod and the session's clones on its own pod — woken only when it has one, since a session that never launched there has nothing to judge.
+  // Locally one call judges every root. On a pool the session's clones are judged on its own pod, woken only when it has one; the legacy worktrees on the agent pod, asked of that pod and never of this disk — woken for a session with no pod of its own, whose workspace can only be there, and otherwise judged only while already bound (#1896).
   private async judgeSessionDirectories(agent: Agent, sessionKey: string): Promise<SessionWorktreeRemoval | undefined> {
     const plane = this.k8sPlane
     if (!plane) {
@@ -18950,12 +19109,25 @@ export class Daemon {
         ? await this.workspaces.removeSessionWorktree(agent, sessionKey)
         : undefined
     }
-    const results: SessionWorktreeRemoval[] = []
-    if (await this.workspaces.hasSessionWorktreeRoots(agent)) {
-      results.push(await this.workspaces.removeSessionWorktree(agent, sessionKey, 'worktrees'))
-    }
     const pod = sessionSandboxSubject(agent.id, hostKeyDirName(sessionHostKey(agent.id, sessionKey)))
-    if (await plane.hasSandbox(pod)) {
+    const ownPod = await plane.hasSandbox(pod)
+    const judgeLegacy = async (): Promise<SessionWorktreeRemoval | undefined> =>
+      (await this.workspaces.hasSessionWorktreeRoots(agent))
+        ? await this.workspaces.removeSessionWorktree(agent, sessionKey, 'worktrees')
+        : undefined
+    let legacy: SessionWorktreeRemoval | undefined
+    if (!ownPod) {
+      legacy = await this.withSandboxVolume(agentSandboxSubject(agent.id), judgeLegacy)
+    } else {
+      const release = plane.holdIfBound(agentSandboxSubject(agent.id))
+      try {
+        legacy = release ? await judgeLegacy() : undefined
+      } finally {
+        release?.()
+      }
+    }
+    const results: SessionWorktreeRemoval[] = legacy ? [legacy] : []
+    if (ownPod) {
       results.push(
         await this.withSandboxVolume(pod, () => this.workspaces.removeSessionWorktree(agent, sessionKey, 'clones'))
       )
@@ -20818,6 +20990,8 @@ export class Daemon {
       agents: () => this.agents,
       workspaces: () => this.workspaces,
       k8sPlane: () => this.k8sPlane,
+      // Before the start-up probe is scheduled a request has nothing to add: that probe is about to run.
+      runtimeProbeRequest: () => (this.k8sProbeOnDemand ? () => this.k8sProbeSchedule?.request() : undefined),
       workspaceFilesFor: (id) => this.workspaceFilesFor(id),
       workspaceSkillLedger: (id, cwd) =>
         this.withWorkspaceSkillTarget(
@@ -21355,7 +21529,7 @@ export class Daemon {
    * something first, and `facts/daemon-runtimes` has replace semantics, so the probed set simply
    * supersedes whatever was advertised at boot.
    */
-  private async probeK8sRuntimes(): Promise<void> {
+  private async probeK8sRuntimes(freshAfter: number): Promise<void> {
     const plane = this.k8sPlane
     const resolved = this.k8sResolvedCatalog
     if (!plane || !resolved) return
@@ -21364,12 +21538,12 @@ export class Daemon {
       // Who probes: one member per runtime image, not one per replica — and per the declarations
       // this daemon hands that image, which a rollout can change without moving the tag.
       const imageRef = this.poolProbeKeyFor(await this.poolRuntimeImageRef(plane))
-      if (imageRef && (await this.adoptPublishedK8sProbe(imageRef, resolved))) return
+      if (imageRef && (await this.adoptPublishedK8sProbe(imageRef, resolved, freshAfter))) return
       if (imageRef) {
         if (await this.claimK8sProbe(imageRef, plane.memberId)) claimed = imageRef
         else {
           this.log.info(`runtimes: another member is probing ${imageRef} — waiting for its answer`)
-          if (await this.awaitPublishedK8sProbe(imageRef, resolved)) return
+          if (await this.awaitPublishedK8sProbe(imageRef, resolved, freshAfter)) return
           // The wait ends exactly when that claim becomes retakeable, so this take-over is the
           // crash path: a holder that died must not leave the whole pool advertising nothing.
           this.log.warn('runtimes: the probing member published nothing in time — probing this member instead')
@@ -21433,16 +21607,18 @@ export class Daemon {
   }
 
   /** Adopt an answer another member already published for this image, if there is one. */
-  private async adoptPublishedK8sProbe(imageRef: string, resolved: ResolvedRuntimeCatalog): Promise<boolean> {
+  private async adoptPublishedK8sProbe(
+    imageRef: string,
+    resolved: ResolvedRuntimeCatalog,
+    freshAfter: number
+  ): Promise<boolean> {
     const published = await this.store.readRuntimeImageProbe(imageRef).catch((err: unknown) => {
       this.log.warn(`runtimes: could not read the published probe for ${imageRef}: ${formatErr(err)}`)
       return undefined
     })
     if (!published) return false
-    // An image reference is not always an immutable identity, and the answer also depends on the
-    // deployment's credentials — so an old one is re-asked rather than inherited. See
-    // K8S_PROBE_FRESH_MS for what each staleness would otherwise cost.
-    if (this.clock.now() - published.probedAt > K8S_PROBE_FRESH_MS) {
+    // An old answer is re-asked, not inherited: a tag can move and credentials change (K8S_PROBE_FRESH_MS); a request asks for one newer than itself.
+    if (published.probedAt < freshAfter) {
       this.log.info(`runtimes: the pool's probe of ${imageRef} is stale — probing again`)
       return false
     }
@@ -21488,12 +21664,16 @@ export class Daemon {
   }
 
   /** Wait out the member that won the claim, then adopt what it published. */
-  private async awaitPublishedK8sProbe(imageRef: string, resolved: ResolvedRuntimeCatalog): Promise<boolean> {
+  private async awaitPublishedK8sProbe(
+    imageRef: string,
+    resolved: ResolvedRuntimeCatalog,
+    freshAfter: number
+  ): Promise<boolean> {
     const deadline = this.clock.now() + K8S_PROBE_WAIT_MS
     for (;;) {
       await new Promise<void>((resolve) => this.clock.setTimeout(() => resolve(), K8S_PROBE_POLL_MS))
       if (this.draining || this.shutdownDraining) return false
-      if (await this.adoptPublishedK8sProbe(imageRef, resolved)) return true
+      if (await this.adoptPublishedK8sProbe(imageRef, resolved, freshAfter)) return true
       if (this.clock.now() >= deadline) return false
     }
   }
@@ -21774,6 +21954,7 @@ export class Daemon {
       this.storeRetentionTimer = undefined
     }
     this.runtimeFacts.dispose()
+    this.k8sProbeSchedule?.stop()
     this.dutyCoordinator.dispose()
     for (const t of this.bgWakeTimers) this.clock.clearTimeout(t)
     this.bgWakeTimers.clear()

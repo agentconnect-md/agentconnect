@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createWorkspaceScope } from '../src/cp/workspace-scope.js'
-import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
+import { WorkspaceManager, type AgentVolumeReach } from '../src/workspace/workspace-manager.js'
 
 // One plane per test file — the isolation Vitest's per-file module registry used to give.
 const workspaces = new WorkspaceManager()
@@ -89,6 +89,16 @@ let cloneRefusals = new Set<string>()
 let discarded: Array<{ agentId: string; exceptLeaf: string | undefined }> = []
 /** The retirement failing on the cluster side, which must leave the conversion unproven rather than proceed. */
 let discardFails = false
+/** The agent pod unbound: every file, Git and emptying call on a path outside the session directories fails as the plane's does, and is recorded. */
+let agentPodDown = false
+let agentPodReached: string[] = []
+const onAgentPod = (path: string | undefined): boolean => path === undefined || !path.startsWith(`${SESSIONS}/`)
+/** Whether a call on `path` finds the agent pod down, recording it under `kind` when it does. */
+function refusedByAgentPod(kind: string, path: string | undefined): boolean {
+  if (!agentPodDown || !onAgentPod(path)) return false
+  agentPodReached.push(`${kind} ${path ?? '(no cwd)'}`)
+  return true
+}
 
 /** A ref name as a commit id, the way `worktree add`/`reset` move HEAD onto their start point. */
 function resolve(ref: string): string {
@@ -246,12 +256,17 @@ beforeEach(() => {
   cloneRefusals = new Set()
   discarded = []
   discardFails = false
+  agentPodDown = false
+  agentPodReached = []
+  pod.ownerAsleep = (path) => refusedByAgentPod('fs', path)
   // Every agent here runs in a pod, so every question of the plane resolves to the sandbox.
   wireTestPlane(workspaces, {
     workspacesOffDisk: true,
-    gitRunnerFor: (_agentId, cwd) => recordingRunner(cwd),
+    // No runner for an unbound pod, which the manager refuses as `sandbox-unavailable`.
+    gitRunnerFor: (_agentId, cwd) => (refusedByAgentPod('git', cwd) ? undefined : recordingRunner(cwd)),
     workspaceFsFor: () => ({ fs: pod, mount: POD_ROOT }),
     clearPath: async (_agentId, root) => {
+      if (refusedByAgentPod('clear', root)) return 'no bound channel'
       cleared.push(root)
       // Emptying the checkout is precisely what makes the pod's probe stop finding one.
       if (root === CHECKOUT) checkoutExists = false
@@ -1388,10 +1403,11 @@ describe('secondary roots on the pod volume', () => {
       expect(await pod.stat(legacyRecord())).toBe('missing')
     })
 
-    it('is dropped, wherever it is, when a review degrades to revision-only', async () => {
+    it('names the primary when a review degrades to revision-only, leaving a record beside the agent’s subtree nothing reads', async () => {
       const agent = agentWithRoots()
       await workspaces.prepareClusterWorkspace(agent, POD_ROOT)
       await reviewInfra(agent)
+      // Only a session that predates its own record reads one there, and this one has its own.
       await pod.writeFile(legacyRecord(), JSON.stringify({ repoFullName: 'acme/infra' }))
 
       const cwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT, {
@@ -1400,8 +1416,8 @@ describe('secondary roots on the pod volume', () => {
       })
 
       expect(cwd).toBe(sessionCloneOf(KEY))
-      expect(await pod.stat(cwdRecordOf(KEY))).toBe('missing')
-      expect(await pod.stat(legacyRecord())).toBe('missing')
+      expect(JSON.parse((await pod.readFile(cwdRecordOf(KEY)))!)).toEqual({ subtreeName: null })
+      expect(await pod.stat(legacyRecord())).toBe('file')
       agentPodAsleep()
       expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, resumed)).toEqual([
         sessionCloneOf(KEY, 'acme/infra')
@@ -1437,11 +1453,11 @@ describe('secondary roots on the pod volume', () => {
     const attested = async (clone: string): Promise<unknown> => JSON.parse((await pod.readFile(attestationOf(clone)))!)
     const inSession = (key: string) => (call: Invocation) =>
       call.cwd === sessionDirOf(key) || call.cwd?.startsWith(`${sessionDirOf(key)}/`) === true
-    /** The agent pod answers nothing outside the session directories, save the `<mount>/repos` listing the cwd record's migration still makes (#2311); what it was asked is returned. */
+    /** The agent pod answers nothing outside the session directories; what it was asked is returned. */
     const agentPodFails = (): string[] => {
       const asked: string[] = []
       pod.ownerAsleep = (path) => {
-        const agentPod = !path.startsWith(`${SESSIONS}/`) && path !== REPOS
+        const agentPod = !path.startsWith(`${SESSIONS}/`)
         if (agentPod) asked.push(path)
         return agentPod
       }
@@ -1485,8 +1501,8 @@ describe('secondary roots on the pod volume', () => {
         'trunk',
         'release'
       ])
-      // No agent-pod subtree was asked about or made, and no Git ran outside the session's directory.
-      expect(asked.filter((path) => path.startsWith(`${REPOS}/`))).toEqual([])
+      // The agent pod was asked nothing, no subtree was made there, and no Git ran outside the session's directory.
+      expect(asked).toEqual([])
       expect([...pod.dirs, ...pod.files.keys()].filter((path) => path.startsWith(`${REPOS}/`))).toEqual([])
       expect(calls.filter((call) => !inSession(KEY)(call))).toEqual([])
     })
@@ -1617,5 +1633,234 @@ describe('secondary roots on the pod volume', () => {
       expect(await scope.target(agent.id, 'acme/infra')).toMatchObject({ branch: 'trunk' })
       expect(await scope.target(agent.id, 'acme/infra', 'sid-shared')).toMatchObject({ branch: 'trunk' })
     })
+  })
+})
+
+// An isolated session prepares on its own pod alone; the agent pod is reached only for work due there (k8s-daemon-pool.md §4, step 7).
+describe('a confined preparation reaches the agent pod only for work due there (#1896)', () => {
+  const KEY = 'sess-own'
+  const REQUEST = { sessionKey: KEY, isolation: 'session' as const, initiatedBy: 'alice' }
+  const INFRA_ROW = { repoFullName: 'acme/infra', repoId: '42' }
+  const INFRA = `${POD_ROOT}/repos/acme/infra`
+  const legacyRecord = (): string => `${INFRA}/.session-cwd-${workspaces.sessionWorktreeId(KEY)}.json`
+  const attestation = (): string => `${sessionCloneOf(KEY, 'acme/infra')}/.git/agentconnect-materialization.json`
+  const recordOf = async (key = KEY): Promise<unknown> => JSON.parse((await pod.readFile(cwdRecordOf(key)))!)
+  let reaches = 0
+  /** The daemon's on-demand reach as a test sees it: the agent pod is up for the work alone, and each reach is counted. */
+  const reachAgentPod: AgentVolumeReach = async (work) => {
+    reaches += 1
+    const down = agentPodDown
+    agentPodDown = false
+    try {
+      return await work()
+    } finally {
+      agentPodDown = down
+    }
+  }
+  /** Markers and the conversion intent are this daemon's own files, so each agent gets a real bookkeeping path. */
+  const agentOf = (rows: Array<{ repoFullName: string; repoId: string }> = [INFRA_ROW]): Agent =>
+    clusterAgent({
+      path: join(mkdtempSync(join(tmpdir(), 'ac-cluster-reach-')), 'workspace'),
+      additionalRepos: rows
+    } as Partial<Agent['workspace']>)
+  const prepare = (agent: Agent, request: Parameters<typeof workspaces.prepareClusterWorkspace>[2] = REQUEST) =>
+    workspaces.prepareClusterWorkspace(agent, POD_ROOT, request, reachAgentPod)
+  /** The formal review that makes the secondary root this session's cwd. */
+  const reviewInfra = (agent: Agent): Promise<string> => {
+    const id = workspaces.sessionWorktreeId(KEY)
+    revs[`refs/agentconnect/reviews/${id}/base`] = 'a'.repeat(40)
+    revs[`refs/agentconnect/reviews/${id}/head`] = 'b'.repeat(40)
+    return prepare(agent, {
+      ...REQUEST,
+      reviewRepoFullName: 'acme/infra',
+      review: { pullNumber: 9, baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40) }
+    })
+  }
+
+  /** From here on the agent pod is down, and only what this test does next is counted. */
+  const agentPodAsleep = (): void => {
+    agentPodDown = true
+    reaches = 0
+    agentPodReached = []
+  }
+
+  beforeEach(() => {
+    reaches = 0
+    remoteDefaultBranch = { 'acme/infra': 'trunk' }
+  })
+
+  it('prepares, resumes and reviews with the agent pod asleep, recording the primary as the cwd', async () => {
+    agentPodAsleep()
+    for (const agent of [agentOf([]), agentOf()]) {
+      // A fresh volume per agent, since both name the same session.
+      pod = new PodWorkspaceFs(POD_ROOT)
+      pod.ownerAsleep = (path) => refusedByAgentPod('fs', path)
+      const cwd = await prepare(agent)
+      expect(cwd).toBe(sessionCloneOf(KEY))
+      // A record for the primary too, so a session with none is one prepared before sessions kept it.
+      expect(await recordOf()).toEqual({ subtreeName: null })
+      expect(await prepare(agent)).toBe(cwd)
+      expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, REQUEST)).toEqual(
+        agent.workspace.additionalRepos?.length ? [sessionCloneOf(KEY, 'acme/infra')] : []
+      )
+    }
+    const agent = agentOf()
+    expect(await reviewInfra(agent)).toBe(sessionCloneOf(KEY, 'acme/infra'))
+    expect(await recordOf()).toEqual({ subtreeName: 'acme/infra' })
+    expect(await prepare(agent)).toBe(sessionCloneOf(KEY, 'acme/infra'))
+    expect(await prepare(agent, { ...REQUEST, githubReviewRevisionOnly: true })).toBe(sessionCloneOf(KEY))
+    expect(await recordOf()).toEqual({ subtreeName: null })
+    expect(reaches).toBe(0)
+    expect(agentPodReached).toEqual([])
+  })
+
+  it('reaches the agent pod for a due conversion alone, and converts exactly as before', async () => {
+    const agent = agentOf([])
+    await workspaces.prepareClusterWorkspace(agent, POD_ROOT)
+    const moved = { ...agent, workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/other.git' } } as Agent
+    await workspaces.prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })
+    checkoutExists = true
+    calls.length = 0
+    agentPodAsleep()
+
+    const cwd = await prepare(moved)
+
+    expect(reaches).toBe(1)
+    expect(agentPodReached).toEqual([])
+    const leaf = hostKeyDirName(sessionHostKey(agent.id, KEY))
+    expect(discarded).toEqual([{ agentId: agent.id, exceptLeaf: leaf }])
+    expect(cleared).toEqual([CHECKOUT, sessionDirOf(KEY)])
+    // The agent pod's checkout is re-cloned from the new repository, then the session clones it afresh.
+    expect(calls.filter((call) => call.args[0] === 'clone').map((call) => [call.cwd, call.args[1]])).toEqual([
+      [POD_ROOT, 'https://github.com/acme/other.git'],
+      [sessionDirOf(KEY), 'https://github.com/acme/other.git']
+    ])
+    expect(cwd).toBe(sessionCloneOf(KEY))
+    // Proven now: the next preparation has nothing due and stays on its own pod.
+    await prepare(moved)
+    expect(reaches).toBe(1)
+    expect(agentPodReached).toEqual([])
+  })
+
+  it('moves a cwd record left beside the agent’s subtree once, reaching the agent pod, and never again', async () => {
+    const agent = agentOf()
+    // The agent pod's subtree of the root, which preparation materialized before sessions answered for their own.
+    await workspaces.prepareClusterWorkspace(agent, POD_ROOT)
+    await reviewInfra(agent)
+    // What a session reviewed before its directory kept the record has instead.
+    await pod.rmTree(cwdRecordOf(KEY))
+    await pod.writeFile(legacyRecord(), JSON.stringify({ repoFullName: 'acme/infra' }))
+    agentPodAsleep()
+
+    expect(await prepare(agent)).toBe(sessionCloneOf(KEY, 'acme/infra'))
+    expect(reaches).toBe(1)
+    expect(await recordOf()).toEqual({ subtreeName: 'acme/infra' })
+    expect(await prepare(agent)).toBe(sessionCloneOf(KEY, 'acme/infra'))
+    expect(reaches).toBe(1)
+    expect(agentPodReached).toEqual([])
+    agentPodDown = false
+    expect(await pod.stat(legacyRecord())).toBe('missing')
+  })
+
+  it('asks the agent pod once for a session that holds an additional clone but predates its record, and never for one that holds none', async () => {
+    const agent = agentOf()
+    await prepare(agent)
+    await pod.rmTree(cwdRecordOf(KEY))
+    const bare = agentOf([])
+    await prepare(bare, { ...REQUEST, sessionKey: 'sess-bare' })
+    await pod.rmTree(cwdRecordOf('sess-bare'))
+    agentPodAsleep()
+
+    // Nothing beside the agent's subtree names it, so the primary is recorded and the next preparation asks nothing.
+    expect(await prepare(agent)).toBe(sessionCloneOf(KEY))
+    expect(reaches).toBe(1)
+    expect(await recordOf()).toEqual({ subtreeName: null })
+    await prepare(agent)
+    expect(reaches).toBe(1)
+    // A record there could only name a clone this session holds, and it holds none.
+    expect(await prepare(bare, { ...REQUEST, sessionKey: 'sess-bare' })).toBe(sessionCloneOf('sess-bare'))
+    expect(reaches).toBe(1)
+    expect(await recordOf('sess-bare')).toEqual({ subtreeName: null })
+    expect(agentPodReached).toEqual([])
+  })
+
+  it('keeps what the agent pod answered even when the rest of that preparation fails', async () => {
+    const agent = agentOf()
+    await prepare(agent)
+    await pod.rmTree(cwdRecordOf(KEY))
+    agentPodAsleep()
+    // The primary's clone cannot be reached this time, so the preparation fails after the migration and keeps the secondary's.
+    pod.ownerAsleep = (path) => path === sessionCloneOf(KEY) || refusedByAgentPod('fs', path)
+    await expect(prepare(agent)).rejects.toThrow(/has no bound channel/)
+    expect(reaches).toBe(1)
+    expect(await recordOf()).toEqual({ subtreeName: null })
+    expect(await pod.stat(`${sessionCloneOf(KEY, 'acme/infra')}/.git`)).toBe('dir')
+
+    pod.ownerAsleep = (path) => refusedByAgentPod('fs', path)
+    expect(await prepare(agent)).toBe(sessionCloneOf(KEY))
+    expect(reaches).toBe(1)
+    expect(agentPodReached).toEqual([])
+  })
+
+  it('drops a legacy record on revision-only by reaching the agent pod only for a session that predates its own', async () => {
+    const agent = agentOf()
+    await workspaces.prepareClusterWorkspace(agent, POD_ROOT)
+    await reviewInfra(agent)
+    await pod.rmTree(cwdRecordOf(KEY))
+    await pod.writeFile(legacyRecord(), JSON.stringify({ repoFullName: 'acme/infra' }))
+    agentPodAsleep()
+
+    expect(await prepare(agent, { ...REQUEST, githubReviewRevisionOnly: true })).toBe(sessionCloneOf(KEY))
+    expect(reaches).toBe(1)
+    expect(await recordOf()).toEqual({ subtreeName: null })
+    // Its own record now names the primary, so a second fallback asks the agent pod nothing.
+    expect(await prepare(agent, { ...REQUEST, githubReviewRevisionOnly: true })).toBe(sessionCloneOf(KEY))
+    expect(reaches).toBe(1)
+    expect(agentPodReached).toEqual([])
+    agentPodDown = false
+    expect(await pod.stat(legacyRecord())).toBe('missing')
+  })
+
+  it('adopts the agent pod’s attestation once for a clone taken before clones carried one', async () => {
+    const agent = agentOf()
+    // The agent pod's attested checkout of the root, beside a session clone that carries nothing.
+    await workspaces.prepareClusterWorkspace(agent, POD_ROOT)
+    await prepare(agent)
+    await pod.rmTree(attestation())
+    remoteDefaultBranch['acme/infra'] = 'main'
+    agentPodAsleep()
+
+    const cwd = await prepare(agent)
+    expect(reaches).toBe(1)
+    expect(JSON.parse((await pod.readFile(attestation()))!)).toMatchObject({ repoId: '42', branch: 'trunk' })
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, REQUEST)).toEqual([
+      sessionCloneOf(KEY, 'acme/infra')
+    ])
+    await prepare(agent)
+    expect(reaches).toBe(1)
+    expect(agentPodReached).toEqual([])
+  })
+
+  it('leaves the primary’s legacy worktree stub on the agent pod to retention', async () => {
+    const stub = `${WORKTREES}/${workspaces.sessionWorktreeId(KEY)}`
+    await pod.mkdir(stub)
+    agentPodAsleep()
+
+    await prepare(agentOf())
+    await prepare(agentOf([]))
+
+    expect(reaches).toBe(0)
+    expect(agentPodReached).toEqual([])
+    agentPodDown = false
+    expect(await pod.stat(stub)).toBe('dir')
+  })
+
+  it('keeps preparing a shared session with the agent pod held', async () => {
+    const agent = agentOf()
+    const cwd = await prepare(agent, { sessionKey: 'sess-shared', isolation: 'shared' })
+    expect(cwd).toBe(CHECKOUT)
+    expect(calls.some((call) => call.cwd === POD_ROOT && call.args[0] === 'clone')).toBe(true)
+    expect(await pod.stat(`${INFRA}/.materialization.json`)).toBe('file')
+    expect(reaches).toBe(0)
   })
 })

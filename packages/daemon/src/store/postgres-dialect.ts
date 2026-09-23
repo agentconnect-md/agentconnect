@@ -99,6 +99,7 @@ export const canonicalColumns = [
   'mintedAt',
   'modelId',
   'modelOverride',
+  'decisionModel',
   'modelsHash',
   'needsParentReply',
   'nextAttemptAt',

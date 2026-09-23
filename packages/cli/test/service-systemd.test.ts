@@ -347,9 +347,9 @@ describe('SystemdController (no polkit rules.d backend)', () => {
       if (cmd === 'visudo') return { code: opts.visudo ?? 0, stdout: '', stderr: '' }
       if (cmd === 'sudo')
         return { code: opts.sudo ?? 0, stdout: '', stderr: opts.sudo ? 'sudo: a password is required' : '' }
-      const lifecycle = args[0] === 'start' || args[0] === 'stop'
-      return opts.denied && lifecycle
-        ? { code: 1, stdout: '', stderr: `Failed to ${args[0]} ${args[1]}: Access denied` }
+      const verb = args.find((a) => a === 'start' || a === 'stop')
+      return opts.denied && verb
+        ? { code: 1, stdout: '', stderr: `Failed to ${verb} ${args.at(-1)}: Access denied` }
         : { code: 0, stdout: '', stderr: '' }
     }
     const sud = sudoers()
@@ -413,9 +413,9 @@ describe('SystemdController (no polkit rules.d backend)', () => {
     await c.up()
     await c.down()
     expect(calls.map((k) => [k.cmd, ...k.args.map((a) => a.replace(/^\/(usr\/)?bin\//, ''))].join(' '))).toEqual([
-      'systemctl start agentconnect.service',
+      'systemctl --no-ask-password start agentconnect.service',
       'sudo -n systemctl start agentconnect.service',
-      'systemctl stop agentconnect.service',
+      'systemctl --no-ask-password stop agentconnect.service',
       'sudo -n systemctl stop agentconnect.service'
     ])
   })

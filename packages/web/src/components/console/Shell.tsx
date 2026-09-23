@@ -165,18 +165,14 @@ export default function ConsoleShell({ children }: { children: ReactNode }) {
       <SWRConfig value={CONSOLE_SWR_CONFIG}>
         <ConsoleDataProvider>
           <PlaygroundProvider>
-            <ModalProvider>
-              {/* What the transcript is waiting on the reader for. Mounted beside the dialog host
-              for the same reason: the cards that register live under a route, the banner that
-              names them is the route's own chrome, and one registry outlives both. */}
-              <PendingActionsProvider>
-                {/* One Decisions prototype outlives every route: a decision created on the
-                    editor is still there when a channel row binds it (lib/decisions/provider). */}
-                <DecisionsPrototypeProvider>
+            <DecisionsPrototypeProvider>
+              <ModalProvider>
+                {/* One pending-action registry outlives every route and its banner. */}
+                <PendingActionsProvider>
                   <ShellChrome>{children}</ShellChrome>
-                </DecisionsPrototypeProvider>
-              </PendingActionsProvider>
-            </ModalProvider>
+                </PendingActionsProvider>
+              </ModalProvider>
+            </DecisionsPrototypeProvider>
           </PlaygroundProvider>
         </ConsoleDataProvider>
       </SWRConfig>

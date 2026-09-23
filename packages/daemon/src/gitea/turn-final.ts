@@ -19,6 +19,8 @@ import { GITEA_ISSUE_CLOSED_EVENT, GITEA_PULL_MERGED_EVENT } from './events.js'
 import { GITEA_HOST_MISMATCH_REASON } from './host-fence.js'
 import { GiteaFinalPoster } from './poster.js'
 import { correlateGiteaReview, giteaReviewEventState } from './review-correlation.js'
+import { readPullDescription } from '../codehost/pull-description.js'
+import { giteaRepoPath } from './api.js'
 
 /** What Gitea's members read back on the daemon: the §10.1 effect lease, and the instance its spec names. */
 export interface GiteaTurnFinalHost {
@@ -141,5 +143,16 @@ export const giteaTurnFinal: CodeHostTurnFinal<'gitea'> = {
   effectLease,
   finalPoster,
   promptSupplement,
+  pullRequestDescription: async (source, agentId, host, signal) => {
+    if (source.gitea?.target.kind !== 'pull') return undefined
+    const target = replyTarget(source)!
+    return readPullDescription(
+      effectLease(agentId, target, host),
+      `${giteaRepoPath(target.repoPath!)}/pulls/${target.number}`,
+      'body',
+      signal,
+      'token'
+    )
+  },
   reportsAbsentOutput: true
 }

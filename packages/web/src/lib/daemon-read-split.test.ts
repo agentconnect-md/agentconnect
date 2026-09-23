@@ -80,6 +80,32 @@ describe('daemon read split', () => {
     expect(row.mcpServers).toEqual([])
   })
 
+  it('reads a relaunch gone past the offline grace as offline, while a queued upgrade stays visible', () => {
+    const op = {
+      id: 'op-1',
+      op: 'upgrade' as const,
+      status: 'pending' as const,
+      phase: 'restarting' as const,
+      targetVersion: '1.52.0',
+      outcome: null
+    }
+    const reconnecting = daemonFromDto({ ...fleetRow, status: 'connecting', lifecycleOp: op })
+    expect(reconnecting.lifecycleStatus).toBe('restarting')
+    expect(reconnecting.lifecycleOp).toEqual(op)
+
+    const gone = daemonFromDto({ ...fleetRow, status: 'offline', lifecycleOp: op })
+    expect(gone.status).toBe('offline')
+    expect(gone.lifecycleStatus).toBeNull()
+    expect(gone.lifecycleOp).toBeNull()
+    expect(
+      daemonFromDto({ ...fleetRow, status: 'offline', lifecycleOp: { ...op, op: 'restart', phase: null } }).lifecycleOp
+    ).toBeNull()
+
+    // A bootstrap upgrade waits for the next connection by design, so an offline daemon keeps showing it.
+    const queued = daemonFromDto({ ...fleetRow, status: 'offline', lifecycleOp: { ...op, phase: null } })
+    expect(queued.lifecycleStatus).toBe('upgrading')
+  })
+
   it('stitches capability onto the liveness row without disturbing liveness', () => {
     const row = withDaemonCapability(daemonFromDto(fleetRow), capability)
     expect(row.status).toBe('online') // the console's word for a ready daemon

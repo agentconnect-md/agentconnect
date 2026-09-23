@@ -186,8 +186,26 @@ therefore costs one slow startup rather than a pool that advertises nothing. A
 published answer is adopted only while it is fresh (one hour): an image reference is
 not always an immutable identity — a template pinned to a moving tag keeps one key
 across rebuilds — and the answer also depends on the deployment's credentials, so a
-newly configured provider pair must be able to take effect. Nothing re-probes on a
-timer; freshness only decides whether a member STARTING now inherits the answer.
+newly configured provider pair must be able to take effect.
+
+**The pool re-probes on a timer, and a self-hosted console can ask for one.** A
+probe only sees what the image's runtimes report, and some of that moves without a
+new image — opencode reads its model catalog from models.dev at runtime, and a
+deployment can declare Claude aliases or add a provider pair. Each member therefore
+re-runs the election every `AC_RUNTIME_PROBE_INTERVAL_MINUTES` (default 60, chart
+`daemonPool.runtimeProbeIntervalMinutes`; 0 disables the timer). A tick asks for an
+answer published within the last interval and adopts a peer's if one exists, so a
+pool still spends about one probe pod per interval rather than one per replica. A
+start-up probe adopts an answer younger than both the interval and the one-hour
+freshness window. Where the deployment sets `AC_RUNTIME_PROBE_ON_DEMAND=true` — the
+chart does whenever `features.managed` is off — a member advertises
+`runtime-probe-v1` and serves `daemon/runtimes/probe`. `POST
+/daemons/pool/runtime-probe` (organization owners only, debounced to one fan-out per
+30 s) sends it to every live member that advertises it. A requested probe accepts
+only an answer published after the request, so the members elect one to claim a
+sandbox and the rest wait for and adopt its answer. Managed Cloud advertises nothing
+and refreshes on its timer alone. A member runs its probes one at a time: a request
+or tick that lands while one is in flight is folded into a single follow-up run.
 
 **The control plane carries one bit, not a namespace.** `DAEMON_POOL_ENABLED=true`
 says "this deployment runs a daemon pool": the control plane loads its in-cluster
@@ -366,10 +384,10 @@ as reasons. With the agent pod unbound they fail or wake it:
 | Standing context lists `<mount>/repos/*/*` for the session's `.session-cwd-<id>.json` (`sessionAdditionalRoots` → `sessionCwdSubtree`)                        | every turn, every git-repo agent; also `session/new`/`load`, review preparation | the turn fails ("no bound channel")                            | build the standing context only when consumed (new, load, first prompt, restate); move the marker into the session's own directory |
 | Turn file links read `repos/<a>/<b>/.materialization.json` (`consoleSecondaryRoot`)                                                                           | every turn, agents with additional repositories                                 | all of the turn's links are dropped                            | resolve a location without I/O; read the marker only for push/pull, per root                                                       |
 | Secondary _reference_ roots are materialized on the agent pod for their default branch and repository-id attestation                                          | every preparation, per additional repository                                    | a reviewed root fails preparation                              | done: the session's clone asks its remote for the default branch and attests itself inside its `.git`                              |
-| `withSandboxVolume(agentPod, …)` around every isolated preparation                                                                                            | every preparation                                                               | wakes the agent pod                                            | wake it only when the member-local conversion check says a conversion is due                                                       |
+| `withSandboxVolume(agentPod, …)` around every isolated preparation                                                                                            | every preparation                                                               | wakes the agent pod                                            | done: holds the session pod alone; reaches the agent pod for a due conversion, or once for a session or clone predating its record |
 | Model-session host start under a key server, and a review host's cold start with a pre-prepared cwd, prepare the agent's own checkout with no session request | per cold host start                                                             | wakes the agent pod; pure overhead                             | done: the start re-verifies only the session pod's skills; the session's own preparation does the rest                             |
 | Post-turn memory distillation runs on the `internal:memory:<agent>` or agent host                                                                             | after each turn, `autoDistill` only                                             | wakes the agent pod                                            | keep for now (decision 2)                                                                                                          |
-| Retention's legacy worktree half; the hourly retired-roots sweep                                                                                              | hourly                                                                          | wakes the agent pod                                            | judge only when the agent pod is already bound                                                                                     |
+| Retention's legacy worktree half; the hourly retired-roots sweep                                                                                              | hourly                                                                          | wakes the agent pod                                            | done: judged only while the agent pod is bound, for a session with a pod of its own; the sweep likewise                            |
 | Attachment writes and image reads decide "pod workspace?" from the agent pod's recorded mount                                                                 | per attachment                                                                  | a member that never bound the agent pod writes to its own disk | decide from the session's own scope and mount                                                                                      |
 | Merge-when-ready watcher                                                                                                                                      | while armed                                                                     | the watcher dies with the pod                                  | an armed watcher holds its pod (#2290); later it moves into the session pod that armed it                                          |
 
@@ -379,8 +397,9 @@ so `resolveRemoteDefaultBranch` would have run `ls-remote` in the daemon's own
 working directory. An off-disk scope with no runner now refuses with
 `sandbox-unavailable`, and a routed file read whose owning pod is unbound throws
 the same typed refusal instead of a plain error, which the console showed as "the
-daemon may be offline" with no Start button. Every such caller still sits inside
-the preparation wrapper; this is what lets the wrapper narrow.
+daemon may be offline" with no Start button. That is what let the preparation
+wrapper narrow: a call the narrowing missed refuses rather than running on the
+wrong disk.
 
 **A session's page wakes its own pod.** `agent/wake` carries an optional
 `sessionId` (`session-wake-v1`). The member holding the agent's duty resolves the

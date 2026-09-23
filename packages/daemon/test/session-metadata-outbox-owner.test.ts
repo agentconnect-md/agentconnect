@@ -72,6 +72,18 @@ async function world() {
 }
 
 describe('session metadata names its classification by the logical session', () => {
+  it('publishes each session runtime and model selection independently', async () => {
+    const w = await world()
+    await w.store.pinDecisionModel(w.dm.key, 'runtime-a', 'model-a')
+    await w.store.pinDecisionModel(w.channel.key, 'runtime-b', 'model-b')
+    await w.start()
+    const seen = await w.events()
+    expect(seen.get(w.dm.outward)).toMatchObject({ runtime: 'runtime-a', model: 'model-a' })
+    expect(seen.get(w.channel.outward)).toMatchObject({ runtime: 'runtime-b', model: 'model-b' })
+    w.outbox.dispose()
+    await w.store.close()
+  })
+
   it("a snapshot carrying the session key publishes that session's own facts, not a sibling's sharing the ACP id", async () => {
     const w = await world()
     await w.classify()

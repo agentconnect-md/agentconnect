@@ -18,6 +18,7 @@ import { seedAgent } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
+import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { PgDaemonLifecycleOpRepo } from '../../src/persistence/repositories/daemon-lifecycle-op.repo.js'
 import { PgRuntimeProfileRepo } from '../../src/persistence/repositories/runtime-profile.repo.js'
 import { DaemonRegistryService } from '../../src/registry/registryService.js'
@@ -28,6 +29,7 @@ import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import { retryArm } from '../../src/http/routes/daemons.js'
 import {
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
+  RUNTIME_PROBE_FEATURE,
   SESSION_EXECUTORS_V1_FEATURE,
   type DaemonControlAck
 } from '@agentconnect.md/protocol'
@@ -1316,5 +1318,129 @@ describe('lifecycle op closure on register→READY', () => {
     const latest = await ops.latestForDaemon(DaemonId(DAEMON))
     expect(latest?.status).toBe('failed')
     expect(latest?.outcome).toContain('timed out')
+  })
+})
+
+describe('POST /daemons/pool/runtime-probe', () => {
+  /** An install-wide pool member registered with `features`, as its Pod would on connect. */
+  async function seedPoolMember(podUid: string, features: string[]) {
+    const repo = new PgDaemonRepo(prisma)
+    const member = await repo.resolvePoolClusterIdentity('system:serviceaccount:agentconnect:ac-cloud-daemon', podUid)
+    await repo.applyRegister(
+      DaemonId(member.id),
+      { host: 'pool-member', capabilities: { platforms: [], runtimes: ['claude'], acp: true, features }, maxAgents: 0 },
+      new Date()
+    )
+    return member.id
+  }
+
+  function probeSpy(ok = true) {
+    const sent: string[] = []
+    const spy = {
+      runtimeProbe: async (id: string) => {
+        sent.push(id)
+        return ok ? { ok: true } : { ok: false, reason: 'this daemon does not take runtime probe requests' }
+      }
+    } as unknown as ControlSender
+    return { spy, sent }
+  }
+
+  it('asks every live member that takes requests, and no other', async () => {
+    const a = await seedPoolMember('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', [RUNTIME_PROBE_FEATURE])
+    const b = await seedPoolMember('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', [RUNTIME_PROBE_FEATURE])
+    const offline = await seedPoolMember('cccccccc-cccc-4ccc-8ccc-cccccccccccc', [RUNTIME_PROBE_FEATURE])
+    const older = await seedPoolMember('dddddddd-dddd-4ddd-8ddd-dddddddddddd', [])
+    await seedDaemon([RUNTIME_PROBE_FEATURE]) // org-owned: not part of the pool
+    const { spy, sent } = probeSpy()
+    const live = liveness({
+      [a]: { state: 'READY', reachable: true },
+      [b]: { state: 'READY', reachable: true },
+      [older]: { state: 'READY', reachable: true },
+      [DAEMON]: { state: 'READY', reachable: true }
+    })
+    running = buildHttpApp(prisma, undefined, live, spy)
+
+    const res = await running.app.inject({ method: 'POST', url: `${ORG}/daemons/pool/runtime-probe` })
+    expect(res.statusCode).toBe(202)
+    expect(res.json()).toEqual({ state: 'probing', members: 2 })
+    expect(sent.sort()).toEqual([a, b].sort())
+    expect(sent).not.toContain(offline)
+  })
+
+  it('answers unsupported without sending when no member takes requests (a managed pool)', async () => {
+    const member = await seedPoolMember('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', [])
+    const { spy, sent } = probeSpy()
+    running = buildHttpApp(prisma, undefined, liveness({ [member]: { state: 'READY', reachable: true } }), spy)
+    const res = await running.app.inject({ method: 'POST', url: `${ORG}/daemons/pool/runtime-probe` })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ state: 'unsupported', members: 0 })
+    expect(sent).toEqual([])
+  })
+
+  it('503s when no member that takes requests accepts one', async () => {
+    const member = await seedPoolMember('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', [RUNTIME_PROBE_FEATURE])
+    running = buildHttpApp(prisma, undefined, liveness({}), probeSpy().spy)
+    expect((await running.app.inject({ method: 'POST', url: `${ORG}/daemons/pool/runtime-probe` })).statusCode).toBe(
+      503
+    )
+    await running.close()
+    const refused = probeSpy(false)
+    running = buildHttpApp(prisma, undefined, liveness({ [member]: { state: 'READY', reachable: true } }), refused.spy)
+    expect((await running.app.inject({ method: 'POST', url: `${ORG}/daemons/pool/runtime-probe` })).statusCode).toBe(
+      503
+    )
+    expect(refused.sent).toEqual([member])
+  })
+
+  it('joins a request made within the debounce window instead of sending it again', async () => {
+    const member = await seedPoolMember('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', [RUNTIME_PROBE_FEATURE])
+    const { spy, sent } = probeSpy()
+    running = buildHttpApp(prisma, undefined, liveness({ [member]: { state: 'READY', reachable: true } }), spy)
+    const first = await running.app.inject({ method: 'POST', url: `${ORG}/daemons/pool/runtime-probe` })
+    const second = await running.app.inject({ method: 'POST', url: `${ORG}/daemons/pool/runtime-probe` })
+    expect(first.statusCode).toBe(202)
+    expect(second.json()).toEqual({ state: 'probing', members: 1 })
+    expect(sent).toEqual([member])
+  })
+
+  it('joins a request that arrives while the first one is still waiting on its acks', async () => {
+    const member = await seedPoolMember('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', [RUNTIME_PROBE_FEATURE])
+    const sent: string[] = []
+    let release!: () => void
+    const acked = new Promise<void>((resolve) => (release = resolve))
+    const spy = {
+      runtimeProbe: async (id: string) => {
+        sent.push(id)
+        await acked
+        return { ok: true }
+      }
+    } as unknown as ControlSender
+    running = buildHttpApp(prisma, undefined, liveness({ [member]: { state: 'READY', reachable: true } }), spy)
+    const first = running.app.inject({ method: 'POST', url: `${ORG}/daemons/pool/runtime-probe` })
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    const second = running.app.inject({ method: 'POST', url: `${ORG}/daemons/pool/runtime-probe` })
+    release()
+    expect((await first).json()).toEqual({ state: 'probing', members: 1 })
+    expect((await second).json()).toEqual({ state: 'probing', members: 1 })
+    expect(sent).toEqual([member])
+  })
+
+  it('is refused to a member who does not own the organization', async () => {
+    const member = await seedPoolMember('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', [RUNTIME_PROBE_FEATURE])
+    const users = new PgUserRepo(prisma)
+    const email = `pool-probe-${randomUUID()}@example.test`
+    const { userId } = await users.provisionOidcUser({ oidcSubject: randomUUID(), email, emailVerified: true })
+    await users.addMemberByEmail(DEFAULT_ORG_ID, email, 'collaborator')
+    const { spy, sent } = probeSpy()
+    running = buildHttpApp(
+      prisma,
+      { DEFAULT_OWNER_ID: userId },
+      liveness({ [member]: { state: 'READY', reachable: true } }),
+      spy
+    )
+    expect((await running.app.inject({ method: 'POST', url: `${ORG}/daemons/pool/runtime-probe` })).statusCode).toBe(
+      403
+    )
+    expect(sent).toEqual([])
   })
 })

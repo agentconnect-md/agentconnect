@@ -30,6 +30,7 @@ import type {
   BindRule,
   AgentIcon,
   AgentMemoryBinding,
+  AgentModelSelection,
   DecimalAmount,
   CodeHostNoteState,
   GithubPublishedComment,
@@ -674,6 +675,7 @@ export interface CreateAgentInput {
   // the AgentSecretStore seam (routes write them there after create).
   mcpServers?: string[] // daemon-configured MCP server names to attach at session/new (AgentSpec.mcpServers)
   decisionIds?: string[] // explicitly enabled saved Decisions
+  modelSelection?: AgentModelSelection
   skills?: string[] // enabled skills, "<sourceName>/<skillName>" or "<sourceName>/*" (shared-skills.md)
   managedSkills?: string[] // accepted managed_skill ids, explicitly enabled
   memory?: AgentMemoryBinding // memory backend
@@ -729,6 +731,7 @@ export interface UpdateAgentInput {
   // them through the AgentSecretStore seam (key-by-key; see AgentSecretStore.merge).
   mcpServers?: string[] | null // replaced wholesale when provided; null clears
   decisionIds?: string[] | null // replaced wholesale; null clears
+  modelSelection?: AgentModelSelection | null
   skills?: string[] | null // enabled skills; replaced wholesale when provided; null clears
   managedSkills?: string[] | null // accepted managed_skill ids; replaced wholesale when provided; null clears
   memory?: AgentMemoryBinding | null // memory backend
@@ -773,6 +776,7 @@ export interface AgentRecord {
   // values only from AgentSecretStore.get on the wire-projection paths.
   mcpServers: string[] // from runtimeOverrides.mcpServers ([] when unset ⇒ none attached)
   decisionIds?: string[] // from runtimeOverrides.decisionIds; absent means none
+  modelSelection?: AgentModelSelection
   skills: string[] // from runtimeOverrides.skills — enabled "<source>/<skill>" / "<source>/*" ([] ⇒ none)
   managedSkills: string[] // accepted managed_skill ids ([] ⇒ none)
   memory: AgentMemoryBinding | null // runtimeOverrides.memory

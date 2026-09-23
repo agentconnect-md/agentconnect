@@ -2,6 +2,7 @@
 // Ported from the AgentConnect design (static demo content for the console UI).
 
 import type { AgentIcon } from '@/lib/agent-icon'
+import type { AgentModelSelection } from '@agentconnect.md/protocol/decision'
 import type { NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import { gitRepoHostname, managedGitlabRepoPath } from './git-url-tile'
 import {
@@ -532,6 +533,7 @@ export interface Agent {
   /** Console avatar descriptor; null ⇒ legacy default (the runtime mark). Rendered by <AgentIconView>. */
   icon?: AgentIcon | null
   model: string
+  modelSelection?: AgentModelSelection | null
   /** Authoritative runtime id (e.g. 'claude' | 'codex' | 'opencode' | 'claude-acp').
    * This is a distinct field from `model` — never derive one from the other. */
   runtime: string
@@ -832,6 +834,7 @@ export interface RuntimeModelCapability {
 /** A runtime's discovered model × config capability matrix (protocol
  *  `RuntimeModelCatalog` — one shape on the wire, in the CP, and here). */
 export interface RuntimeModelCatalog {
+  modelSwitching?: boolean
   models: RuntimeModelCapability[]
   defaultModel?: string
   permissionModes?: { value: string; name?: string; description?: string }[]

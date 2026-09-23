@@ -1,20 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import {
-  closeSync,
-  constants,
-  fstatSync,
-  linkSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  readSync,
-  readdirSync,
-  renameSync,
-  rmSync,
-  rmdirSync,
-  writeFileSync
-} from 'node:fs'
+import { linkSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, rmdirSync, writeFileSync } from 'node:fs'
+import { readRegularFileSync, RegularFileError } from '../fs/regular-file.js'
 
 /**
  * What one path IS, resolved WITHOUT following a symlink.
@@ -62,12 +48,7 @@ export interface WorkspaceFs {
   readdir(path: string): Promise<string[]>
   /** Recursive, like `mkdir -p`. */
   mkdir(path: string, mode?: number): Promise<void>
-  /** The file's text, or undefined when it is absent or unreadable — every caller reads a marker
-   *  it is willing to find missing. */
-  readFile(path: string): Promise<string | undefined>
-  /** The file's BYTES, bounded: over `maxBytes` answers `{tooLarge}` without transferring, and
-   *  absent/unreadable answers undefined. The binary sibling of {@link readFile}, added for the
-   *  outbound file share (agent-authored-attachments.md §6). */
+  /** The only read: bounded, never through a link or a pipe; absent or unreadable is undefined, over `maxBytes` is `{tooLarge}`. */
   readFileBytes(path: string, maxBytes: number): Promise<{ bytes: Buffer } | { tooLarge: number } | undefined>
   /** Atomic: staged beside the target, then published by one rename. Text or raw BYTES: the
    *  binary arm lands an inbound attachment in the workspace (inbound-file-attachments.md §2). */
@@ -120,41 +101,12 @@ export class LocalWorkspaceFs implements WorkspaceFs {
     mkdirSync(path, { recursive: true, ...(mode === undefined ? {} : { mode }) })
   }
 
-  async readFile(path: string): Promise<string | undefined> {
-    try {
-      return readFileSync(path, 'utf8')
-    } catch {
-      return undefined
-    }
-  }
-
   async readFileBytes(path: string, maxBytes: number): Promise<{ bytes: Buffer } | { tooLarge: number } | undefined> {
-    let fd: number
     try {
-      // The lstat refuses a link where O_NOFOLLOW is absent (Windows); the descriptor judges whatever was swapped in since.
-      if (!lstatSync(path).isFile()) return undefined
-      fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
-    } catch {
-      return undefined
-    }
-    try {
-      const stats = fstatSync(fd)
-      if (!stats.isFile()) return undefined
-      if (stats.size > maxBytes) return { tooLarge: stats.size }
-      let bytes = Buffer.alloc(stats.size + 1)
-      let length = 0
-      for (;;) {
-        const count = readSync(fd, bytes, length, bytes.length - length, null)
-        if (count === 0) return { bytes: bytes.subarray(0, length) }
-        length += count
-        // A file that grew since the fstat is read up to the cap and refused past it, never overrun.
-        if (length > maxBytes) return { tooLarge: length }
-        if (length === bytes.length) bytes = Buffer.concat([bytes], Math.min(bytes.length * 2, maxBytes + 1))
-      }
-    } catch {
-      return undefined
-    } finally {
-      closeSync(fd)
+      return { bytes: readRegularFileSync(path, maxBytes) }
+    } catch (err) {
+      // A link, a pipe or any unreadable path is absent; only an oversized regular file reports its size.
+      return err instanceof RegularFileError && err.reason === 'too-large' ? { tooLarge: err.size! } : undefined
     }
   }
 
@@ -218,9 +170,6 @@ export class RoutedWorkspaceFs implements WorkspaceFs {
   }
   async mkdir(path: string, mode?: number): Promise<void> {
     return (await this.route(path)).mkdir(path, mode)
-  }
-  async readFile(path: string): Promise<string | undefined> {
-    return (await this.route(path)).readFile(path)
   }
   async readFileBytes(path: string, maxBytes: number): ReturnType<WorkspaceFs['readFileBytes']> {
     return (await this.route(path)).readFileBytes(path, maxBytes)

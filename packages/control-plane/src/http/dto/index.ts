@@ -9,6 +9,7 @@ import { Cron } from 'croner'
 import { RESERVED_AGENT_SLUGS } from '../../domain/reserved-agent-slugs.js'
 import {
   AgentDecisionIds,
+  AgentModelSelection,
   AgentMemoryBinding,
   ChannelDecisionGate,
   DaemonLifecyclePhase,
@@ -147,6 +148,7 @@ export const RuntimeModelCapabilityDto = z.object({
  *  protocol `RuntimeModelCatalog` (one shape shared by the wire, the CP JSONB
  *  column, and this DTO; runtime-model-catalog.md §5). */
 export const RuntimeModelCatalogDto = z.object({
+  modelSwitching: z.boolean().optional(),
   models: z.array(RuntimeModelCapabilityDto),
   defaultModel: z.string().optional(), // resolved concrete model id (never the literal "default")
   permissionModes: z.array(PermissionModeOptionDto).optional(),
@@ -199,6 +201,12 @@ export const McpServerFactDto = z.object({
 /** A CP-commanded daemon restart/upgrade (cli-daemon-split.md §7). Returned by the
  *  upgrade/restart POSTs so the console can track ITS command by `id`, and embedded in
  *  the fleet read model as each daemon's most-recent op. `status` is expiry-projected. */
+/** `POST /daemons/pool/runtime-probe` — `probing` names the members that accepted; `unsupported` = no member takes requests. */
+export const PoolRuntimeProbeDto = z.object({
+  state: z.enum(['probing', 'unsupported']),
+  members: z.number().int().nonnegative()
+})
+
 export const DaemonLifecycleOpDto = z.object({
   id: z.string(),
   op: z.enum(['restart', 'upgrade']),
@@ -688,6 +696,7 @@ export const CreateAgentBody = z.object({
   skills: SkillEnableBody.optional(),
   managedSkills: ManagedSkillEnableBody.optional(),
   decisionIds: AgentDecisionIds.optional(),
+  modelSelection: AgentModelSelection.optional(),
   // Memory backend; absent ⇒ managed default. The CP resolves `home`: `control-plane` on a member set (`daemon` refused), else the given value or `daemon`.
   memory: MemoryConfigInputBody.optional(),
   // Placement at create. `set` uses `setId`; `daemon` (the default) uses `daemonId`. `pool` is
@@ -746,6 +755,7 @@ export const UpdateAgentBody = z
     skills: SkillEnableBody.nullable().optional(), // enabled skills; replaced wholesale; null clears
     managedSkills: ManagedSkillEnableBody.nullable().optional(), // accepted managed-skill ids; null clears
     decisionIds: AgentDecisionIds.nullable().optional(),
+    modelSelection: AgentModelSelection.nullable().optional(),
     // Memory backend; null clears (revert to managed). A managed `home` moves one way, `daemon` → `control-plane`;
     // the reverse is refused unless `force` is set, and never accepted on the managed pool.
     memory: MemoryConfigInputBody.nullable().optional(),
@@ -850,6 +860,7 @@ export const AgentDto = z.object({
   skills: z.array(z.string()), // enabled shared-skills "<source>/<skill>" / "<source>/*" ([] ⇒ none)
   managedSkills: z.array(z.string().uuid()), // explicitly enabled accepted managed-skill ids
   decisionIds: AgentDecisionIds,
+  modelSelection: AgentModelSelection.nullable(),
   // Memory backend (null ⇒ managed default). A managed binding carries its resolved `home` and, while a
   // `daemon` → `control-plane` copy is under way, the read-only `homeMigration: 'pending'`.
   memory: MemoryConfigBody.nullable(),

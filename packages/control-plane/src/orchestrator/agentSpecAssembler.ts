@@ -406,6 +406,7 @@ export function agentRecordToSpec(
     // disabling the last skill replicates.
     skills: skillEntries,
     decisionIds: a.decisionIds ?? [],
+    modelSelection: a.modelSelection ?? null,
     // Immutable centrally-managed bundle metadata. Content is fetched separately
     // in bounded chunks, keeping reconcile/upsert frames small.
     managedSkills: managedSkillEntries,

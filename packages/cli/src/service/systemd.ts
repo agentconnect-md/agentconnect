@@ -241,8 +241,10 @@ export class SystemdController implements ServiceController {
 
   /** A system-unit lifecycle verb: polkit first, then the sudoers grant on a host without rules.d. */
   private async control(verb: 'start' | 'stop'): Promise<{ code: number; stdout: string; stderr: string }> {
-    const r = await this.systemctl([verb, this.label])
-    if (r.code === 0 || !DENIED.test(r.stderr) || isElevated() || polkitRulesSupported(this.polkitDir)) return r
+    const polkit = polkitRulesSupported(this.polkitDir)
+    // Without rules.d there is no grant for a tty agent to find, and on a polkit-less host its binary is absent too.
+    const r = await this.systemctl([...(polkit ? [] : ['--no-ask-password']), verb, this.label])
+    if (r.code === 0 || !DENIED.test(r.stderr) || isElevated() || polkit) return r
     const viaSudo = await this.deps.exec('sudo', ['-n', systemctlPath(), verb, this.label])
     return viaSudo.code === 0
       ? viaSudo
