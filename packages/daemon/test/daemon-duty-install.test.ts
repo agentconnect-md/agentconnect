@@ -678,3 +678,44 @@ describe('the rendezvous claim ordering', () => {
     await daemon.stop()
   })
 })
+
+describe('a grant after the register snapshot detached the agent', () => {
+  // A group agent's row names no daemon, so a member that registers before its lease lands is told to detach it.
+  const detachOnRegister = (d: Daemon) =>
+    (d as any).cpConfigApply().applyReconcileSnapshot({
+      routingEpoch: 1,
+      assignments: [],
+      agents: [],
+      integrations: [],
+      crons: [],
+      leases: [],
+      drop: { assignments: [], crons: [], agents: [{ agentId: AGENT, action: 'detach' }], integrations: [] }
+    })
+
+  it('serves the agent it installs instead of refusing every turn as draining', async () => {
+    const daemon = await boot({ fetchDutyAgent: vi.fn(async () => ({ bundle: bundle() })) })
+    await detachOnRegister(daemon)
+    expect((daemon as any).drainingAgents.has(AGENT)).toBe(true)
+
+    await (daemon as any).dutyCoordinator.installGrantedAgents([grant()])
+
+    expect((daemon as any).agents.has(AGENT)).toBe(true)
+    expect((daemon as any).drainingAgents.has(AGENT)).toBe(false)
+    expect((daemon as any).cpDroppedAgents.has(AGENT)).toBe(false)
+    await daemon.stop()
+  })
+
+  it('restores the replica the detach archived when the grant carries the revision already applied', async () => {
+    const daemon = await boot({ fetchDutyAgent: vi.fn(async () => ({ bundle: bundle('5') })) })
+    await (daemon as any).dutyCoordinator.installGrantedAgents([grantAt('5')])
+    await detachOnRegister(daemon)
+    expect(registries(daemon).agents.has(AGENT)).toBe(false)
+
+    await (daemon as any).dutyCoordinator.installGrantedAgents([grantAt('5')])
+
+    expect(registries(daemon).agents.has(AGENT)).toBe(true)
+    expect((daemon as any).agents.has(AGENT)).toBe(true)
+    expect((daemon as any).drainingAgents.has(AGENT)).toBe(false)
+    await daemon.stop()
+  })
+})
