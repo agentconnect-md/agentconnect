@@ -1,6 +1,19 @@
 // `AgentWaker` — the daemon side of the console's `agent/wake`: claim the duty if needed, then bring ONE pod to Running and bind its channel, with no host or ACP session; it answers what it OBSERVED.
 import type { AgentWakeOk, AgentWakeReq } from '@agentconnect.md/protocol'
 import { agentSandboxSubject } from '../remote/sandbox-subject.js'
+import type { WorkspaceScope } from './workspace-scope.js'
+
+/** The pod a session's roots live on, routed off its own directory as its reads are — never off the primary, which a scratch agent's session with only additional-repository clones lacks; the agent's pod when its roots are the agent's checkouts or worktrees of them. */
+export async function sessionPodOf(
+  scope: Pick<WorkspaceScope, 'sessionDirectory'>,
+  plane: { subjectForPath: (agentId: string, path: string) => string },
+  agentId: string,
+  sessionId: string
+): Promise<string | undefined> {
+  const dir = await scope.sessionDirectory(agentId, sessionId)
+  if (dir === undefined) return undefined
+  return dir === null ? agentSandboxSubject(agentId) : plane.subjectForPath(agentId, dir)
+}
 
 export interface AgentWakerDeps {
   /** The sandbox plane; undefined on a daemon that runs no sandboxes, where every wake is `unsupported`. */

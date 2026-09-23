@@ -384,11 +384,13 @@ the preparation wrapper; this is what lets the wrapper narrow.
 
 **A session's page wakes its own pod.** `agent/wake` carries an optional
 `sessionId` (`session-wake-v1`). The member holding the agent's duty resolves the
-pod that session's workspace lives on through the same scope and routing its reads
-use, answers `running` when it is bound, and otherwise observes its claim and
-resumes onto that uid; the agent pod is neither claimed nor bound. A session whose
-workspace is still on the agent pod (a pre-§11 worktree) wakes the agent pod as
-before. With no claim the wake refuses as `sandbox-removed`, and the Control Plane
+pod off the session's own directory, which holds every root the session browses
+whatever the primary is — a scratch agent's session may hold only
+additional-repository clones — and routes it as its reads are routed. It answers
+`running` when that pod is bound, and otherwise observes its claim and resumes
+onto that uid; the agent pod is neither claimed nor bound. A shared session, or
+one whose workspace is still on the agent pod (a pre-§11 worktree), wakes the
+agent pod as before. With no claim the wake refuses as `sandbox-removed`, and the Control Plane
 answers it, for a wake as for a read, with 404 `WORKSPACE_SANDBOX_REMOVED`: a
 workspace replacement retires every other session pod of the agent while the
 session rows remain, and offering Start there would loop until it gave up. The

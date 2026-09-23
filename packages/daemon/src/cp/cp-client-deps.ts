@@ -28,7 +28,7 @@ import { createSessionReader } from './session-reader.js'
 import { createWorkspaceReader } from './workspace-reader.js'
 import { createWorkspaceScope } from './workspace-scope.js'
 import { createWorkspaceGit, type CommitMessagePass } from './workspace-git.js'
-import { createAgentWaker } from './agent-wake.js'
+import { createAgentWaker, sessionPodOf } from './agent-wake.js'
 import { createMemoryReader, type AgentMemoryAdminResolver } from './memory-reader.js'
 import { createDreamReader } from './dream-reader.js'
 import { createLocalSkillsReader } from './local-skills-reader.js'
@@ -429,11 +429,8 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
             sandbox: {
               isRunning: (subject) => host.k8sPlane()!.sandboxBound(subject),
               ensureChannel: (subject) => host.k8sPlane()!.ensureChannel(subject),
-              // The pod a session's page reads, through the SAME scope and routing its reads and its keep-alive use (§11).
-              sessionPod: async (id, sessionId) => {
-                const root = await workspaceScope.gitRoot(id, sessionId)
-                return root === undefined ? undefined : host.k8sPlane()!.subjectForPath(id, root)
-              },
+              // The pod a session's page reads, off the session's own directory and the same routing its reads use (§11).
+              sessionPod: (id, sessionId) => sessionPodOf(workspaceScope, host.k8sPlane()!, id, sessionId),
               claimUidFor: (subject) => host.k8sPlane()!.claimUidFor(subject),
               resumeChannel: (subject, claimUid) => host.k8sPlane()!.resumeChannel(subject, claimUid)
             }

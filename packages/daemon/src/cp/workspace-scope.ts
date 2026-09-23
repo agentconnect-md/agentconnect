@@ -43,6 +43,8 @@ export interface WorkspaceScope {
   target(agentId: string, repo?: string): Promise<WorkspaceGitTarget | undefined>
   /** Whether git on this scope rides the daemon credential helper; answered without touching any volume. */
   usesGithubApp(agentId: string, repo?: string): boolean
+  /** The directory holding every root of an isolated session, whatever the primary is (§11); `null` when its roots are the agent's checkouts or worktrees of them (a shared or pre-§11 session), undefined for no session of this agent. */
+  sessionDirectory(agentId: string, sessionId: string): Promise<string | null | undefined>
 }
 
 export function createWorkspaceScope(deps: WorkspaceScopeDeps): WorkspaceScope {
@@ -142,6 +144,15 @@ export function createWorkspaceScope(deps: WorkspaceScopeDeps): WorkspaceScope {
       if (repo !== undefined) return agent !== undefined
       // Same historical name, same meaning: either managed provider rides the daemon helper.
       return agent !== undefined && deps.workspaces.usesManagedCredential(agent)
+    },
+    sessionDirectory: async (agentId, sessionId) => {
+      const agent = deps.agentOf(agentId)
+      if (!agent) return undefined
+      const session = await deps.sessionOf(agentId, sessionId)
+      if (!session) return undefined
+      // A shared session's roots are the agent's checkouts; an isolated one's follow the tier rule every root's read composes its path with.
+      if (session.workspaceIsolation !== 'session') return null
+      return deps.workspaces.confinedSessionDir(agent, session.key) ?? null
     }
   }
 }

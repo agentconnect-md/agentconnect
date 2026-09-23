@@ -1,6 +1,6 @@
 // `createAgentWaker` — the daemon half of the console's "start this sandbox" (#1070), agent- or session-scoped.
 import { describe, expect, it, vi } from 'vitest'
-import { createAgentWaker, AgentWakeViolationError } from '../../src/cp/agent-wake.js'
+import { createAgentWaker, AgentWakeViolationError, sessionPodOf } from '../../src/cp/agent-wake.js'
 
 const silent = { warn: vi.fn() }
 const tick = () => new Promise((r) => setImmediate(r))
@@ -163,5 +163,23 @@ describe('createAgentWaker for one session', () => {
     expect(box.claimUidFor).not.toHaveBeenCalled()
     expect(box.ensureChannel).not.toHaveBeenCalled()
     expect(box.resumeChannel).not.toHaveBeenCalled()
+  })
+})
+
+describe('sessionPodOf', () => {
+  const plane = { subjectForPath: vi.fn((agentId: string, path: string) => `${agentId}@${path}`) }
+  const scopeAnswering = (dir: string | null | undefined) => ({ sessionDirectory: vi.fn(async () => dir) })
+
+  it('routes an isolated session to the pod of its own directory, as its reads are routed', async () => {
+    const scope = scopeAnswering('/agent/sessions/session-0123')
+    await expect(sessionPodOf(scope, plane, 'a1', 's1')).resolves.toBe('a1@/agent/sessions/session-0123')
+    expect(scope.sessionDirectory).toHaveBeenCalledWith('a1', 's1')
+  })
+
+  it("answers the agent's pod for a session whose roots are the agent's checkouts, and nothing for an unknown one", async () => {
+    await expect(sessionPodOf(scopeAnswering(null), plane, 'a1', 's1')).resolves.toBe('a1')
+    plane.subjectForPath.mockClear()
+    await expect(sessionPodOf(scopeAnswering(undefined), plane, 'a1', 's1')).resolves.toBeUndefined()
+    expect(plane.subjectForPath).not.toHaveBeenCalled()
   })
 })
