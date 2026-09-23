@@ -4972,27 +4972,27 @@ export class Daemon {
     }
     if (this.k8sPlane) {
       const plane = this.k8sPlane
-      // The pod's own preparation: clone and pull happen on its volume through the runner, and
-      // none of the local work below runs — its mkdir, `existsSync(.git)` and skills installation
-      // all land on this daemon's disk, describing a filesystem the runtime never reads.
+      // Every step runs on a pod's volume through its channel; none of the local work below may, since it would describe this daemon's disk.
       const agentPod = agentSandboxSubject(agent.id)
-      // §11: an isolated session prepares on ITS pod (its clones, its skills, its cwd record); the agent pod is held beside it for the secondary-root attestation and a cwd record an older daemon left beside the agent's subtree.
-      const pod =
-        request && this.confinedSession(agent, request.sessionKey)
-          ? sandboxSubjectFor(sessionHostKey(agent.id, request.sessionKey))
-          : agentPod
-      const prepare = async (): Promise<string> => {
+      if (!request || !this.confinedSession(agent, request.sessionKey)) {
+        return await this.withSandboxVolume(agentPod, async () => {
+          const cwd = await this.workspaces.prepareClusterWorkspace(agent, plane.workspaceRootFor(agentPod), request)
+          await this.reconcileClusterSkills(agent, agentPod)
+          return cwd
+        })
+      }
+      // §11: an isolated session prepares on ITS pod alone (its clones, skills and cwd record); the agent pod is woken only for work due there — a due conversion, or the one-time move of what an older daemon left beside the agent's subtree.
+      const pod = sandboxSubjectFor(sessionHostKey(agent.id, request.sessionKey))
+      return await this.withSandboxVolume(pod, async () => {
         const cwd = await this.workspaces.prepareClusterWorkspace(
           agent,
           plane.workspaceRootFor(pod),
-          pod === agentPod ? request : { ...request!, confined: true }
+          { ...request, confined: true },
+          (work) => this.withSandboxVolume(agentPod, work)
         )
         await this.reconcileClusterSkills(agent, pod)
         return cwd
-      }
-      return await this.withSandboxVolume(agentPod, () =>
-        pod === agentPod ? prepare() : this.withSandboxVolume(pod, prepare)
-      )
+      })
     }
     if (!this.opts.hostFactory) assertExclusiveAgentWorkspaces([agent as LoadedAgent])
     if (!request && this.microsandbox && this.usesMicrosandbox(agent)) {
@@ -18615,16 +18615,10 @@ export class Daemon {
       }
       // A host bound to this session runs inside the directory about to go: stop it before the removal.
       await this.stopSessionHost(rec.agentId, rec.key, { ...this.sessionHostFence(rec.agentId, rec.key), row: rec })
-      // The volume has to be up and bound for the removal, as it was for the preparation — and for
-      // the question of WHICH roots exist, which is asked of the filesystem that holds them: on a
-      // suspended sandbox this daemon's own disk would answer "none" for a scratch agent whose pod
-      // volume carries secondary worktrees, and the session row would be deleted without them ever
-      // being judged. A pod that will not come up is THIS session's failure, never the whole
-      // sweep's — it retries next pass.
-      // A session directory of its own (§11) is judged even when no shared root remains to hang a worktree off.
-      const result = await this.withSandboxVolume(rec.agentId, () =>
-        this.judgeSessionDirectories(currentAgent, rec.key)
-      ).catch((err: unknown): SessionWorktreeRemoval => ({ outcome: 'failed', error: (err as Error).message }))
+      // A pod that will not come up is THIS session's failure, never the whole sweep's: it retries next pass.
+      const result = await this.judgeSessionDirectories(currentAgent, rec.key).catch(
+        (err: unknown): SessionWorktreeRemoval => ({ outcome: 'failed', error: (err as Error).message })
+      )
       if (result === undefined) return { outcome: 'not_applicable' }
       // `partial` too: a kept aggregate can still have removed another root's worktree, and a warm
       // attachment naming a directory that is gone would skip preparation on its next turn.
@@ -18642,7 +18636,7 @@ export class Daemon {
     })
   }
 
-  // Locally one call judges every root; on a pool the legacy worktrees are judged on the agent pod and the session's clones on its own pod — woken only when it has one, since a session that never launched there has nothing to judge.
+  // Locally one call judges every root. On a pool the session's clones are judged on its own pod, woken only when it has one; the legacy worktrees on the agent pod, asked of that pod and never of this disk — woken for a session with no pod of its own, whose workspace can only be there, and otherwise judged only while already bound (#1896).
   private async judgeSessionDirectories(agent: Agent, sessionKey: string): Promise<SessionWorktreeRemoval | undefined> {
     const plane = this.k8sPlane
     if (!plane) {
@@ -18651,12 +18645,25 @@ export class Daemon {
         ? await this.workspaces.removeSessionWorktree(agent, sessionKey)
         : undefined
     }
-    const results: SessionWorktreeRemoval[] = []
-    if (await this.workspaces.hasSessionWorktreeRoots(agent)) {
-      results.push(await this.workspaces.removeSessionWorktree(agent, sessionKey, 'worktrees'))
-    }
     const pod = sessionSandboxSubject(agent.id, hostKeyDirName(sessionHostKey(agent.id, sessionKey)))
-    if (await plane.hasSandbox(pod)) {
+    const ownPod = await plane.hasSandbox(pod)
+    const judgeLegacy = async (): Promise<SessionWorktreeRemoval | undefined> =>
+      (await this.workspaces.hasSessionWorktreeRoots(agent))
+        ? await this.workspaces.removeSessionWorktree(agent, sessionKey, 'worktrees')
+        : undefined
+    let legacy: SessionWorktreeRemoval | undefined
+    if (!ownPod) {
+      legacy = await this.withSandboxVolume(agentSandboxSubject(agent.id), judgeLegacy)
+    } else {
+      const release = plane.holdIfBound(agentSandboxSubject(agent.id))
+      try {
+        legacy = release ? await judgeLegacy() : undefined
+      } finally {
+        release?.()
+      }
+    }
+    const results: SessionWorktreeRemoval[] = legacy ? [legacy] : []
+    if (ownPod) {
       results.push(
         await this.withSandboxVolume(pod, () => this.workspaces.removeSessionWorktree(agent, sessionKey, 'clones'))
       )

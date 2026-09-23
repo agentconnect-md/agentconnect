@@ -810,7 +810,8 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
     expect(resets).toBe(2)
     expect(readFileSync(join(cwd, 'README.md'), 'utf8')).toBe('seed\n')
     expect(git(cwd, ['status', '--porcelain'])).toBe('')
-    expect(readdirSync(leafOf(agent))).toEqual(['workspace'])
+    // No staging directory survives; the cwd record, naming the primary, is written once the clone is in place.
+    expect(readdirSync(leafOf(agent))).toEqual(['.session-cwd.json', 'workspace'])
   })
 
   it('resolves the console session root, and a repo-scoped one, to the clone', async () => {
@@ -1069,6 +1070,8 @@ describe('a confined session records its cwd root in its own directory', () => {
     const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
     const elsewhere = join(workspaces.agentRootFor(agent), 'elsewhere.json')
     writeFileSync(elsewhere, JSON.stringify({ subtreeName: 'acme/infra' }))
+    // In place of the record preparation wrote, which names the primary.
+    rmSync(recordOf(agent))
     symlinkSync(elsewhere, recordOf(agent))
     const infra = realpathSync(join(leafOf(agent), 'repos', 'acme', 'infra'))
     expect(await handedOut(agent)).toEqual([infra])
