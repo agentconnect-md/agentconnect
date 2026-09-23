@@ -614,6 +614,121 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     await daemon.stop()
   })
 
+  describe('a cold resume of an existing session', () => {
+    const turn = (ts: string, text: string) => ({
+      msgId: `slack:C1:${ts}`,
+      traceId: ts,
+      source: 'cron',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '100.1',
+      sender: { id: 'U1', isBot: false },
+      text,
+      mentionedBots: [],
+      isDm: false
+    })
+
+    // The CP's `event/session` schema takes a UUID agent id, so the durable outbox drops a snapshot for `bot-a`.
+    const AGENT = 'c0c0c0c0-cccc-4ccc-8ccc-cccccccccccc'
+
+    // Turn one runs on a warm host, then the process stops; the next process starts cold on the same row.
+    async function restartCold(cold: Record<string, unknown>) {
+      const root = scaffold()
+      const agentJson = join(root, 'agents', 'bot-a', 'agent.json')
+      writeFileSync(agentJson, JSON.stringify({ ...JSON.parse(readFileSync(agentJson, 'utf8')), id: AGENT }))
+      const warm = {
+        __started: true,
+        start: vi.fn(async () => {}),
+        newSession: vi.fn(async () => 'acp-sess-1'),
+        hasSession: (id: string) => id === 'acp-sess-1',
+        prompt: vi.fn(async () => ({ stopReason: 'end_turn' })),
+        cancel: vi.fn(),
+        stop: vi.fn()
+      }
+      // An ACK-capable CP: durable snapshots reach it one acknowledged request at a time, so this order is its commit order.
+      const ackingCp = (syncEventSession: (event: { status?: string }) => Promise<'acknowledged'>) => ({
+        state: 'READY',
+        supportsServerFeature: (feature: string) => feature === 'session-metadata-ack-v1',
+        syncEventSession,
+        emitEventSession: vi.fn(),
+        emitUsageReport: vi.fn(),
+        stop: vi.fn()
+      })
+      const first = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => warm as any })
+      await first.start()
+      ;(first as any).cpClient = ackingCp(async () => 'acknowledged')
+      await (first as any).dispatch(AGENT, turn('100.1', 'first'))
+      // The next process starts with nothing pending, so a `plan` report has no durable row to ride on.
+      await vi.waitFor(async () => expect(await (first as any).store.hasPendingSessionMetadata()).toBe(false), WAIT)
+      await first.stop()
+      const second = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => cold as any })
+      await second.start()
+      const syncEventSession = vi.fn(async (_event: { status?: string }) => 'acknowledged' as const)
+      const cp = ackingCp(syncEventSession)
+      const emitEventSession = cp.emitEventSession
+      ;(second as any).cpClient = cp
+      return {
+        second,
+        acknowledged: () => syncEventSession.mock.calls.map(([event]) => event.status),
+        unacknowledged: () => emitEventSession.mock.calls.map(([event]) => event.status)
+      }
+    }
+
+    it('commits resuming while the session re-attaches, and never after a later state', async () => {
+      const live = new Set<string>()
+      let attach!: () => void
+      const attached = new Promise<void>((resolve) => (attach = resolve))
+      const cold = {
+        start: vi.fn(async () => {}),
+        newSession: vi.fn(async () => 'acp-unexpected'),
+        hasSession: (id: string) => live.has(id),
+        loadSupported: () => true,
+        loadSession: vi.fn(async (id: string) => {
+          await attached
+          live.add(id)
+        }),
+        prompt: vi.fn(async () => ({ stopReason: 'end_turn' })),
+        cancel: vi.fn(),
+        stop: vi.fn()
+      }
+      const { second, acknowledged, unacknowledged } = await restartCold(cold)
+      const done = (second as any).dispatch(AGENT, turn('100.2', 'second'))
+      await vi.waitFor(() => expect(acknowledged()).toEqual(['resuming']), WAIT)
+      attach()
+      await done
+      await vi.waitFor(() => expect(acknowledged().at(-1)).toBe('idle'), WAIT)
+      expect(cold.loadSession.mock.calls[0]?.[0]).toBe('acp-sess-1')
+      expect(acknowledged().lastIndexOf('resuming')).toBe(0)
+      expect(unacknowledged()).not.toContain('resuming')
+      await second.stop()
+    })
+
+    it('commits the row state after resuming when the cold start fails before the turn starts', async () => {
+      let fail!: () => void
+      const failing = new Promise<void>((resolve) => (fail = resolve))
+      const cold = {
+        start: vi.fn(async () => {}),
+        newSession: vi.fn(async () => {
+          await failing
+          throw new Error('runtime failed to start')
+        }),
+        hasSession: () => false,
+        prompt: vi.fn(async () => ({ stopReason: 'end_turn' })),
+        cancel: vi.fn(),
+        stop: vi.fn()
+      }
+      const { second, acknowledged, unacknowledged } = await restartCold(cold)
+      const done = (second as any).dispatch(AGENT, turn('100.2', 'second')).catch(() => undefined)
+      await vi.waitFor(() => expect(acknowledged()).toEqual(['resuming']), WAIT)
+      fail()
+      await done
+      await vi.waitFor(() => expect(acknowledged()).toEqual(['resuming', 'idle']), WAIT)
+      expect(cold.prompt).not.toHaveBeenCalled()
+      expect(unacknowledged()).not.toContain('resuming')
+      await second.stop()
+    })
+  })
+
   it('persists pre-client lifecycle events and drains only the latest snapshot after restart', async () => {
     const root = scaffold()
     const configPath = join(root, 'config.json')

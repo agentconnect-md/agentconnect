@@ -808,6 +808,17 @@ store another member may be running that turn (#2245). A Dream's row is
 exempt: a Dream runs off the chat-turn queue, stays `prompting` for its whole
 run, and its runner owns the row and its crash recovery.
 
+**What the console shows while a session re-attaches.** The console shows the
+status the daemon last reported to the CP, and a turn reports `prompting` only
+after its session is open. On a cold host, reaching that point can take minutes:
+checkout, sandbox start and `session/load`. A turn replayed after a restart
+always starts cold. So when a turn finds an existing session row but no running
+host, the daemon first reports `resuming` to the CP. It does not change the
+local row. If the turn ends before it starts, the daemon reports the row's own
+state again. Both reports go through the acknowledged metadata outbox, not the
+fire-and-forget `event/session` path. That outbox sends one request at a time,
+so the CP commits `resuming` before whatever replaces it and never keeps it.
+
 ### 7.4 Message-to-Execution Flow
 
 ```

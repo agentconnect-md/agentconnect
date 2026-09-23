@@ -307,6 +307,8 @@ export interface QueueEntry {
   isQueueCmd?: boolean
   /** Re-admitted from the durable inbox, so an earlier attempt may have stopped partway. */
   fromInboxReplay?: boolean
+  /** The ACP id this cold turn reported to the CP as `resuming`; cleared once the turn announces its start. */
+  resumingReported?: string
   /** Settles the `dispatch()` promise for THIS message: resolve with its ACP sessionId
    *  (or null when a gate skipped it), reject with its own turn error. */
   resolve: (sessionId: string | null) => void

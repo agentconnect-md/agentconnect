@@ -56,6 +56,8 @@ export interface SessionMetadataSnapshotInput {
   channel: string
   thread?: string
   status?: string
+  /** Send a `plan` update through the acknowledged outbox, so a transient status commits in order with what replaces it. */
+  ordered?: boolean
   runtime?: string
   model?: string | null
   permissionMode?: string
@@ -222,9 +224,7 @@ export class SessionMetadataOutbox {
     const snapshot = await this.convergedPendingSessionMetadataSnapshot(event)
     let pending = false
     try {
-      // A lifecycle milestone creates the durable obligation. `plan` is title /
-      // display-name enrichment: it updates an already-pending snapshot but does
-      // not turn a historical session into upgrade-time replay work.
+      // A milestone or ordered status creates the durable obligation; other `plan` enrichment only updates a pending one, never replaying old sessions.
       pending =
         (await store.saveSessionMetadataSnapshot(
           input.agentId,
@@ -232,7 +232,7 @@ export class SessionMetadataOutbox {
           // rebuilt ACP hop updates the same pending snapshot instead of opening a second one.
           outwardSessionId,
           JSON.stringify(snapshot),
-          input.phase !== 'plan',
+          input.phase !== 'plan' || input.ordered === true,
           this.host.clock().now(),
           this.host.daemonId()
         )) !== undefined

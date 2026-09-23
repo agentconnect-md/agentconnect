@@ -12761,6 +12761,7 @@ export class Daemon {
               await this.settleReviewBatch(entry)
               sessionId = await this.dispatchOne(entry, key)
             } finally {
+              await this.settleResumingReport(entry, key)
               releaseDispatch()
             }
             // A turn that genuinely COMPLETED is done — remove its row even during a shutdown
@@ -13198,6 +13199,11 @@ export class Daemon {
     let handled: HandledTurnSession
     const persisted = await this.store.getSession(key)
     const persistedSessionId = persisted?.acpSessionId
+    // A cold host can spend minutes on checkout, sandbox and session/load; report that instead of the last turn's `idle`.
+    if (persisted?.acpSessionId && !plan.hostAlreadyRunning) {
+      entry.resumingReported = persisted.acpSessionId
+      await this.reportSessionStatus(persisted, 'resuming')
+    }
     // §11: this session's OWN isolation, learned here because the model-session host below claims its pod before `sessions.handle` records the row — its row, else this turn's explicit choice, else the agent's default, which is the order SessionManager decides it in.
     this.sessionIsolation.set(key, persisted?.workspaceIsolation ?? effectiveSessionIsolation(agent, webchatIsolation))
     // …and WHERE it runs, which the host key below reads: decided once at birth, recorded, and kept for the session's life (session-executors.md §7).
@@ -13488,6 +13494,7 @@ export class Daemon {
       channel: msg.channel,
       thread: plan.sessionThread
     })
+    entry.resumingReported = undefined
     if (
       created &&
       originKindOf(msg.platform) === 'chat' &&
@@ -16641,6 +16648,35 @@ export class Daemon {
     const ids = mentionedUserIds(title)
     if (ids.length === 0) return title
     return substituteUserMentions(title, await this.store.getDisplayNames(ids))
+  }
+
+  /** Report a session's status to the CP without touching its row; no `status` re-reports the row's own state. */
+  private async reportSessionStatus(rec: SessionRecord, status?: string): Promise<void> {
+    if (!rec.acpSessionId) return
+    try {
+      await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
+        sessionId: rec.acpSessionId,
+        sessionKey: rec.key,
+        agentId: rec.agentId,
+        phase: 'plan',
+        platform: rec.platform as SessionKey['platform'],
+        channel: rec.channel,
+        thread: rec.thread,
+        ordered: true,
+        ...(status ? { status } : {})
+      })
+    } catch (err) {
+      this.log.warn(`session: status report for ${rec.key} failed (${formatErr(err)})`)
+    }
+  }
+
+  /** A cold turn that ended before announcing its start re-reports its row, so the CP never keeps `resuming`. */
+  private async settleResumingReport(entry: QueueEntry, key: string): Promise<void> {
+    const reported = entry.resumingReported
+    if (!reported) return
+    entry.resumingReported = undefined
+    const rec = await this.store.getSession(key).catch(() => undefined)
+    if (rec) await this.reportSessionStatus({ ...rec, acpSessionId: rec.acpSessionId ?? reported })
   }
 
   /** Persist one authoritative title and push the CP metadata projection. */
