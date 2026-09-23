@@ -142,6 +142,13 @@ does not fit on one line, tighten it until it does. When code you are touching
 carries a verbose comment, including a pre-existing one, condense it to a single
 line instead of leaving it as is.
 
+## Pull requests
+
+When creating a pull request, report the actual coding harness and model at
+the end of its description. Keep any attribution footer the harness provides
+and append the model name to its final line. If there is no such footer, use
+`Created by <harness> . <model>`, such as `Created by Codex . GPT-6`.
+
 ## Commands
 
 Requires **Node >= 24.12.0** (`.nvmrc` = 24.12.0) and **pnpm 11**.

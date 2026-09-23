@@ -36,6 +36,11 @@ Pull request titles and at least one commit must follow the
 `fix: ...`, `docs: ...`); a status check enforces this. Keep changes focused,
 and run `pnpm typecheck`, `pnpm lint`, and `pnpm test` before pushing.
 
+For pull requests prepared with an AI coding harness, report the actual harness
+and model at the end of the description. Keep any attribution footer the harness
+provides and append the model name to its final line. Otherwise, use
+`Created by <harness> . <model>` (for example, `Created by Codex . GPT-6`).
+
 ## Monorepo layout
 
 This repository is a pnpm workspace. Product packages live under `packages/`:
