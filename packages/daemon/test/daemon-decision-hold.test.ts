@@ -237,7 +237,7 @@ describe('By decision hold', () => {
     await daemon.stop()
   })
 
-  describe('shared-bot routed conversations (held until 5b)', () => {
+  describe('shared-bot routed conversations without a routing disposition', () => {
     for (const trigger of ['routed', 'hosted'] as const) {
       it(`records and holds a bare message, a mention and a thread reply (${trigger})`, async () => {
         const { daemon, store, channel, dispatch } = await boot([{ id: 'bot-a', trigger }])
@@ -251,7 +251,7 @@ describe('By decision hold', () => {
         ]
         for (const outcome of outcomes) expect(outcome).toEqual({ kind: 'rejected', reason: 'gated' })
         for (const result of candidate.mock.results)
-          expect(await result.value).toEqual({ kind: 'held', reason: 'routing_not_implemented' })
+          expect(await result.value).toEqual({ kind: 'held', reason: 'routed_without_disposition' })
         expect((await rowsOf(store, channel)).map((r) => r.text)).toEqual([
           'billing?',
           '<@U_FAKE_BOT> help',
@@ -261,7 +261,7 @@ describe('By decision hold', () => {
         expect(dispatch).not.toHaveBeenCalled()
         const holds = info.mock.calls.filter(([m]) => String(m).startsWith('decision:'))
         expect(holds.map(([m]) => m)).toEqual([
-          'decision: shared-bot routing not implemented yet — holding message in ch=C1'
+          'decision: routed conversation without a routing disposition — holding message in ch=C1'
         ])
         await daemon.stop()
       })
@@ -279,7 +279,7 @@ describe('By decision hold', () => {
       await route(daemon, human({ text: 'both?', thread: '1720000000.000001' }), ['int-bot-a', 'int-bot-b'])
       expect(candidate.mock.calls.map(([, agentId]) => agentId).sort()).toEqual(['bot-a', 'bot-b'])
       for (const result of candidate.mock.results)
-        expect(await result.value).toEqual({ kind: 'held', reason: 'routing_not_implemented' })
+        expect(await result.value).toEqual({ kind: 'held', reason: 'routed_without_disposition' })
       expect(await admissionsOf(store, channel)).toEqual([])
       expect(dispatch).not.toHaveBeenCalled()
       expect(evaluate).not.toHaveBeenCalled()
@@ -306,7 +306,7 @@ describe('By decision hold', () => {
       await daemon.stop()
     })
 
-    it('still runs a control command and does not advertise decision-routing-v1', async () => {
+    it('still runs a control command and advertises decision-routing-v1', async () => {
       const { daemon } = await boot([{ id: 'bot-a', trigger: 'hosted' }])
       const handle = vi.fn(async () => true)
       ;(daemon as any).commands.handleCommand = handle
@@ -315,7 +315,7 @@ describe('By decision hold', () => {
         reason: 'suppressed'
       })
       expect(handle).toHaveBeenCalled()
-      expect((daemon as any).registrationFeatures()).not.toContain('decision-routing-v1')
+      expect((daemon as any).registrationFeatures()).toContain('decision-routing-v1')
       await daemon.stop()
     })
   })

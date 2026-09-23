@@ -201,3 +201,19 @@ export function frozenGateConfig(gate: ResolvedDecisionGate, sessionMode: string
     fingerprint: gateFingerprint(gate)
   }
 }
+
+/** What a pending router verdict is bound to; a Decision rename alone leaves it unchanged. */
+export function routerFingerprint(routing: NonNullable<ResolvedRoutedChannel['routing']>, channel: string): string {
+  return canonicalJson({
+    channel,
+    botId: routing.botId,
+    enabled: routing.config.enabled,
+    decisionId: routing.definition.id,
+    providerId: routing.definition.providerId,
+    model: routing.definition.model,
+    question: routing.definition.question,
+    rules: routing.config.rules,
+    otherwise: routing.config.otherwise,
+    defaultAgentId: routing.defaultAgentId ?? null
+  })
+}

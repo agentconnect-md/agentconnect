@@ -13,7 +13,13 @@ export interface DecisionStateInput {
   /** Newest-first, as `LocalStore.decisionWindow` returns it. */
   history: readonly ChannelTextRow[]
   conversation?: { name?: string }
-  addressing: { mentions: readonly string[]; target: { agentId: string; via: 'mention' | 'implicit' } }
+  addressing: {
+    mentions: readonly string[]
+    /** A gate's bound target; a router has none before its selection. */
+    target?: { agentId: string; via: 'mention' | 'implicit' }
+    /** A router's target constraint (message-intake.md §6 step 2). */
+    constraint?: { eligibleAgentIds: readonly string[]; participantAgentIds: readonly string[] }
+  }
   /** The read window was full, so older rows exist outside it. */
   full: boolean
   /** This record of the conversation began after the conversation did. */
@@ -75,7 +81,18 @@ export function buildDecisionState(input: DecisionStateInput): DecisionStateResu
         currentMessage: current,
         history: [...included].reverse(),
         conversation: input.conversation ?? {},
-        addressing: { mentions: [...input.addressing.mentions], target: input.addressing.target },
+        addressing: {
+          mentions: [...input.addressing.mentions],
+          ...(input.addressing.target ? { target: input.addressing.target } : {}),
+          ...(input.addressing.constraint
+            ? {
+                constraint: {
+                  eligibleAgentIds: [...input.addressing.constraint.eligibleAgentIds],
+                  participantAgentIds: [...input.addressing.constraint.participantAgentIds]
+                }
+              }
+            : {})
+        },
         context: {
           partial: reasons.length > 0,
           reasons,

@@ -23,7 +23,11 @@ import {
   decodeRelayDaemonFrame,
   isRelayDaemonFrameType,
   decodeEnvelope,
-  encode
+  encode,
+  RdRoute,
+  RdRouteAck,
+  isRetryableRouteAck,
+  RD_DECISION_ROUTE_V1
 } from '../index.js'
 
 const ID = '11111111-1111-4111-8111-111111111111'
@@ -910,5 +914,125 @@ describe('RdAck — the not_holder re-route hint', () => {
     expect(
       RdAck.safeParse({ msgId: 'm1', accepted: false, reason: RD_ACK_NOT_HOLDER, holderDaemonId: 'nope' }).success
     ).toBe(false)
+  })
+})
+
+describe('By decision routing frames (message-intake.md §6)', () => {
+  const HOST_ID = '44444444-4444-4444-8444-444444444444'
+  const payload = {
+    msgId: 'Ev1',
+    traceId: 't-1',
+    source: 'user',
+    platform: 'slack',
+    channel: 'C123',
+    sender: { id: 'U1', isBot: false },
+    text: 'billing please',
+    mentionedBots: [],
+    isDm: false
+  }
+  const ref = { agentId: AGENT_ID, daemonId: DAEMON_ID, integrationId: CONV_ID }
+  const selection = {
+    selectionId: '12:router:bot',
+    hostSeq: 12,
+    decisionId: 'd-1',
+    question: { type: 'boolean', instructions: 'Billing?', criteria: { true: 'Yes', false: 'No' } },
+    requestedModel: 'jev-1.13.0',
+    result: {
+      status: 'answered',
+      answer: { type: 'boolean', value: true, probability: 0.9 },
+      matchedRuleIds: ['r1'],
+      matchedKeys: [],
+      usedOtherwise: false
+    },
+    effect: 'selected',
+    constrained: false,
+    targetAgentIds: [AGENT_ID],
+    evaluatedMessageId: 'Ev1',
+    partial: { partial: false, reasons: [], omittedMessages: 0 }
+  }
+  const im = {
+    source: 'im' as const,
+    agentId: AGENT_ID,
+    sessionKey: 'C123',
+    msgId: 'Ev1',
+    botId: RELAY_ID,
+    integrationId: CONV_ID,
+    payload
+  }
+
+  it('round-trips trustedRouting and trustedRouteSelection on rd/msg, bounded at 64 entries', () => {
+    const routed = {
+      ...im,
+      trustedRouting: {
+        evaluationDaemonId: HOST_ID,
+        decisionId: 'd-1',
+        constraint: [{ ...ref, participant: true, via: 'implicit' }],
+        candidates: [ref],
+        relayId: RELAY_ID
+      }
+    }
+    const r = decodeRelayDaemonFrame(envelope('rd/msg', routed))
+    if (!r.ok || r.frame.type !== 'rd/msg' || r.frame.payload.source !== 'im') throw new Error('expected im')
+    expect(r.frame.payload.trustedRouting?.constraint[0]?.participant).toBe(true)
+    const tooMany = { ...routed.trustedRouting, candidates: Array.from({ length: 65 }, () => ref) }
+    expect(RdMsg.safeParse({ ...im, trustedRouting: tooMany }).success).toBe(false)
+    const forwarded = { ...im, trustedRouteSelection: { ...selection, hostDaemonId: HOST_ID } }
+    const f = decodeRelayDaemonFrame(envelope('rd/msg', forwarded))
+    if (!f.ok || f.frame.type !== 'rd/msg' || f.frame.payload.source !== 'im') throw new Error('expected im')
+    expect(f.frame.payload.trustedRouteSelection?.hostDaemonId).toBe(HOST_ID)
+    expect(RdMsg.safeParse({ ...im, trustedRouteSelection: selection }).success).toBe(false)
+  })
+
+  it('round-trips rd/route, rd/route/ack, rd/route/report and the routed RdAck fields', () => {
+    const route = {
+      deliveryId: `${RELAY_ID}:Ev1#${AGENT_ID}`,
+      botId: RELAY_ID,
+      sessionKey: 'C123',
+      toAgentId: AGENT_ID,
+      frozenDaemonId: DAEMON_ID,
+      payload,
+      selection,
+      backfill: [{ ts: '1.1', thread: null, sender: 'U2', text: 'earlier', quoted: { text: 'q' } }]
+    }
+    for (const [type, body] of [
+      ['rd/route', route],
+      ['rd/route/ack', { deliveryId: route.deliveryId, disposition: 'retry', reason: 'offline', daemonId: DAEMON_ID }],
+      ['rd/route/report', { botId: RELAY_ID, sessionKey: 'C123', channel: 'C123', owner: ref, participants: [ref] }],
+      ['rd/route/report/ack', { accepted: true }],
+      ['rd/ack', { msgId: 'Ev1', accepted: false, reason: 'muted', routeAdmission: 'rejected', recoverable: false }]
+    ] as const) {
+      const r = decodeRelayDaemonFrame(envelope(type, body))
+      expect(r.ok, type).toBe(true)
+      expect(isRelayDaemonFrameType(type)).toBe(true)
+    }
+    expect(RdRoute.safeParse({ ...route, selection: { ...selection, hostDaemonId: HOST_ID } }).success).toBe(true)
+    expect(RdRoute.safeParse({ ...route, backfill: Array.from({ length: 51 }, () => route.backfill[0]) }).success).toBe(
+      false
+    )
+    const big = Array.from({ length: 3 }, (_, i) => ({
+      ts: `${i}`,
+      thread: null,
+      sender: 'U',
+      text: 'x'.repeat(12_000)
+    }))
+    expect(RdRoute.safeParse({ ...route, backfill: big }).success).toBe(false)
+    expect(
+      RdRoute.safeParse({ ...route, backfill: [{ ts: '1', thread: null, sender: 'U', text: 'x'.repeat(17_000) }] })
+        .success
+    ).toBe(false)
+    expect(RdRouteAck.safeParse({ deliveryId: 'x', disposition: 'rejected', reason: 'bogus' }).success).toBe(false)
+  })
+
+  it('classifies retryable route acks; not_host only while converging', () => {
+    expect(isRetryableRouteAck({ disposition: 'retry', reason: 'offline' })).toBe(true)
+    expect(isRetryableRouteAck({ disposition: 'rejected', reason: 'durability' })).toBe(true)
+    expect(isRetryableRouteAck({ disposition: 'rejected', reason: 'not_member' })).toBe(false)
+    expect(isRetryableRouteAck({ disposition: 'rejected', reason: 'not_host' })).toBe(false)
+    expect(isRetryableRouteAck({ disposition: 'rejected', reason: 'not_host' }, { converging: true })).toBe(true)
+    expect(isRetryableRouteAck({ disposition: 'admitted' })).toBe(false)
+  })
+
+  it('names the relay capability after the forward feature', () => {
+    expect(RD_DECISION_ROUTE_V1).toBe('decision-routing-forward-v1')
   })
 })

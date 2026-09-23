@@ -339,6 +339,20 @@ first preference and completes with a fallback).
    evaluate, and acknowledges; the host records the disposition. One target's refusal does not
    reclassify the others or invoke Otherwise; a retry reuses the frozen set (decisions.md §7.4).
 
+**Wire and records.** The host copy is an `rd/msg` with a relay-minted `trustedRouting`
+disposition; a daemon that is not the projected host holds it. The router's verdict has subject
+`router:<botId>` and persists its frozen set in `decision_verdict.targetsJson` (schema v27), each
+entry `{agentId, daemonId, participant, effect, disposition, reason?}`; local targets admit under
+receipt `decision-route:<seq>:<agentId>`, remote targets travel as `rd/route` and arrive as an
+`rd/msg` with `trustedRouteSelection` (plus the host's `backfill` rows), and the finished selection's
+owner and participants go to the relay as `rd/route/report` (shared-bot-relay.md §7.2). A host-local
+target whose duty a pool sibling holds also travels as `rd/route`, so the relay's rendezvous places
+it. A target with no routing binding yet answers a recoverable `not_ready` (Pending sync), and a
+recoverable refusal is never replayed from the target's ack cache, so the host's bounded retry
+re-attempts it. An early follow-up's constraint, frozen with the root's admitted recipients, is
+written with `evaluating`; a failed or recovered evaluation settles against it (or rebuilds it from
+durable state), never against the relay's bare constraint.
+
 Observation-only forwarding to non-host members (decisions.md §7.2) is not needed: the host's record
 is the window, and a member that later becomes host on a shared PostgreSQL store inherits it. On
 separate SQLite stores a new host begins with `context.partial = true`, as §9 marks.

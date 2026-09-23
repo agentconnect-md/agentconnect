@@ -12,7 +12,7 @@ export const DECISION_PREVIEW_V1_FEATURE = 'decision-preview-v1'
 export const DECISION_TRIGGER_V1_FEATURE = 'decision-trigger-v1'
 // The peer understands routedConversations/evaluationDaemonId, shared_bot_routing bindings and bundle.sharedBotRouting, never as Any.
 export const DECISION_ROUTING_V1_FEATURE = 'decision-routing-v1'
-// The relay forwards a routed conversation to its evaluationDaemonId (5b); routing-v1 alone only parses the fields.
+// The relay forwards a routed conversation once to its evaluationDaemonId and serves rd/route; routing-v1 alone only parses.
 export const DECISION_ROUTING_FORWARD_V1_FEATURE = 'decision-routing-forward-v1'
 export const DECISION_TOOLS_V1_FEATURE = 'decision-tools-v1'
 export const DECISION_MODEL_SELECTION_V1_FEATURE = 'decision-model-selection-v1'

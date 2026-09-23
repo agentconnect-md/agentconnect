@@ -18,7 +18,12 @@ import {
   buildRelayDaemonFrame,
   decodeRelayDaemonFrame,
   RD_CODEHOST_REPLY_TARGET_V1,
+  RD_DECISION_ROUTE_V1,
   type RelayDaemonFrame,
+  type RdRoute,
+  type RdRouteAck,
+  type RdRouteReport,
+  type RdRouteReportAck,
   type RdHello,
   type RdHelloOk,
   type RdMsg,
@@ -68,6 +73,10 @@ export interface RelayDaemonConnDeps {
    *  via the collaboration snapshot, and forwards to the target daemon. Resolves with
    *  the typed admission verdict to ack back to the source. */
   onAgentMsg: (fromDaemonId: string, msg: RdAgentMsg) => Promise<RdAgentMsgAck>
+  /** An evaluation host's `rd/route`, bound to the socket's authenticated daemonId (the host fence). */
+  onRoute: (fromDaemonId: string, msg: RdRoute) => Promise<RdRouteAck>
+  /** An evaluation host's owner/participant report, bound the same way. */
+  onRouteReport: (fromDaemonId: string, msg: RdRouteReport) => RdRouteReportAck | Promise<RdRouteReportAck>
   log: Logger
 }
 
@@ -194,6 +203,32 @@ export class RelayDaemonConnection {
             })
           return
         }
+        case 'rd/route': {
+          const msg = frame.payload
+          void Promise.resolve()
+            .then(() => this.deps.onRoute(this.daemonId, msg))
+            .then((ack) => this.replyFrame(frame, 'rd/route/ack', ack))
+            .catch((err) => {
+              this.deps.log.warn(`relay: rd/route routing failed: ${(err as Error).message}`)
+              this.replyFrame(frame, 'rd/route/ack', {
+                deliveryId: msg.deliveryId,
+                disposition: 'retry',
+                reason: 'offline'
+              })
+            })
+          return
+        }
+        case 'rd/route/report': {
+          const msg = frame.payload
+          void Promise.resolve()
+            .then(() => this.deps.onRouteReport(this.daemonId, msg))
+            .then((ack) => this.replyFrame(frame, 'rd/route/report/ack', ack))
+            .catch((err) => {
+              this.deps.log.warn(`relay: rd/route/report failed: ${(err as Error).message}`)
+              this.replyFrame(frame, 'rd/route/report/ack', { accepted: false, reason: 'error' })
+            })
+          return
+        }
         default:
           this.sendError(frame.id, 'PROTOCOL_STATE', `unsupported: ${frame.type}`)
       }
@@ -209,7 +244,13 @@ export class RelayDaemonConnection {
         return type === 'rd/hello'
       case 'READY':
         // rd/ack + rd/agentmsg/ack settle above
-        return type === 'rd/chat' || type === 'rd/webchat-post' || type === 'rd/agentmsg'
+        return (
+          type === 'rd/chat' ||
+          type === 'rd/webchat-post' ||
+          type === 'rd/agentmsg' ||
+          type === 'rd/route' ||
+          type === 'rd/route/report'
+        )
       default:
         return false
     }
@@ -269,12 +310,22 @@ export class RelayDaemonConnection {
     this.credentialKind = presented.kind
     this.capabilities = new Set(hello.capabilities ?? [])
     this.state = 'READY'
-    this.reply(frame, 'rd/hello/ok', { relayId, capabilities: [RD_CODEHOST_REPLY_TARGET_V1] })
+    this.reply(frame, 'rd/hello/ok', { relayId, capabilities: [RD_CODEHOST_REPLY_TARGET_V1, RD_DECISION_ROUTE_V1] })
     this.deps.onReady(this.daemonId, this)
   }
 
   private reply(req: RelayDaemonFrame, type: 'rd/hello/ok', payload: RdHelloOk): void {
     this.transport.send(JSON.stringify(buildRelayDaemonFrame(type, payload, { corr: req.id })))
+  }
+
+  /** Answer an inbound `rd/route` or `rd/route/report` request. */
+  private replyFrame<T extends 'rd/route/ack' | 'rd/route/report/ack'>(
+    req: RelayDaemonFrame,
+    type: T,
+    payload: T extends 'rd/route/ack' ? RdRouteAck : RdRouteReportAck
+  ): void {
+    if (this.state === 'CLOSED') return
+    this.transport.send(JSON.stringify(buildRelayDaemonFrame(type, payload as never, { corr: req.id })))
   }
 
   /** Ack an inbound `rd/agentmsg` (corr = the source's REQ id) with the typed verdict. */

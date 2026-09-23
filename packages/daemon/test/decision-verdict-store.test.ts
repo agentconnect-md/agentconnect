@@ -354,4 +354,158 @@ describe('decision verdict store', () => {
     expect((await s.decisionWindow('', CH, current)).rootMissing).toBe(false)
     await s.close()
   })
+
+  describe('router verdicts (message-intake.md §4.3)', () => {
+    const ROUTER = 'router:bot-1'
+    const targets = [
+      {
+        agentId: 'a',
+        daemonId: 'd-1',
+        participant: false,
+        effect: 'selected',
+        via: 'implicit',
+        disposition: 'pending'
+      },
+      { agentId: 'b', daemonId: 'd-2', participant: false, effect: 'selected', via: 'implicit', disposition: 'pending' }
+    ]
+    const routerRow = (seq: number) => reservation(seq, { subject: ROUTER, configJson: '{"botId":"bot-1"}' })
+
+    it('writes targetsJson with the settlement and moves targets only pending → terminal under the fence', async () => {
+      const s = await openTestStore()
+      const seq = await record(s, 1)
+      await s.reserveDecisionVerdict(routerRow(seq))
+      expect(
+        await s.settleDecisionVerdict(seq, ROUTER, FENCE, {
+          ...settled,
+          inputTokens: 7,
+          outputTokens: 1,
+          targetsJson: JSON.stringify(targets)
+        })
+      ).toBe(true)
+      const row = (await s.getDecisionVerdict(seq, ROUTER))!
+      expect(JSON.parse(row.targetsJson!)).toEqual(targets)
+      expect([row.inputTokens, row.outputTokens].map(Number)).toEqual([7, 1])
+      expect(await s.updateRouterTargets(seq, ROUTER, 'stranger', [{ agentId: 'a', disposition: 'admitted' }])).toBe(
+        undefined
+      )
+      const moved = await s.updateRouterTargets(seq, ROUTER, FENCE, [
+        { agentId: 'a', disposition: 'admitted' },
+        { agentId: 'b', disposition: 'pending', retryUntil: AT + 60_000, attempts: 1 }
+      ])
+      expect(moved?.map((t) => [t.agentId, t.disposition, t.retryUntil])).toEqual([
+        ['a', 'admitted', undefined],
+        ['b', 'pending', AT + 60_000]
+      ])
+      // A terminal target is never rewritten.
+      const again = await s.updateRouterTargets(seq, ROUTER, FENCE, [
+        { agentId: 'a', disposition: 'rejected', reason: 'x' }
+      ])
+      expect(again?.[0]).toMatchObject({ agentId: 'a', disposition: 'admitted' })
+      // A gate settlement leaves targetsJson null; a finished verdict takes no more target moves.
+      const gateSeq = await record(s, 2)
+      await s.reserveDecisionVerdict(reservation(gateSeq))
+      await s.settleDecisionVerdict(gateSeq, AGENT, FENCE, settled)
+      expect((await s.getDecisionVerdict(gateSeq, AGENT))!.targetsJson).toBeNull()
+      await s.finishDecisionVerdict(seq, ROUTER, FENCE, 'admitted', null, AT + 20)
+      expect(await s.updateRouterTargets(seq, ROUTER, FENCE, [{ agentId: 'b', disposition: 'admitted' }])).toBe(
+        undefined
+      )
+      await s.close()
+    })
+
+    it('filters pending verdicts by consumer, and cancels only the consumer asked for', async () => {
+      const s = await openTestStore()
+      const one = await record(s, 1)
+      const two = await record(s, 2)
+      await s.reserveDecisionVerdict(routerRow(one))
+      await s.reserveDecisionVerdict(reservation(two))
+      expect((await s.listPendingDecisionVerdicts({ consumer: 'router' })).map((r) => r.subject)).toEqual([ROUTER])
+      expect((await s.listPendingDecisionVerdicts({ consumer: 'gate' })).map((r) => r.subject)).toEqual([AGENT])
+      expect(await s.listPendingDecisionVerdicts()).toHaveLength(2)
+      const canceled = await s.cancelPendingDecisionVerdicts({ integrationId: 'int-a', consumer: 'gate' }, 'x', AT)
+      expect(canceled).toEqual([{ seq: two, subject: AGENT }])
+      await s.close()
+    })
+
+    it('reads earlier verdicts of one thread, root included, newest first', async () => {
+      const s = await openTestStore()
+      const root = await record(s, 10, { thread: '10' })
+      const reply = await record(s, 11, { thread: '10' })
+      const other = await record(s, 12, { thread: '12' })
+      const late = await record(s, 13, { thread: '10' })
+      for (const seq of [root, reply, other]) await s.reserveDecisionVerdict(routerRow(seq))
+      const rows = await s.routerVerdictsInThread({
+        orgId: '',
+        channel: CH,
+        subject: ROUTER,
+        thread: '10',
+        beforeSeq: late
+      })
+      expect(rows.map((r) => [r.seq, r.state])).toEqual([
+        [reply, 'reserved'],
+        [root, 'reserved']
+      ])
+      await s.close()
+    })
+
+    it('a background claim and a concurrent target move both survive (no lost targetsJson write)', async () => {
+      const s = await openTestStore()
+      const many = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map((agentId) => ({ ...targets[0]!, agentId }))
+      for (let round = 0; round < 6; round++) {
+        const seq = await record(s, 100 + round)
+        await s.reserveDecisionVerdict(routerRow(seq))
+        await s.settleDecisionVerdict(seq, ROUTER, FENCE, { ...settled, targetsJson: JSON.stringify(many) })
+        await Promise.all(
+          many.map((t, i) =>
+            i % 2 === 0
+              ? s.claimVerdictBackground(seq, ROUTER, [i], t.agentId)
+              : s.updateRouterTargets(seq, ROUTER, FENCE, [{ agentId: t.agentId, disposition: 'admitted' }])
+          )
+        )
+        const final = JSON.parse((await s.getDecisionVerdict(seq, ROUTER))!.targetsJson!) as Array<{
+          agentId: string
+          disposition: string
+          backgroundSeqs?: number[]
+        }>
+        expect(final.map((t, i) => (i % 2 === 0 ? t.backgroundSeqs : t.disposition))).toEqual(
+          many.map((_, i) => (i % 2 === 0 ? [i] : 'admitted'))
+        )
+      }
+      await s.close()
+    })
+
+    it('claims background per router target, first writer wins, and body stripping keeps targetsJson', async () => {
+      const s = await openTestStore()
+      const seq = await record(s, 1)
+      await s.reserveDecisionVerdict(routerRow(seq))
+      await s.settleDecisionVerdict(seq, ROUTER, FENCE, { ...settled, targetsJson: JSON.stringify(targets) })
+      expect(await s.claimVerdictBackground(seq, ROUTER, [1, 2], 'a')).toEqual([1, 2])
+      expect(await s.claimVerdictBackground(seq, ROUTER, [3], 'a')).toEqual([1, 2])
+      expect(await s.claimVerdictBackground(seq, ROUTER, [4], 'b')).toEqual([4])
+      expect((await s.getDecisionVerdict(seq, ROUTER))!.suppliedSeqsJson).toBeNull()
+      await s.finishDecisionVerdict(seq, ROUTER, FENCE, 'admitted', null, AT)
+      await s.stripDecisionVerdictBodies(AT + 2 * DAY)
+      const row = (await s.getDecisionVerdict(seq, ROUTER))!
+      expect(row.answerJson).toBeNull()
+      expect(JSON.parse(row.targetsJson!).map((t: { backgroundSeqs?: number[] }) => t.backgroundSeqs)).toEqual([
+        [1, 2],
+        [4]
+      ])
+      await s.close()
+    })
+
+    it('records backfill observations once, before a routed message', async () => {
+      const s = await openTestStore()
+      const rows = [
+        { ts: '5', thread: '5', sender: 'U2', text: 'earlier' },
+        { ts: '6', thread: null, sender: 'U3', text: 'quoted', quoted: { text: 'q' } }
+      ]
+      await s.recordObservations(AGENT, CH, rows)
+      await s.recordObservations(AGENT, CH, rows)
+      const window = await s.decisionWindow('', CH, Number.MAX_SAFE_INTEGER)
+      if (s.isShared) expect(window.history).toEqual([])
+      else expect(window.history.map((r) => r.text)).toEqual(['quoted', 'earlier'])
+      await s.close()
+    })
+  })
 })

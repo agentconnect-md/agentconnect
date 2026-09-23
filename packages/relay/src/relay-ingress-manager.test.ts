@@ -763,7 +763,8 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     expect(sendMsg).toHaveBeenCalledTimes(1)
   })
 
-  it('forwards a routed conversation gate-style to the ladder target, never to its evaluation host (5a)', async () => {
+  describe('By decision routed conversations (message-intake.md §6)', () => {
+    const HOST = OTHER_DAEMON_ID
     const routed = (): BotAssignment => {
       const a = channelOwned()
       a.routes[a.routes.length - 1] = {
@@ -771,19 +772,295 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
         match: { kind: 'decision' },
         decisionId: 'dec-1'
       }
-      a.routedConversations = [{ channel: 'C123', decisionId: 'dec-1', evaluationDaemonId: OTHER_DAEMON_ID }]
+      a.members = [
+        { daemonId: DAEMON_ID, agentIds: [AGENT_ID] },
+        { daemonId: HOST, agentIds: [OTHER_AGENT_ID] }
+      ]
+      a.agents = [
+        { agentId: AGENT_ID, name: 'Agent', daemonId: DAEMON_ID, integrationId: INTEGRATION_ID },
+        { agentId: OTHER_AGENT_ID, name: 'Other', daemonId: HOST, integrationId: OTHER_INTEGRATION_ID }
+      ]
+      a.routedConversations = [{ channel: 'C123', decisionId: 'dec-1', evaluationDaemonId: HOST }]
       return a
     }
-    const sendMsg = vi.fn(async (m: { msgId: string }): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
-    const getDaemon = vi.fn(() => ({ sendMsg, supports: () => true }) as unknown as RelayDaemonConnection)
-    const manager = new RelayIngressManager(deps({ getDaemon }))
-    const internals = internalsOf(manager)
-    internals.router.upsert(routed())
+    const fleet = (opts: { hostCapable?: boolean; hostOnline?: boolean } = {}) => {
+      const sent: Array<{ daemonId: string; msg: RdMsgIm }> = []
+      const conn = (daemonId: string, capable: boolean) =>
+        ({
+          sendMsg: vi.fn(async (msg: RdMsgIm): Promise<RdAck> => {
+            sent.push({ daemonId, msg })
+            return { msgId: msg.msgId, accepted: true, routeAdmission: 'admitted' }
+          }),
+          supports: (feature: string) => capable || feature !== 'decision-routing-v1'
+        }) as unknown as RelayDaemonConnection
+      const daemons = new Map<string, RelayDaemonConnection>([[DAEMON_ID, conn(DAEMON_ID, true)]])
+      if (opts.hostOnline !== false) daemons.set(HOST, conn(HOST, opts.hostCapable !== false))
+      return { sent, getDaemon: (id: string) => daemons.get(id) }
+    }
 
-    await internals.forward(BOT_ID, followUp({ msgId: 'slack:C123:r1', thread: undefined, text: 'billing?' }))
-    expect(sendMsg).toHaveBeenCalledTimes(1)
-    expect(sendMsg.mock.calls[0]![0]).toMatchObject({ agentId: AGENT_ID, decisionId: 'dec-1' })
-    expect(getDaemon).not.toHaveBeenCalledWith(OTHER_DAEMON_ID)
+    it('(j) sends a routed human message once, to the host only, with participant flags and the directory', async () => {
+      const { sent, getDaemon } = fleet()
+      const reportThreadAssign = vi.fn(() => true)
+      const reportThreadParticipant = vi.fn(() => true)
+      const manager = new RelayIngressManager(deps({ getDaemon, reportThreadAssign, reportThreadParticipant }))
+      const internals = internalsOf(manager)
+      internals.router.upsert(routed())
+      internals.router.setParticipant(BOT_ID, 'C123/1720000000.000100', {
+        agentId: AGENT_ID,
+        daemonId: DAEMON_ID,
+        integrationId: INTEGRATION_ID
+      })
+      await internals.forward(BOT_ID, followUp({ msgId: 'slack:C123:r1', text: 'billing?' }))
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.daemonId).toBe(HOST)
+      expect(sent[0]!.msg).toMatchObject({
+        agentId: OTHER_AGENT_ID,
+        integrationId: OTHER_INTEGRATION_ID,
+        msgId: 'slack:C123:r1',
+        decisionId: 'dec-1',
+        trustedRouteVia: 'implicit',
+        trustedRouting: {
+          evaluationDaemonId: HOST,
+          decisionId: 'dec-1',
+          relayId: SELF_RELAY,
+          constraint: [{ agentId: AGENT_ID, daemonId: DAEMON_ID, participant: true, via: 'implicit' }]
+        }
+      })
+      expect(sent[0]!.msg.trustedRouting!.candidates.map((c) => c.agentId)).toEqual([AGENT_ID, OTHER_AGENT_ID])
+      // The relay records nothing for a routed message: the host reports owner and participants later.
+      expect(reportThreadAssign).not.toHaveBeenCalled()
+      expect(reportThreadParticipant).not.toHaveBeenCalled()
+    })
+
+    it('(j) drops and counts when the host is offline or predates routing, never per candidate', async () => {
+      for (const opts of [{ hostOnline: false }, { hostCapable: false }]) {
+        const { sent, getDaemon } = fleet(opts)
+        const manager = new RelayIngressManager(deps({ getDaemon }))
+        const internals = internalsOf(manager)
+        internals.router.upsert(routed())
+        await internals.forward(BOT_ID, followUp({ msgId: 'slack:C123:r2', thread: undefined }))
+        expect(sent).toEqual([])
+        expect((manager as unknown as { dropped: Map<string, number> }).dropped.get(BOT_ID)).toBe(1)
+      }
+    })
+
+    it('a !stop keeps normal delivery to the owner and participants and joins nobody', async () => {
+      const { sent, getDaemon } = fleet()
+      const reportThreadParticipant = vi.fn(() => true)
+      const manager = new RelayIngressManager(deps({ getDaemon, reportThreadParticipant }))
+      const internals = internalsOf(manager)
+      internals.router.upsert(routed())
+      await internals.forward(BOT_ID, followUp({ msgId: 'slack:C123:s1', text: '!stop' }))
+      expect(sent.map((s) => [s.daemonId, s.msg.agentId, s.msg.trustedRouting])).toEqual([
+        [DAEMON_ID, AGENT_ID, undefined]
+      ])
+      expect(reportThreadParticipant).not.toHaveBeenCalled()
+      expect(internals.router.conversationParticipants(BOT_ID, 'C123/1720000000.000100', 'C123')).toEqual([])
+    })
+
+    it('a thread reply unknown here looks up the CP: down drops, a miss forwards unconstrained', async () => {
+      const { sent, getDaemon } = fleet()
+      const lookupThread = vi.fn(async (): Promise<RcThreadLookupOk> => {
+        throw new Error('cp down')
+      })
+      const manager = new RelayIngressManager(deps({ getDaemon, lookupThread }))
+      const internals = internalsOf(manager)
+      internals.router.upsert(routed())
+      await internals.forward(BOT_ID, followUp({ msgId: 'slack:C123:t1' }))
+      expect(sent).toEqual([])
+      lookupThread.mockImplementation(async () => ({ botId: BOT_ID, sessionKey: '', target: null, participants: [] }))
+      await internals.forward(BOT_ID, followUp({ msgId: 'slack:C123:t2' }))
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.msg.trustedRouting!.constraint).toEqual([])
+      // The miss is remembered: the next reply does not ask again.
+      await internals.forward(BOT_ID, followUp({ msgId: 'slack:C123:t3' }))
+      expect(lookupThread).toHaveBeenCalledTimes(2)
+      lookupThread.mockImplementation(async () => ({
+        botId: BOT_ID,
+        sessionKey: '',
+        target: null,
+        participants: [{ agentId: AGENT_ID, daemonId: DAEMON_ID }]
+      }))
+      await internals.forward(BOT_ID, followUp({ msgId: 'slack:C123:t4', thread: '1720000000.000900' }))
+      expect(sent.at(-1)!.msg.trustedRouting!.constraint).toEqual([
+        expect.objectContaining({ agentId: AGENT_ID, participant: true })
+      ])
+    })
+
+    describe('rd/route and rd/route/report', () => {
+      const selection = {
+        selectionId: '7:router:bot',
+        hostSeq: 7,
+        decisionId: 'dec-1',
+        question: { type: 'boolean' as const, instructions: 'Billing?', criteria: { true: 'Yes', false: 'No' } },
+        requestedModel: 'jev-1.13.0',
+        result: { status: 'not_evaluated' as const, reason: 'all_participants' as const },
+        effect: 'selected' as const,
+        constrained: false,
+        targetAgentIds: [AGENT_ID],
+        evaluatedMessageId: 'slack:C123:r9',
+        partial: { partial: false, reasons: [], omittedMessages: 0 }
+      }
+      const route = (over: Record<string, unknown> = {}) => ({
+        deliveryId: `${BOT_ID}:slack:C123:r9#${AGENT_ID}`,
+        botId: BOT_ID,
+        sessionKey: 'C123/C123',
+        toAgentId: AGENT_ID,
+        frozenDaemonId: DAEMON_ID,
+        payload: followUp({ msgId: 'slack:C123:r9', thread: undefined }),
+        selection,
+        via: 'implicit' as const,
+        backfill: [{ ts: '1.1', thread: null, sender: 'U2', text: 'earlier' }],
+        ...over
+      })
+      const setup = (ack?: (msg: RdMsgIm) => RdAck | Promise<RdAck>, capable = true) => {
+        const sent: RdMsgIm[] = []
+        const target = {
+          sendMsg: vi.fn(async (msg: RdMsgIm) => {
+            sent.push(msg)
+            return ack ? await ack(msg) : { msgId: msg.msgId, accepted: true, routeAdmission: 'admitted' as const }
+          }),
+          supports: () => capable
+        } as unknown as RelayDaemonConnection
+        const reportThreadAssign = vi.fn(() => true)
+        const reportThreadParticipant = vi.fn(() => true)
+        const manager = new RelayIngressManager(
+          deps({
+            getDaemon: (id) => (id === DAEMON_ID ? target : undefined),
+            reportThreadAssign,
+            reportThreadParticipant
+          })
+        )
+        internalsOf(manager).router.upsert(routed())
+        return { manager, sent, reportThreadAssign, reportThreadParticipant }
+      }
+
+      it('(h) refuses a non-host (replaced host) and forwards nothing', async () => {
+        const { manager, sent } = setup()
+        expect(await manager.handleRoute(DAEMON_ID, route() as never)).toMatchObject({
+          disposition: 'rejected',
+          reason: 'not_host'
+        })
+        expect(sent).toEqual([])
+      })
+
+      it('refuses a stale decision, a non-member, and an unsupported target', async () => {
+        expect(
+          await setup().manager.handleRoute(HOST, route({ selection: { ...selection, decisionId: 'dec-0' } }) as never)
+        ).toMatchObject({ disposition: 'rejected', reason: 'stale' })
+        expect(
+          await setup().manager.handleRoute(
+            HOST,
+            route({ toAgentId: '99999999-9999-4999-8999-999999999999', deliveryId: 'x' }) as never
+          )
+        ).toMatchObject({ disposition: 'rejected', reason: 'not_member' })
+        expect(await setup(undefined, false).manager.handleRoute(HOST, route() as never)).toMatchObject({
+          disposition: 'rejected',
+          reason: 'unsupported'
+        })
+      })
+
+      it('forwards with the socket-stamped host, a per-target msgId, and replays a terminal verdict', async () => {
+        const { manager, sent } = setup()
+        const first = await manager.handleRoute(HOST, route() as never)
+        expect(first).toEqual({ deliveryId: route().deliveryId, disposition: 'admitted', daemonId: DAEMON_ID })
+        expect(sent).toHaveLength(1)
+        expect(sent[0]).toMatchObject({
+          agentId: AGENT_ID,
+          integrationId: INTEGRATION_ID,
+          msgId: `slack:C123:r9#${AGENT_ID}`,
+          decisionId: 'dec-1',
+          trustedRouteVia: 'implicit',
+          trustedRouteSelection: { ...selection, hostDaemonId: HOST },
+          backfill: [{ ts: '1.1', sender: 'U2', text: 'earlier' }]
+        })
+        expect(await manager.handleRoute(HOST, route() as never)).toEqual(first)
+        expect(sent).toHaveLength(1)
+      })
+
+      it('an offline target is a retry that is never cached; a refusal carries its reason', async () => {
+        let online = false
+        const target = {
+          sendMsg: vi.fn(async (msg: RdMsgIm): Promise<RdAck> => ({
+            msgId: msg.msgId,
+            accepted: false,
+            routeAdmission: 'rejected',
+            reason: 'muted',
+            recoverable: false
+          })),
+          supports: () => true
+        } as unknown as RelayDaemonConnection
+        const manager = new RelayIngressManager(
+          deps({ getDaemon: (id) => (online && id === DAEMON_ID ? target : undefined) })
+        )
+        internalsOf(manager).router.upsert(routed())
+        expect(await manager.handleRoute(HOST, route() as never)).toMatchObject({
+          disposition: 'retry',
+          reason: 'offline'
+        })
+        online = true
+        expect(await manager.handleRoute(HOST, route() as never)).toMatchObject({
+          disposition: 'rejected',
+          reason: 'muted',
+          daemonId: DAEMON_ID
+        })
+      })
+
+      it('a recoverable target refusal is a retry', async () => {
+        const recoverable = setup((msg) => ({
+          msgId: msg.msgId,
+          accepted: false,
+          routeAdmission: 'rejected',
+          reason: 'draining',
+          recoverable: true
+        }))
+        expect(await recoverable.manager.handleRoute(HOST, route() as never)).toMatchObject({
+          disposition: 'retry',
+          reason: 'draining'
+        })
+      })
+
+      it('applies a report: owner only without affinity, participants reported, queued while the CP is down', async () => {
+        const { manager, reportThreadAssign, reportThreadParticipant } = setup()
+        const internals = internalsOf(manager)
+        const report = {
+          botId: BOT_ID,
+          sessionKey: 'C123/C123',
+          channel: 'C123',
+          owner: { agentId: AGENT_ID, daemonId: DAEMON_ID },
+          participants: [
+            { agentId: AGENT_ID, daemonId: DAEMON_ID },
+            { agentId: OTHER_AGENT_ID, daemonId: HOST }
+          ]
+        }
+        expect(manager.applyRouteReport(DAEMON_ID, report)).toEqual({ accepted: false, reason: 'not_host' })
+        expect(manager.applyRouteReport(HOST, report)).toEqual({ accepted: true })
+        expect(reportThreadAssign).toHaveBeenCalledWith({
+          botId: BOT_ID,
+          sessionKey: 'C123/C123',
+          agentId: AGENT_ID,
+          daemonId: DAEMON_ID
+        })
+        expect(reportThreadParticipant).toHaveBeenCalledTimes(1)
+        expect(reportThreadParticipant).toHaveBeenCalledWith(expect.objectContaining({ agentId: OTHER_AGENT_ID }))
+        expect(internals.router.peekAffinity(BOT_ID, 'C123/C123')?.agentId).toBe(AGENT_ID)
+        // A second selection in the same thread never moves ownership.
+        manager.applyRouteReport(HOST, {
+          ...report,
+          owner: { agentId: OTHER_AGENT_ID, daemonId: HOST },
+          participants: []
+        })
+        expect(internals.router.peekAffinity(BOT_ID, 'C123/C123')?.agentId).toBe(AGENT_ID)
+        expect(reportThreadAssign).toHaveBeenCalledTimes(1)
+        // CP down: the participant report queues and flushes on reconnect.
+        reportThreadParticipant.mockReturnValue(false)
+        manager.applyRouteReport(HOST, { ...report, sessionKey: 'C123/T9', owner: undefined })
+        reportThreadParticipant.mockReturnValue(true)
+        const before = reportThreadParticipant.mock.calls.length
+        manager.flushPendingReports()
+        expect(reportThreadParticipant.mock.calls.length).toBeGreaterThan(before)
+      })
+    })
   })
 
   // ── send-message-routing-rework.md §4 / §4.1 / §6 — verified agent authors ──

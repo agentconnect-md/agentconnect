@@ -19,11 +19,17 @@ import {
   hasReachedAgentCallHopLimit,
   MAX_AGENT_CALL_HOPS,
   RD_AGENT_IMPLICIT_ROUTING_V1,
+  DECISION_ROUTING_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
   RD_ACK_NOT_HOLDER
 } from '@agentconnect.md/protocol'
+import { parseCommand } from '@agentconnect.md/activation-policy'
 import type {
   RdMsg,
+  RdRoute,
+  RdRouteAck,
+  RdRouteReport,
+  RdRouteReportAck,
   RdAck,
   RdMsgIm,
   RcBotChannels,
@@ -55,6 +61,7 @@ import type {
   RelayPlatformIngressPlugin
 } from './platforms/contract.js'
 import { SlackEventDedup } from './slack-event-dedup.js'
+import { createRouteForwarder, type RouteForward } from './route-forwarder.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 
 /** Cap on the learned `api_app_id → botId` demux index before it is flushed. */
@@ -312,6 +319,118 @@ export class RelayIngressManager {
         { plugin, pool: new IngressPool<RelayBotIngress>(plugin.platformId), demux: new DemuxIndex() }
       ])
     )
+    this.routeForward = createRouteForwarder({
+      ingress: {
+        hostFor: (botId, channel) => this.router.evaluationDaemonIdFor(botId, channel),
+        routed: (botId, msg) => this.router.routedConversationFor(botId, msg),
+        targetFor: (botId, agentId, channel) => this.router.agentTarget(botId, agentId, channel)
+      },
+      daemons: (daemonId) => this.deps.getDaemon(daemonId),
+      sendWithRendezvous: (daemon, rd, botId, context) => this.sendWithRendezvous(daemon, rd, botId, context),
+      log: this.deps.log
+    })
+  }
+
+  private readonly routeForward: RouteForward
+
+  /** `rd/route` from an evaluation host: deliver one frozen target of its selection (message-intake.md §6 step 6). */
+  async handleRoute(fromDaemonId: string, route: RdRoute): Promise<RdRouteAck> {
+    return await this.routeForward(fromDaemonId, route)
+  }
+
+  /** `rd/route/report` from the host: the owner (only where none exists) and admitted participants, via the CP legs. */
+  applyRouteReport(fromDaemonId: string, report: RdRouteReport): RdRouteReportAck {
+    const { botId, sessionKey, channel } = report
+    if (this.router.evaluationDaemonIdFor(botId, channel) !== fromDaemonId)
+      return { accepted: false, reason: 'not_host' }
+    let ownerReported: string | undefined
+    if (report.owner) {
+      const owner = this.router.agentTarget(botId, report.owner.agentId, channel)
+      if (owner && !this.router.peekAffinity(botId, sessionKey)) {
+        this.router.setAffinity(botId, sessionKey, owner)
+        // The CP's thread-assign handler also records the owner as a participant.
+        this.report({ botId, sessionKey, agentId: owner.agentId, daemonId: owner.daemonId })
+        ownerReported = owner.agentId
+      } else if (owner) {
+        this.router.setParticipant(botId, sessionKey, owner)
+        this.reportParticipant(botId, sessionKey, owner)
+      }
+    }
+    for (const participant of report.participants) {
+      if (participant.agentId === ownerReported || participant.agentId === report.owner?.agentId) continue
+      const current = this.router.agentTarget(botId, participant.agentId, channel)
+      if (!current) continue
+      this.router.setParticipant(botId, sessionKey, current)
+      this.reportParticipant(botId, sessionKey, current)
+    }
+    return { accepted: true }
+  }
+
+  /** The one copy of a routed human message, to its evaluation host with the constraint and directory. */
+  private async forwardRoutedToHost(
+    botId: string,
+    msg: WireNormalizedMessage,
+    sidecar: RelayIngressSidecar | undefined,
+    routed: { decisionId: string; evaluationDaemonId: string }
+  ): Promise<RelayForwardOutcome> {
+    const sessionKey = sessionKeyOf(msg)
+    const drop = (why: string): RelayForwardOutcome => {
+      const n = (this.dropped.get(botId) ?? 0) + 1
+      this.dropped.set(botId, n)
+      this.deps.log.warn(`relay-ingress(${botId}): routed ${msg.msgId} dropped — ${why} (dropped ${n})`)
+      return 'accepted'
+    }
+    // A reply in a thread this relay knows nobody in asks the CP first, so its participants constrain it.
+    if (this.router.routedThreadNeedsLookup(botId, msg)) {
+      let lookup: Awaited<ReturnType<RelayIngressManagerDeps['lookupThread']>>
+      try {
+        lookup = await this.deps.lookupThread({ botId, sessionKey })
+      } catch {
+        return drop('thread lookup unavailable') // §10.2 bounded loss; a mention re-anchors the thread.
+      }
+      for (const participant of lookup.participants) {
+        const current = this.router.agentTarget(botId, participant.agentId, msg.channel)
+        if (current && current.daemonId === participant.daemonId) this.router.setParticipant(botId, sessionKey, current)
+      }
+      if (lookup.target) this.router.seedLookupTarget(botId, sessionKey, lookup.target)
+      if (!lookup.target && lookup.participants.length === 0) this.router.rememberNoAffinity(botId, sessionKey)
+    }
+    const host = this.deps.getDaemon(routed.evaluationDaemonId)
+    // Never per-candidate delivery: an unavailable host is backpressure, not permission to classify elsewhere.
+    if (!host) return drop(`evaluation host ${routed.evaluationDaemonId} is not on this relay`)
+    if (!host.supports(DECISION_ROUTING_V1_FEATURE)) return drop(`host ${routed.evaluationDaemonId} predates routing`)
+    const carrier = this.router.hostCarrier(botId, msg.channel, routed.evaluationDaemonId)
+    if (!carrier) return drop(`no member of this bot on host ${routed.evaluationDaemonId}`)
+    const assignment = this.router.get(botId)
+    const namesBot = assignment?.botUserId !== undefined && msg.mentionedBots.includes(assignment.botUserId)
+    const relayId = this.deps.selfRelayId()
+    const rd: RdMsgIm = {
+      source: 'im',
+      agentId: carrier.agentId,
+      sessionKey,
+      msgId: msg.msgId,
+      botId,
+      integrationId: carrier.integrationId,
+      chatId: msg.channel,
+      payload: msg,
+      ...(sidecar?.searchActionToken ? { searchActionToken: sidecar.searchActionToken } : {}),
+      decisionId: routed.decisionId,
+      trustedRouteVia: namesBot || msg.isDm ? 'mention' : 'implicit',
+      trustedRouting: {
+        evaluationDaemonId: routed.evaluationDaemonId,
+        decisionId: routed.decisionId,
+        constraint: this.router.routedConstraint(botId, msg),
+        candidates: this.router.routedCandidates(botId, msg.channel),
+        ...(relayId ? { relayId } : {})
+      }
+    }
+    try {
+      const ack = await this.sendWithRendezvous(host, rd, botId, `relay-ingress(${botId}) routed`)
+      if (!ack.accepted) this.deps.log.warn(`relay-ingress(${botId}): host refused routed ${msg.msgId} (${ack.reason})`)
+    } catch (err) {
+      return drop(`forward to host failed: ${(err as Error).message}`)
+    }
+    return 'accepted'
   }
 
   /** Emit a thread-assign report; on a non-READY CP link stash it for retry. */
@@ -1007,6 +1126,13 @@ export class RelayIngressManager {
     const namesThisBot = assignment?.botUserId !== undefined && msg.mentionedBots.includes(assignment.botUserId)
     const addressesBot = msg.isDm || (msg.isGroupDm === true && namesThisBot)
     if (addressesBot && !msg.sender.isBot) await this.reportObservedConversation(botId, msg)
+    // A By decision routed conversation: every eligible human message goes once to its evaluation host.
+    const routed = this.router.routedConversationFor(botId, msg)
+    if (routed) {
+      const command = parseCommand(msg.text)
+      if (!command || command.kind === 'queue') return await this.forwardRoutedToHost(botId, msg, sidecar, routed)
+      return await this.forwardRoutedCommand(botId, msg, sidecar, routed.decisionId, namesThisBot)
+    }
     const prior = this.router.peekAffinity(botId, sessionKey)
     const arbitration = this.router.routeResult(botId, msg)
     // Terminal (linear-integration.md §6.2): the channel's default moved off the gated
@@ -1166,6 +1292,48 @@ export class RelayIngressManager {
         this.deps.log.warn(
           `relay-ingress(${botId}): forward to ${participant.daemonId} failed: ${(err as Error).message} (dropped ${n})`
         )
+      }
+    }
+    return 'accepted'
+  }
+
+  /** A control command in a routed conversation reaches the owner and remembered participants, and joins nobody. */
+  private async forwardRoutedCommand(
+    botId: string,
+    msg: WireNormalizedMessage,
+    sidecar: RelayIngressSidecar | undefined,
+    decisionId: string,
+    namesThisBot: boolean
+  ): Promise<RelayForwardOutcome> {
+    const sessionKey = sessionKeyOf(msg)
+    const targets = new Map<string, RouteTarget>()
+    const owner = this.router.peekAffinity(botId, sessionKey) ?? this.router.channelDecisionOwner(botId, msg.channel)
+    const ownerTarget = owner ? this.router.agentTarget(botId, owner.agentId, msg.channel) : null
+    if (ownerTarget) targets.set(ownerTarget.agentId, ownerTarget)
+    for (const t of this.router.conversationParticipants(botId, sessionKey, msg.channel)) targets.set(t.agentId, t)
+    for (const target of targets.values()) {
+      const daemon = this.deps.getDaemon(target.daemonId)
+      if (!daemon || !daemon.supports(DECISION_TRIGGER_V1_FEATURE)) {
+        this.deps.log.debug(`relay-ingress(${botId}): command for ${target.agentId} not deliverable`)
+        continue
+      }
+      const rd: RdMsgIm = {
+        source: 'im',
+        agentId: target.agentId,
+        sessionKey,
+        msgId: targets.size > 1 ? `${msg.msgId}#${target.agentId}` : msg.msgId,
+        botId,
+        integrationId: target.integrationId,
+        chatId: msg.channel,
+        payload: msg,
+        ...(sidecar?.searchActionToken ? { searchActionToken: sidecar.searchActionToken } : {}),
+        decisionId,
+        trustedRouteVia: namesThisBot ? 'mention' : 'implicit'
+      }
+      try {
+        await this.sendWithRendezvous(daemon, rd, botId, `relay-ingress(${botId})`)
+      } catch (err) {
+        this.deps.log.warn(`relay-ingress(${botId}): command forward failed: ${(err as Error).message}`)
       }
     }
     return 'accepted'

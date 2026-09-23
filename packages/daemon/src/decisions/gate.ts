@@ -4,7 +4,7 @@ import {
   type DecisionEvaluation,
   type RdMsgIm
 } from '@agentconnect.md/protocol'
-import type { DeliveryAdmission, DeliveryCompletion, DeliveryHandle } from '../evaluation/environment.js'
+import type { DeliveryHandle } from '../evaluation/environment.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import { threadRootResolver } from '../platforms/thread-keys.js'
 import type { ChannelRecordRef, DecisionVerdictRow, LocalStore } from '../store/local-store.js'
@@ -18,7 +18,7 @@ import {
 } from './bundle.js'
 import type { DecisionEvaluationInput } from './evaluator.js'
 import type { DecisionEvidence, DecisionUnavailableReason } from './evidence.js'
-import { DecisionSlots } from './limiter.js'
+import { DecisionLaneRuntime, laneId, verdictKey, type Lane } from './lanes.js'
 import { defaultDecisionGateMetrics, type DecisionGateMetrics } from './metrics.js'
 import { buildDecisionState } from './state.js'
 
@@ -101,21 +101,10 @@ export type GateOutcome =
 
 type CancelReason = 'stop' | 'cancel' | 'config_changed' | 'integration_removed' | 'shutdown' | 'ownership'
 
-interface Lane {
-  orgId: string
-  channel: string
-  subject: string
-}
-
 interface Task {
   lane: Lane
   controller: AbortController
   cancelReason?: CancelReason
-}
-
-interface Waiter {
-  admission: (value: DeliveryAdmission) => void
-  completion: (value: DeliveryCompletion) => void
 }
 
 /** A verdict between its pre-release recheck and dispatch; `refused` without a reason leaves the row for later. */
@@ -125,10 +114,6 @@ interface ReleaseToken {
   config: FrozenGateConfig
   refused?: { reason?: string }
 }
-
-const verdictKey = (seq: number, subject: string): string => `${seq}:${subject}`
-const laneId = (lane: Lane): string => `${lane.orgId}\u0000${lane.channel}\u0000${lane.subject}`
-const conversationId = (orgId: string, channel: string): string => `${orgId}\u0000${channel}`
 
 function parseJson<T>(text: string | null | undefined): T | undefined {
   if (!text) return undefined
@@ -141,48 +126,28 @@ function parseJson<T>(text: string | null | undefined): T | undefined {
 
 /** The Stage 1 fixed-target gate (decisions.md §8.3): durable verdicts, bounded evaluation, per-lane in-order release. */
 export class DecisionGate {
-  private readonly slots: DecisionSlots
   private readonly metrics: DecisionGateMetrics
   private readonly tasks = new Map<string, Task>()
-  private readonly waiters = new Map<string, Waiter[]>()
   private readonly lanes = new Map<string, Lane>()
-  private readonly draining = new Map<string, Promise<void>>()
-  private readonly redrain = new Set<string>()
   private readonly releasing = new Map<string, ReleaseToken>()
   // The latest bundle each integration applied (null once removed); the host's view lags it by a reconcile.
   private readonly applied = new Map<string, ResolvedDecisionBundle | null>()
   // The session modes announced with each integration's bundle, so the fence never trusts a lagging host view.
   private readonly appliedModes = new Map<string, ReadonlyMap<string, string>>()
   private readonly intake = new Map<string, Promise<GateOutcome>>()
-  private readonly openIngressSeqs = new Map<string, Map<number, number>>()
-  private readonly progress = new Set<() => void>()
-  private readonly tracked = new Set<Promise<unknown>>()
   private closed = false
 
   constructor(
     private readonly host: DecisionGateHost,
-    private readonly limits: DecisionGateLimits = DEFAULT_DECISION_GATE_LIMITS
+    private readonly limits: DecisionGateLimits = DEFAULT_DECISION_GATE_LIMITS,
+    readonly runtime: DecisionLaneRuntime = new DecisionLaneRuntime(limits)
   ) {
-    this.slots = new DecisionSlots(limits)
     this.metrics = host.metrics ?? defaultDecisionGateMetrics
   }
 
   /** Mark one recorded row as still travelling the ladder; later rows of its conversation wait behind it. */
   openIngress(ref: ChannelRecordRef): () => void {
-    const id = conversationId(ref.orgId, ref.transcriptChannel)
-    const open = this.openIngressSeqs.get(id) ?? new Map<number, number>()
-    open.set(ref.seq, (open.get(ref.seq) ?? 0) + 1)
-    this.openIngressSeqs.set(id, open)
-    let closed = false
-    return () => {
-      if (closed) return
-      closed = true
-      const count = (open.get(ref.seq) ?? 1) - 1
-      if (count > 0) open.set(ref.seq, count)
-      else open.delete(ref.seq)
-      if (open.size === 0 && this.openIngressSeqs.get(id) === open) this.openIngressSeqs.delete(id)
-      this.notifyProgress()
-    }
+    return this.runtime.openIngress(ref)
   }
 
   /** Step 5 for one bound, enabled target: participation admits, otherwise a verdict is reserved and owned here. */
@@ -203,7 +168,7 @@ export class DecisionGate {
 
   private async joinIntake(key: string, owner: Promise<GateOutcome>): Promise<GateOutcome> {
     // Registered before the owner can settle, so its finish always reaches this waiter.
-    const joined = this.waiterFor(key)
+    const joined = this.runtime.waiterFor(key)
     const outcome = await owner.catch((): GateOutcome => ({ kind: 'held', reason: 'record_unavailable' }))
     if (outcome.kind === 'pending') return { kind: 'pending', handle: joined.handle }
     joined.drop()
@@ -260,8 +225,8 @@ export class DecisionGate {
       return this.joinExisting(reserved.verdict, lane)
     }
     this.lanes.set(laneId(lane), lane)
-    const handle = this.handleFor(key)
-    this.track(this.evaluateTask(key, task, reserved.verdict!, c, config))
+    const handle = this.runtime.handleFor(key)
+    this.runtime.track(this.evaluateTask(key, task, reserved.verdict!, c, config))
     return { kind: 'pending', handle }
   }
 
@@ -276,9 +241,13 @@ export class DecisionGate {
       if (release.lane.subject === agentId && release.lane.channel === transcriptChannel) release.refused ??= { reason }
     const canceled = await this.host
       .store()
-      .cancelPendingDecisionVerdicts({ subject: agentId, channel: transcriptChannel }, reason, this.host.now())
+      .cancelPendingDecisionVerdicts(
+        { subject: agentId, channel: transcriptChannel, consumer: 'gate' },
+        reason,
+        this.host.now()
+      )
     for (const row of canceled) this.finished(verdictKey(row.seq, row.subject), 'canceled', reason)
-    this.notifyProgress()
+    this.runtime.notifyProgress()
     return canceled.length
   }
 
@@ -304,7 +273,7 @@ export class DecisionGate {
       )
         release.refused ??= { reason: 'config_changed' }
     }
-    const pending = await store.listPendingDecisionVerdicts({ integrationId })
+    const pending = await store.listPendingDecisionVerdicts({ integrationId, consumer: 'gate' })
     if (!bundle) {
       // On a shared store the new owner and retention reclaim the rows; only this process's work stops.
       for (const row of pending)
@@ -330,7 +299,9 @@ export class DecisionGate {
   /** Startup / newly served agents: settle orphaned evaluations as unavailable and re-enter release. */
   async recover(agentIds?: ReadonlySet<string>): Promise<void> {
     const store = this.host.store()
-    const rows = await store.listPendingDecisionVerdicts(agentIds ? { agentIds: [...agentIds] } : {})
+    const rows = await store.listPendingDecisionVerdicts(
+      agentIds ? { agentIds: [...agentIds], consumer: 'gate' } : { consumer: 'gate' }
+    )
     const lanes = new Map<string, Lane>()
     for (const row of rows) {
       if (!this.host.servesAgent(row.agentId) || this.tasks.has(verdictKey(row.seq, row.subject))) continue
@@ -360,13 +331,12 @@ export class DecisionGate {
     if (this.closed) return
     this.closed = true
     for (const key of this.tasks.keys()) this.abortTask(key, 'shutdown')
-    for (const key of [...this.waiters.keys()]) this.resolveGated(key)
-    this.notifyProgress()
+    this.runtime.close()
   }
 
   /** Settles once no evaluation, drain, or release is in flight (tests). */
   async idle(): Promise<void> {
-    while (this.tracked.size > 0) await Promise.allSettled([...this.tracked])
+    await this.runtime.idle()
   }
 
   private sameGate(gate: ResolvedDecisionGate | undefined, config: FrozenGateConfig): boolean {
@@ -376,7 +346,7 @@ export class DecisionGate {
   private joinExisting(row: DecisionVerdictRow, lane: Lane): GateOutcome {
     if (row.state === 'admitted') return { kind: 'duplicate' }
     if (row.state === 'skipped' || row.state === 'canceled') return { kind: 'held', reason: row.state }
-    const handle = this.handleFor(verdictKey(row.seq, row.subject))
+    const handle = this.runtime.handleFor(verdictKey(row.seq, row.subject))
     this.drain(lane)
     return { kind: 'pending', handle }
   }
@@ -436,7 +406,7 @@ export class DecisionGate {
     }
     let release: (() => void) | undefined
     try {
-      const slot = await this.slots.acquire(config.providerId, row.deadlineAt, signal, () => this.host.now())
+      const slot = await this.runtime.slots.acquire(config.providerId, row.deadlineAt, signal, () => this.host.now())
       if (slot.kind === 'capacity') {
         this.metrics.capacity(slot.scope)
         await settle('unavailable', { reason: 'capacity' })
@@ -524,7 +494,7 @@ export class DecisionGate {
     } finally {
       release?.()
       if (this.tasks.get(key) === task) this.tasks.delete(key)
-      this.notifyProgress()
+      this.runtime.notifyProgress()
       this.drain(task.lane)
     }
   }
@@ -532,22 +502,12 @@ export class DecisionGate {
   /** Single-flight per lane: releases only its lowest pending verdict, then reads the next head. */
   private drain(lane: Lane): void {
     if (this.closed) return
-    const id = laneId(lane)
-    this.lanes.set(id, lane)
-    if (this.draining.has(id)) {
-      this.redrain.add(id)
-      return
-    }
-    const run = (async () => {
-      do {
-        this.redrain.delete(id)
-        await this.drainOnce(lane)
-      } while (this.redrain.has(id) && !this.closed)
-    })()
-      .catch((err) => this.host.log.warn(`decision: lane drain failed: ${(err as Error).message}`))
-      .finally(() => this.draining.delete(id))
-    this.draining.set(id, run)
-    this.track(run)
+    this.lanes.set(laneId(lane), lane)
+    this.runtime.drain(
+      lane,
+      () => this.drainOnce(lane),
+      (err) => this.host.log.warn(`decision: lane drain failed: ${err.message}`)
+    )
   }
 
   private async drainOnce(lane: Lane): Promise<void> {
@@ -608,7 +568,7 @@ export class DecisionGate {
     const fence = this.host.ownerFence()
     const key = verdictKey(head.seq, head.subject)
     const lane = { orgId: head.orgId, channel: head.channel, subject: head.subject }
-    if (await this.ingressBarrier(head)) {
+    if (await this.runtime.ingressBarrier(head)) {
       if (this.closed) return 'wait'
       // A lower row that reserved while the barrier held is now the head; let drainOnce re-read it.
       const now = await store.decisionLaneHead(lane.orgId, lane.channel, lane.subject)
@@ -747,21 +707,6 @@ export class DecisionGate {
     }
   }
 
-  /** Hold a settled head while a lower row of its conversation is still on the ladder, bounded; true when it waited. */
-  private async ingressBarrier(head: DecisionVerdictRow): Promise<boolean> {
-    const deadline = Date.now() + this.limits.ingressBarrierMs
-    const blocked = (): boolean =>
-      [...(this.openIngressSeqs.get(conversationId(head.orgId, head.channel))?.keys() ?? [])].some(
-        (seq) => seq < head.seq
-      )
-    let waited = false
-    while (!this.closed && blocked() && Date.now() < deadline) {
-      waited = true
-      await this.nextProgress(deadline - Date.now())
-    }
-    return waited
-  }
-
   /** A participation admit waits for lower pending verdicts of its lane, bounded. */
   private async waitBehindLane(lane: Lane, seq: number, capMs: number): Promise<void> {
     const deadline = Date.now() + capMs
@@ -772,45 +717,8 @@ export class DecisionGate {
         .decisionLaneHead(lane.orgId, lane.channel, lane.subject)
         .catch(() => undefined)
       if (!head || head.seq >= seq) return
-      await this.nextProgress(deadline - Date.now())
+      await this.runtime.nextProgress(deadline - Date.now())
     }
-  }
-
-  private nextProgress(timeoutMs: number): Promise<void> {
-    return new Promise<void>((resolve) => {
-      const done = (): void => {
-        clearTimeout(timer)
-        this.progress.delete(done)
-        resolve()
-      }
-      const timer = setTimeout(done, Math.max(0, timeoutMs))
-      this.progress.add(done)
-    })
-  }
-
-  private notifyProgress(): void {
-    for (const done of [...this.progress]) done()
-  }
-
-  private handleFor(key: string): DeliveryHandle {
-    return this.waiterFor(key).handle
-  }
-
-  private waiterFor(key: string): { handle: DeliveryHandle; drop: () => void } {
-    let admission!: (value: DeliveryAdmission) => void
-    let completion!: (value: DeliveryCompletion) => void
-    const handle: DeliveryHandle = {
-      admission: new Promise<DeliveryAdmission>((resolve) => (admission = resolve)),
-      completion: new Promise<DeliveryCompletion>((resolve) => (completion = resolve))
-    }
-    const waiter: Waiter = { admission, completion }
-    this.waiters.set(key, [...(this.waiters.get(key) ?? []), waiter])
-    const drop = (): void => {
-      const rest = (this.waiters.get(key) ?? []).filter((w) => w !== waiter)
-      if (rest.length > 0) this.waiters.set(key, rest)
-      else this.waiters.delete(key)
-    }
-    return { handle, drop }
   }
 
   private finished(
@@ -820,38 +728,6 @@ export class DecisionGate {
     handle?: DeliveryHandle
   ): void {
     this.metrics.finished(state, reason)
-    const waiters = this.waiters.get(key) ?? []
-    this.waiters.delete(key)
-    for (const waiter of waiters) {
-      if (state === 'admitted' && handle) {
-        void handle.admission.then(waiter.admission)
-        void handle.completion.then(waiter.completion)
-      } else if (state === 'admitted') {
-        waiter.admission({ admitted: false, reason: 'deduplicated' })
-        waiter.completion({ status: 'not_admitted' })
-      } else {
-        waiter.admission({ admitted: false, reason: 'gated' })
-        waiter.completion({ status: 'not_admitted' })
-      }
-    }
-    this.notifyProgress()
-  }
-
-  private resolveGated(key: string): void {
-    const waiters = this.waiters.get(key) ?? []
-    this.waiters.delete(key)
-    for (const waiter of waiters) {
-      waiter.admission({ admitted: false, reason: 'gated' })
-      waiter.completion({ status: 'not_admitted' })
-    }
-  }
-
-  private track<T>(promise: Promise<T>): void {
-    const tracked = promise.then(
-      () => undefined,
-      () => undefined
-    )
-    this.tracked.add(tracked)
-    void tracked.finally(() => this.tracked.delete(tracked))
+    this.runtime.finished(key, state, handle)
   }
 }

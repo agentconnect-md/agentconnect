@@ -176,6 +176,12 @@ export interface RouteTarget {
   integrationId: string
 }
 
+/** One constrained recipient of a routed message, flagged participant from this relay's participant set. */
+export interface RoutedConstraintEntry extends RouteTarget {
+  participant: boolean
+  via: 'mention' | 'implicit'
+}
+
 export interface ConversationTarget {
   target: RouteTarget
   /** Explicit only for a human mention. Agent-authored traffic can join a peer by
@@ -403,9 +409,98 @@ export class BotArbitrationRouter {
       ?.routes.find((r) => r.scope?.channel === channelId && r.match.kind === 'decision' && r.decisionId)?.decisionId
   }
 
-  /** The daemon the CP named to evaluate a routed conversation; unused for forwarding until 5b. */
+  /** The daemon the CP named to evaluate a routed conversation; the host fence for `rd/route` and reports. */
   evaluationDaemonIdFor(botId: string, channelId: string): string | undefined {
     return this.bots.get(botId)?.routedConversations?.find((c) => c.channel === channelId)?.evaluationDaemonId
+  }
+
+  /** A human message in an executable By decision routed conversation goes once to its host (message-intake.md §6). */
+  routedConversationFor(
+    botId: string,
+    msg: WireNormalizedMessage
+  ): { decisionId: string; evaluationDaemonId: string } | undefined {
+    const a = this.bots.get(botId)
+    if (!a || msg.sender.isBot) return undefined
+    if (a.botUserId !== undefined && msg.sender.id === a.botUserId) return undefined
+    if (a.mutedChannels?.includes(msg.channel)) return undefined
+    const routed = a.routedConversations?.find((c) => c.channel === msg.channel)
+    if (!routed || this.decisionIdFor(botId, msg.channel) !== routed.decisionId) return undefined
+    return { decisionId: routed.decisionId, evaluationDaemonId: routed.evaluationDaemonId }
+  }
+
+  /** The target constraint of one routed message, read without touching participants, affinity, or reports. */
+  routedConstraint(botId: string, msg: WireNormalizedMessage): RoutedConstraintEntry[] {
+    const a = this.bots.get(botId)
+    if (!a) return []
+    const key = sessionKeyOf(msg)
+    const remembered = this.participants.get(botId)?.get(key)
+    const out = new Map<string, RoutedConstraintEntry>()
+    const add = (agentId: string, participant: boolean, via: 'mention' | 'implicit'): void => {
+      const current = this.agentTarget(botId, agentId, msg.channel)
+      if (!current) return
+      const prior = out.get(agentId)
+      out.set(agentId, {
+        ...current,
+        participant: participant || prior?.participant === true,
+        via: via === 'mention' || prior?.via === 'mention' ? 'mention' : 'implicit'
+      })
+    }
+    for (const agentId of remembered?.keys() ?? []) add(agentId, true, 'implicit')
+    const owner = this.affinity.get(botId)?.get(key)
+    if (owner) add(owner.agentId, true, 'implicit')
+    // An explicit selection names an agent through the unscoped keyword slug; a bare @bot names none.
+    const addressed = msg.isDm || (a.botUserId !== undefined && msg.mentionedBots.includes(a.botUserId))
+    if (addressed) {
+      const text = msg.text.toLowerCase()
+      for (const route of a.routes) {
+        if (route.match.kind !== 'keyword' || route.scope) continue
+        if (!text.includes(route.match.value.toLowerCase())) continue
+        add(route.agentId, remembered?.has(route.agentId) === true, 'mention')
+      }
+    }
+    return [...out.values()].slice(0, 64)
+  }
+
+  /** The bot's member directory for a routed conversation, after the mute and gating fences. */
+  routedCandidates(botId: string, channelId: string): RouteTarget[] {
+    const a = this.bots.get(botId)
+    if (!a) return []
+    const out = new Map<string, RouteTarget>()
+    for (const entry of a.agents) {
+      if (out.has(entry.agentId)) continue
+      const current = this.agentTarget(botId, entry.agentId, channelId)
+      if (current) out.set(entry.agentId, current)
+      if (out.size >= 64) break
+    }
+    return [...out.values()]
+  }
+
+  /** The channel's decision-route owner, the compatibility owner of a routed conversation. */
+  channelDecisionOwner(botId: string, channelId: string): RouteTarget | undefined {
+    const route = this.bots
+      .get(botId)
+      ?.routes.find((r) => r.scope?.channel === channelId && r.match.kind === 'decision')
+    return route ? target(route) : undefined
+  }
+
+  /** An agent on the host daemon with an install on this bot: the carrier that gives the host its org and integration. */
+  hostCarrier(botId: string, channelId: string, daemonId: string): RouteTarget | undefined {
+    const a = this.bots.get(botId)
+    if (!a) return undefined
+    const onHost = (agentId: string | undefined): RouteTarget | undefined => {
+      if (!agentId) return undefined
+      const current = this.agentTarget(botId, agentId, channelId)
+      return current?.daemonId === daemonId ? current : undefined
+    }
+    const owner = a.routes.find((r) => r.scope?.channel === channelId && r.match.kind === 'decision')?.agentId
+    const found = onHost(owner) ?? onHost(a.defaultAgentId)
+    if (found) return found
+    for (const entry of a.agents) {
+      if (entry.daemonId !== daemonId) continue
+      const current = onHost(entry.agentId)
+      if (current) return current
+    }
+    return undefined
   }
 
   /** Apply a channel-owner pick to the current routing snapshot immediately.
@@ -488,6 +583,15 @@ export class BotArbitrationRouter {
     if (this.affinity.get(botId)?.has(sessionKey)) return false
     if (this.noAffinity.get(botId)?.has(sessionKey)) return false
     return true
+  }
+
+  /** A routed thread reply this relay knows nobody in: worth one CP lookup before its constraint is frozen. */
+  routedThreadNeedsLookup(botId: string, msg: WireNormalizedMessage): boolean {
+    if (!msg.thread || isThreadRootMessage(msg)) return false
+    const key = sessionKeyOf(msg)
+    if ((this.participants.get(botId)?.get(key)?.size ?? 0) > 0) return false
+    if (this.affinity.get(botId)?.has(key)) return false
+    return !this.noAffinity.get(botId)?.has(key)
   }
 
   /** Seed affinity from a CP `rc/thread-lookup/ok` target: validate the agent is a

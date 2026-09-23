@@ -5,7 +5,9 @@ import {
   DECISION_EVALUATIONS_V1_FEATURE,
   DECISION_PREVIEW_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
+  DECISION_ROUTING_V1_FEATURE,
   type DecisionBundle,
+  type RdRouteBackfillRow,
   DECISION_TOOLS_V1_FEATURE,
   DECISION_MODEL_SELECTION_V1_FEATURE,
   MEMORY_ENTRIES_SEARCH_V1_FEATURE,
@@ -481,7 +483,18 @@ import {
 import { KeyServerClient, type KeyGrant } from './key-server/client.js'
 import { DecisionEvaluator, type DecisionEvaluationInput } from './decisions/evaluator.js'
 import { DecisionEvaluationReader } from './decisions/evaluations.js'
-import { backgroundConversationText, decisionEvidenceText } from './decisions/evidence.js'
+import { backgroundConversationText, decisionEvidenceText, routeSelectionEvidence } from './decisions/evidence.js'
+import { DecisionLaneRuntime } from './decisions/lanes.js'
+import {
+  DecisionRouter,
+  decisionRouteReceiptId,
+  routedTargetCheck,
+  type CurrentRouting,
+  type DecisionRouterHost,
+  type RouterAdmitRequest,
+  type RouterAdmitResult
+} from './decisions/router.js'
+import { routerFingerprint, resolveDecisionBundle } from './decisions/bundle.js'
 import {
   DecisionGate,
   DEFAULT_DECISION_GATE_LIMITS,
@@ -892,6 +905,10 @@ interface GateDispatchOptions {
   beforeDispatch: () => boolean
   /** The dispatch promise, so a dispatch that ends before admission still settles the release. */
   onDispatched: (turn: Promise<unknown>) => void
+  /** Why the tail dropped the delivery without dispatching it (e.g. `muted`). */
+  onRefused?: (reason: string) => void
+  /** A target-scoped inbox id, for a routed message admitted to more than one agent here. */
+  deliveryId?: string
 }
 
 export class Daemon {
@@ -1390,6 +1407,11 @@ export class Daemon {
   private readonly decisionEvaluator: DecisionEvaluator
   private readonly decisionEvaluations: DecisionEvaluationReader
   private readonly decisionGate: DecisionGate
+  /** The shared-bot router (message-intake.md §6), sharing the gate's lanes and provider budget. */
+  private readonly decisionRouter: DecisionRouter
+  private readonly decisionLanes: DecisionLaneRuntime
+  /** The relay each routed `rd/msg` arrived on, preferred for its rd/route and report. */
+  private readonly relayIngressOf = new WeakMap<object, string>()
   /** Distinguishes this process's verdict ownership from an earlier one's on the same daemon id. */
   private readonly decisionBootNonce = randomUUID()
   /** Deployment codex session-config floor, daemon-applied at spawn so it also reaches agents
@@ -1704,7 +1726,9 @@ export class Daemon {
       now: modelKeyNow,
       warn: (message) => this.log.warn(message)
     })
-    this.decisionGate = new DecisionGate(this.decisionGateHost())
+    this.decisionLanes = new DecisionLaneRuntime(DEFAULT_DECISION_GATE_LIMITS)
+    this.decisionGate = new DecisionGate(this.decisionGateHost(), DEFAULT_DECISION_GATE_LIMITS, this.decisionLanes)
+    this.decisionRouter = new DecisionRouter(this.decisionRouterHost(), this.decisionLanes)
     this.decisionEvaluations = new DecisionEvaluationReader({
       store: () => this.store,
       servedIntegration: async (orgId, agentId, integrationId) => {
@@ -1839,8 +1863,14 @@ export class Daemon {
       log: () => this.log,
       store: () => this.store,
       agents: () => this.agents,
-      cancelDecisionVerdicts: (agentId, msg, kind) =>
-        this.decisionGate.cancelForAgent(agentId, transcriptChannelKey(msg.channel, msg.transportScope), kind),
+      cancelDecisionVerdicts: async (agentId, msg, kind) => {
+        const channel = transcriptChannelKey(msg.channel, msg.transportScope)
+        const [gated, routed] = await Promise.all([
+          this.decisionGate.cancelForAgent(agentId, channel, kind),
+          this.decisionRouter.cancelForAgent(agentId, channel, kind)
+        ])
+        return gated + routed
+      },
       pending: () => this.pending,
       inflight: () => this.inflight,
       serialQueue: () => this.serialQueue,
@@ -4058,6 +4088,7 @@ export class Daemon {
     await this.replayInbox()
     // After the inbox replay, whose receipts tell recovery which verdicts were already admitted.
     await this.decisionGate.recover()
+    await this.decisionRouter.recover()
     await this.collab.syncOrchestrationDeadlines()
     // #485 startup retention pass: reconcile what accumulated (or was orphaned by a
     // crash) while the daemon was down. Best-effort — never blocks readiness. Runs
@@ -4230,10 +4261,13 @@ export class Daemon {
       this.pendingInboxReplayAgents.clear()
       await this.replayInbox(agentIds)
       await this.decisionGate.recover(agentIds)
+      await this.decisionRouter.recover()
     }
     if (!this.reconcileRun && !this.reconcilePending) {
       this.decisionGate.retainAgents(new Set(this.agents.keys()))
       this.decisionGate.kick()
+      this.decisionRouter.retainHosted()
+      this.decisionRouter.kick()
     }
   }
 
@@ -6157,6 +6191,8 @@ export class Daemon {
       DECISION_PREVIEW_V1_FEATURE,
       DECISION_EVALUATIONS_V1_FEATURE,
       DECISION_TRIGGER_V1_FEATURE,
+      // This daemon evaluates routed conversations it hosts and admits routed forwards without evaluating.
+      DECISION_ROUTING_V1_FEATURE,
       DECISION_TOOLS_V1_FEATURE,
       DECISION_MODEL_SELECTION_V1_FEATURE,
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
@@ -8546,7 +8582,9 @@ export class Daemon {
     const trace: RelayAckTrace = inherited ?? { stage: 'received' }
     const watch = (task: Promise<RdAck>): Promise<RdAck> =>
       inherited ? task : this.watchRelayAck(dedupKey, msg, trace, task)
-    if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(msg.agentId)) {
+    // A routed host copy belongs to this daemon's router, not the carrier agent's duty (message-intake.md §6).
+    const hostCopy = msg.source === 'im' && msg.trustedRouting !== undefined
+    if (!hostCopy && this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(msg.agentId)) {
       trace.stage = 'duty-claim'
       const task = this.dutyCoordinator.claimDutyForTrigger(msg.agentId).then((claimed) => {
         this.pendingRelayMsgAcks.delete(dedupKey)
@@ -8579,6 +8617,8 @@ export class Daemon {
       })
       .then((settled) => {
         this.pendingRelayMsgAcks.delete(dedupKey)
+        // A recoverable routed refusal is not cached, so the host's retry of the same delivery is re-attempted.
+        if (settled.routeAdmission === 'rejected' && settled.recoverable === true) return settled
         if (this.relayMsgAcks.size >= 2000) this.relayMsgAcks.clear() // bound the window
         this.relayMsgAcks.set(dedupKey, settled)
         return settled
@@ -8779,9 +8819,21 @@ export class Daemon {
     if (feishuConn) this.channelNameResolver?.noteMessage(feishuConn, normalized)
     // Step 1 (§5/§6): a relay-forwarded IM records exactly like direct ingress. Pre-addressed, so
     // the owning org is known outright and no conversation-row scan is needed.
+    // A routed forward's host window is recorded first, so it precedes the message as background.
+    if (msg.trustedRouteSelection && msg.backfill?.length) {
+      await this.store
+        .recordObservations(
+          msg.agentId,
+          transcriptChannelKey(normalized.channel, normalized.transportScope),
+          msg.backfill
+        )
+        .catch((err) => this.log.warn(`decision-router: backfill record failed: ${formatErr(err)}`))
+    }
     const record = await this.recordChannelInbound(normalized, [msg.integrationId], { orgAgentId: msg.agentId })
     const closeIngress = record ? this.decisionGate.openIngress(record) : () => {}
     try {
+      if (msg.trustedRouteSelection) return await this.admitRoutedTarget(msg, normalized, trace, record)
+      if (msg.trustedRouting) return await this.hostRoutedIm(msg, normalized, trace, record)
       return await this.routeRecordedRelayIm(msg, normalized, trace, record)
     } finally {
       closeIngress()
@@ -8892,6 +8944,7 @@ export class Daemon {
     if (!isAppendCoordinate(sessionThreadOf(normalized)) && (await this.commands.isSessionMuted(muteKey))) {
       if (normalized.trigger !== 'mention') {
         this.log.debug(`relay: dropping ${msg.msgId} for agent "${msg.agentId}" (muted by !stop; awaiting @mention)`)
+        gate?.onRefused?.('muted')
         return { msgId: msg.msgId, accepted: true }
       }
       await this.commands.setSessionMuted(muteKey, false)
@@ -8918,6 +8971,7 @@ export class Daemon {
         ? this.dispatch(msg.agentId, normalized, msg.integrationId, undefined, undefined, {
             requireDurable: true,
             receiptId: gate.receiptId,
+            ...(gate.deliveryId ? { deliveryId: gate.deliveryId } : {}),
             onAdmission: gate.onAdmission
           })
         : this.dispatch(msg.agentId, normalized, msg.integrationId)
@@ -8938,7 +8992,7 @@ export class Daemon {
       ...(ingress?.requireDurable || gate ? { requireDurable: true } : {}),
       // The gate's receipt wins: a By decision delivery must never be dispatched twice for its verdict.
       ...(gate
-        ? { receiptId: gate.receiptId }
+        ? { receiptId: gate.receiptId, ...(gate.deliveryId ? { deliveryId: gate.deliveryId } : {}) }
         : ingress?.receiptId
           ? { receiptId: ingress.receiptId(normalized) }
           : {}),
@@ -10354,7 +10408,8 @@ export class Daemon {
         currentSeq: intake.seq,
         limit: DEFAULT_DECISION_GATE_LIMITS.backgroundRows
       })
-      if (intake.evidence) seqs = await this.store.claimVerdictBackground(intake.seq, agentId, seqs)
+      if (intake.evidence)
+        seqs = await this.store.claimVerdictBackground(intake.seq, intake.evidence.verdict.subject, seqs, agentId)
       intake.backgroundSeqs = seqs
     } catch (err) {
       this.log.warn(`decision: background selection failed: ${formatErr(err)}`)
@@ -18192,10 +18247,10 @@ export class Daemon {
       )
       return { kind: 'held' }
     }
-    // A shared-bot router is never Any and never a gate: every candidate is held until 5b routes it.
+    // A routed conversation is never Any and never a gate: only the relay's host copy reaches the router.
     if (routing.routingFor(targetMsg.channel)) {
-      this.decisionHoldLog(integrationId, targetMsg.channel, 'shared-bot routing not implemented yet')
-      return { kind: 'held', reason: 'routing_not_implemented' }
+      this.decisionHoldLog(integrationId, targetMsg.channel, 'routed conversation without a routing disposition')
+      return { kind: 'held', reason: 'routed_without_disposition' }
     }
     const gate = routing.decisionBindingFor(targetMsg.channel)
     if (!gate) {
@@ -18260,7 +18315,7 @@ export class Daemon {
     const routing = integrationRouting(int)
     if (!routing.decisionBound(channel)) return { status: 'unbound' }
     // A conversation switched to the shared router refuses a pending gate verdict at release.
-    if (routing.routingFor(channel)) return { status: 'disabled', reason: 'routing_not_implemented' }
+    if (routing.routingFor(channel)) return { status: 'disabled', reason: 'routed' }
     const gate = routing.decisionBindingFor(channel)
     if (!gate) {
       const binding = integrationCore(int).decisions.bindings.find((candidate) => candidate.channel === channel)
@@ -18272,22 +18327,41 @@ export class Daemon {
   /** Release one verdict into the same tail the ladder would have run, and report its admission ACK. */
   private async releaseDecisionDelivery(request: DecisionReleaseRequest): Promise<DecisionReleaseResult> {
     const { verdict, delivery, evidence } = request
-    const agentId = verdict.agentId
     const msg: NormalizedMessage = { ...delivery.msg, channelIntake: { seq: verdict.seq, evidence } }
+    return await this.admitWithReceipt(
+      verdict.agentId,
+      delivery,
+      msg,
+      decisionReceiptId(verdict.seq, verdict.agentId),
+      request.beforeDispatch
+    )
+  }
+
+  /** Step 6 under a durable receipt, shared by the gate, the router's local targets, and routed forwards. */
+  private async admitWithReceipt(
+    agentId: string,
+    delivery: DecisionDelivery,
+    msg: NormalizedMessage,
+    receiptId: string,
+    beforeDispatch: () => boolean,
+    deliveryId?: string
+  ): Promise<DecisionReleaseResult> {
     type Raw = { accepted: boolean; reason?: string; duplicate?: boolean }
     let settle!: (result: Raw) => void
     const raw = new Promise<Raw>((resolve) => (settle = resolve))
     let dispatched = false
     const gate: GateDispatchOptions = {
-      receiptId: decisionReceiptId(verdict.seq, agentId),
+      receiptId,
       onAdmission: (result) => settle(result),
-      beforeDispatch: () => (dispatched = request.beforeDispatch()),
+      beforeDispatch: () => (dispatched = beforeDispatch()),
       // A dispatch that ends before settling admission must still release the lane.
       onDispatched: (turn) =>
         void turn.then(
           () => settle({ accepted: false, reason: 'error' }),
           () => settle({ accepted: false, reason: 'error' })
-        )
+        ),
+      onRefused: (reason) => (refused = reason),
+      ...(deliveryId ? { deliveryId } : {})
     }
     let handle: DeliveryHandle | undefined
     let refused = 'gated'
@@ -18307,8 +18381,237 @@ export class Daemon {
     return {
       kind: 'rejected',
       reason: result.reason ?? 'rejected',
-      recoverable: result.reason === 'draining' || this.draining || this.drainingAgents.has(agentId)
+      recoverable:
+        result.reason === 'draining' ||
+        result.reason === 'durability' ||
+        this.draining ||
+        this.drainingAgents.has(agentId)
     }
+  }
+
+  /** What the router reads of this daemon; getters are lazy because the store opens later. */
+  private decisionRouterHost(): DecisionRouterHost {
+    return {
+      store: () => this.store,
+      ownerFence: () => `${this.cfg.daemonId ?? 'local'}:${this.decisionBootNonce}`,
+      now: () => this.clock.now(),
+      selfDaemonId: () => this.cfg.daemonId ?? 'local',
+      evaluate: (input, signal) => this.decisionEvaluator.evaluate(input, signal),
+      currentRouting: (integrationId, channel) => this.currentDecisionRouting(integrationId, channel),
+      configConverged: () => !this.cpClient || this.cpIntegrations?.hasConverged() === true,
+      localTarget: (botId, agentId, channel) => this.localRouterTarget(botId, agentId, channel),
+      participates: async (agentId, msg) =>
+        msg.thread !== undefined &&
+        (await this.sessions.threadParticipants(msg.channel, msg.thread, msg.transportScope)).includes(agentId),
+      admitLocal: (request) => this.admitRouterLocal(request),
+      forwardRemote: async (request) => {
+        if (!this.relays) return { deliveryId: request.deliveryId, disposition: 'retry', reason: 'offline' }
+        const { rd } = request.delivery
+        return await this.relays.sendRoute(
+          {
+            deliveryId: request.deliveryId,
+            botId: rd.botId,
+            sessionKey: rd.sessionKey,
+            toAgentId: request.target.agentId,
+            frozenDaemonId: request.target.daemonId!,
+            payload: rd.payload,
+            selection: request.selection,
+            via: request.target.via,
+            ...(request.backfill.length ? { backfill: request.backfill } : {})
+          },
+          request.delivery.relayId
+        )
+      },
+      report: async (report, relayId) =>
+        (await this.relays?.sendRouteReport(report, relayId)) ?? { accepted: false, reason: 'offline' },
+      backfill: (orgId, channel, seq) => this.routeBackfill(orgId, channel, seq),
+      log: {
+        debug: (message) => this.log.debug(message),
+        info: (message) => this.log.info(message),
+        warn: (message) => this.log.warn(message)
+      }
+    }
+  }
+
+  /** The locally applied routing a router verdict is rechecked against: still host, same fingerprint. */
+  private currentDecisionRouting(integrationId: string, channel: string): CurrentRouting {
+    const int = this.integrationConfigById(integrationId)
+    if (!int) return { status: 'unknown' }
+    const routed = integrationRouting(int).routingFor(channel)
+    if (!routed) return { status: 'disabled', reason: 'binding_removed' }
+    if (!routed.enabled) return { status: 'disabled', reason: routed.disabledReason ?? 'disabled' }
+    if (!routed.routing) return { status: 'not_host' }
+    return { status: 'enabled', routing: routed.routing, fingerprint: routerFingerprint(routed.routing, channel) }
+  }
+
+  /** A local agent's install on this shared bot, recognized by the bot's routing projection on its bundle. */
+  private localRouterTarget(
+    botId: string,
+    agentId: string,
+    channel: string
+  ): { integrationId: string; sessionMode: string; served: boolean } | undefined {
+    for (const int of this.agents.get(agentId)?.integrations ?? []) {
+      const bundle = resolveDecisionBundle(integrationCore(int).decisions ?? { bindings: [], definitions: [] })
+      if (bundle.sharedBotRouting?.botId !== botId) continue
+      return {
+        integrationId: int.id,
+        sessionMode: conversationSessionMode(int, channel),
+        served: this.servesAgent(agentId)
+      }
+    }
+    return undefined
+  }
+
+  /** A router target on this daemon: its own copy of the host message through the shared step-6 tail. */
+  private async admitRouterLocal(request: RouterAdmitRequest): Promise<RouterAdmitResult> {
+    const { target, delivery, verdict } = request
+    const rd: RdMsgIm = {
+      ...(structuredClone(delivery.rd) as RdMsgIm),
+      agentId: target.agentId,
+      integrationId: target.integrationId,
+      msgId: `${delivery.rd.payload.msgId}#${target.agentId}`,
+      trustedRouteVia: target.via
+    }
+    delete rd.trustedRouting
+    const msg: NormalizedMessage = structuredClone(delivery.msg)
+    delete msg.sessionThread
+    if (target.via === 'mention') msg.trigger = 'mention'
+    else delete msg.trigger
+    msg.channelIntake = { seq: verdict.seq, evidence: request.evidence }
+    const result = await this.admitWithReceipt(
+      target.agentId,
+      { origin: 'relay', rd, msg },
+      msg,
+      request.receiptId,
+      request.beforeDispatch,
+      `${stableMessageId(msg)}#${target.agentId}`
+    )
+    return result.kind === 'admitted' ? { kind: 'admitted' } : result
+  }
+
+  /** The host's observation window before a row, newest first until 32 KiB, for a remote target's background. */
+  private async routeBackfill(orgId: string, channel: string, seq: number): Promise<RdRouteBackfillRow[]> {
+    if (this.store.isShared) return []
+    const window = await this.store.decisionWindow(orgId, channel, seq, 50)
+    const rows: RdRouteBackfillRow[] = []
+    let bytes = 2
+    for (const row of window.history) {
+      if (!row.ts || isControlCommandText(row.text)) continue
+      const text = Buffer.byteLength(row.text, 'utf8') > 16 * 1024 ? row.text.slice(0, 4096) : row.text
+      const quoted = transcriptQuoted(row)
+      const entry: RdRouteBackfillRow = {
+        ts: row.ts,
+        thread: row.thread,
+        sender: row.sender,
+        text,
+        ...(row.eventTimeUs ? { eventTimeUs: Number(row.eventTimeUs) } : {}),
+        ...(quoted?.text
+          ? { quoted: { ...(quoted.sender ? { sender: quoted.sender } : {}), text: quoted.text.slice(0, 4096) } }
+          : {})
+      }
+      const size = Buffer.byteLength(JSON.stringify(entry), 'utf8') + 1
+      if (bytes + size > 32 * 1024) break
+      bytes += size
+      rows.push(entry)
+    }
+    return rows.reverse()
+  }
+
+  /** The host copy of a routed human message: record (done), then the router, which evaluates once and distributes. */
+  private async hostRoutedIm(
+    msg: RdMsgIm,
+    normalized: NormalizedMessage,
+    trace: RelayAckTrace,
+    record: ChannelRecordRef | undefined
+  ): Promise<RdAck> {
+    const routing = msg.trustedRouting!
+    trace.stage = 'decision-router'
+    if (this.isAgentBotMessage(normalized)) return { msgId: msg.msgId, accepted: false, reason: 'rejected' }
+    await this.discoverConversations(normalized, [msg.integrationId])
+    if (!this.gatedAdmission(msg.integrationId, normalized)) return { msgId: msg.msgId, accepted: true }
+    const command = parseCommand(normalized.text)
+    if (command && command.kind !== 'queue') return { msgId: msg.msgId, accepted: false, reason: 'rejected' }
+    const int = this.integrationConfigById(msg.integrationId)
+    const routed = int ? integrationRouting(int).routingFor(normalized.channel) : undefined
+    // A daemon that is not the projected host holds the message in its record and never evaluates.
+    if (!int || !routed?.routing || routing.evaluationDaemonId !== this.cfg.daemonId) {
+      this.decisionHoldLog(
+        msg.integrationId,
+        normalized.channel,
+        'routed message for a conversation this daemon does not host'
+      )
+      return { msgId: msg.msgId, accepted: false, reason: 'not_host' }
+    }
+    if (routed.routing.definition.id !== routing.decisionId) {
+      this.decisionHoldLog(msg.integrationId, normalized.channel, `relay decision ${routing.decisionId} is stale`)
+      return { msgId: msg.msgId, accepted: false, reason: 'stale' }
+    }
+    if (!record) return { msgId: msg.msgId, accepted: false, reason: 'durability' }
+    const { searchActionToken: _searchActionToken, ...rd } = msg
+    const relayId = routing.relayId ?? this.relayIngressOf.get(msg)
+    const outcome = await this.decisionRouter.intake({
+      botId: routed.routing.botId,
+      integrationId: msg.integrationId,
+      carrierAgentId: msg.agentId,
+      rawChannel: normalized.channel,
+      record,
+      routing: routed.routing,
+      delivery: {
+        rd,
+        msg: normalized,
+        ...(relayId ? { relayId } : {}),
+        constraint: routing.constraint,
+        candidates: routing.candidates,
+        thread: record.thread
+      }
+    })
+    // The ACK follows the durable reservation (decisions.md §8.3).
+    if (outcome.kind === 'held' && outcome.reason === 'record_unavailable')
+      return { msgId: msg.msgId, accepted: false, reason: 'durability' }
+    if (outcome.kind === 'held' && outcome.reason === 'closed')
+      return { msgId: msg.msgId, accepted: false, reason: 'draining' }
+    return { msgId: msg.msgId, accepted: true }
+  }
+
+  /** A routed forward to one of this daemon's agents: fences, then step 6 WITHOUT evaluating, acknowledged per target. */
+  private async admitRoutedTarget(
+    msg: RdMsgIm,
+    normalized: NormalizedMessage,
+    trace: RelayAckTrace,
+    record: ChannelRecordRef | undefined
+  ): Promise<RdAck> {
+    const selection = msg.trustedRouteSelection!
+    trace.stage = 'decision-route-target'
+    const reject = (reason: string, recoverable = false): RdAck => ({
+      msgId: msg.msgId,
+      accepted: false,
+      routeAdmission: 'rejected',
+      reason,
+      recoverable
+    })
+    const int = this.integrationConfigById(msg.integrationId)
+    const check = routedTargetCheck({
+      agentAuthored: this.isAgentBotMessage(normalized),
+      admitted: this.gatedAdmission(msg.integrationId, normalized),
+      command: parseCommand(normalized.text),
+      routing: int ? integrationRouting(int).routingFor(normalized.channel) : undefined
+    })
+    if (!check.ok) return reject(check.reason, check.recoverable)
+    if (!record) return reject('durability', true)
+    if (this.draining || this.drainingAgents.has(msg.agentId)) return reject('draining', true)
+    const { searchActionToken: _searchActionToken, ...rd } = msg
+    normalized.channelIntake = { seq: record.seq, evidence: routeSelectionEvidence(selection, record.seq) }
+    const result = await this.admitWithReceipt(
+      msg.agentId,
+      { origin: 'relay', rd, msg: normalized },
+      normalized,
+      decisionRouteReceiptId(record.seq, msg.agentId),
+      () => true,
+      `${stableMessageId(normalized)}#${msg.agentId}`
+    )
+    if (result.kind === 'admitted') return { msgId: msg.msgId, accepted: true, routeAdmission: 'admitted' }
+    const recoverable = result.recoverable || result.reason === 'queue_full'
+    return reject(result.reason === 'queue_full' ? 'capacity' : result.reason, recoverable)
   }
 
   // At most one info line per (integration, channel) every 10 minutes.
@@ -18332,6 +18635,9 @@ export class Daemon {
     void this.decisionGate
       .onConfigApplied(integrationId, previous, next, sessionModes)
       .catch((err) => this.log.warn(`decision: config cancellation failed: ${formatErr(err)}`))
+    void this.decisionRouter
+      .onConfigApplied(integrationId, previous, next, sessionModes)
+      .catch((err) => this.log.warn(`decision-router: config cancellation failed: ${formatErr(err)}`))
   }
 
   /** Last-hop admission for a pre-addressed (relay) message. The relay arbitrated it,
@@ -21823,7 +22129,10 @@ export class Daemon {
         }),
       log: this.log,
       // Bridge an inbound relay webchat op onto the shared turn engine (webchat, PR 3).
-      onRelayMsg: (msg, chat) => this.handleRelayMsg(msg, chat),
+      onRelayMsg: (msg, chat, relayId) => {
+        if (relayId) this.relayIngressOf.set(msg, relayId)
+        return this.handleRelayMsg(msg, chat)
+      },
       // A forwarded cross-daemon agent-call — terminal-verify + dispatch (P2).
       onRelayAgentMsg: (msg) => this.handleRelayAgentMsg(msg)
     })
@@ -22343,6 +22652,7 @@ export class Daemon {
 
   async stop(): Promise<void> {
     this.decisionGate.close()
+    this.decisionRouter.close()
     this.decisionEvaluator.close()
     // Set the drain gate FIRST: it both blocks new turns and stops the idle sweep
     // from re-arming itself (its callback re-arms only `if (!this.draining)`), so a

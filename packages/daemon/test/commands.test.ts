@@ -131,3 +131,10 @@ describe('isControlCommandText', () => {
     expect(isControlCommandText('!deploy the thing')).toBe(false)
   })
 })
+
+describe('command grammar ownership', () => {
+  it('re-exports the activation-policy parser so the relay and the daemon agree', async () => {
+    const policy = await import('@agentconnect.md/activation-policy')
+    expect(parseCommand).toBe(policy.parseCommand)
+  })
+})

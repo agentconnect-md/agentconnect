@@ -19,6 +19,8 @@ import {
   matchDecisionCondition,
   matchDecisionRouting,
   parseDecisionAnswer,
+  partitionRoutingConstraint,
+  resolveRoutingTargets,
   type DecisionAnswer,
   type SharedBotDecisionRouting
 } from './decision.js'
@@ -403,5 +405,162 @@ describe('Gate Try samples and Recent evaluations records', () => {
     expect(
       DecisionEvaluationRecordDetail.safeParse({ ...detail, snapshot: { ...detail.snapshot, x: 1 } }).success
     ).toBe(false)
+  })
+})
+
+describe('router settlement (message-intake.md §6, decisions.md §3.2)', () => {
+  const candidates = [
+    { agentId: 'billing-agent', daemonId: 'd-1', integrationId: 'i-1' },
+    { agentId: 'technical-agent', daemonId: 'd-2', integrationId: 'i-2' },
+    { agentId: 'default-agent', daemonId: 'd-1', integrationId: 'i-3' },
+    { agentId: 'A', daemonId: 'd-1' },
+    { agentId: 'B', daemonId: 'd-2' }
+  ]
+  const settle = (over: Partial<Parameters<typeof resolveRoutingTargets>[0]> = {}) =>
+    resolveRoutingTargets({
+      question: choice,
+      routing,
+      answer,
+      constraint: [],
+      defaultAgentId: 'default-agent',
+      candidates,
+      ...over
+    })
+  const ids = (result: ReturnType<typeof settle>) => result.targets.map((t) => [t.agentId, t.effect])
+  const pick = (probabilities: Record<string, number>): DecisionAnswer => ({
+    type: 'choice',
+    value: Object.entries(probabilities).sort((a, b) => b[1] - a[1])[0]![0],
+    probabilities,
+    confidence: 0.5
+  })
+
+  it('(b) ties and non-top passing keys each contribute, in rule order, with their daemon', () => {
+    const result = settle()
+    expect(result.evaluate).toBe(true)
+    expect(ids(result)).toEqual([
+      ['billing-agent', 'selected'],
+      ['technical-agent', 'selected']
+    ])
+    expect(result.targets.map((t) => t.daemonId)).toEqual(['d-1', 'd-2'])
+    expect(result.disposition).toBe('match')
+  })
+
+  it('(b) dedupes one agent from two rules; a mixed skip still admits the agent', () => {
+    const same = structuredClone(routing)
+    same.rules[1]!.action = { type: 'agent', agentId: 'billing-agent' }
+    expect(ids(settle({ routing: same }))).toEqual([['billing-agent', 'selected']])
+    const mixed = structuredClone(routing)
+    mixed.rules[0]!.action = { type: 'skip' }
+    expect(ids(settle({ routing: mixed }))).toEqual([['technical-agent', 'selected']])
+  })
+
+  it('(b) no match uses Otherwise: the default agent, or skip', () => {
+    const none = pick({ billing: 0.1, technical: 0.1, sales: 0.8 })
+    const noRule = structuredClone(routing)
+    noRule.rules = noRule.rules.filter((rule) => rule.id !== 'sales')
+    expect(ids(settle({ routing: noRule, answer: none }))).toEqual([['default-agent', 'default_agent']])
+    const skip = { ...noRule, otherwise: { type: 'skip' as const } }
+    expect(settle({ routing: skip, answer: none })).toMatchObject({ targets: [], disposition: 'skip' })
+    expect(settle({ routing: noRule, answer: none, defaultAgentId: undefined }).disposition).toBe('skip')
+    // A matched skip rule never falls through to Otherwise.
+    expect(settle({ answer: none }).disposition).toBe('skip')
+  })
+
+  it('(b) Score boundaries and Boolean mapping select exactly one destination', () => {
+    const ranges: SharedBotDecisionRouting = {
+      enabled: true,
+      decisionId: 'frustration',
+      otherwise: { type: 'skip' },
+      rules: [
+        { id: 'low', when: { type: 'score', min: 0, max: 1 }, action: { type: 'skip' } },
+        { id: 'mid', when: { type: 'score', min: 1, max: 2.5 }, action: { type: 'agent', agentId: 'A' } },
+        { id: 'high', when: { type: 'score', min: 2.5, max: 3 }, action: { type: 'agent', agentId: 'B' } }
+      ]
+    }
+    for (const [value, expected] of [
+      [1, ['A']],
+      [2.49, ['A']],
+      [2.5, ['B']],
+      [3, ['B']],
+      [0.5, []]
+    ] as const)
+      expect(
+        settle({ question: score, routing: ranges, answer: scoreAnswer(value) }).targets.map((t) => t.agentId)
+      ).toEqual(expected)
+    const yesNo = DecisionQuestion.parse({
+      type: 'boolean',
+      instructions: 'Urgent?',
+      criteria: { true: 'Yes', false: 'No' }
+    })
+    const bool: SharedBotDecisionRouting = {
+      enabled: true,
+      decisionId: 'urgent',
+      otherwise: { type: 'skip' },
+      rules: [
+        { id: 'yes', when: { type: 'boolean', values: [true] }, action: { type: 'agent', agentId: 'A' } },
+        { id: 'no', when: { type: 'boolean', values: [false] }, action: { type: 'agent', agentId: 'B' } }
+      ]
+    }
+    const b = (value: boolean): DecisionAnswer => ({ type: 'boolean', value, probability: value ? 0.9 : 0.1 })
+    expect(ids(settle({ question: yesNo, routing: bool, answer: b(true) }))).toEqual([['A', 'selected']])
+    expect(ids(settle({ question: yesNo, routing: bool, answer: b(false) }))).toEqual([['B', 'selected']])
+  })
+
+  it('(c) a constraint of participant A and eligible B evaluates once; skip keeps A, match keeps both', () => {
+    const constraint = [
+      { agentId: 'A', daemonId: 'd-1', participant: true },
+      { agentId: 'B', daemonId: 'd-2', participant: false, via: 'mention' as const }
+    ]
+    expect(partitionRoutingConstraint(constraint)).toMatchObject({ evaluate: true })
+    const none = pick({ billing: 0.1, technical: 0.1, sales: 0.8 })
+    expect(ids(settle({ constraint, answer: none }))).toEqual([['A', 'participant']])
+    expect(settle({ constraint, answer: none }).disposition).toBe('match')
+    expect(ids(settle({ constraint }))).toEqual([
+      ['A', 'participant'],
+      ['B', 'kept']
+    ])
+    // The answer never adds the rules' agents to a constrained conversation.
+    expect(settle({ constraint }).targets.map((t) => t.agentId)).not.toContain('billing-agent')
+    expect(settle({ constraint: [constraint[1]!], answer: none }).disposition).toBe('skip')
+  })
+
+  it('(c) an all-participant reply needs no evaluation; an unconstrained message always evaluates', () => {
+    const all = [
+      { agentId: 'A', participant: true },
+      { agentId: 'A', participant: false },
+      { agentId: 'B', participant: true }
+    ]
+    expect(partitionRoutingConstraint(all)).toMatchObject({ evaluate: false, eligible: [] })
+    expect(settle({ constraint: all, answer: undefined })).toMatchObject({ evaluate: false, disposition: 'match' })
+    expect(ids(settle({ constraint: all, answer: undefined }))).toEqual([
+      ['A', 'participant'],
+      ['B', 'participant']
+    ])
+    expect(partitionRoutingConstraint([]).evaluate).toBe(true)
+  })
+
+  it('(d) unavailable keeps the constrained, else the default for a new conversation, else nothing', () => {
+    const constraint = [
+      { agentId: 'A', participant: true },
+      { agentId: 'B', participant: false }
+    ]
+    expect(ids(settle({ constraint, answer: 'unavailable' }))).toEqual([
+      ['A', 'participant'],
+      ['B', 'fallback_constrained']
+    ])
+    expect(settle({ answer: 'unavailable' })).toMatchObject({ disposition: 'unavailable', fallback: 'default' })
+    expect(ids(settle({ answer: 'unavailable' }))).toEqual([['default-agent', 'fallback_default']])
+    expect(settle({ answer: 'unavailable', defaultAgentId: undefined })).toMatchObject({
+      targets: [],
+      fallback: 'none'
+    })
+  })
+
+  it('(d) a selected agent missing from the directory is unavailable, never rerouted', () => {
+    const result = settle({ candidates: candidates.filter((c) => c.agentId !== 'technical-agent') })
+    expect(result.targets).toEqual([
+      expect.objectContaining({ agentId: 'billing-agent', daemonId: 'd-1' }),
+      expect.objectContaining({ agentId: 'technical-agent', daemonId: null, unavailableReason: 'not_member' })
+    ])
   })
 })

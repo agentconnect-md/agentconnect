@@ -164,4 +164,36 @@ describe('RelayManager.sendWebchatPost (#753)', () => {
     expect(transports.get('wss://r1')!.sent.some((f) => f.type === 'rd/webchat-post')).toBe(true)
     expect(transports.get('wss://r2')!.sent.some((f) => f.type === 'rd/webchat-post')).toBe(false)
   })
+
+  it('routes rd/route via the ingress relay first, only over relays with the forward leg, else a retry', async () => {
+    const { mgr } = manager()
+    const calls: string[] = []
+    const fake = (relayId: string, route: boolean, fail = false) => ({
+      relayId,
+      supportsRoute: () => route,
+      sendRoute: vi.fn(async (p: { deliveryId: string }) => {
+        calls.push(relayId)
+        if (fail) throw new Error('closed')
+        return { deliveryId: p.deliveryId, disposition: 'admitted' as const }
+      }),
+      sendRouteReport: vi.fn(async () => ({ accepted: true }))
+    })
+    const clients = (mgr as unknown as { clients: Map<string, unknown> }).clients
+    clients.set('r-old', fake('r-old', false))
+    clients.set('r-a', fake('r-a', true, true))
+    clients.set('r-b', fake('r-b', true))
+    expect(await mgr.sendRoute({ deliveryId: 'd' } as never, 'r-b')).toMatchObject({ disposition: 'admitted' })
+    expect(calls).toEqual(['r-b'])
+    calls.length = 0
+    expect(await mgr.sendRoute({ deliveryId: 'd' } as never, 'r-a')).toMatchObject({ disposition: 'admitted' })
+    expect(calls).toEqual(['r-a', 'r-b'])
+    clients.clear()
+    clients.set('r-old', fake('r-old', false))
+    expect(await mgr.sendRoute({ deliveryId: 'd' } as never)).toEqual({
+      deliveryId: 'd',
+      disposition: 'retry',
+      reason: 'offline'
+    })
+    expect(await mgr.sendRouteReport({} as never)).toEqual({ accepted: false, reason: 'offline' })
+  })
 })

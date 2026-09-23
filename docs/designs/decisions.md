@@ -1005,7 +1005,11 @@ not permission to run the same classification independently on every member.
 
 Implementation must extend bot assignment, relay/daemon selection-result and
 forwarding contracts, durable per-target selection receipts, admission
-acknowledgements, and owner/participant reporting together. Record provider usage
+acknowledgements, and owner/participant reporting together. As built: the host
+copy carries `rd/msg.trustedRouting`, the selection receipt is the router
+verdict's `targetsJson`, remote targets travel as `rd/route` → `rd/msg` with
+`trustedRouteSelection`, and owner/participant reports go to the relay as
+`rd/route/report` (message-intake.md §6). Record provider usage
 once per evaluation and agent execution separately per admitted target. The proposed
 configuration/UI does not imply that today's per-target gate or relay owner
 selection already provides this behavior.

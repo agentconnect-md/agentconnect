@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   buildRelayDaemonFrame,
   DECISION_TRIGGER_V1_FEATURE,
+  DECISION_ROUTING_V1_FEATURE,
+  RD_DECISION_ROUTE_V1,
   GITEA_V1_FEATURE,
   RD_HOOK_NOTICE_V1,
   GITLAB_COM_V1_FEATURE,
@@ -126,7 +128,8 @@ describe('RelayClient (daemon → one relay)', () => {
         GITLAB_INSTANCE_V1_FEATURE,
         GITEA_V1_FEATURE,
         RD_HOOK_NOTICE_V1,
-        DECISION_TRIGGER_V1_FEATURE
+        DECISION_TRIGGER_V1_FEATURE,
+        DECISION_ROUTING_V1_FEATURE
       ]
     })
     expect(client.state).toBe('READY')
@@ -304,5 +307,33 @@ describe('RelayClient — an inbound frame that fails to decode', () => {
     const line = warn.mock.calls.map((c) => String(c[0])).find((l) => l.includes('undecodable'))
     expect(line).toContain(`dropping undecodable rd/msg frame ${bad.id}`)
     expect(line).toMatch(/\(\d+ bytes\)/)
+  })
+
+  it('sends rd/route and rd/route/report only to a relay advertising the forward leg', async () => {
+    const old = make()
+    await toReady(old.client, old.transports)
+    const route = { deliveryId: 'b:m#a' } as never
+    expect(old.client.supportsRoute()).toBe(false)
+    expect(await old.client.sendRoute(route)).toEqual({
+      deliveryId: 'b:m#a',
+      disposition: 'rejected',
+      reason: 'unsupported'
+    })
+    expect(await old.client.sendRouteReport({} as never)).toEqual({ accepted: false, reason: 'unsupported' })
+
+    const { client, transports } = make()
+    const t = await toReady(client, transports, RELAY_ID, [RD_DECISION_ROUTE_V1])
+    expect(client.supportsRoute()).toBe(true)
+    const pending = client.sendRoute(route)
+    await flush()
+    const req = t.lastReq('rd/route')!
+    t.inject(buildRelayDaemonFrame('rd/route/ack', { deliveryId: 'b:m#a', disposition: 'admitted' }, { corr: req.id }))
+    expect(await pending).toEqual({ deliveryId: 'b:m#a', disposition: 'admitted' })
+    const report = client.sendRouteReport({ botId: RELAY_ID, sessionKey: 'C/C', channel: 'C', participants: [] })
+    await flush()
+    t.inject(
+      buildRelayDaemonFrame('rd/route/report/ack', { accepted: true }, { corr: t.lastReq('rd/route/report')!.id })
+    )
+    expect(await report).toEqual({ accepted: true })
   })
 })

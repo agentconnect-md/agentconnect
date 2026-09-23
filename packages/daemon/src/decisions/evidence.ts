@@ -1,4 +1,11 @@
-import type { DecisionAnswer, DecisionCondition, DecisionEvaluation, DecisionQuestion } from '@agentconnect.md/protocol'
+import type {
+  DecisionAnswer,
+  DecisionCondition,
+  DecisionEvaluation,
+  DecisionQuestion,
+  RdRouteEffect,
+  RdRouteSelectionBody
+} from '@agentconnect.md/protocol'
 import { transcriptPromptText, type ChannelTextRow, type TranscriptEntry } from '../store/local-store.js'
 
 export type DecisionUnavailableReason = Extract<DecisionEvaluation, { status: 'unavailable' }>['reason']
@@ -15,16 +22,68 @@ export interface DecisionEvidence {
   verdict: { seq: number; subject: string }
   decisionId: string
   question: DecisionQuestion
-  condition: DecisionCondition
+  /** A gate's condition; a router carries `routing` instead. */
+  condition?: DecisionCondition
   result:
     | { status: 'answered'; answer: DecisionAnswer; matchedKeys: string[] }
     | { status: 'unavailable'; reason: DecisionUnavailableReason; recovered?: boolean }
+    | { status: 'not_evaluated'; reason: 'all_participants' }
+  /** A shared-bot router's selection, as the host settled it (usage stays on the host verdict). */
+  routing?: DecisionRoutingEvidence
   requestedModel: string
   actualModel?: string
   usage?: { inputTokens: number; outputTokens: number }
   evaluatedMessageId: string
   snapshotSeq: number
   partial: DecisionPartial
+}
+
+export interface DecisionRoutingEvidence {
+  botId?: string
+  matchedRuleIds: string[]
+  usedOtherwise: boolean
+  effect: RdRouteEffect
+  constrained: boolean
+  targetAgentIds: string[]
+}
+
+/** The wire selection a routed forward carried, as this daemon's evidence for its own admission at `localSeq`. */
+export function routeSelectionEvidence(selection: RdRouteSelectionBody, localSeq: number): DecisionEvidence {
+  const r = selection.result
+  const result: DecisionEvidence['result'] =
+    r.status === 'answered'
+      ? { status: 'answered', answer: r.answer, matchedKeys: r.matchedKeys }
+      : r.status === 'unavailable'
+        ? { status: 'unavailable', reason: r.reason, ...(r.recovered ? { recovered: true } : {}) }
+        : { status: 'not_evaluated', reason: 'all_participants' }
+  return {
+    // `selectionId` is `<hostSeq>:<subject>`; on a shared store the target claims into the host's verdict.
+    verdict: { seq: selection.hostSeq, subject: selection.selectionId.slice(selection.selectionId.indexOf(':') + 1) },
+    decisionId: selection.decisionId,
+    question: selection.question,
+    result,
+    routing: {
+      matchedRuleIds: r.status === 'answered' ? r.matchedRuleIds : [],
+      usedOtherwise: r.status === 'answered' ? r.usedOtherwise : false,
+      effect: selection.effect,
+      constrained: selection.constrained,
+      targetAgentIds: selection.targetAgentIds
+    },
+    requestedModel: selection.requestedModel,
+    ...(selection.actualModel ? { actualModel: selection.actualModel } : {}),
+    evaluatedMessageId: selection.evaluatedMessageId,
+    snapshotSeq: localSeq,
+    partial: selection.partial
+  }
+}
+
+const EFFECT_TEXT: Record<RdRouteEffect, string> = {
+  participant: 'thread participant',
+  kept: 'kept addressed recipient',
+  selected: 'selected by rule',
+  default_agent: 'Otherwise default',
+  fallback_constrained: 'continued after evaluation failure',
+  fallback_default: 'continued after evaluation failure'
 }
 
 /** Carried on an admitted message in a By decision conversation and persisted with its inbox row. */
@@ -69,9 +128,18 @@ export function decisionEvidenceText(evidence: DecisionEvidence): string {
       ? `Answer: ${describeAnswer(evidence.result.answer)}${
           evidence.result.matchedKeys.length ? `; matched ${evidence.result.matchedKeys.join(', ')}` : ''
         }`
-      : `Result: unavailable: ${evidence.result.reason}, delivered because evaluation failed${
-          evidence.result.recovered ? ' (recovered after restart)' : ''
-        }`
+      : evidence.result.status === 'not_evaluated'
+        ? 'Result: not evaluated; every recipient already participates in this thread'
+        : `Result: unavailable: ${evidence.result.reason}, delivered because evaluation failed${
+            evidence.result.recovered ? ' (recovered after restart)' : ''
+          }`
+  const routing = evidence.routing
+    ? `Routing: ${EFFECT_TEXT[evidence.routing.effect]}${
+        evidence.routing.matchedRuleIds.length ? `; matched rules ${evidence.routing.matchedRuleIds.join(', ')}` : ''
+      }${evidence.routing.usedOtherwise ? '; no rule matched' : ''}; ${
+        evidence.routing.constrained ? 'targets constrained to addressed or current recipients' : 'new conversation'
+      }; ${evidence.routing.targetAgentIds.length} target(s)`
+    : undefined
   const model = evidence.actualModel
     ? `Model: ${evidence.actualModel} (requested ${evidence.requestedModel})`
     : `Model: none (requested ${evidence.requestedModel})`
@@ -83,6 +151,7 @@ export function decisionEvidenceText(evidence: DecisionEvidence): string {
     `Decision: ${evidence.decisionId}`,
     `Question: ${evidence.question.instructions}`,
     result,
+    ...(routing ? [routing] : []),
     model,
     `Evaluated message: ${evidence.evaluatedMessageId}`,
     context

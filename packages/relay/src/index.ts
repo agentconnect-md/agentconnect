@@ -365,6 +365,8 @@ async function main(): Promise<void> {
       }
     },
     onAgentMsg: (fromDaemonId, msg) => routeAgentMsg(fromDaemonId, msg),
+    onRoute: (fromDaemonId, msg) => relayIngress.handleRoute(fromDaemonId, msg),
+    onRouteReport: (fromDaemonId, msg) => relayIngress.applyRouteReport(fromDaemonId, msg),
     log
   })
   held.rdServer = rdServer

@@ -9,7 +9,16 @@
  * daemon only does set-convergence — it never assumes the roster is the full relay
  * fleet — so future CP-side sharding is a CP-only change (§17 invariant).
  */
-import type { RelayRosterEntry, RdAgentMsg, RdAgentMsgAck, RdWebchatPost } from '@agentconnect.md/protocol'
+import type {
+  RelayRosterEntry,
+  RdAgentMsg,
+  RdAgentMsgAck,
+  RdRoute,
+  RdRouteAck,
+  RdRouteReport,
+  RdRouteReportAck,
+  RdWebchatPost
+} from '@agentconnect.md/protocol'
 import { RelayClient, type RelayClientDeps } from './relay-client.js'
 
 export class RelayManager {
@@ -62,6 +71,38 @@ export class RelayManager {
       if (client.isReady()) return client.sendAgentMsg(payload)
     }
     throw new Error('no READY relay to route agent-call')
+  }
+
+  /** READY relays that serve the routed-forward leg, the preferred one (the message's ingress relay) first. */
+  private routeRelays(preferRelayId?: string): RelayClient[] {
+    const ready = [...this.clients.values()].filter((c) => c.supportsRoute())
+    return ready.sort((a, b) => Number(b.relayId === preferRelayId) - Number(a.relayId === preferRelayId))
+  }
+
+  /** One frozen router target over a relay; a transport failure tries the next READY relay, else `retry`. */
+  async sendRoute(payload: RdRoute, preferRelayId?: string): Promise<RdRouteAck> {
+    for (const client of this.routeRelays(preferRelayId)) {
+      try {
+        return await client.sendRoute(payload)
+      } catch {
+        continue
+      }
+    }
+    return { deliveryId: payload.deliveryId, disposition: 'retry', reason: 'offline' }
+  }
+
+  /** A finished selection's owner and participants, once, over the first relay that accepts it. */
+  async sendRouteReport(payload: RdRouteReport, preferRelayId?: string): Promise<RdRouteReportAck> {
+    let last: RdRouteReportAck = { accepted: false, reason: 'offline' }
+    for (const client of this.routeRelays(preferRelayId)) {
+      try {
+        last = await client.sendRouteReport(payload)
+        if (last.accepted) return last
+      } catch {
+        continue
+      }
+    }
+    return last
   }
 
   /**
