@@ -722,9 +722,6 @@ export class SessionManager {
     rec = opened.rec
     const created = opened.created
     const additionalMcpServersAttached = opened.additionalMcpAttached
-    // Resolves the memoized snapshot the runtime session already consumed, or composes it now for a
-    // session that was live and needed no preparation.
-    const { sessionContext, parentReplyAppend } = await standingContext()
 
     // A channel-root message posted by this same agent creates the thread's session cursor
     // without running the model. Keep lastDeliveredTs at null: the first real reply must replay
@@ -755,6 +752,9 @@ export class SessionManager {
     const markerBefore =
       rec.lastDeliveredTs !== null && ordering?.coordinate(rec.lastDeliveredTs) === null ? null : rec.lastDeliveredTs
     const firstPromptAfterOwnRootInitialization = markerBefore === null && rec.triggeredBy === agentId
+    const opening = created || firstPromptAfterOwnRootInitialization
+    // Only an inline opening prelude or a restate reads it below, so a warm turn never samples the workspace roots.
+    const preludeStanding = (opening ? !usesMeta : restateParentReply) ? await standingContext() : undefined
     // The warm-thread provider snapshot (§8.4/§8.5) lives in turn/thread-backfill.ts;
     // handle() only supplies the coordinates and consumes the stable window it returns.
     // §6.3: an append session spans many threads and its coordinate is no thread's, so
@@ -912,28 +912,15 @@ export class SessionManager {
       if (reference) blocks.push(reference)
     }
 
-    // System-side context for a newly-created session or the first real prompt after an
-    // initialization-only root: the agent meta object (identity +
-    // description + source/channel) and the memory INDEX, both in `sessionContext`. All
-    // STANDING context, not a user turn — so they never sit as a leading user block (which
-    // a runtime auto-titles from — #398). Claude carries them via `_meta.systemPrompt` (see
-    // newSession/claudeSessionMeta), so it adds NOTHING here. Other runtimes have no such
-    // channel: inline sessionContext as one combined first block. A resumed session normally
-    // carries it from its first turn; an initialization-only root deliberately had no such turn.
+    // A new session or an initialized root's first prompt inlines the standing context unless `_meta` has it (#398).
     const promptPrelude: ContentBlock[] = []
-    if (created || firstPromptAfterOwnRootInitialization) {
-      // Establish the reminder epoch without redundantly restating the rule that this
-      // new session just received (inline or via `_meta.systemPrompt`). A non-Claude
-      // initialization-only session had no first prompt, so defer its inline standing
-      // context to this first real activation.
+    if (opening) {
+      // Start the reminder epoch: this session just received the full rule, inline or via `_meta`.
       this.turnsSinceReminder.set(key, 0)
-      if (!usesMeta && sessionContext) promptPrelude.push({ type: 'text', text: sessionContext })
-    } else if (restateParentReply) {
-      // An ALREADY-OPEN session whose standing context does not state the current obligation —
-      // it was composed before the obligation existed, or it names a previous parent. This session
-      // is not being recreated, so there is no system-prompt channel to update; state the
-      // directive as a turn-scoped block naming the parent THIS turn may actually reply to.
-      promptPrelude.push({ type: 'text', text: parentReplyAppend })
+      if (preludeStanding?.sessionContext) promptPrelude.push({ type: 'text', text: preludeStanding.sessionContext })
+    } else if (restateParentReply && preludeStanding) {
+      // An open session's standing context lacks this obligation or names another parent, so state it as a turn block.
+      promptPrelude.push({ type: 'text', text: preludeStanding.parentReplyAppend })
     } else if (await this.shouldRemind(key)) {
       // Long-running (or just-compacted) session: re-assert the no-response
       // rule as a compact system reminder so it stays salient. A brand-new session already

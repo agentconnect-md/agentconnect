@@ -16,6 +16,7 @@ import type { NormalizedMessage } from '../src/messages/normalized.js'
 import type { McpServer } from '@agentclientprotocol/sdk'
 import { writeWithSidecar } from './fixtures/memory-sidecar.js'
 import { localMemoryHome } from '../src/memory/home.js'
+import { buildParentReplyAppend } from '../src/session/turn/standing-context.js'
 
 /** One session's transcript read scope. In a `createNew` conversation the coordinate IS the
  *  physical thread, so a scope built this way reads exactly what `(channel, thread)` used to. */
@@ -3002,4 +3003,150 @@ it('refreshes the bounded catalog on native resume without adding it to user pro
   await resumed.handle('bot-a', msg({ ts: '100.3', text: 'third', platform: 'telegram' }))
   expect(view).toHaveBeenCalledTimes(observed)
   await store.close()
+})
+
+describe('SessionManager — standing context composed only where a prompt reads it', () => {
+  const rootPath = '/srv/agents/bot-a/repos/acme/infra/checkout'
+  const roots = [{ path: rootPath, repoFullName: 'acme/infra', branch: 'trunk' }]
+  const rootsLine = `- ${rootPath} — acme/infra (trunk)`
+  // Counts the standing context's reads; `asleep` stands for the pod holding the roots going unbound.
+  class RootsProbe extends WorkspaceManager {
+    reads = 0
+    asleep = false
+    override async sessionAdditionalRoots() {
+      if (this.asleep) throw new Error('sandbox bot-a that owns /srv/agents/bot-a/repos has no bound channel')
+      this.reads++
+      return roots
+    }
+    // The runtime's own hand-out on session/new and load is not the standing context's read.
+    override async additionalWorkspaceDirectories() {
+      return roots.map((root) => root.path)
+    }
+  }
+  const liveHost = (usesMeta: boolean) => {
+    const known = new Set<string>()
+    let minted = 0
+    return {
+      newSession: vi.fn(async () => {
+        const id = `acp-${++minted}`
+        known.add(id)
+        return id
+      }),
+      loadSession: vi.fn(async (id: string) => {
+        known.add(id)
+      }),
+      hasSession: (id: string) => known.has(id),
+      loadSupported: () => true,
+      usesMetaSystemPrompt: () => usesMeta
+    } as any
+  }
+  const setup = async (usesMeta: boolean) => {
+    const store = await newStore()
+    const workspaces = new RootsProbe()
+    const host = liveHost(usesMeta)
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory, workspaces })
+    return { store, workspaces, host, sm }
+  }
+  const promptText = (blocks: any[]) => blocks.map((b) => b.text ?? '').join('\n')
+
+  it.each([false, true])(
+    'composes none of it on a warm turn, which an unreadable root cannot fail (meta %s)',
+    async (meta) => {
+      const { store, workspaces, host, sm } = await setup(meta)
+      await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+      expect(workspaces.reads).toBe(1)
+      workspaces.asleep = true
+      const warm = await sm.handle('bot-a', msg({ ts: '100.2', text: 'second' }))
+      expect(warm.created).toBe(false)
+      expect(promptText(warm.blocks)).not.toContain('# Agent')
+      expect(host.newSession).toHaveBeenCalledOnce()
+      expect(workspaces.reads).toBe(1)
+      await store.close()
+    }
+  )
+
+  it('inlines the one snapshot a new session was opened with', async () => {
+    const { store, workspaces, sm } = await setup(false)
+    const { created, blocks } = await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+    expect(created).toBe(true)
+    expect(blocks[0]).toMatchObject({ type: 'text', text: expect.stringMatching(/^# Agent/) })
+    expect((blocks[0] as any).text).toContain(rootsLine)
+    expect(workspaces.reads).toBe(1)
+    await store.close()
+  })
+
+  it.each([false, true])(
+    'composes it for the first prompt after an initialized root only to inline it (meta %s)',
+    async (meta) => {
+      const { store, workspaces, host, sm } = await setup(meta)
+      const seed = msg({
+        ts: '200.1',
+        thread: '200.1',
+        source: 'agent',
+        sender: { id: 'bot-a', isBot: true },
+        text: 'seed'
+      })
+      await sm.handle('bot-a', seed, undefined, undefined, 'acp-parent-1', undefined, undefined, {
+        initializeOnly: true
+      })
+      expect(workspaces.reads).toBe(1)
+      const first = await sm.handle('bot-a', msg({ ts: '200.2', thread: '200.1', text: 'first reply' }))
+      const prompt = promptText(first.blocks)
+      if (meta) {
+        // The `_meta` channel carried it at session/new, so this prompt has nothing to read.
+        expect(host.newSession.mock.calls[0][3]).toContain(rootsLine)
+        expect(prompt).not.toContain('# Agent')
+        expect(workspaces.reads).toBe(1)
+      } else {
+        expect(prompt).toContain('# Agent')
+        expect(prompt).toContain('- Parent session: acp-parent-1')
+        expect(prompt).toContain(rootsLine)
+        expect(workspaces.reads).toBe(2)
+      }
+      await store.close()
+    }
+  )
+
+  it.each([false, true])(
+    'composes it for a restate, stating exactly the parent-reply block (meta %s)',
+    async (meta) => {
+      const { store, workspaces, sm } = await setup(meta)
+      const wake = (ts: string, needsReply: boolean) =>
+        sm.handle('bot-a', msg({ ts, text: 'work' }), undefined, undefined, 'origin-9', undefined, needsReply)
+      await wake('100.1', false)
+      expect(workspaces.reads).toBe(1)
+      const restated = await wake('100.2', true)
+      expect(restated.blocks[0]).toEqual({ type: 'text', text: buildParentReplyAppend(true, 'origin-9') })
+      expect(workspaces.reads).toBe(2)
+      // The obligation is now the session's own, so the next ordinary turn is warm again.
+      await sm.handle('bot-a', msg({ ts: '100.3', text: 'more' }))
+      expect(workspaces.reads).toBe(2)
+      await store.close()
+    }
+  )
+
+  it.each([false, true])(
+    'composes it on a resume only for a host that re-asserts it on load (meta %s)',
+    async (meta) => {
+      const { store, workspaces, sm } = await setup(meta)
+      await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+      const host2 = liveHost(meta)
+      const resumed = new SessionManager({
+        store,
+        hostFor: async () => host2,
+        agentById: () => agent,
+        memory,
+        workspaces
+      })
+      const load = await resumed.handle('bot-a', msg({ ts: '100.2', text: 'second' }))
+      expect(host2.loadSession).toHaveBeenCalledOnce()
+      expect(load.created).toBe(false)
+      if (meta) expect(host2.loadSession.mock.calls[0][4]).toContain(rootsLine)
+      else expect(host2.loadSession.mock.calls[0][4]).toBeUndefined()
+      expect(workspaces.reads).toBe(meta ? 2 : 1)
+      await resumed.handle('bot-a', msg({ ts: '100.3', text: 'third' }))
+      expect(workspaces.reads).toBe(meta ? 2 : 1)
+      await store.close()
+    }
+  )
 })
