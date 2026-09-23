@@ -834,7 +834,7 @@ export function integrationRoutes(deps: HttpDeps) {
           tags: [Tag.Integrations],
           summary: 'Update a conversation',
           description:
-            "Set a conversation's trigger (Off, Mention, Any message, or By decision with its complete gate binding), session mode, or default agent, then push the updated routing configuration. Off, Mention, and Any message clear a By decision binding.",
+            "Set a conversation's trigger (Off, Mention, Any message, or By decision with its complete gate binding), session mode, or default agent, then push the updated routing configuration. Off, Mention, and Any message clear a By decision binding. By decision refusals carry `code` DECISION_NOT_FOUND (404) or DECISION_UNSUPPORTED_CONSUMER (409).",
           operationId: 'updateIntegrationChannel',
           params: IdParam.extend({ channelId: z.string().min(1) }),
           body: UpdateIntegrationChannelBody,
@@ -879,7 +879,12 @@ export function integrationRoutes(deps: HttpDeps) {
             return badRequest('By decision is not available for this platform')
           validatedDecision = await visibleDecision(deps, req, gate.decisionId)
           if (!validatedDecision)
-            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'decision not found' })
+            return reply.code(404).send({
+              error: 'Not Found',
+              statusCode: 404,
+              message: 'decision not found',
+              code: 'DECISION_NOT_FOUND'
+            })
           const issues = decisionConditionIssues(validatedDecision.question, gate.when)
           if (issues.length > 0) return badRequest('The condition does not match the Decision question', issues)
         }
@@ -929,7 +934,8 @@ export function integrationRoutes(deps: HttpDeps) {
             return reply.code(409).send({
               error: 'Conflict',
               statusCode: 409,
-              message: readiness.reason ?? 'A consumer of this conversation does not support By decision'
+              message: readiness.reason ?? 'A consumer of this conversation does not support By decision',
+              code: 'DECISION_UNSUPPORTED_CONSUMER'
             })
           }
         }
@@ -1061,7 +1067,12 @@ export function integrationRoutes(deps: HttpDeps) {
         } catch (err) {
           // The Decision was deleted between validation and the write (FK RESTRICT on the gate).
           if (gate && err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003')
-            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'decision not found' })
+            return reply.code(404).send({
+              error: 'Not Found',
+              statusCode: 404,
+              message: 'decision not found',
+              code: 'DECISION_NOT_FOUND'
+            })
           throw err
         } finally {
           release()

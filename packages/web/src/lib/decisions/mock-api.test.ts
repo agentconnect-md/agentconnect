@@ -51,7 +51,10 @@ describe('Decision mock API', () => {
     expect((await api.getDecision(created.id)).usages).toEqual([])
     fail = false
     await api.saveChannel('moderation-channel', settings)
-    await expect(api.deleteDecision(created.id)).rejects.toMatchObject({ status: 409 })
+    await expect(api.deleteDecision(created.id)).rejects.toMatchObject({
+      status: 409,
+      body: { usages: [{ kind: 'gate', id: 'moderation-channel' }], hiddenUsageCount: 0 }
+    })
     await api.saveChannel('moderation-channel', { trigger: 'mention' })
     await api.deleteDecision(created.id)
     await expect(api.getDecision(created.id)).rejects.toMatchObject({ status: 404 })

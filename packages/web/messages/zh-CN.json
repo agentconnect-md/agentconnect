@@ -1318,7 +1318,9 @@
         "ariaLabel": "{name}的设置：{value}",
         "menuLabel": "{name}的设置",
         "optionHint": "<b>{label}</b>——<hint></hint>"
-      }
+      },
+      "managedByRouting": "由 {bot} 路由管理",
+      "managedByRoutingHint": "此 Bot 的路由决定由哪个 Agent 在这里回复。"
     },
     "github": {
       "sync": "同步",
@@ -4168,6 +4170,7 @@
     "deleting": "正在删除…",
     "deleteTitle": "删除 {name}",
     "deleteBodyUsed": "{names} 正在使用该决策。请先移除关联配置，再删除决策。",
+    "deleteBodyInUse": "该决策仍在使用中。删除前请先从以下位置移除它：",
     "deleteBodyUnused": "该决策未被任何地方使用。此操作无法撤销。",
     "save": "保存",
     "cancel": "取消",
@@ -4224,7 +4227,8 @@
         "model_selection": "模型选择"
       },
       "needsReview": "需要复核",
-      "ok": "正常"
+      "ok": "正常",
+      "hidden": "{count, plural, other {另有 # 处你无权查看}}"
     },
     "errors": {
       "name": "保存前请先为决策命名。",
@@ -4264,7 +4268,38 @@
       "triggers": "触发对象",
       "helpMentions": "@提及不会跳过决策；它只决定可以被触发的 Agent 是这一个。",
       "helpHistory": "最近的对话历史会自动包含在内，包括没有触发 Agent 的消息。",
-      "helpUnavailable": "如果评估不可用，符合条件的消息会继续交给该 Agent。"
+      "helpUnavailable": "如果评估不可用，符合条件的消息会继续交给该 Agent。",
+      "activates": "激活",
+      "activatesAgent": "激活 {agent}",
+      "noDecisions": "还没有决策。新建一个来评估这里的消息。",
+      "hiddenDecision": "你无权查看的决策",
+      "saving": "正在保存…",
+      "retry": "重试",
+      "openDecision": "打开决策",
+      "repair": "修复条件",
+      "chooseAnother": "选择其他决策",
+      "status": {
+        "pending_sync": "等待同步",
+        "needs_review": "需要复核",
+        "daemon_offline": "Daemon 离线",
+        "unsupported": "不受支持",
+        "access_revoked": "访问已撤销"
+      },
+      "statusBody": {
+        "pending_sync": "已保存，尚未生效。服务此对话的 Daemon 和 Relay 确认后即会生效。",
+        "needs_review": "{decision} 已更改，此条件不再匹配其答案。修复前它将保持停用；系统不会替你重新选择。",
+        "daemon_offline": "没有服务此 Agent 的 Daemon 在线。Daemon 重新连接后，已保存的条件才会生效。",
+        "unsupported": "服务此对话的 Daemon 或 Relay 版本过旧，无法运行按决策触发。请升级后再启用此条件。",
+        "access_revoked": "此 Agent 已无法使用已保存的决策，因此该条件已停用。请选择它可以使用的决策。"
+      },
+      "saveErrors": {
+        "invalid": "条件与此决策不匹配。请修正标出的字段后重新保存。",
+        "invalidRequest": "此对话无法使用按决策触发：{message}",
+        "forbidden": "你没有权限更改此 Agent 在这里的响应方式。",
+        "decisionUnavailable": "决策不可用。它已被删除或不再与你共享——请选择其他决策。",
+        "unsupported": "服务此对话的 Daemon 或 Relay 尚不支持按决策触发。请升级后重试。",
+        "failed": "保存失败——你的更改已保留。{message}"
+      }
     },
     "try": {
       "title": "用示例试运行",
@@ -4314,7 +4349,9 @@
       "body": "此决策已绑定到 Agent。更改决策类型或选项会改变 Agent 调用决策时收到的答案。如果 Agent 指令引用了旧答案，请在保存后更新指令。",
       "confirm": "仍然保存",
       "saving": "正在保存…",
-      "usageError": "无法检查此决策的使用情况，请重试保存。"
+      "usageError": "无法检查此决策的使用情况，请重试保存。",
+      "titleUsages": "请检查使用此决策的位置",
+      "gateBody": "条件不再匹配新答案的对话会被标记为需要复核，并在修复前保持停用：{names}"
     },
     "notOffered": {
       "title": "决策功能未启用",

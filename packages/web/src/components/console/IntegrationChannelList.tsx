@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
@@ -16,6 +17,8 @@ import {
 import { useOwnerChangeGuard } from '@/components/console/OwnerChangeGuard'
 import { DecisionBindingStrip } from '@/components/console/decisions/DecisionBindingStrip'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
+import { gateStatus, managedByRouting, savedGateOf, type SavedGate } from '@/lib/decisions/binding'
+import { useOrgs } from '@/lib/org-context'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { chatPlatformName } from '@/lib/platform-labels'
@@ -45,8 +48,7 @@ function resolveMessage(
   return t(message.key, { ...message.values, ...values })
 }
 
-/** The row's trigger choice. `by decision` is prototype-only: the CP's conversation DTO has
- *  no such value yet, so picking it writes a prototype gate instead of a channel PATCH. */
+/** The row's trigger choice; `decision` saves only with its gate, through the binding strip. */
 type RowTrigger = IntegrationChannelRow['trigger'] | 'decision'
 
 type SessionMode = NonNullable<IntegrationChannelRow['sessionMode']>
@@ -68,7 +70,7 @@ function RowSettings({
   disabled: boolean
   /** The row's effective choice, which is the memory trigger unless a gate overrides it. */
   trigger: RowTrigger
-  /** Whether `by decision` is offered here at all — the flag, a group room, and a non-shared bot. */
+  /** Whether `by decision` is offered here at all — the flag and a non-shared bot; the platform may still withhold it. */
   allowDecision: boolean
   onTrigger: (trigger: RowTrigger) => void | Promise<void>
   onSessionMode: (mode: SessionMode) => Promise<void>
@@ -101,7 +103,10 @@ function RowSettings({
           ] satisfies ChannelSettingsOption<RowTrigger>[]
         ).filter((o) =>
           // The room's vocabulary is the platform's: nothing matches "All messages" where no unaddressed traffic exists.
-          o.value === 'decision' ? allowDecision : !semantics.triggers || semantics.triggers.includes(o.value)
+          o.value === 'decision'
+            ? channel.trigger === 'decision' ||
+              (allowDecision && (!semantics.triggers || semantics.triggers.includes('decision')))
+            : !semantics.triggers || semantics.triggers.includes(o.value)
         )
   // A direct conversation is one continuous exchange already, so only a channel row chooses its session.
   const sessions = isDirectConversation(channel.kind)
@@ -628,6 +633,27 @@ function DefaultAgentPicker({
   )
 }
 
+/** A shared bot's routing decides who answers this row, so it links there instead of offering a per-row gate. */
+function ManagedByRoutingNote({ botId, bot, padX }: { botId: string; bot: string; padX: number }) {
+  const t = useTranslations('Integrations.channelList')
+  const { orgPath } = useOrgs()
+  return (
+    <div
+      role="note"
+      className="flex items-start gap-2 border-b border-(--border-subtle) bg-(--surface-sunken) font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)"
+      style={{ padding: `9px ${padX}px 9px ${padX + 22}px` }}
+    >
+      <Icon name="split" size={13} className="mt-[2px] flex-none" />
+      <span className="flex flex-col gap-[2px]">
+        <Link href={orgPath(`/integrations?bot=${encodeURIComponent(botId)}`)} className="lnk">
+          {t('managedByRouting', { bot })}
+        </Link>
+        <span>{t('managedByRoutingHint')}</span>
+      </span>
+    </div>
+  )
+}
+
 /** An integration's conversation rows and their controls, for a padding-less card; demo rows (no id) are inert. */
 export function IntegrationChannelList({
   integrationId,
@@ -660,6 +686,7 @@ export function IntegrationChannelList({
   const translate: ChannelListTranslator = (key, values) => t(key as never, values as never)
   const {
     setChannelTrigger,
+    setChannelDecision,
     setChannelSessionMode,
     setChannelAgent,
     forgetChannel,
@@ -716,26 +743,32 @@ export function IntegrationChannelList({
   // bot-wide just like channels.
   const dmRows = channels.filter((c) => isDirectConversation(c.kind))
   const grouped = groupBySpace(channelRows)
-  // Rows switched to `by decision` this session, plus every saved gate.
+  // Live rows read the gate from the channel DTO; explicit mock mode keeps its local prototype gates.
   const decisions = useOptionalDecisionsPrototype()
-  const decisionsOffered = featureFlagEnabled('decisions') && decisions?.api.mode === 'mock'
-  const [pickedDecision, setPickedDecision] = useState<Record<string, boolean>>({})
-  // The store composes the identity (organization + bot + conversation); without it there are
-  // no gates at all and the choice is hidden, so a bare channel id is only a map key.
+  const decisionsOffered = featureFlagEnabled('decisions') && decisions !== null
+  const mode = decisions?.api.mode
+  const drafts = decisions?.bindingDrafts ?? {}
+  // The store composes the identity (organization + bot + conversation); without it a bare channel id is only a map key.
   const bindingKey = (c: IntegrationChannelRow) => decisions?.gateKeyFor(botId, c.channelId) ?? c.channelId
-  const rowTrigger = (c: IntegrationChannelRow): RowTrigger => {
-    const key = bindingKey(c)
-    return pickedDecision[key] || decisions?.gates[key] ? 'decision' : c.trigger
+  const mockGate = (c: IntegrationChannelRow) => (mode === 'mock' ? decisions?.gates[bindingKey(c)] : undefined)
+  const savedGate = (c: IntegrationChannelRow): SavedGate | null => {
+    if (mode !== 'mock') return savedGateOf(c)
+    const gate = mockGate(c)
+    return gate ? { decisionId: gate.decisionId, when: gate.when } : null
   }
+  const rowTrigger = (c: IntegrationChannelRow): RowTrigger =>
+    (decisionsOffered && drafts[bindingKey(c)]) || mockGate(c) ? 'decision' : c.trigger
   const pickTrigger = (c: IntegrationChannelRow, trigger: RowTrigger) => {
     const key = bindingKey(c)
+    // Choosing By decision only opens a draft; nothing is written until the strip saves the gate with it.
     if (trigger === 'decision') {
-      setPickedDecision((current) => ({ ...current, [key]: true }))
+      if (decisionsOffered)
+        decisions?.setBindingDraft(key, (current) => current ?? { decisionId: null, when: null, phase: 'editing' })
       return
     }
-    setPickedDecision((current) => Object.fromEntries(Object.entries(current).filter(([entry]) => entry !== key)))
-    decisions?.clearGate(key)
-    // The CP trigger word is unchanged by a gate, so a row that never had one has nothing to write.
+    decisions?.setBindingDraft(key, null)
+    if (mode === 'mock') decisions?.clearGate(key)
+    // A live saved gate is trigger 'decision', so leaving it PATCHes; the server clears the binding.
     if (trigger === c.trigger) return
     return setChannelTrigger(integrationId!, c.channelId, trigger)
   }
@@ -776,6 +809,47 @@ export function IntegrationChannelList({
       >
         <Icon name="log-out" size={13} color="var(--text-tertiary)" />
       </button>
+    )
+  }
+  // Beneath a row: the shared-bot routing note, or the gate strip while a draft or saved gate exists.
+  const decisionStrip = (c: IntegrationChannelRow): ReactNode => {
+    if (shareable && managedByRouting(c)) {
+      return (
+        <ManagedByRoutingNote
+          botId={botId ?? ''}
+          bot={bots.find((b) => b.id === botId)?.name ?? botId ?? ''}
+          padX={padX}
+        />
+      )
+    }
+    if (!decisions || !decisionsOffered) return null
+    const key = bindingKey(c)
+    const saved = savedGate(c)
+    if (!drafts[key] && !saved) return null
+    const gate = mockGate(c)
+    return (
+      <DecisionBindingStrip
+        bindingKey={key}
+        canWrite={!!integrationId && !shareable}
+        // The same owner the row's dispatch picker shows — for a shared bot, a sibling install's.
+        agentName={(defaultAgent(c) ?? (agentId ? member(agentId) : undefined))?.label ?? ''}
+        padX={padX}
+        saved={saved}
+        savedName={mode === 'live' ? (c.decision?.name ?? null) : undefined}
+        status={!saved ? null : mode === 'live' ? gateStatus(c.decision) : gate?.needsReview ? 'needs_review' : 'ready'}
+        onSave={(next) =>
+          mode === 'mock'
+            ? Promise.resolve(
+                decisions.setGate(key, {
+                  decisionId: next.decisionId,
+                  when: next.when,
+                  channelName: rowLabel(c),
+                  needsReview: false
+                })
+              )
+            : setChannelDecision(integrationId!, c.channelId, next)
+        }
+      />
     )
   }
   const row = (c: IntegrationChannelRow) => {
@@ -828,7 +902,7 @@ export function IntegrationChannelList({
             <RowSettings
               channel={c}
               platform={platform}
-              disabled={!integrationId}
+              disabled={!integrationId || drafts[bindingKey(c)]?.phase === 'saving'}
               trigger={trigger}
               // A shared bot routes by its own rules (§3.2), a router not built yet, so it gets no per-channel gate.
               allowDecision={decisionsOffered && !shareable}
@@ -849,22 +923,7 @@ export function IntegrationChannelList({
             )}
           </div>
         </div>
-        {trigger === 'decision' && decisions && !shareable && (
-          <DecisionBindingStrip
-            bindingKey={bindingKey(c)}
-            channelName={rowLabel(c)}
-            canWrite={!!integrationId}
-            // The same owner the row's dispatch picker shows — for a shared bot, a sibling install's.
-            agentName={(defaultAgent(c) ?? (agentId ? member(agentId) : undefined))?.label ?? ''}
-            padX={padX}
-            onAbandon={() => {
-              const key = bindingKey(c)
-              setPickedDecision((current) =>
-                Object.fromEntries(Object.entries(current).filter(([entry]) => entry !== key))
-              )
-            }}
-          />
-        )}
+        {decisionStrip(c)}
       </Fragment>
     )
   }

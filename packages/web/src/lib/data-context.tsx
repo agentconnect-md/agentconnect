@@ -14,6 +14,7 @@ import { consoleKeys } from '@/lib/swr-keys'
 import { useSessionList } from '@/lib/use-session-list'
 import { randomUuid } from '@/lib/random-uuid'
 import { accessNotificationSnapshot, type AccessNotificationSnapshot } from '@/lib/access-notification-snapshot'
+import type { ChannelDecisionGate } from '@agentconnect.md/protocol/decision'
 import {
   AGENTS,
   INTEGRATIONS,
@@ -118,6 +119,7 @@ import {
   type ChannelTrigger,
   type ChannelSessionMode,
   type IntegrationDto,
+  type IntegrationChannelDto,
   type CreatedHookDto,
   type CreateHookInput,
   type CreateGithubHookInput,
@@ -260,6 +262,8 @@ interface ConsoleData {
   deleteHook: (id: string, agentId?: string | null) => Promise<void>
   /** Per-conversation trigger choice (PATCH), applied to the local row on success. */
   setChannelTrigger: (integrationId: string, channelId: string, trigger: ChannelTrigger) => Promise<void>
+  /** Save a By decision gate (trigger + binding in one PATCH) and project the returned row. */
+  setChannelDecision: (integrationId: string, channelId: string, gate: ChannelDecisionGate) => Promise<void>
   setChannelSessionMode: (integrationId: string, channelId: string, sessionMode: ChannelSessionMode) => Promise<void>
   /** Per-conversation default agent for a shared bot (PATCH), applied locally. */
   setChannelAgent: (integrationId: string, channelId: string, agentId: string) => Promise<void>
@@ -375,6 +379,8 @@ export function integrationRowFromDto(
       ...(c.url ? { url: c.url } : {}),
       kind: c.kind,
       trigger: c.trigger,
+      decisionBinding: c.decisionBinding ?? null,
+      decision: c.decision ?? null,
       sessionMode: c.sessionMode,
       agentId: c.agentId
     }))
@@ -1476,31 +1482,55 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     [mutateIntegrations, realBots]
   )
 
+  // Project a returned conversation's trigger, gate and readiness onto the cache, bot-wide for a shared bot.
+  const projectChannel = useCallback(
+    (integrationId: string, updated: IntegrationChannelDto) =>
+      mutateIntegrations(
+        (rows) => {
+          const source = rows?.find((row) => row.id === integrationId)
+          if (!rows || !source) return rows
+          const botWide = realBots.some((bot) => bot.id === source.botId && bot.shareable)
+          return rows.map((row) =>
+            (botWide ? row.botId === source.botId : row.id === integrationId)
+              ? {
+                  ...row,
+                  channels: row.channels.map((channel) =>
+                    channel.channelId === updated.channelId
+                      ? {
+                          ...channel,
+                          trigger: updated.trigger,
+                          decisionBinding: updated.decisionBinding ?? null,
+                          decision: updated.decision ?? null
+                        }
+                      : channel
+                  )
+                }
+              : row
+          )
+        },
+        { revalidate: false }
+      ),
+    [mutateIntegrations, realBots]
+  )
+
   const setChannelTrigger = useCallback(
     async (integrationId: string, channelId: string, trigger: ChannelTrigger) => {
-      await apiUpdateIntegrationChannel(integrationId, channelId, { trigger })
-      settleInBackground(
-        mutateIntegrations(
-          (rows) => {
-            const source = rows?.find((row) => row.id === integrationId)
-            if (!rows || !source) return rows
-            const botWide = realBots.some((bot) => bot.id === source.botId && bot.shareable)
-            return rows.map((row) =>
-              (botWide ? row.botId === source.botId : row.id === integrationId)
-                ? {
-                    ...row,
-                    channels: row.channels.map((channel) =>
-                      channel.channelId === channelId ? { ...channel, trigger } : channel
-                    )
-                  }
-                : row
-            )
-          },
-          { revalidate: false }
-        )
-      )
+      const updated = await apiUpdateIntegrationChannel(integrationId, channelId, { trigger })
+      settleInBackground(projectChannel(integrationId, { ...updated, channelId }))
     },
-    [mutateIntegrations, realBots]
+    [projectChannel]
+  )
+
+  // The cache write is awaited so the saved gate is on screen before the caller drops its draft.
+  const setChannelDecision = useCallback(
+    async (integrationId: string, channelId: string, gate: ChannelDecisionGate) => {
+      const updated = await apiUpdateIntegrationChannel(integrationId, channelId, {
+        trigger: 'decision',
+        decisionBinding: gate
+      })
+      await projectChannel(integrationId, { ...updated, channelId })
+    },
+    [projectChannel]
   )
 
   /**
@@ -1776,6 +1806,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       deleteHook,
       deleteBot,
       setChannelTrigger,
+      setChannelDecision,
       setChannelSessionMode,
       forgetChannel,
       leaveConversation,
@@ -1865,6 +1896,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       deleteHook,
       deleteBot,
       setChannelTrigger,
+      setChannelDecision,
       setChannelAgent,
       setBotShareable,
       setBotJoinPublicChannels,

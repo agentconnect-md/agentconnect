@@ -1318,7 +1318,9 @@
         "ariaLabel": "Settings for {name}: {value}",
         "menuLabel": "Settings for {name}",
         "optionHint": "<b>{label}</b> — <hint></hint>"
-      }
+      },
+      "managedByRouting": "Managed by {bot} routing",
+      "managedByRoutingHint": "This bot's routing decides which agent answers here."
     },
     "github": {
       "sync": "Sync",
@@ -4168,6 +4170,7 @@
     "deleting": "Deleting…",
     "deleteTitle": "Delete {name}",
     "deleteBodyUsed": "This decision is used by {names}. Remove its bindings before deleting it.",
+    "deleteBodyInUse": "This decision is still used. Remove it from these places before deleting it:",
     "deleteBodyUnused": "This decision is not used anywhere. This can’t be undone.",
     "save": "Save",
     "cancel": "Cancel",
@@ -4224,7 +4227,8 @@
         "model_selection": "model selection"
       },
       "needsReview": "needs review",
-      "ok": "ok"
+      "ok": "ok",
+      "hidden": "{count, plural, one {# more you cannot see} other {# more you cannot see}}"
     },
     "errors": {
       "name": "Give the decision a name before saving.",
@@ -4264,7 +4268,38 @@
       "triggers": "Triggers",
       "helpMentions": "A mention does not skip the decision; it only fixes that this agent is the one that can be triggered.",
       "helpHistory": "Recent conversation history is included automatically, including messages that did not trigger the agent.",
-      "helpUnavailable": "If evaluation is unavailable, eligible messages continue to the agent."
+      "helpUnavailable": "If evaluation is unavailable, eligible messages continue to the agent.",
+      "activates": "Activates",
+      "activatesAgent": "Activates {agent}",
+      "noDecisions": "No decisions yet. Create one to judge messages here.",
+      "hiddenDecision": "A decision you can't view",
+      "saving": "Saving…",
+      "retry": "Retry",
+      "openDecision": "Open decision",
+      "repair": "Repair condition",
+      "chooseAnother": "Choose another decision",
+      "status": {
+        "pending_sync": "Pending sync",
+        "needs_review": "Needs review",
+        "daemon_offline": "Daemon offline",
+        "unsupported": "Unsupported",
+        "access_revoked": "Access revoked"
+      },
+      "statusBody": {
+        "pending_sync": "Saved, not applied yet. It takes effect once the daemon and relay serving this conversation confirm it.",
+        "needs_review": "{decision} changed and this condition no longer fits its answers. It stays off until you repair it; nothing is reselected for you.",
+        "daemon_offline": "No daemon serving this agent is connected. The saved condition applies when one reconnects.",
+        "unsupported": "The daemon or relay serving this conversation is too old to run By decision. Upgrade it to activate this condition.",
+        "access_revoked": "This agent can no longer use the saved decision, so the condition is off. Choose a decision it can use."
+      },
+      "saveErrors": {
+        "invalid": "The condition doesn't fit this decision. Fix the highlighted field and save again.",
+        "invalidRequest": "This conversation can't use By decision: {message}",
+        "forbidden": "You don't have permission to change how this agent responds here.",
+        "decisionUnavailable": "Decision not available. It was deleted or is no longer shared with you — choose another.",
+        "unsupported": "The daemon or relay serving this conversation doesn't support By decision yet. Upgrade it, then retry.",
+        "failed": "Couldn't save — your changes are kept. {message}"
+      }
     },
     "try": {
       "title": "Try with an example",
@@ -4314,7 +4349,9 @@
       "body": "This decision is attached to an agent. Changing its type or answer options changes the answers that agent receives. If an agent's instructions refer to the old answers, update them after saving.",
       "confirm": "Save changes",
       "saving": "Saving…",
-      "usageError": "Could not check where this decision is used. Try saving again."
+      "usageError": "Could not check where this decision is used. Try saving again.",
+      "titleUsages": "Review where this decision is used",
+      "gateBody": "Conversations whose conditions no longer fit the new answers are marked Needs review and stay off until repaired: {names}"
     },
     "notOffered": {
       "title": "Decisions are not enabled",

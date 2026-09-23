@@ -5,7 +5,7 @@
 // filling fields the API does not (yet) expose with placeholders.
 
 import type { DecisionApi } from '@agentconnect.md/protocol/decision-api'
-import type { AgentModelSelection } from '@agentconnect.md/protocol/decision'
+import type { AgentModelSelection, ChannelDecisionGate } from '@agentconnect.md/protocol/decision'
 import type {
   Agent,
   AgentCallPolicy,
@@ -918,19 +918,27 @@ export interface IntegrationChannelDto {
   url: string | null // the page it opens on the platform; null elsewhere
   isPrivate: boolean
   kind: 'channel' | 'im' | 'mpim'
-  // 'decision' is By decision, set through the Decision flow; the console's own trigger PATCH never sends it.
+  // 'decision' is By decision; the same PATCH sets it together with its complete gate binding.
   trigger: ChannelTrigger | 'decision'
   decisionBinding?: import('@agentconnect.md/protocol').ChannelDecisionBinding | null
-  decision?: {
-    id: string
-    name: string | null
-    enabled: boolean
-    disabledReason?: 'needs_review' | 'access_revoked'
-    readiness: { status: 'ready' | 'pending_sync' | 'needs_review' | 'daemon_offline' | 'unsupported'; reason?: string }
-  } | null
+  decision?: ChannelDecisionView | null
   sessionMode: ChannelSessionMode
   agentId: string | null // effective shared-conversation owner; null before convergence / when not applicable
 }
+
+/** A By decision row's bound Decision: its visible name, whether it runs, and the consumer's readiness. */
+export interface ChannelDecisionView {
+  id: string
+  name: string | null
+  enabled: boolean
+  disabledReason?: 'needs_review' | 'access_revoked'
+  readiness: { status: 'ready' | 'pending_sync' | 'needs_review' | 'daemon_offline' | 'unsupported'; reason?: string }
+}
+
+/** One conversation PATCH: a By decision trigger always travels with its complete gate. */
+export type IntegrationChannelPatch =
+  | { trigger?: ChannelTrigger; decisionBinding?: never; sessionMode?: ChannelSessionMode; agentId?: string }
+  | { trigger: 'decision'; decisionBinding: ChannelDecisionGate; sessionMode?: ChannelSessionMode; agentId?: string }
 
 // `/integrations` list/create row — control-plane metadata only, NEVER tokens.
 export interface IntegrationDto {
@@ -4277,12 +4285,11 @@ export async function fetchHookRuns(id: string, orgId?: string): Promise<HookRun
   return apiGet<HookRunDto[]>(`${orgBase(orgId)}/hooks/${encodeURIComponent(id)}/runs`)
 }
 
-// Per-conversation trigger choice (`PATCH /integrations/:id/channels/:channelId`). The CP
-// persists it and pushes the integration's recomputed bind rules to the owning daemon.
+// PATCH a conversation's trigger (By decision with its gate), session mode or default agent; Off/Mention/Any clear the gate server-side.
 export async function updateIntegrationChannel(
   integrationId: string,
   channelId: string,
-  patch: { trigger?: ChannelTrigger; sessionMode?: ChannelSessionMode; agentId?: string },
+  patch: IntegrationChannelPatch,
   orgId?: string
 ): Promise<IntegrationChannelDto> {
   return apiPatch<IntegrationChannelDto>(
@@ -6369,8 +6376,9 @@ export function deleteProviderKey(orgId: string, provider: ProviderKeyProvider):
 export function createDecisionApi(orgId: string): DecisionApi {
   const base = () => `${orgBase(orgId)}/decisions`
   const path = (id: string) => `${base()}/${encodeURIComponent(id)}`
+  // Live bindings save through updateIntegrationChannel; these consumer methods back only the mock.
   const unsupported = async (): Promise<never> => {
-    throw new ApiError('Decision message triggers are not available yet.', 501)
+    throw new ApiError('This Decision consumer API is only available in mock mode.', 501)
   }
   return {
     mode: 'live',

@@ -1,13 +1,17 @@
 // @vitest-environment happy-dom
 
-// The `By decision` strip: it must open on a usable draft, refuse a condition the decision
-// cannot satisfy, and collapse to a summary once the gate is saved.
+// The `By decision` strip in mock mode: it opens a picked row on a usable draft and collapses to a summary once saved.
 
-import { act, type ReactNode } from 'react'
+import { act, useEffect, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { SWRConfig } from 'swr'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DecisionsPrototypeProvider } from '@/lib/decisions/provider'
+import * as decisionProvider from '@/lib/decisions/provider'
+import * as decisionMock from '@/lib/decisions/mock-api'
+import { createDecisionMockSeed } from '@/lib/decisions/fixtures'
+
+const { DecisionsPrototypeProvider, useDecisionsPrototype } = decisionProvider
+let store: ReturnType<typeof useDecisionsPrototype>
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
@@ -32,7 +36,40 @@ afterEach(async () => {
   container?.remove()
   root = undefined
   container = undefined
+  vi.restoreAllMocks()
 })
+
+/** The row's side of the contract in mock mode: a pick opens a draft, and the provider's gate is the saved state. */
+function MockStrip({
+  bindingKey,
+  canWrite = true,
+  agentName = 'Billing'
+}: {
+  bindingKey: string
+  canWrite?: boolean
+  agentName?: string
+}) {
+  store = useDecisionsPrototype()
+  const { gates, bindingDrafts, setBindingDraft, setGate } = store
+  useEffect(() => {
+    setBindingDraft(bindingKey, (current) => current ?? { decisionId: null, when: null, phase: 'editing' })
+  }, [bindingKey, setBindingDraft])
+  const gate = gates[bindingKey]
+  if (!bindingDrafts[bindingKey] && !gate) return <span>reverted</span>
+  return (
+    <DecisionBindingStrip
+      bindingKey={bindingKey}
+      canWrite={canWrite}
+      agentName={agentName}
+      padX={18}
+      saved={gate ? { decisionId: gate.decisionId, when: gate.when } : null}
+      status={gate ? (gate.needsReview ? 'needs_review' : 'ready') : null}
+      onSave={async (next) =>
+        setGate(bindingKey, { decisionId: next.decisionId, when: next.when, channelName: '#help', needsReview: false })
+      }
+    />
+  )
+}
 
 async function render(node: ReactNode) {
   container = document.createElement('div')
@@ -71,76 +108,62 @@ const clickText = async (scope: HTMLElement, text: string) => {
   })
 }
 
+const CHOICE_SUMMARY = 'billing ≥ 50%, technical ≥ 50%, sales ≥ 50%'
+
 describe('DecisionBindingStrip', () => {
   it('opens the editor on the first decision with its answer keys enabled', async () => {
-    const view = await render(
-      <DecisionBindingStrip
-        bindingKey="org-test|support-bot|#help"
-        channelName="#help"
-        canWrite
-        agentName="Billing"
-        padX={18}
-        onAbandon={() => undefined}
-      />
-    )
+    const view = await render(<MockStrip bindingKey="org-test|support-bot|#help" />)
     expect(findByText(view, 'Support category')).toBeTruthy()
     expect(findByText(view, 'Trigger when')).toBeTruthy()
+    expect(findByText(view, 'Activates')).toBeTruthy()
     expect(view.querySelector('input[aria-label="Minimum probability for billing"]')).toBeTruthy()
     expect(view.querySelector('input[aria-label="Minimum probability for technical"]')).toBeTruthy()
   })
 
-  it('saves the gate and collapses to a summary that names the decision and its condition', async () => {
-    const view = await render(
-      <DecisionBindingStrip
-        bindingKey="org-test|support-bot|#help"
-        channelName="#help"
-        canWrite
-        agentName="Billing"
-        padX={18}
-        onAbandon={() => undefined}
-      />
-    )
-    const save = findByText(view, 'Save')
-    expect(save).toBeTruthy()
-    await act(async () => {
-      save?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+  it('saves the gate and collapses to a summary that names the decision, its condition, and its target', async () => {
+    const view = await render(<MockStrip bindingKey="org-test|support-bot|#help" />)
+    await clickText(view, 'Save')
     expect(findByText(view, 'Support category')).toBeTruthy()
-    expect(findByText(view, 'billing ≥ 50%, technical ≥ 50%, sales ≥ 50%')).toBeTruthy()
+    expect(findByText(view, CHOICE_SUMMARY)).toBeTruthy()
+    expect(findByText(view, 'Activates Billing')).toBeTruthy()
     expect(findByText(view, 'Edit')).toBeTruthy()
     // The editor is gone: no minimum-probability control survives the save.
     expect(view.querySelector('input[aria-label="Minimum probability for billing"]')).toBeNull()
   })
 
-  it('reverts the row when a fresh gate is abandoned, and never when one is already saved', async () => {
-    const onAbandon = vi.fn()
-    const view = await render(
-      <DecisionBindingStrip
-        bindingKey="org-test|support-bot|#help"
-        channelName="#help"
-        canWrite
-        agentName="Billing"
-        padX={18}
-        onAbandon={onAbandon}
-      />
-    )
+  it('lands keyboard focus on the collapsed Edit once a save closes the editor', async () => {
+    const view = await render(<MockStrip bindingKey="org-test|support-bot|#help" />)
+    await clickText(view, 'Save')
     await act(async () => {
-      findByText(view, 'Cancel')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)))
     })
-    expect(onAbandon).toHaveBeenCalledTimes(1)
+    expect(document.activeElement).toBe(findByText(view, 'Edit'))
+  })
+
+  it('reverts the row when a fresh gate is abandoned, and keeps the saved one when an edit is', async () => {
+    const view = await render(
+      <>
+        <MockStrip bindingKey="org-test|support-bot|#help" />
+        <div id="saved">
+          <MockStrip bindingKey="org-test|support-bot|#ops" />
+        </div>
+      </>
+    )
+    const fresh = view.firstElementChild as HTMLElement
+    await clickText(fresh, 'Cancel')
+    expect(findByText(view, 'reverted')).toBeTruthy()
+
+    const saved = view.querySelector<HTMLElement>('#saved')!
+    await clickText(saved, 'Save')
+    await clickText(saved, 'Edit')
+    expect(findByText(saved, 'Trigger when')).toBeTruthy()
+    await clickText(saved, 'Cancel')
+    expect(findByText(saved, CHOICE_SUMMARY)).toBeTruthy()
+    expect(findByText(saved, 'reverted')).toBeUndefined()
   })
 
   it('offers no editor controls without write permission', async () => {
-    const view = await render(
-      <DecisionBindingStrip
-        bindingKey="org-test|support-bot|#help"
-        channelName="#help"
-        canWrite={false}
-        agentName="Billing"
-        padX={18}
-        onAbandon={() => undefined}
-      />
-    )
+    const view = await render(<MockStrip bindingKey="org-test|support-bot|#help" canWrite={false} />)
     expect(findByText(view, 'Save')).toBeUndefined()
     expect(findByText(view, 'Cancel')).toBeUndefined()
   })
@@ -149,22 +172,8 @@ describe('DecisionBindingStrip', () => {
   it('keeps two bots’ gates in one conversation apart', async () => {
     const view = await render(
       <>
-        <DecisionBindingStrip
-          bindingKey="org-test|bot-a|C123"
-          channelName="#help"
-          canWrite
-          agentName="Billing"
-          padX={18}
-          onAbandon={() => undefined}
-        />
-        <DecisionBindingStrip
-          bindingKey="org-test|bot-b|C123"
-          channelName="#help"
-          canWrite
-          agentName="Technical"
-          padX={18}
-          onAbandon={() => undefined}
-        />
+        <MockStrip bindingKey="org-test|bot-a|C123" />
+        <MockStrip bindingKey="org-test|bot-b|C123" agentName="Technical" />
       </>
     )
     const saves = () => [...view.querySelectorAll('button')].filter((node) => node.textContent?.trim() === 'Save')
@@ -177,24 +186,14 @@ describe('DecisionBindingStrip', () => {
     // Bot A collapsed to its summary; bot B's editor is untouched.
     expect(saves()).toHaveLength(1)
     expect(
-      [...view.querySelectorAll('span')].filter(
-        (node) => node.textContent?.trim() === 'billing ≥ 50%, technical ≥ 50%, sales ≥ 50%'
-      )
+      [...view.querySelectorAll('span')].filter((node) => node.textContent?.trim() === CHOICE_SUMMARY)
     ).toHaveLength(1)
     expect(view.querySelectorAll('input[aria-label="Minimum probability for billing"]')).toHaveLength(1)
   })
+
   // The verdict is its own block, so a reader who collapses the disclosure keeps the result.
   it('keeps the preview verdict after collapsing Try a message', async () => {
-    const view = await render(
-      <DecisionBindingStrip
-        bindingKey="org-test|support-bot|#help"
-        channelName="#help"
-        canWrite
-        agentName="Billing"
-        padX={18}
-        onAbandon={() => undefined}
-      />
-    )
+    const view = await render(<MockStrip bindingKey="org-test|support-bot|#help" />)
     // The daemon catalog is a second read; wait for it or Try stays inert.
     await act(async () => {})
     await act(async () => {})
@@ -210,5 +209,45 @@ describe('DecisionBindingStrip', () => {
     await clickText(view, 'Try a message')
     expect(view.querySelector('input[aria-label="Try a message"]')).toBeNull()
     expect(findByText(view, 'Skipped')).toBeTruthy()
+  })
+
+  // Inline Create returns to this draft with the new Decision selected.
+  it('hands an inline-created decision back to the draft that opened Add decision', async () => {
+    const view = await render(<MockStrip bindingKey="org-test|support-bot|#help" />)
+    await act(async () => {
+      document.body
+        .querySelector('button[aria-haspopup="menu"]')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    const create = [...document.body.querySelectorAll('a')].find((node) => node.textContent?.trim() === 'Add decision')
+    expect(create?.getAttribute('href')).toBe('/decisions/new?returnTo=%2Fagents%2Fa1')
+    create?.addEventListener('click', (event) => event.preventDefault())
+    await act(async () => {
+      create?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    })
+    const created = await store.api.createDecision({
+      name: 'Escalation',
+      providerId: 'typesafe',
+      model: 'jev-1.13.0',
+      question: {
+        type: 'boolean',
+        instructions: 'Does this need a human?',
+        criteria: { true: 'A human should answer.', false: 'The agent can answer.' }
+      }
+    })
+    await act(async () => {
+      store.completeInlineCreate(created)
+      await store.reload()
+    })
+    expect(findByText(view, 'Escalation')).toBeTruthy()
+    expect(view.querySelector('input[aria-label="Minimum probability for billing"]')).toBeNull()
+  })
+
+  it('says there are no decisions yet when the list is empty', async () => {
+    const api = decisionMock.createDecisionMockApi({ seed: { ...createDecisionMockSeed(), decisions: [] } })
+    vi.spyOn(decisionMock, 'createDecisionMockApi').mockReturnValue(api)
+    const view = await render(<MockStrip bindingKey="org-test|support-bot|#help" />)
+    expect(findByText(view, 'No decisions yet. Create one to judge messages here.')).toBeTruthy()
+    expect((findByText(view, 'Save') as HTMLButtonElement | undefined)?.disabled).toBe(true)
   })
 })
