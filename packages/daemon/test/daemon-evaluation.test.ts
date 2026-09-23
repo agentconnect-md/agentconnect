@@ -687,13 +687,20 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
   function distillHost(opts: { usesMetaSystemPrompt: boolean; modes?: string[]; promptFails?: boolean }) {
     let onUpdate!: (sessionId: string, update: unknown) => void
     const discarded = new Set<string>()
+    const sessions = new Set<string>()
     const host = {
       start: vi.fn(async () => {}),
-      newSession: vi.fn(async () => 'distill-session-1'),
+      newSession: vi.fn(async () => {
+        sessions.add('distill-session-1')
+        discarded.delete('distill-session-1')
+        return 'distill-session-1'
+      }),
       hasSession: vi.fn((id: string) => !discarded.has(id)),
       usesMetaSystemPrompt: vi.fn(() => opts.usesMetaSystemPrompt),
       modelOptions: vi.fn(() => ({ current: 'test-model', models: ['test-model'] })),
-      permissionModeOptions: vi.fn(() => ({ modes: opts.modes ?? ['read-only'] })),
+      permissionModeOptions: vi.fn((sessionId?: string) =>
+        sessionId && sessions.has(sessionId) ? { modes: opts.modes ?? ['read-only'] } : null
+      ),
       setSessionPermissionMode: vi.fn(async () => true),
       discardSession: vi.fn((id: string) => void discarded.add(id)),
       prompt: vi.fn(async (sessionId: string, _blocks: { text?: string }[]) => {
@@ -716,6 +723,39 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
     })
     return { host, daemon }
   }
+
+  it('discovers modes from the new extraction session without a warmed chat host', async () => {
+    const { host, daemon } = distillHost({ usesMetaSystemPrompt: false, modes: ['default', 'plan'] })
+    await daemon.start()
+    try {
+      expect(host.permissionModeOptions()).toBeNull()
+      await expect((daemon as any).runMemoryExtraction(AGENT_ID, 'DISTILL THIS')).resolves.toBe('{"memories":[]}')
+      expect(host.permissionModeOptions).toHaveBeenCalledWith('distill-session-1')
+      expect(host.setSessionPermissionMode).toHaveBeenCalledWith('distill-session-1', 'plan')
+      expect(host.setSessionPermissionMode.mock.invocationCallOrder[0]).toBeLessThan(
+        host.prompt.mock.invocationCallOrder[0]!
+      )
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('releases the bridge token when creation fails before a session exists', async () => {
+    const { host, daemon } = distillHost({ usesMetaSystemPrompt: false })
+    host.newSession.mockRejectedValueOnce(new Error('session creation failed'))
+    await daemon.start()
+    try {
+      await expect((daemon as any).runMemoryExtraction(AGENT_ID, 'DISTILL THIS')).rejects.toThrow(
+        'session creation failed'
+      )
+      expect(host.prompt).not.toHaveBeenCalled()
+      expect((daemon as any).memoryExtractionTokens.size).toBe(0)
+      expect((daemon as any).memoryExtractionSessions.size).toBe(0)
+      expect((daemon as any).mcp.sessions.size).toBe(0)
+    } finally {
+      await daemon.stop()
+    }
+  })
 
   it('serializes replay and fresh extraction so concurrent passes cannot exchange source identities', async () => {
     const { host, daemon } = distillHost({ usesMetaSystemPrompt: true })
@@ -828,7 +868,13 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
     const { host, daemon } = distillHost({ usesMetaSystemPrompt: false, modes: ['default', 'agent'] })
     await daemon.start()
     await expect((daemon as any).runMemoryExtraction(AGENT_ID, 'DISTILL THIS')).rejects.toThrow(/read-only/)
-    expect(host.newSession).not.toHaveBeenCalled()
+    expect(host.newSession).toHaveBeenCalledOnce()
+    expect(host.discardSession).toHaveBeenCalledWith('distill-session-1')
+    expect(host.prompt).not.toHaveBeenCalled()
+    expect(host.setSessionPermissionMode).not.toHaveBeenCalled()
+    expect((daemon as any).internalPassSessions.size).toBe(0)
+    expect((daemon as any).memoryExtractionTokens.size).toBe(0)
+    expect((daemon as any).mcp.sessions.size).toBe(0)
     await daemon.stop()
   })
 })

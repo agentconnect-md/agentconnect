@@ -59,6 +59,7 @@ export interface AssembleRuntimeLaunchOptions {
   hostPackageCache?: boolean
   microsandbox?: {
     mounts: SandboxMount[]
+    homeKey?: HostKey
     trustedSessionDir?: string
     trustedMounts?: SandboxMount[]
   }
