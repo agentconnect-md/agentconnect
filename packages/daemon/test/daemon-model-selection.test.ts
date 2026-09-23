@@ -2,9 +2,15 @@ import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DECISION_MODEL_SELECTION_V1_FEATURE, type DecisionEvaluation } from '@agentconnect.md/protocol'
+import {
+  DECISION_MODEL_SELECTION_V1_FEATURE,
+  type DecisionEvaluation,
+  type ExecutorPrepareReq,
+  type ExecutorPrepareResult
+} from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { EvaluationEventCollector } from '../src/evaluation/index.js'
+import type { ExecutorPlane } from '../src/execution/executor-plane.js'
 import { fakeCpClient } from './webchat-continuation-fixture.js'
 
 const agentId = 'example-agent'
@@ -164,6 +170,58 @@ describe('session-pinned Decision model', () => {
     )
     expect(JSON.parse(selected.decisionModel)).toEqual({ runtime: 'alternative', model: 'model-capable' })
     expect((await internal.statusInfoFrom(agentId, selected.key, selected.acpSessionId)).runtime).toBe('alternative')
+  })
+
+  it('prepares and relocates executors with the session runtime after the binding changes', async () => {
+    const { internal, turn } = await start(scaffold())
+    internal.agents.get(agentId).modelSelection.rules[0].runtime = 'alternative'
+    await turn('routed')
+    const row = (await internal.store.listSessions(agentId))[0]
+    const executorId = '44444444-4444-4444-8444-444444444444'
+    const replacementId = '55555555-5555-4555-8555-555555555555'
+    const endpoint = { host: '192.0.2.10', port: 7100 }
+    const prepare = vi.fn(async (request: ExecutorPrepareReq): Promise<ExecutorPrepareResult> => ({
+      status: 'ready',
+      generation: 1,
+      endpoint,
+      psk: Buffer.alloc(32, 7).toString('base64url'),
+      runtimeRoot: '/home/agent/runtime',
+      liveCount: 1,
+      runtimeLaunch: { command: request.runtime!, args: [] }
+    }))
+    internal.cpClient.connected = () => true
+    internal.cpClient.executorPrepare = prepare
+    internal.cpClient.executorCandidates = async () => ({
+      candidates: [
+        {
+          daemonId: replacementId,
+          endpoint,
+          strategies: { host: { available: true } },
+          hostedSessions: 0,
+          runtimes: [{ runtime: 'alternative', authRequired: false }]
+        }
+      ]
+    })
+    internal.sessionIsolation.set(row.key, 'session')
+    vi.spyOn(internal, 'hostedSessionCount').mockResolvedValue(1)
+    const plane: ExecutorPlane = internal.executorPlane
+    const choices = [{ daemonId: executorId, strategy: 'host' }]
+    const first = await plane.prepareAt(agentId, row.key, choices)
+    expect(first).toHaveProperty('placed.executorDaemonId', executorId)
+    expect(plane.runtimeDefFor(row.key, internal.runtimes.test).command).toBe('alternative')
+    if (!('placed' in first)) throw new Error('Expected a prepared executor')
+    await plane.suspendIdle(first.placed.subject)
+    internal.agents.get(agentId).modelSelection = undefined
+    prepare.mockResolvedValueOnce({ status: 'offline', lastSeenAt: null })
+    const resumed = await plane.prepareAt(agentId, row.key, choices)
+    expect(resumed).toHaveProperty('placed.executorDaemonId', replacementId)
+    expect(prepare.mock.calls.map(([request]) => request.runtime)).toEqual([
+      'alternative',
+      'alternative',
+      'alternative'
+    ])
+    expect(plane.runtimeDefFor(row.key, internal.runtimes.test).command).toBe('alternative')
+    expect(internal.agents.get(agentId).runtime).toBe('test')
   })
 
   it('evaluates once, preserves the choice after config changes and manual overrides, and evaluates new sessions', async () => {

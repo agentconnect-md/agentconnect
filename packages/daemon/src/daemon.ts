@@ -3663,7 +3663,7 @@ export class Daemon {
     this.executorPlane = new ExecutorPlane({
       prepare: (launch) => {
         // Named so the executor can answer with its own install of it (§8).
-        const runtime = this.agents.get(launch.agentId)?.runtime
+        const runtime = this.sessionAgent(launch.agentId, launch.sessionKey)?.runtime
         return this.requireCp('executor/prepare').executorPrepare(
           {
             agentId: launch.agentId,
@@ -3854,7 +3854,7 @@ export class Daemon {
 
   /** The loss rule's second branch (§7): the executor has been out of touch past the grace, so the session is prepared elsewhere and the user is told the previous environment is gone. */
   private async replaceLostExecutor(placed: PlacedSession): Promise<PlacementChoice | undefined> {
-    const agent = this.agents.get(placed.agentId)
+    const agent = this.sessionAgent(placed.agentId, placed.sessionKey)
     if (!agent) return undefined
     const answer = await this.executorCandidates(placed.agentId, placed.sessionKey)
     const placement = placeSession({
