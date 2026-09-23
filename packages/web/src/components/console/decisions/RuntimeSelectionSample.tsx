@@ -16,6 +16,9 @@ import { intervalText } from './DecisionConditionFields'
 import type { RuntimeModelSource } from '../RuntimeModelSelect'
 import { runtimeLabel } from '@/lib/data'
 
+const SECTION_LABEL =
+  'font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[0.06em] text-(--text-tertiary)'
+
 // Illustrative answers exercise the current rules without making provider requests.
 export function sampleAnswer(question: DecisionQuestion, sample: number): DecisionAnswer | undefined {
   if (sample === 4) return undefined
@@ -90,82 +93,139 @@ export function RuntimeSelectionSample({
         : winningCondition?.type === 'boolean'
           ? winningCondition.values.join(', ')
           : ''
-  const result = !answer
-    ? t('unavailable')
-    : answer.type === 'choice'
-      ? Object.entries(answer.probabilities)
-          .map(([key, probability]) => `${key} ${Math.round(probability * 100)}%`)
-          .join(' · ')
-      : answer.type === 'boolean'
-        ? t('booleanResult', { value: String(answer.value), probability: Math.round(answer.probability * 100) })
-        : String(answer.value)
   const model =
     source?.runtimeModels
       .find((profile) => profile.runtime === target.runtime)
       ?.modelCatalog?.models.find((model) => model.id === target.model)?.name ?? target.model
+  const steps = [
+    {
+      title: t('rules'),
+      active: !!selected,
+      detail: !valid
+        ? t('invalid')
+        : winner
+          ? t('matched', { index: winner.index + 1, condition, runtime: runtimeLabel(target.runtime), model })
+          : t('noMatch')
+    },
+    { title: t('fallback'), active: !selected, detail: selected ? t('notNeeded') : t('fallbackUsed') }
+  ]
   return (
-    <details className="rounded-lg border border-(--border-subtle)">
-      <summary className="flex cursor-pointer items-center justify-between gap-3 px-4 py-3 text-[13px] font-semibold">
-        <span className="flex items-center gap-2">
-          <Icon name="chevron-down" size={14} />
+    <details className="group rounded-md border border-(--border-subtle)">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-[10px] px-4 py-[9px] [&::-webkit-details-marker]:hidden">
+        <span className="flex items-center gap-2 font-sans text-[13px] font-semibold leading-normal">
+          <Icon
+            name="chevron-down"
+            size={13}
+            className="flex-none -rotate-90 text-(--text-tertiary) transition-transform group-open:rotate-0"
+          />
           {t('title')}
         </span>
-        <span className="rounded-full bg-(--status-info-soft) px-2 py-1 text-[11px] text-(--status-info)">
+        <span
+          title={t('help')}
+          className="inline-flex items-center gap-[5px] rounded-full bg-(--status-info-soft) px-2 py-[2px] font-sans text-[11px] font-semibold leading-normal text-(--status-info)"
+        >
+          <Icon name="flask-conical" size={11} />
           {t('badge')}
         </span>
       </summary>
-      <div className="flex flex-col gap-3 px-4 pb-4">
-        <p className="m-0 text-[12px] text-(--text-tertiary)">{t('help')}</p>
-        {([0, 1, 2, 3, 4] as const).map((index) => (
-          <button
-            key={index}
-            type="button"
-            aria-pressed={sample === index}
-            onClick={() => setSample(index)}
-            className={`flex items-center gap-3 rounded-md border px-3 py-2 text-left text-[12px] ${sample === index ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-subtle) hover:bg-(--surface-hover)'}`}
-          >
-            <span className="w-12 flex-none font-mono text-[10px] text-(--text-tertiary)">
-              {index === 4 ? 'ERROR' : index === 1 || index === 3 ? 'PR/MR' : 'CHAT'}
-            </span>
-            {t(`text${index}`)}
-          </button>
-        ))}
-        <dl className="m-0 grid grid-cols-1 gap-3 text-[12px] desktop:grid-cols-[140px_minmax(0,1fr)]">
-          <dt className="font-mono uppercase text-(--text-tertiary)">{t('evaluatedText')}</dt>
-          <dd className="m-0 text-(--text-secondary)">
-            {t(sample === 1 || sample === 3 ? 'description' : 'opening')} · {t(`text${sample}`)}
-          </dd>
-          <dt className="font-mono uppercase text-(--text-tertiary)">{t('result')}</dt>
-          <dd className="m-0 font-mono">{result}</dd>
-        </dl>
-        <div
-          className={`rounded-md border p-3 text-[12px] ${selected ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-subtle)'}`}
-        >
-          <strong className="mr-4">1 · {t('rules')}</strong>
-          {!valid
-            ? t('invalid')
-            : winner
-              ? t('matched', {
-                  index: winner.index + 1,
-                  condition,
-                  runtime: runtimeLabel(target.runtime),
-                  model: target.model
-                })
-              : t('noMatch')}
+      <div className="flex flex-col gap-4 border-t border-(--border-subtle) px-4 py-[14px]">
+        <div className="flex flex-col gap-1">
+          {([0, 1, 2, 3, 4] as const).map((index) => (
+            <button
+              key={index}
+              type="button"
+              aria-pressed={sample === index}
+              onClick={() => setSample(index)}
+              className={`grid grid-cols-[44px_minmax(0,1fr)] items-center gap-2 rounded-sm border px-[9px] py-[7px] text-left transition-colors ${sample === index ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-subtle) hover:border-(--border-strong)'}`}
+            >
+              <span className="font-mono text-[10.5px] font-medium uppercase leading-normal tracking-[0.04em] text-(--text-tertiary)">
+                {index === 4 ? 'ERROR' : index === 1 || index === 3 ? 'PR/MR' : 'CHAT'}
+              </span>
+              <span className="truncate font-sans text-[12px] leading-normal text-(--text-primary)">
+                {t(`text${index}`)}
+              </span>
+            </button>
+          ))}
         </div>
-        <div
-          className={`rounded-md border p-3 text-[12px] ${!selected ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-subtle)'}`}
-        >
-          <strong className="mr-4">2 · {t('fallback')}</strong>
-          {selected ? t('notNeeded') : t('fallbackUsed')}
-        </div>
-        <div className="flex items-center gap-2 border-t border-(--border-subtle) pt-3 text-[13px]">
-          <span className="text-(--text-tertiary)">{t('startsOn')}</span>
-          <span className="flex h-[15px] w-[15px] flex-none items-center justify-center">
-            <AgentMark model={target.runtime} fillPct={100} />
+        <div className="flex flex-col gap-[6px]">
+          <span className={SECTION_LABEL}>
+            {t('evaluatedText')} · {t(sample === 1 || sample === 3 ? 'description' : 'opening')}
           </span>
-          <strong>{model}</strong>
-          <span className="font-mono text-[11px] text-(--text-tertiary)">{runtimeLabel(target.runtime)}</span>
+          <div className="rounded-sm border border-(--border-subtle) bg-(--surface-sunken) px-[10px] py-2 font-sans text-[12.5px] leading-[1.5] text-(--text-secondary)">
+            {t(`text${sample}`)}
+          </div>
+        </div>
+        <div className="flex flex-col gap-2">
+          <span className={SECTION_LABEL}>{t('result')}</span>
+          {!answer ? (
+            <div className="flex items-center gap-2 rounded-sm bg-(--status-paused-soft) px-[10px] py-2 font-sans text-[12px] font-medium leading-normal">
+              <Icon name="triangle-alert" size={13} color="var(--amber-500)" />
+              {t('unavailable')}
+            </div>
+          ) : answer.type === 'choice' ? (
+            <div className="flex flex-col gap-[6px]">
+              {Object.entries(answer.probabilities).map(([key, probability]) => (
+                <div key={key} className="grid grid-cols-[140px_minmax(0,1fr)_36px] items-center gap-2">
+                  <span className="truncate font-mono text-[11.5px] font-medium leading-normal text-(--text-secondary)">
+                    {key}
+                  </span>
+                  <span className="h-[6px] overflow-hidden rounded-[3px] bg-(--surface-sunken)">
+                    <span
+                      className={`block h-full rounded-[3px] ${key === answer.value ? 'bg-(--brand)' : 'bg-(--gray-300)'}`}
+                      style={{ width: `${Math.round(probability * 100)}%` }}
+                    />
+                  </span>
+                  <span className="text-right font-mono text-[11.5px] font-medium leading-normal">
+                    {Math.round(probability * 100)}%
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <span className="font-mono text-[13px] font-semibold leading-normal">
+              {answer.type === 'boolean'
+                ? t('booleanResult', { value: String(answer.value), probability: Math.round(answer.probability * 100) })
+                : String(answer.value)}
+            </span>
+          )}
+        </div>
+        <div className="flex flex-col gap-[6px]">
+          {steps.map((step, index) => (
+            <div
+              key={step.title}
+              aria-current={step.active ? 'step' : undefined}
+              className={`grid grid-cols-[20px_minmax(0,1fr)] items-center gap-[9px] rounded-sm border px-[10px] py-[7px] ${step.active ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-subtle)'}`}
+            >
+              <span
+                className={`flex h-5 w-5 items-center justify-center rounded-[5px] font-mono text-[10.5px] font-semibold leading-normal ${step.active ? 'bg-(--brand) text-white' : 'bg-(--surface-sunken) text-(--text-tertiary)'}`}
+              >
+                {index + 1}
+              </span>
+              <span className="flex min-w-0 items-baseline justify-between gap-2">
+                <span
+                  className={`whitespace-nowrap font-sans text-[12.5px] leading-normal ${step.active ? 'font-semibold text-(--text-primary)' : 'font-medium text-(--text-secondary)'}`}
+                >
+                  {step.title}
+                </span>
+                <span
+                  title={step.detail}
+                  className="truncate font-mono text-[11.5px] leading-normal text-(--text-tertiary)"
+                >
+                  {step.detail}
+                </span>
+              </span>
+            </div>
+          ))}
+          <div className="mt-[6px] flex items-center gap-2 border-t border-(--border-subtle) pt-[10px]">
+            <span className="font-sans text-[12px] leading-normal text-(--text-tertiary)">{t('startsOn')}</span>
+            <span className="flex h-[15px] w-[15px] flex-none items-center justify-center">
+              <AgentMark model={target.runtime} fillPct={100} />
+            </span>
+            <span className="font-sans text-[15px] font-semibold leading-normal tracking-[-0.01em]">{model}</span>
+            <span className="font-mono text-[11px] leading-normal text-(--text-tertiary)">
+              {runtimeLabel(target.runtime)}
+            </span>
+          </div>
         </div>
       </div>
     </details>
