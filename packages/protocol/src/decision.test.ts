@@ -45,12 +45,25 @@ describe('Decision model selection', () => {
   const selection = AgentModelSelection.parse({
     decisionId: '33333333-3333-4333-8333-333333333333',
     rules: [
-      { when: { type: 'choice', thresholds: { billing: 0.3 } }, runtime: 'claude', model: 'model-a' },
+      {
+        when: { type: 'choice', thresholds: { billing: 0.3 } },
+        runtime: 'claude',
+        model: 'model-a',
+        effort: 'high',
+        permissionMode: 'plan',
+        fastMode: false
+      },
       { when: { type: 'choice', thresholds: { technical: 0.3 } }, runtime: 'claude', model: 'model-b' }
     ]
   })
   it('selects one eligible model by probability and rule order, leaving no match to the consumer', () => {
-    expect(selectDecisionTarget(choice, selection, answer)).toEqual({ runtime: 'claude', model: 'model-a' })
+    expect(selectDecisionTarget(choice, selection, answer)).toEqual({
+      runtime: 'claude',
+      model: 'model-a',
+      effort: 'high',
+      permissionMode: 'plan',
+      fastMode: false
+    })
     expect(
       selectDecisionTarget(choice, selection, {
         ...answer,

@@ -854,7 +854,7 @@ export default function EditAgentModal({
                 value={modelSelection}
                 onChange={setModelSelection}
                 onValidityChange={setModelSelectionValid}
-                fallback={{ runtime: runtime, model: selectedModel }}
+                fallback={{ runtime, model: selectedModel, effort, permissionMode, fastMode }}
                 source={daemon}
                 runtimes={runtimeOptions}
                 enabled={featureFlagEnabled('decisions')}
@@ -864,17 +864,21 @@ export default function EditAgentModal({
                 onFallbackChange={(target) => {
                   if (target.runtime !== runtime) onRuntimeChange(target.runtime)
                   setModel(target.model)
-                  setEffort((current) =>
-                    resolveEffortForModel(
-                      target.runtime,
-                      modelCapability(daemon, target.runtime, target.model),
-                      current
-                    )
+                  setEffort(
+                    (current) =>
+                      target.effort ??
+                      resolveEffortForModel(
+                        target.runtime,
+                        modelCapability(daemon, target.runtime, target.model),
+                        current
+                      )
                   )
+                  if (target.permissionMode !== undefined) setPermissionMode(target.permissionMode)
+                  if (target.fastMode !== undefined) setFastMode(target.fastMode)
                 }}
               />
               <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
-                {(showEffort || showPermission) && (
+                {!modelSelection && (showEffort || showPermission) && (
                   <div className="fld desktop:col-span-2">
                     <div className="grid grid-cols-1 gap-x-7 gap-y-[14px] desktop:grid-cols-[minmax(0,1fr)_auto]">
                       {showEffort && (

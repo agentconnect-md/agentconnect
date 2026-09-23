@@ -2321,6 +2321,9 @@
       },
       "runtimeModel": {
         "title": "Provider 和模型",
+        "runSettings": "运行设置 · {model}",
+        "effort": "思考深度",
+        "approval": "审批",
         "provider": "Provider",
         "byDecision": "由 Decision 选择",
         "choose": "选择 Provider 和模型",

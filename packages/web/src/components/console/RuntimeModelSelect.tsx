@@ -6,7 +6,23 @@ import { useTranslations } from 'next-intl'
 import { AgentMark } from '@/components/marks'
 import { Icon, Toggle } from '@/components/ui'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
-import { modelOptionsFor, runtimeLabel, runtimeWarning, selectableRuntimeIds, type DaemonRow } from '@/lib/data'
+import {
+  displayedEffort,
+  effortChoicesFor,
+  fastModeAvailableFor,
+  modelCapability,
+  modelOptionsFor,
+  permissionModeChoicesFor,
+  permissionModeDefault,
+  resolveEffortForModel,
+  resolvedPermissionMode,
+  runtimeLabel,
+  runtimeWarning,
+  selectableRuntimeIds,
+  supportsModes,
+  type DaemonRow
+} from '@/lib/data'
+import { permissionModeLabelKey } from '@/lib/permission-mode-i18n'
 import type { DecisionRuntimeTarget } from '@agentconnect.md/protocol/decision'
 
 export type RuntimeModelSource = Pick<DaemonRow, 'runtimeModels'>
@@ -28,6 +44,7 @@ export function RuntimeModelSelect({
   ariaLabel,
   compact = false,
   dense = false,
+  runSettings = false,
   decision,
   fastMode,
   fastModeAvailable = true,
@@ -44,6 +61,7 @@ export function RuntimeModelSelect({
   compact?: boolean
   /** The 30px table-cell trigger used by Decision rule rows. */
   dense?: boolean
+  runSettings?: boolean
   allowRuntimeOnly?: boolean
   runInSandbox?: boolean
   readOnly?: boolean
@@ -54,6 +72,7 @@ export function RuntimeModelSelect({
   onFastModeChange?(value: boolean): void
 }) {
   const t = useTranslations('Agents.dialog.runtimeModel')
+  const permissionT = useTranslations('Common.permissionModes')
   const registry = useAcpRegistry()
   const [provider, setProvider] = useState(value.runtime)
   const [search, setSearch] = useState('')
@@ -84,14 +103,54 @@ export function RuntimeModelSelect({
         `${label(item.runtime)} ${model.value} ${model.name ?? ''}`.toLowerCase().includes(search.toLowerCase())
       )
     }))
-  const fastOn = !!fastMode && fastModeAvailable
+  const capability = modelCapability(source, value.runtime, value.model)
+  const effortChoices = effortChoicesFor(value.runtime, capability)
+  const showEffort = capability?.efforts ? effortChoices.length > 0 : supportsModes(value.runtime)
+  const effort = displayedEffort(value.effort ?? '', effortChoices, capability?.defaultEffort)
+  const permissionChoices = permissionModeChoicesFor(value.runtime, current?.modelCatalog ?? undefined).map(
+    (option) => {
+      const key = permissionModeLabelKey(option.v)
+      return { ...option, l: key ? permissionT(key) : option.l }
+    }
+  )
+  const permission =
+    value.permissionMode ?? current?.modelCatalog?.defaultPermissionMode ?? permissionModeDefault(value.runtime)
+  const settingsSummary = runSettings
+    ? [
+        showEffort ? (effortChoices.find((option) => option.value === effort)?.label ?? effort) : undefined,
+        permissionChoices.length
+          ? (permissionChoices.find((option) => option.v === permission)?.l ?? permission)
+          : undefined
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : ''
+  const fastAvailable = runSettings ? fastModeAvailableFor(value.runtime, capability) : fastModeAvailable
+  const fastOn = !!(runSettings ? value.fastMode : fastMode) && fastAvailable
+  const selectModel = (runtime: string, model: string) => {
+    if (!runSettings) return onChange({ runtime, model })
+    const nextCapability = modelCapability(source, runtime, model)
+    const catalog = source?.runtimeModels.find((profile) => profile.runtime === runtime)?.modelCatalog ?? undefined
+    const modes = permissionModeChoicesFor(runtime, catalog)
+    const mode =
+      runtime === value.runtime && modes.some((option) => option.v === permission)
+        ? permission
+        : resolvedPermissionMode(permissionModeDefault(runtime), modes, catalog)
+    onChange({
+      runtime,
+      model,
+      effort: resolveEffortForModel(runtime, nextCapability, runtime === value.runtime ? (value.effort ?? '') : ''),
+      permissionMode: mode,
+      fastMode: !!value.fastMode && fastModeAvailableFor(runtime, nextCapability)
+    })
+  }
   const runtimeOnly = allowRuntimeOnly && !search && matching[0]?.options.length === 0 ? matching[0] : undefined
   return (
     <AnchoredFlyout
       role="dialog"
       ariaLabel={ariaLabel ?? t('title')}
       width={readOnly ? 320 : 480}
-      estimatedHeight={readOnly ? 48 : 390}
+      estimatedHeight={readOnly ? 48 : runSettings ? 500 : 390}
       align={compact ? 'start' : 'end'}
       className="p-0!"
       triggerClassName="block min-w-0"
@@ -123,6 +182,14 @@ export function RuntimeModelSelect({
           <span className="min-w-0 flex-1 truncate text-left">
             {decision?.selected ? t('byDecision') : modelName || label(value.runtime) || t('choose')}
           </span>
+          {settingsSummary && (
+            <span
+              className="max-w-[38%] truncate font-mono text-[10.5px] font-normal leading-normal text-(--text-tertiary)"
+              title={settingsSummary}
+            >
+              {settingsSummary}
+            </span>
+          )}
           {!decision?.selected && selectedWarning && (
             <span className="flex flex-none" title={warningLabel(selectedWarning)}>
               <Icon name="triangle-alert" size={13} color="var(--status-paused)" />
@@ -226,8 +293,8 @@ export function RuntimeModelSelect({
                                 aria-pressed={on}
                                 className={`fopt min-h-[30px] ${on ? 'on' : ''}`}
                                 onClick={() => {
-                                  onChange({ runtime: item.runtime, model: model.value })
-                                  close(true)
+                                  selectModel(item.runtime, model.value)
+                                  if (!runSettings) close(true)
                                 }}
                               >
                                 <span className="min-w-0 flex-1 truncate text-left">{model.name ?? model.value}</span>
@@ -257,23 +324,85 @@ export function RuntimeModelSelect({
                 </div>
               </div>
             </div>
-            {onFastModeChange && (
-              <div className="flex items-center gap-[10px] border-t border-(--border-subtle) px-[11px] pt-[7px] pb-2">
-                <Toggle
-                  checked={fastOn}
-                  disabled={!fastModeAvailable}
-                  onChange={onFastModeChange}
-                  ariaLabel={t('fastMode')}
-                />
-                <span
-                  className={`flex-1 font-sans text-[13px] font-medium leading-normal ${fastModeAvailable ? 'text-(--text-primary)' : 'text-(--text-disabled)'}`}
-                >
-                  {t('fastMode')}
-                </span>
-                <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                  {t('lowerLatency')}
-                </span>
+            {runSettings ? (
+              <div className="flex flex-col gap-[9px] border-t border-(--border-subtle) bg-(--surface-app) px-3 py-[10px]">
+                <div className="truncate font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[0.06em] text-(--text-tertiary)">
+                  {t('runSettings', { model: modelName || label(value.runtime) })}
+                </div>
+                {showEffort && (
+                  <div className="grid grid-cols-[76px_minmax(0,1fr)] items-center gap-2">
+                    <span className="font-sans text-[12px] leading-normal text-(--text-secondary)">{t('effort')}</span>
+                    <div className="pillbar flex-wrap justify-self-start" role="group" aria-label={t('effort')}>
+                      {effortChoices.map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          className={`pill px-[10px] py-1 text-[12px] leading-normal ${effort === option.value ? 'on' : ''}`}
+                          aria-pressed={effort === option.value}
+                          title={option.description}
+                          onClick={() => onChange({ ...value, effort: option.value })}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {permissionChoices.length > 0 && (
+                  <div className="grid grid-cols-[76px_minmax(0,1fr)] items-center gap-2">
+                    <span className="font-sans text-[12px] leading-normal text-(--text-secondary)">
+                      {t('approval')}
+                    </span>
+                    <div className="pillbar flex-wrap justify-self-start" role="group" aria-label={t('approval')}>
+                      {permissionChoices.map((option) => (
+                        <button
+                          key={option.v}
+                          type="button"
+                          className={`pill whitespace-nowrap px-[10px] py-1 text-[12px] leading-normal ${permission === option.v ? 'on' : ''}`}
+                          aria-pressed={permission === option.v}
+                          title={option.description}
+                          onClick={() => onChange({ ...value, permissionMode: option.v })}
+                        >
+                          {option.l}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="grid grid-cols-[76px_minmax(0,1fr)] items-center gap-2">
+                  <span className="font-sans text-[12px] leading-normal text-(--text-secondary)">{t('fastMode')}</span>
+                  <div className="flex items-center gap-[9px]">
+                    <Toggle
+                      checked={fastOn}
+                      disabled={!fastAvailable}
+                      onChange={(fastMode) => onChange({ ...value, fastMode })}
+                      ariaLabel={t('fastMode')}
+                    />
+                    <span className="font-sans text-[11.5px] leading-normal text-(--text-tertiary)">
+                      {t('lowerLatency')}
+                    </span>
+                  </div>
+                </div>
               </div>
+            ) : (
+              onFastModeChange && (
+                <div className="flex items-center gap-[10px] border-t border-(--border-subtle) px-[11px] pt-[7px] pb-2">
+                  <Toggle
+                    checked={fastOn}
+                    disabled={!fastModeAvailable}
+                    onChange={onFastModeChange}
+                    ariaLabel={t('fastMode')}
+                  />
+                  <span
+                    className={`flex-1 font-sans text-[13px] font-medium leading-normal ${fastModeAvailable ? 'text-(--text-primary)' : 'text-(--text-disabled)'}`}
+                  >
+                    {t('fastMode')}
+                  </span>
+                  <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                    {t('lowerLatency')}
+                  </span>
+                </div>
+              )
             )}
           </div>
         )

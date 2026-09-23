@@ -56,6 +56,9 @@ function scaffold() {
 
 async function start(root: string) {
   const models = new Map<string, string>()
+  type Settings = { effort?: string; permissionMode: string; fastMode?: boolean }
+  const settings = new Map<string, Settings>()
+  const promptSettings: Settings[] = []
   const prompted: string[] = []
   const executionRuntimes: string[] = []
   const started: Array<{ runtime: string; model?: string }> = []
@@ -72,10 +75,20 @@ async function start(root: string) {
         newSession: async () => {
           const id = `acp-${models.size}`
           models.set(id, 'model-standard')
+          settings.set(id, {
+            effort: agent.reasoningEffort,
+            permissionMode: agent.permissionMode,
+            fastMode: agent.fastMode
+          })
           return id
         },
         loadSession: async (id: string) => {
           models.set(id, 'model-standard')
+          settings.set(id, {
+            effort: agent.reasoningEffort,
+            permissionMode: agent.permissionMode,
+            fastMode: agent.fastMode
+          })
           return true
         },
         hasSession: (id: string) => models.has(id),
@@ -87,8 +100,21 @@ async function start(root: string) {
           models.set(id, model)
           return true
         },
+        setSessionEffort: async (id: string, effort: string) => {
+          settings.get(id)!.effort = effort
+          return true
+        },
+        setSessionPermissionMode: async (id: string, mode: string) => {
+          settings.get(id)!.permissionMode = mode
+          return true
+        },
+        setSessionFastMode: async (id: string, fast: boolean) => {
+          settings.get(id)!.fastMode = fast
+          return true
+        },
         prompt: async (id: string) => {
           prompted.push(models.get(id)!)
+          promptSettings.push({ ...settings.get(id)! })
           executionRuntimes.push(agent.runtime)
           onUpdate(id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Done' } })
           return { stopReason: 'end_turn' }
@@ -130,7 +156,7 @@ async function start(root: string) {
     await daemon.runEvaluationTurn({ agentId, conversationId, text })
     await daemon.waitForEvaluationIdle()
   }
-  return { daemon, internal, prompted, executionRuntimes, started, evaluate, turn }
+  return { daemon, internal, prompted, promptSettings, executionRuntimes, started, evaluate, turn }
 }
 
 describe('session-pinned Decision model', () => {
@@ -168,7 +194,13 @@ describe('session-pinned Decision model', () => {
     const selected = (await internal.store.listSessions(agentId)).find(
       (row: { decisionModel?: string }) => row.decisionModel
     )
-    expect(JSON.parse(selected.decisionModel)).toEqual({ runtime: 'alternative', model: 'model-capable' })
+    expect(JSON.parse(selected.decisionModel)).toEqual({
+      runtime: 'alternative',
+      model: 'model-capable',
+      effort: '',
+      permissionMode: 'default',
+      fastMode: false
+    })
     expect((await internal.statusInfoFrom(agentId, selected.key, selected.acpSessionId)).runtime).toBe('alternative')
   })
 
@@ -242,7 +274,13 @@ describe('session-pinned Decision model', () => {
     )
     expect(prompted).toEqual(['model-capable', 'model-capable'])
     const row = (await internal.store.listSessions(agentId))[0]
-    expect(JSON.parse(row.decisionModel)).toEqual({ runtime: 'test', model: 'model-capable' })
+    expect(JSON.parse(row.decisionModel)).toEqual({
+      runtime: 'test',
+      model: 'model-capable',
+      effort: '',
+      permissionMode: 'default',
+      fastMode: false
+    })
     internal.agents.get(agentId).modelSelection.rules[0].model = 'model-standard'
     await turn('first')
     expect(prompted.at(-1)).toBe('model-capable')
@@ -258,14 +296,29 @@ describe('session-pinned Decision model', () => {
   })
 
   it.skipIf(process.platform === 'win32').each([true, false])(
-    'persists the runtime pair across restart without retrying Jev (fallback=%s)',
+    'persists the runtime and run settings across restart without retrying Jev (fallback=%s)',
     async (fallback) => {
       const root = scaffold()
       const first = await start(root)
-      first.internal.agents.get(agentId).modelSelection.rules[0].runtime = 'alternative'
+      const configured = first.internal.agents.get(agentId)
+      Object.assign(configured, { reasoningEffort: 'low', permissionMode: 'plan', fastMode: true })
+      Object.assign(configured.modelSelection.rules[0], {
+        runtime: 'alternative',
+        effort: 'high',
+        permissionMode: 'default',
+        fastMode: false
+      })
+      const expected = fallback
+        ? { effort: 'low', permissionMode: 'plan', fastMode: true }
+        : { effort: 'high', permissionMode: 'default', fastMode: false }
       if (fallback) first.evaluate.mockResolvedValue({ status: 'unavailable', reason: 'timeout' })
       await first.turn('first')
       expect(first.prompted).toEqual([fallback ? 'model-standard' : 'model-capable'])
+      expect(first.promptSettings).toEqual([expected])
+      Object.assign(configured, { reasoningEffort: 'medium', permissionMode: 'default', fastMode: false })
+      configured.modelSelection = undefined
+      await first.turn('first', 'A follow-up')
+      expect(first.promptSettings.at(-1)).toEqual(expected)
       await first.daemon.stop()
       daemons.splice(daemons.indexOf(first.daemon), 1)
       const second = await start(root)
@@ -273,6 +326,20 @@ describe('session-pinned Decision model', () => {
       expect(second.evaluate).not.toHaveBeenCalled()
       expect(second.prompted).toEqual([fallback ? 'model-standard' : 'model-capable'])
       expect(second.executionRuntimes).toEqual([fallback ? 'test' : 'alternative'])
+      expect(second.promptSettings).toEqual([expected])
+      const row = (await second.internal.store.listSessions(agentId))[0]
+      await second.internal.store.setEffortOverride(row.key, 'medium')
+      await second.internal.store.setPermissionModeOverride(row.key, 'ask')
+      await second.internal.store.setFastModeOverride(row.key, !expected.fastMode)
+      await second.turn('first', 'Manual settings')
+      expect(second.promptSettings.at(-1)).toEqual({
+        effort: 'medium',
+        permissionMode: 'ask',
+        fastMode: !expected.fastMode
+      })
+      second.internal.agents.get(agentId).allowRuntimeChangesInChat = false
+      await second.turn('first', 'Configured settings')
+      expect(second.promptSettings.at(-1)).toEqual(expected)
     }
   )
 })

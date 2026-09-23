@@ -1658,14 +1658,19 @@ Agent-level answer filtering is a separate future capability described below.
 
 An Agent can use a Decision to choose a **runtime and model together, once when a
 new session starts**. The reusable Decision owns its question and evaluator model.
-The Agent owns conditions, execution targets, rule order, and the fallback pair.
+The Agent owns conditions, execution targets, their run settings, rule order, and the fallback.
 This consumer is independent of MCP Decision attachments and live message triggers.
 
 The Agent create/edit **Runtime** section has two modes, **Fixed** and **By decision**.
 Both use the same Provider · model picker: runtimes on the left, their advertised
-models on the right, search across every runtime, and the supported Fast mode
-control at the bottom. Catalog contents come from the selected daemon, group, or
-managed pool; screenshots do not define a static model catalog. Login and missing
+models on the right, and search across every runtime. In By decision mode, each
+rule and the fallback picker has a **Run settings** section below the model list:
+model-specific Effort, runtime-specific Approval, and Fast mode. Selecting a model
+keeps the picker open so these settings can be adjusted together. The closed
+trigger shows the model, a compact effort/approval summary, and the FAST badge when
+enabled. The separate Effort and Permission mode fields remain in Fixed mode only.
+Catalog contents come from the selected daemon, group, or managed pool;
+screenshots do not define a static model catalog. Login and missing
 installation states remain visible. A runtime with no model selector can still be
 chosen in Fixed mode, without inventing a model id.
 
@@ -1679,15 +1684,29 @@ chosen in Fixed mode, without inventing a model id.
       {
         "when": { "type": "choice", "thresholds": { "complex": 0.7 } },
         "runtime": "codex",
-        "model": "model-capable"
+        "model": "model-capable",
+        "effort": "high",
+        "permissionMode": "plan",
+        "fastMode": false
       }
     ]
   }
 }
 ```
 
-With a binding, the existing Agent `runtime` and `model` fields are the explicit
-**Fallback provider and model**. Without it they are the Fixed pair.
+With a binding, the existing Agent `runtime`, `model`, `reasoningEffort`,
+`permissionMode`, and `fastMode` fields configure the explicit fallback. Without it
+they are the Fixed configuration. Each rule can independently set `effort`,
+`permissionMode`, and `fastMode`, including when two rules use the same model.
+Omitted rule settings retain the existing Agent defaults; an explicit empty
+`effort` uses the runtime's default and `fastMode: false` overrides an enabled
+fallback. New rules copy the fallback settings into their own target. Editing one
+rule does not change another rule or the fallback.
+
+The picker uses the existing model catalog to show supported settings. A deliberate
+model change resolves effort using the model's offered levels and default, and
+disables Fast mode when unsupported. Changing runtime selects its own approval
+vocabulary and default. Merely receiving an updated catalog does not edit the draft.
 `modelSelection: null` removes the binding. Each rule needs a runtime and one of
 its advertised models. The fallback model is required while a binding exists.
 Launch-time model configuration is supported because selection precedes host start.
@@ -1728,11 +1747,11 @@ No match, invalidated rules, missing definition, unavailable evaluation, or an
 unavailable/incompatible target uses the configured fallback pair. A failure to
 start that fallback remains a visible startup error.
 
-**One pair for the session.** The choice is resolved before executor placement,
+**One configuration for the session.** The choice is resolved before executor placement,
 provider credential selection, and runtime startup. Execution uses a session-owned
-host and an effective Agent configuration with the chosen pair; the shared Agent
-configuration is never changed. The saved pair survives later turns, context
-resets, and daemon restart/resume. Changing or removing an Agent binding affects
+host and an effective Agent configuration with the chosen runtime, model, and run
+settings; the shared Agent configuration is never changed. The saved configuration
+survives later turns, context resets, and daemon restart/resume. Changing or removing an Agent binding affects
 new sessions. Sessions that have already prompted are not evaluated retroactively.
 Actual runtime/model observations continue to drive metadata, status, and usage.
 
@@ -1755,8 +1774,8 @@ return retained name/type without revealing a hidden question.
 `decision/get` with `purpose=model_selection`, negotiated by
 `decision-model-selection-v1`, checks the exact binding and current placement before
 and after asynchronous reads. This grants no MCP tool attachment or tool read.
-The session store saves the selected runtime/model pair; no message content or
-provider credentials are added to CP storage.
+The session store saves the selected runtime/model and run settings in the existing
+Decision snapshot; no message content or provider credentials are added to CP storage.
 
 The temporary Console `decisions` flag gates By decision configuration and must be
 removed at final release. Acceptance covers cross-runtime startup, isolation between

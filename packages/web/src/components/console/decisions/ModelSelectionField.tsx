@@ -99,12 +99,12 @@ export function ModelSelectionField({
     ;[rules[index], rules[index + step]] = [rules[index + step]!, rules[index]!]
     onChange({ ...value, rules })
   }
-  // Fast mode is one agent setting; each picker only reports whether its own model offers it.
   const fastAvailable = (target: DecisionRuntimeTarget) =>
     fastModeAvailableFor(target.runtime, modelCapability(source, target.runtime, target.model))
   const fallbackPicker = (dense: boolean) => (
     <RuntimeModelSelect
       dense={dense}
+      runSettings={active}
       allowRuntimeOnly={!active}
       value={fallback}
       onChange={onFallbackChange}
@@ -370,14 +370,17 @@ export function ModelSelectionField({
                     <Icon name="arrow-right" size={13} className="hidden text-(--text-tertiary) desktop:block" />
                     <RuntimeModelSelect
                       dense
-                      value={rule}
+                      runSettings
+                      value={{
+                        effort: fallback.effort,
+                        permissionMode: fallback.permissionMode,
+                        fastMode: fallback.fastMode,
+                        ...rule
+                      }}
                       ariaLabel={t('ruleModel', { index: index + 1 })}
                       source={source}
                       runtimes={runtimes}
                       runInSandbox={runInSandbox}
-                      fastMode={fastMode}
-                      fastModeAvailable={fastAvailable(rule)}
-                      onFastModeChange={onFastModeChange}
                       onChange={(target) => replaceRule(index, { ...rule, ...target })}
                     />
                     <div className="flex justify-end gap-[2px]">

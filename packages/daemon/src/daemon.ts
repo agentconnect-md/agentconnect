@@ -42,6 +42,7 @@ import {
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   SESSION_EXECUTORS_V1_FEATURE,
   type ExecutorCandidatesResult,
+  type DecisionRuntimeTarget,
   type SessionStayedHomeReason,
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
@@ -4861,7 +4862,7 @@ export class Daemon {
     return effectiveSessionIsolation(agent) === 'session'
   }
 
-  private readonly sessionRuntimes = new Map<string, { runtime: string; model: string }>()
+  private readonly sessionRuntimes = new Map<string, DecisionRuntimeTarget>()
 
   private sessionAgent(agentId: string, key?: string): LoadedAgent | undefined {
     const agent = this.agents.get(agentId)
@@ -13262,7 +13263,7 @@ export class Daemon {
         }
       )
       const target = this.sessionRuntimes.get(key)
-      if (target) await this.store.pinDecisionModel(key, target.runtime, target.model)
+      if (target) await this.store.pinDecisionModel(key, target)
       if (remoteMcpServer && handled.additionalMcpServersAttached === false) {
         this.log.warn('remote MCP descriptor was rejected by the runtime; ordinary webchat continued without it')
       }
@@ -13365,7 +13366,7 @@ export class Daemon {
     const configuration = modelSelectionConfiguration(agent)
     const orgId = this.cpCollab.orgForAgent(agent.id)
     const client = this.cpClient
-    let target: { runtime: string; model: string } | undefined
+    let target: DecisionRuntimeTarget | undefined
     const manualModel =
       manual?.model ?? (agent.allowRuntimeChangesInChat ? await this.store.getModelOverride(key) : undefined)
     if (!manualModel && client?.supportsServerFeature(DECISION_MODEL_SELECTION_V1_FEATURE)) {
@@ -13401,10 +13402,16 @@ export class Daemon {
     const currentAgent = this.agents.get(agent.id)
     if (!currentAgent || modelSelectionConfiguration(currentAgent) !== configuration) return
     target ??= { runtime: agent.runtime, model: manualModel ?? agent.runtimeOverrides.model }
-    this.sessionRuntimes.set(key, target)
+    const selected = agentWithRuntime(agent, target)
+    this.sessionRuntimes.set(key, {
+      ...target,
+      effort: selected.reasoningEffort ?? '',
+      permissionMode: selected.permissionMode,
+      fastMode: selected.fastMode ?? false
+    })
   }
 
-  private sessionRuntimeSupported(agent: LoadedAgent, target: { runtime: string; model: string }): boolean {
+  private sessionRuntimeSupported(agent: LoadedAgent, target: DecisionRuntimeTarget): boolean {
     return (
       !!this.runtimes[target.runtime] &&
       this.runtimeFacts.profileFor(target.runtime).models.includes(target.model) &&
@@ -13895,7 +13902,9 @@ export class Daemon {
         this.log.debug(`permission mode "${effectivePermissionMode}" not applied: ${(err as Error).message}`)
       }
     }
-    const fastOverride = allowRuntimeChangesInChat ? await this.store.getFastModeOverride(key) : undefined
+    const fastOverride =
+      (allowRuntimeChangesInChat ? await this.store.getFastModeOverride(key) : undefined) ??
+      (automaticModel ? runtimeAgent?.fastMode : undefined)
     if (fastOverride !== undefined) {
       await host
         .setSessionFastMode(sessionId, fastOverride)

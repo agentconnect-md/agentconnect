@@ -113,7 +113,13 @@ export type DecisionCondition = z.infer<typeof DecisionCondition>
 export const ChannelDecisionGate = z.strictObject({ type: z.literal('gate'), decisionId: Id, when: DecisionCondition })
 export type ChannelDecisionGate = z.infer<typeof ChannelDecisionGate>
 
-export const DecisionRuntimeTarget = z.strictObject({ runtime: Text.max(128), model: Text.max(256) })
+export const DecisionRuntimeTarget = z.strictObject({
+  runtime: Text.max(128),
+  model: Text.max(256),
+  effort: z.string().trim().max(128).optional(),
+  permissionMode: Text.max(128).optional(),
+  fastMode: z.boolean().optional()
+})
 export type DecisionRuntimeTarget = z.infer<typeof DecisionRuntimeTarget>
 
 export const AgentModelSelection = z.strictObject({
@@ -312,13 +318,12 @@ export function selectDecisionTarget(
   requireValid(decisionModelSelectionIssues(question, selection))
   parseDecisionAnswer(question, answer)
   let selected: { target: DecisionRuntimeTarget; probability: number } | undefined
-  for (const rule of selection.rules) {
-    const match = matchDecisionCondition(question, rule.when, answer)
+  for (const { when, ...target } of selection.rules) {
+    const match = matchDecisionCondition(question, when, answer)
     if (!match.matched) continue
     const probability =
       answer.type === 'choice' ? Math.max(...match.matchedKeys.map((key) => answer.probabilities[key]!)) : 1
-    if (!selected || probability > selected.probability)
-      selected = { target: { runtime: rule.runtime, model: rule.model }, probability }
+    if (!selected || probability > selected.probability) selected = { target, probability }
   }
   return selected?.target
 }
