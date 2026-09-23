@@ -446,6 +446,37 @@ describe('DecisionGate', () => {
     })
   })
 
+  it('(f) a session-mode-only change refuses an in-flight release even while the bundle and host view are unchanged', async () => {
+    const h = await harness()
+    const a = await h.post()
+    await h.candidate(a)
+    await vi.waitFor(() => expect(h.calls).toHaveLength(1), WAIT)
+    h.calls[0]!.resolve(yes)
+    await vi.waitFor(() => expect(h.releases).toHaveLength(1), WAIT)
+    const fence = h.releases[0]!.request.beforeDispatch
+    await h.gate.onConfigApplied('int-a', bundle(), bundle(), [
+      { channel: 'C1', mode: 'append' }
+    ])
+    expect(fence()).toBe(false)
+    h.releases[0]!.resolve({ kind: 'rejected', reason: 'gated', recoverable: false })
+    await h.gate.idle()
+    expect(await h.store.getDecisionVerdict(a.record.seq, AGENT)).toMatchObject({
+      state: 'canceled',
+      cancelReason: 'config_changed'
+    })
+  })
+
+  it('(f) announcing the same session mode leaves an in-flight release alone', async () => {
+    const h = await harness()
+    const a = await h.post()
+    await h.candidate(a)
+    await vi.waitFor(() => expect(h.calls).toHaveLength(1), WAIT)
+    h.calls[0]!.resolve(yes)
+    await vi.waitFor(() => expect(h.releases).toHaveLength(1), WAIT)
+    await h.gate.onConfigApplied('int-a', bundle(), bundle(), [])
+    expect(h.releases[0]!.request.beforeDispatch()).toBe(true)
+  })
+
   it('(f) a verdict frozen under the lagging host gate never releases once a new config was announced', async () => {
     const h = await harness()
     // Announced while the host's agents still serve the old gate, so intake freezes the old config.

@@ -151,6 +151,8 @@ export class DecisionGate {
   private readonly releasing = new Map<string, ReleaseToken>()
   // The latest bundle each integration applied (null once removed); the host's view lags it by a reconcile.
   private readonly applied = new Map<string, ResolvedDecisionBundle | null>()
+  // The session modes announced with each integration's bundle, so the fence never trusts a lagging host view.
+  private readonly appliedModes = new Map<string, ReadonlyMap<string, string>>()
   private readonly intake = new Map<string, Promise<GateOutcome>>()
   private readonly openIngressSeqs = new Map<string, Map<number, number>>()
   private readonly progress = new Set<() => void>()
@@ -281,15 +283,25 @@ export class DecisionGate {
   }
 
   /** A relevant binding/definition/model/provider change cancels, never reinterprets (decisions.md §8.3). */
-  async onConfigApplied(integrationId: string, _previous?: DecisionBundle, next?: DecisionBundle): Promise<void> {
+  async onConfigApplied(
+    integrationId: string,
+    _previous?: DecisionBundle,
+    next?: DecisionBundle,
+    sessionModes?: readonly { channel: string; mode: string }[]
+  ): Promise<void> {
     const store = this.host.store()
     const bundle = next ? resolveDecisionBundle(next) : undefined
     this.applied.set(integrationId, bundle ?? null)
+    if (sessionModes) this.appliedModes.set(integrationId, new Map(sessionModes.map((m) => [m.channel, m.mode])))
+    else if (!bundle) this.appliedModes.delete(integrationId)
     // Synchronously, before any await: a release already past its recheck must not reach dispatch.
     for (const release of this.releasing.values()) {
       if (release.integrationId !== integrationId) continue
       if (!bundle) release.refused ??= store.isShared ? {} : { reason: 'integration_removed' }
-      else if (!this.sameGate(bundle.gates.get(release.config.binding.channel), release.config))
+      else if (
+        !this.sameGate(bundle.gates.get(release.config.binding.channel), release.config) ||
+        this.modeChanged(integrationId, release.config)
+      )
         release.refused ??= { reason: 'config_changed' }
     }
     const pending = await store.listPendingDecisionVerdicts({ integrationId })
@@ -304,7 +316,12 @@ export class DecisionGate {
     }
     for (const row of pending) {
       const config = parseJson<FrozenGateConfig>(row.configJson)
-      if (config && this.sameGate(bundle.gates.get(config.binding.channel), config)) continue
+      if (
+        config &&
+        this.sameGate(bundle.gates.get(config.binding.channel), config) &&
+        !this.modeChanged(integrationId, config)
+      )
+        continue
       this.abortTask(verdictKey(row.seq, row.subject), 'config_changed')
       await this.cancelRow(row, 'config_changed')
     }
@@ -653,10 +670,17 @@ export class DecisionGate {
   }
 
   /** The cancel reason when the applied gate no longer matches the frozen one, or 'wait' while config converges. */
+  // An announced mode list is sparse: a channel absent from it is createNew (channel-session-mode.md §4).
+  private modeChanged(integrationId: string, config: FrozenGateConfig): boolean {
+    const modes = this.appliedModes.get(integrationId)
+    return modes !== undefined && (modes.get(config.binding.channel) ?? 'createNew') !== config.sessionMode
+  }
+
   private staleGate(head: DecisionVerdictRow, config: FrozenGateConfig): string | 'wait' | undefined {
     const applied = this.applied.get(head.integrationId)
     if (applied === null) return this.host.store().isShared ? 'wait' : 'integration_removed'
     if (applied && !this.sameGate(applied.gates.get(config.binding.channel), config)) return 'config_changed'
+    if (this.modeChanged(head.integrationId, config)) return 'config_changed'
     const current = this.host.currentGate(head.agentId, head.integrationId, config.binding.channel)
     if (current.status === 'unknown') return this.host.configConverged() ? 'integration_removed' : 'wait'
     if (current.status === 'unbound') return 'binding_removed'

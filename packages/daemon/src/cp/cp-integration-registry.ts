@@ -5,7 +5,7 @@
  * SECURITY: specs carry PLAINTEXT platform tokens. Never log a spec or an
  * entry — ids only.
  */
-import type { DecisionBundle, IntegrationSpec } from '@agentconnect.md/protocol'
+import type { DecisionBundle, IntegrationSessionMode, IntegrationSpec } from '@agentconnect.md/protocol'
 import type { Integration } from '../agents/agent-schema.js'
 import { resolveDecisionBundle } from '../decisions/bundle.js'
 import { integrationConfig, integrationCore } from '../platforms/integration-config.js'
@@ -17,7 +17,8 @@ export interface WriteIntegrationDeps {
   onDecisionConfigApplied?: (
     integrationId: string,
     previous: DecisionBundle | undefined,
-    next: DecisionBundle | undefined
+    next: DecisionBundle | undefined,
+    nextSessionModes?: readonly IntegrationSessionMode[]
   ) => void
 }
 
@@ -113,7 +114,8 @@ export class CpIntegrationRegistry {
     this.deps.onDecisionConfigApplied?.(
       integrationId,
       previous ? integrationCore(previous.integration).decisions : undefined,
-      next ? integrationCore(next.integration).decisions : undefined
+      next ? integrationCore(next.integration).decisions : undefined,
+      next ? integrationCore(next.integration).sessionModes : undefined
     )
   }
 

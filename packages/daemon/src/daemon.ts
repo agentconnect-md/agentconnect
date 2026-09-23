@@ -2974,7 +2974,7 @@ export class Daemon {
       this.agentsDir,
       {
         warn: (m) => this.log.warn(m),
-        onDecisionConfigApplied: (id, previous, next) => this.onDecisionConfigApplied(id, previous, next)
+        onDecisionConfigApplied: (id, previous, next, modes) => this.onDecisionConfigApplied(id, previous, next, modes)
       },
       () =>
         void this.reconcile().catch((err) =>
@@ -17740,10 +17740,11 @@ export class Daemon {
   private onDecisionConfigApplied(
     integrationId: string,
     previous: DecisionBundle | undefined,
-    next: DecisionBundle | undefined
+    next: DecisionBundle | undefined,
+    sessionModes?: readonly { channel: string; mode: string }[]
   ): void {
     void this.decisionGate
-      .onConfigApplied(integrationId, previous, next)
+      .onConfigApplied(integrationId, previous, next, sessionModes)
       .catch((err) => this.log.warn(`decision: config cancellation failed: ${formatErr(err)}`))
   }
 
