@@ -59,7 +59,7 @@ interface HostStub {
   cancel: ReturnType<typeof vi.fn>
   setSessionPermissionMode: ReturnType<typeof vi.fn>
   usesMetaSystemPrompt: () => boolean
-  permissionModeOptions: () => { modes: string[] } | null
+  permissionModeOptions: (sessionId?: string) => { modes: string[] } | null
 }
 
 /** One warm host stub whose `prompt` streams `chunks` through the daemon's real `onAcpUpdate`. */
@@ -78,10 +78,12 @@ function stubHost(
   } = {}
 ): { host: HostStub; factory: ReturnType<typeof vi.fn> } {
   let seq = 0
+  const sessions = new Set<string>()
   let canceled!: () => void
   const host: HostStub = {
     usesMetaSystemPrompt: () => opts.trusted ?? false,
-    permissionModeOptions: () => ({ modes: opts.modes ?? ['read-only'] }),
+    permissionModeOptions: (sessionId?: string) =>
+      sessionId && sessions.has(sessionId) ? { modes: opts.modes ?? ['read-only'] } : null,
     setSessionPermissionMode: vi.fn(async () => {
       // A real `session/set_mode` is a round-trip, not a microtask. Deferring it by a macrotask is
       // what lets the advertisement below overtake anything registered after this await.
@@ -90,6 +92,7 @@ function stubHost(
     }),
     newSession: vi.fn(async () => {
       const id = `sess-${++seq}`
+      sessions.add(id)
       // claude-agent-acp advertises its commands on a timer right after the session/new response —
       // outside any turn, and before the pass registers its collector.
       if (opts.advertise) {
@@ -114,7 +117,7 @@ function stubHost(
       if (opts.awaitCancel) await new Promise<void>((resolve) => (canceled = resolve))
       return { stopReason: opts.stopReason ?? 'end_turn' }
     }),
-    discardSession: vi.fn(),
+    discardSession: vi.fn((sessionId: string) => sessions.delete(sessionId)),
     cancel: vi.fn(async () => canceled?.()),
     hasSession: () => true,
     start: async () => {},
@@ -161,6 +164,17 @@ function pass(daemon: Daemon, signal = new AbortController().signal) {
 }
 
 describe('runCommitMessagePass — a fresh isolated session on the warm host', () => {
+  it('discovers read-only modes from its new session on a cold utility host', async () => {
+    await withDaemon({ modes: ['default', 'plan'], chunks: ['fix: cold host'] }, async (daemon, host) => {
+      expect(host.permissionModeOptions()).toBeNull()
+      await expect(pass(daemon)).resolves.toMatchObject({ output: 'fix: cold host' })
+      expect(host.setSessionPermissionMode).toHaveBeenCalledWith('sess-1', 'plan')
+      expect(host.setSessionPermissionMode.mock.invocationCallOrder[0]).toBeLessThan(
+        host.prompt.mock.invocationCallOrder[0]!
+      )
+    })
+  })
+
   it('opens a fresh tool-free session per press, collects the answer, and discards the session', async () => {
     await withDaemon({ chunks: ['feat(dock): ', 'draft a message'] }, async (daemon, host) => {
       const inner = daemon as never as Record<string, any>
@@ -237,7 +251,9 @@ describe('runCommitMessagePass — a fresh isolated session on the warm host', (
   it('fails closed when the runtime has no non-mutating mode, before any prompt', async () => {
     await withDaemon({ modes: ['default', 'accept-edits'] }, async (daemon, host) => {
       await expect(pass(daemon)).rejects.toThrow('read-only/plan mode')
-      expect(host.newSession).not.toHaveBeenCalled()
+      expect(host.newSession).toHaveBeenCalledOnce()
+      expect(host.discardSession).toHaveBeenCalledWith('sess-1')
+      expect(host.setSessionPermissionMode).not.toHaveBeenCalled()
       expect(host.prompt).not.toHaveBeenCalled()
     })
   })

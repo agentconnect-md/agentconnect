@@ -60,6 +60,8 @@ export interface PrepareMicrosandboxLaunchOptions {
   agentsRoot?: string
   cwd: string
   hostKey?: HostKey
+  // Legacy VM sessions retain the agent's HOME while their ACP hosts have independent keys.
+  homeKey?: HostKey
   explicitEnv?: Record<string, string>
   stateSourceEnv?: NodeJS.ProcessEnv
   nativeMemory?: boolean
@@ -95,7 +97,7 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
       throw new Error('microsandbox session directory must be one existing scopeDir/sessions/<leaf> directory')
     }
   }
-  let runtimeHome = microsandboxRuntimeHome(scopeDir, opts.hostKey, sessionDir)
+  let runtimeHome = microsandboxRuntimeHome(scopeDir, opts.homeKey ?? opts.hostKey, sessionDir)
   const boundary = sandboxBoundary({ agentDir: scopeDir, cwd: opts.cwd, runtimeHome })
   if (sessionDir && !contains(sessionDir, boundary.writable[0]!)) {
     throw new Error('microsandbox cwd is outside its session directory')

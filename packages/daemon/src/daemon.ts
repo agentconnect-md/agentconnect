@@ -4444,10 +4444,14 @@ export class Daemon {
     agent: LoadedAgent,
     cwd: string,
     key?: HostKey
-  ): { id: string; trustedSessionDir?: string } {
+  ): { id: string; trustedSessionDir?: string; homeKey?: HostKey } {
     const parts = relative(agent.dir, cwd).split(sep)
     if (parts[0] === 'sessions' && /^session-[a-f0-9]{24}$/.test(parts[1] ?? '')) {
       return { id: `${agent.id}/${parts[1]}`, trustedSessionDir: join(agent.dir, 'sessions', parts[1]!) }
+    }
+    // A legacy session keeps its VM and HOME even when its MCP scope requires a separate ACP process.
+    if (key && this.legacyMicrosandboxSessions.has(key)) {
+      return { id: `${agent.id}/agent`, homeKey: agentHostKey(agent.id) }
     }
     return { id: `${agent.id}/${hostKeyDirName(key)}` }
   }
@@ -4503,7 +4507,9 @@ export class Daemon {
       scopeDir: agent.dir,
       daemonRoot: this.root,
       agentsRoot: this.cfg.agentsDir,
-      cwd: placement.trustedSessionDir ?? (key && hostKeySessionKey(key) ? cwd : agent.workspace.path),
+      cwd:
+        placement.trustedSessionDir ??
+        (key && hostKeySessionKey(key) && !placement.homeKey ? cwd : agent.workspace.path),
       hostKey: key,
       ...placement,
       trustedWorkspaceWriteRoots: placement.trustedSessionDir
@@ -4833,11 +4839,10 @@ export class Daemon {
     if (sessionKey === undefined || !agent) return agentHostKey(agentId)
     const key = sessionHostKey(agentId, sessionKey)
     if (this.sessionRuntimes.has(sessionKey) || this.confinedSession(agent, sessionKey)) return key
+    // Process-local MCP registrations cannot share a host, even inside a legacy shared VM.
+    if (sessionMcpServersScope(agent.runtime, this.runtimes[agent.runtime]) === 'per-process') return key
     if (this.usesMicrosandbox(agent)) return this.legacyMicrosandboxSessions.has(key) ? agentHostKey(agentId) : key
-    // Sharing one would hand every session's MCP tool calls the bridge token of whichever session registered last.
-    return sessionMcpServersScope(agent.runtime, this.runtimes[agent.runtime]) === 'per-process'
-      ? key
-      : agentHostKey(agentId)
+    return agentHostKey(agentId)
   }
 
   /** {@link hostKeyFor} for a caller holding the session's workspace request, which is where its isolation is learned. */
@@ -4911,10 +4916,11 @@ export class Daemon {
 
   /** Admission the session holds right now, read with no await so a stop can decide against it in one tick. */
   private sessionAdmitted(sessionKey: string, hostKey: HostKey): boolean {
+    // Successful starts stay cached; only a not-yet-ready host still holds startup admission.
     return (
       this.inflight.has(sessionKey) ||
       this.activeDispatchDoneByKey.has(sessionKey) ||
-      this.hostStarts.has(hostKey) ||
+      (this.hostStarts.has(hostKey) && !this.readyHosts.has(hostKey)) ||
       [...this.pending.values()].some((p) => p.plan.sessionKey === sessionKey)
     )
   }
@@ -5689,7 +5695,11 @@ export class Daemon {
             dir:
               remoteHome ??
               (microPlacement
-                ? microsandboxRuntimeHome(agent.dir, opts.hostKey, microPlacement.trustedSessionDir)
+                ? microsandboxRuntimeHome(
+                    agent.dir,
+                    microPlacement.homeKey ?? opts.hostKey,
+                    microPlacement.trustedSessionDir
+                  )
                 : privateRuntimeHomeFor(agent.dir, opts.hostKey))
           }
         : agent
@@ -5815,7 +5825,8 @@ export class Daemon {
         runtime: launchDef,
         provider: memoryKindOf(agent),
         scopeDir: agent.dir,
-        cwd: opts.cwd,
+        // Legacy shared VMs keep their original mount set; session/new still receives the session's own cwd.
+        cwd: microPlacement?.homeKey ? agent.workspace.path : opts.cwd,
         hostKey: opts.hostKey,
         runInSandbox,
         daemonRoot: this.root,
@@ -6416,41 +6427,16 @@ export class Daemon {
       if (this.memoryExtractionUnavailable.has(host)) {
         throw new Error('memory extraction is unavailable for this runtime host')
       }
-      // Two independent trust dimensions, gated like a memory dream (#653):
-      // - HARD GATE (fail closed): the distilled turn is attacker-controlled, so a
-      //   read-only/plan permission mode is required or extraction never runs.
-      // - OBSERVED (not gated): when the runtime carries the system prompt via
-      //   `_meta.systemPrompt` the policy rides it; otherwise it is prepended inline
-      //   to the user prompt. Runtimes without an ACP system-prompt channel (Codex /
-      //   OpenCode) therefore distill too, instead of silently failing (#653).
-      //
-      // RESIDUAL (owner-accepted P2, #658): unlike a dream, distillation writes to
-      // shared live memory UNREVIEWED and runs on the WARM host (full tool
-      // credentials). On the inline path a prompt injection could write poisoned
-      // facts or read+re-encode a warm-host credential (read-only blocks writes, not
-      // reads). #658 will move the untrusted-channel path onto a dedicated
-      // excludeAgentToolCredentials host; the trusted-channel path is unchanged.
+      // Read-only gates extraction; system-prompt transport is optional, and warm-host credential exposure remains tracked in #658.
       const trusted = host.usesMetaSystemPrompt()
       let sessionId = this.memoryExtractionSessions.get(cacheKey)
       if (!sessionId || !host.hasSession(sessionId)) {
-        const modes = host.permissionModeOptions()?.modes ?? []
-        const readOnlyMode = readOnlyExtractionMode(modes)
-        if (!readOnlyMode) {
-          this.memoryExtractionUnavailable.add(host)
-          throw new Error('runtime lacks a verified read-only memory-extraction mode')
-        }
         let cwd = this.memoryExtractionDirs.get(cacheKey)
         if (!cwd) {
           cwd = await mkdtemp(join(tmpdir(), 'agentconnect-memory-distill-'))
           this.memoryExtractionDirs.set(cacheKey, cwd)
         }
-        // Distillation writes memory through the SAME tool surface as an ordinary
-        // turn and a dream — only the binding differs (#41). The binding tags its
-        // writes `distill`, which dream adoption's rebase relies on to tell
-        // additive capture apart from a tool/console edit.
-        // The binding pins the ORIGINATING conversation's memory scope: a
-        // channel-scoped agent must distill into that channel's folder, not into a
-        // store derived from this synthetic session's coordinates.
+        // Bind writes to the originating memory scope and mark them as distillation for dream-adoption rebases.
         const extractionScopes = this.memoryExtractionScopes
         const mcpToken = this.mcp.register({
           agentId,
@@ -6472,36 +6458,35 @@ export class Daemon {
         this.releaseMemoryExtractionToken(cacheKey)
         this.memoryExtractionTokens.set(cacheKey, mcpToken)
         const mcpServers = this.mcpToolServerSpec(mcpToken, this.agents.get(agentId))
-        sessionId = trusted
-          ? await host.newSession(
-              cwd,
-              mcpServers,
-              undefined,
-              MEMORY_DISTILLATION_SYSTEM_PROMPT,
-              [],
-              undefined,
-              CLAUDE_HEADLESS_DISALLOWED_TOOLS
-            )
-          : await host.newSession(
-              cwd,
-              mcpServers,
-              undefined,
-              undefined,
-              [],
-              undefined,
-              CLAUDE_HEADLESS_DISALLOWED_TOOLS
-            )
-        // Synchronous on purpose: the runtime advertises its commands on a timer right after this
-        // resolves, and a registration behind one more await loses that race (#1310 review).
-        const passKey = pendingTurnKey(owner, sessionId)
-        this.internalPassSessions.add(internalPassSlot.distill(cacheKey), passKey)
-        if (!(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
-          host.discardSession(sessionId)
-          this.internalPassSessions.delete(passKey)
-          this.memoryExtractionUnavailable.add(host)
-          throw new Error('runtime lacks a verified read-only memory-extraction mode')
+        sessionId = undefined
+        try {
+          sessionId = await host.newSession(
+            cwd,
+            mcpServers,
+            undefined,
+            trusted ? MEMORY_DISTILLATION_SYSTEM_PROMPT : undefined,
+            [],
+            undefined,
+            CLAUDE_HEADLESS_DISALLOWED_TOOLS
+          )
+          // Register before any await so early command advertisements stay internal (#1310).
+          this.internalPassSessions.add(internalPassSlot.distill(cacheKey), pendingTurnKey(owner, sessionId))
+          // Modes arrive with session/new, not initialize; never borrow another session's cached modes.
+          const readOnlyMode = readOnlyExtractionMode(host.permissionModeOptions(sessionId)?.modes ?? [])
+          if (!readOnlyMode || !(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
+            this.memoryExtractionUnavailable.add(host)
+            throw new Error('runtime lacks a verified read-only memory-extraction mode')
+          }
+          this.memoryExtractionSessions.set(cacheKey, sessionId)
+        } catch (error) {
+          this.memoryExtractionSessions.delete(cacheKey)
+          this.releaseMemoryExtractionToken(cacheKey)
+          if (sessionId) {
+            host.discardSession(sessionId)
+            this.internalPassSessions.delete(pendingTurnKey(owner, sessionId))
+          }
+          throw error
         }
-        this.memoryExtractionSessions.set(cacheKey, sessionId)
       }
       const key = pendingTurnKey(owner, sessionId)
       const chunks: string[] = []
@@ -6589,14 +6574,8 @@ export class Daemon {
     const owner = selected?.hostKey ?? agentHostKey(agentId)
     const host = selected?.host ?? (await this.ensureHostAsync(agentHostKey(agentId)))
     try {
-      // OBSERVED, not gated (memory-dreaming.md §2): the policy rides `_meta.systemPrompt` where the
-      // runtime has that channel and is prepended inline where it does not. The output contract lives
-      // in the prompt either way, so a runtime that drops the key still answers in the right shape.
+      // Carry the policy as system context when supported, otherwise prepend it to the prompt.
       const trusted = host.usesMetaSystemPrompt()
-      // HARD GATE, fail closed: a staged diff can carry injected text, and this pass must not be the
-      // thing that gives it a write. No verified non-mutating mode ⇒ no draft.
-      const readOnlyMode = readOnlyExtractionMode(host.permissionModeOptions()?.modes ?? [])
-      if (!readOnlyMode) throw new Error('runtime lacks a verified read-only/plan mode')
       let cwd = this.commitMessageDirs.get(agentId)
       if (!cwd) {
         cwd = await mkdtemp(join(tmpdir(), 'agentconnect-commit-message-'))
@@ -6606,9 +6585,12 @@ export class Daemon {
         ? await host.newSession(cwd, [], undefined, systemPrompt, [], undefined, CLAUDE_HEADLESS_DISALLOWED_TOOLS)
         : await host.newSession(cwd, [], undefined, undefined, [], undefined, CLAUDE_HEADLESS_DISALLOWED_TOOLS)
       const key = pendingTurnKey(owner, sessionId)
-      // Synchronous on purpose: see the distillation pass — the advertisement is already on a timer.
+      // Register before any await so early command advertisements stay internal.
       this.internalPassSessions.add(internalPassSlot.commit(agentId, sessionId), key)
       try {
+        // Even a cold utility host learns this session's modes before any untrusted diff is prompted.
+        const readOnlyMode = readOnlyExtractionMode(host.permissionModeOptions(sessionId)?.modes ?? [])
+        if (!readOnlyMode) throw new Error('runtime lacks a verified read-only/plan mode')
         if (!(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
           throw new Error('runtime rejected the read-only/plan mode')
         }
