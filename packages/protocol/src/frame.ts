@@ -89,6 +89,10 @@ import {
   ProviderCredentialsChanged
 } from './frames/provider-credentials.js'
 import {
+  DecisionListRequest,
+  DecisionListReply,
+  DecisionGetRequest,
+  DecisionGetReply,
   DecisionCatalogRequest,
   DecisionCatalogReply,
   DecisionPreviewRequest,
@@ -356,6 +360,10 @@ export const FRAME_SCHEMAS = {
   // ── Linear access-token broker (linear-integration.md §7.3; token-bearing — never log) ──
   'linearcred/request': LinearCredRequest,
   'linearcred/grant': LinearCredGrant,
+  'decision/list': DecisionListRequest,
+  'decision/list/result': DecisionListReply,
+  'decision/get': DecisionGetRequest,
+  'decision/get/result': DecisionGetReply,
   'decision/catalog': DecisionCatalogRequest,
   'decision/catalog/result': DecisionCatalogReply,
   'decision/preview': DecisionPreviewRequest,
@@ -671,6 +679,10 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('gitcred/grant', FRAME_SCHEMAS['gitcred/grant']),
   frame('linearcred/request', FRAME_SCHEMAS['linearcred/request']),
   frame('linearcred/grant', FRAME_SCHEMAS['linearcred/grant']),
+  frame('decision/list', FRAME_SCHEMAS['decision/list']),
+  frame('decision/list/result', FRAME_SCHEMAS['decision/list/result']),
+  frame('decision/get', FRAME_SCHEMAS['decision/get']),
+  frame('decision/get/result', FRAME_SCHEMAS['decision/get/result']),
   frame('decision/catalog', FRAME_SCHEMAS['decision/catalog']),
   frame('decision/catalog/result', FRAME_SCHEMAS['decision/catalog/result']),
   frame('decision/preview', FRAME_SCHEMAS['decision/preview']),

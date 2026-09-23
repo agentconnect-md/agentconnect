@@ -30,6 +30,13 @@ export const DecisionQuestion = z
   })
 export type DecisionQuestion = z.infer<typeof DecisionQuestion>
 
+export const AgentDecisionIds = z
+  .array(z.string().uuid())
+  .max(64)
+  .refine((ids) => new Set(ids).size === ids.length, {
+    message: 'Decision IDs must be unique.'
+  })
+
 export const DecisionDraft = z
   .strictObject({
     name: Text.max(120),

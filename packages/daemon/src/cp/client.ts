@@ -2,6 +2,11 @@ import type { DecisionControlDeps } from './control/decision.js'
 import {
   MEMORY_TRANSACTION_V1_FEATURE,
   PROVIDER_CREDENTIALS_V1_FEATURE,
+  DECISION_TOOLS_V1_FEATURE,
+  DecisionListReply,
+  DecisionGetReply,
+  type DecisionListRequest,
+  type DecisionGetRequest,
   MEMORY_CAPTURE_FENCE_V1_FEATURE,
   type MemoryTransactionReq,
   type MemoryTransactionResult
@@ -1393,6 +1398,30 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected memory/home/migrated/ok, got ${rep.type}`, false)
     }
     return rep.payload as MemoryHomeMigratedOk
+  }
+
+  async decisionList(payload: DecisionListRequest): Promise<DecisionListReply> {
+    this.requireReady('decision/list')
+    if (!this.supportsServerFeature(DECISION_TOOLS_V1_FEATURE)) {
+      throw new WireError('INTERNAL', 'control plane does not support Decision tools', false)
+    }
+    const rep = await this.request('decision/list', payload)
+    if (rep.type !== 'decision/list/result') {
+      throw new WireError('INTERNAL', 'unexpected Decision list reply', false)
+    }
+    return DecisionListReply.parse(rep.payload)
+  }
+
+  async decisionGet(payload: DecisionGetRequest): Promise<DecisionGetReply> {
+    this.requireReady('decision/get')
+    if (!this.supportsServerFeature(DECISION_TOOLS_V1_FEATURE)) {
+      throw new WireError('INTERNAL', 'control plane does not support Decision tools', false)
+    }
+    const rep = await this.request('decision/get', payload)
+    if (rep.type !== 'decision/get/result') {
+      throw new WireError('INTERNAL', 'unexpected Decision read reply', false)
+    }
+    return DecisionGetReply.parse(rep.payload)
   }
 
   async knowledgeList(payload: KnowledgeListReq): Promise<KnowledgeListOk> {

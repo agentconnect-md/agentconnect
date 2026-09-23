@@ -1,4 +1,10 @@
-import { DecisionDraft, type DecisionDefinition, type DecisionDraftInput } from '@agentconnect.md/protocol'
+import {
+  DecisionDraft,
+  DecisionToolDefinition,
+  type DecisionListRequest,
+  type DecisionDefinition,
+  type DecisionDraftInput
+} from '@agentconnect.md/protocol'
 import { canEdit, visibilityWhere } from '../../authorization/policy.js'
 import type { OrgId } from '../../domain/ids.js'
 import { Prisma, type Decision } from '../../generated/prisma/client.js'
@@ -6,6 +12,9 @@ import { OrgMembershipMissing, ResourceAudienceEmpty } from '../errors.js'
 import type { DecisionRepo, ViewCtx } from '../ports.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
+import { DecisionInUse } from '../decision-binding-fence.js'
+
+const toolSelect = { id: true, name: true, providerId: true, model: true, question: true } as const
 
 function definition(row: Decision): DecisionDefinition {
   return {
@@ -27,6 +36,30 @@ function definition(row: Decision): DecisionDefinition {
 
 export class PgDecisionRepo implements DecisionRepo {
   constructor(private readonly db: PrismaLike) {}
+
+  // The caller supplies the agent's authorized bindings, independently of Console visibility.
+  async listForAgent(
+    orgId: OrgId,
+    decisionIds: readonly string[],
+    input: Omit<DecisionListRequest, 'requesterAgentId'>
+  ): Promise<DecisionToolDefinition[]> {
+    const rows = await this.db.decision.findMany({
+      where: {
+        orgId,
+        id: { in: [...decisionIds], ...(input.cursor ? { gt: input.cursor } : {}) },
+        ...(input.query ? { name: { contains: input.query, mode: 'insensitive' as const } } : {})
+      },
+      select: toolSelect,
+      orderBy: { id: 'asc' },
+      take: input.limit + 1
+    })
+    return rows.map((row) => DecisionToolDefinition.parse(row))
+  }
+
+  async getForAgent(orgId: OrgId, id: string): Promise<DecisionToolDefinition | null> {
+    const row = await this.db.decision.findFirst({ where: { id, orgId }, select: toolSelect })
+    return row ? DecisionToolDefinition.parse(row) : null
+  }
 
   async list(orgId: OrgId, viewer: ViewCtx): Promise<DecisionDefinition[]> {
     return (
@@ -104,6 +137,13 @@ export class PgDecisionRepo implements DecisionRepo {
       await lockResourceWriteMemberships(tx, { orgId, visibility: 'org', actorUserId: actor.userId })
       const membership = await tx.membership.findUnique({ where: { orgId_userId: { orgId, userId: actor.userId } } })
       if (!membership || membership.role === 'viewer') throw new OrgMembershipMissing()
+      await tx.$queryRaw`SELECT "id" FROM "decision" WHERE "orgId" = ${orgId} AND "id" = ${id}::uuid FOR UPDATE`
+      const visible = await tx.decision.findFirst({
+        where: { id, orgId, ...visibilityWhere({ ...actor, role: membership.role }) }
+      })
+      if (!visible) return
+      if (await tx.agent.count({ where: { orgId, runtimeOverrides: { path: ['decisionIds'], array_contains: [id] } } }))
+        throw new DecisionInUse()
       await tx.decision.deleteMany({ where: { id, orgId, ...visibilityWhere({ ...actor, role: membership.role }) } })
     })
   }

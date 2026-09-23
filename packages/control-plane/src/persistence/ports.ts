@@ -672,6 +672,7 @@ export interface CreateAgentInput {
   // NOTE: write-only secret env vars are NOT part of the agent row — they live behind
   // the AgentSecretStore seam (routes write them there after create).
   mcpServers?: string[] // daemon-configured MCP server names to attach at session/new (AgentSpec.mcpServers)
+  decisionIds?: string[] // explicitly enabled saved Decisions
   skills?: string[] // enabled skills, "<sourceName>/<skillName>" or "<sourceName>/*" (shared-skills.md)
   managedSkills?: string[] // accepted managed_skill ids, explicitly enabled
   memory?: AgentMemoryBinding // memory backend
@@ -726,6 +727,7 @@ export interface UpdateAgentInput {
   // NOTE: write-only secrets are NOT a repo patch field — the PATCH route merges
   // them through the AgentSecretStore seam (key-by-key; see AgentSecretStore.merge).
   mcpServers?: string[] | null // replaced wholesale when provided; null clears
+  decisionIds?: string[] | null // replaced wholesale; null clears
   skills?: string[] | null // enabled skills; replaced wholesale when provided; null clears
   managedSkills?: string[] | null // accepted managed_skill ids; replaced wholesale when provided; null clears
   memory?: AgentMemoryBinding | null // memory backend
@@ -769,6 +771,7 @@ export interface AgentRecord {
   // serialization guard, like BotSecret): key names come from AgentSecretStore.keys,
   // values only from AgentSecretStore.get on the wire-projection paths.
   mcpServers: string[] // from runtimeOverrides.mcpServers ([] when unset ⇒ none attached)
+  decisionIds?: string[] // from runtimeOverrides.decisionIds; absent means none
   skills: string[] // from runtimeOverrides.skills — enabled "<source>/<skill>" / "<source>/*" ([] ⇒ none)
   managedSkills: string[] // accepted managed_skill ids ([] ⇒ none)
   memory: AgentMemoryBinding | null // runtimeOverrides.memory
@@ -5379,6 +5382,12 @@ export interface OrgMemberRecord {
 
 // Reusable typed judgments; consumers own their bindings.
 export interface DecisionRepo {
+  listForAgent(
+    orgId: OrgId,
+    decisionIds: readonly string[],
+    input: Omit<import('@agentconnect.md/protocol').DecisionListRequest, 'requesterAgentId'>
+  ): Promise<import('@agentconnect.md/protocol').DecisionToolDefinition[]>
+  getForAgent(orgId: OrgId, id: string): Promise<import('@agentconnect.md/protocol').DecisionToolDefinition | null>
   list(orgId: OrgId, viewer: ViewCtx): Promise<import('@agentconnect.md/protocol').DecisionDefinition[]>
   get(orgId: OrgId, id: string): Promise<import('@agentconnect.md/protocol').DecisionDefinition | null>
   create(

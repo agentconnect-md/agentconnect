@@ -44,10 +44,12 @@ const ALL_CAPABILITIES = new Set(['recall', 'create', 'get', 'update', 'delete']
 const advertised: ToolDescriptor[] = [
   ...toolsForIntegrations([slackInt, telegramInt, qqInt], {
     organizationKnowledge: true,
+    decisions: true,
     currentPlatform: 'slack'
   }),
   ...toolsForIntegrations([slackInt, telegramInt], {
     organizationKnowledge: true,
+    decisions: true,
     currentPlatform: 'telegram'
   }),
   ...externalMemoryTools(ALL_CAPABILITIES),

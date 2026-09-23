@@ -3,6 +3,7 @@ import {
   MEMORY_ENTRIES_V1_FEATURE,
   PROVIDER_CREDENTIALS_V1_FEATURE,
   DECISION_PREVIEW_V1_FEATURE,
+  DECISION_TOOLS_V1_FEATURE,
   MEMORY_ENTRIES_SEARCH_V1_FEATURE,
   MEMORY_ENTRIES_HISTORY_V1_FEATURE,
   MEMORY_ENTRIES_WRITE_V1_FEATURE,
@@ -3098,6 +3099,36 @@ export class Daemon {
         // space than the rows hold and silently return no address.
         return orgId ? this.cpCollab.mentionAddress(orgId, platform, channel, agentId) : undefined
       },
+      decisions: {
+        list: async (req) => {
+          if (!this.cpClient) throw new Error('control plane is not connected')
+          return this.cpClient.decisionList(req)
+        },
+        get: async (req) => {
+          if (!this.cpClient) throw new Error('control plane is not connected')
+          return this.cpClient.decisionGet(req)
+        },
+        evaluate: (input, signal) => this.decisionEvaluator.evaluate(input, signal),
+        turn: (ctx, decisionId) => {
+          const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+          const entry = this.activeGateEntries.get(key)
+          const orgId = this.cpCollab.orgForAgent(ctx.agentId)
+          if (!entry || !orgId) throw new Error('Decisions require an active agent turn')
+          return {
+            signal: entry.initAbort.signal,
+            assertCurrent: () => {
+              if (
+                this.activeGateEntries.get(key) !== entry ||
+                !this.toolTurnRunnable(ctx) ||
+                this.cpCollab.orgForAgent(ctx.agentId) !== orgId ||
+                (decisionId !== undefined && !this.agents.get(ctx.agentId)?.decisionIds?.includes(decisionId))
+              )
+                throw new Error('this agent turn has been stopped')
+              entry.initAbort.signal.throwIfAborted()
+            }
+          }
+        }
+      },
       findKnowledge: async (req) => {
         const client = this.cpClient
         if (!client) throw Object.assign(new Error('control plane is not connected'), { code: 'INTERNAL' })
@@ -3463,6 +3494,8 @@ export class Daemon {
         const servers: McpServer[] = []
         let tools = toolsForIntegrations(agent.integrations, {
           organizationKnowledge: this.cpClient?.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE) === true,
+          decisions:
+            !!agent.decisionIds?.length && this.cpClient?.supportsServerFeature?.(DECISION_TOOLS_V1_FEATURE) === true,
           currentPlatform: platform
         })
         // Static descriptor, dynamic authority: a per-thread ACP session can
@@ -5915,6 +5948,7 @@ export class Daemon {
     return [
       PROVIDER_CREDENTIALS_V1_FEATURE,
       DECISION_PREVIEW_V1_FEATURE,
+      DECISION_TOOLS_V1_FEATURE,
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
       'workspace-file-edit-v1',
       'workspace-file-delete-v1',

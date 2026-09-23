@@ -42,6 +42,15 @@ describe('diffAgents', () => {
     expect(toChange).toEqual([])
   })
 
+  it('refreshes the runtime tool set when Decision attachments are added or removed', () => {
+    const bound = { ...a('x'), decisionIds: ['11111111-1111-4111-8111-111111111111'] }
+    expect(diffAgents([bound], actual(a('x'))).toChange[0]).toMatchObject({ hostRespawn: true })
+    expect(diffAgents([{ ...bound, decisionIds: [] }], actual(bound)).toChange[0]).toMatchObject({ hostRespawn: true })
+    expect(diffAgents([{ ...a('x'), decisionIds: [] }], actual(a('x'))).toChange[0]).toMatchObject({
+      hostRespawn: false
+    })
+  })
+
   it('classifies a runtime edit as a host-spawn change (only)', () => {
     const after = { ...a('x'), runtime: 'codex' } as Agent
     const { toChange } = diffAgents([after], actual(a('x')))

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { PgDecisionRepo } from '../../src/persistence/repositories/decision.repo.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DECISION_PROVIDER_PROFILES, DECISION_PREVIEW_V1_FEATURE, type DecisionDraft } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
@@ -67,6 +68,71 @@ async function execution(userId = DEFAULT_OWNER_ID) {
 }
 
 describe('Decision management and standalone preview', () => {
+  it('resolves only attached IDs in the organization, including Selected Decisions, and pages deterministically', async () => {
+    const repo = new PgDecisionRepo(prisma)
+    const orgId = OrgId(DEFAULT_ORG_ID)
+    const actor = { userId: DEFAULT_OWNER_ID, role: 'owner' as const }
+    const first = await repo.create(orgId, { ...draft, name: 'Reply A' }, actor)
+    const second = await repo.create(orgId, { ...draft, name: 'Reply B' }, actor)
+    const restricted = await repo.create(
+      orgId,
+      { ...draft, name: 'Selected only', visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] },
+      actor
+    )
+    const attached = [first.id, second.id, restricted.id]
+    const rows = await repo.listForAgent(orgId, attached, { query: 'reply', limit: 1 })
+    expect(rows.map((row) => row.id)).toEqual([first.id, second.id].sort())
+    expect(Object.keys(rows[0]!).sort()).toEqual(['id', 'model', 'name', 'providerId', 'question'])
+    expect(
+      (await repo.listForAgent(orgId, attached, { query: 'REPLY', cursor: rows[0]!.id, limit: 1 })).map((row) => row.id)
+    ).toEqual([rows[1]!.id])
+    expect(await repo.getForAgent(orgId, restricted.id)).toMatchObject({ id: restricted.id })
+    expect(await repo.listForAgent(orgId, [restricted.id], { limit: 10 })).toEqual([
+      expect.objectContaining({ id: restricted.id })
+    ])
+    expect(await repo.getForAgent(OrgId('another-org'), first.id)).toBeNull()
+    expect(await repo.listForAgent(OrgId('another-org'), attached, { limit: 10 })).toEqual([])
+    expect(await repo.listForAgent(orgId, [], { limit: 10 })).toEqual([])
+    await repo.update(orgId, first.id, { ...draft, visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }, actor)
+    expect(await repo.getForAgent(orgId, first.id)).toMatchObject({ id: first.id })
+    await repo.delete(orgId, second.id, actor)
+    expect(await repo.getForAgent(orgId, second.id)).toBeNull()
+  })
+
+  it('authorizes new attachments like skills, preserves existing hidden bindings, and requires unbinding before delete', async () => {
+    const collaborator = await member('collaborator')
+    const viewer = await member('viewer')
+    const { app } = appAs()
+    const restricted = await app.inject({
+      method: 'POST',
+      url: BASE,
+      payload: { ...draft, visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }
+    })
+    const decisionId = restricted.json().id
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    const agentUrl = `/api/v1/orgs/${DEFAULT_ORG_ID}/agents/${agentId}`
+    const collaboratorApp = appAs(collaborator).app
+    const bind = (target: typeof app, ids: string[]) =>
+      target.inject({ method: 'PATCH', url: agentUrl, payload: { decisionIds: ids } })
+    expect((await bind(collaboratorApp, [decisionId])).statusCode).toBe(403)
+    expect((await bind(app, [decisionId])).statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: agentUrl })).json().decisionIds).toEqual([decisionId])
+    expect((await bind(collaboratorApp, [decisionId])).statusCode).toBe(200)
+    const attached = await collaboratorApp.inject({ method: 'GET', url: `${agentUrl}/decisions` })
+    expect(attached.statusCode).toBe(200)
+    expect(attached.json()).toEqual([
+      { id: decisionId, name: draft.name, model: draft.model, providerId: draft.providerId, questionType: 'boolean' }
+    ])
+    expect((await bind(appAs(viewer).app, [])).statusCode).toBe(403)
+    expect((await app.inject({ method: 'DELETE', url: `${BASE}/${decisionId}` })).statusCode).toBe(409)
+    expect((await bind(collaboratorApp, [])).statusCode).toBe(200)
+    expect((await bind(collaboratorApp, [decisionId])).statusCode).toBe(403)
+    expect((await bind(app, [randomUUID()])).statusCode).toBe(403)
+    expect((await app.inject({ method: 'GET', url: agentUrl })).json().decisionIds).toEqual([])
+    expect((await app.inject({ method: 'DELETE', url: `${BASE}/${decisionId}` })).statusCode).toBe(204)
+  })
+
   it('persists definitions across clients, preserves omitted sharing, and deletes without a daemon', async () => {
     const { app } = appAs()
     const created = await app.inject({
