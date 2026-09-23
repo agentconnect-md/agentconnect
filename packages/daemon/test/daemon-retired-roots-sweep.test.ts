@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import { FakeClock } from './cp/fake-clock.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import { PodWorkspaceFs } from './fixtures/pod-workspace-fs.js'
+import { testPlane } from './workspace-plane-support.js'
 
 /**
  * multi-repository-workspaces.md decision 12 at the daemon boundary: a retired secondary root is
@@ -112,4 +114,40 @@ describe('retired workspace roots are swept only while the agent is quiescent (d
     expect(existsSync(unattested)).toBe(true)
     await daemon.stop()
   })
+})
+
+describe('on a pool, retired roots are swept only while the agent pod itself is bound (#1896)', () => {
+  it.each([false, true])(
+    'never holds the agent pod for a bound session pod (agent pod bound: %s)',
+    async (agentBound) => {
+      const { daemon, inner } = await boot(scaffold())
+      // Any bound pod of the agent, a session's included, answers a workspace mount for it.
+      const plane = {
+        ...testPlane({
+          workspacesOffDisk: true,
+          workspaceFsFor: () => ({ fs: new PodWorkspaceFs('/agent'), mount: '/agent' })
+        }),
+        sandboxBound: (subject: string) => subject === `${AGENT}/session-0` || (agentBound && subject === AGENT),
+        withSandbox: vi.fn(async (_subject: string, work: () => Promise<unknown>) => await work()),
+        ensureChannel: async () => {},
+        stop: async () => {}
+      }
+      inner.k8sPlane = plane
+      inner.wirePlaneResolver(plane)
+      const list = vi.spyOn(inner.workspaces, 'retiredSecondaryRoots').mockResolvedValue([])
+      try {
+        await inner.sweepSessionRetention()
+        if (agentBound) {
+          expect(plane.withSandbox).toHaveBeenCalledExactlyOnceWith(AGENT, expect.any(Function))
+          expect(list).toHaveBeenCalledOnce()
+        } else {
+          // Holding the agent pod for the listing is what claims and wakes a suspended one.
+          expect(plane.withSandbox).not.toHaveBeenCalled()
+          expect(list).not.toHaveBeenCalled()
+        }
+      } finally {
+        await daemon.stop()
+      }
+    }
+  )
 })

@@ -405,7 +405,8 @@ back unchecked. Nothing is persisted, as before.
 2. Build the standing context only when consumed.
 3. Per-turn hygiene: file links without the marker read, attachment scope,
    retired-roots sweep gated on the agent pod being bound, `gitpull` stopping only
-   hosts under the pulled root.
+   the hosts that can read the pulled checkout (never a confined session's, whose
+   every root is its own clone).
 4. Move `.session-cwd` into the session directory, with a migrating read while
    preparation still wakes the agent pod.
 5. No agent-checkout preparation for a confined session's host start.

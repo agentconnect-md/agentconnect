@@ -487,7 +487,7 @@ import { WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createWorkspaceScope } from './cp/workspace-scope.js'
 import { createWorkspaceFileLinkResolver, type WorkspaceFileLinkResolver } from './messages/workspace-file-links.js'
 import { canonicalWorkspacePath, containedWorkspacePath, WorkspaceViolationError } from './workspace/workspace-files.js'
-import { localWorkspaceFs } from './workspace/workspace-fs.js'
+import { localWorkspaceFs, type WorkspaceFs } from './workspace/workspace-fs.js'
 import type { SaveAttachmentResult } from './mcp/ops/platform-reads.js'
 import { saveAttachmentTo, type SaveAttachmentTarget } from './mcp/ops/save-attachment.js'
 import type { ShareReadResult, ShareTargetResult } from './mcp/ops/share-file.js'
@@ -3226,9 +3226,8 @@ export class Daemon {
           runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
         })
         // The session by its logical key; the scope answers by the outward id the row carries.
-        const row = await this.store
-          .getSession(sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope))
-          .catch(() => undefined)
+        const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+        const row = await this.store.getSession(key).catch(() => undefined)
         const acpSessionId = row?.sessionId ?? row?.acpSessionId ?? undefined
         // Session-worktree first (an isolated session's files live there), then the agent
         // root: `location(id, sessionId)` answers ONLY for git-repo agents on isolated
@@ -3257,26 +3256,20 @@ export class Daemon {
           return { ok: true, bytes, name: `${stem}.${ext}`, mimeType: sniffed, sha256 }
         }
 
-        // Pod arm (design §6): the workspace lives on the sandbox volume, reached over the
-        // fd-anchored workspace-fs channel. The daemon contributes the LEXICAL fence (which
-        // carries the `.git` rule the pod-side check lacks); the symlink guarantee is the
-        // pod's own fd-anchored descent — there is nothing daemon-side to realpath.
-        if (this.k8sPlane?.workspaceRootFor(ctx.agentId) !== undefined) {
-          const placement = this.k8sPlane.workspaceFsFor(ctx.agentId)
-          if (!placement) return { ok: false, reason: 'sandboxed' }
+        // Pod arm (design §6): the daemon adds the lexical fence (with the `.git` rule); the pod's fd-anchored descent is the symlink guarantee.
+        const podFs = this.poolToolWorkspaceFs(ctx.agentId, key)
+        if (podFs !== undefined) {
+          if (podFs === 'unbound') return { ok: false, reason: 'sandboxed' }
           let resolved: string
           try {
             resolved = containedWorkspacePath(location.root, rel)
           } catch (err) {
             return { ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'not-found' }
           }
-          // A transport failure must NOT read as absence: "the channel dropped" mid-read is
-          // not evidence the file is missing, and the agent would act on it (regenerate, or
-          // give up). ShimWorkspaceFs already folds true refusals into undefined, so anything
-          // it THROWS is the channel — answer "sandbox unreachable", which invites a retry.
-          let read: Awaited<ReturnType<typeof placement.fs.readFileBytes>> | 'channel-lost'
+          // Refusals come back undefined, so anything THROWN is the channel: "sandbox unreachable" invites a retry where "missing" would not.
+          let read: Awaited<ReturnType<typeof podFs.readFileBytes>> | 'channel-lost'
           try {
-            read = await placement.fs.readFileBytes(resolved, cap)
+            read = await podFs.readFileBytes(resolved, cap)
           } catch {
             read = 'channel-lost'
           }
@@ -3318,31 +3311,26 @@ export class Daemon {
           sessionOf: (id, sessionId) => this.store.getSessionByOutwardId(sessionId, id),
           runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
         })
-        const row = await this.store
-          .getSession(sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope))
-          .catch(() => undefined)
+        const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+        const row = await this.store.getSession(key).catch(() => undefined)
         const acpSessionId = row?.sessionId ?? row?.acpSessionId ?? undefined
         const location =
           (await scope.location(ctx.agentId, acpSessionId).catch(() => undefined)) ??
           (await scope.location(ctx.agentId).catch(() => undefined))
         if (!location) return { ok: false, reason: 'no-workspace' }
 
-        // Pod arm: the sandbox volume over the fd-anchored channel, whose descent is the
-        // containment. Local arm: the daemon's disk, with realpath re-verification of `uploads/`
-        // (the pod-side guarantee the daemon has to supply itself). Anything the seam THROWS
-        // past the helper is the channel (pod) or the disk (local).
-        const pod = this.k8sPlane?.workspaceRootFor(ctx.agentId) !== undefined
-        const placement = pod ? this.k8sPlane?.workspaceFsFor(ctx.agentId) : undefined
-        if (pod && !placement) return { ok: false, reason: 'sandboxed' }
-        const target: SaveAttachmentTarget = placement
-          ? { kind: 'workspace-fs', fs: placement.fs, root: location.root }
+        // Pod arm: the channel's descent is the containment; local arm: realpath re-verifies `uploads/`. Anything thrown past the helper is the channel or the disk.
+        const podFs = this.poolToolWorkspaceFs(ctx.agentId, key)
+        if (podFs === 'unbound') return { ok: false, reason: 'sandboxed' }
+        const target: SaveAttachmentTarget = podFs
+          ? { kind: 'workspace-fs', fs: podFs, root: location.root }
           : process.platform === 'linux'
             ? { kind: 'pinned', root: location.root }
             : { kind: 'workspace-fs', fs: localWorkspaceFs, root: location.root, canonicalDir: canonicalWorkspacePath }
         try {
           return await saveAttachmentTo(target, name, bytes)
         } catch (err) {
-          if (pod) return { ok: false, reason: 'sandboxed' }
+          if (podFs) return { ok: false, reason: 'sandboxed' }
           return { ok: false, reason: 'write-failed', detail: err instanceof Error ? err.message : String(err) }
         }
       },
@@ -4618,6 +4606,12 @@ export class Daemon {
   /** Where a session is placed, or undefined for one that runs on this machine. */
   private placedSession(sessionKey: string | undefined): PlacedSession | undefined {
     return sessionKey === undefined ? undefined : this.executorPlane?.placementOf(sessionKey)
+  }
+
+  /** A pool session's tool workspace on the pod that owns each path, 'unbound' while no pod of the agent is, undefined off the pool — judged by the session's own scope, as its location was, never by whether the agent pod ever reported a mount here. */
+  private poolToolWorkspaceFs(agentId: string, sessionKey: string): WorkspaceFs | 'unbound' | undefined {
+    if (!this.k8sPlane || !this.workspaces.offDisk({ agentId, sessionKey })) return undefined
+    return this.k8sPlane.workspaceFsFor(agentId)?.fs ?? 'unbound'
   }
 
   private workspaceFilesFor(agentId: string) {
@@ -12331,17 +12325,36 @@ export class Daemon {
     }
   }
 
-  private withWorkspaceFileWrite<T>(agentId: string, write: () => Promise<T>): Promise<T> {
-    // Admission into the shared mutation tail is synchronous: a preparation or
-    // second publication accepted in the next call stack can only run after this
-    // complete stop+write operation, and vice versa.
+  private withWorkspaceFileWrite<T>(
+    agentId: string,
+    write: () => Promise<T>,
+    stopHosts: () => Promise<void> = () => this.stopHost(agentId)
+  ): Promise<T> {
+    // Admission is synchronous: a preparation or publication accepted in the next call stack runs only after this whole stop+write, and vice versa.
     return this.withWorkspaceAdmissionFence(agentId, async () => {
       if (this.workspaceMutationBusy(agentId)) {
         throw new WorkspaceConflictError('the agent is working in this workspace; retry when it is idle')
       }
-      await this.stopHost(agentId)
+      await stopHosts()
       return await write()
     })
+  }
+
+  /** {@link withWorkspaceFileWrite} for a console pull, which rewrites only the agent's own checkout: a confined session's host keeps running. */
+  private withWorkspacePull<T>(agentId: string, pull: () => Promise<T>): Promise<T> {
+    return this.withWorkspaceFileWrite(agentId, pull, () => this.stopCheckoutHosts(agentId))
+  }
+
+  /** Stop the hosts that can read the agent's checkouts — every one but a confined session's, whose every root is a clone of its own. */
+  private async stopCheckoutHosts(agentId: string): Promise<void> {
+    const agent = this.agents.get(agentId)
+    const keys = this.hostKeysForAgent(agentId)
+    const reading = keys.filter((key) => !agent || !this.confinedSession(agent, hostKeySessionKey(key)))
+    // Nothing spared is every host, which keeps stopHost's agent-wide sweep of session state.
+    if (reading.length === keys.length) return await this.stopHost(agentId)
+    const results = await Promise.allSettled(reading.map((key) => this.stopHostByKey(key)))
+    const failed = results.find((result) => result.status === 'rejected')
+    if (failed) throw failed.reason
   }
 
   /**
@@ -13121,15 +13134,15 @@ export class Daemon {
       })
       const roots: Array<{ path: string; repo?: string }> = []
       for (const repo of [undefined, ...this.workspaces.secondaryRoots(agent).map((root) => root.repoFullName)]) {
-        const location = await scope.location(agent.id, scopeSessionId, repo)
-        if (!location) continue
         try {
+          const location = await scope.location(agent.id, scopeSessionId, repo)
+          if (!location) continue
           const path = this.workspaces.offDisk({ agentId: agent.id, path: location.root })
             ? location.root
             : this.workspaces.canonicalWorkspacePath(agent.id, location.root)
           roots.push({ path, ...(repo === undefined ? {} : { repo }) })
         } catch {
-          // An absent or retired checkout cannot supply a working file link.
+          // A root that cannot be resolved, or an absent or retired checkout, loses only its own links.
         }
       }
       if (!roots.length) return undefined
@@ -18872,8 +18885,11 @@ export class Daemon {
     for (const agent of [...this.agents.values()]) {
       if (this.draining) break
       if (!this.servesAgent(agent.id)) continue
-      // Off this disk the subtrees are on the pod's volume, so an agent whose sandbox is not already bound is skipped: retiring a root is never worth waking a suspended pod, and the next pass that finds one bound sweeps it.
-      if (this.workspaces.offDisk({ agentId: agent.id }) && this.workspaces.sandboxMountFor(agent.id) === undefined) {
+      // Off this disk the subtrees are on the AGENT pod's volume, so skip unless that pod itself is bound (a bound session pod is not it): retiring a root is never worth a wake, and a later pass that finds it bound sweeps it.
+      if (
+        this.workspaces.offDisk({ agentId: agent.id }) &&
+        !this.k8sPlane?.sandboxBound(agentSandboxSubject(agent.id))
+      ) {
         continue
       }
       // Retiring old roots must not create or wake an idle VM merely to inspect its workspace.
@@ -20493,6 +20509,8 @@ export class Daemon {
       sandboxHolds: () => this.sandboxHolds,
       withWorkspaceFileWrite: <T>(agentId: string, write: () => Promise<T>): Promise<T> =>
         this.withWorkspaceFileWrite(agentId, write),
+      withWorkspacePull: <T>(agentId: string, pull: () => Promise<T>): Promise<T> =>
+        this.withWorkspacePull(agentId, pull),
       withWorkspaceIndexWrite: <T>(agentId: string, write: () => Promise<T>): Promise<T> =>
         this.withWorkspaceIndexWrite(agentId, write),
       runCommitMessagePass: (agentId, systemPrompt, prompt, signal) =>
