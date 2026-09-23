@@ -186,8 +186,26 @@ therefore costs one slow startup rather than a pool that advertises nothing. A
 published answer is adopted only while it is fresh (one hour): an image reference is
 not always an immutable identity — a template pinned to a moving tag keeps one key
 across rebuilds — and the answer also depends on the deployment's credentials, so a
-newly configured provider pair must be able to take effect. Nothing re-probes on a
-timer; freshness only decides whether a member STARTING now inherits the answer.
+newly configured provider pair must be able to take effect.
+
+**The pool re-probes on a timer, and a self-hosted console can ask for one.** A
+probe only sees what the image's runtimes report, and some of that moves without a
+new image — opencode reads its model catalog from models.dev at runtime, and a
+deployment can declare Claude aliases or add a provider pair. Each member therefore
+re-runs the election every `AC_RUNTIME_PROBE_INTERVAL_MINUTES` (default 60, chart
+`daemonPool.runtimeProbeIntervalMinutes`; 0 disables the timer). A tick asks for an
+answer published within the last interval and adopts a peer's if one exists, so a
+pool still spends about one probe pod per interval rather than one per replica. A
+start-up probe adopts an answer younger than both the interval and the one-hour
+freshness window. Where the deployment sets `AC_RUNTIME_PROBE_ON_DEMAND=true` — the
+chart does whenever `features.managed` is off — a member advertises
+`runtime-probe-v1` and serves `daemon/runtimes/probe`. `POST
+/daemons/pool/runtime-probe` (organization owners only, debounced to one fan-out per
+30 s) sends it to every live member that advertises it. A requested probe accepts
+only an answer published after the request, so the members elect one to claim a
+sandbox and the rest wait for and adopt its answer. Managed Cloud advertises nothing
+and refreshes on its timer alone. A member runs its probes one at a time: a request
+or tick that lands while one is in flight is folded into a single follow-up run.
 
 **The control plane carries one bit, not a namespace.** `DAEMON_POOL_ENABLED=true`
 says "this deployment runs a daemon pool": the control plane loads its in-cluster

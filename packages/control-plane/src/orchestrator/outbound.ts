@@ -284,6 +284,12 @@ export class ControlSender {
     return this.sendLifecycle(daemonId, 'daemon/upgrade', req)
   }
 
+  /** Ask a cluster member to re-probe its runtime image (REQ → ack); the result arrives later as `facts/daemon-runtimes`. */
+  async runtimeProbe(daemonId: string): Promise<Ack> {
+    const c = this.must(daemonId)
+    return c.conn.request<Ack>('daemon/runtimes/probe', {}, { epoch: c.sessionEpoch })
+  }
+
   /**
    * Send a lifecycle REQ and classify the outcome for the caller's audit. This NEVER
    * conflates a definite negative with an ambiguous transport loss (cli-daemon-split.md §7):

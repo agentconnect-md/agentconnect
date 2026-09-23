@@ -54,6 +54,7 @@ import {
   RUNTIME_COMMANDS_FEATURE,
   AGENT_WAKE_FEATURE,
   SESSION_WAKE_FEATURE,
+  RUNTIME_PROBE_FEATURE,
   PULL_REQUEST_FEEDBACK_FEATURE,
   WORKSPACE_GIT_V1_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
@@ -428,7 +429,6 @@ import {
 } from './runtimes/k8s-runtimes.js'
 import {
   K8S_PROBE_CLAIM_TTL_MS,
-  K8S_PROBE_FRESH_MS,
   K8S_PROBE_POLL_MS,
   K8S_PROBE_WAIT_MS,
   parseK8sProbePayload,
@@ -436,6 +436,11 @@ import {
   probeClusterRuntimes,
   type K8sProbePayload
 } from './runtimes/cluster-probe.js'
+import {
+  ClusterProbeSchedule,
+  configuredRuntimeProbeIntervalMs,
+  configuredRuntimeProbeOnDemand
+} from './runtimes/cluster-probe-schedule.js'
 import { ensureNodeBinOnPath } from './runtimes/exec-path.js'
 import {
   isAuthRequiredError,
@@ -1238,6 +1243,10 @@ export class Daemon {
   /** The plane every scope of this daemon falls back to — its VMs or its pods; a spread session resolves to the executor plane instead. */
   private localPlane?: ExecutionPlane
   private k8sRuntimeProbed = false
+  /** Start-up, periodic and requested runtime probes of a cluster member, one at a time. */
+  private k8sProbeSchedule: ClusterProbeSchedule | undefined
+  /** Whether this deployment lets the control plane request a probe (`AC_RUNTIME_PROBE_ON_DEMAND`). */
+  private k8sProbeOnDemand = false
   private startupComplete = false
   // The shutdown duty drain in progress: its deadline, its counters, and the release of every grant
   // that landed after the latch, so the summary and `stop()` can wait for all of them.
@@ -1629,6 +1638,7 @@ export class Daemon {
     this.codexSessionFloor = this.k8s ? configuredCodexSessionFloor(process.env) : undefined
     // Self-hosted launches inherit the host environment already; only a pod launch needs these carried.
     this.claudeModelAliases = this.k8s ? configuredClaudeModelAliases(process.env) : undefined
+    this.k8sProbeOnDemand = this.k8s && configuredRuntimeProbeOnDemand(process.env)
     this.evalHooks = new DaemonEvaluationHooks(this.evaluationHost(), opts.evaluation)
     this.sessionMetadataOutbox = new SessionMetadataOutbox(this.sessionMetadataHost())
     this.observedChannelsSync = new ObservedChannelsSync(this.observedChannelsSyncHost())
@@ -2836,7 +2846,16 @@ export class Daemon {
     // immediately every time — a probe that never ran, and a daemon that silently advertised
     // nothing. Background because it needs a pod, and blocking boot on one would make a slow
     // cluster look like a hung daemon; `facts/daemon-runtimes` replaces, so the probed set wins.
-    if (this.k8sPlane) void this.probeK8sRuntimes()
+    if (this.k8sPlane) {
+      this.k8sProbeSchedule = new ClusterProbeSchedule({
+        clock: this.clock,
+        intervalMs: configuredRuntimeProbeIntervalMs(process.env, (message) => this.log.warn(message)),
+        run: (freshAfter) => this.probeK8sRuntimes(freshAfter),
+        paused: () => this.draining || this.shutdownDraining,
+        log: this.log
+      })
+      this.k8sProbeSchedule.start()
+    }
   }
 
   /** Phase 19 — model-catalog enumeration, wired to re-emit daemon runtimes whenever a catalog changes. */
@@ -5994,6 +6013,8 @@ export class Daemon {
       ...(this.k8s ? [AGENT_WAKE_FEATURE, SESSION_WAKE_FEATURE] : []),
       // Only a cluster daemon places a watcher by session; elsewhere the loop runs in this process either way.
       ...(this.k8s ? [AUTO_MERGE_SESSION_FEATURE] : []),
+      // A managed pool refreshes on its timer alone; only a deployment that opts in takes requests.
+      ...(this.k8sProbeOnDemand ? [RUNTIME_PROBE_FEATURE] : []),
       WORKSPACE_GIT_MESSAGE_FEATURE,
       WORKSPACE_GIT_REVIEW_FEATURE,
       WORKSPACE_GIT_WRITE_FEATURE,
@@ -20537,6 +20558,8 @@ export class Daemon {
       agents: () => this.agents,
       workspaces: () => this.workspaces,
       k8sPlane: () => this.k8sPlane,
+      // Before the start-up probe is scheduled a request has nothing to add: that probe is about to run.
+      runtimeProbeRequest: () => (this.k8sProbeOnDemand ? () => this.k8sProbeSchedule?.request() : undefined),
       workspaceFilesFor: (id) => this.workspaceFilesFor(id),
       workspaceSkillLedger: (id, cwd) =>
         this.withWorkspaceSkillTarget(
@@ -21074,7 +21097,7 @@ export class Daemon {
    * something first, and `facts/daemon-runtimes` has replace semantics, so the probed set simply
    * supersedes whatever was advertised at boot.
    */
-  private async probeK8sRuntimes(): Promise<void> {
+  private async probeK8sRuntimes(freshAfter: number): Promise<void> {
     const plane = this.k8sPlane
     const resolved = this.k8sResolvedCatalog
     if (!plane || !resolved) return
@@ -21083,12 +21106,12 @@ export class Daemon {
       // Who probes: one member per runtime image, not one per replica — and per the declarations
       // this daemon hands that image, which a rollout can change without moving the tag.
       const imageRef = this.poolProbeKeyFor(await this.poolRuntimeImageRef(plane))
-      if (imageRef && (await this.adoptPublishedK8sProbe(imageRef, resolved))) return
+      if (imageRef && (await this.adoptPublishedK8sProbe(imageRef, resolved, freshAfter))) return
       if (imageRef) {
         if (await this.claimK8sProbe(imageRef, plane.memberId)) claimed = imageRef
         else {
           this.log.info(`runtimes: another member is probing ${imageRef} — waiting for its answer`)
-          if (await this.awaitPublishedK8sProbe(imageRef, resolved)) return
+          if (await this.awaitPublishedK8sProbe(imageRef, resolved, freshAfter)) return
           // The wait ends exactly when that claim becomes retakeable, so this take-over is the
           // crash path: a holder that died must not leave the whole pool advertising nothing.
           this.log.warn('runtimes: the probing member published nothing in time — probing this member instead')
@@ -21152,16 +21175,18 @@ export class Daemon {
   }
 
   /** Adopt an answer another member already published for this image, if there is one. */
-  private async adoptPublishedK8sProbe(imageRef: string, resolved: ResolvedRuntimeCatalog): Promise<boolean> {
+  private async adoptPublishedK8sProbe(
+    imageRef: string,
+    resolved: ResolvedRuntimeCatalog,
+    freshAfter: number
+  ): Promise<boolean> {
     const published = await this.store.readRuntimeImageProbe(imageRef).catch((err: unknown) => {
       this.log.warn(`runtimes: could not read the published probe for ${imageRef}: ${formatErr(err)}`)
       return undefined
     })
     if (!published) return false
-    // An image reference is not always an immutable identity, and the answer also depends on the
-    // deployment's credentials — so an old one is re-asked rather than inherited. See
-    // K8S_PROBE_FRESH_MS for what each staleness would otherwise cost.
-    if (this.clock.now() - published.probedAt > K8S_PROBE_FRESH_MS) {
+    // An old answer is re-asked, not inherited: a tag can move and credentials change (K8S_PROBE_FRESH_MS); a request asks for one newer than itself.
+    if (published.probedAt < freshAfter) {
       this.log.info(`runtimes: the pool's probe of ${imageRef} is stale — probing again`)
       return false
     }
@@ -21207,12 +21232,16 @@ export class Daemon {
   }
 
   /** Wait out the member that won the claim, then adopt what it published. */
-  private async awaitPublishedK8sProbe(imageRef: string, resolved: ResolvedRuntimeCatalog): Promise<boolean> {
+  private async awaitPublishedK8sProbe(
+    imageRef: string,
+    resolved: ResolvedRuntimeCatalog,
+    freshAfter: number
+  ): Promise<boolean> {
     const deadline = this.clock.now() + K8S_PROBE_WAIT_MS
     for (;;) {
       await new Promise<void>((resolve) => this.clock.setTimeout(() => resolve(), K8S_PROBE_POLL_MS))
       if (this.draining || this.shutdownDraining) return false
-      if (await this.adoptPublishedK8sProbe(imageRef, resolved)) return true
+      if (await this.adoptPublishedK8sProbe(imageRef, resolved, freshAfter)) return true
       if (this.clock.now() >= deadline) return false
     }
   }
@@ -21492,6 +21521,7 @@ export class Daemon {
       this.storeRetentionTimer = undefined
     }
     this.runtimeFacts.dispose()
+    this.k8sProbeSchedule?.stop()
     this.dutyCoordinator.dispose()
     for (const t of this.bgWakeTimers) this.clock.clearTimeout(t)
     this.bgWakeTimers.clear()

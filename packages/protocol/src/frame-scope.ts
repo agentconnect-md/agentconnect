@@ -23,6 +23,7 @@ export const INSTALL_WIDE_FRAME_TYPES: ReadonlySet<FrameType> = new Set<FrameTyp
   'drain/done',
   'daemon/restart',
   'daemon/upgrade',
+  'daemon/runtimes/probe',
   'daemon/control/ack',
   'config/push',
   'duty/grant',

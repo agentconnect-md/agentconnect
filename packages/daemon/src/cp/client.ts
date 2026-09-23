@@ -134,6 +134,7 @@ import type { SkillsControlDeps } from './control/skills.js'
 import type { TaskControlDeps } from './control/task.js'
 import type { AutoMergeControlDeps } from './control/automerge.js'
 import type { SandboxKeepAliveDeps } from './control/sandbox-keepalive.js'
+import type { RuntimeProbeDeps } from './control/runtime-probe.js'
 import { GitMessagePasses, type WorkspaceReadDeps } from './control/workspace.js'
 import type { ConfigApply } from './config-apply.js'
 import type { Logger } from '../log.js'
@@ -186,6 +187,7 @@ export interface CpClientDeps
     TaskControlDeps,
     AutoMergeControlDeps,
     SandboxKeepAliveDeps,
+    RuntimeProbeDeps,
     CodeHostControlDeps,
     WorkspaceReadDeps {
   // Credential leases must not lengthen when the wall clock moves backward.
@@ -351,6 +353,7 @@ export class CpClient {
       taskReader: deps.taskReader,
       autoMerge: deps.autoMerge,
       sandboxKeepAlive: deps.sandboxKeepAlive,
+      runtimeProbe: deps.runtimeProbe,
       executorPrepare: deps.executorPrepare,
       executorRelease: deps.executorRelease,
       agentWake: deps.agentWake,

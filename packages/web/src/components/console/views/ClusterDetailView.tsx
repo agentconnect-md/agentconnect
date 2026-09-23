@@ -20,7 +20,7 @@
 // the console mints no pool credentials, and inventing a log stream would be
 // indistinguishable from real telemetry (same call the daemon detail page made).
 
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { useRouter } from 'next/navigation'
 import useSWR from 'swr'
@@ -28,7 +28,7 @@ import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
 import { isPoolPlacementKind, poolFleetStatus, poolLabel, status, type DaemonRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { consoleKeys } from '@/lib/swr-keys'
-import { fetchUsage } from '@/lib/api'
+import { fetchUsage, probePoolRuntimes } from '@/lib/api'
 import { amountToNumber, sumAmounts } from '@/lib/amount'
 import { SEG_FILL, bucketLabel, tickInterval } from '@/lib/spend-chart'
 import {
@@ -54,9 +54,45 @@ import { KubernetesMark, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 
+/** The daemon feature that says a member takes probe requests (protocol `RUNTIME_PROBE_FEATURE`). */
+const RUNTIME_PROBE_FEATURE = 'runtime-probe-v1'
+/** A probe takes minutes, so the capability read is re-pulled on this cadence for that long. */
+const PROBE_POLL_MS = 20_000
+const PROBE_WATCH_MS = 5 * 60_000
+
+/** Ask the pool to re-probe its runtime image, then re-read capabilities while that probe runs. */
+function RuntimeProbeButton() {
+  const t = useTranslations('Daemons.clusterDetail')
+  const { refreshDaemons } = useConsoleData()
+  const [state, setState] = useState<'idle' | 'sending' | 'probing' | 'failed'>('idle')
+  useEffect(() => {
+    if (state !== 'probing') return
+    const poll = setInterval(() => void refreshDaemons(), PROBE_POLL_MS)
+    const done = setTimeout(() => setState('idle'), PROBE_WATCH_MS)
+    return () => {
+      clearInterval(poll)
+      clearTimeout(done)
+    }
+  }, [state, refreshDaemons])
+  const start = async () => {
+    setState('sending')
+    try {
+      setState((await probePoolRuntimes()).state === 'probing' ? 'probing' : 'failed')
+    } catch {
+      setState('failed')
+    }
+  }
+  const busy = state === 'sending' || state === 'probing'
+  return (
+    <Button variant="secondary" size="sm" disabled={busy} onClick={() => void start()}>
+      {busy ? t('refreshingRuntimes') : state === 'failed' ? t('refreshRuntimesFailed') : t('refreshRuntimes')}
+    </Button>
+  )
+}
+
 export default function ClusterDetailView() {
   const t = useTranslations('Daemons.clusterDetail')
-  const { orgPath } = useOrgs()
+  const { orgPath, myRole } = useOrgs()
   const router = useRouter()
   const { daemons, agents, orgSetIds, daemonsLoading } = useConsoleData()
 
@@ -125,6 +161,9 @@ export default function ClusterDetailView() {
   // One serving member stands in for the set when reading what it can run — the same
   // substitution Add-agent and Edit-agent make (edit-agent-daemon-choice.ts).
   const capabilitySource = serving[0]
+  // Cloud refreshes on its own schedule; a self-hosted pool whose members take requests offers it to owners.
+  const probeOffered =
+    !managed && myRole === 'owner' && serving.some((m) => m.caps.features.includes(RUNTIME_PROBE_FEATURE))
   const models = runtimes.reduce((sum, rt) => sum + rt.models.length, 0)
 
   // Cloud's tiles. They stack in a column beside the Credits card, and spread three-up where a
@@ -187,6 +226,7 @@ export default function ClusterDetailView() {
             )}
           </div>
         </div>
+        {probeOffered && <RuntimeProbeButton />}
         {billingOffered && (
           <Button variant="secondary" size="sm" onClick={() => router.push(orgPath('/billing'))}>
             {t('manageBilling')}

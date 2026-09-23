@@ -155,6 +155,8 @@ export interface CpClientSeamHost {
   agents(): ReadonlyMap<string, LoadedAgent>
   workspaces(): WorkspaceManager
   k8sPlane(): K8sRuntimePlane | undefined
+  /** A cluster member's requested re-probe, or undefined where the deployment takes no requests. */
+  runtimeProbeRequest(): (() => void) | undefined
   workspaceFilesFor: K8sRuntimePlane['workspaceFilesFor']
   workspaceSkillLedger: NonNullable<Parameters<typeof createLocalSkillsReader>[4]>
   verifyWorkspaceSkills: (id: string, roots: ClusterSkillLedger['roots'], cwd: string) => Promise<boolean[] | undefined>
@@ -396,6 +398,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       // data, not an error, because a workspace write is exactly when the answer would be stale.
       message: (req) => workspaceGit.message(req)
     },
+    ...(host.runtimeProbeRequest() ? { runtimeProbe: host.runtimeProbeRequest()! } : {}),
     // A pure projection of the in-memory lease — no I/O, no runtime, and nothing it can do to a
     // reclaim decision, so it needs neither of the workspace coordinators.
     taskReader: { list: async (req) => host.listBackgroundTasks(req) },
