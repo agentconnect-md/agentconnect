@@ -177,3 +177,16 @@ export function initialContextDeltaText(
   })
   return `${heading}\n${rows.join('\n')}`
 }
+
+/** Appended to a turn replayed from the durable inbox; `historyRestored` is false when the runtime session was recreated. */
+export function interruptedDeliveryText(historyRestored: boolean): string {
+  return [
+    '(AgentConnect delivery note: this message was accepted before an interruption such as a',
+    'daemon restart and is being delivered again, so an earlier attempt at it may have stopped partway.',
+    historyRestored
+      ? 'If your history above shows that work, continue from where it stopped instead of starting over.'
+      : 'That attempt is not in this session, so some of its actions may already have taken effect.',
+    'Before repeating anything with external effects (posting, pushing, submitting a review), check',
+    'whether it already happened, and do not mention this note unless it matters to the user.)'
+  ].join('\n')
+}

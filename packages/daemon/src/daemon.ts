@@ -155,6 +155,7 @@ import {
   ThreadContextCoordinator,
   contextUpdateText,
   initialContextDeltaText,
+  interruptedDeliveryText,
   type ContextRefresh,
   type ThreadContextSnapshot
 } from './session/thread-context.js'
@@ -11859,6 +11860,7 @@ export class Daemon {
           ...(opts?.admissionWait ? { admissionWait: opts.admissionWait } : {}),
           ...(opts?.deferObservedInbound ? { deferObservedInbound: true } : {}),
           ...(opts?.isQueueCmd ? { isQueueCmd: true } : {}),
+          ...(opts?.fromInboxReplay ? { fromInboxReplay: true } : {}),
           ...(githubReply ? { githubReply } : {}),
           ...(posterPublishState ? { posterPublishState } : {}),
           ...(this.safetyDrainingAgents.has(agentId) && !safetyDrainByKey
@@ -13610,6 +13612,8 @@ export class Daemon {
     // is every turn on every other surface — carries exactly the blocks it always did.
     const appContext = appContextBlock(this.liveApps.contextsFor(key))
     if (appContext) promptBlocks.push({ type: 'text', text: appContext })
+    // A replayed delivery may have been cut off mid-turn; without this the model just sees the request repeated.
+    if (entry.fromInboxReplay) promptBlocks.push({ type: 'text', text: interruptedDeliveryText(!handled.created) })
     return { promptBlocks, finalCaptureInput, baseRevision, providerCheckpoint }
   }
 
