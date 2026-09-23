@@ -35,6 +35,7 @@ export const handleMemoryConnections: Handler = async (frame, conn, deps) => {
         ...(fact.profile !== undefined ? { profile: fact.profile } : {}),
         ...(fact.manifestDigest !== undefined ? { manifestDigest: fact.manifestDigest } : {}),
         ...(fact.capabilities !== undefined ? { capabilities: fact.capabilities } : {}),
+        ...(fact.configSchema !== undefined ? { configSchema: fact.configSchema } : {}),
         ...(fact.declaredEgressHosts !== undefined ? { declaredEgressHosts: fact.declaredEgressHosts } : {}),
         ...(fact.reasonCode !== undefined ? { reasonCode: fact.reasonCode } : {})
       })

@@ -275,6 +275,8 @@ export const MemoryConnectionFact = z
       .regex(/^sha256:[a-f0-9]{64}$/)
       .optional(),
     capabilities: MemoryPluginManifest.shape.capabilities.optional(),
+    // The manifest's bounded settings schema (memory-plugin.ts): the console renders it as fields.
+    configSchema: MemoryPluginManifest.shape.connection.shape.configSchema.optional(),
     declaredEgressHosts: z.array(z.string().min(1).max(255)).max(128).optional(),
     status: z.enum(['probing', 'ready', 'degraded', 'invalid']),
     reasonCode: z.string().min(1).max(128).optional()

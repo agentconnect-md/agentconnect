@@ -100,6 +100,7 @@ describe('CpMemoryConnectionRegistry', () => {
       version: '1.2.3',
       profile: MEMORY_PLUGIN_PROFILE,
       manifestDigest: DIGEST,
+      configSchema: manifest.connection.configSchema,
       declaredEgressHosts: ['api.example-memory.com'],
       status: 'ready'
     })

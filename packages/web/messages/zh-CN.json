@@ -3576,8 +3576,10 @@
         "noCredentials": "无需凭据。",
         "sentAsHeader": "作为 {header} 发送",
         "passedToCommand": "传递给本地命令",
-        "settings": "设置（JSON）",
+        "settings": "设置",
+        "settingsJson": "设置（JSON）",
         "settingsHint": "插件特定的非敏感配置。",
+        "notSet": "未设置",
         "replaceSecrets": "替换凭据",
         "creating": "正在创建…",
         "createConnection": "创建连接",
@@ -3590,7 +3592,10 @@
           "endpointRequired": "插件 URL 为必填项。",
           "commandRefRequired": "命令为必填项。",
           "credentialFieldsInvalid": "每个凭据字段都需要名称和请求头。",
-          "missingSecretValues": "请填写必填凭据：{names}。"
+          "missingSecretValues": "请填写必填凭据：{names}。",
+          "fieldRequired": "{label} 为必填项。",
+          "fieldNumber": "{label} 必须是数字。",
+          "fieldInteger": "{label} 必须是整数。"
         }
       }
     }

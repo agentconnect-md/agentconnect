@@ -25,6 +25,14 @@ import {
 } from '@/lib/api'
 import { AgentIconView, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
+import {
+  configFitsFields,
+  configFromValues,
+  settingsFields,
+  valuesFromConfig,
+  type SettingsField,
+  type SettingsValues
+} from '@/components/console/memory-config-schema'
 
 type CardTranslator = ReturnType<typeof useTranslations<'Knowledge.memoryConnections'>>
 type DialogTranslator = ReturnType<typeof useTranslations<'Knowledge.memoryConnections.dialog'>>
@@ -53,6 +61,36 @@ function secretsFor(fields: MemoryPluginSecretHeaderDto[], values: Record<string
     if (value) secrets[field.name] = value
   }
   return secrets
+}
+
+type SettingsMode = { kind: 'hidden' } | { kind: 'fields'; fields: SettingsField[] } | { kind: 'json' }
+
+/** Fields when the probed schema renders and fits the config, nothing when it declares no settings, JSON otherwise. */
+function settingsMode(
+  schema: Record<string, unknown> | null | undefined,
+  config: Record<string, unknown>
+): SettingsMode {
+  if (!schema) return { kind: 'json' }
+  const fields = settingsFields(schema)
+  if (!fields || !configFitsFields(config, fields)) return { kind: 'json' }
+  return fields.length ? { kind: 'fields', fields } : { kind: 'hidden' }
+}
+
+function resolveSettings(mode: SettingsMode, values: SettingsValues, jsonText: string, t: DialogTranslator) {
+  if (mode.kind === 'hidden') return {}
+  if (mode.kind === 'json') return parseObjectJson(jsonText, t)
+  const result = configFromValues(mode.fields, values)
+  if ('error' in result) {
+    const { field, reason } = result.error
+    const key =
+      reason === 'required'
+        ? 'errors.fieldRequired'
+        : reason === 'number'
+          ? 'errors.fieldNumber'
+          : 'errors.fieldInteger'
+    throw new Error(t(key, { label: field.label }))
+  }
+  return result.config
 }
 
 function statusClasses(status: ExternalMemoryConnectionDto['status']): string {
@@ -119,6 +157,15 @@ export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
     for (const bound of index.values()) bound.sort((a, b) => agentLabel(a).localeCompare(agentLabel(b)))
     return index
   }, [agents])
+  // A probe reports the plugin's settings schema on a connection; a new connection on the same plugin reuses it.
+  const schemaByInstallation = useMemo(() => {
+    const index = new Map<string, Record<string, unknown>>()
+    for (const connection of connections) {
+      if (connection.configSchema && !index.has(connection.installationId))
+        index.set(connection.installationId, connection.configSchema)
+    }
+    return index
+  }, [connections])
   const unconnected = installations.filter(
     (installation) => !connections.some((connection) => connection.installationId === installation.id)
   )
@@ -251,6 +298,7 @@ export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
           <div className="modal max-w-[640px]">
             <CreateMemoryConnectionModal
               installations={installations}
+              knownSchemas={schemaByInstallation}
               preselectedId={creating.installationId}
               onClose={() => setCreating(null)}
               onSaved={async () => {
@@ -321,6 +369,9 @@ function ConnectionRow({
       ? t('noDownstreamHosts')
       : t('waitingForPluginReport')
   const usage = agents.length ? t('usedByCount', { count: agents.length }) : t('usedByNone')
+  const editable =
+    settingsMode(connection.configSchema, connection.config).kind !== 'hidden' ||
+    (installation?.secretHeaders.length ?? 0) > 0
 
   return (
     <div data-connection={connection.id} className="group border-b border-(--border-subtle) last:border-b-0">
@@ -360,15 +411,24 @@ function ConnectionRow({
         </div>
         {canManage && (
           <div className="flex flex-none items-center gap-[6px]">
-            <button className="iconbtn" disabled={busy} onClick={onEdit} title={t('editConnection')}>
-              <Icon name="pencil" size={15} />
-            </button>
+            {editable && (
+              <button
+                className="iconbtn"
+                disabled={busy}
+                onClick={onEdit}
+                title={t('editConnection')}
+                aria-label={t('editConnection')}
+              >
+                <Icon name="pencil" size={15} />
+              </button>
+            )}
             <div className="relative">
               <button
                 className="iconbtn"
                 disabled={busy}
                 onClick={() => setActionsOpen((value) => !value)}
                 title={t('connectionActions')}
+                aria-label={t('connectionActions')}
               >
                 <Icon name="ellipsis" size={16} />
               </button>
@@ -586,6 +646,88 @@ function SecretValueFields({
   )
 }
 
+function SettingsEditor({
+  mode,
+  values,
+  onValues,
+  jsonText,
+  onJsonText
+}: {
+  mode: SettingsMode
+  values: SettingsValues
+  onValues: (values: SettingsValues) => void
+  jsonText: string
+  onJsonText: (text: string) => void
+}) {
+  const t = useTranslations('Knowledge.memoryConnections.dialog')
+  if (mode.kind === 'hidden') return null
+  if (mode.kind === 'json') {
+    return (
+      <label className="fld">
+        <span className="fldlbl">{t('settingsJson')}</span>
+        <textarea
+          className="dsinput-field mono min-h-[120px] resize-y"
+          spellCheck={false}
+          value={jsonText}
+          onChange={(event) => onJsonText(event.target.value)}
+        />
+        <span className="text-[11px] text-(--text-tertiary)">{t('settingsHint')}</span>
+      </label>
+    )
+  }
+  return (
+    <div className="flex flex-col gap-3">
+      <span className="fldlbl">{t('settings')}</span>
+      {mode.fields.map((field) => {
+        const set = (value: string | boolean) => onValues({ ...values, [field.name]: value })
+        const text = typeof values[field.name] === 'string' ? (values[field.name] as string) : ''
+        if (field.kind === 'boolean') {
+          return (
+            <label key={field.name} className="flex items-start gap-2 text-[12px] text-(--text-secondary)">
+              <input
+                type="checkbox"
+                className="mt-[3px]"
+                checked={values[field.name] === true}
+                onChange={(event) => set(event.target.checked)}
+              />
+              <span>
+                <span className="font-medium text-(--text-primary)">{field.label}</span>
+                {field.description && (
+                  <span className="block text-[11px] text-(--text-tertiary)">{field.description}</span>
+                )}
+              </span>
+            </label>
+          )
+        }
+        return (
+          <label key={field.name} className="fld">
+            <span className="fldlbl">{field.required ? `${field.label} *` : field.label}</span>
+            {field.kind === 'enum' ? (
+              <select className="dsinput-field" value={text} onChange={(event) => set(event.target.value)}>
+                <option value="">{t('notSet')}</option>
+                {field.options.map((option) => (
+                  <option key={option.key} value={option.key}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                className={field.kind === 'number' ? 'dsinput-field mono' : 'dsinput-field'}
+                type={field.kind === 'number' ? 'number' : 'text'}
+                step={field.kind === 'number' ? (field.integer ? 1 : 'any') : undefined}
+                value={text}
+                onChange={(event) => set(event.target.value)}
+              />
+            )}
+            {field.description && <span className="text-[11px] text-(--text-tertiary)">{field.description}</span>}
+          </label>
+        )
+      })}
+    </div>
+  )
+}
+
 function DialogHead({ title, onClose }: { title: string; onClose: () => void }) {
   const t = useTranslations('Knowledge.memoryConnections.dialog')
   return (
@@ -604,11 +746,14 @@ function DialogHead({ title, onClose }: { title: string; onClose: () => void }) 
 // Two steps, as memory-evolution.md §3.3.1 allows: the plugin first, then the account on it.
 function CreateMemoryConnectionModal({
   installations,
+  knownSchemas,
   preselectedId,
   onClose,
   onSaved
 }: {
   installations: MemoryPluginInstallationDto[]
+  /** Settings schemas already reported for a plugin, keyed by installation id. */
+  knownSchemas: Map<string, Record<string, unknown>>
   preselectedId: string | null
   onClose: () => void
   onSaved: () => Promise<void>
@@ -625,10 +770,13 @@ function CreateMemoryConnectionModal({
   const [advanced, setAdvanced] = useState(false)
   const [newFields, setNewFields] = useState<MemoryPluginSecretHeaderDto[]>([])
   const [secretValues, setSecretValues] = useState<Record<string, string>>({})
+  const [settingsValues, setSettingsValues] = useState<SettingsValues>({})
   const [configText, setConfigText] = useState('{}')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const selected = installations.find((installation) => installation.id === installationId)
+  const mode: SettingsMode = selected ? settingsMode(knownSchemas.get(selected.id) ?? null, {}) : { kind: 'json' }
+  const settings = mode.kind === 'fields' ? { ...valuesFromConfig(mode.fields, {}), ...settingsValues } : settingsValues
   const definedFields = newFields.filter((row) => row.name.trim() || row.header.trim())
   const fields = selected ? selected.secretHeaders : definedFields.map((row) => ({ ...row, name: row.name.trim() }))
   const accountTransport = selected ? selected.transport : transport
@@ -657,7 +805,7 @@ function CreateMemoryConnectionModal({
     setError(null)
     let createdInstallation: MemoryPluginInstallationDto | undefined
     try {
-      const config = parseObjectJson(configText, t)
+      const config = resolveSettings(mode, settings, configText, t)
       const missing = fields.filter((field) => field.required && !secretValues[field.name])
       if (missing.length)
         throw new Error(t('errors.missingSecretValues', { names: missing.map((field) => field.name).join(', ') }))
@@ -714,6 +862,7 @@ function CreateMemoryConnectionModal({
               onChange={(event) => {
                 setInstallationId(event.target.value)
                 setSecretValues({})
+                setSettingsValues({})
               }}
             >
               {installations.map((installation) => (
@@ -822,16 +971,13 @@ function CreateMemoryConnectionModal({
             values={secretValues}
             onChange={setSecretValues}
           />
-          <label className="fld">
-            <span className="fldlbl">{t('settings')}</span>
-            <textarea
-              className="dsinput-field mono min-h-[120px] resize-y"
-              spellCheck={false}
-              value={configText}
-              onChange={(event) => setConfigText(event.target.value)}
-            />
-            <span className="text-[11px] text-(--text-tertiary)">{t('settingsHint')}</span>
-          </label>
+          <SettingsEditor
+            mode={mode}
+            values={settings}
+            onValues={setSettingsValues}
+            jsonText={configText}
+            onJsonText={setConfigText}
+          />
           {error && <div className="text-[12px] text-(--status-error)">{error}</div>}
         </div>
       )}
@@ -875,6 +1021,10 @@ function EditMemoryConnectionModal({
 }) {
   const t = useTranslations('Knowledge.memoryConnections.dialog')
   const tc = useTranslations('Knowledge.memoryConnections')
+  const [mode] = useState<SettingsMode>(() => settingsMode(connection.configSchema, connection.config))
+  const [settingsValues, setSettingsValues] = useState<SettingsValues>(() =>
+    mode.kind === 'fields' ? valuesFromConfig(mode.fields, connection.config) : {}
+  )
   const [configText, setConfigText] = useState(JSON.stringify(connection.config, null, 2))
   const [replaceSecrets, setReplaceSecrets] = useState(false)
   const [secretValues, setSecretValues] = useState<Record<string, string>>({})
@@ -885,7 +1035,7 @@ function EditMemoryConnectionModal({
     setBusy(true)
     setError(null)
     try {
-      const config = parseObjectJson(configText, t)
+      const config = resolveSettings(mode, settingsValues, configText, t)
       let secrets: Record<string, string> | undefined
       if (replaceSecrets) {
         const missing = fields.filter((field) => field.required && !secretValues[field.name])
@@ -907,16 +1057,13 @@ function EditMemoryConnectionModal({
         <div className="truncate rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-2 font-mono text-[12px] text-(--text-secondary)">
           {installation?.pluginId ?? tc('unknownPlugin')} · {whereLabel(installation, tc)}
         </div>
-        <label className="fld">
-          <span className="fldlbl">{t('settings')}</span>
-          <textarea
-            className="dsinput-field mono min-h-[140px] resize-y"
-            spellCheck={false}
-            value={configText}
-            onChange={(event) => setConfigText(event.target.value)}
-          />
-          <span className="text-[11px] text-(--text-tertiary)">{t('settingsHint')}</span>
-        </label>
+        <SettingsEditor
+          mode={mode}
+          values={settingsValues}
+          onValues={setSettingsValues}
+          jsonText={configText}
+          onJsonText={setConfigText}
+        />
         {fields.length > 0 && (
           <label className="flex items-center gap-2 text-[12px] text-(--text-secondary)">
             <input

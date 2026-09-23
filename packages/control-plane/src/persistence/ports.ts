@@ -6521,6 +6521,7 @@ export interface ExternalMemoryConnectionRecord {
   profile: string | null
   manifestDigest: string | null
   capabilities: Record<string, unknown> | null
+  configSchema: Record<string, unknown> | null
   declaredEgressHosts: string[]
   reasonCode: string | null
   createdByUserId: string | null
@@ -6558,6 +6559,7 @@ export interface ExternalMemoryConnectionRepo {
       profile?: string
       manifestDigest?: string
       capabilities?: Record<string, unknown>
+      configSchema?: Record<string, unknown>
       declaredEgressHosts?: string[]
       reasonCode?: string
     }

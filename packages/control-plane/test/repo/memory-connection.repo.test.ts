@@ -56,17 +56,21 @@ describe('external-memory persistence (real Postgres)', () => {
         profile: 'agentconnect.memory/v1',
         manifestDigest: `sha256:${'a'.repeat(64)}`,
         capabilities: { scopes: ['agent'] },
+        configSchema: { type: 'object', properties: {}, additionalProperties: false },
         declaredEgressHosts: ['api.example-memory.com']
       })
     ).toBe(true)
     expect(await connections.get(DEF_ORG, connection.id)).toMatchObject({
       status: 'ready',
       probedRevision: 1,
+      configSchema: { type: 'object', properties: {}, additionalProperties: false },
       declaredEgressHosts: ['api.example-memory.com']
     })
 
     const updated = await connections.update(DEF_ORG, connection.id, { config: { projectId: 'p2' } })
     expect(updated).toMatchObject({ revision: 2, status: 'probing', probedRevision: null })
+    // The schema describes the plugin, not the revision, so an edited config keeps its typed form.
+    expect(updated.configSchema).toEqual({ type: 'object', properties: {}, additionalProperties: false })
     expect(await connections.updateProbeFact(connection.id, 1, { status: 'invalid' })).toBe(false)
     expect((await connections.get(DEF_ORG, connection.id))?.status).toBe('probing')
     expect(await connections.updateProbeFact(connection.id, 2, { status: 'degraded', reasonCode: 'timeout' })).toBe(

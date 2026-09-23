@@ -360,6 +360,7 @@ export class CpMemoryConnectionRegistry {
         profile: client.manifest.profile,
         manifestDigest: client.manifestDigest,
         capabilities: client.manifest.capabilities,
+        configSchema: client.manifest.connection.configSchema,
         ...(client.manifest.declaredEgressHosts ? { declaredEgressHosts: client.manifest.declaredEgressHosts } : {}),
         status,
         ...(reasonCode ? { reasonCode } : {})

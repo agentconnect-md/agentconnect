@@ -639,7 +639,7 @@ interface MemoryConnectionSpec {
 
 The daemon builds an internal MCP client, probes manifest/health, then reports
 facts as
-`{connectionId,pluginId,version,profile,capabilities,status}`. Placement and
+`{connectionId,pluginId,version,profile,capabilities,configSchema,status}`. Placement and
 admission have two layers:
 
 1. **Static fail-closed**: if a connection is missing, the profile/capabilities
