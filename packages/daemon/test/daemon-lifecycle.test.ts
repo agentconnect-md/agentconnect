@@ -293,6 +293,83 @@ describe('Daemon session lifecycle (#118)', () => {
     }
   )
 
+  // An executor's coordinates are POSIX: its `host` strategy needs Linux (session-executors.md §5).
+  it.skipIf(process.platform === 'win32')(
+    'puts a spread session’s attachment and image read on its executor, at that machine’s own root',
+    async () => {
+      const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as never })
+      try {
+        await daemon.start()
+        const d = daemon as any
+        await vi.waitFor(() => expect(d.sessionRetentionSweepInFlight).toBe(false))
+        const agent = d.agents.get('bot-a')
+        agent.workspace.mode = 'git-repo'
+        agent.workspace.gitRepo = 'https://github.com/example-org/example-repo'
+        const row = { key: KEY, sessionId: 'outward-1', workspaceIsolation: 'session' }
+        const getSession = d.store.getSession.bind(d.store)
+        vi.spyOn(d.store, 'getSession').mockImplementation(async (key: any) => (key === KEY ? row : getSession(key)))
+        vi.spyOn(d.store, 'getSessionByOutwardId').mockResolvedValue(row)
+        // The executor's own daemon root, where its shim reported the session's directory: never the pool's `/agent`.
+        const executorRoot = '/srv/executor'
+        const machine = new PodWorkspaceFs(executorRoot)
+        const clone = `${executorRoot}/sessions/${sessionKeyDirName(KEY)}/workspace`
+        const png = Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=',
+          'base64'
+        )
+        vi.spyOn(machine, 'readFileBytes').mockImplementation(async (path) =>
+          path === `${clone}/out/chart.png` ? { bytes: png } : undefined
+        )
+        let bound = true
+        // This holder runs no pool; only the one placed session, and the paths in its environment, resolve to the executor.
+        const executor = {
+          ...testPlane({
+            workspacesOffDisk: true,
+            workspaceFsFor: () => (bound ? { fs: machine, mount: executorRoot } : undefined)
+          }),
+          placementOf: (key: string) => (key === KEY ? { agentId: 'bot-a', sessionKey: KEY } : undefined),
+          planeFor: (scope: { agentId: string; sessionKey?: string; path?: string }) =>
+            scope.agentId === 'bot-a' &&
+            (scope.sessionKey === undefined ? scope.path?.startsWith(`${executorRoot}/`) : scope.sessionKey === KEY)
+              ? executor
+              : undefined,
+          launched: () => [],
+          releaseAgent: () => {},
+          stop: async () => {}
+        }
+        d.executorPlane = executor
+        d.wirePlaneResolver()
+        const ctx = {
+          agentId: 'bot-a',
+          platform: 'slack',
+          channel: 'C1',
+          thread: 'T1',
+          transportScope: TRANSPORT_SCOPE
+        }
+
+        expect(await d.mcp.deps.saveAttachment(ctx, 'report.pdf', Buffer.from('%PDF-1'))).toEqual({
+          ok: true,
+          path: 'uploads/report.pdf'
+        })
+        expect(String(machine.files.get(`${clone}/uploads/report.pdf`))).toBe('%PDF-1')
+        expect(await d.mcp.deps.readWorkspaceImage(ctx, 'out/chart.png')).toMatchObject({
+          ok: true,
+          mimeType: 'image/png'
+        })
+
+        // Its pipe closed: both refuse rather than reach for this holder's own disk.
+        bound = false
+        expect(await d.mcp.deps.saveAttachment(ctx, 'other.pdf', Buffer.from('%PDF-2'))).toEqual({
+          ok: false,
+          reason: 'sandboxed'
+        })
+        expect(await d.mcp.deps.readWorkspaceImage(ctx, 'out/chart.png')).toEqual({ ok: false, reason: 'sandboxed' })
+      } finally {
+        await daemon.stop()
+      }
+    }
+  )
+
   it.skipIf(process.platform === 'win32')(
     'reads a local image from one regular-file descriptor and refuses a FIFO swapped in after the check',
     async () => {

@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { Agent } from '../src/agents/agent-schema.js'
 import { sessionKeyDirName } from '../src/acp/host-key.js'
+import { createWorkspaceScope } from '../src/cp/workspace-scope.js'
 import { testPlane } from './workspace-plane-support.js'
 import {
   daemonGitCredentialTarget,
@@ -216,6 +217,32 @@ describe('a session prepared on an executor', () => {
     const removal = await workspaces.removeSessionWorktree(agent(), KEY, 'clones')
     expect(removal.outcome).not.toBe('failed')
     expect(await executor.stat(sessionDir)).toBe('missing')
+  })
+})
+
+// The console, a turn's file links and the attachment tools ask one scope where a session's root is; on a holder with no pool it has no runtime root to offer, and the pool's default mount is not that machine's.
+describe('a spread session’s location', () => {
+  const scopeFor = (subject: Agent) =>
+    createWorkspaceScope({
+      workspaces,
+      agentOf: (id) => (id === AGENT ? subject : undefined),
+      sessionOf: async () => ({ key: KEY, workspaceIsolation: 'session' }),
+      runtimeRootOf: () => undefined
+    })
+
+  it('is the clone preparation made on that machine, for the primary and a secondary root alike', async () => {
+    const withRepo = agent([{ repoFullName: 'example-org/library', repoId: '42' }])
+    const cwd = await workspaces.prepareExecutorWorkspace(withRepo, executorRoot, request)
+    const scope = scopeFor(withRepo)
+    expect(await scope.location(AGENT, 'outward-1')).toEqual({ root: cwd, scratch: false })
+    expect((await scope.location(AGENT, 'outward-1', 'example-org/library'))?.root).toBe(
+      join(sessionDir, 'repos', 'example-org', 'library')
+    )
+  })
+
+  it('is reached through that machine’s filesystem, and a session on this disk is not', () => {
+    expect(workspaces.offDiskFsFor(AGENT, { sessionKey: KEY })).toBe(executor)
+    expect(workspaces.offDiskFsFor(AGENT, { sessionKey: 'slack:C1:1700000000.000900:agent-spread' })).toBeUndefined()
   })
 })
 
