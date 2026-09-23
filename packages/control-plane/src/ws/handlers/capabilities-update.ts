@@ -17,4 +17,6 @@ export const handleCapabilitiesUpdate: Handler = async (frame, conn, deps) => {
   const state = deps.connReg.get(conn.daemonId)
   if (state) state.capabilities = frame.payload.capabilities
   await deps.registry.updateCapabilities(DaemonId(conn.daemonId), frame.payload.capabilities)
+  // A feature change can release a held By decision conversation or make this daemon a routing host.
+  void deps.httpBotDaemonReady?.(conn.daemonId).catch(() => {})
 }

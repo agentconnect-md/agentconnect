@@ -501,6 +501,32 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     expect(bad.ok).toBe(false)
   })
 
+  it('carries routed conversations with their evaluation host on rc/bot-assign and rc/routes', () => {
+    const routedConversations = [{ channel: 'C1', decisionId: 'd1', evaluationDaemonId: DAEMON_ID }]
+    const base = { botId: DAEMON_ID, members: [], routes: [] }
+    const assign = decodeRelayCpFrame(
+      envelope('rc/bot-assign', {
+        ...base,
+        platform: 'slack',
+        secrets: { botToken: 'xoxb-x', signingSecret: 'sign-x' },
+        routedConversations
+      })
+    )
+    if (!assign.ok || assign.frame.type !== 'rc/bot-assign') throw new Error('narrow')
+    expect(assign.frame.payload.routedConversations).toEqual(routedConversations)
+    const routes = decodeRelayCpFrame(envelope('rc/routes', { ...base, routedConversations }))
+    if (!routes.ok || routes.frame.type !== 'rc/routes') throw new Error('narrow')
+    expect(routes.frame.payload.routedConversations).toEqual(routedConversations)
+    // Absent means none, which is what an older CP sends.
+    const legacy = decodeRelayCpFrame(envelope('rc/routes', base))
+    if (!legacy.ok || legacy.frame.type !== 'rc/routes') throw new Error('narrow')
+    expect(legacy.frame.payload.routedConversations).toEqual([])
+    const bad = decodeRelayCpFrame(
+      envelope('rc/routes', { ...base, routedConversations: [{ ...routedConversations[0], evaluationDaemonId: 'd' }] })
+    )
+    expect(bad.ok).toBe(false)
+  })
+
   it('round-trips the per-conversation default rung on rc/bot-assign and rc/routes', () => {
     // linear-integration.md §6.2 — the table the relay consults between the keyword slug and
     // `defaultAgentId`, plus the axis that makes a rejected gated affinity terminal there.
@@ -551,6 +577,7 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     if (!r.ok || r.frame.type !== 'rc/bot-assign') throw new Error('narrow')
     expect(r.frame.payload.conversationDefaults).toEqual([])
     expect(r.frame.payload.ownerAsDefault).toBe(false)
+    expect(r.frame.payload.routedConversations).toEqual([])
   })
 
   it('round-trips a Feishu HTTP assignment without provider API credentials', () => {

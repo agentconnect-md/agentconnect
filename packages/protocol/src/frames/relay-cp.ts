@@ -848,6 +848,14 @@ export const RcConversationDefault = z.object({
 })
 export type RcConversationDefault = z.infer<typeof RcConversationDefault>
 
+// One executable By decision routing conversation and the one daemon that evaluates it (message-intake.md §6).
+export const RcRoutedConversation = z.object({
+  channel: z.string().min(1),
+  decisionId: z.string().min(1).max(128),
+  evaluationDaemonId: z.string().uuid()
+})
+export type RcRoutedConversation = z.infer<typeof RcRoutedConversation>
+
 // C→R EVT — load a shared bot's INBOUND routing + credentials onto this relay:
 // inbound arrives over the shared HTTP Events API endpoints (`/slack/events`,
 // `/slack/interactions`) and is arbitrated against `routes`. Whole-pool: the CP
@@ -928,7 +936,9 @@ export const RcBotAssign = z.object({
   conversationDefaults: z.array(RcConversationDefault).default([]),
   // §9.1's platform axis, projected so the relay can pick the terminal `grant-withdrawn`
   // affinity refusal over Slack's fall-through without ever reading a platform name.
-  ownerAsDefault: z.boolean().default(false)
+  ownerAsDefault: z.boolean().default(false),
+  // Executable routed conversations only (held ones are muted); absent means none, as from an older CP.
+  routedConversations: z.array(RcRoutedConversation).default([])
 })
 export type RcBotAssign = z.infer<typeof RcBotAssign>
 
@@ -966,7 +976,8 @@ export const RcRoutes = z.object({
   // re-assign, so an already-connected relay would otherwise keep the old default —
   // and with it the old grant fact — after exactly the edit this rung exists for.
   // The immutable `ownerAsDefault` axis stays assignment-scoped.
-  conversationDefaults: z.array(RcConversationDefault).default([])
+  conversationDefaults: z.array(RcConversationDefault).default([]),
+  routedConversations: z.array(RcRoutedConversation).default([]) // see RcBotAssign.routedConversations
 })
 export type RcRoutes = z.infer<typeof RcRoutes>
 

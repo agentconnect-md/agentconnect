@@ -113,6 +113,7 @@ model Org {
   mcpProviders              McpProvider[]
   skillSources              SkillSource[]
   decisions                 Decision[]
+  botDecisionRoutings       BotDecisionRouting[]
   memoryPluginInstallations MemoryPluginInstallation[]
   externalMemoryConnections ExternalMemoryConnection[]
   webchatConversations      WebchatConversation[]
@@ -187,6 +188,7 @@ model User {
   createdBots                      Bot[]
   createdMcpProviders              McpProvider[]              @relation("McpProviderCreatedBy")
   createdDecisions                 Decision[]                 @relation("DecisionCreatedBy")
+  createdBotDecisionRoutings       BotDecisionRouting[]       @relation("BotDecisionRoutingCreatedBy")
   createdSkillSources              SkillSource[]              @relation("SkillSourceCreatedBy")
   createdMemoryPluginInstallations MemoryPluginInstallation[] @relation("MemoryPluginInstallationCreatedBy")
   createdExternalMemoryConnections ExternalMemoryConnection[] @relation("ExternalMemoryConnectionCreatedBy")
@@ -2418,6 +2420,8 @@ model Bot {
   // unique FK (dropped so shared bots can fan out).
   integrations Integration[]
   credentialObservations BotCredentialObservation[]
+  // The bot-owned By decision router (decisions.md §6.2); at most one per bot.
+  decisionRouting BotDecisionRouting?
 
   // One Bot per external app identity per platform — the relay demux fence, and
   // cross-org global because a workspace binds to exactly one org. A row that
@@ -2610,11 +2614,11 @@ model IntegrationChannel {
   // integration row per shared conversation carries the owner; sibling rows are null.
   // Irrelevant for a classic integration, where its agent is the only target.
   agentId       String?          @db.Uuid
-  // The By decision consumer (decisions.md §6.2); present exactly when trigger is decision (DB CHECK).
+  // The By decision consumer (a gate or the bot's router); present exactly when trigger is decision (DB CHECK).
   decisionBinding     Json?
-  // Denormalized gate Decision id: blocks deleting a used Decision and indexes usage lookups.
+  // Denormalized gate Decision id (null for a router): blocks deleting a used Decision and indexes usages.
   decisionId          String?  @db.Uuid
-  // A Decision edit invalidated this gate; only a successful re-save of the binding clears it.
+  // A Decision edit invalidated this gate; a router's review state lives on BotDecisionRouting instead.
   decisionNeedsReview Boolean  @default(false)
   firstSeenAt   DateTime         @default(now()) @db.Timestamptz(6)
   updatedAt     DateTime         @updatedAt @db.Timestamptz(6)
@@ -3956,8 +3960,34 @@ model Decision {
   org             Org                @relation(fields: [orgId], references: [id], onDelete: Cascade)
   createdBy       User?              @relation("DecisionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   channelBindings IntegrationChannel[]
+  routings        BotDecisionRouting[]
 
   @@index([orgId])
   @@index([sharedWith], type: Gin)
   @@map("decision")
+}
+
+// A shared bot's By decision router (decisions.md §6.2): one per bot, its channel scope is the rows bound to it.
+model BotDecisionRouting {
+  botId           String   @id @db.Uuid
+  orgId           String
+  // Paused keeps the configuration and scope; it only stops new deliveries.
+  enabled         Boolean  @default(true)
+  decisionId      String   @db.Uuid
+  // Ordered SharedBotDecisionRouting rules and its Otherwise action, stored verbatim.
+  rules           Json
+  otherwise       Json
+  // A Decision edit invalidated a rule; only a successful routing save clears it.
+  needsReview     Boolean  @default(false)
+  createdByUserId String?
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(6)
+  bot             Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  org             Org      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  decision        Decision @relation(fields: [decisionId], references: [id], onDelete: Restrict)
+  createdBy       User?    @relation("BotDecisionRoutingCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([orgId])
+  @@index([decisionId])
+  @@map("bot_decision_routing")
 }

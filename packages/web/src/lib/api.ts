@@ -928,10 +928,11 @@ export interface IntegrationChannelDto {
 
 /** A By decision row's bound Decision: its visible name, whether it runs, and the consumer's readiness. */
 export interface ChannelDecisionView {
+  consumer?: 'gate' | 'shared_bot_routing'
   id: string
   name: string | null
   enabled: boolean
-  disabledReason?: 'needs_review' | 'access_revoked'
+  disabledReason?: 'needs_review' | 'access_revoked' | 'paused'
   readiness: { status: 'ready' | 'pending_sync' | 'needs_review' | 'daemon_offline' | 'unsupported'; reason?: string }
 }
 
@@ -6378,7 +6379,8 @@ export function createDecisionApi(orgId: string): DecisionApi {
   const path = (id: string) => `${base()}/${encodeURIComponent(id)}`
   const conversation = (ref: DecisionConversationRef) =>
     `${orgBase(orgId)}/integrations/${encodeURIComponent(ref.integrationId)}/channels/${encodeURIComponent(ref.channelId)}`
-  // Live bindings save through updateIntegrationChannel; these consumer methods back only the mock.
+  const routing = (botId: string) => `${orgBase(orgId)}/bots/${encodeURIComponent(botId)}/decision-routing`
+  // Live bindings save through updateIntegrationChannel; listBots, listChannels and saveChannel back only the mock.
   const unsupported = async (): Promise<never> => {
     throw new ApiError('This Decision consumer API is only available in mock mode.', 501)
   }
@@ -6404,7 +6406,7 @@ export function createDecisionApi(orgId: string): DecisionApi {
     listBots: unsupported,
     listChannels: unsupported,
     saveChannel: unsupported,
-    getRouting: unsupported,
-    saveRouting: unsupported
+    getRouting: (botId) => apiGet(routing(botId)),
+    saveRouting: (botId, input) => apiPut(routing(botId), input)
   }
 }

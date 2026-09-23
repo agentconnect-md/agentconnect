@@ -26,6 +26,7 @@ import type {
   RcAgentDirEntry,
   RcBotAssign,
   RcConversationDefault,
+  RcRoutedConversation,
   RcRoutes,
   WireNormalizedMessage
 } from '@agentconnect.md/protocol'
@@ -96,6 +97,8 @@ export interface BotAssignment {
   /** True where that projection is what the platform does with a row's owner. On such
    *  an assignment the affinity gate's rejection of a gated binding is TERMINAL. */
   ownerAsDefault?: boolean
+  /** Executable By decision routing conversations and the one daemon that evaluates each (message-intake.md §6). */
+  routedConversations?: RcRoutedConversation[]
 }
 
 /** The routing state an `rc/routes` hot update replaces — everything a re-assign would
@@ -115,15 +118,18 @@ export type RoutesPatch = Pick<
   | 'noticeAuthority'
   | 'noticedDmConversations'
   | 'conversationDefaults'
+  | 'routedConversations'
 >
 
 /** Map the CP's `rc/routes` frame to the hot-update patch (the `toBotAssignment` of the
  *  routes-only leg). Sole assembler of the patch — see {@link RoutesPatch}. */
 export function toRoutesPatch(r: RcRoutes): RoutesPatch {
+  const routes = usableRoutes(r.routes)
   return {
     members: r.members,
     agents: mapAgentDirectory(r.agents),
-    routes: usableRoutes(r.routes),
+    routes,
+    routedConversations: usableRoutedConversations(r.routedConversations ?? [], routes),
     ...(r.defaultAgentId ? { defaultAgentId: r.defaultAgentId } : {}),
     ...(r.defaultDaemonId ? { defaultDaemonId: r.defaultDaemonId } : {}),
     gatedAgentIds: r.gatedAgentIds,
@@ -140,6 +146,16 @@ export function usableRoutes<R extends { match: { kind: string }; decisionId?: s
   return routes.filter((route) => route.match.kind !== 'decision' || !!route.decisionId)
 }
 
+/** Keep only routed conversations whose channel still has a decision route with the same Decision (a stale snapshot otherwise). */
+export function usableRoutedConversations(
+  routed: readonly RcRoutedConversation[],
+  routes: readonly AttributedRoute[]
+): RcRoutedConversation[] {
+  return routed.filter((c) =>
+    routes.some((r) => r.match.kind === 'decision' && r.scope?.channel === c.channel && r.decisionId === c.decisionId)
+  )
+}
+
 /** Keep the directory shape identical on full assignments and `rc/routes` updates. */
 export function mapAgentDirectory(entries: readonly RcAgentDirEntry[]): BotAssignment['agents'] {
   return entries.map((entry) => ({
@@ -149,6 +165,9 @@ export function mapAgentDirectory(entries: readonly RcAgentDirEntry[]): BotAssig
     ...(entry.integrationId ? { integrationId: entry.integrationId } : {})
   }))
 }
+
+/** The package verdict plus, in a routed conversation, the host the CP named for it (relay-local). */
+export type RelayArbitration = SharedBotArbitration & { evaluationDaemonId?: string }
 
 /** The arbitration verdict — a target the daemon dispatches to. */
 export interface RouteTarget {
@@ -241,6 +260,8 @@ export class BotArbitrationRouter {
     // An owner edit converges through here, so the defaults are replaced with the routes:
     // otherwise a connected relay keeps the old default — and the old grant — forever.
     a.conversationDefaults = patch.conversationDefaults
+    // Replaced whole, so a patch without the field (an older CP) clears every evaluation host.
+    a.routedConversations = patch.routedConversations
   }
 
   remove(botId: string): BotAssignment | undefined {
@@ -382,6 +403,11 @@ export class BotArbitrationRouter {
       ?.routes.find((r) => r.scope?.channel === channelId && r.match.kind === 'decision' && r.decisionId)?.decisionId
   }
 
+  /** The daemon the CP named to evaluate a routed conversation; unused for forwarding until 5b. */
+  evaluationDaemonIdFor(botId: string, channelId: string): string | undefined {
+    return this.bots.get(botId)?.routedConversations?.find((c) => c.channel === channelId)?.evaluationDaemonId
+  }
+
   /** Apply a channel-owner pick to the current routing snapshot immediately.
    *  The CP remains authoritative and will replace this optimistic update via
    *  `rc/routes`; preserving the existing match keeps the channel trigger stable. */
@@ -511,13 +537,15 @@ export class BotArbitrationRouter {
 
   /** {@link route} keeping the terminal `grant-withdrawn` refusal distinguishable from
    *  an ordinary miss, so the caller drops instead of continuing down the ladder. */
-  routeResult(botId: string, msg: WireNormalizedMessage): SharedBotArbitration {
+  routeResult(botId: string, msg: WireNormalizedMessage): RelayArbitration {
     const a = this.bots.get(botId)
     if (!a) return { kind: 'none' }
     const aff = this.affinity.get(botId) ?? this.affinity.set(botId, new Map()).get(botId)!
     const result = arbitrateSharedBotResult(a, msg, aff)
-    if (result.kind === 'target') aff.set(sessionKeyOf(msg), result.target)
-    return result
+    if (result.kind !== 'target') return result
+    aff.set(sessionKeyOf(msg), result.target)
+    const evaluationDaemonId = this.evaluationDaemonIdFor(botId, msg.channel)
+    return evaluationDaemonId ? { ...result, evaluationDaemonId } : result
   }
 
   /**
@@ -720,6 +748,7 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
   // is exactly today's behaviour (ingress-tenant-fence.md §3.3 fail-open).
   const workspaceId = typeof ingress.workspaceId === 'string' ? ingress.workspaceId : undefined
   const botUserId = typeof ingress.botUserId === 'string' ? ingress.botUserId : undefined
+  const routes = usableRoutes(a.routes)
   return {
     botId: a.botId,
     platform: a.platform,
@@ -731,7 +760,8 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
     ...(botUserId ? { botUserId } : {}),
     members: a.members,
     agents: mapAgentDirectory(a.agents),
-    routes: usableRoutes(a.routes),
+    routes,
+    routedConversations: usableRoutedConversations(a.routedConversations ?? [], routes),
     ...(a.defaultAgentId ? { defaultAgentId: a.defaultAgentId } : {}),
     ...(a.defaultDaemonId ? { defaultDaemonId: a.defaultDaemonId } : {}),
     gatedAgentIds: a.gatedAgentIds,

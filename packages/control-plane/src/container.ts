@@ -1,4 +1,5 @@
 import { PgDecisionRepo } from './persistence/repositories/decision.repo.js'
+import { PgBotDecisionRoutingRepo } from './persistence/repositories/bot-decision-routing.repo.js'
 import { PgAgentMemoryTransactionRepo } from './persistence/repositories/agent-memory-transaction.repo.js'
 import { AgentMemoryTransactionService } from './agent-memory/transaction.service.js'
 /**
@@ -449,6 +450,7 @@ export function buildContainer(
     // credential-generation fence, and serialize on the bot row (§5.3).
     botCredential: new PgBotCredentialWriter(prisma, secretCipher),
     decision: new PgDecisionRepo(prisma),
+    botDecisionRouting: new PgBotDecisionRoutingRepo(prisma),
     providerKey: new PgProviderKeyStore(prisma, secretCipher),
     agentSecret: new PgAgentSecretStore(prisma, secretCipher),
     agentConfig: new PgAgentConfigWriter(prisma, secretCipher),
@@ -963,7 +965,8 @@ export function buildContainer(
     platforms,
     agentDelivery,
     placementResolver,
-    gatedDmSeedResolver
+    gatedDmSeedResolver,
+    { routings: repos.botDecisionRouting, daemons: repos.daemon }
   )
   const stagedAgentMoves = new AgentMoveService({
     agents: repos.agent,
@@ -1714,6 +1717,7 @@ export function buildContainer(
       botSecret: repos.botSecret,
       botCredential: repos.botCredential,
       decision: repos.decision,
+      botDecisionRouting: repos.botDecisionRouting,
       providerKey: repos.providerKey,
       agentSecret: repos.agentSecret,
       agentConfig: repos.agentConfig,
@@ -2225,6 +2229,7 @@ export function buildContainer(
     launch: repos.launch,
     visibilityPush,
     httpBotDaemonReady: (daemonId) => httpBot.daemonReady(daemonId),
+    httpBotDaemonOffline: (daemonId) => httpBot.daemonOffline(daemonId),
     ...(sessionPullRequestFeedback ? { pullRequestFeedback: sessionPullRequestFeedback } : {}),
     events,
     usageWriter,

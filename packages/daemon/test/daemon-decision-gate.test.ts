@@ -281,6 +281,30 @@ describe('By decision gate (daemon)', () => {
     await daemon.stop()
   })
 
+  it('refuses a pending verdict once the conversation switches from the gate to the shared-bot router', async () => {
+    const { daemon, store, evaluate, dispatch, gate: g } = await boot()
+    let answer!: (evaluation: DecisionEvaluation) => void
+    evaluate.mockImplementation(() => new Promise<DecisionEvaluation>((resolve) => (answer = resolve)))
+    await route(daemon, human({ text: 'route me' }))
+    await vi.waitFor(() => expect(evaluate).toHaveBeenCalledTimes(1), WAIT)
+    const int = (daemon as any).agents.get('bot-a').integrations[0]
+    const previous = int.core.decisions
+    const next = {
+      bindings: [{ channel: 'C1', consumer: { type: 'shared_bot_routing' }, enabled: true }],
+      definitions: []
+    }
+    int.core = { ...int.core, decisions: next }
+    // The release recheck alone refuses it before the applied bundle even changes: the channel is no longer a gate's.
+    answer(yes)
+    await g.idle()
+    expect(dispatch).not.toHaveBeenCalled()
+    expect((await verdicts(store)).map((v) => v.state)).not.toContain('admitted')
+    await g.onConfigApplied('int-bot-a', previous, next)
+    expect(await route(daemon, human({ text: 'after the switch' }))).toEqual({ kind: 'rejected', reason: 'gated' })
+    expect(evaluate).toHaveBeenCalledTimes(1)
+    await daemon.stop()
+  })
+
   it('(g) an unavailable evaluation dispatches the same agent with failure evidence; a skip never does', async () => {
     const { daemon, store, host, evaluate, dispatch, gate: g } = await boot()
     evaluate.mockResolvedValueOnce(no)

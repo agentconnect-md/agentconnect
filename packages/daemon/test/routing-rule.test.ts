@@ -231,6 +231,48 @@ describe('integrationRouting (§6.4 core-envelope read)', () => {
     expect(rulesFromAgent(agent({ integrations: [int] }), {}).map((r) => r.match)).toEqual([{ kind: 'decision' }])
     expect(BindMatchSchema.parse({ kind: 'decision' })).toEqual({ kind: 'decision' })
   })
+
+  it('exposes a routed channel as bound, never as a gate, with the router only where this daemon hosts it', () => {
+    const definition = {
+      id: 'd1',
+      orgId: 'o',
+      name: 'Help',
+      providerId: 'typesafe',
+      model: 'jev-1.13.0',
+      question: { type: 'boolean', instructions: 'Help?', criteria: { true: 'Yes', false: 'No' } }
+    }
+    const config = {
+      enabled: true,
+      decisionId: 'd1',
+      rules: [{ id: 'r1', when: { type: 'boolean', values: [true] }, action: { type: 'skip' } }],
+      otherwise: { type: 'default_agent' }
+    }
+    const router = { type: 'shared_bot_routing' }
+    const int = {
+      id: 'i',
+      platform: 'slack',
+      core: {
+        bindRules: [],
+        decisions: {
+          bindings: [
+            { channel: 'R1', consumer: router, enabled: true },
+            { channel: 'R2', consumer: router, enabled: true }
+          ],
+          definitions: [definition],
+          sharedBotRouting: { botId: 'b1', config, channels: [{ channel: 'R1' }] }
+        }
+      },
+      config: { botToken: 'x' }
+    } as unknown as Integration
+    const routing = integrationRouting(int)
+    expect(routing.decisionBound('R1')).toBe(true)
+    expect(routing.decisionBound('R2')).toBe(true)
+    expect(routing.decisionBindingFor('R1')).toBeUndefined()
+    expect(routing.routingFor('R1')?.routing).toMatchObject({ botId: 'b1', config })
+    expect(routing.routingFor('R2')).toEqual({ channel: 'R2', enabled: true })
+    expect(routing.routingFor('C9')).toBeUndefined()
+    expect(routing.sharedBotRouting()).toEqual({ botId: 'b1', config })
+  })
 })
 
 describe('rulesFromAgent', () => {
