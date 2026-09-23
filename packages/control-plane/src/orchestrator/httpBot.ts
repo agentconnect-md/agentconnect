@@ -334,15 +334,15 @@ export class HttpBotOrchestrator {
     return { applied: true }
   }
 
-  /** `rc/bot-credential-check`: an ambiguous rejection only marks the bot and `ok` clears it — never a revocation, an integration flip, a spec pull or a release. */
-  async recordCredentialCheck(m: RcBotCredentialCheck): Promise<{ applied: boolean }> {
+  /** `rc/bot-credential-check` from `relayId`: records that relay's observation and re-aggregates the mark — never a revocation, an integration flip, a spec pull or a release. */
+  async recordCredentialCheck(m: RcBotCredentialCheck, relayId: string): Promise<{ applied: boolean }> {
     const observedAt = new Date(m.observedAtMs)
     const check =
       m.result === 'rejected'
         ? { result: m.result, code: m.code, revision: m.credentialRevision, observedAt }
         : { result: m.result, revision: m.credentialRevision, observedAt }
-    const applied = await this.bots.recordCredentialCheck(BotId(m.botId), check)
-    const log = { botId: m.botId, result: m.result, revision: m.credentialRevision, applied }
+    const applied = await this.bots.recordCredentialCheck(BotId(m.botId), relayId, check)
+    const log = { botId: m.botId, relayId, result: m.result, revision: m.credentialRevision, applied }
     if (applied && m.result === 'rejected') this.log.warn({ ...log, code: m.code }, 'http-bot: credential rejected')
     else this.log.info(log, 'http-bot: credential check recorded')
     return { applied }

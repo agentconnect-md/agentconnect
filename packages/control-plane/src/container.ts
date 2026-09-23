@@ -2581,8 +2581,8 @@ export function buildContainer(
         },
         { ...(m.evidence ? { evidence: m.evidence } : {}), ...(m.code ? { code: m.code } : {}) }
       ),
-    // A probe's ambiguous rejection only marks the bot, and `ok` clears it; acknowledged, so a failure propagates.
-    onBotCredentialCheck: async (m) => httpBot.recordCredentialCheck(m),
+    // One relay's probe answer: its observation re-aggregates the bot's mark; acknowledged, so a failure propagates.
+    onBotCredentialCheck: async (m, relayId) => httpBot.recordCredentialCheck(m, relayId),
     // A relay delivered a §14.3 DM gating notice — record + re-stamp the pool's
     // latch. Swallow+log.
     onNoticePosted: async (m) => {

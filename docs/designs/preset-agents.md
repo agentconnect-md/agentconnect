@@ -343,19 +343,27 @@ installed via standard OAuth v2. Verified gaps against current code:
   always an event. Ambiguous evidence does not revoke: Slack also answers
   `invalid_auth` to a caller outside the app's IP allowlist, where a reinstall
   cannot help, so a probe that gets it sends `rc/bot-credential-check` with
-  `result: 'rejected'` and the code instead. That only marks the bot with the
-  time the rejection was first seen and the latest code; its integrations stay
-  active and its specs stay on the daemons. A later successful probe sends
-  `result: 'ok'`, which clears the mark, and a fresh credential clears the mark
-  in the same statement that clears the revocation. A check applies only while
-  the `credentialRevision` it probed is still current, so a probe of a replaced
-  credential changes nothing, and only when its observation time is strictly
-  newer than the last check applied to that credential (the bot's
-  `credentialCheckedAt` watermark, reset by a fresh credential). Checks that
-  relay replicas or retries deliver out of order therefore neither clear a newer
-  rejection nor re-mark the bot after a newer success. A relay
-  sends the check and the new `rc/bot-revoked` fields only to a Control Plane
-  that advertises `bot-credential-check-v1`. The console shows a marked bot's
+  `result: 'rejected'` and the code instead, and a successful probe sends
+  `result: 'ok'`. Because that answer depends on the caller's address, relay
+  replicas can legitimately disagree, so the Control Plane keeps each relay's
+  latest observation of the bot (`bot_credential_observation`, keyed by bot and
+  relay: revision, result, code, observation time) rather than one verdict. A
+  check applies only while the `credentialRevision` it probed is still current,
+  so a probe of a replaced credential changes nothing, and only when its
+  observation time is strictly newer than that relay's row, so retries and
+  out-of-order delivery move each relay forward without touching the others.
+  The bot's mark is the aggregate of its rows for the current revision: while
+  any relay's latest observation is `rejected`, the bot is marked, keeping the
+  time the rejection was first seen and taking the code of the newest rejected
+  row; once none is, the mark clears. Recording the row and recomputing the mark
+  happen in one transaction under the bot's row lock. A relay's rows cascade
+  away when the failover sweeper deletes that relay, and the sweep recomputes
+  every marked bot, so a mark held only by a relay that is gone clears. A fresh
+  credential deletes the bot's rows and clears the mark in the same transaction
+  that clears the revocation. The mark only records the rejection: its
+  integrations stay active and its specs stay on the daemons. A relay sends the
+  check and the new `rc/bot-revoked` fields only to a Control Plane that
+  advertises `bot-credential-check-v2`. The console shows a marked bot's
   integrations as `rejected`, ranked after `revoked` and before `offline`, with
   Slack's code in the tooltip and the same repairs a revoked app offers. Members
   who can edit the agent also get a notification for it, keyed apart from the
@@ -371,13 +379,15 @@ installed via standard OAuth v2. Verified gaps against current code:
   `evidence: 'probe'` and the code, `invalid_auth` a `rejected` check, and a
   success an `ok` check; any other failure (a network error, a rate limit,
   `missing_scope`) reports nothing. The relay sends a check for the first probe
-  after each assignment and afterwards only when the result or code changes for
-  the probed revision, which bounds the traffic; the watermark already makes a
-  repeat harmless. It keeps only the latest unacknowledged check per bot,
-  replays it after a reconnect, and drops it once the Control Plane replies
-  (applied or not), when the bot is unassigned, or when an assignment carries a
-  newer revision. Against a Control Plane that does not advertise
-  `bot-credential-check-v1`, the relay keeps its earlier behavior and reports
+  after each assignment and after each registration with the Control Plane, and
+  afterwards only when the result or code changes for the probed revision. That
+  is safe because each relay owns its own row, and a registration may follow a
+  sweep that removed the row along with the old relay id. It keeps only the
+  latest unacknowledged check per bot, replays it after a reconnect, and drops
+  it once the Control Plane replies (applied or not), when the bot is
+  unassigned, or when an assignment carries a newer revision. Against a Control
+  Plane that does not advertise
+  `bot-credential-check-v2`, the relay keeps its earlier behavior and reports
   `invalid_auth` as a revocation. The relay reads the advertisement from its
   last registration, so a probe that runs while the link is down keeps its tier.
 

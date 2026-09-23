@@ -1,4 +1,4 @@
-// Two tiers of credential evidence against Postgres: a revocation records how it was learned, an ambiguous probe only marks the bot.
+// Two tiers of credential evidence against Postgres: a revocation records how it was learned, an ambiguous probe only marks the bot while any relay reports it.
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import type { IntegrationUpsert, RcBotCredentialCheck } from '@agentconnect.md/protocol'
@@ -7,6 +7,7 @@ import { seedDaemon, seedAgent } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import { BotId, OrgId } from '../../src/domain/ids.js'
+import { PgRelayRepo } from '../../src/persistence/index.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -56,9 +57,20 @@ async function install(): Promise<{ app: HttpApp; spy: SpyControl; integrationId
 const botRow = (botId: string) => prisma.bot.findUniqueOrThrow({ where: { id: botId } })
 const integrationStatus = async (id: string) => (await prisma.integration.findUniqueOrThrow({ where: { id } })).status
 
+const observations = (botId: string) => prisma.botCredentialObservation.findMany({ where: { botId } })
+
+/** A registered relay, last seen at `lastSeenAt` (now by default). */
+async function seedRelay(lastSeenAt = new Date()): Promise<string> {
+  const id = randomUUID()
+  await prisma.relay.create({ data: { id, name: `relay-${id}`, daemonUrl: 'wss://relay.example.test', lastSeenAt } })
+  return id
+}
+
+/** One relay's probe report, as `rc/bot-credential-check` delivers it. */
 async function check(
   app: HttpApp,
   botId: string,
+  relayId: string,
   over: Partial<{ result: 'ok' | 'rejected'; code: string; observedAtMs: number; credentialRevision: number }> = {}
 ): Promise<boolean> {
   const revision = over.credentialRevision ?? (await botRow(botId)).credentialRevision
@@ -67,7 +79,17 @@ async function check(
     over.result === 'ok'
       ? { ...base, result: 'ok' }
       : { ...base, result: 'rejected', code: over.code ?? 'invalid_auth' }
-  return (await app.deps.httpBot.recordCredentialCheck(m)).applied
+  return (await app.deps.httpBot.recordCredentialCheck(m, relayId)).applied
+}
+
+/** A fresh credential for the bot, as a reinstall or token replacement writes it. */
+async function reinstall(app: HttpApp, botId: string): Promise<void> {
+  await app.deps.repos.botCredential.install(
+    OrgId(DEFAULT_ORG_ID),
+    BotId(botId),
+    { botToken: 'xoxb-fixture-789', appToken: SLACK.appToken, signingSecret: null },
+    new Date()
+  )
 }
 
 describe('a definitive revocation records its evidence', () => {
@@ -121,9 +143,10 @@ describe('a definitive revocation records its evidence', () => {
 describe('an ambiguous rejection only marks the bot', () => {
   it('marks the bot and leaves its integrations, specs and revocation alone', async () => {
     const { app, spy, integrationId, botId } = await install()
+    const relay = await seedRelay()
     const observedAtMs = Date.now()
 
-    expect(await check(app, botId, { observedAtMs, code: 'invalid_auth' })).toBe(true)
+    expect(await check(app, botId, relay, { observedAtMs, code: 'invalid_auth' })).toBe(true)
 
     const row = await botRow(botId)
     expect(row.credentialRejectedAt?.getTime()).toBe(observedAtMs)
@@ -136,137 +159,159 @@ describe('an ambiguous rejection only marks the bot', () => {
     expect(dto).toMatchObject({ credentialRejectedAt: new Date(observedAtMs).toISOString(), revokedAt: null })
   })
 
-  it('keeps the first sighting and takes the latest code on a repeat', async () => {
+  it('keeps the first sighting and takes the latest code on a repeat from the same relay', async () => {
     const { app, botId } = await install()
+    const relay = await seedRelay()
     const first = Date.now() - 60_000
 
-    await check(app, botId, { observedAtMs: first, code: 'invalid_auth' })
-    expect(await check(app, botId, { observedAtMs: first + 30_000, code: 'not_allowed_token_type' })).toBe(true)
+    await check(app, botId, relay, { observedAtMs: first, code: 'invalid_auth' })
+    expect(await check(app, botId, relay, { observedAtMs: first + 30_000, code: 'not_allowed_token_type' })).toBe(true)
 
     const row = await botRow(botId)
     expect(row.credentialRejectedAt?.getTime()).toBe(first)
     expect(row.credentialRejectedCode).toBe('not_allowed_token_type')
-    expect(row.credentialCheckedAt?.getTime()).toBe(first + 30_000)
+    expect(await observations(botId)).toEqual([
+      expect.objectContaining({ relayId: relay, result: 'rejected', observedAt: new Date(first + 30_000) })
+    ])
   })
 
-  // Relay replicas and retries can deliver checks out of order; only a strictly newer observation applies.
-  it('keeps a newer rejection against an ok observed between two rejections', async () => {
+  // An IP allowlist can reject one relay and admit another: one relay's ok must not hide another's rejection.
+  it.each([
+    ['A rejects before B passes', 10, 20],
+    ['B passes before A rejects', 20, 10]
+  ])('stays marked while any relay is rejected (%s)', async (_order, rejectAt, okAt) => {
     const { app, botId } = await install()
+    const [a, b] = [await seedRelay(), await seedRelay()]
+    const t = Date.now() - 60_000
+    const reports = [
+      { relay: a, at: rejectAt, over: { code: 'invalid_auth' } },
+      { relay: b, at: okAt, over: { result: 'ok' as const } }
+    ].sort((x, y) => x.at - y.at)
+
+    for (const r of reports) expect(await check(app, botId, r.relay, { ...r.over, observedAtMs: t + r.at })).toBe(true)
+
+    expect(await botRow(botId)).toMatchObject({
+      credentialRejectedAt: new Date(t + rejectAt),
+      credentialRejectedCode: 'invalid_auth'
+    })
+  })
+
+  it('clears once no relay is rejected, and takes the newest rejected code across relays', async () => {
+    const { app, botId } = await install()
+    const [a, b] = [await seedRelay(), await seedRelay()]
+    const t = Date.now() - 60_000
+    await check(app, botId, a, { observedAtMs: t + 10, code: 'invalid_auth' })
+    await check(app, botId, b, { result: 'ok', observedAtMs: t + 20 })
+
+    expect(await check(app, botId, a, { result: 'ok', observedAtMs: t + 30 })).toBe(true)
+    expect(await botRow(botId)).toMatchObject({ credentialRejectedAt: null, credentialRejectedCode: null })
+
+    expect(await check(app, botId, b, { observedAtMs: t + 40, code: 'invalid_auth' })).toBe(true)
+    expect(await check(app, botId, a, { observedAtMs: t + 50, code: 'not_allowed_token_type' })).toBe(true)
+    // First sighting across relays, and the newest rejected relay's code.
+    expect(await botRow(botId)).toMatchObject({
+      credentialRejectedAt: new Date(t + 40),
+      credentialRejectedCode: 'not_allowed_token_type'
+    })
+  })
+
+  // Monotonic per relay: retries and out-of-order delivery can only move a relay forward, never another relay.
+  it('ignores an older observation from the same relay, but applies an older one from another relay', async () => {
+    const { app, botId } = await install()
+    const [a, b] = [await seedRelay(), await seedRelay()]
     const t = Date.now() - 60_000
 
-    await check(app, botId, { observedAtMs: t + 10, code: 'invalid_auth' })
-    await check(app, botId, { observedAtMs: t + 30, code: 'invalid_auth' })
-    expect(await check(app, botId, { result: 'ok', observedAtMs: t + 20 })).toBe(false)
+    expect(await check(app, botId, a, { result: 'ok', observedAtMs: t + 30 })).toBe(true)
+    expect(await check(app, botId, a, { observedAtMs: t + 20, code: 'invalid_auth' })).toBe(false)
+    expect(await check(app, botId, a, { observedAtMs: t + 30, code: 'invalid_auth' })).toBe(false) // equal is not newer
+    expect((await botRow(botId)).credentialRejectedAt).toBeNull()
 
-    const row = await botRow(botId)
-    expect(row.credentialRejectedAt?.getTime()).toBe(t + 10)
-    expect(row.credentialRejectedCode).toBe('invalid_auth')
-    expect(row.credentialCheckedAt?.getTime()).toBe(t + 30)
+    expect(await check(app, botId, b, { observedAtMs: t + 10, code: 'invalid_auth' })).toBe(true)
+    expect((await botRow(botId)).credentialRejectedAt?.getTime()).toBe(t + 10)
   })
 
-  it('does not re-mark after an ok when an older rejection arrives late', async () => {
+  it('clears a mark held only by a relay the failover sweeper removed', async () => {
     const { app, botId } = await install()
-    const t = Date.now() - 60_000
+    const t = Date.now()
+    const stale = await seedRelay(new Date(t - 10 * 60_000))
+    const live = await seedRelay(new Date(t))
+    await check(app, botId, stale, { observedAtMs: t - 20 * 60_000, code: 'invalid_auth' })
+    await check(app, botId, live, { result: 'ok', observedAtMs: t - 1_000 })
+    expect((await botRow(botId)).credentialRejectedAt).toBeInstanceOf(Date)
 
-    expect(await check(app, botId, { result: 'ok', observedAtMs: t + 20 })).toBe(true)
-    expect(await check(app, botId, { observedAtMs: t + 10, code: 'invalid_auth' })).toBe(false)
+    expect(await new PgRelayRepo(prisma).sweepStale(new Date(t - 5 * 60_000))).toBe(1)
 
-    const row = await botRow(botId)
-    expect(row.credentialRejectedAt).toBeNull()
-    expect(row.credentialRejectedCode).toBeNull()
-    expect(row.credentialCheckedAt?.getTime()).toBe(t + 20)
+    expect(await botRow(botId)).toMatchObject({ credentialRejectedAt: null, credentialRejectedCode: null })
+    expect(await observations(botId)).toEqual([expect.objectContaining({ relayId: live, result: 'ok' })])
   })
 
-  it('treats a check observed at the watermark itself as already applied', async () => {
+  it('keeps a mark another live relay still holds when the sweeper removes one', async () => {
     const { app, botId } = await install()
-    const t = Date.now() - 60_000
-    await check(app, botId, { observedAtMs: t, code: 'invalid_auth' })
+    const t = Date.now()
+    const stale = await seedRelay(new Date(t - 10 * 60_000))
+    const live = await seedRelay(new Date(t))
+    await check(app, botId, live, { observedAtMs: t - 30_000, code: 'invalid_auth' })
+    await check(app, botId, stale, { observedAtMs: t - 20_000, code: 'not_allowed_token_type' })
+    expect((await botRow(botId)).credentialRejectedCode).toBe('not_allowed_token_type')
 
-    // A retried report of the same observation, and a different verdict claiming the same instant, both change nothing.
-    expect(await check(app, botId, { observedAtMs: t, code: 'not_allowed_token_type' })).toBe(false)
-    expect(await check(app, botId, { result: 'ok', observedAtMs: t })).toBe(false)
+    await new PgRelayRepo(prisma).sweepStale(new Date(t - 5 * 60_000))
 
-    const row = await botRow(botId)
-    expect(row.credentialRejectedAt?.getTime()).toBe(t)
-    expect(row.credentialRejectedCode).toBe('invalid_auth')
-  })
-
-  it('clears the mark on a later ok, but not on an ok observed before the rejection', async () => {
-    const { app, botId } = await install()
-    const rejectedAt = Date.now() - 60_000
-    await check(app, botId, { observedAtMs: rejectedAt })
-
-    // A delayed answer from before the rejection says nothing about it.
-    expect(await check(app, botId, { result: 'ok', observedAtMs: rejectedAt - 1_000 })).toBe(false)
-    expect((await botRow(botId)).credentialRejectedAt?.getTime()).toBe(rejectedAt)
-
-    expect(await check(app, botId, { result: 'ok', observedAtMs: rejectedAt + 1_000 })).toBe(true)
-    const row = await botRow(botId)
-    expect(row.credentialRejectedAt).toBeNull()
-    expect(row.credentialRejectedCode).toBeNull()
-    // Idempotent: an ok with no mark to clear is still a verdict about the current credential.
-    expect(await check(app, botId, { result: 'ok', observedAtMs: rejectedAt + 2_000 })).toBe(true)
+    // Still rejected by the survivor: the first sighting stays, the code falls back to the survivor's.
+    expect(await botRow(botId)).toMatchObject({
+      credentialRejectedAt: new Date(t - 30_000),
+      credentialRejectedCode: 'invalid_auth'
+    })
   })
 
   it('ignores a check of a credential that has since been replaced', async () => {
     const { app, botId } = await install()
+    const relay = await seedRelay()
     const { credentialRevision } = await botRow(botId)
-    await check(app, botId, { observedAtMs: Date.now() - 1_000 })
-    await app.deps.repos.botCredential.install(
-      OrgId(DEFAULT_ORG_ID),
-      BotId(botId),
-      { botToken: 'xoxb-fixture-789', appToken: SLACK.appToken, signingSecret: null },
-      new Date()
-    )
+    await check(app, botId, relay, { observedAtMs: Date.now() - 1_000 })
+    await reinstall(app, botId)
 
     // The stale probe of the old credential must neither mark the fresh one nor clear anything.
-    expect(await check(app, botId, { credentialRevision, code: 'invalid_auth' })).toBe(false)
-    expect(await check(app, botId, { credentialRevision, result: 'ok' })).toBe(false)
+    expect(await check(app, botId, relay, { credentialRevision, code: 'invalid_auth' })).toBe(false)
+    expect(await check(app, botId, relay, { credentialRevision, result: 'ok' })).toBe(false)
     expect((await botRow(botId)).credentialRejectedAt).toBeNull()
-    expect(await check(app, botId, { credentialRevision: credentialRevision + 1 })).toBe(true)
+    expect(await observations(botId)).toEqual([])
+    expect(await check(app, botId, relay, { credentialRevision: credentialRevision + 1 })).toBe(true)
   })
 
-  // The watermark describes one credential: a new one starts its own sequence, even from an earlier probe time.
-  it('resets the watermark with a new credential', async () => {
+  // Observations describe one credential: a new one starts every relay's sequence afresh, even from an earlier probe time.
+  it('starts every relay afresh with a new credential', async () => {
     const { app, botId } = await install()
+    const relay = await seedRelay()
     const t = Date.now() - 60_000
-    await check(app, botId, { observedAtMs: t + 30, code: 'invalid_auth' })
-    await app.deps.repos.botCredential.install(
-      OrgId(DEFAULT_ORG_ID),
-      BotId(botId),
-      { botToken: 'xoxb-fixture-789', appToken: SLACK.appToken, signingSecret: null },
-      new Date()
-    )
-    expect((await botRow(botId)).credentialCheckedAt).toBeNull()
+    await check(app, botId, relay, { observedAtMs: t + 30, code: 'invalid_auth' })
+    await reinstall(app, botId)
 
-    expect(await check(app, botId, { observedAtMs: t + 10, code: 'invalid_auth' })).toBe(true)
-    const row = await botRow(botId)
-    expect(row.credentialRejectedAt?.getTime()).toBe(t + 10)
-    expect(row.credentialCheckedAt?.getTime()).toBe(t + 10)
+    expect(await check(app, botId, relay, { observedAtMs: t + 10, code: 'invalid_auth' })).toBe(true)
+    expect((await botRow(botId)).credentialRejectedAt?.getTime()).toBe(t + 10)
   })
 
-  it('answers an unknown bot as not applied', async () => {
-    const { app } = await install()
+  it('answers an unknown bot or relay as not applied', async () => {
+    const { app, botId } = await install()
+    const relay = await seedRelay()
 
-    expect(await check(app, randomUUID(), { credentialRevision: 1 })).toBe(false)
+    expect(await check(app, randomUUID(), relay, { credentialRevision: 1 })).toBe(false)
+    expect(await check(app, botId, randomUUID())).toBe(false)
+    expect(await observations(botId)).toEqual([])
   })
 })
 
 describe('a fresh credential', () => {
-  it('clears the revocation, its evidence and the rejected mark in the same step', async () => {
+  it('clears the revocation, its evidence, the rejected mark and every observation in the same step', async () => {
     const { app, botId } = await install()
-    await check(app, botId, { observedAtMs: Date.now() - 1_000, code: 'invalid_auth' })
+    const [a, b] = [await seedRelay(), await seedRelay()]
+    await check(app, botId, a, { observedAtMs: Date.now() - 2_000, code: 'invalid_auth' })
+    await check(app, botId, b, { result: 'ok', observedAtMs: Date.now() - 1_000 })
     await app.deps.httpBot.revokeBot(botId, 'tokens_revoked', {}, { evidence: 'probe', code: 'token_revoked' })
     const before = await botRow(botId)
     expect(before.revokedAt).toBeInstanceOf(Date)
     expect(before.credentialRejectedAt).toBeInstanceOf(Date)
 
-    await app.deps.repos.botCredential.install(
-      OrgId(DEFAULT_ORG_ID),
-      BotId(botId),
-      { botToken: 'xoxb-fixture-789', appToken: SLACK.appToken, signingSecret: null },
-      new Date()
-    )
+    await reinstall(app, botId)
 
     expect(await botRow(botId)).toMatchObject({
       credentialRevision: before.credentialRevision + 1,
@@ -275,8 +320,8 @@ describe('a fresh credential', () => {
       revokedEvidence: null,
       revokedCode: null,
       credentialRejectedAt: null,
-      credentialRejectedCode: null,
-      credentialCheckedAt: null
+      credentialRejectedCode: null
     })
+    expect(await observations(botId)).toEqual([])
   })
 })

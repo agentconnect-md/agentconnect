@@ -505,6 +505,21 @@ describe('RelayCpClient', () => {
     expect(older.transport.lastReq('rc/bot-credential-check')).toBeUndefined()
   })
 
+  // v1's single bot-wide watermark let replicas overwrite each other, so only v2's per-relay observations are fed.
+  it('treats a CP that advertises only bot-credential-check-v1 as having no credential checks', async () => {
+    expect(BOT_CREDENTIAL_CHECK_FEATURE).toBe('bot-credential-check-v2')
+    const { client, transport } = makeClient()
+    client.start()
+    await flush()
+    await completeHandshake(transport, 15, undefined, ['bot-credential-check-v1'])
+
+    expect(client.advertisedFeature(BOT_CREDENTIAL_CHECK_FEATURE)).toBe(false)
+    await expect(
+      client.reportBotCredentialCheck({ botId: RELAY_ID, credentialRevision: 1, result: 'ok', observedAtMs: 1 })
+    ).resolves.toBe(false)
+    expect(transport.lastReq('rc/bot-credential-check')).toBeUndefined()
+  })
+
   it('remembers what the last registration advertised while the link is down', async () => {
     const { client, transport } = makeClient()
     expect(client.advertisedFeature(BOT_CREDENTIAL_CHECK_FEATURE)).toBe(false)

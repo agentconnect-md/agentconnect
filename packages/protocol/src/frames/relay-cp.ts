@@ -1063,18 +1063,18 @@ const RcBotCredentialCheckBase = z.object({
   botId: z.string().uuid(),
   // The generation the relay probed; the CP applies the check only while it is still the bot's current one.
   credentialRevision: z.number().int().nonnegative(),
-  // When the relay observed the answer, in ms: a rejection's first-seen time, and the order checks apply in (older ones are ignored).
+  // When the relay observed the answer, in ms: a rejection's first-seen time, and the order this relay's checks apply in (older ones are ignored).
   observedAtMs: z.number().int().nonnegative()
 })
 
-// R→C REQ → rc/bot-credential-check/ok — a probe answer that is not a revocation: `rejected` (ambiguous, e.g. an IP allowlist) only marks the bot, `ok` clears the mark; sent only to a CP advertising `bot-credential-check-v1`.
+// R→C REQ → rc/bot-credential-check/ok — this relay's probe answer that is not a revocation (`rejected` is ambiguous, e.g. an IP allowlist); the CP keeps each relay's latest and marks the bot while any is rejected; sent only to a CP advertising `bot-credential-check-v2`.
 export const RcBotCredentialCheck = z.discriminatedUnion('result', [
   RcBotCredentialCheckBase.extend({ result: z.literal('ok') }),
   RcBotCredentialCheckBase.extend({ result: z.literal('rejected'), code: BotCredentialCode })
 ])
 export type RcBotCredentialCheck = z.infer<typeof RcBotCredentialCheck>
 
-// C→R REP (corr = rc/bot-credential-check id) — committed; `applied: false` means a replaced credential, an unknown bot or an observation no newer than the last applied, and nothing was written.
+// C→R REP (corr = rc/bot-credential-check id) — committed; `applied: false` means a replaced credential, an unknown bot or relay, or an observation no newer than this relay's last, and nothing was written.
 export const RcBotCredentialCheckOk = z.object({
   botId: z.string().uuid(),
   applied: z.boolean()

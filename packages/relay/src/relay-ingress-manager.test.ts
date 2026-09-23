@@ -2790,6 +2790,23 @@ describe('RelayIngressManager credential reports (preset-agents.md §5.3)', () =
     expect(reportBotCredentialCheck).toHaveBeenCalledTimes(5)
   })
 
+  // The CP keeps one row per relay, and a sweep during an outage drops it along with the relayId.
+  it('reports afresh after every CP registration', async () => {
+    const reportBotCredentialCheck = vi.fn(async () => true)
+    const { manager, host } = build({ reportBotCredentialCheck })
+    await manager.assign(syntheticAssignment({ credentialRevision: 1 }))
+
+    host.reportCredentialCheck(BOT_ID, ok(1_000), 1)
+    host.reportCredentialCheck(BOT_ID, ok(2_000), 1) // unchanged
+    expect(reportBotCredentialCheck).toHaveBeenCalledTimes(1)
+    await new Promise((resolve) => setImmediate(resolve)) // the CP's reply settles it
+
+    manager.flushPendingReports() // the client's onReady after a (re)registration
+    host.reportCredentialCheck(BOT_ID, ok(3_000), 1)
+    expect(reportBotCredentialCheck).toHaveBeenCalledTimes(2)
+    expect(reportBotCredentialCheck).toHaveBeenLastCalledWith(expect.objectContaining({ observedAtMs: 3_000 }))
+  })
+
   it('sends nothing without the CP feature, a known revision, or a current assignment', async () => {
     const reportBotCredentialCheck = vi.fn(async () => true)
     let supported = false

@@ -271,8 +271,12 @@ assigned and then every `RELAY_CREDENTIAL_PROBE_INTERVAL_SEC` seconds (default
 3600, jittered). A definitive answer (`account_inactive`, `token_revoked`) is an
 `rc/bot-revoked` with `evidence: 'probe'` and the code; an ambiguous
 `invalid_auth` is a `rejected` check and a success an `ok` check, sent once per
-change for the probed revision. A CP that does not advertise
-`bot-credential-check-v1` receives neither the check nor the new
+change for the probed revision and again after each registration. Because
+`invalid_auth` depends on the caller's address, the CP keeps each relay's latest
+observation (strictly newer per relay, fenced on the current revision) and marks
+the bot while any relay's is `rejected`. Those rows go when the sweeper removes
+their relay or a fresh credential lands. A CP that does not advertise
+`bot-credential-check-v2` receives neither the check nor the new
 `rc/bot-revoked` fields, and the relay reports `invalid_auth` to it as a
 revocation, as before.
 

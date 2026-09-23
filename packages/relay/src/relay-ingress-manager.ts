@@ -118,7 +118,7 @@ export interface RelayIngressManagerDeps {
   reportBotRevoked: (m: RcBotRevoked) => Promise<boolean>
   /** Report a probe answer that does not revoke (→ `rc/bot-credential-check`) and wait for the CP's reply; `false` keeps it queued. */
   reportBotCredentialCheck: (m: RcBotCredentialCheck) => Promise<boolean>
-  /** Whether the CP this relay last registered with advertised `bot-credential-check-v1` (kept while the link is down). */
+  /** Whether the CP this relay last registered with advertised `bot-credential-check-v2` (kept while the link is down). */
   credentialCheckSupported: () => boolean
   /** Interval between periodic credential probes of each bot; defaults to one hour. */
   credentialProbeIntervalMs?: number
@@ -276,7 +276,7 @@ export class RelayIngressManager {
   private readonly pendingRevokedReports = new Map<string, RcBotRevoked>()
   /** The latest unacknowledged credential check per bot, replayed across reconnects until the CP replies. */
   private readonly pendingCredentialChecks = new Map<string, RcBotCredentialCheck>()
-  /** The last check reported per bot since its (re)assign (`revision\0result\0code`), so only a change is sent. */
+  /** The last check this relay reported per bot since its (re)assign or CP registration (`revision\0result\0code`), so only a change is sent. */
   private readonly lastCredentialChecks = new Map<string, string>()
   /** Each pooled ingest's next periodic credential probe. */
   private readonly credentialProbeTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -499,7 +499,7 @@ export class RelayIngressManager {
     this.credentialProbeTimers.delete(botId)
   }
 
-  /** Re-emit every report queue on the client's onReady; each stops at the first frame that still can't be sent, and acknowledged ones clear on their reply. */
+  /** On every CP registration (the client's onReady): re-emit each report queue, stopping at the first frame that still can't be sent, and reset the check latch. */
   flushPendingReports(): void {
     for (const [key, m] of [...this.pendingReports]) {
       if (!this.deps.reportThreadAssign(m)) break
@@ -521,6 +521,8 @@ export class RelayIngressManager {
     this.ackRetryDelayMs = ACK_RETRY_INITIAL_MS
     for (const [, m] of [...this.pendingRevokedReports]) this.reportRevoked(m)
     for (const [, m] of [...this.pendingCredentialChecks]) this.sendCredentialCheck(m)
+    // The CP keeps one observation row per relay, and a sweep during an outage drops it with the relayId, so every bot reports afresh.
+    this.lastCredentialChecks.clear()
   }
 
   /** `rc/bot-assign` — (re)load the routing table + (re)build the bot's HTTP ingest. */

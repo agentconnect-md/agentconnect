@@ -569,7 +569,8 @@ export interface OAuthRepo {
 // RelayRepo (shared-bot-relay.md §6) — the DB-less relay's durable identity
 //   A `relay` row is upserted by its unique `name` on `rc/register` (the
 //   stateless relay reclaims the same row + relayId after a restart), bumped by
-//   `rc/heartbeat`, and swept when its heartbeat lapses. No org, no FKs, no
+//   `rc/heartbeat`, and swept when its heartbeat lapses (its bots' credential
+//   observations cascade with it). No org, no
 //   secret material — deployment infra serving every tenant.
 // ───────────────────────────────────────────────────────────────────────────
 
@@ -596,8 +597,7 @@ export interface RelayRepo {
   touchLastSeen(id: string, at: Date): Promise<boolean>
   /** Relays seen at/after `since` — the roster source (`register/ok.relays` + `relay/roster`). */
   listAlive(since: Date): Promise<RelayRecord[]>
-  /** Delete relays not seen since `staleBefore` (or never seen and older than it) — the
-   *  failover sweeper. Returns the number swept. */
+  /** Failover sweep: delete relays not seen since `staleBefore` (or never seen and older), their credential observations with them, and re-aggregate the marks those held; returns the number swept. */
   sweepStale(staleBefore: Date): Promise<number>
 }
 
@@ -3136,7 +3136,7 @@ export interface BotRevocationRecord {
   code: string | null
 }
 
-/** A probe answer that is not a revocation: `rejected` marks the bot, `ok` clears the mark; both fenced by the probed revision. */
+/** One relay's probe answer that is not a revocation, fenced by the probed revision; the bot's mark aggregates every relay's latest one. */
 export type BotCredentialCheck = { revision: number; observedAt: Date } & (
   { result: 'ok' } | { result: 'rejected'; code: string }
 )
@@ -3301,7 +3301,7 @@ export interface BotRepo {
    *  the same value {@link BotIdentityProjector} writes. Legacy rows (NULL
    *  identity) are unreachable here by design. */
   getByExternalIdentity(platform: string, externalAppId: string, externalTenantId: string): Promise<BotRecord | null>
-  /** A fresh credential landed (re-install / rotation): advance the generation, stamp it, and clear the revocation, its evidence and any rejected mark in ONE statement — the only way to un-revoke; system-tier, reached through {@link BotCredentialWriter}. */
+  /** A fresh credential landed (re-install / rotation): advance the generation, stamp it, and clear the revocation, its evidence, the rejected mark and every relay's observation in ONE transaction — the only way to un-revoke; system-tier, reached through {@link BotCredentialWriter}. */
   bumpCredential(id: BotId, at: Date): Promise<number>
   /** Compare-and-set revocation recording how it was learned, refused (nothing written) when `revision` is no longer current or the current credential was installed at-or-after `eventAt` — each arm skipped when absent; system-tier, reached through {@link BotCredentialWriter}. */
   revokeIfCurrent(
@@ -3310,8 +3310,8 @@ export interface BotRepo {
     fence: { revision?: number; eventAt?: Date },
     record: BotRevocationRecord
   ): Promise<boolean>
-  /** Apply a probe's non-revoking answer to the CURRENT credential, only when strictly newer than the last one applied: `rejected` sets the mark (first-seen time kept, code updated), `ok` clears it; false ⇒ a replaced credential, an unknown bot or a stale observation, nothing written. System-tier, relay-reported like a revocation. */
-  recordCredentialCheck(id: BotId, check: BotCredentialCheck): Promise<boolean>
+  /** Record `relayId`'s probe of the CURRENT credential when strictly newer than that relay's last one, then re-aggregate the mark (any relay rejected ⇒ marked, first sighting kept, newest code; none ⇒ cleared); false ⇒ a replaced credential, an unknown bot or relay, or a stale observation, nothing written. System-tier. */
+  recordCredentialCheck(id: BotId, relayId: string, check: BotCredentialCheck): Promise<boolean>
   /** Callers must refuse while the bot is installed (FK Restrict backstops).
    *  Org-fenced: a cross-org id throws the same Prisma P2025 as an absent row. */
   delete(orgId: OrgId, id: BotId): Promise<void>
