@@ -1,9 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import {
+  closeSync,
+  constants,
+  fstatSync,
   linkSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -124,16 +129,32 @@ export class LocalWorkspaceFs implements WorkspaceFs {
   }
 
   async readFileBytes(path: string, maxBytes: number): Promise<{ bytes: Buffer } | { tooLarge: number } | undefined> {
+    let fd: number
     try {
-      const stats = lstatSync(path)
-      if (!stats.isFile()) return undefined
-      if (stats.size > maxBytes) return { tooLarge: stats.size }
-      const bytes = readFileSync(path)
-      // Re-check on the read bytes: the stat→read race on a growing file must refuse, not overrun.
-      if (bytes.byteLength > maxBytes) return { tooLarge: bytes.byteLength }
-      return { bytes }
+      // The lstat refuses a link where O_NOFOLLOW is absent (Windows); the descriptor judges whatever was swapped in since.
+      if (!lstatSync(path).isFile()) return undefined
+      fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
     } catch {
       return undefined
+    }
+    try {
+      const stats = fstatSync(fd)
+      if (!stats.isFile()) return undefined
+      if (stats.size > maxBytes) return { tooLarge: stats.size }
+      let bytes = Buffer.alloc(stats.size + 1)
+      let length = 0
+      for (;;) {
+        const count = readSync(fd, bytes, length, bytes.length - length, null)
+        if (count === 0) return { bytes: bytes.subarray(0, length) }
+        length += count
+        // A file that grew since the fstat is read up to the cap and refused past it, never overrun.
+        if (length > maxBytes) return { tooLarge: length }
+        if (length === bytes.length) bytes = Buffer.concat([bytes], Math.min(bytes.length * 2, maxBytes + 1))
+      }
+    } catch {
+      return undefined
+    } finally {
+      closeSync(fd)
     }
   }
 
