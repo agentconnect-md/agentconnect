@@ -707,7 +707,7 @@ export default function HomeView() {
                 {!multi && (modelChoices.length > 0 || byDecision) && (
                   <RuntimeModelSelect
                     compact
-                    disabled={!runtimeChangesAllowed}
+                    readOnly={!runtimeChangesAllowed}
                     runInSandbox={agent.runInSandbox}
                     value={{ runtime: selectedRuntime, model }}
                     source={owningDaemon}

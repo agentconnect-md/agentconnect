@@ -23,7 +23,7 @@ export function RuntimeModelSelect({
   onFastModeChange,
   allowRuntimeOnly = false,
   runInSandbox = false,
-  disabled = false
+  readOnly = false
 }: {
   value: DecisionRuntimeTarget
   onChange(value: DecisionRuntimeTarget): void
@@ -33,7 +33,7 @@ export function RuntimeModelSelect({
   compact?: boolean
   allowRuntimeOnly?: boolean
   runInSandbox?: boolean
-  disabled?: boolean
+  readOnly?: boolean
   decision?: { name: string; selected: boolean; onSelect(): void }
   fastMode?: boolean
   onFastModeChange?(value: boolean): void
@@ -80,12 +80,11 @@ export function RuntimeModelSelect({
       triggerClassName="block min-w-0"
       trigger={({ open, menuId, toggle }) => (
         <button
-          disabled={disabled}
           type="button"
           className={
             compact
               ? 'inline-flex h-7 max-w-[260px] items-center gap-2 rounded-full px-[10px] text-[12.5px] hover:bg-(--surface-hover)'
-              : 'inp flex w-full min-w-0 items-center gap-2 text-left'
+              : `inp flex w-full min-w-0 cursor-pointer items-center gap-2 text-left hover:border-(--border-strong) hover:bg-(--surface-hover) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`
           }
           aria-label={ariaLabel ?? t('title')}
           aria-haspopup="dialog"
@@ -112,20 +111,31 @@ export function RuntimeModelSelect({
               <Icon name="triangle-alert" size={13} color="var(--status-paused)" />
             </span>
           )}
-          {compact && fastMode && (
-            <span className="rounded-xs bg-(--brand-soft) px-1 text-[10px] font-semibold text-(--brand-soft-text)">
+          {fastMode && (
+            <span className="flex-none rounded-xs bg-(--brand-soft) px-1 text-[10px] font-semibold text-(--brand-soft-text)">
               FAST
             </span>
           )}
-          <Icon name="chevron-down" size={14} className="flex-none" />
+          <Icon
+            name="chevron-down"
+            size={14}
+            className={`flex-none transition-transform ${open ? 'rotate-180' : ''}`}
+          />
         </button>
       )}
     >
       {({ close }) => (
         <div>
+          {readOnly && (
+            <div className="flex items-start gap-2 border-b border-(--border-subtle) px-3 py-2 text-[12px] text-(--text-secondary)">
+              <Icon name="lock" size={14} className="mt-px flex-none" />
+              {t('readOnly')}
+            </div>
+          )}
           {decision && (
             <button
               type="button"
+              disabled={readOnly}
               className={`flex w-full items-center gap-3 border-b border-(--border-subtle) p-3 text-left ${decision.selected ? 'bg-(--brand-soft)' : 'hover:bg-(--surface-hover)'}`}
               onClick={() => {
                 decision.onSelect()
@@ -144,7 +154,7 @@ export function RuntimeModelSelect({
           )}
           <div className="grid grid-cols-[minmax(105px,1fr)_minmax(0,2fr)]">
             <div className="max-h-[320px] overflow-y-auto border-r border-(--border-subtle) bg-(--surface-sunken) p-2">
-              <div className="px-2 py-2 font-mono text-[11px] uppercase tracking-wider text-(--text-tertiary)">
+              <div className="px-2 py-1 font-mono text-[11px] uppercase tracking-wider text-(--text-tertiary)">
                 {t('provider')}
               </div>
               {profiles.map((item) => (
@@ -152,7 +162,7 @@ export function RuntimeModelSelect({
                   key={item.runtime}
                   type="button"
                   aria-pressed={provider === item.runtime && !search}
-                  className={`flex w-full items-center gap-2 rounded-md px-2 py-[9px] text-left text-[13px] ${provider === item.runtime && !search ? 'bg-(--brand-soft) font-semibold' : 'hover:bg-(--surface-hover)'}`}
+                  className={`fopt min-h-8 gap-2 rounded-md px-2 py-[6px] text-[13px] ${provider === item.runtime && !search ? 'on' : ''}`}
                   onClick={() => {
                     setProvider(item.runtime)
                     setSearch('')
@@ -174,7 +184,7 @@ export function RuntimeModelSelect({
             <div className="min-w-0 p-2">
               <input
                 autoFocus
-                className="inp mb-2 w-full"
+                className="inp mb-2 min-h-8 w-full py-[6px]"
                 aria-label={t('search')}
                 placeholder={t('search')}
                 value={search}
@@ -185,27 +195,26 @@ export function RuntimeModelSelect({
                   (item) =>
                     item.options.length > 0 && (
                       <div key={item.runtime}>
-                        <div className="px-2 py-2 font-mono text-[11px] uppercase tracking-wider text-(--text-tertiary)">
-                          {label(item.runtime)}
-                        </div>
                         {item.options.map((model) => (
                           <button
                             type="button"
+                            disabled={readOnly}
                             key={model.value}
                             title={model.description}
+                            aria-label={`${label(item.runtime)} · ${model.name ?? model.value}`}
                             aria-pressed={
                               !decision?.selected && value.runtime === item.runtime && value.model === model.value
                             }
-                            className={`block w-full rounded-md px-2 py-[9px] text-left text-[13px] ${!decision?.selected && value.runtime === item.runtime && value.model === model.value ? 'bg-(--brand-soft) font-semibold' : 'hover:bg-(--surface-hover)'}`}
+                            className={`fopt min-h-8 gap-2 rounded-md px-2 py-[6px] text-[13px] disabled:cursor-not-allowed disabled:opacity-60 ${!decision?.selected && value.runtime === item.runtime && value.model === model.value ? 'on' : ''}`}
                             onClick={() => {
                               onChange({ runtime: item.runtime, model: model.value })
                               close(true)
                             }}
                           >
-                            <span className="block truncate">{model.name ?? model.value}</span>
-                            {model.name && (
-                              <span className="block truncate font-mono text-[10px] text-(--text-tertiary)">
-                                {model.value}
+                            <span className="min-w-0 flex-1 truncate">{model.name ?? model.value}</span>
+                            {search && (
+                              <span className="truncate text-[11px] font-normal text-(--text-tertiary)">
+                                {label(item.runtime)}
                               </span>
                             )}
                           </button>
@@ -216,6 +225,7 @@ export function RuntimeModelSelect({
                 {allowRuntimeOnly && !search && matching[0] && matching[0].options.length === 0 && (
                   <button
                     type="button"
+                    disabled={readOnly}
                     className="fopt p-3 text-[12px]"
                     onClick={() => {
                       onChange({ runtime: matching[0]!.runtime, model: '' })
@@ -232,8 +242,13 @@ export function RuntimeModelSelect({
             </div>
           </div>
           {onFastModeChange && (
-            <div className="flex items-center gap-3 border-t border-(--border-subtle) px-4 py-3">
-              <Toggle checked={fastMode ?? false} onChange={onFastModeChange} ariaLabel={t('fastMode')} />
+            <div className="flex items-center gap-3 border-t border-(--border-subtle) px-3 py-2">
+              <Toggle
+                checked={fastMode ?? false}
+                disabled={readOnly}
+                onChange={onFastModeChange}
+                ariaLabel={t('fastMode')}
+              />
               <span className="text-[13px] font-medium">{t('fastMode')}</span>
               <span className="ml-auto text-[12px] text-(--text-tertiary)">{t('lowerLatency')}</span>
             </div>

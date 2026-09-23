@@ -114,7 +114,7 @@ export function RuntimeSelectionSample({
           {t('badge')}
         </span>
       </summary>
-      <div className="flex flex-col gap-3 border-t border-(--border-subtle) p-4">
+      <div className="flex flex-col gap-3 px-4 pb-4">
         <p className="m-0 text-[12px] text-(--text-tertiary)">{t('help')}</p>
         {([0, 1, 2, 3, 4] as const).map((index) => (
           <button

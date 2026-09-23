@@ -15,6 +15,15 @@ vi.mock('@/lib/decisions/provider', () => ({
         id: '33333333-3333-4333-8333-333333333333',
         name: 'Complexity',
         question: { type: 'score', instructions: 'Rate complexity.', criteria: ['Simple', 'Moderate', 'Complex'] }
+      },
+      {
+        id: '44444444-4444-4444-8444-444444444444',
+        name: 'Task type',
+        question: {
+          type: 'choice',
+          instructions: 'Classify this task.',
+          criteria: { deploy: 'Deployment', infrastructure_maintenance: 'Infrastructure maintenance' }
+        }
       }
     ]
   })
@@ -56,9 +65,7 @@ it('creates a binding, flags overlapping intervals, removes rules, and returns t
   )
   expect(validity).toHaveBeenLastCalledWith(true)
   expect(container.textContent).toContain('0 ≤ score ≤ 2')
-  await act(async () =>
-    [...container.querySelectorAll('button')].find((button) => button.textContent?.includes('Add rule'))!.click()
-  )
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Add rule"]')!.click())
   expect(validity).toHaveBeenLastCalledWith(false)
   expect(container.querySelector('[role="alert"]')).not.toBeNull()
   await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Remove rule 2"]')!.click())
@@ -68,4 +75,45 @@ it('creates a binding, flags overlapping intervals, removes rules, and returns t
   )
   expect(container.textContent).not.toContain('0 ≤ score ≤ 2')
   expect(validity).toHaveBeenLastCalledWith(true)
+})
+
+it('selects a complete answer in the themed menu while preserving its probability', async () => {
+  const onChange = vi.fn()
+  container = document.createElement('div')
+  document.body.appendChild(container)
+  root = createRoot(container)
+  await act(async () =>
+    root!.render(
+      <ModelSelectionField
+        value={{
+          decisionId: '44444444-4444-4444-8444-444444444444',
+          rules: [{ when: { type: 'choice', thresholds: { deploy: 0.6 } }, runtime: 'claude', model: 'model-standard' }]
+        }}
+        onChange={onChange}
+        onValidityChange={vi.fn()}
+        source={{ runtimeModels: [{ runtime: 'claude', version: '', models: ['model-standard'] }] }}
+        runtimes={['claude']}
+        fallback={{ runtime: 'claude', model: 'model-standard' }}
+        onFallbackChange={vi.fn()}
+      />
+    )
+  )
+  expect(container.querySelector('select')).toBeNull()
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Answer for rule 1"]')!.click())
+  const answer = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(
+    (button) => button.textContent === 'infrastructure_maintenance'
+  )!
+  await act(async () => answer.click())
+  expect(onChange).toHaveBeenCalledWith(
+    expect.objectContaining({
+      rules: [
+        {
+          when: { type: 'choice', thresholds: { infrastructure_maintenance: 0.6 } },
+          runtime: 'claude',
+          model: 'model-standard'
+        }
+      ]
+    })
+  )
+  expect(document.querySelector('[role="menu"]')).toBeNull()
 })

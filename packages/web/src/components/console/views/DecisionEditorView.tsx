@@ -2,11 +2,10 @@
 
 // The reusable question and standalone preview; consumers own their conditions.
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
-import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
 import { LoadingState } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
@@ -16,6 +15,7 @@ import { useDecisionProviders, useDecisionsPrototype } from '@/lib/decisions/pro
 import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
 import { DecisionsNotOffered } from '@/components/console/decisions/DecisionsNotOffered'
+import { DecisionModelSelect } from '@/components/console/decisions/DecisionModelSelect'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import {
   DecisionDraft,
@@ -48,7 +48,7 @@ interface Draft {
 }
 
 const CHOICE_GRID =
-  'grid grid-cols-[150px_minmax(0,1fr)_28px] items-start gap-2 max-desktop:grid-cols-[minmax(0,1fr)_28px]'
+  'grid grid-cols-[minmax(180px,.4fr)_minmax(0,1fr)_28px] items-start gap-2 max-desktop:grid-cols-[minmax(0,1fr)_28px]'
 const SCORE_GRID = 'grid grid-cols-[34px_minmax(0,1fr)_28px_28px_28px] items-center gap-2'
 
 function criteriaForType(type: QuestionType): DraftCriterion[] {
@@ -169,6 +169,7 @@ function DecisionEditor() {
   const [issues, setIssues] = useState<DecisionValidationIssue[]>([])
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const [confirmAgentAnswerChange, setConfirmAgentAnswerChange] = useState(false)
   const [history, setHistory] = useState<Array<{ sender: string; text: string }>>([])
   const [current, setCurrent] = useState('')
@@ -274,10 +275,6 @@ function DecisionEditor() {
   }))
   const profile = provider ?? DECISION_PROVIDER_PROFILES.find((entry) => entry.id === draft?.providerId)
   const previewReady = editable && !providerError && !!provider && ready(provider)
-  const models = useMemo(
-    () => (profile?.models ?? []).filter((model) => model.questionTypes.includes(draft?.type ?? 'choice')),
-    [profile, draft?.type]
-  )
   const signature = JSON.stringify({ draft, history, current, target: selectedTarget?.target ?? selectedTargetValue })
   const stale = !!result && result.signature !== signature
   // Conversations gated on this decision: an edit can strand their saved conditions.
@@ -287,6 +284,7 @@ function DecisionEditor() {
       ? gated.filter((usage) => decisionConditionNeedsReview(definition.question, questionFrom(draft), usage.when))
       : []
   const usages = usageState.usages
+  const usageNames = [...usages.map((usage) => usage.label), ...gated.map((usage) => usage.channelName)].join(', ')
 
   if (!featureFlagEnabled('decisions')) return <DecisionsNotOffered />
 
@@ -495,12 +493,78 @@ function DecisionEditor() {
   const issueFor = (path: string) => issues.find((issue) => issue.path.join('.') === path)?.message
   const criteriaIssue = issueFor('question.criteria')
 
+  const duplicate = async () => {
+    if (!definition || saving || myRole === 'viewer') return
+    setSaving(true)
+    setSaveError(null)
+    try {
+      const copy = await api.createDecision({
+        name: t('copyName', { name: definition.name }),
+        providerId: definition.providerId,
+        model: definition.model,
+        question: definition.question,
+        visibility: definition.visibility,
+        sharedWith: definition.sharedWith
+      })
+      await reload()
+      router.push(orgPath(`/decisions/${encodeURIComponent(copy.id)}`))
+    } catch (cause) {
+      setSaveError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const askDelete = async () => {
+    if (!id || !editable || saving) return
+    setSaving(true)
+    setSaveError(null)
+    try {
+      const detail = await api.getDecision(id)
+      setUsageState({ status: 'ready', usages: detail.usages })
+      setConfirmDelete(true)
+    } catch (cause) {
+      setSaveError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const remove = async () => {
+    if (!id || !editable || saving) return
+    setSaveError(null)
+    if (gated.length) {
+      setSaveError(t('deleteBodyUsed', { names: usageNames }))
+      return
+    }
+    setSaving(true)
+    try {
+      await api.deleteDecision(id)
+      await reload()
+      router.push(orgPath('/decisions'))
+    } catch (cause) {
+      setSaveError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
-    <div className="wrap max-desktop:p-4">
+    <div className="wrap max-w-[1360px] max-desktop:p-4">
       <div className="mb-4 flex min-h-[34px] flex-wrap items-center gap-3">
         <p className="psub mt-0 min-w-0 flex-1">
           {id ? t('editing', { name: draft.name || t('untitled') }) : t('newDecision')}
         </p>
+        {definition && myRole !== 'viewer' && (
+          <Button variant="secondary" size="sm" disabled={saving} onClick={() => void duplicate()}>
+            {t('duplicate')}
+          </Button>
+        )}
+        {definition && editable && (
+          <Button variant="secondary" size="sm" disabled={saving} onClick={() => void askDelete()}>
+            {t('delete')}
+          </Button>
+        )}
         <Button variant="secondary" size="sm" onClick={() => router.push(returnTo ?? orgPath('/decisions'))}>
           {t('cancel')}
         </Button>
@@ -508,6 +572,21 @@ function DecisionEditor() {
           {id ? t('save') : t('create')}
         </Button>
       </div>
+
+      {confirmDelete && definition && (
+        <ConfirmationDialog
+          title={t('deleteTitle', { name: definition.name })}
+          confirmLabel={t('delete')}
+          busy={saving}
+          busyLabel={t('deleting')}
+          error={saveError}
+          destructive
+          onConfirm={() => void remove()}
+          onClose={() => setConfirmDelete(false)}
+        >
+          {usageNames ? t('deleteBodyUsed', { names: usageNames }) : t('deleteBodyUnused')}
+        </ConfirmationDialog>
+      )}
 
       {confirmAgentAnswerChange && (
         <ConfirmationDialog
@@ -523,7 +602,7 @@ function DecisionEditor() {
         </ConfirmationDialog>
       )}
 
-      <div className="grid grid-cols-1 items-start gap-[18px] desktop:grid-cols-[minmax(0,1fr)_400px]">
+      <div className="grid grid-cols-1 items-start gap-[18px] desktop:grid-cols-[minmax(0,1fr)_360px]">
         <div className="flex min-w-0 flex-col gap-4">
           {saveError && (
             <div className="flex items-start gap-[9px] rounded-md border border-(--red-500) bg-(--status-error-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]">
@@ -540,7 +619,7 @@ function DecisionEditor() {
           )}
 
           <fieldset disabled={!editable || saving} className="card min-w-0 flex flex-col gap-[15px] p-4">
-            <div className="grid grid-cols-1 gap-3 desktop:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 desktop:grid-cols-2">
               <Field label={t('name')}>
                 <input
                   value={draft.name}
@@ -550,69 +629,19 @@ function DecisionEditor() {
                 />
                 {issueFor('name') && <IssueLine>{issueFor('name')}</IssueLine>}
               </Field>
-              <Field label={t('provider')}>
-                <span className="inp min-h-9 items-center">
-                  <span className="truncate font-sans text-[13px] font-normal leading-normal">
-                    {profile?.name ?? draft.providerId}
-                  </span>
-                </span>
-              </Field>
-              <Field label={t('model')}>
-                <AnchoredFlyout
-                  ariaLabel={t('model')}
-                  align="start"
-                  width={280}
-                  estimatedHeight={10 + models.length * 34}
-                  triggerClassName="inline-flex w-full"
-                  trigger={({ open, menuId, toggle }) => (
-                    <button
-                      type="button"
-                      aria-haspopup="menu"
-                      aria-expanded={open}
-                      aria-controls={open ? menuId : undefined}
-                      onClick={toggle}
-                      className="inp min-h-9 w-full cursor-pointer justify-between gap-2"
-                    >
-                      <span className="mono truncate text-[12.5px]">
-                        {models.find((model) => model.id === draft.model)?.label ?? draft.model}
-                      </span>
-                      <Icon name="chevron-down" size={15} color="var(--text-tertiary)" className="flex-none" />
-                    </button>
-                  )}
-                >
-                  {({ close }) => (
-                    <>
-                      {models.map((model) => (
-                        <button
-                          key={model.id}
-                          type="button"
-                          role="menuitemradio"
-                          aria-checked={model.id === draft.model}
-                          className={model.id === draft.model ? 'fopt on' : 'fopt'}
-                          onClick={() => {
-                            close(true)
-                            patch({ model: model.id })
-                          }}
-                        >
-                          <span className="mono text-[12.5px]">{model.label}</span>
-                        </button>
-                      ))}
-                    </>
-                  )}
-                </AnchoredFlyout>
+              <Field label={t('providerModel')}>
+                <DecisionModelSelect
+                  providerId={draft.providerId}
+                  model={draft.model}
+                  questionType={draft.type}
+                  providers={profile ? [...providers, profile] : providers}
+                  disabled={!editable || saving}
+                  onChange={patch}
+                />
               </Field>
             </div>
 
-            <Field
-              label={t('questionType')}
-              hint={
-                draft.type === 'choice'
-                  ? t('typeHint.choice')
-                  : draft.type === 'boolean'
-                    ? t('typeHint.boolean')
-                    : t('typeHint.score')
-              }
-            >
+            <Field label={t('questionType')}>
               <span className="pillbar self-start">
                 {(['choice', 'boolean', 'score'] as const).map((type) => (
                   <button
@@ -620,6 +649,7 @@ function DecisionEditor() {
                     type="button"
                     className={type === draft.type ? 'pill on' : 'pill'}
                     aria-pressed={type === draft.type}
+                    title={t(`typeHint.${type}`)}
                     onClick={() => setType(type)}
                   >
                     {t(`types.${type}`)}

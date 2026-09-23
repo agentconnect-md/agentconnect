@@ -213,12 +213,41 @@ describe('DecisionEditorView', () => {
     expect(run()?.disabled).toBe(true)
   })
 
-  it('creates a valid choice decision and returns to the list', async () => {
+  it('saves the combined provider and model selection with a valid choice decision', async () => {
+    const seed = createDecisionMockSeed()
+    seed.providers[0]!.models.push({ id: 'jev-latest', label: 'Jev latest', questionTypes: ['choice'] })
+    vi.spyOn(decisionMock, 'createDecisionMockApi').mockReturnValue(decisionMock.createDecisionMockApi({ seed }))
     await render()
     await fillValidChoice()
+    const create = vi.spyOn(store.api, 'createDecision')
+    const picker = document.body.querySelector('button[aria-label="Provider · model"]')!
+    await click(picker)
+    await click(byText('Jev latest'))
+    expect(picker.textContent).toContain('TypeSafe · Jev latest')
     await click(byText('Create'))
     await act(async () => {})
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ providerId: 'typesafe', model: 'jev-latest' }))
     expect(push).toHaveBeenCalledWith('/decisions')
+  })
+
+  it('refuses to delete a decision a consumer still uses from the editor', async () => {
+    params = { id: 'support-category' }
+    await render()
+    await click(byText('Delete'))
+    const dialog = document.body.querySelector('[role="dialog"]')!
+    expect(dialog.textContent).toContain('Delete Support category')
+    await click([...dialog.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'Delete'))
+    expect(dialog.textContent).toContain('This Decision is still used. Remove its bindings before deleting it.')
+    expect(push).not.toHaveBeenCalled()
+  })
+
+  it('duplicates the saved decision and opens the copy', async () => {
+    params = { id: 'support-category' }
+    await render()
+    await click(byText('Duplicate'))
+    const copy = store.decisions.find((entry) => entry.name === 'Support category copy')!
+    expect(copy.question).toEqual(store.decisions.find((entry) => entry.id === params.id)!.question)
+    expect(push).toHaveBeenCalledWith(`/decisions/${copy.id}`)
   })
 
   it('preserves sharing changed elsewhere while the user edits only the question', async () => {

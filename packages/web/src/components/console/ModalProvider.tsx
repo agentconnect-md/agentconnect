@@ -157,15 +157,13 @@ export function ModalProvider({ children }: { children: ReactNode }) {
               open.kind === 'nativeIntegration' && open.opts?.nativeUi ? nativeUiTitle(open.opts.nativeUi) : undefined
             }
             className={
-              // Add/Edit agent carry a section rail beside the form — they need the design's
-              // ≥720px so the two-up fields keep their old width, and the native cards that mount
-              // that editor or the agent's own Tools & Skills rosters inherit the requirement.
+              // Leave room for the section rail and runtime routing rules in every agent editor.
               open.kind === 'agent' ||
               open.kind === 'editAgent' ||
               (open.kind === 'nativeIntegration' &&
                 (open.opts?.nativeUi?.resourceUri === AGENT_SETUP_URI ||
                   open.opts?.nativeUi?.resourceUri === AGENT_TOOLS_URI))
-                ? 'modal desktop:max-w-[760px]'
+                ? 'modal desktop:max-w-[1040px]'
                 : open.kind === 'integration' || open.kind === 'nativeIntegration'
                   ? 'modal desktop:max-w-[700px]'
                   : 'modal'

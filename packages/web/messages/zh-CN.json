@@ -741,7 +741,8 @@
         "schedules": "定时任务",
         "sessions": "会话",
         "pages": "页面",
-        "settings": "设置"
+        "settings": "设置",
+        "decisions": "决策"
       },
       "all": "全部",
       "placeholder": "搜索 Agent、Daemon、定时任务…",
@@ -772,7 +773,8 @@
         "knowledge": "知识库",
         "infra": "基础设施",
         "analytics": "分析",
-        "billing": "账单"
+        "billing": "账单",
+        "decisions": "决策"
       },
       "settings": {
         "organization": "组织",
@@ -2310,7 +2312,10 @@
           "startsOn": "Session 将使用",
           "booleanResult": "{value} · true 的概率为 {probability}%",
           "text4": "评估暂时不可用"
-        }
+        },
+        "answerColumn": "答案",
+        "probabilityColumn": "概率",
+        "add": "添加"
       },
       "runtimeModel": {
         "title": "Provider 和模型",
@@ -2324,7 +2329,8 @@
         "decisionHelp": "{name} 在 session 开始时选择 runtime 和模型",
         "fastMode": "快速模式",
         "lowerLatency": "更低延迟",
-        "imageBinaryMissing": "镜像中未安装此运行时"
+        "imageBinaryMissing": "镜像中未安装此运行时",
+        "readOnly": "当前聊天不允许修改 Runtime。"
       }
     },
     "detail": {
@@ -3056,7 +3062,7 @@
   },
   "Crons": {
     "description": "按计划运行 Agent 的 Cron 任务——报告、扫描和审计。",
-    "newSchedule": "新建计划",
+    "newSchedule": "添加计划",
     "enabled": "{count} 个已启用",
     "next": "下次：{value}",
     "off": "已关闭",
@@ -3089,7 +3095,7 @@
     "dialog": {
       "at": "时间",
       "editSchedule": "编辑计划",
-      "newSchedule": "新建计划",
+      "newSchedule": "添加计划",
       "name": "名称",
       "namePlaceholder": "weekly-deploy-report",
       "agent": "Agent",
@@ -4142,7 +4148,7 @@
     },
     "description": "决策针对一条收到的消息提出一个问题并返回答案。由频道决定每个答案触发什么。",
     "searchPlaceholder": "搜索决策…",
-    "createDecision": "新建决策",
+    "createDecision": "添加决策",
     "create": "创建",
     "loading": "正在加载决策…",
     "emptyTitle": "还没有决策",
@@ -4161,7 +4167,7 @@
     "delete": "删除",
     "deleting": "正在删除…",
     "deleteTitle": "删除 {name}",
-    "deleteBodyUsed": "{names} 正在使用该决策。在你选择其他决策之前，这些频道将停止评估消息。此操作无法撤销。",
+    "deleteBodyUsed": "{names} 正在使用该决策。请先移除关联配置，再删除决策。",
     "deleteBodyUnused": "该决策未被任何地方使用。此操作无法撤销。",
     "save": "保存",
     "cancel": "取消",
@@ -4313,7 +4319,8 @@
     "notOffered": {
       "title": "决策功能未启用",
       "body": "该控制台尚未开启决策功能。管理员可以通过 decisions 功能开关启用。"
-    }
+    },
+    "providerModel": "提供方 · 模型"
   },
   "ProviderKeys": {
     "title": "Provider keys",

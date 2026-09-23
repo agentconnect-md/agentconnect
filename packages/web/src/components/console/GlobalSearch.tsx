@@ -1,21 +1,13 @@
 'use client'
 
-// The console's unified search (design: the top-bar `sr.*` box + `.srpanel`).
-// One box searches agents, daemons, schedules and sessions BY NAME, plus the
-// console's own pages and settings (the static SEARCH_PAGES index — labels and
-// on-page feature keywords); results are grouped (each capped at 3, with the full
-// match count shown), keyboard-navigable (↑↓ move · ↵ open · esc close), and ⌘K
-// focuses it from anywhere. Selecting a result routes to that entity's page.
-// Matching runs client-side over the already-loaded read models and the static
-// page index — no new CP endpoint. The one extra read: opening authed search
-// pulls the three session-access states through their existing endpoints
-// (SWR-deduped with the Settings page) to gate that card's entry.
+// Search visible resources and console destinations with grouped results and keyboard navigation.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useRouter } from 'next/navigation'
 import { useLocale, useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { useConsoleData } from '@/lib/data-context'
+import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { useOrgs } from '@/lib/org-context'
 import {
   agentDaemonLabel,
@@ -40,7 +32,7 @@ import { AgentIconView } from '@/components/marks'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { SEARCH_PAGES, navVisible, type ConsolePage } from './nav'
 
-type SearchKind = 'agent' | 'daemon' | 'schedule' | 'session' | 'page' | 'setting'
+type SearchKind = 'agent' | 'daemon' | 'schedule' | 'decision' | 'session' | 'page' | 'setting'
 
 interface SearchItem {
   key: string
@@ -82,6 +74,7 @@ const SEARCH_PAGE_LABEL_KEYS: Record<string, Parameters<ReturnType<typeof useTra
     '/agents': 'pages.agents',
     '/sessions': 'pages.sessions',
     '/crons': 'pages.schedules',
+    '/decisions': 'pages.decisions',
     '/tools': 'pages.tools',
     '/integrations': 'pages.integrations',
     '/knowledge': 'pages.knowledge',
@@ -102,6 +95,7 @@ const SEARCH_PAGE_LABEL_KEYS: Record<string, Parameters<ReturnType<typeof useTra
 const wellIcon = (it: SearchItem): string => {
   if (it.kind === 'daemon') return it.iconName ?? 'server'
   if (it.kind === 'schedule') return 'alarm-clock'
+  if (it.kind === 'decision') return 'split'
   if (it.kind === 'session') return 'message-square-text'
   return it.iconName ?? 'panel-left'
 }
@@ -114,9 +108,11 @@ export function GlobalSearch({
 }: { autoFocus?: boolean; mobile?: boolean; rail?: boolean; onClose?: () => void } = {}) {
   const locale = useLocale()
   const t = useTranslations('Shell.globalSearch')
+  const decisionT = useTranslations('Decisions')
   const router = useRouter()
   const { orgPath, myRole, activeOrg } = useOrgs()
   const { agents, daemons, crons, allSessions, memberSets, orgSetIds } = useConsoleData()
+  const decisions = useOptionalDecisionsPrototype()?.decisions
 
   const [open, setOpen] = useState(false)
   const [q, setQ] = useState('')
@@ -258,6 +254,18 @@ export function GlobalSearch({
       }
     })
 
+    const decisionMatches = (featureFlagEnabled('decisions') ? (decisions ?? []) : []).filter(
+      (entry) => hit(entry.name) || hit(decisionT(`types.${entry.question.type}`))
+    )
+    const decisionItems: SearchItem[] = decisionMatches.slice(0, CAP).map((entry) => ({
+      key: `decision:${entry.id}`,
+      kind: 'decision',
+      title: entry.name,
+      meta: `${decisionT(`types.${entry.question.type}`)} · ${entry.model}`,
+      aux: '',
+      href: orgPath(`/decisions/${encodeURIComponent(entry.id)}`)
+    }))
+
     const sessionMatches = allSessions.filter((s) => hit(s.title))
     const sessionItems: SearchItem[] = sessionMatches.slice(0, CAP).map((s) => ({
       key: `session:${s.id}`,
@@ -306,6 +314,7 @@ export function GlobalSearch({
       { kind: 'agent' as const, label: t('groups.agents'), count: agentMatches.length, items: agentItems },
       { kind: 'daemon' as const, label: t('groups.daemons'), count: daemonMatches.length, items: daemonItems },
       { kind: 'schedule' as const, label: t('groups.schedules'), count: cronMatches.length, items: cronItems },
+      { kind: 'decision' as const, label: t('groups.decisions'), count: decisionMatches.length, items: decisionItems },
       { kind: 'session' as const, label: t('groups.sessions'), count: sessionMatches.length, items: sessionItems },
       {
         kind: 'page' as const,
@@ -327,6 +336,7 @@ export function GlobalSearch({
     memberSets,
     orgSetIds,
     crons,
+    decisions,
     allSessions,
     daemonById,
     agentById,
@@ -334,7 +344,9 @@ export function GlobalSearch({
     authed,
     myRole,
     sessionAccessRenders,
-    t
+    t,
+    decisionT,
+    locale
   ])
 
   const totalCount = useMemo(() => groups.reduce((n, g) => n + g.count, 0), [groups])

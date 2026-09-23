@@ -112,7 +112,7 @@ function VisibilityTiles({ restricted, onPick }: { restricted: boolean; onPick: 
     )
   }
   return (
-    <div className="grid grid-cols-1 gap-[10px] desktop:grid-cols-2">
+    <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,300px),1fr))] gap-[10px]">
       {tile('org', 'globe', t('everyone'), t('everyoneDescription'))}
       {tile('restricted', 'lock', t('selected'), t('selectedDescription'))}
     </div>
