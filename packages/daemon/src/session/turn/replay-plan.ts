@@ -23,6 +23,8 @@ export type ReplayPlanInput = {
   ordering: MessageOrdering | undefined
   /** Is this the first real prompt of a session initialized from the agent's own root post? */
   firstPromptAfterOwnRootInitialization: boolean
+  /** A durable inbox row still owns this turn even if the read cursor passed its trigger. */
+  retryAdmittedTurn?: boolean
   /** Replay cap override, for tests. */
   maxReplayEntries?: number
 }
@@ -99,7 +101,11 @@ export function planReplay(input: ReplayPlanInput): ReplayPlan {
   // Only a natively ordered platform can tell "newer" from "older" at all.
   const hasMessageAfterTrigger = ordering !== undefined && participantGap.some((e) => ordering.compare(e.ts, ts) > 0)
 
-  if (hasMessageAfterTrigger || triggerWasAlreadyDelivered) {
+  // A retained inbox row still needs its trigger delivered even when a previous reply advanced the cursor.
+  if (
+    (hasMessageAfterTrigger || triggerWasAlreadyDelivered) &&
+    !(input.retryAdmittedTurn && triggerWasAlreadyDelivered)
+  ) {
     const { context, elided } = boundedReplay(participantGap)
     if (context.length === 0) return { shape: 'skip', context: [], elided: 0, head: '', deliveredThrough }
     const head =

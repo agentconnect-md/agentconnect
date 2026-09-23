@@ -1389,6 +1389,83 @@ describe('daemon durable inbox', () => {
     }
   )
 
+  it('replays an interrupted Slack cron turn after its reply advanced the read cursor', async () => {
+    const releases: Array<(err?: Error) => void> = []
+    const before = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-1'),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async () => {
+        await new Promise<void>((resolve, reject) => releases.push((err) => (err ? reject(err) : resolve())))
+        return 'end_turn'
+      }),
+      cancel: vi.fn(async () => releases.shift()?.(new Error('cancelled by shutdown'))),
+      stop: vi.fn(async () => {})
+    }
+    const root = scaffold()
+    const first = await boot(root, before)
+    ;(first as any).cfg.limits.shutdownDrainMs = 0
+    const ts = '1700000000.000100'
+    const key = sessionKey('slack', 'C1', ts, 'bot-a')
+    const cronId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const firedAt = new Date(Date.now() - 1_000).toISOString()
+    const scheduled = {
+      ...msg(ts, 'scheduled work', ts),
+      msgId: 'cron:cron-a:fire-a',
+      traceId: 'fire-a',
+      source: 'cron' as const,
+      trigger: 'cron' as const,
+      sender: { id: `cron:${cronId}`, isBot: false },
+      cronRun: { cronId, firedAt }
+    }
+    void (first as any).dispatch('bot-a', scheduled, 'int-a').catch(() => {})
+    await vi.waitFor(() => expect(before.prompt).toHaveBeenCalledTimes(1), WAIT)
+    const rec = await (first as any).store.getSession(key)
+    await (first as any).store.upsertSession({ ...rec, lastDeliveredTs: '1700000005.000100' })
+    await first.stop()
+    expect(await inbox(root)).toHaveLength(1)
+
+    const live = new Set<string>()
+    let finishPrompt!: () => void
+    const resumedPrompt = new Promise<void>((resolve) => {
+      finishPrompt = resolve
+    })
+    const after = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'unexpected-new-session'),
+      hasSession: vi.fn((id: string) => live.has(id)),
+      loadSupported: vi.fn(() => true),
+      loadSession: vi.fn(async (id: string) => {
+        live.add(id)
+      }),
+      prompt: vi.fn(async (_sid: string, _blocks: { text?: string }[]) => {
+        await resumedPrompt
+        return 'end_turn'
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const second = await boot(root, after)
+    await vi.waitFor(() => expect(after.prompt).toHaveBeenCalledTimes(1), WAIT)
+    expect(after.loadSession.mock.calls[0]?.[0]).toBe('acp-1')
+    expect(after.prompt.mock.calls[0]![1]).toEqual(
+      expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining('scheduled work') })])
+    )
+    const emitCronReport = vi.fn()
+    ;(second as any).cpClient = { emitCronReport, emitEventSession: vi.fn(), emitUsageReport: vi.fn(), stop: vi.fn() }
+    finishPrompt()
+    const outward = (await (second as any).store.getSession(key)).sessionId
+    await vi.waitFor(
+      () =>
+        expect(emitCronReport).toHaveBeenCalledWith(
+          expect.objectContaining({ cronId, firedAt, status: 'success', sessionId: outward })
+        ),
+      WAIT
+    )
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
+    await second.stop()
+  })
+
   it('a webchat message is NOT durably persisted (live sink cannot be restored)', async () => {
     const g = gatedHost()
     const root = scaffold()

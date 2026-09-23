@@ -1596,6 +1596,11 @@ describe('Daemon session lifecycle (#118)', () => {
     expect(outward).not.toBe('acp-1')
     expect(emitCronReport.mock.calls[1]![0]).toMatchObject({ sessionId: outward })
     expect(emitCronReport.mock.calls[1]![0]).not.toHaveProperty('status')
+    const admitted = await (daemon as any).store.listInboxBySessionKeyFifo()
+    expect(JSON.parse(admitted[0]!.msg).cronRun).toEqual({
+      cronId: 'cron-1',
+      firedAt: emitCronReport.mock.calls[0]![0].firedAt
+    })
 
     blocked.release()
     await run

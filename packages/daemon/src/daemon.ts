@@ -13431,6 +13431,7 @@ export class Daemon {
         callMeta?.needsReply,
         {
           initializeOnly: plan.initializeOnly,
+          retryAdmittedTurn: entry.fromInboxReplay,
           runtimeTarget: this.sessionRuntimes.get(key),
           // CallMeta is the trusted distinction between a real A2A delivery and
           // synthetic `source: agent` wakes (background task/orchestration). A webchat
@@ -21553,7 +21554,23 @@ export class Daemon {
         hookContext,
         posterPublishState
       )
-        .catch(() => {})
+        .then(async (sessionId) => {
+          if (!msg.cronRun || sessionId === null) return
+          const outward = (await this.outwardSessionIdForAcp(row.agentId, sessionId)) ?? sessionId
+          this.reportCronRun(row.agentId, msg, {
+            status: 'success',
+            durationMs: Math.max(0, this.clock.now() - Date.parse(msg.cronRun.firedAt)),
+            sessionId: outward
+          })
+        })
+        .catch((err) => {
+          if (msg.cronRun)
+            this.reportCronRun(row.agentId, msg, {
+              status: 'failed',
+              durationMs: Math.max(0, this.clock.now() - Date.parse(msg.cronRun.firedAt)),
+              reason: (err as Error).message?.slice(0, 300) || 'dispatch failed'
+            })
+        })
         .finally(() => settleReplayAdmission())
       // A safety-draining agent defers its replay until the drain closes, so its admission
       // is deliberately late — waiting for it here would stall the whole replay.
@@ -22038,10 +22055,9 @@ export class Daemon {
   private async onCronFire(agentId: string, msg: NormalizedMessage, cron: CronDef): Promise<void> {
     const firedAt = this.clock.now()
     const firedAtIso = new Date(firedAt).toISOString()
-    const report = (update: Omit<CronReport, 'cronId' | 'agentId' | 'firedAt'> = {}): void => {
-      if (cron.origin === 'cp')
-        this.cpClient?.emitCronReport({ cronId: cron.id, agentId, firedAt: firedAtIso, ...update })
-    }
+    const delivery = cron.origin === 'cp' ? { ...msg, cronRun: { cronId: cron.id, firedAt: firedAtIso } } : msg
+    const report = (update: Omit<CronReport, 'cronId' | 'agentId' | 'firedAt'> = {}): void =>
+      this.reportCronRun(agentId, delivery, update)
     await this.store.setCronLastRun(`${agentId}:${cron.id}`, firedAt, scheduleFingerprint(this.cronDefinition(cron)))
     // CP-owned crons report the fire, attach the session as soon as it exists,
     // then close the run when the turn ends. Hand-authored crons stay local.
@@ -22052,7 +22068,7 @@ export class Daemon {
       // one (§1.1). The ready callback already delivers that; `fireTrigger`'s return is the ACP id.
       const sessionId = await this.fireTrigger(
         agentId,
-        msg,
+        delivery,
         cron.target,
         `⏰ ${cron.trigger}`,
         `cron "${cron.id}"`,
@@ -22078,6 +22094,15 @@ export class Daemon {
       })
       throw err
     }
+  }
+
+  private reportCronRun(
+    agentId: string,
+    msg: NormalizedMessage,
+    update: Omit<CronReport, 'cronId' | 'agentId' | 'firedAt'> = {}
+  ): void {
+    if (msg.source !== 'cron' || !msg.cronRun) return
+    this.cpClient?.emitCronReport({ ...msg.cronRun, agentId, ...update })
   }
 
   /** Console "Run now" (`cron/run` REQ): fire one CP cron immediately. The fire
