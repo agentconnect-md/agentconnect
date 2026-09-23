@@ -23,8 +23,6 @@ export interface RemoteShimDriverDeps<L extends Launch = Launch> {
   binder: ChannelBinder<L>
   /** What this subject's channel may do when the caller names no grants. */
   grantsFor: (subject: string) => ShimCapability[]
-  /** Optionally bind and hold another launch beside this one, pushing it onto `held`; it reports rather than raises. */
-  holdCompanion?: (subject: SandboxSubject, held: L[]) => Promise<void>
   clock: Clock
   log: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
   metrics: ClusterMetrics
@@ -57,21 +55,12 @@ export class RemoteShimDriver<L extends Launch = Launch> implements SpawnDriver 
       )
     }
     const timer = new LaunchTimer(this.deps.metrics, () => this.deps.clock.now())
-    // The sandbox is held from before bind until runtime exit and released on every failure path.
-    const held: L[] = []
-    const releaseHeld = (): void => {
-      for (const launch of held.splice(0)) this.deps.endpoints.release(launch)
-    }
+    // The subject's own sandbox alone is held, from before bind until runtime exit, and released on every failure path.
+    let held: L | undefined
     try {
-      const bound = await this.deps.ensureLaunch(subject, timer)
-      this.deps.endpoints.retain(bound)
-      held.push(bound)
-      // Settled TOGETHER: a companion still binding when the bind fails would retain its sandbox after the catch below drained `held`, and nothing would ever release it.
-      const [channel] = await Promise.allSettled([
-        this.ensureBoundChannel(subject, timer),
-        this.deps.holdCompanion?.(subject, held) ?? Promise.resolve()
-      ])
-      if (channel.status === 'rejected') throw channel.reason
+      held = await this.deps.ensureLaunch(subject, timer)
+      this.deps.endpoints.retain(held)
+      await this.ensureBoundChannel(subject, timer)
       this.deps.metrics.channel('bound')
       const session = this.deps.binder.sessionFor(subject)
       if (!session) throw new Error(`no shim session for ${subject} after binding its channel`)
@@ -90,14 +79,13 @@ export class RemoteShimDriver<L extends Launch = Launch> implements SpawnDriver 
           timer.finish(outcome)
         }
       })
-      // Runtime exit releases the holds so the next idle sweep can suspend the sandboxes.
-      const released = held.splice(0)
-      runtime.onExit(() => {
-        for (const launch of released) this.deps.endpoints.release(launch)
-      })
+      // Runtime exit releases the hold so the next idle sweep can suspend the sandbox.
+      const bound = held
+      held = undefined
+      runtime.onExit(() => this.deps.endpoints.release(bound))
       return runtime
     } catch (err) {
-      releaseHeld()
+      if (held) this.deps.endpoints.release(held)
       timer.finish(err instanceof LaunchTimeoutError ? 'timeout' : 'error')
       throw err
     }

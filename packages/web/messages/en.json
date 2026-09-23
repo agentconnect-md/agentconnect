@@ -1049,7 +1049,8 @@
       "authSend": "No AI runtime is signed in on {placement} — can’t start a session",
       "authMemberSend": "{agent} has no AI runtime signed in — can’t start a session",
       "theDaemon": "the daemon",
-      "send": "Send"
+      "send": "Send",
+      "byDecision": "By decision"
     },
     "blocked": {
       "offlineSuffix": " is offline — you can’t start a session until its daemon reconnects.",
@@ -2250,10 +2251,85 @@
         "forceReassign": "Force reassign",
         "moveAgent": "Move agent",
         "repairAgent": "Repair agent"
+      },
+      "modelSelection": {
+        "title": "Runtime",
+        "fixed": "Fixed",
+        "byDecision": "By decision",
+        "unavailableDecision": "Attached Decision",
+        "unsupported": "This runtime does not currently offer model switching.",
+        "help": "Choose once when a session starts. Chat uses the opening message; PR/MR uses its description. Existing sessions keep their runtime and model.",
+        "loadError": "Could not load Decisions. Try again.",
+        "loading": "Loading Decision…",
+        "retained": "This saved Decision is no longer visible to you. Its rules are preserved; select another Decision to replace them.",
+        "rule": "Rule {index}",
+        "removeRule": "Remove rule {index}",
+        "ruleModel": "Provider and model for rule {index}",
+        "addRule": "Add rule",
+        "invalidRules": "Check the conditions: assign each answer once and keep score intervals separate. At least one rule is required.",
+        "missingModel": "Choose an available provider and model for every rule and the fallback.",
+        "fallback": "No rule matches, or the evaluation is unavailable.",
+        "providerModel": "Provider · model",
+        "chooseDecision": "Choose a Decision",
+        "savedDecisions": "Saved Decisions",
+        "emptyDecisions": "Create a Decision first.",
+        "openDecision": "Open {name} in Decisions",
+        "choice": "Choice",
+        "boolean": "Boolean",
+        "score": "Score",
+        "evaluator": "Evaluator",
+        "rules": "Rules",
+        "condition": "Answer / condition",
+        "answer": "Answer for rule {index}",
+        "probability": "Probability for rule {index}",
+        "choiceHelp": "Highest passing probability wins. Ties follow rule order.",
+        "intervalHelp": "Assign each answer once. Score intervals must not overlap.",
+        "moveUp": "Move rule {index} up",
+        "moveDown": "Move rule {index} down",
+        "fallbackTitle": "Fallback provider and model",
+        "sample": {
+          "title": "Try a sample",
+          "badge": "Sample data",
+          "help": "Illustrative answers only; no evaluation is run. Results follow your current rules.",
+          "text0": "Checkout returns 500 after today’s deploy. Can you look?",
+          "text1": "Add SAML SSO and SCIM provisioning to the admin console",
+          "text2": "How do I rotate the webhook signing secret?",
+          "text3": "Fix typos in README and update build badges",
+          "evaluatedText": "Evaluated text",
+          "opening": "Opening message",
+          "description": "PR/MR description",
+          "result": "Sample result",
+          "unavailable": "Evaluation unavailable",
+          "rules": "Rules",
+          "matched": "Rule {index} · {condition} → {runtime} · {model}",
+          "invalid": "Fix the rules to preview a match",
+          "noMatch": "No matching rule",
+          "fallback": "Fallback",
+          "notNeeded": "Not needed",
+          "fallbackUsed": "Use the fallback provider and model",
+          "startsOn": "Session starts on",
+          "booleanResult": "{value} · {probability}% true",
+          "text4": "The evaluator is temporarily unavailable"
+        }
+      },
+      "runtimeModel": {
+        "title": "Provider and model",
+        "provider": "Provider",
+        "byDecision": "By decision",
+        "choose": "Choose a provider and model",
+        "search": "Search all providers",
+        "empty": "No models found",
+        "loginRequired": "Login required",
+        "agentSetting": "Agent setting",
+        "decisionHelp": "{name} picks the runtime and model when the session starts",
+        "fastMode": "Fast mode",
+        "lowerLatency": "Lower latency",
+        "imageBinaryMissing": "Binary not installed in image"
       }
     },
     "detail": {
       "on": "On",
+      "modelByDecision": "By decision",
       "dreams": {
         "title": "Dreams",
         "unsupported": "Dreams need a newer version of this agent’s daemon. Upgrade it to consolidate memory here.",
@@ -2321,7 +2397,8 @@
         "modified": "Modified",
         "safeMoveUnavailable": "Safe move unavailable",
         "safeMoveBody": "Bring {daemon} online before moving this agent safely.",
-        "openRecovery": "Open recovery options"
+        "openRecovery": "Open recovery options",
+        "runtimeAndModel": "Runtime and model"
       },
       "runtime": {
         "title": "Runtime",
@@ -4137,7 +4214,8 @@
       "kind": {
         "gate": "channel gate",
         "shared_bot_routing": "shared bot routing",
-        "agent_tool": "agent tool"
+        "agent_tool": "agent tool",
+        "model_selection": "model selection"
       },
       "needsReview": "needs review",
       "ok": "ok"

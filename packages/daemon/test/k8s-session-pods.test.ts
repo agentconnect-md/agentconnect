@@ -187,17 +187,17 @@ const request = (hostKey?: typeof T1) =>
   ({ command: 'x', args: [], env: { AC_AGENT_ID: AGENT }, ...(hostKey ? { hostKey } : {}) }) as never
 
 describe('one sandbox pod per session host (git-workspace-model §11)', () => {
-  it('claims a pod per session host, beside the agent pod, labelled by agent AND session leaf', async () => {
+  it('claims a pod per session host and nothing of the agent’s, labelled by agent AND session leaf', async () => {
     const { api, claims } = cluster()
     const { driver, records } = member(api, podSide().connect)
 
     await driver.launch(request(T1))
     await driver.launch(request(T2))
 
-    // Three claims: one per session, plus the agent's own, held beside them as the sessions' companion.
+    // One claim per session: a session runtime holds its own pod alone (#1896).
     const names = [...claims.keys()].sort()
-    expect(new Set(names).size).toBe(3)
-    expect(names).toContain(`agent-${AGENT}`)
+    expect(new Set(names).size).toBe(2)
+    expect(names).not.toContain(`agent-${AGENT}`)
     for (const key of [T1, T2]) {
       const leaf = hostKeyDirName(key)
       const name = sandboxClaimName(sandboxSubjectFor(key))
@@ -214,17 +214,12 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
       // Nothing per-session in the spec beyond the labels, or the claim would bypass warm-pool adoption.
       expect(Object.keys(claim.spec ?? {}).sort()).toEqual(['additionalPodMetadata', 'warmPoolRef'])
     }
-    expect(claims.get(`agent-${AGENT}`)!.spec?.additionalPodMetadata?.labels).toEqual({
-      [AC_LABEL_ORG]: 'org-1',
-      [AC_LABEL_AGENT]: AGENT
-    })
-    // Each pod was dialled under its own subject (the companion re-binds per launch), with the agent id
-    // on the wire for the pod's own checks.
+    // Each pod was dialled under its own subject, with the agent id on the wire for the pod's own checks.
     expect([...new Set(records.map((record) => record.subject))].sort()).toEqual(
-      [AGENT, sandboxSubjectFor(T1), sandboxSubjectFor(T2)].sort()
+      [sandboxSubjectFor(T1), sandboxSubjectFor(T2)].sort()
     )
     expect(new Set(records.map((record) => record.agentId))).toEqual(new Set([AGENT]))
-    expect(new Set(records.map((record) => record.sandboxUid)).size).toBe(3)
+    expect(new Set(records.map((record) => record.sandboxUid)).size).toBe(2)
     expect(driver.sessionSubjectsOf(AGENT).sort()).toEqual([sandboxSubjectFor(T1), sandboxSubjectFor(T2)].sort())
   })
 
@@ -236,7 +231,7 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
     ).rejects.toThrow(/names agent agent-a/)
   })
 
-  it('holds the session pod and the agent pod while the session runtime runs, and releases both on exit', async () => {
+  it('holds the session pod alone while the session runtime runs, and releases it on exit', async () => {
     const { api, modeWrites, claims } = cluster()
     const pod = podSide()
     const { driver } = member(api, pod.connect)
@@ -244,29 +239,29 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
 
     await driver.launch(request(T1))
     expect(await driver.suspendIfIdle(session)).toBe('busy')
-    expect(await driver.suspendIfIdle(AGENT)).toBe('busy')
+    // The agent pod was never launched, so there is nothing of it to hold or suspend.
+    expect(await driver.suspendIfIdle(AGENT)).toBe('absent')
 
     pod.exit(session)
     await new Promise((resolve) => setImmediate(resolve))
-    // Idle now, both — the session's pod suspends on its own, the agent's on its own, claims kept.
+    // Idle now: the session's pod suspends, its claim kept.
     expect(await driver.suspendIfIdle(session)).toBe('suspended')
-    expect(await driver.suspendIfIdle(AGENT)).toBe('suspended')
-    expect(modeWrites.map((write) => write.desired)).toEqual(['Suspended', 'Suspended'])
-    expect(new Set(modeWrites.map((write) => write.sandbox)).size).toBe(2)
-    expect(claims.size).toBe(2)
+    expect(modeWrites.map((write) => write.desired)).toEqual(['Suspended'])
+    expect(claims.size).toBe(1)
   })
 
   it("suspending one session's pod leaves its sibling and the agent pod untouched", async () => {
     const { api, modeWrites } = cluster()
     const pod = podSide()
     const { driver } = member(api, pod.connect)
+    await driver.launch(request())
     await driver.launch(request(T1))
     await driver.launch(request(T2))
     pod.exit(sandboxSubjectFor(T1))
     await new Promise((resolve) => setImmediate(resolve))
 
     expect(await driver.suspendIfIdle(sandboxSubjectFor(T1))).toBe('suspended')
-    // T2's runtime still runs, and it still holds the agent pod as its companion.
+    // T2's runtime still holds its own pod; the agent's runtime, the agent's.
     expect(await driver.suspendIfIdle(sandboxSubjectFor(T2))).toBe('busy')
     expect(await driver.suspendIfIdle(AGENT)).toBe('busy')
     expect(modeWrites).toHaveLength(1)
@@ -339,39 +334,23 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
     expect(deleted).toEqual([sandboxClaimName(t1)])
     expect(await driver.hasClaim(t1)).toBe(false)
     expect(claims.has(sandboxClaimName(sandboxSubjectFor(T2)))).toBe(true)
-    expect(claims.has(`agent-${AGENT}`)).toBe(true)
     expect(driver.sessionSubjectsOf(AGENT)).toEqual([sandboxSubjectFor(T2)])
   })
 
-  it('releases a companion that bound after the session bind had already failed', async () => {
-    // The two binds are settled TOGETHER. With the session's rejection propagating on its own, the
-    // launch's catch drains its holds while the companion is still binding, and the retain it then
-    // takes belongs to no runtime and no `onExit`: the agent pod stays busy until this process
-    // restarts, and the idle sweep can never reclaim it.
+  it('releases a session pod whose bind failed, and puts it back to sleep', async () => {
     const { api, claims, modeWrites } = cluster()
-    const pod = podSide()
     const session = sandboxSubjectFor(T1)
-    let releaseCompanion: () => void = () => {}
-    const companionBound = new Promise<void>((resolve) => (releaseCompanion = resolve))
-    const { driver } = member(api, async (record) => {
-      // The session's pod refuses at once; the agent's comes up only after that rejection is out.
-      if (record.subject === session) throw new Error('session pod refused the channel')
-      await companionBound
-      return await pod.connect(record)
+    const { driver } = member(api, async () => {
+      throw new Error('session pod refused the channel')
     })
 
-    const launching = driver.launch(request(T1))
-    releaseCompanion()
-    await expect(launching).rejects.toThrow(/session pod refused the channel/)
+    await expect(driver.launch(request(T1))).rejects.toThrow(/session pod refused the channel/)
 
-    // The companion bound, so it is held — and released, because the failure that dropped the launch
-    // waited for it. Suspending it is the observable form of "nothing still retains this Sandbox".
-    expect(driver.currentLaunch(AGENT)).toBeDefined()
-    expect(await driver.suspendIfIdle(AGENT)).toBe('suspended')
-    // The session's own Sandbox — claimed before its channel refused — is released by the same drain, and nothing uses a pod whose bind failed, so it goes back to sleep.
+    // Claimed before its channel refused, released by the launch's failure, and nothing uses a pod whose bind failed.
     await vi.waitFor(() => expect(driver.currentLaunch(session)).toBeUndefined())
     const sessionSandbox = claims.get(driver.claimName(session))!.status!.sandbox!.name
     expect(modeWrites).toContainEqual({ sandbox: sessionSandbox, desired: 'Suspended' })
+    expect(claims.has(`agent-${AGENT}`)).toBe(false)
   })
 
   it('puts a resumed session pod that never comes up back to sleep, so it cannot keep its node full', async () => {
@@ -476,21 +455,28 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
     expect(driver.sessionFor(session)?.isAttached()).toBe(true)
   })
 
-  it('still degrades rather than failing the launch when only the companion cannot come up', async () => {
-    // The companion is a reachability convenience for the agent-scoped seams, never a precondition: its failure must not become the session's.
-    const { api, claims, modeWrites } = cluster()
+  it('launches a session runtime while the agent pod refuses every call, never asking it anything', async () => {
+    // A session runtime needs its own pod only (#1896): the agent's is neither claimed nor dialled for it.
+    const { api, claims } = cluster()
     const pod = podSide()
-    const { driver } = member(api, async (record) => {
-      if (record.subject === AGENT) throw new Error('agent pod refused the channel')
+    const ensureClaim = api.ensureClaim.getMockImplementation()!
+    api.ensureClaim.mockImplementation(async (claim) => {
+      if (claim.metadata.name === `agent-${AGENT}`) throw new Error('the agent pod refuses every call')
+      return await ensureClaim(claim)
+    })
+    const { driver, records } = member(api, async (record) => {
+      if (record.subject === AGENT) throw new Error('the agent pod refuses every call')
       return await pod.connect(record)
     })
 
     await expect(driver.launch(request(T1))).resolves.toBeDefined()
     expect(await driver.suspendIfIdle(sandboxSubjectFor(T1))).toBe('busy')
-    // Not held by the runtime either: the companion that would not bind goes back to sleep.
-    await vi.waitFor(() => expect(driver.currentLaunch(AGENT)).toBeUndefined())
-    const agentSandbox = claims.get(driver.claimName(AGENT))!.status!.sandbox!.name!
-    expect(modeWrites).toContainEqual({ sandbox: agentSandbox, desired: 'Suspended' })
+    expect(api.ensureClaim.mock.calls.map((call) => call[0].metadata.name)).toEqual([
+      sandboxClaimName(sandboxSubjectFor(T1))
+    ])
+    expect(records.map((record) => record.subject)).toEqual([sandboxSubjectFor(T1)])
+    expect(driver.currentLaunch(AGENT)).toBeUndefined()
+    expect(claims.has(`agent-${AGENT}`)).toBe(false)
   })
 
   it('reads the pod a path lives on off the PATH, so a suspended pod stays addressable', () => {
@@ -846,6 +832,10 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
     const { driver, records } = member(api, podSide().connect)
     await driver.launch(request())
     expect([...claims.keys()]).toEqual([`agent-${AGENT}`])
+    expect(claims.get(`agent-${AGENT}`)!.spec?.additionalPodMetadata?.labels).toEqual({
+      [AC_LABEL_ORG]: 'org-1',
+      [AC_LABEL_AGENT]: AGENT
+    })
     expect(records).toHaveLength(1)
     expect(records[0]).toMatchObject({ agentId: AGENT, subject: AGENT })
     expect(sessionSandboxSubject(AGENT, 'session-abc')).toBe(`${AGENT}/session-abc`)

@@ -14,6 +14,7 @@ import {
   type SessionListItem
 } from '@agentconnect.md/protocol'
 import type { LoadedAgent } from '../agents/load-agents.js'
+import { pinnedDecisionTarget } from '../decisions/model-selection.js'
 import type { CpClient } from '../cp/client.js'
 import { createSessionReader } from '../cp/session-reader.js'
 import {
@@ -177,14 +178,17 @@ export class SessionMetadataOutbox {
     // runtime's own default. Snapshotted here so the CP records what this session
     // actually ran with — the agent's config can change later without rewriting history.
     const agent = this.host.agents().get(input.agentId)
+    const selected = pinnedDecisionTarget(slot?.decisionModel)
     const allowRuntimeChangesInChat = agent?.allowRuntimeChangesInChat === true
     if (input.runtime !== undefined) event.runtime = input.runtime
+    else if (selected) event.runtime = selected.runtime
     else if (agent?.runtime) event.runtime = agent.runtime
     const sessionRecord = slot
     if (sessionRecord?.workspaceIsolation) event.workspaceIsolation = sessionRecord.workspaceIsolation
     const storeKey = sessionRecord?.key
     const configuredModel =
       (allowRuntimeChangesInChat && storeKey ? await store.getModelOverride(storeKey) : undefined) ??
+      selected?.model ??
       agent?.runtimeOverrides?.model
     const observedModel =
       input.model !== undefined ? input.model : storeKey ? await store.getObservedModel(storeKey) : undefined

@@ -41,6 +41,32 @@ async function store(): Promise<LocalStore> {
   return await openTestStore({ path: join(mkdtempSync(join(tmpdir(), 'ac-db-')), 'local.sqlite') })
 }
 
+it('pins a Decision model once, independently of manual overrides and subsequent session updates', async () => {
+  const s = await store()
+  const row = {
+    key: 'model-decision',
+    agentId: 'bot-a',
+    platform: 'webchat',
+    channel: 'conversation',
+    thread: 'thread',
+    acpSessionId: 'acp-1',
+    state: 'idle' as const,
+    lastDeliveredTs: null,
+    updatedAt: 1
+  }
+  await s.upsertSession(row)
+  await s.pinDecisionModel(row.key, 'claude', 'model-capable')
+  await s.pinDecisionModel(row.key, 'claude', 'model-standard')
+  await s.setModelOverride(row.key, 'model-manual')
+  await s.clearRuntimeConfigOverrides(row.agentId)
+  await s.upsertSession({ ...row, updatedAt: 2 })
+  expect((await s.getSession(row.key))?.decisionModel).toBe(
+    JSON.stringify({ runtime: 'claude', model: 'model-capable' })
+  )
+  expect(await s.getModelOverride(row.key)).toBeUndefined()
+  await s.close()
+})
+
 /** A second handle on the same durable store — a daemon restart, not a new store. */
 async function reopen(path: string): Promise<LocalStore> {
   return await openTestStore(path)
@@ -93,6 +119,7 @@ const revertSessionGateKey = (db: DatabaseSync): void => {
 /** Undo the v24 channel record, so a fixture looks like the transcript a v23 daemon wrote:
  *  `thread` NOT NULL, the dedup index on the full key, and a (channel, thread, ts, agent) delivery table. */
 const revertTranscriptAdmissions = (db: DatabaseSync): void => {
+  db.exec('ALTER TABLE sessions DROP COLUMN decisionModel')
   db.exec(`
     DROP INDEX transcript_channel_seq;
     DROP INDEX transcript_text_ts;
@@ -1707,6 +1734,22 @@ describe('LocalStore session lifecycle (§7.3/#111/#118)', () => {
     // a closed session no longer counts toward activity
     await s.setSessionState('k2', 'closed', 300)
     expect(await s.agentLastActivityTs('bot-a')).toBe(100)
+    await s.close()
+  })
+
+  it('agentSharedLastActivityTs leaves out isolated sessions, whose traffic runs in pods of their own', async () => {
+    const s = await store()
+    await seed(s, 'k1', 'bot-a', 'idle', 100)
+    await s.upsertSession({ ...(await s.getSession('k1'))!, workspaceIsolation: 'shared' })
+    await seed(s, 'k2', 'bot-a', 'idle', 200)
+    await seed(s, 'k3', 'bot-a', 'idle', 900)
+    await s.upsertSession({ ...(await s.getSession('k3'))!, workspaceIsolation: 'session' })
+    // A row no turn has decided yet counts as shared, as the agent-wide clock always did.
+    expect(await s.agentSharedLastActivityTs('bot-a')).toBe(200)
+    expect(await s.agentLastActivityTs('bot-a')).toBe(900)
+    await s.setSessionState('k2', 'closed', 200)
+    expect(await s.agentSharedLastActivityTs('bot-a')).toBe(100)
+    expect(await s.agentSharedLastActivityTs('nobody')).toBeNull()
     await s.close()
   })
 

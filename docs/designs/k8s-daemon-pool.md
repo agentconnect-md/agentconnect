@@ -260,10 +260,12 @@ process, and the in-pod merge watcher
 session page renews a LEASE (`POST /sessions/:id/sandbox-keep-alive` →
 `sandbox/keepalive` → `k8s/sandbox-hold.ts`) while its document is visible, and
 `sweepIdleSandboxes` skips a POD whose lease is live. The lease is keyed by
-sandbox SUBJECT, so a page watching an isolated session's worktree holds that
-session's own pod and neither the agent's nor a sibling session's (§11); an armed
-merge watcher holds the pod it runs in — the isolated session's own that armed it,
-else the agent's — whatever worktree the page is looking at.
+sandbox SUBJECT, and a session's page finds its pod off the session's own
+directory, as its wake does (below), so a page watching an isolated session holds
+that session's own pod — a scratch agent's too, whose session holds only
+additional-repository clones — and neither the agent's nor a sibling session's
+(§11); an armed merge watcher holds the pod it runs in — the isolated session's
+own that armed it, else the agent's — whatever worktree the page is looking at.
 
 Three properties make that safe to hand a browser:
 
@@ -342,9 +344,9 @@ claim is `agent-<agentId>-<16 hex of the session leaf>`, its pod labelled
 successor member can list an agent's session claims without knowing its
 sessions. The session's clones and HOME live on that pod's volume under
 `<mount>/sessions/<leaf>/`; the agent pod keeps the primary checkout and the
-secondary roots (managed memory is in the CP database, §11), and a session runtime
-binds and holds it as its companion for the runtime's life, so a running runtime
-still implies a reachable agent pod. Every workspace path is routed to the pod that owns it,
+secondary roots (managed memory is in the CP database, §11). A session runtime
+binds and holds its own pod alone, so a running runtime says nothing about the
+agent pod, which is claimed only for work that runs in it (below). Every workspace path is routed to the pod that owns it,
 read off the **path** rather than off the live-launch registry, so a suspended
 session pod stays addressable; a read that names one RESUMES it only beside a
 bound agent pod, the session's own page resumes it alone with the session-scoped
@@ -356,8 +358,19 @@ a session that no longer has one — a read can lose a race with a retirement, n
 win one. A session pod with no claim at all is not asleep but removed, so a read
 or a wake of it refuses as `sandbox-removed`, which no press can undo; the
 session's next message creates a new one.
-Sleep is per pod — a quiet session pod suspends on its own session's activity
-while its siblings and the agent pod stay — and the claim goes with the
+Sleep is per pod, each judged by its own work. A quiet session pod suspends on its
+own session's activity while its siblings and the agent pod stay. The agent pod is
+kept while a host, a dispatch or a turn runs IN it — its shared host, a shared
+session's, an internal pass's — while something holds it (a preparation that
+reaches it, a console read, an open page's lease, an armed watcher), and for one
+idle window after the later of when this member launched or took over its pod and
+the last activity of the agent's sessions that are not isolated, which on a pool
+are exactly the ones that run in it. An isolated session's host, turn or traffic
+keeps it for nothing, and a host that leaves it restarts no clock, so a reaped
+shared host gives the pod no second window. One path remains: the agent's shared
+host, where one runs, is still reaped by the activity of all the agent's
+sessions, so isolated traffic keeps that host — and so this pod — up while it
+lives. A session pod's claim goes with the
 session's row: retention deletes it (volume and all) once the clone has passed
 the dirty and unique-commit rules, a replaced workspace retires every session
 pod of the agent **when its conversion runs on the volume** — not when the edit
@@ -377,9 +390,12 @@ a workspace conversion that is actually due, and opt-in `autoDistill` until it
 moves (below). A plain message to an agent whose sessions are isolated starts
 exactly one pod.
 
-**Why the companion cannot simply be dropped.** Managed memory no longer needs
-the agent pod (§11), but the companion also hides reads that were never listed
-as reasons. With the agent pod unbound they fail or wake it:
+**The companion is gone.** A session runtime used to bind and hold the agent pod
+beside its own. Managed memory no longer needed it (§11), but the companion also
+hid reads that were never listed as reasons; with the agent pod unbound they
+failed or woke it. Each is settled below, so a session runtime now holds its own
+pod alone and the idle sweep keeps the agent pod only for the work that runs in it
+(§4, "Sleep is per pod"):
 
 | Dependency                                                                                                                                                    | When                                                                            | Without the agent pod                                          | Decision                                                                                                                           |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
@@ -426,8 +442,8 @@ checkout, the skills tab, dream staging, and the commit-message wand. These wake
 it on demand, as memory reads once did (#1077).
 
 **Why the executor plane's answer does not transfer.** A spread session
-(session-executors.md §7) has no companion because the agent's environment stays
-on the holder's disk, which is up whenever the holder is. On the pool the only
+(session-executors.md §7) never needed a companion, because the agent's environment
+stays on the holder's disk, which is up whenever the holder is. On the pool the only
 place the agent is materialized is the agent pod, and a member's state root is an
 `emptyDir`. So facts that belong to the session move into the session's own
 directory, where the same code also serves executors and local confined sessions;
@@ -456,7 +472,9 @@ carries the arming session only to a member advertising `auto-merge-session-v1`,
 and only when the session belongs to the watcher's agent; an older member would
 strip it and arm in the agent pod, as it did before. A session's retirement
 deletes its pod and its watcher with it, and the box reads back unchecked.
-Nothing is persisted, as before.
+Nothing is persisted, as before. An arm while the pod that would run it is asleep
+still answers 409 `AUTO_MERGE_SANDBOX_ASLEEP`, and the panel offers no wake yet;
+opening the session's files wakes its pod.
 
 **Order**, each change shippable on its own:
 

@@ -23,7 +23,6 @@ import {
   effortLabel,
   fastModeAvailableFor,
   modelCapability,
-  modelOptionsFor,
   displayedEffort,
   preferredModelFor,
   resolvedPermissionMode,
@@ -54,8 +53,8 @@ import { isCodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { GithubMark, LoadingState } from '@/components/marks'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
-import { ModelSelect } from '@/components/console/ModelSelect'
-import { RuntimeSelect } from '@/components/console/RuntimeSelect'
+import { ModelSelectionField } from '@/components/console/decisions/ModelSelectionField'
+import type { AgentModelSelection } from '@agentconnect.md/protocol/decision'
 import { randomGlyphIcon, type AgentIcon } from '@/lib/agent-icon'
 import { DEFAULT_AGENT_OUTPUT_MODE, type OutputMode } from '@/lib/output-mode'
 import { Button, Icon } from '@/components/ui'
@@ -163,6 +162,8 @@ export default function AddAgentModal({
   const [icon, setIcon] = useState<AgentIcon>(() => randomGlyphIcon())
   const [runtime, setRuntime] = useState(seed.runtime) // '' = untouched; the daemon supplies the default
   const [model, setModel] = useState(seed.model)
+  const [modelSelection, setModelSelection] = useState<AgentModelSelection | null>(null)
+  const [modelSelectionValid, setModelSelectionValid] = useState(true)
   const [effort, setEffort] = useState(seed.effort)
   const [fastMode, setFastMode] = useState(seed.fastMode)
   const [outputMode, setOutputMode] = useState<OutputMode>(seed.outputMode ?? DEFAULT_AGENT_OUTPUT_MODE)
@@ -710,7 +711,7 @@ export default function AddAgentModal({
     // ("Deploy Bot" → deploy-bot) — a non-latin display name derives nothing,
     // so the explicit name stays required then.
     const slug = agentSlugFinalize(name) || agentSlugFinalize(displayName)
-    if (busy) return
+    if (busy || !modelSelectionValid) return
     if (!slug) {
       setErr(t('errors.nameRequired'))
       return
@@ -843,6 +844,7 @@ export default function AddAgentModal({
         icon,
         runtime: effectiveRuntime,
         ...(selectedModel ? { model: selectedModel } : {}),
+        ...(modelSelection ? { modelSelection } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
         ...(placement?.kind === 'pool'
           ? { placementKind: 'pool' as const }
@@ -855,7 +857,7 @@ export default function AddAgentModal({
         showFooter,
         showStatusBar,
         ...(selectedEffort ? { reasoningEffort: selectedEffort } : {}),
-        fastMode: fastModeAvailable ? fastMode : false,
+        fastMode: fastModeAvailable || modelSelection ? fastMode : false,
         ...(memoryProvider === 'external'
           ? {
               memory: {
@@ -1025,54 +1027,39 @@ export default function AddAgentModal({
                   onChange={(e) => setDescription(e.target.value)}
                 />
               </div>
-              {/* Daemon / Runtime / Model share one 3-up row inside the Basics grid. */}
-              <div className="desktop:col-span-2 grid grid-cols-1 gap-[14px] desktop:grid-cols-3">
+              {/* Placement belongs to Basics; runtime and model are configured together below. */}
+              <div className="desktop:col-span-2 grid grid-cols-1 gap-[14px]">
                 <div className="fld">
                   <span className="fldlbl">{t('runsOn')}</span>
                   <DaemonSelect value={effectiveDaemonId} options={daemonOptions} onChange={setDaemonId} />
-                </div>
-                <div className="fld">
-                  <span className="fldlbl">{t('runtime')}</span>
-                  <RuntimeSelect
-                    value={effectiveRuntime}
-                    options={runtimeIds}
-                    needsLogin={runtimesNeedingLogin}
-                    imageBinaryMissing={runtimesMissingImageBinary}
-                    onChange={(nextRuntime) => {
-                      setRuntime(nextRuntime)
-                      setEffort('')
-                      setPermissionMode(permissionModeDefault(nextRuntime))
-                    }}
-                  />
-                </div>
-                <div className="fld">
-                  <span className="fldlbl">{t('model')}</span>
-                  {/* No advertised models ⇒ nothing to choose: an inert em-dash field
-                  rather than a fabricated "Default" entry the runtime never offered. */}
-                  <ModelSelect
-                    value={selectedModel}
-                    options={modelOptionsFor(daemon, effectiveRuntime, models)}
-                    disabledHint={t('noSelectableModels')}
-                    onChange={(next) => {
-                      setModel(next)
-                      // Picking a model resolves an effort the new model doesn't offer:
-                      // its default level, else the nearest available tier.
-                      setEffort((cur) =>
-                        resolveEffortForModel(effectiveRuntime, modelCapability(daemon, effectiveRuntime, next), cur)
-                      )
-                    }}
-                  />
                 </div>
               </div>
             </div>
           </section>
 
           <section ref={sectionRef('runtime')} className="mt-5 border-t border-(--border-subtle) pt-5">
-            <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-              {t('sections.runtime')}
-            </div>
+            <ModelSelectionField
+              value={modelSelection}
+              onChange={setModelSelection}
+              onValidityChange={setModelSelectionValid}
+              fallback={{ runtime: effectiveRuntime, model: selectedModel }}
+              source={daemon}
+              runtimes={runtimeIds}
+              enabled={featureFlagEnabled('decisions')}
+              runInSandbox={effectiveRunInSandbox}
+              fastMode={fastMode}
+              onFastModeChange={fastModeAvailable || modelSelection ? setFastMode : undefined}
+              onFallbackChange={(target) => {
+                if (target.runtime !== effectiveRuntime) setPermissionMode(permissionModeDefault(target.runtime))
+                setRuntime(target.runtime)
+                setModel(target.model)
+                setEffort((current) =>
+                  resolveEffortForModel(target.runtime, modelCapability(daemon, target.runtime, target.model), current)
+                )
+              }}
+            />
             <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
-              {(showEffort || fastModeAvailable || showPermission) && (
+              {(showEffort || showPermission) && (
                 <div className="fld desktop:col-span-2">
                   <div className="grid grid-cols-1 gap-x-7 gap-y-[14px] desktop:grid-cols-[minmax(0,1fr)_auto]">
                     {showEffort && (
@@ -1094,31 +1081,6 @@ export default function AddAgentModal({
                               {o.label}
                             </button>
                           ))}
-                        </div>
-                      </div>
-                    )}
-                    {fastModeAvailable && (
-                      <div className="flex flex-col gap-[6px]">
-                        <span className="fldlbl">{t('fastMode')}</span>
-                        <div className="pillbar self-start">
-                          <button
-                            type="button"
-                            className={
-                              fastMode ? 'pill on px-[10px] py-1 text-[12px]' : 'pill px-[10px] py-1 text-[12px]'
-                            }
-                            onClick={() => setFastMode(true)}
-                          >
-                            {t('on')}
-                          </button>
-                          <button
-                            type="button"
-                            className={
-                              fastMode ? 'pill px-[10px] py-1 text-[12px]' : 'pill on px-[10px] py-1 text-[12px]'
-                            }
-                            onClick={() => setFastMode(false)}
-                          >
-                            {t('off')}
-                          </button>
                         </div>
                       </div>
                     )}
@@ -1640,7 +1602,12 @@ export default function AddAgentModal({
           {t('cancel')}
         </Button>
         <Button
-          disabled={busy || !effectiveRuntime || (memoryProvider === 'external' && !externalMemory.connectionId)}
+          disabled={
+            busy ||
+            !effectiveRuntime ||
+            !modelSelectionValid ||
+            (memoryProvider === 'external' && !externalMemory.connectionId)
+          }
           onClick={submit}
         >
           <Icon name="bot" size={15} />

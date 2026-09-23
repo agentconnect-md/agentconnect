@@ -109,7 +109,6 @@ export class K8sDriver implements SpawnDriver {
       endpoints,
       binder: this.binder,
       grantsFor: (subject) => this.grantsFor(subject),
-      holdCompanion: (subject, held) => this.holdCompanion(subject, held),
       clock: this.clock,
       log: deps.log,
       metrics: this.metrics
@@ -560,24 +559,6 @@ export class K8sDriver implements SpawnDriver {
   /** Start the runtime through the subject's shim; the dial, bind and hold logic is the generic driver's. */
   launch(request: SpawnRequest): Promise<SpawnedRuntime> {
     return this.shim.launch(request)
-  }
-
-  // A session runtime keeps its agent's pod reachable for the agent-scoped seams (managed memory, merge-when-ready, the console's primary checkout): bound and held for the runtime's life, reported rather than raised, so a companion that will not come up degrades those seams, never the launch.
-  private async holdCompanion(subject: SandboxSubject, held: SandboxLaunch[]): Promise<void> {
-    if (sandboxSubjectSessionLeaf(subject) === undefined) return
-    const companion = agentSandboxSubject(sandboxSubjectAgentId(subject))
-    let launch: SandboxLaunch | undefined
-    try {
-      launch = await this.ensureSandbox(companion)
-      this.lease.retain(launch.sandboxName)
-      await this.ensureBoundChannel(companion)
-      held.push(launch)
-    } catch (err) {
-      if (launch) this.lease.release(launch.sandboxName)
-      this.deps.log.warn(
-        `cluster: agent ${companion} pod is not reachable beside its session pod — ${(err as Error).message}`
-      )
-    }
   }
 
   /** Re-attach a renewed or replacement connection to the launch it belongs to. */

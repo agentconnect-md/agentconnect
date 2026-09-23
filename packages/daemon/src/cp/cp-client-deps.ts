@@ -410,9 +410,11 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     ...(host.k8sPlane()
       ? {
           sandboxKeepAlive: createSandboxKeepAlive({
-            // The pod this page's worktree lives on, through the SAME scope the status read resolves its root with and the same routing rule, so the lease, the judgement and the read can never name different pods (§11).
+            // A session's page holds the pod its own directory is on, as its wake resolves it, which its tree's status read routes to as well (§11).
             podFor: async (id, sessionId) =>
-              host.k8sPlane()!.subjectForPath(id, await workspaceScope.gitRoot(id, sessionId)),
+              (sessionId === undefined
+                ? undefined
+                : await sessionPodOf(workspaceScope, host.k8sPlane()!, id, sessionId)) ?? agentSandboxSubject(id),
             agentPod: (id) => agentSandboxSubject(id),
             holdIfBound: (subject) => host.k8sPlane()!.holdIfBound(subject),
             knownAgent: (id) => host.agents().has(id),

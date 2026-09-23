@@ -68,6 +68,57 @@ async function execution(userId = DEFAULT_OWNER_ID) {
 }
 
 describe('Decision management and standalone preview', () => {
+  it('authorizes model bindings, validates rules, and protects bound Decisions from deletion', async () => {
+    const owner = appAs(),
+      editor = appAs(await member('collaborator'))
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    const url = `/api/v1/orgs/${DEFAULT_ORG_ID}/agents/${agentId}`
+    const id = (
+      await owner.app.inject({
+        method: 'POST',
+        url: BASE,
+        payload: { ...draft, visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }
+      })
+    ).json().id
+    const modelSelection = {
+      decisionId: id,
+      rules: [{ when: { type: 'boolean', values: [true] }, runtime: 'claude', model: 'model-capable' }]
+    }
+    const patch = (app: HttpApp, payload: object) => app.app.inject({ method: 'PATCH', url, payload })
+    expect((await patch(editor, { model: 'model-standard', modelSelection })).statusCode).toBe(403)
+    expect((await patch(owner, { modelSelection })).statusCode).toBe(400)
+    expect(
+      (
+        await patch(owner, {
+          model: 'model-standard',
+          modelSelection: {
+            ...modelSelection,
+            rules: [{ when: { type: 'score', min: 0, max: 1 }, runtime: 'claude', model: 'model-capable' }]
+          }
+        })
+      ).statusCode
+    ).toBe(400)
+    expect((await patch(owner, { model: 'model-standard', modelSelection })).json()).toMatchObject({
+      modelSelection,
+      decisionIds: []
+    })
+    expect((await patch(editor, { modelSelection })).statusCode).toBe(200)
+    expect((await patch(editor, { decisionIds: [id] })).statusCode).toBe(403)
+    expect((await owner.app.inject({ method: 'GET', url: `${BASE}/${id}` })).json().usages).toEqual([
+      expect.objectContaining({ kind: 'model_selection', id: agentId })
+    ])
+    expect((await editor.app.inject({ method: 'GET', url: `${url}/decisions` })).json()).toEqual([])
+    const retained = (
+      await editor.app.inject({ method: 'GET', url: `${url}/decisions?purpose=model_selection` })
+    ).json()
+    expect(retained).toEqual([expect.objectContaining({ id })])
+    expect(retained[0]).not.toHaveProperty('question')
+    expect((await owner.app.inject({ method: 'DELETE', url: `${BASE}/${id}` })).statusCode).toBe(409)
+    expect((await patch(owner, { model: null })).statusCode).toBe(400)
+    expect((await patch(owner, { modelSelection: null })).statusCode).toBe(200)
+    expect((await owner.app.inject({ method: 'DELETE', url: `${BASE}/${id}` })).statusCode).toBe(204)
+  })
   it('resolves only attached IDs in the organization, including Selected Decisions, and pages deterministically', async () => {
     const repo = new PgDecisionRepo(prisma)
     const orgId = OrgId(DEFAULT_ORG_ID)

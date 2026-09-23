@@ -402,6 +402,7 @@ function renderReasoning(buf: string): string {
  *  and context/token/cost each arrive on their own cadence (context/cost stream live;
  *  token totals refresh at turn end). */
 export interface StatusBarInfo {
+  runtime?: string
   model?: string
   effort?: string
   /** Effective session permission preset. Codex Auto is a composite value, not a raw ACP mode. */

@@ -298,6 +298,7 @@ export type RuntimeModelCapability = z.infer<typeof RuntimeModelCapability>
  * no field renames between layers.
  */
 export const RuntimeModelCatalog = z.object({
+  modelSwitching: z.boolean().optional(),
   models: z.array(RuntimeModelCapability).max(128),
   defaultModel: z.string().optional(), // resolved concrete model id (never the literal "default")
   permissionModes: z.array(PermissionModeOption).optional(),

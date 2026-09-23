@@ -228,6 +228,8 @@ export interface SessionRecord {
   transportScope?: string | null
   /** What the RUNTIME knows this session by, used on the ACP hop alone (§1.1). Null until it exists. */
   acpSessionId: string | null
+  // The Decision-selected model (including a fallback), pinned for this logical session.
+  decisionModel?: string | null
   /** The session's OUTWARD identity (§1.1), minted when the slot resolves — so it exists before
    *  the runtime does. Null only on a pre-v12 row that had no ACP id to backfill from. */
   sessionId?: string | null
@@ -1048,7 +1050,7 @@ export const TRANSCRIPT_ADMISSION_BACKFILL = `
                             ELSE CONCAT(s.channel, '${TRANSCRIPT_SCOPE_SEPARATOR}', s.transportScope) END
 `
 
-export const SCHEMA_VERSION = 24
+export const SCHEMA_VERSION = 25
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1341,7 +1343,8 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
       UPDATE transcript SET thread = NULL WHERE thread LIKE '${APPEND_COORDINATE_PREFIX}%';
       DROP TABLE transcript_recipient_legacy;
     `)
-  }
+  },
+  async (db) => await db.exec('ALTER TABLE sessions ADD COLUMN decisionModel TEXT')
 ]
 
 // The list and the version are two halves of one fact: step `i` moves a database from
@@ -1450,7 +1453,7 @@ export class LocalStore {
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
         transportScope TEXT, originCodeHostReplyTarget TEXT, acpSessionId TEXT, sessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
         usage TEXT, muted INTEGER, triggeredBy TEXT, title TEXT, threadUrl TEXT, modelOverride TEXT,
-        observedModel TEXT, observedModelSet INTEGER NOT NULL DEFAULT 0,
+        observedModel TEXT, observedModelSet INTEGER NOT NULL DEFAULT 0, decisionModel TEXT,
         effortOverride TEXT, permissionModeOverride TEXT, fastModeOverride INTEGER,
         outputModeOverride TEXT, statusBarTs TEXT, memoryProvider TEXT, workspaceIsolation TEXT,
         originSessionId TEXT, lastTurnOutcome TEXT, needsParentReply INTEGER,
@@ -3361,6 +3364,12 @@ export class LocalStore {
     await this.db.prepare('UPDATE sessions SET modelOverride = ? WHERE key = ?').run(model, key)
   }
 
+  async pinDecisionModel(key: string, runtime: string, model: string): Promise<void> {
+    await this.db
+      .prepare('UPDATE sessions SET decisionModel = ? WHERE key = ? AND decisionModel IS NULL')
+      .run(JSON.stringify({ runtime, model }), key)
+  }
+
   /** The session-scoped reasoning-effort override (set via the status-bar effort picker),
    *  or undefined if the session runs on the agent's default. Sticky across turns and
    *  restarts, re-applied to the ACP session on each dispatch. */
@@ -3553,6 +3562,16 @@ export class LocalStore {
   async agentLastActivityTs(agentId: string): Promise<number | null> {
     const row = (await this.db
       .prepare("SELECT MAX(updatedAt) AS ts FROM sessions WHERE agentId = ? AND state != 'closed'")
+      .get(agentId)) as { ts: number | null } | undefined
+    return row?.ts ?? null
+  }
+
+  /** {@link agentLastActivityTs} over the agent's sessions that are not isolated — on a pool, the ones that run in the agent's own pod (k8s-daemon-pool §4). */
+  async agentSharedLastActivityTs(agentId: string): Promise<number | null> {
+    const row = (await this.db
+      .prepare(
+        "SELECT MAX(updatedAt) AS ts FROM sessions WHERE agentId = ? AND state != 'closed' AND (workspaceIsolation IS NULL OR workspaceIsolation != 'session')"
+      )
       .get(agentId)) as { ts: number | null } | undefined
     return row?.ts ?? null
   }

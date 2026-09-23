@@ -15,9 +15,31 @@ const mocks = vi.hoisted(() => ({
   openPlayground: vi.fn(() => 'pg_1'),
   pgSend: vi.fn(),
   pgSetModel: vi.fn(),
+  pgStageRuntime: vi.fn(),
   pgSetEffort: vi.fn(),
   pgSetPermissionPreset: vi.fn(),
   push: vi.fn()
+}))
+
+vi.mock('@/lib/decisions/provider', () => ({ useDecisionsPrototype: () => ({ decisions: [] }) }))
+vi.mock('@/components/console/RuntimeModelSelect', () => ({
+  RuntimeModelSelect: (props: {
+    value: { runtime: string; model: string }
+    source?: { runtimeModels: Array<{ runtime: string; models: string[] }> }
+    decision?: { selected: boolean }
+    onChange(value: { runtime: string; model: string }): void
+  }) => {
+    mocks.menus.push({
+      title: 'Model',
+      value: props.decision?.selected ? 'By decision' : props.value.model,
+      options: props.source?.runtimeModels.find((item) => item.runtime === props.value.runtime)?.models ?? []
+    })
+    return (
+      <button data-runtime-choice onClick={() => props.onChange({ runtime: 'codex', model: 'code-model' })}>
+        Choose runtime
+      </button>
+    )
+  }
 }))
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mocks.push }) }))
@@ -44,6 +66,7 @@ vi.mock('@/components/console/PlaygroundProvider', () => ({
     openPlayground: mocks.openPlayground,
     pgSend: mocks.pgSend,
     pgSetModel: mocks.pgSetModel,
+    pgStageRuntime: mocks.pgStageRuntime,
     pgSetEffort: mocks.pgSetEffort,
     pgSetPermissionPreset: mocks.pgSetPermissionPreset
   })
@@ -104,6 +127,7 @@ const agent = (over: Record<string, unknown> = {}) => ({
   model: '',
   reasoning: '',
   permissionMode: '',
+  allowRuntimeChangesInChat: true,
   daemon: 'd1',
   status: 'online',
   icon: null,
@@ -137,6 +161,7 @@ beforeEach(() => {
   mocks.openPlayground.mockClear()
   mocks.pgSend.mockClear()
   mocks.pgSetModel.mockClear()
+  mocks.pgStageRuntime.mockClear()
   mocks.pgSetEffort.mockClear()
   mocks.pgSetPermissionPreset.mockClear()
   mocks.push.mockClear()
@@ -149,6 +174,29 @@ afterEach(() => {
 const menu = (title: string) => mocks.menus.find((m) => m.title === title)
 
 describe('HomeView run-selectors (catalog-aware)', () => {
+  it.each([false, true])('keeps Decision automatic unless a runtime pair is selected (manual=%s)', async (manual) => {
+    mocks.agents = [agent({ modelSelection: { decisionId: 'example-decision', rules: [] } })]
+    mocks.daemons = [daemon()]
+    await render()
+    expect(menu('Model')?.value).toBe('By decision')
+    if (manual) await act(async () => host.querySelector<HTMLButtonElement>('[data-runtime-choice]')!.click())
+    const textarea = host.querySelector('textarea')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, 'Opening request')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => host.querySelector<HTMLButtonElement>('button.sendbtn')!.click())
+    expect(mocks.pgSend).toHaveBeenCalled()
+    expect(mocks.pgSetModel).not.toHaveBeenCalled()
+    if (manual) {
+      expect(mocks.pgStageRuntime).toHaveBeenCalledWith('pg_1', { runtime: 'codex', model: 'code-model' })
+    } else {
+      expect(mocks.pgStageRuntime).not.toHaveBeenCalled()
+      expect(mocks.pgSetEffort).not.toHaveBeenCalled()
+      expect(mocks.pgSetPermissionPreset).not.toHaveBeenCalled()
+    }
+  })
+
   it('resolves a blank stored model to the daemon default (shown == what runs)', async () => {
     mocks.agents = [agent({ model: '' })]
     mocks.daemons = [daemon()]

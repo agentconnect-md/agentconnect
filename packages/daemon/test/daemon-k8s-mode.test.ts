@@ -1854,6 +1854,132 @@ describe('an isolated session reaches the agent pod only for work due there (#18
   })
 })
 
+// The agent pod answers to the work that runs IN it and to its own sessions' clock, never to an isolated session's (k8s-daemon-pool.md §4, step 8).
+describe('the idle sweep keeps the agent pod only for its own work (#1896)', () => {
+  const ISOLATED = 'slack:C1:T1:bot-a'
+  const SHARED = 'slack:C1:T2:bot-a'
+  const AGENT_POD = agentSandboxSubject('bot-a')
+  const SESSION_POD = sandboxSubjectFor(sessionHostKey('bot-a', ISOLATED))
+
+  /** A member holding the agent pod, launched long ago, and one isolated session's pod, recording what the sweep suspends. */
+  async function poolMember(store?: LocalStore) {
+    const suspended: string[] = []
+    const instance = daemon({
+      root: root(),
+      k8s: true,
+      ...(store ? { store } : {}),
+      plane: {
+        launched: () => [
+          { subject: AGENT_POD, agentId: 'bot-a', since: 0 },
+          { subject: SESSION_POD, agentId: 'bot-a', since: Date.now() }
+        ],
+        suspendIdle: async (subject: string) => {
+          suspended.push(subject)
+          return 'suspended'
+        }
+      }
+    })
+    await instance.start()
+    const inner = instance as any
+    inner.agents.set('bot-a', poolAgent('session'))
+    inner.sessionIsolation.set(ISOLATED, 'session')
+    inner.sessionIsolation.set(SHARED, 'shared')
+    const ttl = inner.cfg.limits.agentIdleTimeoutMs
+    /** Whether one sweep, well past the window, suspends the agent pod. */
+    const suspendsAgentPod = async (): Promise<boolean> => {
+      suspended.length = 0
+      await inner.sweepIdleSandboxes(Date.now() + 2 * ttl, ttl)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      return suspended.includes(AGENT_POD)
+    }
+    return { instance, inner, suspendsAgentPod }
+  }
+
+  it('lets the agent pod go under an isolated session’s host, dispatch or turn, and keeps it for its own', async () => {
+    const pool = await poolMember()
+    const { inner } = pool
+    try {
+      const host = { stop: async () => {} }
+      const scenarios: Array<{ name: string; set: () => () => void; keeps: boolean }> = []
+      for (const [key, keeps] of [
+        [ISOLATED, false],
+        [SHARED, true]
+      ] as const) {
+        const hostKey = inner.hostKeyFor('bot-a', key)
+        scenarios.push(
+          {
+            name: `a host of ${key}`,
+            set: () => (inner.hosts.set(hostKey, host), () => inner.hosts.delete(hostKey)),
+            keeps
+          },
+          {
+            name: `a model-session host of ${key}`,
+            set: () => {
+              inner.modelSessions.entries.set(key, { agentId: 'bot-a', sessionKey: key, host })
+              return () => inner.modelSessions.entries.delete(key)
+            },
+            keeps
+          },
+          { name: `a dispatch of ${key}`, set: () => inner.beginActiveDispatch('bot-a', key), keeps },
+          {
+            name: `a pending turn of ${key}`,
+            set: () => {
+              inner.pending.set(`turn-${key}`, { plan: { agentId: 'bot-a', sessionKey: key } })
+              return () => inner.pending.delete(`turn-${key}`)
+            },
+            keeps
+          }
+        )
+      }
+      // A turn whose session has not reported its tier yet may still be headed for the agent pod.
+      scenarios.push({
+        name: 'a dispatch of an unreported session',
+        set: () => inner.beginActiveDispatch('bot-a', 'slack:C1:T3:bot-a'),
+        keeps: true
+      })
+      expect(await pool.suspendsAgentPod()).toBe(true)
+      for (const scenario of scenarios) {
+        const clear = scenario.set()
+        expect({ [scenario.name]: await pool.suspendsAgentPod() }).toEqual({ [scenario.name]: !scenario.keeps })
+        clear()
+      }
+    } finally {
+      await pool.instance.stop()
+    }
+  })
+
+  it('judges the agent pod by its own sessions’ activity, which an isolated session’s traffic does not refresh', async () => {
+    const store = await LocalStore.open(':memory:')
+    const pool = await poolMember(store)
+    const row = (key: string, workspaceIsolation: 'shared' | 'session', updatedAt: number) =>
+      store.upsertSession({
+        key,
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread: key,
+        acpSessionId: null,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt,
+        workspaceIsolation
+      })
+    try {
+      const ttl = pool.inner.cfg.limits.agentIdleTimeoutMs
+      const late = Date.now() + 2 * ttl
+      // Busy isolated traffic up to the sweep, while the one shared session went quiet long ago.
+      await row(ISOLATED, 'session', late)
+      await row(SHARED, 'shared', 0)
+      expect(await pool.suspendsAgentPod()).toBe(true)
+      // The agent pod's own session speaking keeps it, as before.
+      await row(SHARED, 'shared', late)
+      expect(await pool.suspendsAgentPod()).toBe(false)
+    } finally {
+      await pool.instance.stop()
+    }
+  })
+})
+
 /** The session seam that decides an agent's MCP servers, asked about an ordinary agent. */
 function mcpServersFor(
   instance: Daemon

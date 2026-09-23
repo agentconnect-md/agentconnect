@@ -18,6 +18,7 @@ interface AnchoredFlyoutProps {
   trigger: (controls: AnchoredFlyoutControls) => ReactNode
   children: (controls: Pick<AnchoredFlyoutControls, 'close'>) => ReactNode
   ariaLabel: string
+  role?: 'menu' | 'dialog'
   width?: number
   /** Grow to the trigger's width when it is wider than `width` — a full-width mobile control. */
   matchTriggerWidth?: boolean
@@ -63,6 +64,7 @@ export function AnchoredFlyout({
   trigger,
   children,
   ariaLabel,
+  role = 'menu',
   width = 280,
   matchTriggerWidth = false,
   estimatedHeight = 160,
@@ -139,7 +141,7 @@ export function AnchoredFlyout({
               ref={menuRef}
               data-anchored-flyout
               id={menuId}
-              role="menu"
+              role={role}
               aria-label={ariaLabel}
               className={`fixed z-[1100] overflow-y-auto rounded-lg border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg) ${className}`}
               style={style}
