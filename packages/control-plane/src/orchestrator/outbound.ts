@@ -208,6 +208,11 @@ export class ControlSender {
     return this.registry.get(daemonId)?.capabilities?.features
   }
 
+  /** Whether a daemon's connection has reached READY on this CP (the routing host's liveness). */
+  daemonLive(daemonId: string): boolean {
+    return this.registry.get(daemonId)?.state === 'READY'
+  }
+
   /** The live connection state for a daemon, or throw {@link NoConnection}. */
   private must(daemonId: string): DaemonConnState {
     const c = this.registry.get(daemonId)

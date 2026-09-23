@@ -1,9 +1,12 @@
 import {
   DecisionBundle,
+  SharedBotRoutingProjection,
   decisionConditionIssues,
+  decisionRoutingIssues,
   supportsDecision,
   type ChannelDecisionGate,
-  type DecisionBundleDefinition
+  type DecisionBundleDefinition,
+  type SharedBotDecisionRouting
 } from '@agentconnect.md/protocol'
 
 /** One enabled By decision gate with the definition it evaluates. */
@@ -13,10 +16,25 @@ export interface ResolvedDecisionGate {
   definition: DecisionBundleDefinition
 }
 
+/** One shared-bot routed channel; `routing` is present only where this daemon is the named evaluation host. */
+export interface ResolvedRoutedChannel {
+  channel: string
+  enabled: boolean
+  disabledReason?: string
+  routing?: {
+    botId: string
+    config: SharedBotDecisionRouting
+    definition: DecisionBundleDefinition
+    defaultAgentId?: string
+  }
+}
+
 /** An integration's validated bundle: `bound` holds every channel with ANY binding, enabled or not. */
 export interface ResolvedDecisionBundle {
   gates: ReadonlyMap<string, ResolvedDecisionGate>
+  routed: ReadonlyMap<string, ResolvedRoutedChannel>
   bound: ReadonlySet<string>
+  sharedBotRouting?: { botId: string; config: SharedBotDecisionRouting }
 }
 
 // Bundles are replaced whole on every upsert and never edited in place, so identity keying is sound and logs once.
@@ -30,8 +48,12 @@ export function resolveDecisionBundle(
   const cached = resolved.get(bundle)
   if (cached) return cached
   const gates = new Map<string, ResolvedDecisionGate>()
+  const routed = new Map<string, ResolvedRoutedChannel>()
   const bound = new Set<string>()
-  const parsed = DecisionBundle.safeParse(bundle)
+  let sharedBotRouting: ResolvedDecisionBundle['sharedBotRouting']
+  // The host projection validates on its own, so a malformed one holds routed channels without taking the gates down.
+  const { sharedBotRouting: projection, ...rest } = (bundle ?? {}) as DecisionBundle & { sharedBotRouting?: unknown }
+  const parsed = DecisionBundle.safeParse(rest)
   if (!parsed.success) {
     // An unreadable bundle still names its channels where it can, so they are held rather than opened.
     for (const binding of (bundle as { bindings?: unknown[] })?.bindings ?? []) {
@@ -41,8 +63,32 @@ export function resolveDecisionBundle(
     warn?.('decision: bundle failed validation; holding every bound conversation')
   } else {
     const definitions = new Map(parsed.data.definitions.map((d) => [d.id, d]))
+    const host = hostRouting(projection, definitions, warn)
+    if (host) sharedBotRouting = { botId: host.botId, config: host.config }
     for (const binding of parsed.data.bindings) {
       bound.add(binding.channel)
+      // A router binding is never a gate: it stays bound and held here until 5b routes it.
+      if (binding.consumer.type === 'shared_bot_routing') {
+        const hosted = binding.enabled ? host?.channels.get(binding.channel) : undefined
+        routed.set(binding.channel, {
+          channel: binding.channel,
+          enabled: binding.enabled,
+          ...(binding.disabledReason ? { disabledReason: binding.disabledReason } : {}),
+          ...(host && hosted
+            ? {
+                routing: {
+                  botId: host.botId,
+                  config: host.config,
+                  definition: host.definition,
+                  ...(hosted.defaultAgentId ? { defaultAgentId: hosted.defaultAgentId } : {})
+                }
+              }
+            : {})
+        })
+        if (!binding.enabled)
+          warn?.(`decision: routed ${binding.channel} disabled (${binding.disabledReason ?? 'disabled'})`)
+        continue
+      }
       const reason = disabledReason(binding, definitions)
       if (reason) {
         warn?.(`decision: binding for ${binding.channel} disabled (${reason})`)
@@ -56,9 +102,44 @@ export function resolveDecisionBundle(
       })
     }
   }
-  const result = { gates, bound }
+  const result: ResolvedDecisionBundle = { gates, routed, bound, ...(sharedBotRouting ? { sharedBotRouting } : {}) }
   resolved.set(bundle, result)
   return result
+}
+
+/** The host projection, only when its config parses, its Decision is present and valid, and its model is supported. */
+function hostRouting(
+  projection: unknown,
+  definitions: ReadonlyMap<string, DecisionBundleDefinition>,
+  warn?: (message: string) => void
+):
+  | {
+      botId: string
+      config: SharedBotDecisionRouting
+      definition: DecisionBundleDefinition
+      channels: ReadonlyMap<string, { defaultAgentId?: string }>
+    }
+  | undefined {
+  if (projection === undefined) return undefined
+  const parsed = SharedBotRoutingProjection.safeParse(projection)
+  const definition = parsed.success ? definitions.get(parsed.data.config.decisionId) : undefined
+  if (
+    !parsed.success ||
+    !definition ||
+    decisionRoutingIssues(definition.question, parsed.data.config).length > 0 ||
+    !supportsDecision(definition)
+  ) {
+    warn?.('decision: shared-bot routing failed validation; holding every routed conversation')
+    return undefined
+  }
+  return {
+    botId: parsed.data.botId,
+    config: parsed.data.config,
+    definition,
+    channels: new Map(
+      parsed.data.channels.map((c) => [c.channel, c.defaultAgentId ? { defaultAgentId: c.defaultAgentId } : {}])
+    )
+  }
 }
 
 function disabledReason(
@@ -66,7 +147,7 @@ function disabledReason(
   definitions: ReadonlyMap<string, DecisionBundleDefinition>
 ): string | undefined {
   if (!binding.enabled) return binding.disabledReason ?? 'disabled'
-  if (binding.consumer.type !== 'gate') return `unsupported consumer ${binding.consumer.type}`
+  if (binding.consumer.type !== 'gate') return 'not a gate'
   const definition = definitions.get(binding.consumer.decisionId)
   if (!definition) return 'missing definition'
   if (decisionConditionIssues(definition.question, binding.consumer.when).length > 0) return 'incompatible condition'

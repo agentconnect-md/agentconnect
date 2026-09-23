@@ -9,7 +9,12 @@
  */
 import type { Agent, BindMatch, BindRuleConfig, Integration } from '../agents/agent-schema.js'
 import { configuredBotSelfId, integrationCore } from '../platforms/integration-config.js'
-import { resolveDecisionBundle, type ResolvedDecisionGate } from '../decisions/bundle.js'
+import {
+  resolveDecisionBundle,
+  type ResolvedDecisionBundle,
+  type ResolvedDecisionGate,
+  type ResolvedRoutedChannel
+} from '../decisions/bundle.js'
 import type { ActivationRule } from '@agentconnect.md/activation-policy'
 import type { ChannelSessionMode, RouteAssign, RouteUpdate } from '@agentconnect.md/protocol'
 
@@ -36,6 +41,10 @@ export function integrationRouting(int: Integration): {
   decisionBindingFor(channel: string): ResolvedDecisionGate | undefined
   /** Whether the channel is By decision: a bundle binding (enabled or not) or a decision bind rule covering it. */
   decisionBound(channel: string): boolean
+  /** The channel's shared-bot router binding, with the routing config only where this daemon is the host. */
+  routingFor(channel: string): ResolvedRoutedChannel | undefined
+  /** The bot router this daemon hosts for this integration, if any. */
+  sharedBotRouting(): ResolvedDecisionBundle['sharedBotRouting']
 } {
   const { bindRules, mutedChannels, gated, decisions } = integrationCore(int)
   const bundle = resolveDecisionBundle(decisions)
@@ -45,6 +54,8 @@ export function integrationRouting(int: Integration): {
     mutedChannels,
     gated,
     decisionBindingFor: (channel) => bundle.gates.get(channel),
+    routingFor: (channel) => bundle.routed.get(channel),
+    sharedBotRouting: () => bundle.sharedBotRouting,
     // A decision rule with no bundle entry is held, never Any: a hand-authored agent.json can carry one.
     decisionBound: (channel) =>
       bundle.bound.has(channel) ||

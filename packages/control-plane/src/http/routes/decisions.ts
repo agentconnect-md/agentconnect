@@ -13,7 +13,7 @@ import {
 import { canEdit, canView } from '../../authorization/policy.js'
 import { AgentId, DaemonId } from '../../domain/ids.js'
 import { DecisionInUse } from '../../persistence/errors.js'
-import type { AgentRecord, DecisionChannelUsage } from '../../persistence/ports.js'
+import type { AgentRecord, BotDecisionRoutingUsage, DecisionChannelUsage } from '../../persistence/ports.js'
 import { convergeDecisionConsumers } from '../../orchestrator/integrationPush.js'
 import type { HttpDeps } from '../deps.js'
 import { visibleDecision } from '../decision-access.js'
@@ -130,6 +130,18 @@ export function decisionRoutes(deps: HttpDeps) {
       integrationId: u.integrationId,
       channelId: u.channelId
     })
+    // Shared-bot routers on these Decisions, visible when the caller can see at least one of the bot's agents.
+    const routingUsages = async (req: FastifyRequest, decisionIds?: readonly string[]) => {
+      const all = await deps.repos.botDecisionRouting.listUsages(orgOf(req), decisionIds)
+      if (all.length === 0) return { all, visible: [] as BotDecisionRoutingUsage[] }
+      const agents = new Set((await deps.repos.agent.list(orgOf(req), ctxOf(req))).map((a) => a.id))
+      return { all, visible: all.filter((usage) => usage.agentIds.some((id) => agents.has(id))) }
+    }
+    const routingUsageDto = (u: BotDecisionRoutingUsage) => ({
+      kind: 'shared_bot_routing' as const,
+      id: u.botId,
+      label: u.botName
+    })
     // Distinct conversations, counted across sibling rows the same way as the visible set.
     const conversationCount = (usages: readonly DecisionChannelUsage[]) =>
       new Set(usages.map((u) => `${u.botId}\u0000${u.channelId}`)).size
@@ -237,18 +249,20 @@ export function decisionRoutes(deps: HttpDeps) {
           summary: 'List Decisions',
           operationId: 'listDecisions',
           description:
-            'Lists reusable Decision definitions visible to the caller, each with the number of visible conversations it gates. Message consumers are not enabled by saving a definition.',
+            'Lists reusable Decision definitions visible to the caller, each with the number of visible consumers: conversations it gates, shared-bot routers, and agents. Message consumers are not enabled by saving a definition.',
           response: { 200: z.array(DefinitionDto.extend({ usageCount: z.number().int() })) }
         }
       },
       async (req) => {
         const [rows, agents] = await Promise.all([deps.repos.decision.list(orgOf(req), ctxOf(req)), agentUsages(req)])
-        const { visible: gates } = await visibleUsages(
-          req,
-          rows.map((row) => row.id)
-        )
+        const ids = rows.map((row) => row.id)
+        const [{ visible: gates }, { visible: routers }] = await Promise.all([
+          visibleUsages(req, ids),
+          routingUsages(req, ids)
+        ])
         const counts = new Map<string, number>()
-        for (const usage of [...gates, ...agents]) counts.set(usage.decisionId, (counts.get(usage.decisionId) ?? 0) + 1)
+        for (const usage of [...gates, ...routers, ...agents])
+          counts.set(usage.decisionId, (counts.get(usage.decisionId) ?? 0) + 1)
         return rows.map((row) => ({ ...dto(row, req), usageCount: counts.get(row.id) ?? 0 }))
       }
     )
@@ -261,7 +275,7 @@ export function decisionRoutes(deps: HttpDeps) {
           summary: 'Get a Decision',
           operationId: 'getDecision',
           description:
-            'Returns a visible Decision and its visible consumers: each By decision conversation gate whose agent the caller can see.',
+            'Returns a visible Decision and its visible consumers: each By decision conversation gate whose agent the caller can see, each shared-bot router whose bot connects an agent the caller can see, and each agent that uses it.',
           params: IdParam,
           response: { 200: z.object({ decision: DefinitionDto, usages: z.array(UsageDto) }), 404: ErrorDto }
         }
@@ -270,10 +284,15 @@ export function decisionRoutes(deps: HttpDeps) {
         const row = await visible(req, req.params.id)
         if (!row) return reply.code(404).send(notFound)
         const { visible: gates } = await visibleUsages(req, [row.id])
+        const { visible: routers } = await routingUsages(req, [row.id])
         const agents = (await agentUsages(req)).filter((usage) => usage.decisionId === row.id)
         return {
           decision: dto(row, req),
-          usages: [...gates.map(usageDto), ...agents.map(({ decisionId: _decisionId, ...usage }) => usage)]
+          usages: [
+            ...gates.map(usageDto),
+            ...routers.map(routingUsageDto),
+            ...agents.map(({ decisionId: _decisionId, ...usage }) => usage)
+          ]
         }
       }
     )
@@ -335,7 +354,7 @@ export function decisionRoutes(deps: HttpDeps) {
         if (!checked.success) return reply.code(400).send(invalidAudience)
         const result = await deps.repos.decision.update(orgOf(req), req.params.id, input, ctxOf(req))
         if (!result) return reply.code(404).send(notFound)
-        await convergeDecisionConsumers(deps, result.consumerIntegrationIds, req.log)
+        await convergeDecisionConsumers(deps, result.consumerIntegrationIds, req.log, result.consumerBotIds)
         return dto(result.decision, req)
       }
     )
@@ -348,7 +367,7 @@ export function decisionRoutes(deps: HttpDeps) {
           summary: 'Delete a Decision',
           operationId: 'deleteDecision',
           description:
-            'Deletes a visible definition. Refused with 409 while a conversation gate or an agent still references it: usages lists what the caller can see and hiddenUsageCount counts the conversations and agents it cannot.',
+            'Deletes a visible definition. Refused with 409 while a conversation gate, a shared-bot router, or an agent still references it: usages lists what the caller can see and hiddenUsageCount counts the conversations, routers, and agents it cannot.',
           params: IdParam,
           response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: DecisionInUseDto }
         }
@@ -358,6 +377,7 @@ export function decisionRoutes(deps: HttpDeps) {
         if (!(await visible(req, req.params.id))) return reply.code(404).send(notFound)
         const inUse = async () => {
           const { all, visible: shown } = await visibleUsages(req, [req.params.id])
+          const routing = await routingUsages(req, [req.params.id])
           const agents = (await agentUsages(req)).filter((usage) => usage.decisionId === req.params.id)
           // Org-wide references count agents the caller cannot see, so the refusal never reads as unused.
           const referencing = new Set(
@@ -367,8 +387,10 @@ export function decisionRoutes(deps: HttpDeps) {
           )
           const hiddenAgents = [...referencing].filter((id) => !agents.some((usage) => usage.id === id)).length
           const conversations = conversationCount(all)
+          const routers = routing.all.length
           const parts = [
             ...(conversations ? [`${conversations} conversation${conversations === 1 ? '' : 's'}`] : []),
+            ...(routers ? [`${routers} shared bot${routers === 1 ? '' : 's'}`] : []),
             ...(referencing.size ? [`${referencing.size} agent${referencing.size === 1 ? '' : 's'}`] : [])
           ]
           return reply.code(409).send({
@@ -377,11 +399,19 @@ export function decisionRoutes(deps: HttpDeps) {
             message: parts.length
               ? `This Decision is used by ${parts.join(' and ')}.`
               : 'This Decision is still in use.',
-            usages: [...shown.map(usageDto), ...agents.map(({ decisionId: _decisionId, ...usage }) => usage)],
-            hiddenUsageCount: Math.max(0, conversations - shown.length) + hiddenAgents
+            usages: [
+              ...shown.map(usageDto),
+              ...routing.visible.map(routingUsageDto),
+              ...agents.map(({ decisionId: _decisionId, ...usage }) => usage)
+            ],
+            hiddenUsageCount:
+              Math.max(0, conversations - shown.length) + (routers - routing.visible.length) + hiddenAgents
           })
         }
-        if ((await deps.repos.integrationChannel.listDecisionUsages(orgOf(req), [req.params.id])).length > 0)
+        if (
+          (await deps.repos.integrationChannel.listDecisionUsages(orgOf(req), [req.params.id])).length > 0 ||
+          (await deps.repos.botDecisionRouting.listUsages(orgOf(req), [req.params.id])).length > 0
+        )
           return inUse()
         try {
           await deps.repos.decision.delete(orgOf(req), req.params.id, ctxOf(req))

@@ -5071,12 +5071,12 @@ export type ChannelTrigger = 'off' | 'mention' | 'any' | 'decision'
 /** A trigger a row can be seeded or defaulted to; By decision is only ever chosen, with its binding. */
 export type SeedTrigger = Exclude<ChannelTrigger, 'decision'>
 
-/** A trigger write: By decision carries its gate, so a decision trigger without a binding is unrepresentable. */
+/** A trigger write: By decision carries its binding, so a decision trigger without one is unrepresentable. */
 export type ChannelActivation =
   | { trigger: SeedTrigger }
   | {
       trigger: 'decision'
-      decisionBinding: import('@agentconnect.md/protocol').ChannelDecisionGate
+      decisionBinding: import('@agentconnect.md/protocol').ChannelDecisionBinding
       decisionNeedsReview: boolean
     }
 
@@ -5117,12 +5117,14 @@ export interface IntegrationChannelRecord {
   trigger: ChannelTrigger
   /** Which session a message here joins. Replicated across sibling rows like `trigger`. */
   sessionMode: ChannelSessionMode
-  /** The By decision gate; non-null exactly when `trigger` is 'decision' (null if it no longer parses). */
-  decisionBinding: import('@agentconnect.md/protocol').ChannelDecisionGate | null
+  /** The By decision consumer (a gate or the bot's router); non-null exactly when `trigger` is 'decision' (null if unparseable). */
+  decisionBinding: import('@agentconnect.md/protocol').ChannelDecisionBinding | null
   /** A Decision edit invalidated this gate; replicated across sibling rows like `trigger`. */
   decisionNeedsReview: boolean
-  /** The bound Decision's executable definition, joined on read; null without a binding. */
+  /** The bound gate Decision's executable definition, joined on read; null without a gate. */
   decisionDefinition: import('@agentconnect.md/protocol').DecisionBundleDefinition | null
+  /** The bot's router joined on read (botShared = http + shareable); null when the bot has none. Optional for older fixtures. */
+  decisionRouting?: ChannelDecisionRoutingRef | null
   /** The 1:1 DM counterpart's platform member id (§14.8); null on rooms and on rows
    *  discovered before the reporter carried it. */
   dmUserId: string | null
@@ -5255,6 +5257,14 @@ export interface IntegrationChannelRepo {
   namesForOrg(orgId: OrgId, conversations: readonly ConversationCoordinate[]): Promise<IntegrationChannelNameRecord[]>
   /** Every org conversation row gated by one of these Decisions (all of the org's when omitted). */
   listDecisionUsages(orgId: OrgId, decisionIds?: readonly string[]): Promise<DecisionChannelUsage[]>
+}
+
+/** The router state a conversation row reads through its bot. */
+export interface ChannelDecisionRoutingRef {
+  decisionId: string
+  enabled: boolean
+  needsReview: boolean
+  botShared: boolean
 }
 
 /** One conversation row whose By decision gate references a Decision. */
@@ -5442,9 +5452,54 @@ export interface DecisionRepo {
     decision: import('@agentconnect.md/protocol').DecisionDefinition
     /** Every integration with a gate on this Decision; incompatible gates are marked Needs review in the same tx. */
     consumerIntegrationIds: IntegrationId[]
+    /** Every bot whose router uses this Decision; incompatible routers are marked Needs review in the same tx. */
+    consumerBotIds: BotId[]
   } | null>
   /** Throws {@link DecisionInUse} while a conversation still references it. */
   delete(orgId: OrgId, id: string, actor: ViewCtx): Promise<void>
+}
+
+/** A shared bot's stored router (decisions.md §6.2); `definition` is the joined executable Decision. */
+export interface BotDecisionRoutingRecord {
+  botId: BotId
+  orgId: OrgId
+  config: import('@agentconnect.md/protocol').SharedBotDecisionRouting
+  needsReview: boolean
+  updatedAt: Date
+  definition: import('@agentconnect.md/protocol').DecisionBundleDefinition | null
+}
+
+/** One scope removal: the replacement trigger, and optionally the install whose agent becomes the owner. */
+export interface BotDecisionRoutingRemoval {
+  channelId: string
+  activation: { trigger: SeedTrigger }
+  ownerIntegrationId?: IntegrationId
+}
+
+/** One router referencing a Decision, with the agents its bot connects (for permission-filtered usages). */
+export interface BotDecisionRoutingUsage {
+  decisionId: string
+  botId: BotId
+  botName: string
+  agentIds: AgentId[]
+}
+
+export interface BotDecisionRoutingRepo {
+  get(orgId: OrgId, botId: BotId): Promise<BotDecisionRoutingRecord | null>
+  /** Orchestration read: the bot id arrived from a route or compile that already resolved its org. */
+  getUnscoped(botId: BotId): Promise<BotDecisionRoutingRecord | null>
+  /** Save the complete router and every scope change in one transaction; throws RoutingScopeChanged / RoutingChannelInvalid. */
+  save(
+    orgId: OrgId,
+    botId: BotId,
+    input: {
+      config: import('@agentconnect.md/protocol').SharedBotDecisionRouting
+      channelIds: readonly string[]
+      removals: readonly BotDecisionRoutingRemoval[]
+    },
+    actor: ViewCtx
+  ): Promise<BotDecisionRoutingRecord>
+  listUsages(orgId: OrgId, decisionIds?: readonly string[]): Promise<BotDecisionRoutingUsage[]>
 }
 
 export type VisibilityResourceKind = 'agent' | 'daemon' | 'cron' | 'mcpProvider' | 'skillSource' | 'decision'

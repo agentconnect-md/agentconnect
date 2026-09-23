@@ -5,8 +5,11 @@ import type { PlacementResolver } from './placementResolver.js'
 import type { GatedDmSeedResolver } from './linkedDm.js'
 import { RelayRegistry, type RelayChannel } from '../ws/relay-registry.js'
 import {
+  DECISION_ROUTING_FORWARD_V1_FEATURE,
+  DECISION_ROUTING_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
   type DecisionBundleDefinition,
+  type IntegrationSpec,
   type RcBotAssign,
   type RcRoutes,
   type RelayCpFrameType
@@ -27,7 +30,8 @@ import type {
   AgentRepo,
   AgentRecord,
   ThreadAffinityStore,
-  SessionRepo
+  SessionRepo,
+  BotDecisionRoutingRecord
 } from '../persistence/ports.js'
 import type { CpPlatformProvider } from '../platforms/provider.js'
 import { buildCpPlatformRegistry } from '../platforms/registry.js'
@@ -174,6 +178,11 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
   // What each daemon advertised (ControlSender.daemonFeatures) and the Decisions the channel join resolves.
   let daemonFeatures: Record<string, readonly string[]>
   let decisionDefinitions: Record<string, DecisionBundleDefinition>
+  // The bot router, READY daemons, stored Daemon.createdAt, and extra duty holders per agent.
+  let routingRecord: BotDecisionRoutingRecord | null
+  let liveDaemons: Set<string>
+  let daemonCreatedAt: Record<string, number>
+  let dutyHolders: Record<string, string[]>
 
   /** `placement` stands in for the duty ledger: absent ⇒ placement alone, which is what every
    *  expectation predating the pool was written against. */
@@ -291,7 +300,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         row.decisionBinding = activation.trigger === 'decision' ? activation.decisionBinding : null
         row.decisionNeedsReview = activation.trigger === 'decision' ? activation.decisionNeedsReview : false
         row.decisionDefinition =
-          activation.trigger === 'decision'
+          activation.trigger === 'decision' && activation.decisionBinding.type === 'gate'
             ? (decisionDefinitions[activation.decisionBinding.decisionId] ?? null)
             : null
         // Set-only, exactly like the repo: a decision does not expire.
@@ -334,6 +343,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     }
     const control = {
       daemonFeatures: (daemonId: string) => daemonFeatures[daemonId],
+      daemonLive: (daemonId: string) => liveDaemons.has(daemonId),
       integrationUpsert: async (daemonId: string, spec: unknown) =>
         void upserts.push({ daemonId, spec: spec as never }),
       integrationRemove: async (daemonId: string, r: { integrationId: string }) =>
@@ -383,9 +393,34 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       platforms,
       // No duty ledger wired ⇒ the delivery set is the placement alone, which is
       // exactly what every expectation in this file was written against.
-      new AgentDelivery({ control: control as never, specs: undefined as never }),
+      new AgentDelivery({
+        control: control as never,
+        specs: undefined as never,
+        ...(Object.keys(dutyHolders).length > 0
+          ? {
+              placement: {
+                servingDaemons: async (a: { id: string; daemonId?: string | null }) => [
+                  ...(a.daemonId ? [a.daemonId] : []),
+                  ...(dutyHolders[a.id] ?? [])
+                ]
+              } as never
+            }
+          : {})
+      }),
       placement ?? undefined,
-      gatedDmSeeds
+      gatedDmSeeds,
+      {
+        routings: {
+          getUnscoped: async () => routingRecord,
+          save: async () => {
+            throw new Error('not used')
+          }
+        },
+        daemons: {
+          getUnscoped: async (id) =>
+            daemonCreatedAt[id] === undefined ? null : ({ createdAt: new Date(daemonCreatedAt[id]!) } as never)
+        }
+      }
     )
   }
 
@@ -414,6 +449,10 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     warns = []
     daemonFeatures = {}
     decisionDefinitions = {}
+    routingRecord = null
+    liveDaemons = new Set()
+    daemonCreatedAt = {}
+    dutyHolders = {}
   })
 
   describe('lookupThread — SessionMeta fallback on affinity miss (§7.2 case 2a)', () => {
@@ -1944,6 +1983,185 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       await makeOrch().updateConversation(BOT, 'C1', { sessionMode: 'append' })
       for (const row of channels.filter((c) => c.channelId === 'C1'))
         expect(row).toMatchObject({ trigger: 'decision', decisionBinding: gate, sessionMode: 'append' })
+    })
+  })
+
+  describe('shared-bot By decision routing (message-intake.md §6)', () => {
+    const DECISION = '99999999-9999-4999-8999-999999999998'
+    const D3 = '33333333-3333-4333-8333-333333333333'
+    const both = [DECISION_TRIGGER_V1_FEATURE, DECISION_ROUTING_V1_FEATURE]
+    const definition: DecisionBundleDefinition = {
+      id: DECISION,
+      orgId: ORG,
+      name: 'Triage',
+      providerId: 'typesafe',
+      model: 'jev-1.13.0',
+      question: { type: 'boolean', instructions: 'Is it billing?', criteria: { true: 'Yes', false: 'No' } }
+    }
+    const config = {
+      enabled: true,
+      decisionId: DECISION,
+      rules: [
+        {
+          id: 'r1',
+          when: { type: 'boolean' as const, values: [true] },
+          action: { type: 'agent' as const, agentId: ALICE }
+        },
+        {
+          id: 'r2',
+          when: { type: 'boolean' as const, values: [false] },
+          action: { type: 'agent' as const, agentId: BOB }
+        }
+      ],
+      otherwise: { type: 'default_agent' as const }
+    }
+    const join = { decisionId: DECISION, enabled: true, needsReview: false, botShared: true }
+    const routedRow = (integrationId: IntegrationId, agentId: AgentId | null) =>
+      channel({
+        integrationId,
+        channelId: 'C1',
+        agentId,
+        trigger: 'decision',
+        decisionBinding: { type: 'shared_bot_routing' },
+        decisionRouting: join
+      })
+    let modern: FakeChannel
+    const lastOf = (relay: FakeChannel, type: RelayCpFrameType) =>
+      relay.sends.filter((send) => send.type === type).at(-1)?.payload as RcBotAssign | RcRoutes | undefined
+    const pushedTo = (daemonId: string) =>
+      upserts.filter((u) => u.daemonId === daemonId).at(-1)?.spec as unknown as IntegrationSpec | undefined
+
+    beforeEach(() => {
+      modern = new FakeChannel('55555555-5555-4555-8555-555555555556', [...both, DECISION_ROUTING_FORWARD_V1_FEATURE])
+      relayReg = new RelayRegistry()
+      relayReg.add(modern)
+      routingRecord = { botId: BOT, orgId: ORG, config, needsReview: false, updatedAt: new Date(0), definition }
+      channels = [routedRow(INT_B, BOB), routedRow(INT_A, null)]
+      liveDaemons = new Set([D1, D2])
+      daemonCreatedAt = { [D1]: 200, [D2]: 100 }
+      daemonFeatures = { [D1]: both, [D2]: both }
+    })
+
+    it("projects the default agent's daemon as host, and sends the router to that daemon only", async () => {
+      dutyHolders = { [BOB]: [D3] }
+      await makeOrch().syncBot(BOT)
+      const assign = lastOf(modern, 'rc/bot-assign')!
+      expect(assign.routedConversations).toEqual([{ channel: 'C1', decisionId: DECISION, evaluationDaemonId: D1 }])
+      expect(assign.routes.filter((r) => r.scope?.channel === 'C1')).toEqual([
+        {
+          agentId: BOB,
+          daemonId: D2,
+          integrationId: INT_B,
+          scope: { channel: 'C1' },
+          match: { kind: 'decision' },
+          decisionId: DECISION
+        }
+      ])
+      expect(assign.mutedChannels).not.toContain('C1')
+      expect(pushedTo(D1)?.core.decisions.sharedBotRouting).toEqual({
+        botId: BOT,
+        config,
+        channels: [{ channel: 'C1', defaultAgentId: BOB }]
+      })
+      expect(pushedTo(D1)?.core.decisions.definitions).toEqual([definition])
+      // A non-host member and a duty holder get the base spec: a held candidate binding, no router.
+      for (const other of [D2, D3]) {
+        expect(pushedTo(other)?.core.decisions.sharedBotRouting).toBeUndefined()
+        expect(pushedTo(other)?.core.decisions.definitions).toEqual([])
+        expect(pushedTo(other)?.core.decisions.bindings).toEqual([
+          { channel: 'C1', consumer: { type: 'shared_bot_routing' }, enabled: true }
+        ])
+      }
+    })
+
+    it('holds the conversation against current daemons, which lack decision-routing-v1', async () => {
+      daemonFeatures = { [D1]: [DECISION_TRIGGER_V1_FEATURE], [D2]: [DECISION_TRIGGER_V1_FEATURE] }
+      const orch = makeOrch()
+      await orch.syncBot(BOT)
+      const assign = lastOf(modern, 'rc/bot-assign')!
+      expect(assign.mutedChannels).toContain('C1')
+      expect(assign.routedConversations).toEqual([])
+      expect(assign.routes.some((r) => r.scope?.channel === 'C1')).toBe(false)
+      expect(pushedTo(D1)?.core.decisions.sharedBotRouting).toBeUndefined()
+      expect((await orch.describeRouting(botRow)).channels[0]?.readiness).toEqual({
+        status: 'unsupported',
+        reason: 'The evaluation host daemon does not support By decision routing yet.'
+      })
+      // The host upgrading in place releases the hold.
+      daemonFeatures = { ...daemonFeatures, [D1]: both }
+      await orch.daemonReady(D1)
+      const routes = lastOf(modern, 'rc/routes')!
+      expect(routes.mutedChannels).not.toContain('C1')
+      expect(routes.routedConversations).toEqual([{ channel: 'C1', decisionId: DECISION, evaluationDaemonId: D1 }])
+    })
+
+    it('moves the host to the earliest-created live candidate when it goes offline, and back', async () => {
+      const orch = makeOrch()
+      await orch.syncBot(BOT)
+      liveDaemons = new Set([D2])
+      upserts = []
+      await orch.daemonOffline(D1)
+      expect(lastOf(modern, 'rc/routes')!.routedConversations).toEqual([
+        { channel: 'C1', decisionId: DECISION, evaluationDaemonId: D2 }
+      ])
+      expect(pushedTo(D2)?.core.decisions.sharedBotRouting?.channels).toEqual([{ channel: 'C1', defaultAgentId: BOB }])
+      expect(pushedTo(D1)?.core.decisions.sharedBotRouting).toBeUndefined()
+      liveDaemons = new Set([D1, D2])
+      await orch.daemonReady(D1)
+      expect(lastOf(modern, 'rc/routes')!.routedConversations[0]?.evaluationDaemonId).toBe(D1)
+      expect(pushedTo(D2)?.core.decisions.sharedBotRouting).toBeUndefined()
+    })
+
+    it('holds every routed conversation while no candidate daemon is live', async () => {
+      liveDaemons = new Set()
+      await makeOrch().syncBot(BOT)
+      const assign = lastOf(modern, 'rc/bot-assign')!
+      expect(assign.mutedChannels).toContain('C1')
+      expect(assign.routedConversations).toEqual([])
+    })
+
+    it('mutes a paused router and one whose target left the bot, never as a revoked gate', async () => {
+      routingRecord = { ...routingRecord!, config: { ...config, enabled: false } }
+      channels = [
+        { ...routedRow(INT_B, BOB), decisionRouting: { ...join, enabled: false } },
+        { ...routedRow(INT_A, null), decisionRouting: { ...join, enabled: false } }
+      ]
+      const orch = makeOrch()
+      await orch.syncBot(BOT)
+      expect(lastOf(modern, 'rc/bot-assign')!.mutedChannels).toContain('C1')
+      expect(pushedTo(D2)?.core.decisions.bindings[0]).toMatchObject({ enabled: false, disabledReason: 'paused' })
+      // A paused router keeps its would-be readiness and says it is paused.
+      expect((await orch.describeRouting(botRow)).channels[0]?.readiness).toEqual({
+        status: 'ready',
+        reason: 'Routing is paused.'
+      })
+
+      routingRecord = {
+        ...routingRecord!,
+        config: {
+          ...config,
+          rules: [{ ...config.rules[0]!, action: { type: 'agent', agentId: '44444444-4444-4444-8444-444444444449' } }]
+        }
+      }
+      channels = [routedRow(INT_B, BOB), routedRow(INT_A, null)]
+      await orch.syncRoutes(BOT)
+      expect(lastOf(modern, 'rc/routes')!.mutedChannels).toContain('C1')
+      const described = await orch.describeRouting(botRow)
+      expect(described.readiness.status).toBe('needs_review')
+      expect(described.readiness.issues).toEqual([
+        { path: ['rules', 0, 'action'], message: 'Choose an agent connected to this bot.' }
+      ])
+    })
+
+    it('strips the router for a relay without routing-v1 while a capable relay keeps it', async () => {
+      const oldRelay = new FakeChannel('55555555-5555-4555-8555-555555555557', [DECISION_TRIGGER_V1_FEATURE])
+      relayReg.add(oldRelay)
+      await makeOrch().syncBot(BOT)
+      const legacy = lastOf(oldRelay, 'rc/bot-assign')!
+      expect(legacy.routedConversations).toEqual([])
+      expect(legacy.mutedChannels).toContain('C1')
+      expect(legacy.routes.some((r) => r.scope?.channel === 'C1')).toBe(false)
+      expect(lastOf(modern, 'rc/bot-assign')!.routedConversations).toHaveLength(1)
     })
   })
 

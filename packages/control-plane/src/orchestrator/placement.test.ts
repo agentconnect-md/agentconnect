@@ -368,6 +368,37 @@ describe('By decision projection (decisions.md §7.1)', () => {
   })
 })
 
+describe('shared-bot router projection on member specs (decisions.md §7.1)', () => {
+  const router = { type: 'shared_bot_routing' as const }
+  const routing = { decisionId: 'd1', enabled: true, needsReview: false, botShared: true }
+  const routedRow = (channelId: string, over: Partial<IntegrationChannelRecord> = {}): IntegrationChannelRecord => ({
+    ...channel(channelId, 'mention'),
+    trigger: 'decision',
+    decisionBinding: router,
+    decisionRouting: routing,
+    ...over
+  })
+  const rows = () => [routedRow('R1'), routedRow('R2', { decisionRouting: { ...routing, enabled: false } })]
+
+  it('binds every member as a held candidate without the router config', async () => {
+    const shared = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, bot({ transport: 'http' }), SECRET, rows())
+    expect(shared?.core.bindRules).toEqual([])
+    expect(shared?.core.mutedChannels).toEqual(['R2'])
+    expect(shared?.core.decisions).toEqual({
+      bindings: [
+        { channel: 'R1', consumer: router, enabled: true },
+        { channel: 'R2', consumer: router, enabled: false, disabledReason: 'paused' }
+      ],
+      definitions: []
+    })
+  })
+
+  it('gives a gated member a decision rule for an enabled routed channel only', async () => {
+    const gated = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, bot({ transport: 'http' }), SECRET, rows(), true)
+    expect(gated?.core.bindRules).toEqual([{ channel: 'R1', match: { kind: 'decision' } }])
+  })
+})
+
 describe('integrationToSpec platform fences (§9)', () => {
   const foreign = { ...INTEGRATION, platform: 'mastodon' }
 

@@ -18162,6 +18162,11 @@ export class Daemon {
       )
       return { kind: 'held' }
     }
+    // A shared-bot router is never Any and never a gate: every candidate is held until 5b routes it.
+    if (routing.routingFor(targetMsg.channel)) {
+      this.decisionHoldLog(integrationId, targetMsg.channel, 'shared-bot routing not implemented yet')
+      return { kind: 'held', reason: 'routing_not_implemented' }
+    }
     const gate = routing.decisionBindingFor(targetMsg.channel)
     if (!gate) {
       this.decisionHoldLog(integrationId, targetMsg.channel, 'decision rule has no enabled binding')
@@ -18224,6 +18229,8 @@ export class Daemon {
     if (!int) return { status: 'unknown' }
     const routing = integrationRouting(int)
     if (!routing.decisionBound(channel)) return { status: 'unbound' }
+    // A conversation switched to the shared router refuses a pending gate verdict at release.
+    if (routing.routingFor(channel)) return { status: 'disabled', reason: 'routing_not_implemented' }
     const gate = routing.decisionBindingFor(channel)
     if (!gate) {
       const binding = integrationCore(int).decisions.bindings.find((candidate) => candidate.channel === channel)

@@ -19,16 +19,21 @@ import type {
   AttributedRoute,
   BotRevocationEvidence,
   ChannelDecisionGate,
+  DecisionBundleDefinition,
+  IntegrationSpec,
   RcBotAssign,
+  RcRoutedConversation,
+  SharedBotDecisionRouting,
   RcBotCredentialCheck,
   RcConversationDefault,
   BindMatch,
   RcThreadAssign,
   RcThreadParticipant,
   RcThreadLookup,
-  RcThreadLookupOk
+  RcThreadLookupOk,
+  DecisionReadiness
 } from '@agentconnect.md/protocol'
-import { manifestFor } from '@agentconnect.md/protocol'
+import { decisionRoutingAgentIds, manifestFor } from '@agentconnect.md/protocol'
 import type {
   BotRepo,
   BotRecord,
@@ -48,7 +53,11 @@ import type {
   AgentRecord,
   ThreadAffinityStore,
   SessionRepo,
-  ChannelSessionMode
+  ChannelSessionMode,
+  BotDecisionRoutingRecord,
+  BotDecisionRoutingRepo,
+  DaemonRepo,
+  ViewCtx
 } from '../persistence/ports.js'
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 import { ControlSender, NoConnection } from './outbound.js'
@@ -58,8 +67,24 @@ import type { AgentDelivery } from './agentDelivery.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
 import { AgentId, BotId, DaemonId } from '../domain/ids.js'
-import { decisionTriggerSupported, encodeRelayRoutesForPeer } from '../domain/decision-trigger-features.js'
-import { activationOf, decisionGateState } from './decisionBundle.js'
+import {
+  decisionRoutingSupported,
+  decisionTriggerSupported,
+  encodeRelayRoutesForPeer,
+  relayRoutingSupported
+} from '../domain/decision-trigger-features.js'
+import { activationOf, decisionGateState, decisionRoutingState, isRoutedChannel } from './decisionBundle.js'
+import {
+  planRoutedConversations,
+  resolveEvaluationHost,
+  routingConfigState,
+  sharedBotRoutingFor,
+  type EvaluationHost,
+  type RoutedConversationInput,
+  type RoutedConversationPlan,
+  type RoutingConfigState,
+  type RoutingHold
+} from './decisionRouting.js'
 
 // Key-order-independent JSON, since jsonb does not preserve the order a binding was written in.
 function canonicalJson(value: unknown): string {
@@ -127,6 +152,56 @@ interface Compiled {
   /** Whether that projection is what this platform does with a row's owner — carried on
    *  the assignment so the relay picks the terminal affinity refusal without a platform name. */
   ownerAsDefault: boolean
+  /** Executable routed conversations and their one evaluation host (message-intake.md §6). */
+  routedConversations: RcRoutedConversation[]
+  /** The router plan every member spec and the host's extra bundle are shaped from; null without routed rows. */
+  routing: RoutingPlan | null
+  /** Daemons whose missing decision-trigger-v1 held a conversation, and daemons a routing host depends on. */
+  heldFor: Set<string>
+  routingDependents: Set<string>
+}
+
+/** The bot router as one compile planned it. */
+interface RoutingPlan {
+  record: BotDecisionRoutingRecord | null
+  state: RoutingConfigState
+  plan: RoutedConversationPlan[]
+  defaultDaemonId?: string
+  candidateDaemonIds: string[]
+}
+
+/** The read-only routing plan behind GET /bots/:id/decision-routing. */
+export interface RoutingDescription {
+  record: BotDecisionRoutingRecord | null
+  state: RoutingConfigState
+  evaluationHost: (EvaluationHost & { status: 'ready' | 'daemon_offline' | 'unsupported' }) | null
+  relay: 'ready' | 'pending_sync' | 'unsupported'
+  channels: Array<{
+    channelId: string
+    name: string | null
+    defaultAgentId: string | null
+    evaluationDaemonId: string | null
+    hold: RoutingHold | null
+    readiness: DecisionReadiness
+  }>
+  readiness: DecisionReadiness
+}
+
+/** A routing save's scope: removals carry their replacement trigger and optional replacement default agent. */
+export interface RoutingSaveInput {
+  config: SharedBotDecisionRouting
+  channelIds: string[]
+  removals: Array<{ channelId: string; trigger: SeedTrigger; agentId?: string }>
+}
+
+const READINESS_RANK: Record<DecisionReadiness['status'], number> = {
+  ready: 0,
+  pending_sync: 1,
+  insufficient_credits: 2,
+  missing_credentials: 2,
+  daemon_offline: 3,
+  unsupported: 4,
+  needs_review: 5
 }
 
 /** Resolve a persisted owner marker to its active integration, falling back to
@@ -154,6 +229,8 @@ export class HttpBotOrchestrator {
   private readonly conversationMutationChains = new Map<string, Promise<unknown>>()
   // daemonId → bots whose last compile held a By decision conversation because that daemon lacked the feature.
   private readonly decisionHeldBots = new Map<string, Set<string>>()
+  // daemonId → bots whose routed conversations' evaluation host depends on that daemon's liveness or features.
+  private readonly routingDependents = new Map<string, Set<string>>()
 
   constructor(
     /** Every bot read here is `getUnscoped`: this is the orchestration trust
@@ -187,7 +264,12 @@ export class HttpBotOrchestrator {
     /** §14.8: which of a gated install's reported DMs seed to the ordinary DM default
      *  because their counterpart is in the agent's own audience. Late-bound in the
      *  composition root; absent ⇒ every gated conversation keeps the §14.2 Off default. */
-    private readonly gatedDmSeeds?: GatedDmSeedResolver
+    private readonly gatedDmSeeds?: GatedDmSeedResolver,
+    /** The bot router store and daemon rows (for `createdAt`); absent ⇒ every routed conversation is held. */
+    private readonly routing?: {
+      routings: Pick<BotDecisionRoutingRepo, 'getUnscoped' | 'save'>
+      daemons: Pick<DaemonRepo, 'getUnscoped'>
+    }
   ) {}
 
   /**
@@ -248,28 +330,43 @@ export class HttpBotOrchestrator {
     await this.pushSpecs(compiled, secret, bot)
   }
 
-  /** A daemon reached READY: recompile the bots whose By decision conversations were held for its missing feature. */
+  /** A daemon reached READY or changed features: recompile bots held for its missing feature or hosted by its liveness. */
   async daemonReady(daemonId: string): Promise<void> {
+    const bots = new Set(this.routingDependents.get(daemonId) ?? [])
     const held = this.decisionHeldBots.get(daemonId)
-    if (!held || !decisionTriggerSupported(this.control.daemonFeatures?.(daemonId))) return
-    this.decisionHeldBots.delete(daemonId)
-    for (const botId of held) {
-      await this.syncRoutes(botId).catch((err: unknown) =>
-        this.log.warn({ err, botId, daemonId }, 'http-bot: decision-trigger resync deferred')
-      )
+    if (held && decisionTriggerSupported(this.control.daemonFeatures?.(daemonId))) {
+      this.decisionHeldBots.delete(daemonId)
+      for (const botId of held) bots.add(botId)
+    }
+    await this.resyncBots(bots, daemonId, 'http-bot: decision resync deferred')
+  }
+
+  /** A daemon's connection closed: move the evaluation host of every routed conversation that depended on it. */
+  async daemonOffline(daemonId: string): Promise<void> {
+    const bots = new Set(this.routingDependents.get(daemonId) ?? [])
+    await this.resyncBots(bots, daemonId, 'http-bot: routing host resync deferred')
+  }
+
+  private async resyncBots(bots: ReadonlySet<string>, daemonId: string, message: string): Promise<void> {
+    for (const botId of bots) {
+      await this.syncRoutes(botId).catch((err: unknown) => this.log.warn({ err, botId, daemonId }, message))
     }
   }
 
   private recordDecisionHolds(botId: string, heldFor: ReadonlySet<string>): void {
-    for (const [daemonId, bots] of this.decisionHeldBots) {
-      if (heldFor.has(daemonId)) continue
+    HttpBotOrchestrator.recordIndex(this.decisionHeldBots, botId, heldFor)
+  }
+
+  private static recordIndex(index: Map<string, Set<string>>, botId: string, daemonIds: ReadonlySet<string>): void {
+    for (const [daemonId, bots] of index) {
+      if (daemonIds.has(daemonId)) continue
       bots.delete(botId)
-      if (bots.size === 0) this.decisionHeldBots.delete(daemonId)
+      if (bots.size === 0) index.delete(daemonId)
     }
-    for (const daemonId of heldFor) {
-      const bots = this.decisionHeldBots.get(daemonId) ?? new Set<string>()
+    for (const daemonId of daemonIds) {
+      const bots = index.get(daemonId) ?? new Set<string>()
       bots.add(botId)
-      this.decisionHeldBots.set(daemonId, bots)
+      index.set(daemonId, bots)
     }
   }
 
@@ -303,6 +400,7 @@ export class HttpBotOrchestrator {
             // An owner edit converges here without a re-assign, so the defaults must ride the hot
             // update too — otherwise a connected relay keeps the old default, and the old grant.
             conversationDefaults: compiled.conversationDefaults,
+            routedConversations: compiled.routedConversations,
             ...(this.noticeAuthorityFor(bot.id) ? { noticeAuthority: this.noticeAuthorityFor(bot.id) } : {})
           },
           ch.features
@@ -868,23 +966,160 @@ export class HttpBotOrchestrator {
     await this.ensureConversationOwners(bot.id, installs)
   }
 
+  /** Save the router and its scope under every affected conversation's lock (§6.2); null when an owner changed. */
+  async saveDecisionRouting(
+    bot: BotRecord,
+    input: RoutingSaveInput,
+    options: { expectedOwners: ReadonlyMap<string, string>; actor: ViewCtx }
+  ): Promise<BotDecisionRoutingRecord | null> {
+    if (!this.routing) throw new Error('decision routing store is not wired')
+    const routings = this.routing.routings
+    const keys = [...input.channelIds, ...input.removals.map((r) => r.channelId), ...options.expectedOwners.keys()]
+    return this.serializeConversationMutations(bot.id, keys, async () => {
+      const installs = await this.integrations.listForBot(bot.id)
+      const rows = await this.channels.listForBot(bot.id)
+      for (const [channelId, expected] of options.expectedOwners) {
+        const owner = pickConversationOwner(
+          installs,
+          rows.filter((row) => row.channelId === channelId)
+        )
+        if (owner?.agentId !== expected) {
+          this.log.warn({ botId: bot.id, channelId }, 'http-bot: conversation owner changed before routing save')
+          return null
+        }
+      }
+      const removals = []
+      for (const removal of input.removals) {
+        const owner = removal.agentId ? installs.find((i) => i.agentId === removal.agentId) : undefined
+        if (removal.agentId && !owner) return null
+        removals.push({
+          channelId: removal.channelId,
+          activation: { trigger: removal.trigger },
+          ...(owner ? { ownerIntegrationId: owner.id } : {})
+        })
+      }
+      const saved = await routings.save(
+        bot.orgId,
+        bot.id,
+        { config: input.config, channelIds: input.channelIds, removals },
+        options.actor
+      )
+      await this.syncRoutes(bot.id)
+      return saved
+    })
+  }
+
+  /** The read-only routing plan: the compile's planner without its owner-convergence writes. */
+  async describeRouting(bot: BotRecord): Promise<RoutingDescription> {
+    const integrations = await this.integrations.listForBot(bot.id)
+    const record = (await this.routing?.routings.getUnscoped(bot.id)) ?? null
+    const { placed } = await this.readPlacement(integrations)
+    const chans = integrations.length > 0 ? await this.channels.listForBot(bot.id) : []
+    const planned = await this.planRouting(bot, integrations, chans, placed, record, { describe: true })
+    const state = planned?.state ?? routingConfigState(record, new Set(integrations.map((i) => i.agentId)), false)
+    const relays = this.relayReg.all()
+    const relay: RoutingDescription['relay'] =
+      relays.length === 0
+        ? 'pending_sync'
+        : relays.some((ch) => !relayRoutingSupported(ch.features) || !decisionTriggerSupported(ch.features))
+          ? 'unsupported'
+          : 'ready'
+    const reviewIssues = state.executable || state.disabledReason === 'paused' ? undefined : state.issues
+    const paused = state.disabledReason === 'paused'
+    const readinessOf = (hold: RoutingHold | null): DecisionReadiness => {
+      let r: DecisionReadiness
+      if (reviewIssues) r = { status: 'needs_review', issues: reviewIssues }
+      else if (hold === 'needs_review' || hold === 'access_revoked')
+        r = { status: 'needs_review', reason: 'This conversation cannot use By decision routing.' }
+      else if (hold === 'owner_unavailable')
+        r = { status: 'daemon_offline', reason: "No daemon serving this conversation's default agent is connected." }
+      else if (hold === 'host_offline')
+        r = { status: 'daemon_offline', reason: 'No daemon that can evaluate this conversation is connected.' }
+      else if (hold === 'host_unsupported')
+        r = { status: 'unsupported', reason: 'The evaluation host daemon does not support By decision routing yet.' }
+      else if (relay === 'pending_sync') r = { status: 'pending_sync', reason: 'No relay is connected.' }
+      else if (relay === 'unsupported')
+        r = { status: 'unsupported', reason: 'Upgrade the relay to use By decision routing.' }
+      else r = { status: 'ready' }
+      return paused && r.status !== 'needs_review' ? { ...r, reason: 'Routing is paused.' } : r
+    }
+    const names = new Map(chans.map((c) => [c.channelId, c.name]))
+    const channels = (planned?.plan ?? []).map((entry) => ({
+      channelId: entry.channel,
+      name: names.get(entry.channel) ?? null,
+      defaultAgentId: entry.defaultAgentId ?? null,
+      evaluationDaemonId: entry.evaluationDaemonId,
+      hold: entry.hold,
+      readiness: readinessOf(entry.hold)
+    }))
+    // The bot-level host: rule 1, else rule 2 over every candidate of the bot's router.
+    let evaluationHost: RoutingDescription['evaluationHost'] = null
+    if (planned) {
+      const host = resolveEvaluationHost({
+        defaultDaemonId: planned.defaultDaemonId,
+        candidateDaemonIds: planned.candidateDaemonIds,
+        live: (id) => this.daemonLive(id),
+        createdAt: planned.createdAt
+      })
+      if (host) evaluationHost = { ...host, status: this.routingHostSupported(host.daemonId) ? 'ready' : 'unsupported' }
+      else if (planned.defaultDaemonId)
+        evaluationHost = { daemonId: planned.defaultDaemonId, source: 'default_agent', status: 'daemon_offline' }
+    }
+    let readiness: DecisionReadiness
+    if (reviewIssues) readiness = { status: 'needs_review', issues: reviewIssues }
+    else if (channels.length > 0)
+      readiness = channels
+        .map((c) => c.readiness)
+        .reduce((worst, next) => (READINESS_RANK[next.status] > READINESS_RANK[worst.status] ? next : worst))
+    else
+      readiness = readinessOf(
+        !evaluationHost || evaluationHost.status === 'daemon_offline'
+          ? 'host_offline'
+          : evaluationHost.status === 'unsupported'
+            ? 'host_unsupported'
+            : null
+      )
+    return { record, state, evaluationHost, relay, channels, readiness }
+  }
+
+  private daemonLive(daemonId: string): boolean {
+    return this.control.daemonLive?.(daemonId) ?? this.control.daemonFeatures?.(daemonId) !== undefined
+  }
+
+  /** A routing host must advertise both routing and trigger support, or its conversations are held. */
+  private routingHostSupported(daemonId: string): boolean {
+    const features = this.control.daemonFeatures?.(daemonId)
+    return decisionRoutingSupported(features) && decisionTriggerSupported(features)
+  }
+
   // ── internals ──────────────────────────────────────────────────────────────
 
   /** Serialize the owner check and write per conversation. Console authorization
    * happens before this boundary and supplies the owner it authorized; a queued
    * Slack move therefore makes that Console mutation fail closed. */
   private serializeConversationMutation<T>(botId: string, channelId: string, run: () => Promise<T>): Promise<T> {
-    const key = `${botId}\u0000${channelId}`
-    const previous = this.conversationMutationChains.get(key) ?? Promise.resolve()
+    return this.serializeConversationMutations(botId, [channelId], run)
+  }
+
+  /** Every key is chained synchronously before `run` starts, so a multi-conversation save cannot interleave a PATCH. */
+  private serializeConversationMutations<T>(
+    botId: string,
+    channelIds: readonly string[],
+    run: () => Promise<T>
+  ): Promise<T> {
+    const keys = [...new Set(channelIds)].map((channelId) => `${botId}\u0000${channelId}`)
+    const previous = Promise.all(keys.map((key) => this.conversationMutationChains.get(key) ?? Promise.resolve()))
     const result = previous.then(run, run)
     const settled = result.then(
       () => undefined,
       () => undefined
     )
-    this.conversationMutationChains.set(key, settled)
-    void settled.finally(() => {
-      if (this.conversationMutationChains.get(key) === settled) this.conversationMutationChains.delete(key)
-    })
+    for (const key of keys) {
+      this.conversationMutationChains.set(key, settled)
+      void settled.finally(() => {
+        if (this.conversationMutationChains.get(key) === settled) this.conversationMutationChains.delete(key)
+      })
+    }
     return result
   }
 
@@ -1075,11 +1310,19 @@ export class HttpBotOrchestrator {
     }
   }
 
-  /** Compile the attributed routing table after converging conversation ownership. */
+  /** Compile the attributed routing table after converging conversation ownership, then record its holds. */
   private async compile(bot: BotRecord): Promise<Compiled | null> {
     const integrations = await this.integrations.listForBot(bot.id)
     if (integrations.length === 0) return null
     await this.ensureConversationOwners(bot.id, integrations)
+    const compiled = await this.plan(bot, integrations)
+    this.recordDecisionHolds(bot.id, compiled?.heldFor ?? new Set())
+    HttpBotOrchestrator.recordIndex(this.routingDependents, bot.id, compiled?.routingDependents ?? new Set())
+    return compiled
+  }
+
+  /** The members a daemon is currently SERVING, and every member agent record. */
+  private async readPlacement(integrations: IntegrationRecord[]) {
     const agentById = new Map<string, AgentRecord>()
     for (const i of integrations) {
       const a = await this.agents.getUnscoped(i.agentId)
@@ -1092,6 +1335,87 @@ export class HttpBotOrchestrator {
       (agentId) => agentById.get(agentId),
       (agent) => this.placement.routableDaemon(agent)
     )
+    return { agentById, placed }
+  }
+
+  /** Plan each routed conversation's host (message-intake.md §6) over placed rule targets plus its default agent. */
+  private async planRouting(
+    bot: BotRecord,
+    integrations: IntegrationRecord[],
+    chans: IntegrationChannelRecord[],
+    placed: Awaited<ReturnType<HttpBotOrchestrator['readPlacement']>>['placed'],
+    preloaded?: BotDecisionRoutingRecord | null,
+    opts: { describe?: boolean } = {}
+  ): Promise<(RoutingPlan & { createdAt: (daemonId: string) => number | undefined }) | null> {
+    const byConversation = new Map<string, IntegrationChannelRecord[]>()
+    for (const c of chans) byConversation.set(c.channelId, [...(byConversation.get(c.channelId) ?? []), c])
+    const routed: Array<{ channel: string; ownerRow: IntegrationChannelRecord; owner?: IntegrationRecord }> = []
+    for (const [channel, rows] of byConversation) {
+      const owner = pickConversationOwner(integrations, rows)
+      const ownerRow = conversationOwnerRow(owner, rows)
+      if (ownerRow && isRoutedChannel(ownerRow)) routed.push({ channel, ownerRow, ...(owner ? { owner } : {}) })
+    }
+    const record =
+      preloaded !== undefined
+        ? preloaded
+        : routed.length > 0
+          ? ((await this.routing?.routings.getUnscoped(bot.id)) ?? null)
+          : null
+    if (routed.length === 0 && !opts.describe) return null
+    const botShared = bot.transport === 'http' && bot.shareable
+    const state = routingConfigState(record, new Set(integrations.map((i) => i.agentId)), botShared)
+    const byAgent = new Map<string, (typeof placed)[number]>(placed.map((p) => [p.integration.agentId, p]))
+    const defaultDaemonId = defaultMemberOf(placed)?.daemonId
+    const targets = record ? decisionRoutingAgentIds(record.config) : []
+    const targetDaemons = targets.flatMap((id) => (byAgent.get(id) ? [byAgent.get(id)!.daemonId] : []))
+    const ownerAsDefault = manifestFor(bot.platform).ownerAsDefault
+    const conversations: RoutedConversationInput[] = routed.map(({ channel, ownerRow, owner }) => {
+      const ownerPlaced = owner ? byAgent.get(owner.agentId) : undefined
+      const rowState = decisionRoutingState(ownerRow)
+      return {
+        channel,
+        ...(ownerPlaced ? { defaultAgentId: ownerPlaced.integration.agentId } : {}),
+        candidateDaemonIds: [...targetDaemons, ...(ownerPlaced ? [ownerPlaced.daemonId] : [])],
+        // A direct conversation or an owner-as-default platform has no candidate route to route through.
+        ...(ownerAsDefault || (rowState && !rowState.enabled && !rowState.disabledReason)
+          ? { rowHold: 'needs_review' as const }
+          : {})
+      }
+    })
+    const candidateDaemonIds = [...new Set(conversations.flatMap((c) => c.candidateDaemonIds))]
+    const daemonIds = [...new Set([...candidateDaemonIds, ...(defaultDaemonId ? [defaultDaemonId] : [])])]
+    const created = new Map<string, number>()
+    if (this.routing) {
+      for (const id of daemonIds) {
+        const row = await this.routing.daemons.getUnscoped(DaemonId(id))
+        if (row) created.set(id, row.createdAt.getTime())
+      }
+    }
+    const createdAt = (id: string) => created.get(id)
+    // A paused router is described with the status it would have running, so its readiness stays actionable.
+    const planState = opts.describe && state.disabledReason === 'paused' ? { executable: true, issues: [] } : state
+    const plan = planRoutedConversations({
+      config: { decisionId: record?.config.decisionId ?? '' },
+      state: planState,
+      conversations,
+      defaultDaemonId,
+      live: (id) => this.daemonLive(id),
+      createdAt,
+      hostSupported: (id) => this.routingHostSupported(id)
+    })
+    return {
+      record,
+      state,
+      plan,
+      ...(defaultDaemonId ? { defaultDaemonId } : {}),
+      candidateDaemonIds: [...new Set([...targetDaemons, ...candidateDaemonIds])],
+      createdAt
+    }
+  }
+
+  /** The attributed routing table from the current reads; no writes and no hold bookkeeping. */
+  private async plan(bot: BotRecord, integrations: IntegrationRecord[]): Promise<Compiled | null> {
+    const { agentById, placed } = await this.readPlacement(integrations)
     if (placed.length === 0) return null
     // linear-integration.md §6.2: a row's owner rides the relay's PER-CONVERSATION default
     // rung instead of a channel-scoped route — which would otherwise shadow keyword selection
@@ -1123,8 +1447,18 @@ export class HttpBotOrchestrator {
     const muted = new Set(offConversationIds)
     // A held By decision conversation (disabled, or no consumer route on this platform) is Off, never Any.
     for (const c of chans) {
-      if (c.trigger === 'decision' && (ownerAsDefault || !decisionGateState(c)?.enabled)) muted.add(c.channelId)
+      if (c.trigger !== 'decision' || isRoutedChannel(c)) continue
+      if (ownerAsDefault || !decisionGateState(c)?.enabled) muted.add(c.channelId)
     }
+    // A routed conversation is held unless its plan names a supported, live evaluation host.
+    const routing = await this.planRouting(bot, integrations, chans, placed)
+    const routedPlan = new Map((routing?.plan ?? []).map((entry) => [entry.channel, entry]))
+    for (const c of chans) {
+      if (!isRoutedChannel(c)) continue
+      const entry = routedPlan.get(c.channelId)
+      if (ownerAsDefault || !entry || entry.hold) muted.add(c.channelId)
+    }
+    const routedConversations: RcRoutedConversation[] = []
     for (const [channelId, ownerId] of conversationOwner) {
       if (!byAgent.has(ownerId)) muted.add(channelId)
     }
@@ -1147,11 +1481,33 @@ export class HttpBotOrchestrator {
       // for it too would make the FIRST rung swallow every addressed message.
       if (ownerAsDefault) continue
       if (c.trigger === 'decision') {
-        const g = decisionGateState(c)
         // Hold only for a daemon KNOWN to lack the feature; an offline one gets the route and the relay fails closed per delivery.
         const features = this.control.daemonFeatures?.(p.daemonId)
         const downgraded = features !== undefined && !decisionTriggerSupported(features)
         if (downgraded) heldFor.add(p.daemonId)
+        if (isRoutedChannel(c)) {
+          const entry = routedPlan.get(c.channelId)
+          if (!entry || entry.hold || !entry.evaluationDaemonId || downgraded) {
+            muted.add(c.channelId)
+            continue
+          }
+          // The owner's decision route, gate-shaped, so relay fan-out is unchanged until 5b forwards to the host.
+          routes.push({
+            agentId: p.integration.agentId,
+            daemonId: p.daemonId,
+            integrationId: p.integration.id,
+            scope: { channel: c.channelId },
+            match: { kind: 'decision' },
+            decisionId: entry.decisionId
+          })
+          routedConversations.push({
+            channel: c.channelId,
+            decisionId: entry.decisionId,
+            evaluationDaemonId: entry.evaluationDaemonId
+          })
+          continue
+        }
+        const g = decisionGateState(c)
         if (!g?.enabled || !g.gate || downgraded) {
           muted.add(c.channelId)
           continue
@@ -1177,7 +1533,10 @@ export class HttpBotOrchestrator {
     }
     const mutedChannels = [...muted]
     const gatedOffChannels = [...gatedOff]
-    this.recordDecisionHolds(bot.id, heldFor)
+    // Every daemon a routed conversation's host could move to or from resyncs this bot when it comes and goes.
+    const routingDependents = new Set<string>(
+      routing ? [...(routing.defaultDaemonId ? [routing.defaultDaemonId] : []), ...routing.candidateDaemonIds] : []
+    )
 
     // 2. keyword disambiguation (§10.2): one keyword rule per agent = its slug, so
     //    "@bot <slug> …" routes to that agent. No unscoped mention rule — that would
@@ -1249,6 +1608,10 @@ export class HttpBotOrchestrator {
       noticedDmConversations,
       conversationDefaults,
       ownerAsDefault,
+      routedConversations,
+      routing: routing ? { ...routing } : null,
+      heldFor,
+      routingDependents,
       botChannels: chans,
       placed: placed.map((p) => ({
         integration: p.integration,
@@ -1286,14 +1649,37 @@ export class HttpBotOrchestrator {
       // The relay still addresses ingress to `daemonId`; the send-only credential
       // bundle goes to every daemon serving the agent, so a duty holder is not
       // left signing egress with a credential the workspace has since rotated.
-      await this.agentDelivery.integrationUpsert(agent, spec, (err, target) => {
-        if (!(err instanceof NoConnection)) throw err
-        this.log.debug?.(
-          { integrationId: integration.id, daemonId: target },
-          'http-bot: spec push skipped — daemon offline'
-        )
-      })
+      await this.agentDelivery.integrationUpsert(
+        agent,
+        spec,
+        (err, target) => {
+          if (!(err instanceof NoConnection)) throw err
+          this.log.debug?.(
+            { integrationId: integration.id, daemonId: target },
+            'http-bot: spec push skipped — daemon offline'
+          )
+        },
+        (daemonId) => this.routingHostSpec(compiled, bot, spec, daemonId)
+      )
     }
+  }
+
+  /** Only the evaluation host's copy carries the router and its definition (decisions.md §7.1); every other target gets `spec`. */
+  private routingHostSpec(
+    compiled: Compiled,
+    bot: BotRecord,
+    spec: IntegrationSpec,
+    daemonId: string
+  ): IntegrationSpec {
+    const record = compiled.routing?.record
+    if (!record?.definition) return spec
+    const projection = sharedBotRoutingFor(compiled.routing!.plan, { botId: bot.id, config: record.config }, daemonId)
+    if (!projection) return spec
+    const decisions = spec.core.decisions ?? { bindings: [], definitions: [] }
+    const definitions: DecisionBundleDefinition[] = decisions.definitions.some((d) => d.id === record.definition!.id)
+      ? decisions.definitions
+      : [...decisions.definitions, record.definition]
+    return { ...spec, core: { ...spec.core, decisions: { ...decisions, definitions, sharedBotRouting: projection } } }
   }
 
   /**
@@ -1369,6 +1755,7 @@ export class HttpBotOrchestrator {
       noticedDmConversations: compiled.noticedDmConversations,
       conversationDefaults: compiled.conversationDefaults,
       ownerAsDefault: compiled.ownerAsDefault,
+      routedConversations: compiled.routedConversations,
       ...(this.noticeAuthorityFor(bot.id) ? { noticeAuthority: this.noticeAuthorityFor(bot.id) } : {})
     }
   }

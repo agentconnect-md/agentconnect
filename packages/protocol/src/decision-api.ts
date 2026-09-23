@@ -23,6 +23,7 @@ export interface DecisionReadiness {
     | 'daemon_offline'
     | 'unsupported'
     | 'insufficient_credits'
+  reason?: string
   issues?: DecisionValidationIssue[]
 }
 
@@ -78,14 +79,35 @@ export interface DecisionBot {
 export interface DecisionRoutingSave {
   config: SharedBotDecisionRouting
   channelIds: string[]
-  removals: Array<{ channelId: string; settings: Exclude<DecisionChannelSettings, { trigger: 'decision' }> }>
+  // `agentId` optionally names the removed channel's replacement default agent.
+  removals: Array<{
+    channelId: string
+    settings: Exclude<DecisionChannelSettings, { trigger: 'decision' }>
+    agentId?: string
+  }>
 }
 
 export interface DecisionRoutingDetail {
   botId: string
   config: SharedBotDecisionRouting | null
+  // The complete effective scope: every conversation bound to this bot's router.
   channelIds: string[]
   readiness: DecisionReadiness
+  // The bot-level host (message-intake.md §6 rule 1, else rule 2 over every candidate); null when none is live.
+  evaluationHost: {
+    daemonId: string
+    name: string | null
+    source: 'default_agent' | 'earliest_candidate'
+    status: 'ready' | 'daemon_offline' | 'unsupported'
+  } | null
+  channels: Array<{
+    channelId: string
+    name: string | null
+    defaultAgent: { id: string; name: string | null } | null
+    evaluationDaemonId: string | null
+    readiness: DecisionReadiness
+  }>
+  updatedAt: string | null
 }
 
 export type DecisionTargetConstraint = { type: 'new' } | { type: 'mention' | 'thread'; agentIds: string[] }

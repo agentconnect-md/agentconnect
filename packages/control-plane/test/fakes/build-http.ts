@@ -8,6 +8,7 @@
  * stub (no `OIDC_ISSUER`). Tests drive it with `app.inject` — DB-backed, NO socket.
  */
 import { PgDecisionRepo } from '../../src/persistence/repositories/decision.repo.js'
+import { PgBotDecisionRoutingRepo } from '../../src/persistence/repositories/bot-decision-routing.repo.js'
 import type { FastifyInstance } from 'fastify'
 import type { PrismaClient } from '../../src/generated/prisma/client.js'
 import {
@@ -266,6 +267,7 @@ export function buildHttpApp(
   prisma = withSharedTxRouting(prisma)
 
   const daemonRepo = new PgDaemonRepo(prisma)
+  const botDecisionRoutingRepo = new PgBotDecisionRoutingRepo(prisma)
   const daemonLifecycleOpRepo = new PgDaemonLifecycleOpRepo(prisma)
   const apiKeyRepo = new PgApiKeyRepo(prisma)
   const oauthRepo = new PgOAuthRepo(prisma)
@@ -507,6 +509,7 @@ export function buildHttpApp(
       botSecret: botSecretStore,
       botCredential: botCredentialWriter,
       decision: new PgDecisionRepo(prisma),
+      botDecisionRouting: botDecisionRoutingRepo,
       providerKey: new PgProviderKeyStore(prisma, cipher),
       agentSecret: agentSecretStore,
       agentConfig: new PgAgentConfigWriter(prisma, cipher),
@@ -564,7 +567,9 @@ export function buildHttpApp(
       { info() {}, warn() {}, debug() {} },
       platforms,
       agentDelivery,
-      placementResolver
+      placementResolver,
+      undefined,
+      { routings: botDecisionRoutingRepo, daemons: daemonRepo }
     ),
     collabRoutes: new CollabRoutesService(
       daemonRepo,

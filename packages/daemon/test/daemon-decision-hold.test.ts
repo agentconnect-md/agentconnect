@@ -20,11 +20,45 @@ const definition = {
   question: { type: 'boolean', instructions: 'Is help needed?', criteria: { true: 'Yes', false: 'No' } }
 }
 
+const router = { type: 'shared_bot_routing' }
+const routingConfig = {
+  enabled: true,
+  decisionId: DECISION,
+  rules: [{ id: 'r1', when: { type: 'boolean', values: [true] }, action: { type: 'skip' } }],
+  otherwise: { type: 'default_agent' }
+}
+
 interface AgentSpec {
   id: string
-  /** 'decision' binds C1 with a bundle; 'disabled' binds it needing review; 'orphan' has no bundle; 'auto' is Any. */
-  trigger: 'decision' | 'disabled' | 'auto' | 'orphan'
+  /** gate: 'decision' | 'disabled' (review) | 'orphan' (no bundle); 'auto' is Any; router: 'routed' | 'hosted'. */
+  trigger: 'decision' | 'disabled' | 'auto' | 'orphan' | 'routed' | 'hosted'
 }
+
+function decisionsOf(trigger: AgentSpec['trigger']): Record<string, unknown> {
+  if (trigger === 'routed') return { decisions: { bindings: [{ channel: 'C1', consumer: router, enabled: true }] } }
+  if (trigger === 'hosted')
+    return {
+      decisions: {
+        bindings: [{ channel: 'C1', consumer: router, enabled: true }],
+        definitions: [definition],
+        sharedBotRouting: { botId: 'b1', config: routingConfig, channels: [{ channel: 'C1' }] }
+      }
+    }
+  if (trigger === 'decision' || trigger === 'disabled')
+    return {
+      decisions: {
+        bindings: [
+          trigger === 'decision'
+            ? { channel: 'C1', consumer: gate, enabled: true }
+            : { channel: 'C1', consumer: gate, enabled: false, disabledReason: 'needs_review' }
+        ],
+        definitions: [definition]
+      }
+    }
+  return {}
+}
+
+const isDecisionRule = (trigger: AgentSpec['trigger']) => ['disabled', 'routed', 'hosted'].includes(trigger)
 
 function scaffold(agents: AgentSpec[]): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-decision-hold-'))
@@ -56,20 +90,9 @@ function scaffold(agents: AgentSpec[]): string {
                 { match: { kind: 'mention' } },
                 a.trigger === 'orphan'
                   ? { match: { kind: 'decision' } }
-                  : { match: { kind: a.trigger === 'disabled' ? 'decision' : a.trigger }, channel: 'C1' }
+                  : { match: { kind: isDecisionRule(a.trigger) ? 'decision' : a.trigger }, channel: 'C1' }
               ],
-              ...(a.trigger === 'decision' || a.trigger === 'disabled'
-                ? {
-                    decisions: {
-                      bindings: [
-                        a.trigger === 'decision'
-                          ? { channel: 'C1', consumer: gate, enabled: true }
-                          : { channel: 'C1', consumer: gate, enabled: false, disabledReason: 'needs_review' }
-                      ],
-                      definitions: [definition]
-                    }
-                  }
-                : {})
+              ...decisionsOf(a.trigger)
             },
             config: { botToken: 'xoxb', appToken: 'xapp' }
           }
@@ -212,6 +235,89 @@ describe('By decision hold', () => {
       WAIT
     )
     await daemon.stop()
+  })
+
+  describe('shared-bot routed conversations (held until 5b)', () => {
+    for (const trigger of ['routed', 'hosted'] as const) {
+      it(`records and holds a bare message, a mention and a thread reply (${trigger})`, async () => {
+        const { daemon, store, channel, dispatch } = await boot([{ id: 'bot-a', trigger }])
+        ;(daemon as any).sessions.threadOwner = async () => 'bot-a'
+        const info = vi.spyOn((daemon as any).log, 'info')
+        const candidate = vi.spyOn(daemon as any, 'decisionCandidate')
+        const outcomes = [
+          await route(daemon, human({ text: 'billing?' }), ['int-bot-a']),
+          await route(daemon, human({ text: '<@U_FAKE_BOT> help', mentionedBots: ['U_FAKE_BOT'] }), ['int-bot-a']),
+          await route(daemon, human({ text: 'follow-up', thread: '1720000000.000001' }), ['int-bot-a'])
+        ]
+        for (const outcome of outcomes) expect(outcome).toEqual({ kind: 'rejected', reason: 'gated' })
+        for (const result of candidate.mock.results)
+          expect(await result.value).toEqual({ kind: 'held', reason: 'routing_not_implemented' })
+        expect((await rowsOf(store, channel)).map((r) => r.text)).toEqual([
+          'billing?',
+          '<@U_FAKE_BOT> help',
+          'follow-up'
+        ])
+        expect(await admissionsOf(store, channel)).toEqual([])
+        expect(dispatch).not.toHaveBeenCalled()
+        const holds = info.mock.calls.filter(([m]) => String(m).startsWith('decision:'))
+        expect(holds.map(([m]) => m)).toEqual([
+          'decision: shared-bot routing not implemented yet — holding message in ch=C1'
+        ])
+        await daemon.stop()
+      })
+    }
+
+    it('holds a thread participant, never gate-evaluating it', async () => {
+      const { daemon, store, channel, dispatch } = await boot([
+        { id: 'bot-a', trigger: 'routed' },
+        { id: 'bot-b', trigger: 'routed' }
+      ])
+      ;(daemon as any).sessions.threadOwner = async () => 'bot-a'
+      ;(daemon as any).sessions.threadParticipants = async () => ['bot-a', 'bot-b']
+      const candidate = vi.spyOn(daemon as any, 'decisionCandidate')
+      const evaluate = vi.spyOn((daemon as any).decisionEvaluator, 'evaluate')
+      await route(daemon, human({ text: 'both?', thread: '1720000000.000001' }), ['int-bot-a', 'int-bot-b'])
+      expect(candidate.mock.calls.map(([, agentId]) => agentId).sort()).toEqual(['bot-a', 'bot-b'])
+      for (const result of candidate.mock.results)
+        expect(await result.value).toEqual({ kind: 'held', reason: 'routing_not_implemented' })
+      expect(await admissionsOf(store, channel)).toEqual([])
+      expect(dispatch).not.toHaveBeenCalled()
+      expect(evaluate).not.toHaveBeenCalled()
+      await daemon.stop()
+    })
+
+    it('ACKs and holds a relay delivery carrying the router Decision', async () => {
+      const { daemon, store, channel, dispatch } = await boot([{ id: 'bot-a', trigger: 'hosted' }])
+      const payload = human({ text: 'relayed' })
+      const frame = {
+        source: 'im' as const,
+        agentId: 'bot-a',
+        sessionKey: 'C1',
+        msgId: payload.msgId,
+        botId: '11111111-1111-4111-8111-111111111111',
+        integrationId: 'int-bot-a',
+        chatId: 'C1',
+        payload,
+        decisionId: DECISION
+      }
+      expect(await (daemon as any).handleRelayIm(frame)).toMatchObject({ accepted: true })
+      expect((await rowsOf(store, channel)).map((r) => r.text)).toEqual(['relayed'])
+      expect(dispatch).not.toHaveBeenCalled()
+      await daemon.stop()
+    })
+
+    it('still runs a control command and does not advertise decision-routing-v1', async () => {
+      const { daemon } = await boot([{ id: 'bot-a', trigger: 'hosted' }])
+      const handle = vi.fn(async () => true)
+      ;(daemon as any).commands.handleCommand = handle
+      expect(await route(daemon, human({ text: '!stop' }), ['int-bot-a'])).toEqual({
+        kind: 'rejected',
+        reason: 'suppressed'
+      })
+      expect(handle).toHaveBeenCalled()
+      expect((daemon as any).registrationFeatures()).not.toContain('decision-routing-v1')
+      await daemon.stop()
+    })
   })
 
   describe('relay-forwarded candidates', () => {

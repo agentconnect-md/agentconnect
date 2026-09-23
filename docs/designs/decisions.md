@@ -717,8 +717,9 @@ Evaluation usage is its own category rather than a fabricated ACP turn.
 These routes extend the organization-scoped `/api/v1` API with normal
 authentication, visibility, error DTOs, and OpenAPI metadata. The bot routing routes
 are Stage 2; the resource and gate routes are Stage 1. Decision CRUD, the provider
-catalog, standalone preview, gate preview, and Recent evaluations are implemented; the
-shared-bot routing routes remain proposed.
+catalog, standalone preview, gate preview, Recent evaluations, and the shared-bot routing
+GET/PUT are implemented; routing preview remains proposed, and until routing runtime
+lands every routed conversation is held.
 Usage lists identify the
 consumer kind without restricting the reusable resource to gates and routers.
 
@@ -829,7 +830,12 @@ plus an optional field that an old reader can silently strip.
 
 Advertise `decision-trigger-v1` for Stage 1 gates and `decision-routing-v1` for
 Stage 2 shared-bot selection on both daemon and relay connections. A Stage 1
-installation does not advertise or accept the routing capability.
+installation does not advertise or accept the routing capability. On a relay,
+`decision-routing-v1` only means it parses routed conversations and their
+`evaluationDaemonId`; a routed conversation is projected only to a relay that also
+advertises `decision-routing-forward-v1`, which it does once it forwards that
+conversation to the evaluation host instead of the owner. A parse-only relay reads
+as unsupported, so a routing-capable daemon behind it cannot unhold a conversation.
 Binding and placement require all consumers on that route to support it. On a
 later downgrade, hold the affected route unavailable and surface the mismatch;
 do not publish an unfiltered Any route. Existing non-Decision conversations continue

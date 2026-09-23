@@ -14,6 +14,8 @@ import {
   decisionConditionIssues,
   decisionConditionNeedsReview,
   decisionRoutingIssues,
+  decisionRoutingAgentIds,
+  SharedBotRoutingProjection,
   matchDecisionCondition,
   matchDecisionRouting,
   parseDecisionAnswer,
@@ -271,6 +273,70 @@ describe('Decision wire bundle', () => {
       DecisionBundle.safeParse({ bindings: [{ channel: 'C1', consumer: gate, enabled: false, disabledReason: 'x' }] })
         .success
     ).toBe(false)
+  })
+})
+
+describe('shared-bot routing projection (decisions.md §7.1)', () => {
+  const definition = {
+    id: 'd1',
+    orgId: 'org1',
+    name: 'Triage',
+    providerId: 'typesafe',
+    model: 'jev-1.13.0',
+    question: { type: 'boolean', instructions: 'Is help needed?', criteria: { true: 'Yes', false: 'No' } }
+  } as const
+  const agent = '00000000-0000-4000-8000-00000000000a'
+  const config = {
+    enabled: true,
+    decisionId: 'd1',
+    rules: [
+      {
+        id: 'r1',
+        when: { type: 'boolean' as const, values: [true] },
+        action: { type: 'agent' as const, agentId: agent }
+      },
+      { id: 'r2', when: { type: 'boolean' as const, values: [false] }, action: { type: 'skip' as const } }
+    ],
+    otherwise: { type: 'default_agent' as const }
+  }
+  const routed = {
+    bindings: [{ channel: 'C1', consumer: { type: 'shared_bot_routing' as const }, enabled: true }],
+    definitions: [definition],
+    sharedBotRouting: { botId: 'b1', config, channels: [{ channel: 'C1', defaultAgentId: agent }] }
+  }
+
+  it('round-trips a bundle with the host projection and still parses one without it', () => {
+    expect(DecisionBundle.parse(routed)).toEqual(routed)
+    const { sharedBotRouting: _omitted, ...plain } = routed
+    expect(DecisionBundle.parse(plain)).toEqual(plain)
+    expect(DecisionBundle.parse(plain)).not.toHaveProperty('sharedBotRouting')
+  })
+
+  it('rejects a projection whose config or channel list is malformed', () => {
+    expect(SharedBotRoutingProjection.safeParse({ botId: 'b1', config, channels: [{ channel: '' }] }).success).toBe(
+      false
+    )
+    expect(
+      SharedBotRoutingProjection.safeParse({ botId: 'b1', config: { ...config, extra: 1 }, channels: [] }).success
+    ).toBe(false)
+    expect(
+      SharedBotRoutingProjection.safeParse({
+        botId: 'b1',
+        config,
+        channels: [{ channel: 'C1', defaultAgentId: 'not-a-uuid' }]
+      }).success
+    ).toBe(false)
+  })
+
+  it('accepts a paused router binding', () => {
+    const paused = { channel: 'C1', consumer: { type: 'shared_bot_routing' }, enabled: false, disabledReason: 'paused' }
+    expect(DecisionBundle.parse({ bindings: [paused] }).bindings[0]?.disabledReason).toBe('paused')
+  })
+
+  it('lists the distinct rule targets', () => {
+    const twice = { ...config, rules: [...config.rules, { ...config.rules[0]!, id: 'r3' }] }
+    expect(decisionRoutingAgentIds(twice)).toEqual([agent])
+    expect(decisionRoutingAgentIds({ rules: [] })).toEqual([])
   })
 })
 

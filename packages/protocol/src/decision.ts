@@ -152,18 +152,9 @@ export const DecisionBundleBinding = z.object({
   channel: z.string().min(1),
   consumer: ChannelDecisionBinding,
   enabled: z.boolean(),
-  disabledReason: z.enum(['needs_review', 'access_revoked']).optional()
+  disabledReason: z.enum(['needs_review', 'access_revoked', 'paused']).optional()
 })
 export type DecisionBundleBinding = z.infer<typeof DecisionBundleBinding>
-
-// The complete per-integration Decision configuration (decisions.md §7.1); an empty bundle clears.
-export const DecisionBundle = z.object({
-  bindings: z.array(DecisionBundleBinding).max(1000).default([]),
-  definitions: z.array(DecisionBundleDefinition).max(1000).default([])
-})
-export type DecisionBundle = z.infer<typeof DecisionBundle>
-
-export const EMPTY_DECISION_BUNDLE: DecisionBundle = { bindings: [], definitions: [] }
 
 export const DecisionChannelSettings = z.discriminatedUnion('trigger', [
   z.strictObject({ trigger: z.enum(['off', 'mention', 'auto']) }),
@@ -192,6 +183,29 @@ export const SharedBotDecisionRouting = z
     message: 'Rule IDs must be unique.'
   })
 export type SharedBotDecisionRouting = z.infer<typeof SharedBotDecisionRouting>
+
+// The distinct agents a routing configuration can activate through its rules.
+export function decisionRoutingAgentIds(routing: Pick<SharedBotDecisionRouting, 'rules'>): string[] {
+  return [...new Set(routing.rules.flatMap((rule) => (rule.action.type === 'agent' ? [rule.action.agentId] : [])))]
+}
+
+// The bot's routing config for exactly the conversations this recipient hosts, with each resolved default agent.
+export const SharedBotRoutingProjection = z.object({
+  botId: Id,
+  config: SharedBotDecisionRouting,
+  channels: z.array(z.object({ channel: z.string().min(1), defaultAgentId: z.string().uuid().optional() })).max(1000)
+})
+export type SharedBotRoutingProjection = z.infer<typeof SharedBotRoutingProjection>
+
+// The complete per-integration Decision configuration (decisions.md §7.1); an empty bundle clears.
+export const DecisionBundle = z.object({
+  bindings: z.array(DecisionBundleBinding).max(1000).default([]),
+  definitions: z.array(DecisionBundleDefinition).max(1000).default([]),
+  sharedBotRouting: SharedBotRoutingProjection.optional()
+})
+export type DecisionBundle = z.infer<typeof DecisionBundle>
+
+export const EMPTY_DECISION_BUNDLE: DecisionBundle = { bindings: [], definitions: [] }
 
 export const DecisionAnswer = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('boolean'), value: z.boolean(), probability: Probability }),

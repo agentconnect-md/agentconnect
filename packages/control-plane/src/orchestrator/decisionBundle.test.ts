@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { IntegrationChannelRecord } from '../persistence/ports.js'
-import { activationOf, decisionBundleOf, decisionGateState, heldDecisionChannels } from './decisionBundle.js'
+import {
+  activationOf,
+  decisionBundleOf,
+  decisionGateState,
+  decisionRoutingState,
+  heldDecisionChannels
+} from './decisionBundle.js'
 
 const definition = {
   id: 'd1',
@@ -70,5 +76,49 @@ describe('activationOf', () => {
     expect(activationOf(row())).toEqual({ trigger: 'decision', decisionBinding: gate, decisionNeedsReview: false })
     expect(activationOf(row({ decisionBinding: null }))).toEqual({ trigger: 'off' })
     expect(activationOf(row({ trigger: 'mention', decisionBinding: null }))).toEqual({ trigger: 'mention' })
+  })
+})
+
+describe('shared-bot router rows (decisions.md §6.2)', () => {
+  const router = { type: 'shared_bot_routing' as const }
+  const routing = { decisionId: 'd1', enabled: true, needsReview: false, botShared: true }
+  const routed = (over: Partial<IntegrationChannelRecord> = {}) =>
+    row({ decisionBinding: router, decisionDefinition: null, decisionRouting: routing, ...over })
+
+  it('replicates the router binding and never carries a review flag with it', () => {
+    expect(activationOf(routed({ decisionNeedsReview: true }))).toEqual({
+      trigger: 'decision',
+      decisionBinding: router,
+      decisionNeedsReview: false
+    })
+  })
+
+  it('reads its state through the bot record, never as a gate', () => {
+    expect(decisionGateState(routed())).toBeNull()
+    expect(decisionRoutingState(routed())).toEqual({ decisionId: 'd1', enabled: true })
+    expect(decisionRoutingState(routed({ decisionRouting: { ...routing, enabled: false } }))).toMatchObject({
+      enabled: false,
+      disabledReason: 'paused'
+    })
+    expect(decisionRoutingState(routed({ decisionRouting: { ...routing, needsReview: true } }))?.disabledReason).toBe(
+      'needs_review'
+    )
+    expect(decisionRoutingState(routed({ decisionRouting: { ...routing, botShared: false } }))?.disabledReason).toBe(
+      'needs_review'
+    )
+    expect(decisionRoutingState(routed({ decisionRouting: null }))?.disabledReason).toBe('needs_review')
+    expect(decisionRoutingState(routed({ kind: 'im' }))?.enabled).toBe(false)
+  })
+
+  it('emits a definition-free router binding and holds a disabled one', () => {
+    const paused = routed({ channelId: 'C2', decisionRouting: { ...routing, enabled: false } })
+    expect(decisionBundleOf([routed(), paused])).toEqual({
+      bindings: [
+        { channel: 'C1', consumer: router, enabled: true },
+        { channel: 'C2', consumer: router, enabled: false, disabledReason: 'paused' }
+      ],
+      definitions: []
+    })
+    expect(heldDecisionChannels([routed(), paused])).toEqual(['C2'])
   })
 })

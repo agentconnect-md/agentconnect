@@ -10,7 +10,7 @@
  * routes/protocol/daemon.
  */
 import {
-  ChannelDecisionGate,
+  ChannelDecisionBinding,
   DecisionBundleDefinition,
   type Platform,
   type FeishuRegion
@@ -781,13 +781,42 @@ export class PgIntegrationRepo implements IntegrationRepo {
   }
 }
 
-// Every record read joins the bound Decision so its definition rides each projection.
-const CHANNEL_INCLUDE = { decision: true } as const
+// Every record read joins the bound gate Decision and the bot's router, so both ride each projection.
+const CHANNEL_INCLUDE = {
+  decision: true,
+  integration: {
+    select: {
+      bot: {
+        select: {
+          transport: true,
+          shareable: true,
+          decisionRouting: { select: { decisionId: true, enabled: true, needsReview: true } }
+        }
+      }
+    }
+  }
+} as const
+
+type ChannelRouterJoin = {
+  integration?: {
+    bot: {
+      transport: string
+      shareable: boolean
+      decisionRouting: { decisionId: string; enabled: boolean; needsReview: boolean } | null
+    }
+  }
+}
 
 // Fail closed: an unparseable binding or definition reads as null, which projection holds.
-function gateOf(value: unknown): ChannelDecisionGate | null {
-  const parsed = ChannelDecisionGate.safeParse(value)
+function bindingOf(value: unknown): ChannelDecisionBinding | null {
+  const parsed = ChannelDecisionBinding.safeParse(value)
   return parsed.success ? parsed.data : null
+}
+
+function routingOf(c: ChannelRouterJoin): IntegrationChannelRecord['decisionRouting'] {
+  const bot = c.integration?.bot
+  if (!bot?.decisionRouting) return null
+  return { ...bot.decisionRouting, botShared: bot.transport === 'http' && bot.shareable }
 }
 
 function definitionOf(d: Decision | null | undefined): DecisionBundleDefinition | null {
@@ -803,7 +832,9 @@ function definitionOf(d: Decision | null | undefined): DecisionBundleDefinition 
   return parsed.success ? parsed.data : null
 }
 
-function toChannelRecord(c: IntegrationChannel & { decision?: Decision | null }): IntegrationChannelRecord {
+function toChannelRecord(
+  c: IntegrationChannel & { decision?: Decision | null } & ChannelRouterJoin
+): IntegrationChannelRecord {
   return {
     integrationId: IntegrationId(c.integrationId),
     channelId: c.channelId,
@@ -818,9 +849,10 @@ function toChannelRecord(c: IntegrationChannel & { decision?: Decision | null })
     kind: c.kind as ConversationKind,
     trigger: c.trigger as ChannelTrigger,
     sessionMode: c.sessionMode as ChannelSessionMode,
-    decisionBinding: c.decisionBinding === null ? null : gateOf(c.decisionBinding),
+    decisionBinding: c.decisionBinding === null ? null : bindingOf(c.decisionBinding),
     decisionNeedsReview: c.decisionNeedsReview,
     decisionDefinition: c.decisionBinding === null ? null : definitionOf(c.decision),
+    decisionRouting: routingOf(c),
     dmUserId: c.dmUserId,
     triggerChosen: c.triggerChosen,
     agentId: c.agentId ? AgentId(c.agentId) : null
@@ -1071,10 +1103,11 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
     activation: ChannelActivation,
     opts?: { chosen?: boolean }
   ): Promise<IntegrationChannelRecord | null> {
-    const gate = activation.trigger === 'decision' ? activation.decisionBinding : null
+    const binding = activation.trigger === 'decision' ? activation.decisionBinding : null
     // Backstop for untyped callers; the DB CHECK enforces the same invariant.
-    if (activation.trigger === 'decision' && !ChannelDecisionGate.safeParse(gate).success)
-      throw new Error('trigger decision requires a gate decisionBinding')
+    if (activation.trigger === 'decision' && !ChannelDecisionBinding.safeParse(binding).success)
+      throw new Error('trigger decision requires a decisionBinding')
+    const gate = binding?.type === 'gate' ? binding : null
     // updateMany → no throw on a missing row (the bot may have just left the channel).
     // `triggerChosen` is only ever set, never cleared: a decision does not expire, and
     // orchestration mirroring an owner's trigger must not unmark one either.
@@ -1082,9 +1115,10 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       where: { integrationId, channelId },
       data: {
         trigger: activation.trigger,
-        decisionBinding: gate ? (gate as Prisma.InputJsonValue) : Prisma.DbNull,
+        decisionBinding: binding ? (binding as Prisma.InputJsonValue) : Prisma.DbNull,
         decisionId: gate?.decisionId ?? null,
-        decisionNeedsReview: activation.trigger === 'decision' ? activation.decisionNeedsReview : false,
+        // A router's review state lives on the bot record, never on the row (DB CHECK).
+        decisionNeedsReview: gate && activation.trigger === 'decision' ? activation.decisionNeedsReview : false,
         ...(opts?.chosen ? { triggerChosen: true } : {})
       }
     })

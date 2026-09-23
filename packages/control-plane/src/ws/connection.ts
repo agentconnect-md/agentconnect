@@ -341,6 +341,7 @@ export class DaemonConnection implements ConnChannel {
       // clear is its last mutation, and ahead of a reconnect's replay, which waits on the same tail (§7).
       const daemonId = this.daemonId
       void this.deps.connReg.runApprovalMutation(daemonId, () => clearAwaitingApprovals(this.deps, daemonId, true))
+      void this.deps.httpBotDaemonOffline?.(daemonId).catch(() => {})
     }
   }
 }

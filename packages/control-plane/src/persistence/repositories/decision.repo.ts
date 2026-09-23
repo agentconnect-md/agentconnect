@@ -4,12 +4,14 @@ import {
   DecisionQuestion,
   DecisionToolDefinition,
   decisionConditionNeedsReview,
+  decisionRoutingIssues,
+  SharedBotDecisionRouting,
   type DecisionListRequest,
   type DecisionDefinition,
   type DecisionDraftInput
 } from '@agentconnect.md/protocol'
 import { canEdit, visibilityWhere } from '../../authorization/policy.js'
-import { IntegrationId, type OrgId } from '../../domain/ids.js'
+import { BotId, IntegrationId, type OrgId } from '../../domain/ids.js'
 import { Prisma, type Decision } from '../../generated/prisma/client.js'
 import { DecisionInUse, OrgMembershipMissing, ResourceAudienceEmpty } from '../errors.js'
 import type { DecisionRepo, ViewCtx } from '../ports.js'
@@ -101,7 +103,11 @@ export class PgDecisionRepo implements DecisionRepo {
     id: string,
     input: DecisionDraftInput,
     actor: ViewCtx
-  ): Promise<{ decision: DecisionDefinition; consumerIntegrationIds: IntegrationId[] } | null> {
+  ): Promise<{
+    decision: DecisionDefinition
+    consumerIntegrationIds: IntegrationId[]
+    consumerBotIds: BotId[]
+  } | null> {
     return withAmbientTx(this.db, async (tx) => {
       const audience = await lockResourceWriteMemberships(tx, {
         orgId,
@@ -149,9 +155,34 @@ export class PgDecisionRepo implements DecisionRepo {
           where: { OR: review.map((c) => ({ integrationId: c.integrationId, channelId: c.channelId })) },
           data: { decisionNeedsReview: true }
         })
+      // Routers too: an invalidated one keeps its saved config and is projected disabled until re-saved.
+      const routings = await tx.botDecisionRouting.findMany({
+        where: { decisionId: id, orgId },
+        select: { botId: true, enabled: true, decisionId: true, rules: true, otherwise: true, needsReview: true }
+      })
+      const reviewBots = routings.filter((r) => {
+        if (r.needsReview) return false
+        const config = SharedBotDecisionRouting.safeParse({
+          enabled: r.enabled,
+          decisionId: r.decisionId,
+          rules: r.rules,
+          otherwise: r.otherwise
+        })
+        if (!config.success || !previous.success) return true
+        return (
+          decisionRoutingIssues(draft.question, config.data).length > 0 ||
+          config.data.rules.some((rule) => decisionConditionNeedsReview(previous.data, draft.question, rule.when))
+        )
+      })
+      if (reviewBots.length > 0)
+        await tx.botDecisionRouting.updateMany({
+          where: { botId: { in: reviewBots.map((r) => r.botId) } },
+          data: { needsReview: true }
+        })
       return {
         decision,
-        consumerIntegrationIds: [...new Set(consumers.map((c) => c.integrationId))].map(IntegrationId)
+        consumerIntegrationIds: [...new Set(consumers.map((c) => c.integrationId))].map(IntegrationId),
+        consumerBotIds: routings.map((r) => BotId(r.botId))
       }
     })
   }
@@ -181,7 +212,7 @@ export class PgDecisionRepo implements DecisionRepo {
       try {
         await tx.decision.deleteMany({ where: { id, orgId, ...visibilityWhere({ ...actor, role: membership.role }) } })
       } catch (err) {
-        // The channel gate FK refuses a Decision a conversation still references.
+        // The channel gate and bot router FKs refuse a Decision a consumer still references.
         if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') throw new DecisionInUse(id)
         throw err
       }
