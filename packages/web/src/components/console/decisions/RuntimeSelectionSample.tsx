@@ -11,7 +11,7 @@ import {
   type DecisionRuntimeTarget
 } from '@agentconnect.md/protocol/decision'
 import { Icon } from '@/components/ui'
-import { AgentMark } from '@/components/marks'
+import { AgentMark, MarkSlot } from '@/components/marks'
 import { intervalText } from './DecisionConditionFields'
 import type { RuntimeModelSource } from '../RuntimeModelSelect'
 import { runtimeLabel } from '@/lib/data'
@@ -218,9 +218,9 @@ export function RuntimeSelectionSample({
           ))}
           <div className="mt-[6px] flex items-center gap-2 border-t border-(--border-subtle) pt-[10px]">
             <span className="font-sans text-[12px] leading-normal text-(--text-tertiary)">{t('startsOn')}</span>
-            <span className="flex h-[15px] w-[15px] flex-none items-center justify-center">
+            <MarkSlot>
               <AgentMark model={target.runtime} fillPct={100} />
-            </span>
+            </MarkSlot>
             <span className="font-sans text-[15px] font-semibold leading-normal tracking-[-0.01em]">{model}</span>
             <span className="font-mono text-[11px] leading-normal text-(--text-tertiary)">
               {runtimeLabel(target.runtime)}

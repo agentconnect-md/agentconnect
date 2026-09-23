@@ -3,7 +3,7 @@
 // Agent-type + IM-platform brand marks.
 // Sized to 60% of their container to match the .av / .imark CSS.
 
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon } from './ui'
 import { withIconUrl, type AgentIcon } from '@/lib/agent-icon'
@@ -42,6 +42,13 @@ export function AgentMark({ model, fillPct = 60 }: { model: string; fillPct?: nu
       className={`block object-contain ${DARK_MARK_FILTER}`}
     />
   )
+}
+
+const MARK_SLOT = { 14: 'h-[14px] w-[14px]', 15: 'h-[15px] w-[15px]' } as const
+
+// A brand mark centred in a fixed square beside text; a bare mark <img> otherwise sits at its box's top-left.
+export function MarkSlot({ size = 15, children }: { size?: keyof typeof MARK_SLOT; children: ReactNode }) {
+  return <span className={`flex flex-none items-center justify-center ${MARK_SLOT[size]}`}>{children}</span>
 }
 
 // Resolve a provider/model prefix or bare model family; unknown models fall back to the runtime mark.

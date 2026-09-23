@@ -6,7 +6,10 @@ import { RuntimeModelSelect } from './RuntimeModelSelect'
 import type { DecisionRuntimeTarget } from '@agentconnect.md/protocol/decision'
 
 vi.mock('@/lib/acp-registry', () => ({ useAcpRegistry: () => ({}), acpRuntime: () => undefined }))
-vi.mock('@/components/marks', () => ({ AgentMark: () => <span /> }))
+vi.mock('@/components/marks', () => ({
+  AgentMark: () => <span />,
+  MarkSlot: ({ children }: { children: React.ReactNode }) => <span>{children}</span>
+}))
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 let root: Root
@@ -270,4 +273,75 @@ it('edits run settings in the open picker and adapts them when choosing another 
   expect(selected).toEqual({ runtime: 'codex', model: 'other', effort: '', permissionMode: 'agent', fastMode: false })
   expect(document.querySelector('select[aria-label="Effort"]')).toBeNull()
   expect(document.querySelector('select[aria-label="Approval"]')?.textContent).toBe('Approve for me')
+})
+
+it('shows a truncated form trigger in full on hover, with its run settings', async () => {
+  vi.useFakeTimers()
+  try {
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    await act(async () =>
+      root.render(
+        <RuntimeModelSelect
+          dense
+          runSettings
+          value={{ runtime: 'claude', model: 'model-standard', effort: 'high', permissionMode: 'plan' }}
+          onChange={vi.fn()}
+          source={{ runtimeModels: [{ runtime: 'claude', version: '', models: ['model-standard'] }] }}
+        />
+      )
+    )
+    const trigger = container.querySelector('button')!
+    await act(async () => trigger.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
+    await act(async () => vi.advanceTimersByTime(260))
+    const card = document.querySelector('[role="tooltip"]')!.textContent
+    expect(card).toContain('Modelmodel-standard')
+    expect(card).toContain('EffortHigh')
+    expect(card).toContain('ApprovalPlan')
+    await act(async () => trigger.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })))
+    expect(document.querySelector('[role="tooltip"]')).toBeNull()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it('shows the composer pill details on hover, including By decision rules, but not while the picker is open', async () => {
+  vi.useFakeTimers()
+  try {
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    await act(async () =>
+      root.render(
+        <RuntimeModelSelect
+          compact
+          value={{ runtime: 'codex', model: 'model-standard' }}
+          onChange={vi.fn()}
+          decision={{
+            name: 'Task type',
+            selected: true,
+            onSelect: vi.fn(),
+            rules: [{ when: 'feature ≥ 60%', then: 'model-capable' }],
+            fallback: 'model-standard'
+          }}
+          source={{ runtimeModels: [{ runtime: 'codex', version: '', models: ['model-standard'] }] }}
+        />
+      )
+    )
+    const trigger = container.querySelector('button')!
+    await act(async () => trigger.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
+    expect(document.querySelector('[role="tooltip"]')).toBeNull()
+    await act(async () => vi.advanceTimersByTime(260))
+    const card = document.querySelector('[role="tooltip"]')!
+    expect(card.textContent).toContain('ModelBy decision')
+    expect(card.textContent).toContain('DecisionTask type')
+    expect(card.textContent).toContain('1feature ≥ 60%model-capable')
+    expect(card.textContent).toContain('Fallbackmodel-standard')
+    expect(trigger.getAttribute('aria-describedby')).toBe(card.id)
+    await act(async () => trigger.click())
+    expect(document.querySelector('[role="tooltip"]')).toBeNull()
+  } finally {
+    vi.useRealTimers()
+  }
 })

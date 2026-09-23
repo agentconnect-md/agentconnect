@@ -2,9 +2,11 @@
 
 import { useState } from 'react'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
+import { HoverCardRows, useHoverCard } from '@/components/ui/HoverCard'
 import { useTranslations } from 'next-intl'
-import { AgentMark } from '@/components/marks'
+import { AgentMark, MarkSlot } from '@/components/marks'
 import { Icon, Toggle } from '@/components/ui'
+import { ModelOption, ProviderModelMenu } from '@/components/console/ProviderModelMenu'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import {
   displayedEffort,
@@ -22,7 +24,7 @@ import {
   supportsModes,
   type DaemonRow
 } from '@/lib/data'
-import { permissionModeLabelKey } from '@/lib/permission-mode-i18n'
+import { localizedPermissionChoices } from '@/lib/permission-mode-i18n'
 import type { DecisionRuntimeTarget } from '@agentconnect.md/protocol/decision'
 
 export type RuntimeModelSource = Pick<DaemonRow, 'runtimeModels'>
@@ -47,14 +49,18 @@ export interface RunSettingsControls {
   fast?: { value: boolean; onChange(value: boolean): void }
 }
 
-// A runtime mark centred in its box; the bare <AgentMark> img otherwise sits at the box's top-left.
-function RuntimeMark({ runtime, box }: { runtime: string; box: string }) {
-  return (
-    <span className={`flex flex-none items-center justify-center ${box}`}>
-      <AgentMark model={runtime} fillPct={100} />
-    </span>
-  )
+/** The agent Decision a composer can defer to, with its rules summarized for the hover card. */
+export interface RuntimeDecisionChoice {
+  name: string
+  selected: boolean
+  onSelect(): void
+  rules?: readonly { when: string; then: string }[]
+  fallback?: string
 }
+
+const HOVER_RULE = 'grid grid-cols-[16px_auto_12px_minmax(0,1fr)] items-center gap-[6px]'
+const HOVER_NUM =
+  'flex h-4 w-4 items-center justify-center rounded-xs font-mono text-[9.5px] font-semibold leading-normal text-(--text-secondary)'
 
 function SettingSelect({ label, control }: { label: string; control: RunSettingControl }) {
   const offered = control.options.some((option) => option.value === control.value)
@@ -117,13 +123,14 @@ export function RuntimeModelSelect({
   allowRuntimeOnly?: boolean
   runInSandbox?: boolean
   readOnly?: boolean
-  decision?: { name: string; selected: boolean; onSelect(): void }
+  decision?: RuntimeDecisionChoice
 }) {
   const t = useTranslations('Agents.dialog.runtimeModel')
   const permissionT = useTranslations('Common.permissionModes')
   const registry = useAcpRegistry()
   const [provider, setProvider] = useState(value.runtime)
   const [search, setSearch] = useState('')
+  const hover = useHoverCard()
   if (pending) {
     return (
       <span
@@ -171,11 +178,9 @@ export function RuntimeModelSelect({
   const effortChoices = effortChoicesFor(value.runtime, capability)
   const showEffort = capability?.efforts ? effortChoices.length > 0 : supportsModes(value.runtime)
   const effort = displayedEffort(value.effort ?? '', effortChoices, capability?.defaultEffort)
-  const permissionChoices = permissionModeChoicesFor(value.runtime, current?.modelCatalog ?? undefined).map(
-    (option) => {
-      const key = permissionModeLabelKey(option.v)
-      return { value: option.v, label: key ? permissionT(key) : option.l, description: option.description }
-    }
+  const permissionChoices = localizedPermissionChoices(
+    permissionModeChoicesFor(value.runtime, current?.modelCatalog ?? undefined),
+    permissionT
   )
   const permission =
     value.permissionMode ?? current?.modelCatalog?.defaultPermissionMode ?? permissionModeDefault(value.runtime)
@@ -226,6 +231,47 @@ export function RuntimeModelSelect({
     })
   }
   const runtimeOnly = allowRuntimeOnly && !search && matching[0]?.options.length === 0 ? matching[0] : undefined
+  const hoverRows: [string, string][] = decision?.selected
+    ? [
+        [t('model'), t('byDecision')],
+        [t('decision'), decision.name]
+      ]
+    : [
+        [t('provider'), label(value.runtime)],
+        [t('model'), modelName],
+        ...(controls?.effort ? [[t('effort'), choiceLabel(controls.effort)] as [string, string]] : []),
+        ...(controls?.approval ? [[t('approval'), choiceLabel(controls.approval)] as [string, string]] : []),
+        ...(controls?.fast ? [[t('fastMode'), controls.fast.value ? t('on') : t('off')] as [string, string]] : [])
+      ]
+  const hoverContent = (
+    <>
+      <HoverCardRows rows={hoverRows} />
+      {decision?.selected && (!!decision.rules?.length || !!decision.fallback) && (
+        <span className="mt-2 flex flex-col gap-1 border-t border-(--border-subtle) pt-2">
+          {decision.rules?.map((rule, index) => (
+            <span key={index} className={HOVER_RULE}>
+              <span className={`${HOVER_NUM} bg-(--surface-active)`}>{index + 1}</span>
+              <span className="whitespace-nowrap font-mono text-[11px] leading-normal text-(--text-primary)">
+                {rule.when}
+              </span>
+              <Icon name="arrow-right" size={11} className="text-(--text-tertiary)" />
+              <span className="truncate font-mono text-[11px] leading-normal text-(--text-secondary)">{rule.then}</span>
+            </span>
+          ))}
+          {decision.fallback && (
+            <span className={HOVER_RULE}>
+              <span className={`${HOVER_NUM} bg-(--surface-sunken)`}>—</span>
+              <span className="font-sans text-[11px] leading-normal text-(--text-tertiary)">{t('fallback')}</span>
+              <Icon name="arrow-right" size={11} className="text-(--text-tertiary)" />
+              <span className="truncate font-mono text-[11px] leading-normal text-(--text-secondary)">
+                {decision.fallback}
+              </span>
+            </span>
+          )}
+        </span>
+      )}
+    </>
+  )
   return (
     <AnchoredFlyout
       role="dialog"
@@ -236,55 +282,62 @@ export function RuntimeModelSelect({
       className="p-0!"
       triggerClassName="block min-w-0"
       trigger={({ open, menuId, toggle }) => (
-        <button
-          type="button"
-          className={
-            compact
-              ? 'inline-flex h-7 max-w-[400px] items-center gap-[7px] rounded-full px-[10px] font-sans text-[12.5px] font-medium leading-normal hover:bg-(--surface-hover)'
-              : dense
-                ? `inp h-[30px] min-h-0 w-full cursor-pointer gap-2 px-[9px] py-0 text-left text-[12px] font-medium hover:border-(--border-strong) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`
-                : `inp h-8 min-h-0 w-full cursor-pointer gap-2 px-[10px] py-0 text-left text-[12.5px] font-medium hover:border-(--border-strong) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`
-          }
-          aria-label={ariaLabel ?? t('title')}
-          aria-haspopup="dialog"
-          aria-expanded={open}
-          aria-controls={open ? menuId : undefined}
-          onClick={() => {
-            setProvider(value.runtime)
-            setSearch('')
-            toggle()
-          }}
-        >
-          {decision?.selected ? (
-            <Icon name="git-branch" size={13} color="var(--brand)" className="flex-none" />
-          ) : (
-            <RuntimeMark runtime={value.runtime} box="h-[14px] w-[14px]" />
-          )}
-          <span className="min-w-0 flex-1 truncate text-left">
-            {decision?.selected ? t('byDecision') : modelName || label(value.runtime) || t('choose')}
-            {summary &&
-              (compact ? (
-                <span className="font-mono text-[11px] font-normal text-(--text-tertiary)"> · {summary}</span>
-              ) : (
-                <span className="font-normal text-(--text-tertiary)"> ({summary})</span>
-              ))}
-          </span>
-          {!decision?.selected && selectedWarning && (
-            <span className="flex flex-none" title={warningLabel(selectedWarning)}>
-              <Icon name="triangle-alert" size={13} color="var(--status-paused)" />
+        <>
+          <button
+            type="button"
+            className={
+              compact
+                ? 'inline-flex h-7 max-w-[400px] cursor-pointer items-center gap-[7px] rounded-full px-[10px] font-sans text-[12.5px] font-medium leading-normal hover:bg-(--surface-hover)'
+                : dense
+                  ? `inp h-[30px] min-h-0 w-full cursor-pointer gap-2 px-[9px] py-0 text-left text-[12px] font-medium hover:border-(--border-strong) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`
+                  : `inp h-8 min-h-0 w-full cursor-pointer gap-2 px-[10px] py-0 text-left text-[12.5px] font-medium hover:border-(--border-strong) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`
+            }
+            aria-label={ariaLabel ?? t('title')}
+            aria-haspopup="dialog"
+            aria-expanded={open}
+            aria-controls={open ? menuId : undefined}
+            {...hover.triggerProps}
+            onClick={() => {
+              hover.hide()
+              setProvider(value.runtime)
+              setSearch('')
+              toggle()
+            }}
+          >
+            {decision?.selected ? (
+              <Icon name="git-branch" size={13} color="var(--brand)" className="flex-none" />
+            ) : (
+              <MarkSlot size={14}>
+                <AgentMark model={value.runtime} fillPct={100} />
+              </MarkSlot>
+            )}
+            <span className="min-w-0 flex-1 truncate text-left">
+              {decision?.selected ? t('byDecision') : modelName || label(value.runtime) || t('choose')}
+              {summary &&
+                (compact ? (
+                  <span className="font-mono text-[11px] font-normal text-(--text-tertiary)"> · {summary}</span>
+                ) : (
+                  <span className="font-normal text-(--text-tertiary)"> ({summary})</span>
+                ))}
             </span>
-          )}
-          {fastOn && (
-            <span className="flex-none rounded-xs bg-(--brand-soft) px-[5px] py-px font-mono text-[10px] font-semibold leading-normal tracking-[0.04em] text-(--brand-soft-text)">
-              FAST
-            </span>
-          )}
-          <Icon
-            name="chevron-down"
-            size={compact ? 11 : 13}
-            className={`flex-none text-(--text-tertiary) transition-transform ${open ? 'rotate-180' : ''}`}
-          />
-        </button>
+            {!decision?.selected && selectedWarning && (
+              <span className="flex flex-none" title={warningLabel(selectedWarning)}>
+                <Icon name="triangle-alert" size={13} color="var(--status-paused)" />
+              </span>
+            )}
+            {fastOn && (
+              <span className="flex-none rounded-xs bg-(--brand-soft) px-[5px] py-px font-mono text-[10px] font-semibold leading-normal tracking-[0.04em] text-(--brand-soft-text)">
+                FAST
+              </span>
+            )}
+            <Icon
+              name="chevron-down"
+              size={compact ? 11 : 13}
+              className={`flex-none text-(--text-tertiary) transition-transform ${open ? 'rotate-180' : ''}`}
+            />
+          </button>
+          {!open && hover.card(hoverContent)}
+        </>
       )}
     >
       {({ close }) =>
@@ -318,91 +371,61 @@ export function RuntimeModelSelect({
                 </button>
               </div>
             )}
-            <div className="flex">
-              <div className="max-h-[320px] w-[168px] flex-none overflow-y-auto border-r border-(--border-subtle) bg-(--surface-app) p-1">
-                <div className="fhdr">{t('provider')}</div>
-                {profiles.map((item) => (
-                  <button
-                    key={item.runtime}
-                    type="button"
-                    aria-pressed={provider === item.runtime && !search}
-                    className={`fopt min-h-8 ${provider === item.runtime && !search ? 'on' : ''}`}
-                    onClick={() => {
-                      setProvider(item.runtime)
-                      setSearch('')
-                    }}
-                  >
-                    <RuntimeMark runtime={item.runtime} box="h-[15px] w-[15px]" />
-                    <span className="min-w-0 flex-1 truncate text-left">{label(item.runtime)}</span>
-                    {item.warning && (
-                      <span className="flex flex-none" title={warningLabel(item.warning)}>
-                        <Icon name="triangle-alert" size={12} color="var(--status-paused)" />
-                      </span>
-                    )}
-                    <span className="flex-none font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                      {item.options.length}
-                    </span>
-                  </button>
-                ))}
-              </div>
-              <div className="flex min-w-0 flex-1 flex-col p-[6px]">
-                <input
-                  autoFocus
-                  className="fsearch"
-                  aria-label={t('search')}
-                  placeholder={t('search')}
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                />
-                <div className="max-h-[264px] overflow-y-auto">
-                  {matching.map(
-                    (item) =>
-                      item.options.length > 0 && (
-                        <div key={item.runtime}>
-                          {search && <div className="fhdr">{label(item.runtime)}</div>}
-                          {item.options.map((model) => {
-                            const on =
-                              !decision?.selected && value.runtime === item.runtime && value.model === model.value
-                            return (
-                              <button
-                                type="button"
-                                key={model.value}
-                                title={model.description}
-                                aria-label={`${label(item.runtime)} · ${model.name ?? model.value}`}
-                                aria-pressed={on}
-                                className={`fopt min-h-[30px] ${on ? 'on' : ''}`}
-                                onClick={() => {
-                                  selectModel(item.runtime, model.value)
-                                  if (!runSettings) close(true)
-                                }}
-                              >
-                                <span className="min-w-0 flex-1 truncate text-left">{model.name ?? model.value}</span>
-                              </button>
-                            )
-                          })}
-                        </div>
-                      )
-                  )}
-                  {runtimeOnly && (
-                    <button
-                      type="button"
-                      className={`fopt min-h-[30px] ${value.runtime === runtimeOnly.runtime && !value.model ? 'on' : ''}`}
-                      onClick={() => {
-                        onChange({ runtime: runtimeOnly.runtime, model: '' })
-                        close(true)
-                      }}
-                    >
-                      {label(runtimeOnly.runtime)}
-                    </button>
-                  )}
-                  {!runtimeOnly && matching.every((item) => !item.options.length) && (
-                    <div className="px-2 py-[14px] font-sans text-[12px] leading-normal text-(--text-tertiary)">
-                      {t('empty')}
+            <ProviderModelMenu
+              title={t('provider')}
+              providers={profiles.map((item) => ({
+                id: item.runtime,
+                label: label(item.runtime),
+                mark: <AgentMark model={item.runtime} fillPct={100} />,
+                count: item.options.length,
+                warning: item.warning ? warningLabel(item.warning) : undefined
+              }))}
+              active={search ? null : provider}
+              onPick={(runtime) => {
+                setProvider(runtime)
+                setSearch('')
+              }}
+              search={{ value: search, placeholder: t('search'), onChange: setSearch }}
+            >
+              {matching.map(
+                (item) =>
+                  item.options.length > 0 && (
+                    <div key={item.runtime}>
+                      {search && <div className="fhdr">{label(item.runtime)}</div>}
+                      {item.options.map((model) => (
+                        <ModelOption
+                          key={model.value}
+                          label={model.name ?? model.value}
+                          description={model.description}
+                          ariaLabel={`${label(item.runtime)} · ${model.name ?? model.value}`}
+                          selected={
+                            !decision?.selected && value.runtime === item.runtime && value.model === model.value
+                          }
+                          onClick={() => {
+                            selectModel(item.runtime, model.value)
+                            if (!runSettings) close(true)
+                          }}
+                        />
+                      ))}
                     </div>
-                  )}
+                  )
+              )}
+              {runtimeOnly && (
+                <ModelOption
+                  label={label(runtimeOnly.runtime)}
+                  selected={value.runtime === runtimeOnly.runtime && !value.model}
+                  onClick={() => {
+                    onChange({ runtime: runtimeOnly.runtime, model: '' })
+                    close(true)
+                  }}
+                />
+              )}
+              {!runtimeOnly && matching.every((item) => !item.options.length) && (
+                <div className="px-2 py-[14px] font-sans text-[12px] leading-normal text-(--text-tertiary)">
+                  {t('empty')}
                 </div>
-              </div>
-            </div>
+              )}
+            </ProviderModelMenu>
             {showSettings && (
               <div className="flex flex-wrap items-center gap-2 border-t border-(--border-subtle) bg-(--surface-app) px-[10px] py-[7px]">
                 {controls?.effort && <SettingSelect label={t('effort')} control={controls.effort} />}

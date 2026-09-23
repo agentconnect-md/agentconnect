@@ -71,6 +71,7 @@ import {
 import { useConsoleData } from '@/lib/data-context'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { RuntimeModelSelect } from '@/components/console/RuntimeModelSelect'
+import { ruleSummaries } from '@/components/console/decisions/rule-summary'
 import { agentToneColor } from '@/lib/agent-tone'
 import { useProfile } from '@/lib/profile'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
@@ -100,7 +101,7 @@ import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
-import { permissionModeLabelKey } from '@/lib/permission-mode-i18n'
+import { localizedPermissionChoices } from '@/lib/permission-mode-i18n'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
 import { MentionMenu, type MentionOption } from '@/components/console/MentionMenu'
 import { useMentionAutocomplete } from '@/components/console/useMentionAutocomplete'
@@ -4654,25 +4655,16 @@ export default function SessionDetailView() {
           ...selectablePermissionModes
         ]
       : selectablePermissionModes
-  const localizedPermissionPresets = pgPermissionPresets.map((mode) => {
-    const key = permissionModeLabelKey(mode.v)
-    return key ? { ...mode, l: permissionT(key) } : mode
-  })
   // The picker's Approval choices; a mode the live list no longer offers keeps its readable name.
-  const presetKey = pgPermissionPreset ? permissionModeLabelKey(pgPermissionPreset) : undefined
-  const pgApprovalOptions = [
-    ...(pgPermissionPreset && !localizedPermissionPresets.some((mode) => mode.v === pgPermissionPreset)
+  const pgApprovalOptions = localizedPermissionChoices(
+    pgPermissionPreset && !pgPermissionPresets.some((mode) => mode.v === pgPermissionPreset)
       ? [
-          {
-            value: pgPermissionPreset,
-            label: presetKey
-              ? permissionT(presetKey)
-              : agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionPreset)
-          }
+          { v: pgPermissionPreset, l: agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionPreset) },
+          ...pgPermissionPresets
         ]
-      : []),
-    ...localizedPermissionPresets.map((mode) => ({ value: mode.v, label: mode.l, description: mode.description }))
-  ]
+      : pgPermissionPresets,
+    permissionT
+  )
   // Stage the fast selection locally like model/effort/permission: an adopted
   // (persisted webchat) session has no synthetic provider entry for pgSetFast to
   // mutate, and an idle daemon session emits no status frame — without this the
@@ -5861,6 +5853,8 @@ export default function SessionDetailView() {
                                     ? {
                                         name: runtimeDecision?.name ?? 'Decision',
                                         selected: byDecision,
+                                        rules: ruleSummaries(owner.modelSelection, runtimeDecision?.question),
+                                        fallback: pgModel || agentRuntime,
                                         onSelect: () => {
                                           setRuntimeSelections((current) => ({
                                             ...current,
