@@ -503,6 +503,7 @@ export type WebchatEvent = z.infer<typeof WebchatEvent>
 // payload (see below) rather than a reply-stream event — a status update is not part
 // of the transcript and can arrive with no text chunk of its own.
 export const WebchatStatus = z.object({
+  runtime: z.string().optional(),
   model: z.string().optional(),
   effort: z.string().optional(),
   // Effective session permission preset; Codex Auto is composite rather than a raw mode.

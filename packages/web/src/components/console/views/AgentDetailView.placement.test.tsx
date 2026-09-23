@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   tab: 'tab=config'
 }))
 
+vi.mock('@/lib/decisions/provider', () => ({ useOptionalDecisionsPrototype: () => ({ decisions: [] }) }))
 vi.mock('next/navigation', () => ({
   useParams: () => ({ id: 'agent-1' }),
   useSearchParams: () => new URLSearchParams(mocks.tab),

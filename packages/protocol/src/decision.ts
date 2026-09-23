@@ -113,6 +113,18 @@ export type DecisionCondition = z.infer<typeof DecisionCondition>
 export const ChannelDecisionGate = z.strictObject({ type: z.literal('gate'), decisionId: Id, when: DecisionCondition })
 export type ChannelDecisionGate = z.infer<typeof ChannelDecisionGate>
 
+export const DecisionRuntimeTarget = z.strictObject({ runtime: Text.max(128), model: Text.max(256) })
+export type DecisionRuntimeTarget = z.infer<typeof DecisionRuntimeTarget>
+
+export const AgentModelSelection = z.strictObject({
+  decisionId: z.string().uuid(),
+  rules: z
+    .array(DecisionRuntimeTarget.extend({ when: DecisionCondition }))
+    .min(1)
+    .max(32)
+})
+export type AgentModelSelection = z.infer<typeof AgentModelSelection>
+
 export const ChannelDecisionBinding = z.discriminatedUnion('type', [
   ChannelDecisionGate,
   z.strictObject({ type: z.literal('shared_bot_routing') })
@@ -243,10 +255,17 @@ export function decisionRoutingIssues(
   const parsed = SharedBotDecisionRouting.safeParse(routing)
   if (!parsed.success)
     return parsed.error.issues.map((issue) => ({ path: issue.path.map(String), message: issue.message }))
+  return decisionRuleIssues(question, routing.rules)
+}
+
+function decisionRuleIssues(
+  question: DecisionQuestion,
+  rules: readonly { when: DecisionCondition }[]
+): DecisionValidationIssue[] {
   const issues: DecisionValidationIssue[] = []
   const assigned = new Set<string>()
   const intervals: Array<{ min: number; max: number }> = []
-  routing.rules.forEach((rule, index) => {
+  rules.forEach((rule, index) => {
     const path = ['rules', index, 'when']
     issues.push(
       ...decisionConditionIssues(question, rule.when, true).map((issue) => ({
@@ -272,6 +291,36 @@ export function decisionRoutingIssues(
     }
   })
   return issues
+}
+
+export function decisionModelSelectionIssues(
+  question: DecisionQuestion,
+  selection: AgentModelSelection
+): DecisionValidationIssue[] {
+  const parsed = AgentModelSelection.safeParse(selection)
+  if (!parsed.success)
+    return parsed.error.issues.map((issue) => ({ path: issue.path.map(String), message: issue.message }))
+  return decisionRuleIssues(question, selection.rules)
+}
+
+// A model consumer selects one winner; equal choice probabilities retain the configured rule order.
+export function selectDecisionTarget(
+  question: DecisionQuestion,
+  selection: AgentModelSelection,
+  answer: DecisionAnswer
+): DecisionRuntimeTarget | undefined {
+  requireValid(decisionModelSelectionIssues(question, selection))
+  parseDecisionAnswer(question, answer)
+  let selected: { target: DecisionRuntimeTarget; probability: number } | undefined
+  for (const rule of selection.rules) {
+    const match = matchDecisionCondition(question, rule.when, answer)
+    if (!match.matched) continue
+    const probability =
+      answer.type === 'choice' ? Math.max(...match.matchedKeys.map((key) => answer.probabilities[key]!)) : 1
+    if (!selected || probability > selected.probability)
+      selected = { target: { runtime: rule.runtime, model: rule.model }, probability }
+  }
+  return selected?.target
 }
 
 export function parseDecisionAnswer(question: DecisionQuestion, input: unknown): DecisionAnswer {

@@ -34,7 +34,7 @@ const DefinitionDto = z.object({
 })
 const IdParam = z.object({ id: z.string().uuid() })
 const UsageDto = z.object({
-  kind: z.enum(['gate', 'shared_bot_routing', 'agent_tool']),
+  kind: z.enum(['gate', 'shared_bot_routing', 'agent_tool', 'model_selection']),
   id: z.string(),
   label: z.string(),
   integrationId: z.string().optional(),
@@ -134,14 +134,24 @@ export function decisionRoutes(deps: HttpDeps) {
     const conversationCount = (usages: readonly DecisionChannelUsage[]) =>
       new Set(usages.map((u) => `${u.botId}\u0000${u.channelId}`)).size
     const agentUsages = async (req: FastifyRequest) =>
-      (await deps.repos.agent.list(orgOf(req), ctxOf(req))).flatMap((agent) =>
-        (agent.decisionIds ?? []).map((decisionId) => ({
+      (await deps.repos.agent.list(orgOf(req), ctxOf(req))).flatMap((agent) => [
+        ...(agent.modelSelection
+          ? [
+              {
+                decisionId: agent.modelSelection.decisionId,
+                kind: 'model_selection' as const,
+                id: agent.id,
+                label: agent.displayName ?? agent.name
+              }
+            ]
+          : []),
+        ...(agent.decisionIds ?? []).map((decisionId) => ({
           decisionId,
           kind: 'agent_tool' as const,
           id: agent.id,
           label: agent.displayName ?? agent.name
         }))
-      )
+      ])
     // A preview borrows a visible placed agent's credential identity without executing that agent.
     const executionAgent = async (req: FastifyRequest, daemonId: string) => {
       const agents = await deps.repos.agent.list(orgOf(req), ctxOf(req))

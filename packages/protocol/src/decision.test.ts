@@ -3,6 +3,9 @@ import {
   ChannelDecisionGate,
   DecisionBundle,
   DecisionBundleDefinition,
+  AgentModelSelection,
+  decisionModelSelectionIssues,
+  selectDecisionTarget,
   DecisionDraft,
   DecisionQuestion,
   decisionConditionIssues,
@@ -36,6 +39,47 @@ const scoreAnswer = (value: number): DecisionAnswer => ({
   value,
   probabilities: [0.1, 0.2, 0.3, 0.4],
   confidence: 0.8
+})
+
+describe('Decision model selection', () => {
+  const selection = AgentModelSelection.parse({
+    decisionId: '33333333-3333-4333-8333-333333333333',
+    rules: [
+      { when: { type: 'choice', thresholds: { billing: 0.3 } }, runtime: 'claude', model: 'model-a' },
+      { when: { type: 'choice', thresholds: { technical: 0.3 } }, runtime: 'claude', model: 'model-b' }
+    ]
+  })
+  it('selects one eligible model by probability and rule order, leaving no match to the consumer', () => {
+    expect(selectDecisionTarget(choice, selection, answer)).toEqual({ runtime: 'claude', model: 'model-a' })
+    expect(
+      selectDecisionTarget(choice, selection, {
+        ...answer,
+        value: 'technical',
+        probabilities: { billing: 0.3, technical: 0.5, sales: 0.2 }
+      })
+    ).toEqual({ runtime: 'claude', model: 'model-b' })
+    expect(
+      selectDecisionTarget(choice, selection, {
+        ...answer,
+        value: 'sales',
+        probabilities: { billing: 0.1, technical: 0.1, sales: 0.8 }
+      })
+    ).toBeUndefined()
+  })
+  it('rejects overlapping score ranges and rules invalidated by question edits', () => {
+    const ranges: AgentModelSelection = {
+      ...selection,
+      rules: [
+        { when: { type: 'score', min: 0, max: 2.5 }, runtime: 'claude', model: 'model-a' },
+        { when: { type: 'score', min: 2, max: 3 }, runtime: 'claude', model: 'model-b' }
+      ]
+    }
+    expect(decisionModelSelectionIssues(score, ranges)).not.toHaveLength(0)
+    expect(() => selectDecisionTarget(score, ranges, scoreAnswer(2))).toThrow()
+    ranges.rules[0]!.when = { type: 'score', min: 0, max: 1 }
+    expect(selectDecisionTarget(score, ranges, scoreAnswer(2))).toEqual({ runtime: 'claude', model: 'model-b' })
+    expect(() => selectDecisionTarget(score, selection, scoreAnswer(2))).toThrow()
+  })
 })
 const routing: SharedBotDecisionRouting = {
   enabled: true,

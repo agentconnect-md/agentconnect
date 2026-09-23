@@ -144,6 +144,8 @@ interface PlaygroundData {
   getPgQueue: (id: string) => QueuedTurn[]
   /** Remove one queued message before it is sent. */
   pgCancelQueued: (id: string, queueId: string) => void
+  // Stage an explicit pair before the first turn, or clear it to restore the Agent Decision.
+  pgStageRuntime: (id: string, runtime: WebchatRuntimeConfig) => void
   /** Switch the session's model (in-session, sticky). */
   pgSetModel: (id: string, agentId: string, model: string, conversationId?: string) => void
   /** Switch the session's reasoning effort (in-session, sticky). */
@@ -316,6 +318,7 @@ type WebchatEvent =
  *  (mirrors protocol WebchatStatus). Partial: context/cost stream live, token
  *  totals land at turn end. */
 type WebchatStatus = {
+  runtime?: string
   model?: string
   effort?: string
   permissionMode?: string
@@ -364,6 +367,7 @@ type WebchatPost = {
 type WebchatParticipant = { agentId: string; primary?: boolean }
 
 type WebchatRuntimeConfig = {
+  runtime?: string
   model?: string
   effort?: string
   permissionMode?: string
@@ -938,6 +942,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         [id]: {
           ...s,
           usage,
+          ...(st.runtime !== undefined ? { runtime: st.runtime } : {}),
           ...(st.model !== undefined ? { model: st.model } : {}),
           ...(st.models !== undefined ? { availableModels: st.models } : {}),
           ...(st.effort !== undefined ? { effort: st.effort } : {}),
@@ -2327,6 +2332,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       markSessionTarget,
       getPgQueue,
       pgCancelQueued,
+      pgStageRuntime: stageRuntimeChange,
       pgSetModel,
       pgSetEffort,
       pgSetPermissionPreset,
@@ -2362,6 +2368,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pgSetEffort,
       pgSetPermissionPreset,
       pgSetFast,
+      stageRuntimeChange,
       pgAnswerElicitation,
       pgAppRpc,
       pgCloseApp,

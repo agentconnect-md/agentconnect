@@ -19,6 +19,7 @@ import { runtimeSandboxReadRoots } from '../launch/compose.js'
 import { capsFromConfigOptions, augmentEffortOptions } from './config-caps.js'
 import { isClaudeRuntimeDef } from '../runtime-defs/claude-runtime.js'
 import { catalogFingerprint } from './model-catalog.js'
+import { RUNTIME_MODEL_ENV } from './model-env.js'
 import { parseArchiveLaunch } from './archive-store.js'
 import { mcpSocketPath } from '../paths.js'
 import { formatErr } from '../daemon/text.js'
@@ -161,7 +162,13 @@ export class RuntimeFactsRegistry {
   }
 
   modelCatalog(runtimeId: string): RuntimeModelCatalog | undefined {
-    return this.catalogs.get(this.canonicalId(runtimeId))
+    const catalog = this.catalogs.get(this.canonicalId(runtimeId))
+    return catalog ? { ...catalog, modelSwitching: this.canSwitchModels(runtimeId) } : undefined
+  }
+
+  canSwitchModels(runtimeId: string): boolean {
+    const id = this.canonicalId(runtimeId)
+    return !RUNTIME_MODEL_ENV[id] && !this.selectorless.has(id) && (this.models.get(id)?.length ?? 0) > 0
   }
 
   /** Report the current runtime profile, preserving both host and image versions. */
@@ -184,7 +191,7 @@ export class RuntimeFactsRegistry {
       mcpCapabilities: this.mcpCaps.get(id),
       modelsSource: this.modelsSource.get(id),
       // Retain cached capabilities even when a failed probe empties the advertised models.
-      modelCatalog: this.catalogs.get(id),
+      modelCatalog: this.modelCatalog(id),
       ...(this.host.unavailableReason(id) ? { unavailableReason: this.host.unavailableReason(id) } : {}),
       ...(credentialsConfigured === false || this.authRequired.has(id) || this.authRequiredLive.has(id)
         ? { authRequired: true }

@@ -13,6 +13,7 @@ import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigat
 import useSWR from 'swr'
 import {
   agentDaemonLabel,
+  agentCapabilitySource,
   agentLabel,
   agentPermissionDisplay,
   agentPlacementIcon,
@@ -25,7 +26,6 @@ import {
   lane,
   modelCapability,
   modelLabel,
-  modelTooltip,
   MOCK_MODE,
   MOCK_PREFIX,
   permissionModeLabel,
@@ -68,10 +68,12 @@ import {
   type ToolBody
 } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
+import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
+import { RuntimeModelSelect } from '@/components/console/RuntimeModelSelect'
 import { agentToneColor } from '@/lib/agent-tone'
 import { useProfile } from '@/lib/profile'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
-import { AgentIconView, LoadingState, ModelMark, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
+import { AgentIconView, LoadingState, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
 import { platformSenderFallback } from '../platforms/registry'
 import { McpAppCard, type McpAppCardProps } from '@/components/console/McpAppCard'
@@ -214,16 +216,6 @@ const COMPOSER_PILL_STATIC =
 // the family it feeds is not a new object on every render while the multi-request
 // lineage fetch is in flight.
 const EMPTY_CONVERSATION_FAMILY: ConversationLineage['family'] = { parentSessions: [], childSessions: [] }
-
-// The "fast" tag shown inside the model pill when fast mode is on.
-function FastBadge() {
-  const t = useTranslations('Sessions.detail')
-  return (
-    <span className="rounded-sm bg-(--brand-soft) px-[5px] py-px font-mono text-[10px] font-semibold uppercase tracking-[.04em] text-(--brand-soft-text)">
-      {t('fast')}
-    </span>
-  )
-}
 
 // Shared open/dismiss state for the header's hover-or-tap popovers (Details,
 // Requests). `tapped` is the touch path: a tap neither hovers nor reliably
@@ -2606,6 +2598,7 @@ export default function SessionDetailView() {
     pgCancelQueued,
     pgAddAgent,
     pgSetModel,
+    pgStageRuntime,
     pgSetEffort,
     pgSetPermissionPreset,
     pgSetFast,
@@ -2659,7 +2652,7 @@ export default function SessionDetailView() {
   // The last `/` pick, if any — consumed (and cleared) by the next send; see onPgSend.
   const commandPickRef = useRef<{ agentId: string; name: string } | null>(null)
   const [runtimeSelections, setRuntimeSelections] = useState<
-    Record<string, { model?: string; effort?: string; permissionPreset?: string; fast?: boolean }>
+    Record<string, { runtime?: string; model?: string; effort?: string; permissionPreset?: string; fast?: boolean }>
   >({})
   const [worktreeSelections, setWorktreeSelections] = useState<Record<string, boolean>>({})
   // A rail row already carries enough metadata to paint the next session while
@@ -2807,14 +2800,16 @@ export default function SessionDetailView() {
           daemon: sessionBase.daemon ?? owner?.daemon
         }
       : sessionBase
-  const agentRuntime = session?.runtime || owner?.runtime || ''
+  const decisionCatalog = useOptionalDecisionsPrototype()
+  const agentRuntime = runtimeSelections[session?.id ?? '']?.runtime || session?.runtime || owner?.runtime || ''
   // Hoisted above this component's loading / not-found returns: a deep link renders it
   // before `session` resolves, and a hook called only on the later render would change the
   // hook count between renders. The model catalogs live on the single-daemon read; until
   // it lands this is the fleet row.
   const owningDaemonId = session?.daemon && session.daemon !== '—' ? session.daemon : owner?.daemon
   const owningDaemon = useDaemonDetail(
-    owningDaemonId && owningDaemonId !== '—' ? daemons.find((d) => d.daemonId === owningDaemonId) : undefined
+    (owningDaemonId && owningDaemonId !== '—' ? daemons.find((d) => d.daemonId === owningDaemonId) : undefined) ??
+      (owner ? agentCapabilitySource(owner, daemons, memberSets) : undefined)
   )
 
   // A real (CP) session arrives with an empty `steps` — its transcript is a separate on-demand pull
@@ -4586,11 +4581,21 @@ export default function SessionDetailView() {
   const runtimeChangesEnabled =
     !isContinuable && !continuationBlocked && sessionRuntimeChangesEnabled(allowRuntimeChangesInChat, session)
   const runtimeSelection = runtimeSelections[session.id]
-  const setRuntimeSelection = (patch: { model?: string; effort?: string; permissionPreset?: string; fast?: boolean }) =>
+  const setRuntimeSelection = (patch: {
+    runtime?: string
+    model?: string
+    effort?: string
+    permissionPreset?: string
+    fast?: boolean
+  }) =>
     setRuntimeSelections((current) => ({
       ...current,
       [session.id]: { ...current[session.id], ...patch }
     }))
+  const beforeFirstTurn = pgEmpty && !session.realSessionId
+  const byDecision =
+    beforeFirstTurn && !!owner?.modelSelection && !runtimeSelection?.model && !runtimeSelection?.runtime
+  const runtimeDecision = decisionCatalog?.decisions.find((item) => item.id === owner?.modelSelection?.decisionId)
   const runtimeProfile = owningDaemon?.runtimeModels.find((profile) => profile.runtime === agentRuntime)
   const runtimeCatalog = runtimeProfile?.modelCatalog ?? undefined
   const pgModel =
@@ -4598,6 +4603,13 @@ export default function SessionDetailView() {
   const pgModels = session.availableModels ?? runtimeProfile?.models ?? []
   const pgModelOptions =
     pgModels.length > 0 && pgModel && !pgModels.includes(pgModel) ? [pgModel, ...pgModels] : pgModels
+  const pickerSource = beforeFirstTurn
+    ? owningDaemon
+    : {
+        runtimeModels: [
+          { ...runtimeProfile, runtime: agentRuntime, version: runtimeProfile?.version ?? '', models: pgModelOptions }
+        ]
+      }
   const selectedModelCapability = modelCapability(owningDaemon, agentRuntime, pgModel)
   const pgEffortChoices = sessionEffortChoicesForSelection(
     agentRuntime,
@@ -5804,93 +5816,74 @@ export default function SessionDetailView() {
                                 }}
                               />
                             )}
-                            {!multiLive &&
-                              (runtimeChangesEnabled && pgModelOptions.length > 0 ? (
-                                <ComposerMenu
-                                  title={t('model')}
-                                  value={pgModel}
-                                  options={pgModelOptions.map((model) => {
-                                    const description = modelTooltip(owningDaemon, agentRuntime, model)
-                                    return {
-                                      value: model,
-                                      label: modelLabel(model),
-                                      ...(description ? { description } : {})
-                                    }
-                                  })}
-                                  open={composerMenuOpen === 'model'}
-                                  align="left"
-                                  triggerClassName={COMPOSER_PILL}
-                                  tooltips={false}
-                                  leading={
-                                    <span className="inline-flex h-[14px] w-[14px] flex-none items-center justify-center">
-                                      <ModelMark model={pgModel} fallbackRuntime={agentRuntime} />
-                                    </span>
-                                  }
-                                  trailing={pgFastModeAvailable && pgFastMode ? <FastBadge /> : undefined}
-                                  footer={
-                                    pgFastModeAvailable ? (
-                                      <div className="flex items-center gap-[10px] px-[7px] pt-2 pb-[3px]">
-                                        <button
-                                          type="button"
-                                          role="switch"
-                                          aria-checked={pgFastMode}
-                                          aria-label={t('fastMode')}
-                                          title={t('fastModeHint')}
-                                          className={`relative h-[15px] w-[26px] flex-none cursor-pointer rounded-full border-0 p-0 transition-colors ${
-                                            pgFastMode ? 'bg-(--brand)' : 'bg-(--border-strong)'
-                                          }`}
-                                          onClick={() => {
-                                            const fast = !pgFastMode
-                                            setRuntimeSelection({ fast })
-                                            pgSetFast(session.id, session.agentId ?? '', fast, webchatConversationId)
-                                          }}
-                                        >
-                                          <span
-                                            className={`absolute top-[1px] h-[13px] w-[13px] rounded-full bg-white transition-[left] ${
-                                              pgFastMode ? 'left-3' : 'left-[1px]'
-                                            }`}
-                                          />
-                                        </button>
-                                        <span className="flex-1 font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
-                                          {t('fastMode')}
-                                        </span>
-                                        <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                                          {t('lowerLatency')}
-                                        </span>
-                                      </div>
-                                    ) : undefined
-                                  }
-                                  onOpenChange={(open) => {
-                                    setAttachMenuOpen(false)
-                                    setComposerMenuOpen(open ? 'model' : null)
-                                  }}
-                                  onChange={(model) => {
-                                    const currentEffort =
-                                      runtimeSelection?.effort ?? session.effort ?? owner?.reasoning ?? ''
-                                    const effort = sessionEffortAfterModelChange(
-                                      agentRuntime,
-                                      owningDaemon,
-                                      model,
-                                      currentEffort
-                                    )
-                                    setRuntimeSelection(effort === currentEffort ? { model } : { model, effort })
-                                    pgSetModel(session.id, session.agentId ?? '', model, webchatConversationId)
-                                    if (effort !== currentEffort) {
+                            {!multiLive && (pgModel || byDecision) && (
+                              <RuntimeModelSelect
+                                compact
+                                ariaLabel={t('model')}
+                                value={{ runtime: agentRuntime, model: pgModel }}
+                                source={pickerSource}
+                                runtimes={beforeFirstTurn ? undefined : [agentRuntime]}
+                                runInSandbox={owner?.runInSandbox}
+                                disabled={!runtimeChangesEnabled}
+                                decision={
+                                  beforeFirstTurn && owner?.modelSelection
+                                    ? {
+                                        name: runtimeDecision?.name ?? 'Decision',
+                                        selected: byDecision,
+                                        onSelect: () => {
+                                          setRuntimeSelections((current) => ({
+                                            ...current,
+                                            [session.id]: { fast: current[session.id]?.fast }
+                                          }))
+                                          pgStageRuntime(session.id, {
+                                            runtime: undefined,
+                                            model: undefined,
+                                            effort: undefined,
+                                            permissionMode: undefined
+                                          })
+                                        }
+                                      }
+                                    : undefined
+                                }
+                                fastMode={pgFastMode}
+                                onFastModeChange={
+                                  pgFastModeAvailable || byDecision
+                                    ? (fast) => {
+                                        setRuntimeSelection({ fast })
+                                        pgSetFast(session.id, session.agentId ?? '', fast, webchatConversationId)
+                                      }
+                                    : undefined
+                                }
+                                onChange={(target) => {
+                                  const currentEffort =
+                                    runtimeSelection?.effort ?? session.effort ?? owner?.reasoning ?? ''
+                                  const effort = sessionEffortAfterModelChange(
+                                    target.runtime,
+                                    owningDaemon,
+                                    target.model,
+                                    currentEffort
+                                  )
+                                  setRuntimeSelection({
+                                    ...target,
+                                    effort,
+                                    permissionPreset:
+                                      target.runtime === agentRuntime ? runtimeSelection?.permissionPreset : undefined
+                                  })
+                                  if (beforeFirstTurn) {
+                                    pgStageRuntime(session.id, {
+                                      ...target,
+                                      effort,
+                                      permissionMode:
+                                        target.runtime === agentRuntime ? runtimeSelection?.permissionPreset : undefined
+                                    })
+                                  } else {
+                                    pgSetModel(session.id, session.agentId ?? '', target.model, webchatConversationId)
+                                    if (effort !== currentEffort)
                                       pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
-                                    }
-                                  }}
-                                />
-                              ) : (
-                                pgModel && (
-                                  <span className={COMPOSER_PILL_STATIC} title={t('model')}>
-                                    <span className="inline-flex h-[14px] w-[14px] flex-none items-center justify-center">
-                                      <ModelMark model={pgModel} fallbackRuntime={agentRuntime} />
-                                    </span>
-                                    <span className="truncate">{modelLabel(pgModel)}</span>
-                                    {pgFastModeAvailable && pgFastMode && <FastBadge />}
-                                  </span>
-                                )
-                              ))}
+                                  }
+                                }}
+                              />
+                            )}
                             {!multiLive &&
                               (runtimeChangesEnabled && pgEffortOptions.length > 0 ? (
                                 <ComposerMenu

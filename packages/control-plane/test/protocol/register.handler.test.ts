@@ -232,6 +232,7 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
       skills: [], // resolved skill entries; always shipped (disabling the last skill must replicate)
       managedSkills: [], // managed organization skill bindings; likewise always shipped
       decisionIds: [],
+      modelSelection: null,
       // Agent→agent call policy (§2.5), always shipped so a policy/allow-list change replicates.
       callPolicy: 'all',
       allowedCallerAgentIds: [],
