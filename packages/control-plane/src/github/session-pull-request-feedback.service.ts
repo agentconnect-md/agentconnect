@@ -22,12 +22,24 @@ import type { SessionPullRequestLinkService } from './session-pull-request-link.
 
 const RETRY_MS = 10_000
 const CAPTURE_RETRY_MS = 60_000
+// Still unreadable a day after the session's last turn means asleep, removed or unserved; its next turn re-queues it.
+export const CAPTURE_MAX_IDLE_MS = 24 * 60 * 60 * 1000
 const CLAIM_MS = 60_000
 const FEEDBACK_DEBOUNCE_MS = 10_000
 const UNMATCHED_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000
 const MAX_PER_TICK = 20
 const MAX_CAPTURES_PER_TICK = 5
+
+/** An ended isolated session with content left, whose last turn is recent enough to still read its branch. */
+function owesCapture(session: SessionMetaRecord, nowMs: number): boolean {
+  return (
+    (session.phase === 'end' || session.phase === 'problem') &&
+    session.workspaceIsolation === 'session' &&
+    !session.contentPurgedAt &&
+    nowMs - session.lastActivityAt.getTime() < CAPTURE_MAX_IDLE_MS
+  )
+}
 
 export interface SessionPullRequestFeedbackServiceDeps {
   clock: Clock
@@ -85,13 +97,9 @@ export class SessionPullRequestFeedbackService {
   }
 
   async trackSession(session: SessionMetaRecord): Promise<void> {
-    if (
-      (session.phase !== 'end' && session.phase !== 'problem') ||
-      session.workspaceIsolation !== 'session' ||
-      session.contentPurgedAt
-    )
-      return
-    if (await this.deps.feedback.enqueueCapture(session.id, new Date(this.deps.clock.now()))) this.kick()
+    const now = this.deps.clock.now()
+    if (!owesCapture(session, now)) return
+    if (await this.deps.feedback.enqueueCapture(session.id, new Date(now))) this.kick()
   }
 
   async enqueue(signal: PullRequestFeedbackSignal): Promise<boolean> {
@@ -162,13 +170,7 @@ export class SessionPullRequestFeedbackService {
   private async capture(item: PullRequestCaptureRecord): Promise<boolean> {
     if (await this.deps.feedback.hasSession(item.sessionId)) return true
     const session = await this.deps.sessions.getUnscoped(item.sessionId)
-    if (
-      !session ||
-      (session.phase !== 'end' && session.phase !== 'problem') ||
-      session.workspaceIsolation !== 'session' ||
-      session.contentPurgedAt
-    )
-      return true
+    if (!session || !owesCapture(session, this.deps.clock.now())) return true
     const agent = await this.deps.agents.getUnscoped(session.agentId)
     if (!agent || agent.orgId !== session.orgId) return true
     const result = await this.deps.links.capture(agent, session)

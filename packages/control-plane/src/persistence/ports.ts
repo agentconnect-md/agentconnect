@@ -1561,6 +1561,7 @@ export interface SessionPullRequestFeedbackRepo {
   hasSession(sessionId: SessionId): Promise<boolean>
   /** Persist the exact terminal session's capture obligation before its lifecycle snapshot is ACKed. */
   enqueueCapture(sessionId: SessionId, nextAttemptAt: Date): Promise<boolean>
+  /** Cross-process lease for the due capture whose session had the most recent activity. */
   claimNextCapture(owner: string, now: Date, until: Date): Promise<PullRequestCaptureRecord | null>
   completeCapture(item: PullRequestCaptureRecord, owner: string): Promise<void>
   deferCapture(item: PullRequestCaptureRecord, owner: string, nextAttemptAt: Date): Promise<void>
