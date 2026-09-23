@@ -288,8 +288,8 @@ export function daemonRoutes(deps: HttpDeps) {
       }
     )
 
-    // One fan-out per window for the whole install: the pool is shared, and every accepted request costs a probe pod.
-    let lastPoolProbe: { at: number; members: number } | undefined
+    // One fan-out per window for the whole install, recorded before its acks settle so an overlapping request joins it.
+    let lastPoolProbe: { at: number; accepted: Promise<number> } | undefined
     r.post(
       '/daemons/pool/runtime-probe',
       {
@@ -309,23 +309,30 @@ export function daemonRoutes(deps: HttpDeps) {
         )
         if (members.length === 0) return reply.code(200).send({ state: 'unsupported', members: 0 })
         const now = Date.now()
-        if (lastPoolProbe && now - lastPoolProbe.at < POOL_RUNTIME_PROBE_DEBOUNCE_MS) {
-          return reply.code(202).send({ state: 'probing', members: lastPoolProbe.members })
+        const joined =
+          lastPoolProbe && now - lastPoolProbe.at < POOL_RUNTIME_PROBE_DEBOUNCE_MS ? lastPoolProbe : undefined
+        const attempt = joined ?? {
+          at: now,
+          accepted: Promise.allSettled(
+            members
+              .filter((d) => {
+                const conn = deps.liveness.get(d.daemonId)
+                return Boolean(conn?.reachable && conn.state === 'READY')
+              })
+              .map((d) => deps.control.runtimeProbe(d.daemonId))
+          ).then((acks) => acks.filter((ack) => ack.status === 'fulfilled' && ack.value.ok).length)
         }
-        const live = members.filter((d) => {
-          const conn = deps.liveness.get(d.daemonId)
-          return Boolean(conn?.reachable && conn.state === 'READY')
-        })
-        const acks = await Promise.allSettled(live.map((d) => deps.control.runtimeProbe(d.daemonId)))
-        const accepted = acks.filter((ack) => ack.status === 'fulfilled' && ack.value.ok).length
+        lastPoolProbe = attempt
+        const accepted = await attempt.accepted
         if (accepted === 0) {
+          // A fan-out nobody accepted holds no window: the next request tries again.
+          if (lastPoolProbe === attempt) lastPoolProbe = undefined
           return reply.code(503).send({
             error: 'Service Unavailable',
             statusCode: 503,
             message: 'no pool member accepted the probe request'
           })
         }
-        lastPoolProbe = { at: now, members: accepted }
         return reply.code(202).send({ state: 'probing', members: accepted })
       }
     )

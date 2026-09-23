@@ -1403,6 +1403,28 @@ describe('POST /daemons/pool/runtime-probe', () => {
     expect(sent).toEqual([member])
   })
 
+  it('joins a request that arrives while the first one is still waiting on its acks', async () => {
+    const member = await seedPoolMember('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', [RUNTIME_PROBE_FEATURE])
+    const sent: string[] = []
+    let release!: () => void
+    const acked = new Promise<void>((resolve) => (release = resolve))
+    const spy = {
+      runtimeProbe: async (id: string) => {
+        sent.push(id)
+        await acked
+        return { ok: true }
+      }
+    } as unknown as ControlSender
+    running = buildHttpApp(prisma, undefined, liveness({ [member]: { state: 'READY', reachable: true } }), spy)
+    const first = running.app.inject({ method: 'POST', url: `${ORG}/daemons/pool/runtime-probe` })
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    const second = running.app.inject({ method: 'POST', url: `${ORG}/daemons/pool/runtime-probe` })
+    release()
+    expect((await first).json()).toEqual({ state: 'probing', members: 1 })
+    expect((await second).json()).toEqual({ state: 'probing', members: 1 })
+    expect(sent).toEqual([member])
+  })
+
   it('is refused to a member who does not own the organization', async () => {
     const member = await seedPoolMember('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', [RUNTIME_PROBE_FEATURE])
     const users = new PgUserRepo(prisma)
