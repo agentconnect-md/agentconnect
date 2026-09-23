@@ -1653,11 +1653,27 @@ it grants no permission, applies no routing rule, and bypasses no approval. This
 consumer is available before live message triggers and does not advance shared-bot
 routing out of Stage 2. The temporary Console `decisions` flag also gates its
 attachment card and must be removed with the other gates at final release.
+Agent-level answer filtering is a separate future capability described below.
 
 ## 11. Future possibilities
 
 These are exploratory uses of the same Decision resource, outside Stage 1 and
 Stage 2. They have no committed delivery order, configuration, API, or execution design.
+
+### Agent-level Decision filters
+
+An Agent may later need its own condition for filtering a Decision's answers.
+Represent that condition on the Agent's Decision binding, independently of the
+Decision definition and any channel gate or shared-bot routing condition. A
+Decision can then be reused by several Agents with different filters. The
+current `decisionIds` enable-list and MCP tools do not imply such a filter.
+
+When this capability is designed, validate each Agent-owned condition against
+the selected Decision's answer schema. A type or criteria change that makes a
+condition incompatible should preserve it for repair and show **Needs review**
+in Agent Configure; the affected filter must not silently match more answers.
+The binding's storage shape, evaluation point, and behavior while review is
+needed require a separate design before implementation.
 
 ### Auto and built-in Decisions
 
