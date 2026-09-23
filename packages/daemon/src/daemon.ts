@@ -527,7 +527,7 @@ import { sessionPodOf } from './cp/agent-wake.js'
 import { createWorkspaceFileLinkResolver, type WorkspaceFileLinkResolver } from './messages/workspace-file-links.js'
 import { canonicalWorkspacePath, containedWorkspacePath, WorkspaceViolationError } from './workspace/workspace-files.js'
 import { readRegularFile, RegularFileError } from './fs/regular-file.js'
-import { localWorkspaceFs, type WorkspaceFs } from './workspace/workspace-fs.js'
+import { localWorkspaceFs } from './workspace/workspace-fs.js'
 import type { SaveAttachmentResult } from './mcp/ops/platform-reads.js'
 import { saveAttachmentTo, type SaveAttachmentTarget } from './mcp/ops/save-attachment.js'
 import type { ShareReadResult, ShareTargetResult } from './mcp/ops/share-file.js'
@@ -679,6 +679,7 @@ import type {
   McpAppOutcome
 } from '@agentconnect.md/protocol'
 import { boundedDiagnostic, formatErr, startFailureDetail } from './daemon/text.js'
+import { HostPasses } from './daemon/host-passes.js'
 import { isBuiltinSystemToolCall, type ApprovalRequestParts } from './daemon/tool-classification.js'
 import { buildTurnPlan, type TurnPlan } from './daemon/turn-plan.js'
 import { turnEvaluationReporter, type TurnEvaluationReporter } from './daemon/turn-evaluation.js'
@@ -1029,6 +1030,8 @@ export class Daemon {
   private hostLaunch = new Map<HostKey, { agentDir: string; cwd: string }>()
   // host → when it was (re)built (clock ms), so the idle reaper gives a host with no recorded activity yet a full window.
   private hostStartedAt = new Map<HostKey, number>()
+  // The daemon's own passes on its hosts, which hold one against the idle reaper and restart its clock; no session row records them.
+  private readonly hostPasses = new HostPasses()
   // agentId → config-file secret state (shim/config-file-env.ts); the files are shared by the agent's hosts and go with its last one.
   // Recorded at spawn because the reconcile remove path drops the roster entry BEFORE
   // stopping the host — the agent dir can't be re-resolved there. `childEnv` is the
@@ -3359,8 +3362,8 @@ export class Daemon {
           return { ok: true, bytes, name: `${stem}.${ext}`, mimeType: sniffed, sha256 }
         }
 
-        // Pod arm (design §6): the daemon adds the lexical fence (with the `.git` rule); the pod's fd-anchored descent is the symlink guarantee.
-        const podFs = this.poolToolWorkspaceFs(ctx.agentId, key)
+        // Pod arm (design §6), and an executor's: the daemon adds the lexical fence (with the `.git` rule); the shim's fd-anchored descent is the symlink guarantee.
+        const podFs = this.workspaces.offDiskFsFor(ctx.agentId, { sessionKey: key })
         if (podFs !== undefined) {
           if (podFs === 'unbound') return { ok: false, reason: 'sandboxed' }
           let resolved: string
@@ -3422,8 +3425,8 @@ export class Daemon {
           (await scope.location(ctx.agentId).catch(() => undefined))
         if (!location) return { ok: false, reason: 'no-workspace' }
 
-        // Pod arm: the channel's descent is the containment; local arm: realpath re-verifies `uploads/`. Anything thrown past the helper is the channel or the disk.
-        const podFs = this.poolToolWorkspaceFs(ctx.agentId, key)
+        // Pod or executor arm: the channel's descent is the containment; local arm: realpath re-verifies `uploads/`. Anything thrown past the helper is the channel or the disk.
+        const podFs = this.workspaces.offDiskFsFor(ctx.agentId, { sessionKey: key })
         if (podFs === 'unbound') return { ok: false, reason: 'sandboxed' }
         const target: SaveAttachmentTarget = podFs
           ? { kind: 'workspace-fs', fs: podFs, root: location.root }
@@ -4733,12 +4736,6 @@ export class Daemon {
     return sessionKey === undefined ? undefined : this.executorPlane?.placementOf(sessionKey)
   }
 
-  /** A pool session's tool workspace on the pod that owns each path, 'unbound' while no pod of the agent is, undefined off the pool — judged by the session's own scope, as its location was, never by whether the agent pod ever reported a mount here. */
-  private poolToolWorkspaceFs(agentId: string, sessionKey: string): WorkspaceFs | 'unbound' | undefined {
-    if (!this.k8sPlane || !this.workspaces.offDisk({ agentId, sessionKey })) return undefined
-    return this.k8sPlane.workspaceFsFor(agentId)?.fs ?? 'unbound'
-  }
-
   private workspaceFilesFor(agentId: string) {
     const cluster = this.k8sPlane?.workspaceFilesFor(agentId)
     if (cluster) return cluster
@@ -4964,6 +4961,15 @@ export class Daemon {
   private runsInAgentPod(agentId: string, sessionKey?: string): boolean {
     const agent = this.agents.get(agentId)
     return !agent || !this.confinedSession(agent, sessionKey)
+  }
+
+  /** The last activity of the sessions the agent's shared host serves — those {@link hostKeyFor} routes to it — never one with a host of its own. */
+  private async sharedHostLastActivityTs(agentId: string): Promise<number | null> {
+    const shared = agentHostKey(agentId)
+    for (const { key, updatedAt } of await this.store.agentSessionActivity(agentId)) {
+      if (this.hostKeyFor(agentId, key) === shared) return updatedAt
+    }
+    return null
   }
 
   /** Whether anything of the agent runs in its own pod right now: a host, a model-session host, an admitted dispatch or a pending turn. */
@@ -6275,15 +6281,21 @@ export class Daemon {
     let lastError: unknown
     for (let attempt = 1; attempt <= attempts; attempt++) {
       // A session in its own pod prepares its workspace when it opens, after this launch; the gate re-verifies that pod alone.
-      const cwd = this.runsInSessionPod(agent, entry.sessionKey)
+      const inSessionPod = this.runsInSessionPod(agent, entry.sessionKey)
+      const cwd = inSessionPod
         ? await this.prepareSessionPodLaunch(agent, entry.sessionKey)
         : await this.prepareAgentWorkspace(agent, undefined, undefined)
       const hostKey = sessionHostKey(agent.id, entry.sessionKey)
+      // The clones it already holds on that pod, as an ordinary start lists them; a session opening after this launch has none yet.
+      const sessionGitDirs = inSessionPod
+        ? await this.listSessionGitDirs(agent, entry.sessionKey, hostKeyLabel(hostKey))
+        : undefined
       const { host, configFileState } = this.buildAcpHost(agent, this.cfg, {
         hostKey,
         runInSandbox: this.agentRunsInSandbox(agent),
         cwd,
         warnOnSandboxDowngrade: true,
+        ...(sessionGitDirs ? { sessionGitDirs } : {}),
         modelCredential: {
           target: entry.target,
           credential: {
@@ -6307,6 +6319,14 @@ export class Daemon {
       }
     }
     throw lastError
+  }
+
+  /** The `.git` of a session's clones off this disk, listed where they are because its launch cannot read them; undefined for clones on this disk, and a failed listing grants nothing. */
+  private async listSessionGitDirs(agent: Agent, sessionKey: string, label: string): Promise<string[] | undefined> {
+    return await this.workspaces.offDiskSessionGitDirs(agent, sessionKey)?.catch((err: unknown) => {
+      this.log.warn(`acp: could not list the clones of "${label}" where it runs: ${formatErr(err)}`)
+      return []
+    })
   }
 
   /** Forget a host's launch facts and drop its sandbox policy directory, once its process is gone. */
@@ -6523,10 +6543,24 @@ export class Daemon {
     return `${agentId}\u0000${scope?.channelKey ?? ''}`
   }
 
+  /** Run one of the daemon's own passes, holding the agent's shared host against the idle reaper from before the pass fetches it until it settles. */
+  private async onAgentHost<T>(agentId: string, pass: () => Promise<T>): Promise<T> {
+    // With a key server the pass runs on a model-session host of its own, which it releases itself.
+    if (this.modelSessions.enabled) return await pass()
+    const settle = this.hostPasses.begin(agentHostKey(agentId), this.clock.now())
+    try {
+      return await pass()
+    } finally {
+      settle(this.clock.now())
+    }
+  }
+
   private async runMemoryExtraction(agentId: string, prompt: string, scope?: MemoryScope): Promise<string> {
     const key = this.memoryExtractionKey(agentId, scope)
     const prior = this.memoryExtractionChains.get(key) ?? Promise.resolve('')
-    const next = prior.catch(() => '').then(() => this.runMemoryExtractionPass(agentId, prompt, scope))
+    const next = prior
+      .catch(() => '')
+      .then(() => this.onAgentHost(agentId, () => this.runMemoryExtractionPass(agentId, prompt, scope)))
     this.memoryExtractionChains.set(key, next)
     try {
       return await next
@@ -17500,14 +17534,7 @@ export class Daemon {
             )
       if (!this.usesMicrosandbox(agent))
         await withStartupPhase('runtime', () => this.ensureRuntimeInstalled(agent.runtime, true))
-      // Clones off this disk are listed where they are, since the launch cannot read them itself; no answer grants nothing.
-      const listing = boundKey ? this.workspaces.offDiskSessionGitDirs(agent, boundKey) : undefined
-      const sessionGitDirs = listing
-        ? await listing.catch((err: unknown) => {
-            this.log.warn(`acp: could not list the clones of "${label}" where it runs: ${formatErr(err)}`)
-            return []
-          })
-        : undefined
+      const sessionGitDirs = boundKey ? await this.listSessionGitDirs(agent, boundKey, label) : undefined
       if (this.hostStartGeneration.get(key) !== generation) {
         throw new Error(`host start superseded for ${label}`)
       }
@@ -18162,6 +18189,11 @@ export class Daemon {
       )
       return { kind: 'held' }
     }
+    // A shared-bot router is never Any and never a gate: every candidate is held until 5b routes it.
+    if (routing.routingFor(targetMsg.channel)) {
+      this.decisionHoldLog(integrationId, targetMsg.channel, 'shared-bot routing not implemented yet')
+      return { kind: 'held', reason: 'routing_not_implemented' }
+    }
     const gate = routing.decisionBindingFor(targetMsg.channel)
     if (!gate) {
       this.decisionHoldLog(integrationId, targetMsg.channel, 'decision rule has no enabled binding')
@@ -18224,6 +18256,8 @@ export class Daemon {
     if (!int) return { status: 'unknown' }
     const routing = integrationRouting(int)
     if (!routing.decisionBound(channel)) return { status: 'unbound' }
+    // A conversation switched to the shared router refuses a pending gate verdict at release.
+    if (routing.routingFor(channel)) return { status: 'disabled', reason: 'routing_not_implemented' }
     const gate = routing.decisionBindingFor(channel)
     if (!gate) {
       const binding = integrationCore(int).decisions.bindings.find((candidate) => candidate.channel === channel)
@@ -20130,35 +20164,30 @@ export class Daemon {
         `config-files: removed idle secret files for agent "${agentId}" (quiet ${Math.round((now - last) / 1000)}s)`
       )
     }
-    // §7.2 ready→provisioned: reclaim a host whose agent has no recent session
-    // activity AND no in-flight turn (a long turn stamps no activity, so the
-    // in-flight guard is load-bearing).
+    // §7.2 ready→provisioned: reclaim a host with no recent activity of its own and no work in flight (a long turn stamps no activity, so the in-flight guards are load-bearing).
     for (const [key] of [...this.hosts]) {
       const agentId = hostKeyAgentId(key)
       const sessionKey = hostKeySessionKey(key)
       const label = hostKeyLabel(key)
       if (this.drainingAgents.has(agentId)) continue
-      // `pending` begins only after session/new|load. A warm dispatch can still
-      // be assembling memory/context or preparing its workspace before that;
-      // reclaiming its host here would detach a live initialization generation.
+      // Any dispatch of the agent holds all its hosts: it prepares before `pending` exists, and a review's preparation is fenced on the shared host staying ready.
       if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
-      // A session-bound host is quiet when ITS session is; the shared host, when every session of the agent is.
+      // A session-bound host is held by its own session's turn in flight; the shared host, as above, by any of the agent's.
       const inFlight = (p: Pending): boolean =>
         p.plan.agentId === agentId && (sessionKey === undefined || p.plan.sessionKey === sessionKey)
       if ([...this.pending.values()].some(inFlight)) continue
-      // A just-started host that hasn't served a turn yet has no recorded activity
-      // (`agentLastActivityTs` unset ⇒ 0 ⇒ idle≈now), so without this it would be
-      // reclaimed on the very next sweep — including WHILE it is still mid-startup
-      // (the host object is in `this.hosts` before `start()` resolves), tearing it
-      // down underneath its own first dispatch (ACP "connection closed" → "already
-      // started" → "Session not found"). Fall back to when the host came up so it
-      // gets a full idle window from start, not an instant reclaim.
+      // The shared host's clock counts only the sessions routed to it and its own passes, never a session with a host of its own; a host gets a full window from its start, or it would go mid-startup.
       const activity =
         sessionKey === undefined
-          ? await this.store.agentLastActivityTs(agentId)
+          ? await this.sharedHostLastActivityTs(agentId)
           : await this.store.sessionLastActivityTs(sessionKey)
-      const last = Math.max(activity ?? 0, this.hostStartedAt.get(key) ?? 0)
+      const last = Math.max(activity ?? 0, this.hostStartedAt.get(key) ?? 0, this.hostPasses.settledAt(key) ?? 0)
       if (now - last <= ttl) continue
+      // A pass of the daemon's own holds its host until it settles, read after the store round trip in the tick that stops it; one past the lifetime ceiling is taken as wedged.
+      if (this.hostPasses.holds(key, now, maxLifetime)) {
+        this.log.info(`idle: host "${label}" has an internal pass in flight — deferring reclaim`)
+        continue
+      }
       // Background-task lease: don't reap a host that still has live background work
       // (a running SDK cycle / followup turn or unsettled background tasks) — reaping
       // SIGTERMs the adapter, and `claude` reaps its own background jobs on graceful
@@ -21414,7 +21443,7 @@ export class Daemon {
       withWorkspaceIndexWrite: <T>(agentId: string, write: () => Promise<T>): Promise<T> =>
         this.withWorkspaceIndexWrite(agentId, write),
       runCommitMessagePass: (agentId, systemPrompt, prompt, signal) =>
-        this.runCommitMessagePass(agentId, systemPrompt, prompt, signal)
+        this.onAgentHost(agentId, () => this.runCommitMessagePass(agentId, systemPrompt, prompt, signal))
     }
   }
 

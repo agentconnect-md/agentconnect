@@ -58,6 +58,7 @@ import {
   type SessionImage
 } from '@/lib/data'
 import { agentSessionIsolationLabel } from '@/lib/session-isolation'
+import { permissionModeLabelKey } from '@/lib/permission-mode-i18n'
 import { cronNext, cronHuman, fmtNextRun } from '@/lib/cron'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
 
@@ -104,6 +105,7 @@ function useAvailableHeight(ref: RefObject<HTMLElement | null>, enabled: boolean
 export default function HomeView() {
   const router = useRouter()
   const t = useTranslations('Home')
+  const permissionT = useTranslations('Common.permissionModes')
   const locale = useLocale()
   const { user } = useProfile()
   const firstName = user.name.trim().split(/\s+/)[0] ?? ''
@@ -223,7 +225,7 @@ export default function HomeView() {
   const [imageError, setImageError] = useState<string | null>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
   // Which selector menu is open (only one at a time), and the run-runtime overrides.
-  const [menu, setMenu] = useState<'agent' | 'model' | 'effort' | 'permission' | 'add' | 'attach' | null>(null)
+  const [menu, setMenu] = useState<'agent' | 'model' | 'add' | 'attach' | null>(null)
   const [runtime, setRuntime] = useState<{
     runtime?: string
     model?: string
@@ -325,11 +327,10 @@ export default function HomeView() {
     ? resolvedPermissionMode(agent?.permissionMode ?? '', permissionList, modelCatalog)
     : ''
   const permissionPreset = runtime.permissionPreset ?? permissionMode
-  const permissionChoices = permissionList.map((o) => ({
-    value: o.v,
-    label: o.l,
-    description: o.description
-  }))
+  const permissionChoices = permissionList.map((o) => {
+    const key = permissionModeLabelKey(o.v)
+    return { value: o.v, label: key ? permissionT(key) : o.l, description: o.description }
+  })
 
   // Why the composer can't start a session for the selected agent (null ⇒ it can).
   const executionAgent = agent && runtime.runtime ? { ...agent, runtime: runtime.runtime, model } : agent
@@ -720,38 +721,31 @@ export default function HomeView() {
                           }
                         : undefined
                     }
-                    fastMode={runtime.fastMode ?? agent.fastMode}
-                    fastModeAvailable={byDecision || fastModeAvailableFor(selectedRuntime, capability)}
-                    onFastModeChange={(fastMode) => setRuntime((current) => ({ ...current, fastMode }))}
+                    settings={{
+                      effort:
+                        showEffort && effortChoices.length > 0
+                          ? {
+                              value: effort,
+                              options: effortChoices,
+                              onChange: (v) => setRuntime((r) => ({ ...r, effort: v }))
+                            }
+                          : undefined,
+                      approval:
+                        showPermission && permissionChoices.length > 0
+                          ? {
+                              value: permissionPreset,
+                              options: permissionChoices,
+                              onChange: (v) => setRuntime((r) => ({ ...r, permissionPreset: v }))
+                            }
+                          : undefined,
+                      fast: fastModeAvailableFor(selectedRuntime, capability)
+                        ? {
+                            value: runtime.fastMode ?? agent.fastMode,
+                            onChange: (fastMode) => setRuntime((current) => ({ ...current, fastMode }))
+                          }
+                        : undefined
+                    }}
                     onChange={(target) => setRuntime({ ...target, fastMode: runtime.fastMode })}
-                  />
-                )}
-                {!multi && runtimeChangesAllowed && showEffort && effortChoices.length > 0 && (
-                  <ComposerMenu
-                    title={t('composer.effort')}
-                    value={effort}
-                    options={effortChoices}
-                    open={menu === 'effort'}
-                    align="left"
-                    placement="down"
-                    triggerClassName={CHIP}
-                    tooltips={false}
-                    onOpenChange={(o) => setMenu(o ? 'effort' : null)}
-                    onChange={(v) => setRuntime((r) => ({ ...r, effort: v }))}
-                  />
-                )}
-                {!multi && runtimeChangesAllowed && showPermission && permissionChoices.length > 0 && (
-                  <ComposerMenu
-                    title={t('composer.permission')}
-                    value={permissionPreset}
-                    options={permissionChoices}
-                    open={menu === 'permission'}
-                    align="left"
-                    placement="down"
-                    triggerClassName={CHIP}
-                    tooltips={false}
-                    onOpenChange={(o) => setMenu(o ? 'permission' : null)}
-                    onChange={(v) => setRuntime((r) => ({ ...r, permissionPreset: v }))}
                   />
                 )}
                 {!multi && gitWorkspace && (

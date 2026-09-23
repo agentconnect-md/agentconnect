@@ -46,13 +46,22 @@ export async function convergeIntegrationGating(
   for (const i of integrations) await convergeIntegration(deps, i, agent, syncedBots, log)
 }
 
-/** Re-push the specs of every integration gating on an edited Decision (decisions.md §7.1); best-effort. */
+/** Re-push the specs of every integration gating on, and every bot routing by, an edited Decision (§7.1); best-effort. */
 export async function convergeDecisionConsumers(
   deps: GatingPushDeps & { repos: { agent: Pick<AgentRepo, 'getUnscoped'> } },
   integrationIds: readonly IntegrationId[],
-  log?: { warn(obj: unknown, msg?: string): void }
+  log?: { warn(obj: unknown, msg?: string): void },
+  botIds: readonly string[] = []
 ): Promise<void> {
   const syncedBots = new Set<string>()
+  for (const botId of new Set(botIds)) {
+    syncedBots.add(botId)
+    try {
+      await deps.httpBot.syncBot(botId)
+    } catch (err) {
+      log?.warn({ botId, err: (err as Error).message }, 'decision converge: routing bot sync failed')
+    }
+  }
   for (const id of new Set(integrationIds)) {
     try {
       const i = await deps.repos.integration.getUnscoped(id)

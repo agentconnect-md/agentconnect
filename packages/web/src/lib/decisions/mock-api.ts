@@ -187,18 +187,27 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
       const issues = routingIssues(botId, saved.config, definition)
       readiness = issues.length ? { status: 'needs_review', issues } : providerReadiness(definition, bot.daemonId)
     }
+    const scoped = [...channels.values()].filter(
+      (channel) =>
+        channel.botId === botId &&
+        channel.settings.trigger === 'decision' &&
+        channel.settings.decisionBinding.type === 'shared_bot_routing'
+    )
+    const defaultAgent = bot.agents.find((agent) => agent.id === bot.defaultAgentId)
     return copy({
       botId,
       config: saved?.config ?? null,
-      channelIds: [...channels.values()]
-        .filter(
-          (channel) =>
-            channel.botId === botId &&
-            channel.settings.trigger === 'decision' &&
-            channel.settings.decisionBinding.type === 'shared_bot_routing'
-        )
-        .map((channel) => channel.id),
-      readiness
+      channelIds: scoped.map((channel) => channel.id),
+      readiness,
+      evaluationHost: { daemonId: bot.daemonId, name: null, source: 'default_agent', status: 'ready' },
+      channels: scoped.map((channel) => ({
+        channelId: channel.id,
+        name: channel.name,
+        defaultAgent: defaultAgent ? { id: defaultAgent.id, name: defaultAgent.name } : null,
+        evaluationDaemonId: bot.daemonId,
+        readiness
+      })),
+      updatedAt: null
     })
   }
 

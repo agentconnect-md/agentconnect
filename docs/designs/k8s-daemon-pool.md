@@ -373,10 +373,15 @@ idle window after the later of when this member launched or took over its pod an
 the last activity of the agent's sessions that are not isolated, which on a pool
 are exactly the ones that run in it. An isolated session's host, turn or traffic
 keeps it for nothing, and a host that leaves it restarts no clock, so a reaped
-shared host gives the pod no second window. One path remains: the agent's shared
-host, where one runs, is still reaped by the activity of all the agent's
-sessions, so isolated traffic keeps that host — and so this pod — up while it
-lives. A session pod's claim goes with the
+shared host gives the pod no second window. The shared host, where one runs, is
+judged the same way: it is reaped one idle window after the latest of its start,
+the last activity of the sessions routed to it — never one with a host of its
+own — and the end of its last internal pass. Without a key server, distillation
+and the commit-message wand run there, so each pass holds the host from before it
+fetches it until it settles, and one older than `agentMaxLifetimeMs` is taken as
+wedged and holds nothing. An admitted dispatch of any of the agent's sessions
+still holds the host while it runs, restarting no clock, because a review's
+preparation is fenced on that host staying ready. A session pod's claim goes with the
 session's row: retention deletes it (volume and all) once the clone has passed
 the dirty and unique-commit rules, a replaced workspace retires every session
 pod of the agent **when its conversion runs on the volume** — not when the edit

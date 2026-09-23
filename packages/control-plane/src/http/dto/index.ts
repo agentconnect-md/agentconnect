@@ -11,6 +11,7 @@ import {
   AgentDecisionIds,
   AgentModelSelection,
   AgentMemoryBinding,
+  ChannelDecisionBinding,
   ChannelDecisionGate,
   DaemonLifecyclePhase,
   AgentPermissionRequestRecord,
@@ -959,15 +960,16 @@ export const IntegrationChannelDto = z.object({
   isPrivate: z.boolean(),
   kind: z.enum(['channel', 'im', 'mpim']),
   trigger: z.enum(['off', 'mention', 'any', 'decision']),
-  /** The By decision gate; present exactly when `trigger` is 'decision'. */
-  decisionBinding: ChannelDecisionGate.nullable(),
+  /** The By decision consumer (a gate, or the bot's shared router); present exactly when `trigger` is 'decision'. */
+  decisionBinding: ChannelDecisionBinding.nullable(),
   /** The effective By decision consumer and its deployment readiness; null for any other trigger. */
   decision: z
     .object({
+      consumer: z.enum(['gate', 'shared_bot_routing']).optional(),
       id: z.string(),
       name: z.string().nullable(), // null when the caller cannot view the Decision
       enabled: z.boolean(),
-      disabledReason: z.enum(['needs_review', 'access_revoked']).optional(),
+      disabledReason: z.enum(['needs_review', 'access_revoked', 'paused']).optional(),
       readiness: z.object({
         status: z.enum(['ready', 'pending_sync', 'needs_review', 'daemon_offline', 'unsupported']),
         reason: z.string().optional()

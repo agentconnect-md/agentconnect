@@ -137,9 +137,17 @@ export class AgentDelivery {
    *  No explicit orgId: `IntegrationSpec.orgId` is a required wire field, so the
    *  payload IS the explicit org — and sending it also teaches the connection's
    *  id→org map, which is why upserts never had this problem. */
-  async integrationUpsert(agent: ResolvableAgent, spec: IntegrationSpec, onError: DeliveryErrorHandler): Promise<void> {
+  async integrationUpsert(
+    agent: ResolvableAgent,
+    spec: IntegrationSpec,
+    onError: DeliveryErrorHandler,
+    /** Per-target spec shaping (the routing host's extra bundle); absent ⇒ every target gets `spec`. */
+    shape?: (daemonId: string) => IntegrationSpec
+  ): Promise<void> {
     const targets = await this.daemonsFor(agent)
-    await this.fanOut(targets, onError, (daemonId) => this.deps.control.integrationUpsert(daemonId, spec))
+    await this.fanOut(targets, onError, (daemonId) =>
+      this.deps.control.integrationUpsert(daemonId, shape ? shape(daemonId) : spec)
+    )
   }
 
   /** `orgId` is REQUIRED, not derived. A removal payload is a bare id, so an

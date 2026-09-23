@@ -763,6 +763,29 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     expect(sendMsg).toHaveBeenCalledTimes(1)
   })
 
+  it('forwards a routed conversation gate-style to the ladder target, never to its evaluation host (5a)', async () => {
+    const routed = (): BotAssignment => {
+      const a = channelOwned()
+      a.routes[a.routes.length - 1] = {
+        ...a.routes[a.routes.length - 1]!,
+        match: { kind: 'decision' },
+        decisionId: 'dec-1'
+      }
+      a.routedConversations = [{ channel: 'C123', decisionId: 'dec-1', evaluationDaemonId: OTHER_DAEMON_ID }]
+      return a
+    }
+    const sendMsg = vi.fn(async (m: { msgId: string }): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+    const getDaemon = vi.fn(() => ({ sendMsg, supports: () => true }) as unknown as RelayDaemonConnection)
+    const manager = new RelayIngressManager(deps({ getDaemon }))
+    const internals = internalsOf(manager)
+    internals.router.upsert(routed())
+
+    await internals.forward(BOT_ID, followUp({ msgId: 'slack:C123:r1', thread: undefined, text: 'billing?' }))
+    expect(sendMsg).toHaveBeenCalledTimes(1)
+    expect(sendMsg.mock.calls[0]![0]).toMatchObject({ agentId: AGENT_ID, decisionId: 'dec-1' })
+    expect(getDaemon).not.toHaveBeenCalledWith(OTHER_DAEMON_ID)
+  })
+
   // ── send-message-routing-rework.md §4 / §4.1 / §6 — verified agent authors ──
   describe('verified agent-authored routing', () => {
     const AUTHOR_ID = '99999999-9999-4999-8999-999999999999'

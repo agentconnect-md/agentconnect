@@ -44,9 +44,11 @@ import { Prisma } from '../../generated/prisma/client.js'
 import {
   decisionChannelView,
   decisionGateReadiness,
+  routedChannelReadiness,
   visibleDecision,
   type DecisionGateReadiness
 } from '../decision-access.js'
+import { isRoutedChannel } from '../../orchestrator/decisionBundle.js'
 import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
 import { relayIngress } from '../relay-ingress.js'
 import { buildCreateIntegrationBody, credentialBlockOf } from '../dto/create-integration-body.js'
@@ -624,7 +626,8 @@ export function integrationRoutes(deps: HttpDeps) {
                   trigger: state.trigger,
                   decisionBinding: state.decisionBinding,
                   decisionNeedsReview: state.decisionNeedsReview,
-                  decisionDefinition: state.decisionDefinition
+                  decisionDefinition: state.decisionDefinition,
+                  decisionRouting: state.decisionRouting ?? null
                 }
               : channel
           })
@@ -649,21 +652,36 @@ export function integrationRoutes(deps: HttpDeps) {
           }
           return pending
         }
+        // A routed conversation's readiness is its bot's routing plan, described once per bot.
+        const routingMemo = new Map<string, ReturnType<typeof deps.httpBot.describeRouting>>()
+        const routingFor = (bot: BotRecord) => {
+          let pending = routingMemo.get(bot.id)
+          if (!pending) {
+            pending = deps.httpBot.describeRouting(bot)
+            routingMemo.set(bot.id, pending)
+          }
+          return pending
+        }
         return Promise.all(
           effectiveRows.map(async ({ integration, channels }) => {
             if (!channels.some((c) => c.trigger === 'decision')) return toDto(integration, channels)
             const bot = bots.get(integration.botId)
             const byAgent = new Map<string, DecisionGateReadiness | undefined>()
+            const routed = new Map<string, DecisionGateReadiness>()
             if (bot) {
               for (const c of channels) {
                 if (c.trigger !== 'decision') continue
+                if (isRoutedChannel(c)) {
+                  routed.set(c.channelId, routedChannelReadiness(await routingFor(bot), c.channelId))
+                  continue
+                }
                 const agentId = consumerOf(integration, c)
                 if (!byAgent.has(agentId)) byAgent.set(agentId, await readinessFor(agentId, bot))
               }
             }
             return toDto(integration, channels, {
               names,
-              readiness: (c) => byAgent.get(consumerOf(integration, c))
+              readiness: (c) => (isRoutedChannel(c) ? routed.get(c.channelId) : byAgent.get(consumerOf(integration, c)))
             })
           })
         )
@@ -1053,16 +1071,23 @@ export function integrationRoutes(deps: HttpDeps) {
             await replicateUpsert(integration, agent)
           }
           const names = new Map(validatedDecision ? [[validatedDecision.id, validatedDecision.name] as const] : [])
-          if (
-            updated.trigger === 'decision' &&
-            updated.decisionBinding &&
-            !names.has(updated.decisionBinding.decisionId)
-          ) {
-            const bound = await visibleDecision(deps, req, updated.decisionBinding.decisionId)
+          const boundId =
+            updated.trigger !== 'decision'
+              ? undefined
+              : updated.decisionBinding?.type === 'gate'
+                ? updated.decisionBinding.decisionId
+                : updated.decisionRouting?.decisionId
+          if (boundId && !names.has(boundId)) {
+            const bound = await visibleDecision(deps, req, boundId)
             if (bound) names.set(bound.id, bound.name)
           }
+          // A sessionMode- or agent-only PATCH on a routed conversation keeps the router, so its readiness is the plan's.
           const readiness =
-            updated.trigger === 'decision' ? await decisionGateReadiness(deps, selectedOwner ?? agent, bot) : undefined
+            updated.trigger !== 'decision'
+              ? undefined
+              : isRoutedChannel(updated)
+                ? routedChannelReadiness(await deps.httpBot.describeRouting(bot), updated.channelId)
+                : await decisionGateReadiness(deps, selectedOwner ?? agent, bot)
           return toChannelDto(updated, { names, readiness: () => readiness })
         } catch (err) {
           // The Decision was deleted between validation and the write (FK RESTRICT on the gate).

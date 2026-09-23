@@ -114,10 +114,16 @@ guards:
 1. An idle session older than `agentIdleTimeoutMs` is closed only when its lease
    is quiescent.
 2. An ACP host older than the idle window is reclaimed only when it has no
-   foreground prompt and no live SDK work.
+   foreground prompt, no internal pass of the daemon's own (distillation, the
+   commit-message wand) and no live SDK work. The agent's shared host measures
+   that window from the latest of its start, the last activity of the sessions
+   routed to it, and the end of its last internal pass
+   ([k8s-daemon-pool.md](k8s-daemon-pool.md) §4).
 3. If an otherwise idle-eligible host still reports SDK work after
    `agentMaxLifetimeMs` from host start, the daemon logs a warning and
    force-reclaims it. A hung task cannot pin the child process indefinitely.
+   An internal pass is bounded by the same setting from its own start: past it,
+   the pass is taken as wedged and no longer holds its host.
 
 The defaults in
 [`config-schema.ts`](../../packages/daemon/src/config/config-schema.ts) are:
@@ -125,7 +131,7 @@ The defaults in
 | Setting              |    Default | Purpose                                                        |
 | -------------------- | ---------: | -------------------------------------------------------------- |
 | `agentIdleTimeoutMs` | 15 minutes | Close inactive sessions and reclaim genuinely idle hosts.      |
-| `agentMaxLifetimeMs` |    6 hours | Bound lease-based reclaim deferral for an otherwise idle host. |
+| `agentMaxLifetimeMs` |    6 hours | Bound lease- and pass-based reclaim deferral for an idle host. |
 | `idleSweepMs`        | 60 seconds | Re-evaluate session and host eligibility.                      |
 
 The maximum lifetime does not preempt an active foreground prompt: the pending

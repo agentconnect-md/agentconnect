@@ -11,7 +11,6 @@ import {
   type DecisionRuntimeTarget
 } from '@agentconnect.md/protocol/decision'
 import { fetchAgentDecisions } from '@/lib/api'
-import { fastModeAvailableFor, modelCapability } from '@/lib/data'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { useOrgs } from '@/lib/org-context'
 import { RuntimeModelSelect, type RuntimeModelSource } from '@/components/console/RuntimeModelSelect'
@@ -22,7 +21,7 @@ import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 
 // The rule table's desktop columns: number, answer, probability, arrow, provider and model, actions.
 const RULE_GRID =
-  'grid grid-cols-1 items-center gap-2 desktop:grid-cols-[24px_minmax(0,1.1fr)_118px_14px_minmax(0,1fr)_76px] desktop:gap-[10px]'
+  'grid grid-cols-1 items-center gap-2 desktop:grid-cols-[24px_minmax(0,1.1fr)_100px_14px_minmax(0,1fr)_76px] desktop:gap-[10px]'
 const ROW_ACTION =
   'flex h-6 w-6 items-center justify-center rounded-[5px] text-(--text-tertiary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary) disabled:pointer-events-none disabled:opacity-35'
 
@@ -47,9 +46,7 @@ export function ModelSelectionField({
   source,
   runtimes,
   runInSandbox,
-  enabled = true,
-  fastMode,
-  onFastModeChange
+  enabled = true
 }: {
   agentId?: string
   value: AgentModelSelection | null
@@ -61,8 +58,6 @@ export function ModelSelectionField({
   runtimes: readonly string[]
   runInSandbox?: boolean
   enabled?: boolean
-  fastMode?: boolean
-  onFastModeChange?(value: boolean): void
 }) {
   const t = useTranslations('Agents.dialog.modelSelection')
   const { orgPath } = useOrgs()
@@ -99,21 +94,17 @@ export function ModelSelectionField({
     ;[rules[index], rules[index + step]] = [rules[index + step]!, rules[index]!]
     onChange({ ...value, rules })
   }
-  const fastAvailable = (target: DecisionRuntimeTarget) =>
-    fastModeAvailableFor(target.runtime, modelCapability(source, target.runtime, target.model))
+  // Fixed and By decision share one control: the fallback's run settings are the agent's own.
   const fallbackPicker = (dense: boolean) => (
     <RuntimeModelSelect
       dense={dense}
-      runSettings={active}
+      runSettings
       allowRuntimeOnly={!active}
       value={fallback}
       onChange={onFallbackChange}
       source={source}
       runtimes={runtimes}
       runInSandbox={runInSandbox}
-      fastMode={fastMode}
-      fastModeAvailable={fastAvailable(fallback)}
-      onFastModeChange={onFastModeChange}
     />
   )
   const fallbackPanel = (
@@ -254,7 +245,7 @@ export function ModelSelectionField({
           {value && decision && (
             <>
               <div className="overflow-hidden rounded-md border border-(--border-default)">
-                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-(--border-subtle) bg-(--surface-app) px-3 py-[5px] font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[0.06em] text-(--text-tertiary) desktop:grid-cols-[24px_minmax(0,1.1fr)_118px_14px_minmax(0,1fr)_76px] desktop:gap-[10px]">
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-(--border-subtle) bg-(--surface-app) px-3 py-[5px] font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[0.06em] text-(--text-tertiary) desktop:grid-cols-[24px_minmax(0,1.1fr)_100px_14px_minmax(0,1fr)_76px] desktop:gap-[10px]">
                   <span className="hidden desktop:inline">#</span>
                   <span className="flex items-center gap-1">
                     {t(decision.question.type === 'choice' ? 'answerColumn' : 'condition')}

@@ -65,6 +65,27 @@ export class DecisionInUse extends Error {
   }
 }
 
+// Thrown by `BotDecisionRoutingRepo.save` when the locked scope no longer matches the removals the caller supplied.
+export class RoutingScopeChanged extends Error {
+  readonly code = 'ROUTING_SCOPE_CHANGED' as const
+  constructor(readonly botId: string) {
+    super(`routing scope of bot ${botId} changed; every removed channel needs replacement settings`)
+    this.name = 'RoutingScopeChanged'
+  }
+}
+
+// Thrown by `BotDecisionRoutingRepo.save` for an addition that is missing, Off, or a direct conversation.
+export class RoutingChannelInvalid extends Error {
+  readonly code = 'ROUTING_CHANNEL_INVALID' as const
+  constructor(
+    readonly channelId: string,
+    readonly reason: 'off' | 'direct' | 'missing'
+  ) {
+    super(`channel ${channelId} cannot be added to routing (${reason})`)
+    this.name = 'RoutingChannelInvalid'
+  }
+}
+
 /**
  * Thrown by `enrollOperator` when the daemon still has agents pinned directly to it. A set member
  * serves only what it holds a lease for, so those agents would be placed and unservable the moment

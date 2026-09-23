@@ -157,13 +157,13 @@ export function ModalProvider({ children }: { children: ReactNode }) {
               open.kind === 'nativeIntegration' && open.opts?.nativeUi ? nativeUiTitle(open.opts.nativeUi) : undefined
             }
             className={
-              // Leave room for the section rail and runtime routing rules in every agent editor.
+              // Agent editors: the narrowest width that keeps the Visibility tiles two-up beside the section rail.
               open.kind === 'agent' ||
               open.kind === 'editAgent' ||
               (open.kind === 'nativeIntegration' &&
                 (open.opts?.nativeUi?.resourceUri === AGENT_SETUP_URI ||
                   open.opts?.nativeUi?.resourceUri === AGENT_TOOLS_URI))
-                ? 'modal desktop:max-w-[1040px]'
+                ? 'modal desktop:max-w-[830px]'
                 : open.kind === 'integration' || open.kind === 'nativeIntegration'
                   ? 'modal desktop:max-w-[700px]'
                   : 'modal'

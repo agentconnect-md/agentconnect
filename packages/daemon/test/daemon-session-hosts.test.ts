@@ -1142,6 +1142,51 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     await daemon.stop()
   })
 
+  // The shared host's clock follows where each session runs, not what isolation it records: a worktree session runs there, a confined one never does.
+  it('keeps the shared host for a worktree session it serves, and not for a confined session with a host of its own', async () => {
+    const root = scaffold()
+    const { daemon } = await startDaemon(root)
+    const inner = daemon as any
+    const ttl = inner.cfg.limits.agentIdleTimeoutMs
+    const confined = KEY('T1')
+    const worktree = KEY('T2')
+    // What a worktree session's preparation left, so it was born on that tier and stays on the agent host.
+    const tree = join(root, 'agents', 'bot-a', 'worktrees', inner.workspaces.sessionWorktreeId(worktree))
+    mkdirSync(tree, { recursive: true })
+    writeFileSync(join(tree, '.git'), 'gitdir: /nowhere\n')
+    for (const key of [confined, worktree]) inner.sessionIsolation.set(key, 'session')
+    expect(inner.hostKeyFor('bot-a', confined)).toBe(sessionHostKey('bot-a', confined))
+    expect(inner.hostKeyFor('bot-a', worktree)).toBe(agentHostKey('bot-a'))
+    const row = (key: string) =>
+      inner.store.upsertSession({
+        key,
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread: key,
+        acpSessionId: null,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: Date.now(),
+        workspaceIsolation: 'session'
+      })
+    const host = { stop: vi.fn(async () => {}) }
+    /** One idle sweep over a shared host started two windows ago: whether it reaped the host. */
+    const reaps = async (): Promise<boolean> => {
+      inner.hosts.set(agentHostKey('bot-a'), host)
+      inner.hostStartedAt.set(agentHostKey('bot-a'), Date.now() - 2 * ttl)
+      host.stop.mockClear()
+      await inner.sweepIdle()
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      return host.stop.mock.calls.length > 0
+    }
+    await row(confined)
+    expect(await reaps()).toBe(true)
+    await row(worktree)
+    expect(await reaps()).toBe(false)
+    await daemon.stop()
+  })
+
   it('an internal pass resolves an ACP id only to its own row: a dream to its execution row, a memory pass to none', async () => {
     const { daemon } = await startDaemon(scaffold())
     await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')

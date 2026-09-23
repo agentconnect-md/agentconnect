@@ -2031,7 +2031,6 @@
       "fastMode": "快速模式",
       "on": "开启",
       "off": "关闭",
-      "permissionMode": "权限模式",
       "sessionIsolation": "会话隔离",
       "worktree": "工作树",
       "githubRepository": "GitHub 仓库",
@@ -2043,7 +2042,6 @@
       "cancel": "取消",
       "creating": "创建中…",
       "create": "创建",
-      "unavailableSuffix": "{label}（不可用）",
       "workspace": {
         "codeHostHint": "仓库会克隆到这台机器，Agent 将从你选择的目录运行。",
         "gitUrlHint": "使用 Daemon 主机自身的 Git 凭证克隆，Agent 将从你选择的目录运行。",
@@ -2321,7 +2319,6 @@
       },
       "runtimeModel": {
         "title": "Provider 和模型",
-        "runSettings": "运行设置 · {model}",
         "effort": "思考深度",
         "approval": "审批",
         "provider": "Provider",
@@ -2333,6 +2330,7 @@
         "agentSetting": "Agent 设置",
         "decisionHelp": "{name} 在 session 开始时选择 runtime 和模型",
         "fastMode": "快速模式",
+        "fast": "快速",
         "lowerLatency": "更低延迟",
         "imageBinaryMissing": "镜像中未安装此运行时",
         "readOnly": "当前聊天不允许修改 Runtime。"

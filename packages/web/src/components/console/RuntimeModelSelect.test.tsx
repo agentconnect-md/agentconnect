@@ -58,15 +58,37 @@ it('searches across runtimes, selects a complete pair and can return to the agen
   expect(onSelect).toHaveBeenCalledOnce()
 })
 
-it('shows the selected Fast mode on the closed form selector', async () => {
-  function Form() {
+const choose = async (label: string, value: string) => {
+  const select = document.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(select, value)
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+}
+
+it('edits composer run settings in the footer and summarizes them on the pill', async () => {
+  const efforts = [
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' }
+  ]
+  const approvals = [
+    { value: 'ask', label: 'Ask' },
+    { value: 'auto', label: 'Auto' }
+  ]
+  function Composer() {
+    const [effort, setEffort] = useState('medium')
+    const [approval, setApproval] = useState('ask')
     const [fast, setFast] = useState(false)
     return (
       <RuntimeModelSelect
+        compact
         value={{ runtime: 'codex', model: 'model-standard' }}
         onChange={vi.fn()}
-        fastMode={fast}
-        onFastModeChange={setFast}
+        settings={{
+          effort: { value: effort, options: efforts, onChange: setEffort },
+          approval: { value: approval, options: approvals, onChange: setApproval },
+          fast: { value: fast, onChange: setFast }
+        }}
         source={{ runtimeModels: [{ runtime: 'codex', version: '', models: ['model-standard'] }] }}
       />
     )
@@ -74,17 +96,20 @@ it('shows the selected Fast mode on the closed form selector', async () => {
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
-  await act(async () => root.render(<Form />))
+  await act(async () => root.render(<Composer />))
   const trigger = container.querySelector('button')!
+  expect(trigger.textContent).toContain('model-standard · Medium · Ask')
   expect(trigger.textContent).not.toContain('FAST')
   await act(async () => trigger.click())
+  await choose('Effort', 'high')
+  await choose('Approval', 'auto')
   await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Fast mode"]')!.click())
-  await act(async () => trigger.click())
-  expect(document.querySelector('[role="dialog"]')).toBeNull()
+  expect(document.querySelector('[role="dialog"]')).not.toBeNull()
+  expect(trigger.textContent).toContain('model-standard · High · Auto')
   expect(trigger.textContent).toContain('FAST')
 })
 
-it('opens read-only chat settings to the notice alone, without runtime or Fast choices', async () => {
+it('opens read-only chat settings to the notice alone while the pill still reads its settings', async () => {
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -95,42 +120,57 @@ it('opens read-only chat settings to the notice alone, without runtime or Fast c
         readOnly
         value={{ runtime: 'codex', model: 'model-standard' }}
         onChange={vi.fn()}
-        decision={{ name: 'Task type', selected: true, onSelect: vi.fn() }}
-        onFastModeChange={vi.fn()}
+        settings={{
+          effort: { value: 'high', options: [{ value: 'high', label: 'High' }], onChange: vi.fn() },
+          fast: { value: false, onChange: vi.fn() }
+        }}
         source={{ runtimeModels: [{ runtime: 'codex', version: '', models: ['model-standard'] }] }}
       />
     )
   )
+  expect(container.querySelector('button')!.textContent).toContain('model-standard · High')
   await act(async () => container.querySelector('button')!.click())
   const dialog = document.querySelector('[role="dialog"]')!
   expect(dialog.textContent).toBe('Runtime changes are disabled for this chat.')
-  expect(dialog.querySelectorAll('button, input')).toHaveLength(0)
+  expect(dialog.querySelectorAll('button, input, select')).toHaveLength(0)
 })
 
-it('keeps Fast mode visible but disabled when the selected model does not offer it', async () => {
-  const onFastModeChange = vi.fn()
+it('omits the footer while By decision is selected and Fast mode where the model lacks it', async () => {
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
+  const settings = { effort: { value: 'high', options: [{ value: 'high', label: 'High' }], onChange: vi.fn() } }
   await act(async () =>
     root.render(
       <RuntimeModelSelect
+        compact
         value={{ runtime: 'codex', model: 'model-standard' }}
         onChange={vi.fn()}
-        fastMode
-        fastModeAvailable={false}
-        onFastModeChange={onFastModeChange}
+        decision={{ name: 'Task type', selected: true, onSelect: vi.fn() }}
+        settings={settings}
         source={{ runtimeModels: [{ runtime: 'codex', version: '', models: ['model-standard'] }] }}
       />
     )
   )
   const trigger = container.querySelector('button')!
-  expect(trigger.textContent).not.toContain('FAST')
+  expect(trigger.textContent).not.toContain('High')
   await act(async () => trigger.click())
-  const fast = document.querySelector<HTMLButtonElement>('[aria-label="Fast mode"]')!
-  expect([fast.disabled, fast.getAttribute('aria-checked')]).toEqual([true, 'false'])
-  await act(async () => fast.click())
-  expect(onFastModeChange).not.toHaveBeenCalled()
+  expect(document.querySelector('select')).toBeNull()
+  await act(async () => trigger.click())
+  await act(async () =>
+    root.render(
+      <RuntimeModelSelect
+        compact
+        value={{ runtime: 'codex', model: 'model-standard' }}
+        onChange={vi.fn()}
+        settings={settings}
+        source={{ runtimeModels: [{ runtime: 'codex', version: '', models: ['model-standard'] }] }}
+      />
+    )
+  )
+  await act(async () => trigger.click())
+  expect(document.querySelector('select[aria-label="Effort"]')).not.toBeNull()
+  expect(document.querySelector('[aria-label="Fast mode"]')).toBeNull()
 })
 
 it('edits run settings in the open picker and adapts them when choosing another model or runtime', async () => {
@@ -196,12 +236,8 @@ it('edits run settings in the open picker and adapts them when choosing another 
   await act(async () => root.render(<Form />))
   const trigger = container.querySelector('button')!
   await act(async () => trigger.click())
-  const option = (group: string, label: string) =>
-    [...document.querySelectorAll<HTMLButtonElement>(`[role="group"][aria-label="${group}"] button`)].find(
-      (button) => button.textContent === label
-    )!
-  await act(async () => option('Effort', 'High').click())
-  await act(async () => option('Approval', 'Plan').click())
+  await choose('Effort', 'high')
+  await choose('Approval', 'plan')
   await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Fast mode"]')!.click())
   expect(selected).toEqual({
     runtime: 'claude',
@@ -211,7 +247,8 @@ it('edits run settings in the open picker and adapts them when choosing another 
     fastMode: true
   })
   expect(document.querySelector('[role="dialog"]')).not.toBeNull()
-  expect(trigger.textContent).toContain('High · Plan')
+  expect(trigger.textContent).toContain('capable (High)')
+  expect(trigger.textContent).not.toContain('Plan')
   expect(trigger.textContent).toContain('FAST')
   await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Claude Code · small"]')!.click())
   expect(selected).toEqual({
@@ -222,7 +259,8 @@ it('edits run settings in the open picker and adapts them when choosing another 
     fastMode: false
   })
   expect(document.querySelector('[role="dialog"]')).not.toBeNull()
-  expect(document.querySelector<HTMLButtonElement>('[aria-label="Fast mode"]')!.disabled).toBe(true)
+  expect(document.querySelector('[aria-label="Fast mode"]')).toBeNull()
+  expect(trigger.textContent).toContain('small (Low)')
   const search = document.querySelector<HTMLInputElement>('[aria-label="Search all providers"]')!
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'other')
@@ -230,6 +268,6 @@ it('edits run settings in the open picker and adapts them when choosing another 
   })
   await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Codex · other"]')!.click())
   expect(selected).toEqual({ runtime: 'codex', model: 'other', effort: '', permissionMode: 'agent', fastMode: false })
-  expect(document.querySelector('[role="group"][aria-label="Effort"]')).toBeNull()
-  expect(document.querySelector('[role="group"][aria-label="Approval"]')?.textContent).toBe('Approve for me')
+  expect(document.querySelector('select[aria-label="Effort"]')).toBeNull()
+  expect(document.querySelector('select[aria-label="Approval"]')?.textContent).toBe('Approve for me')
 })

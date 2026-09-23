@@ -201,13 +201,9 @@ const AGENT_NAME =
 const SELF_BUBBLE =
   'max-w-full rounded-[12px_12px_4px_12px] border border-(--bubble-self-edge) bg-(--bubble-self) px-3 py-[9px] font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary)'
 
-// Design composer selectors (session composer, mirrors HomeView): the model is a
-// "pill" with a leading mark, effort/permission are plain chips. Full literal
-// strings so Tailwind's scanner sees them (STYLE.md §8).
+// Session composer chips (mirrors HomeView); effort and approval live in the model picker.
 const COMPOSER_CHIP =
   'inline-flex h-7 items-center gap-[6px] rounded-md px-[9px] max-desktop:px-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)'
-const COMPOSER_CHIP_STATIC =
-  'inline-flex h-7 min-w-0 items-center gap-[6px] rounded-md px-[9px] max-desktop:px-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)'
 const COMPOSER_PILL =
   'inline-flex h-7 items-center gap-[7px] rounded-full px-[10px] max-desktop:px-0 font-mono text-[11.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)'
 const COMPOSER_PILL_STATIC =
@@ -4631,7 +4627,7 @@ export default function SessionDetailView() {
     selectedModelCapability?.defaultEffort
   )
   const pgEffortOptions =
-    runtimeChangesEnabled && pgEffort && !pgEffortChoices.some((choice) => choice.value === pgEffort)
+    pgEffort && !pgEffortChoices.some((choice) => choice.value === pgEffort)
       ? [{ value: pgEffort, label: effortLabel(agentRuntime, pgEffort) }, ...pgEffortChoices]
       : pgEffortChoices
   const livePermissionModes = session.availablePermissionModes
@@ -4655,6 +4651,21 @@ export default function SessionDetailView() {
     const key = permissionModeLabelKey(mode.v)
     return key ? { ...mode, l: permissionT(key) } : mode
   })
+  // The picker's Approval choices; a mode the live list no longer offers keeps its readable name.
+  const presetKey = pgPermissionPreset ? permissionModeLabelKey(pgPermissionPreset) : undefined
+  const pgApprovalOptions = [
+    ...(pgPermissionPreset && !localizedPermissionPresets.some((mode) => mode.v === pgPermissionPreset)
+      ? [
+          {
+            value: pgPermissionPreset,
+            label: presetKey
+              ? permissionT(presetKey)
+              : agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionPreset)
+          }
+        ]
+      : []),
+    ...localizedPermissionPresets.map((mode) => ({ value: mode.v, label: mode.l, description: mode.description }))
+  ]
   // Stage the fast selection locally like model/effort/permission: an adopted
   // (persisted webchat) session has no synthetic provider entry for pgSetFast to
   // mutate, and an idle daemon session emits no status frame — without this the
@@ -5852,12 +5863,56 @@ export default function SessionDetailView() {
                                       }
                                     : undefined
                                 }
-                                fastMode={pgFastMode}
-                                fastModeAvailable={pgFastModeAvailable || byDecision}
-                                onFastModeChange={(fast) => {
-                                  setRuntimeSelection({ fast })
-                                  pgSetFast(session.id, session.agentId ?? '', fast, webchatConversationId)
-                                }}
+                                settings={
+                                  byDecision
+                                    ? undefined
+                                    : {
+                                        effort: pgEffort
+                                          ? {
+                                              value: pgEffort,
+                                              options: pgEffortOptions,
+                                              onChange: (effort) => {
+                                                setRuntimeSelection({ effort })
+                                                pgSetEffort(
+                                                  session.id,
+                                                  session.agentId ?? '',
+                                                  effort,
+                                                  webchatConversationId
+                                                )
+                                              }
+                                            }
+                                          : undefined,
+                                        approval: pgPermissionPreset
+                                          ? {
+                                              value: pgPermissionPreset,
+                                              options: pgApprovalOptions,
+                                              onChange: (permissionPreset) => {
+                                                setRuntimeSelection({ permissionPreset })
+                                                pgSetPermissionPreset(
+                                                  session.id,
+                                                  session.agentId ?? '',
+                                                  permissionPreset,
+                                                  webchatConversationId
+                                                )
+                                              }
+                                            }
+                                          : undefined,
+                                        fast: pgFastModeAvailable
+                                          ? {
+                                              value: pgFastMode,
+                                              onChange: (fast) => {
+                                                setRuntimeSelection({ fast })
+                                                pgSetFast(
+                                                  session.id,
+                                                  session.agentId ?? '',
+                                                  fast,
+                                                  webchatConversationId
+                                                )
+                                              }
+                                            }
+                                          : undefined
+                                      }
+                                }
                                 onChange={(target) => {
                                   const currentEffort =
                                     runtimeSelection?.effort ?? session.effort ?? owner?.reasoning ?? ''
@@ -5888,80 +5943,6 @@ export default function SessionDetailView() {
                                 }}
                               />
                             )}
-                            {!multiLive &&
-                              (runtimeChangesEnabled && pgEffortOptions.length > 0 ? (
-                                <ComposerMenu
-                                  title={t('effort')}
-                                  value={pgEffort}
-                                  options={pgEffortOptions.map((effort) => ({
-                                    value: effort.value,
-                                    label: effort.label,
-                                    description: effort.description
-                                  }))}
-                                  open={composerMenuOpen === 'effort'}
-                                  align="left"
-                                  triggerClassName={COMPOSER_CHIP}
-                                  tooltips={false}
-                                  onOpenChange={(open) => {
-                                    setAttachMenuOpen(false)
-                                    setComposerMenuOpen(open ? 'effort' : null)
-                                  }}
-                                  onChange={(effort) => {
-                                    setRuntimeSelection({ effort })
-                                    pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
-                                  }}
-                                />
-                              ) : (
-                                pgEffort && (
-                                  <span className={COMPOSER_CHIP_STATIC} title={t('effort')}>
-                                    <span className="truncate">
-                                      {pgEffortChoices.find((choice) => choice.value === pgEffort)?.label ??
-                                        effortLabel(agentRuntime, pgEffort)}
-                                    </span>
-                                  </span>
-                                )
-                              ))}
-                            {!multiLive &&
-                              (runtimeChangesEnabled && localizedPermissionPresets.length > 0 ? (
-                                <ComposerMenu
-                                  title={t('permission')}
-                                  value={pgPermissionPreset}
-                                  options={localizedPermissionPresets.map((mode) => ({
-                                    value: mode.v,
-                                    label: mode.l,
-                                    description: mode.description
-                                  }))}
-                                  open={composerMenuOpen === 'permission'}
-                                  align="left"
-                                  triggerClassName={COMPOSER_CHIP}
-                                  onOpenChange={(open) => {
-                                    setAttachMenuOpen(false)
-                                    setComposerMenuOpen(open ? 'permission' : null)
-                                  }}
-                                  onChange={(permissionPreset) => {
-                                    setRuntimeSelection({ permissionPreset })
-                                    pgSetPermissionPreset(
-                                      session.id,
-                                      session.agentId ?? '',
-                                      permissionPreset,
-                                      webchatConversationId
-                                    )
-                                  }}
-                                />
-                              ) : (
-                                pgPermissionPreset && (
-                                  <span className={COMPOSER_CHIP_STATIC} title={t('permission')}>
-                                    <span className="truncate">
-                                      {(() => {
-                                        const key = permissionModeLabelKey(pgPermissionPreset)
-                                        return key
-                                          ? permissionT(key)
-                                          : agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionPreset)
-                                      })()}
-                                    </span>
-                                  </span>
-                                )
-                              ))}
                             {canChooseWorktree && (
                               <label className={`${COMPOSER_CHIP} min-w-0 cursor-pointer`}>
                                 <input

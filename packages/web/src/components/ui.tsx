@@ -153,13 +153,16 @@ export function Toggle({
   checked,
   disabled,
   onChange,
-  ariaLabel
+  ariaLabel,
+  size = 'md'
 }: {
   checked: boolean
   disabled?: boolean
   onChange: (next: boolean) => void
   ariaLabel?: string
+  size?: 'sm' | 'md'
 }) {
+  const sizeCls = size === 'sm' ? ' sm' : ''
   return (
     <button
       type="button"
@@ -167,7 +170,7 @@ export function Toggle({
       aria-checked={checked}
       aria-label={ariaLabel}
       disabled={disabled}
-      className={checked ? 'dstoggle on' : 'dstoggle'}
+      className={`dstoggle${sizeCls}${checked ? ' on' : ''}`}
       onClick={() => onChange(!checked)}
     >
       <span className="dstoggle-knob" />

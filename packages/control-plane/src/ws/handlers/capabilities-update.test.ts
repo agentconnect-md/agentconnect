@@ -47,6 +47,16 @@ describe('handleCapabilitiesUpdate', () => {
     expect(updateCapabilities).toHaveBeenCalledWith(DAEMON, CAPS)
   })
 
+  it('asks the HTTP bot orchestrator to recompile routing held for or hosted by this daemon', async () => {
+    const { deps } = fakeDeps({ capabilities: CAPS })
+    const httpBotDaemonReady = vi.fn(async () => {})
+    await handleCapabilitiesUpdate(buildEnvelope('capabilities/update', { capabilities: CAPS }), conn, {
+      ...deps,
+      httpBotDaemonReady
+    })
+    expect(httpBotDaemonReady).toHaveBeenCalledWith(DAEMON)
+  })
+
   it('ignores a frame of another type', async () => {
     const { deps, updateCapabilities } = fakeDeps({ capabilities: CAPS })
     await handleCapabilitiesUpdate(

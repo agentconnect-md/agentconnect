@@ -58,7 +58,13 @@ import type {
   IntegrationChannelRecord
 } from '../persistence/ports.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
-import { decisionBundleOf, decisionGateState, enabledDecisionGates, heldDecisionChannels } from './decisionBundle.js'
+import {
+  decisionBundleOf,
+  decisionGateState,
+  decisionRoutingState,
+  enabledDecisionGates,
+  heldDecisionChannels
+} from './decisionBundle.js'
 import { servedAgents, type ServedAgents } from './servedAgents.js'
 import {
   mcpDefsForAgents,
@@ -238,7 +244,9 @@ function gatedBindRules(channels: IntegrationChannelRecord[]): IntegrationBindRu
     if (c.trigger === 'off') continue
     // Before the fallthrough below, which would otherwise make By decision a mention rule.
     if (c.trigger === 'decision') {
-      if (decisionGateState(c)?.enabled) out.push({ channel: c.channelId, match: { kind: 'decision' } })
+      // A routed row makes every gated member a candidate; only the evaluation host receives the router itself.
+      if (decisionGateState(c)?.enabled || decisionRoutingState(c)?.enabled)
+        out.push({ channel: c.channelId, match: { kind: 'decision' } })
       continue
     }
     if (c.kind === 'im') out.push({ channel: c.channelId, match: { kind: 'dm' } })

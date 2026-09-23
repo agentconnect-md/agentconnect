@@ -4,7 +4,8 @@ import {
   arbitrate,
   type BotAssignment,
   type RouteTarget,
-  toBotAssignment
+  toBotAssignment,
+  toRoutesPatch
 } from './bot-arbitration.js'
 import type { WireNormalizedMessage } from '@agentconnect.md/protocol'
 
@@ -787,6 +788,61 @@ describe('By decision candidate routes (decisions.md §7.1)', () => {
     expect(r.channelAutoOwned('bot-1', 'C9')).toBe(true)
     expect(r.decisionIdFor('bot-1', 'C9')).toBe('dec-1')
     expect(r.decisionIdFor('bot-1', 'C1')).toBeUndefined()
+  })
+
+  it('stores, replaces and clears routed conversations, exposing the host only for routed channels', () => {
+    const r = new BotArbitrationRouter()
+    const base = decisionAssignment()
+    const routes = base.routes
+    const host = { channel: 'C9', decisionId: 'dec-1', evaluationDaemonId: D2 }
+    r.upsert({ ...base, routedConversations: [host] })
+    expect(r.evaluationDaemonIdFor('bot-1', 'C9')).toBe(D2)
+    const routed = r.routeResult('bot-1', msg({ channel: 'C9', text: 'anyone?' }))
+    // The forwarding target is still the ladder's owner; the host only rides along until 5b.
+    expect(routed).toMatchObject({ kind: 'target', target: { agentId: ALICE, daemonId: D1 }, evaluationDaemonId: D2 })
+    const elsewhere = r.routeResult('bot-1', msg({ channel: 'C1', text: '<@UBOT> bob hi', mentionedBots: [BOTUSER] }))
+    expect(elsewhere).not.toHaveProperty('evaluationDaemonId')
+
+    const patch = toRoutesPatch({
+      botId: 'bot-1',
+      members: base.members,
+      agents: [],
+      routes,
+      gatedAgentIds: [],
+      mutedChannels: [],
+      gatedOffChannels: [],
+      noticedDmConversations: [],
+      conversationDefaults: [],
+      routedConversations: [{ ...host, evaluationDaemonId: D1 }]
+    })
+    r.updateRoutes('bot-1', patch)
+    expect(r.evaluationDaemonIdFor('bot-1', 'C9')).toBe(D1)
+    r.updateRoutes('bot-1', { ...patch, routedConversations: [] })
+    expect(r.evaluationDaemonIdFor('bot-1', 'C9')).toBeUndefined()
+  })
+
+  it('drops a routed conversation whose channel has no decision route with the same Decision', () => {
+    const base = decisionAssignment()
+    const a = toBotAssignment({
+      botId: 'bot-1',
+      platform: 'slack',
+      secrets: { botToken: 'xoxb-x', signingSecret: 'sig' },
+      members: base.members,
+      agents: [],
+      routes: base.routes,
+      gatedAgentIds: [],
+      mutedChannels: [],
+      gatedOffChannels: [],
+      noticedDmConversations: [],
+      conversationDefaults: [],
+      ownerAsDefault: false,
+      routedConversations: [
+        { channel: 'C9', decisionId: 'dec-1', evaluationDaemonId: D2 },
+        { channel: 'C9', decisionId: 'dec-stale', evaluationDaemonId: D1 },
+        { channel: 'C1', decisionId: 'dec-1', evaluationDaemonId: D1 }
+      ]
+    })
+    expect(a?.routedConversations).toEqual([{ channel: 'C9', decisionId: 'dec-1', evaluationDaemonId: D2 }])
   })
 
   it('drops a decision route that names no Decision (fail closed)', () => {

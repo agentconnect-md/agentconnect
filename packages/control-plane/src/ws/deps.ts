@@ -106,6 +106,8 @@ export interface DaemonWsDeps {
   visibilityPush?: SessionVisibilityPushService
   /** Recompiles relay routes held for this daemon's missing decision-trigger-v1 once it is READY; absent ⇒ next sync. */
   httpBotDaemonReady?: (daemonId: string) => Promise<void>
+  /** Moves the evaluation host of routed conversations that depended on a daemon whose connection closed. */
+  httpBotDaemonOffline?: (daemonId: string) => Promise<void>
   /** Persists exact-session PR capture obligations and drains durable PR feedback after daemon readiness. */
   pullRequestFeedback?: Pick<SessionPullRequestFeedbackService, 'trackSession' | 'kick'>
   /** Publishes persisted session milestones to the WebUI SSE feed. */

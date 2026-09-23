@@ -5,7 +5,8 @@ import { decisionTriggerSupported } from '../domain/decision-trigger-features.js
 import type { AgentRecord, BotRecord, IntegrationChannelRecord, IntegrationRecord } from '../persistence/ports.js'
 import { conversationOwnerRow, pickConversationOwner } from '../orchestrator/httpBot.js'
 import type { OrgId } from '../domain/ids.js'
-import { decisionGateState, type DecisionDisabledReason } from '../orchestrator/decisionBundle.js'
+import { decisionGateState, decisionRoutingState, type DecisionDisabledReason } from '../orchestrator/decisionBundle.js'
+import type { RoutingDescription } from '../orchestrator/httpBot.js'
 import type { HttpDeps } from './deps.js'
 import { ctxOf, orgOf } from './rbac.js'
 
@@ -73,18 +74,44 @@ export async function decisionGateReadiness(
   return { status: 'ready' }
 }
 
+/** A routed conversation's readiness, read from the bot's routing plan. */
+export function routedChannelReadiness(
+  description: Pick<RoutingDescription, 'channels' | 'readiness'>,
+  channelId: string
+): DecisionGateReadiness {
+  const r = description.channels.find((c) => c.channelId === channelId)?.readiness ?? description.readiness
+  const status = r.status === 'missing_credentials' || r.status === 'insufficient_credits' ? 'unsupported' : r.status
+  return { status, ...(r.reason ? { reason: r.reason } : {}) }
+}
+
 /** The channel DTO's Decision view: name only when the caller can view it, per-row review state over readiness. */
 export function decisionChannelView(
   row: IntegrationChannelRecord,
   names: ReadonlyMap<string, string>,
   readiness: DecisionGateReadiness | undefined
 ): {
+  consumer: 'gate' | 'shared_bot_routing'
   id: string
   name: string | null
   enabled: boolean
   disabledReason?: DecisionDisabledReason
   readiness: DecisionGateReadiness
 } | null {
+  const routed = decisionRoutingState(row)
+  if (routed) {
+    const effective: DecisionGateReadiness =
+      routed.disabledReason === 'needs_review'
+        ? { status: 'needs_review', reason: 'The routing configuration needs review.' }
+        : (readiness ?? { status: 'pending_sync' })
+    return {
+      consumer: 'shared_bot_routing',
+      id: routed.decisionId ?? '',
+      name: routed.decisionId ? (names.get(routed.decisionId) ?? null) : null,
+      enabled: routed.enabled && effective.status === 'ready',
+      ...(routed.disabledReason ? { disabledReason: routed.disabledReason } : {}),
+      readiness: effective
+    }
+  }
   const state = decisionGateState(row)
   if (!state?.gate) return null
   const effective: DecisionGateReadiness =
@@ -92,6 +119,7 @@ export function decisionChannelView(
       ? { status: 'needs_review', reason: 'The Decision changed; review this condition.' }
       : (readiness ?? { status: 'pending_sync' })
   return {
+    consumer: 'gate',
     id: state.gate.decisionId,
     name: names.get(state.gate.decisionId) ?? null,
     enabled: state.enabled && effective.status === 'ready',

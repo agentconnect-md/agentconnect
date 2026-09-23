@@ -147,6 +147,24 @@ describe('IntegrationCoreEnvelope decisions', () => {
     expect(parsed).not.toHaveProperty('decisions')
   })
 
+  it('round-trips a bundle carrying the host routing projection', () => {
+    const routed = {
+      bindings: [{ channel: 'C2', consumer: { type: 'shared_bot_routing' }, enabled: true }],
+      definitions: [definition],
+      sharedBotRouting: {
+        botId: 'b1',
+        config: {
+          enabled: true,
+          decisionId: 'd1',
+          rules: [{ id: 'r1', when: { type: 'boolean', values: [true] }, action: { type: 'skip' } }],
+          otherwise: { type: 'skip' }
+        },
+        channels: [{ channel: 'C2' }]
+      }
+    }
+    expect(IntegrationCoreEnvelope.parse({ ...base, decisions: routed }).decisions).toEqual(routed)
+  })
+
   it('rejects an unknown consumer type', () => {
     const bad = { ...bundle, bindings: [{ ...bundle.bindings[0], consumer: { type: 'router' } }] }
     expect(IntegrationCoreEnvelope.safeParse({ ...base, decisions: bad }).success).toBe(false)

@@ -310,6 +310,12 @@ export class WorkspaceManager {
     return this.planeFor({ agentId, ...scope })?.workspaceFsFor(agentId, scope)?.mount
   }
 
+  /** The filesystem an off-disk scope's files are in, 'unbound' while its plane has no channel to them, undefined for a scope on this disk — never this disk in its place. */
+  offDiskFsFor(agentId: string, scope: Omit<PlaneScope, 'agentId'>): WorkspaceFs | 'unbound' | undefined {
+    if (!this.offDisk({ agentId, ...scope })) return undefined
+    return this.planeFor({ agentId, ...scope })?.workspaceFsFor(agentId, scope)?.fs ?? 'unbound'
+  }
+
   /** The plane's error message, or undefined when it emptied the path or has no clearer for it. */
   async clearPath(agentId: string, root: string): Promise<string | undefined> {
     return await this.planeFor({ agentId, path: root })
@@ -2449,7 +2455,11 @@ export class WorkspaceManager {
     if (local === undefined || !this.offDisk({ agentId: agent.id, sessionKey: request?.sessionKey })) return local
     // A secondary root's location already came from the mount-aware roots, so it needs no translation.
     if (repoScope !== undefined) return local
-    return this.clusterSessionRootAt(agent, runtimeRoot, request)
+    // A session's clone is on its own placement's mount, as `sessionDir` composes it — an executor's root is not the pool's `/agent`.
+    const sessionKey = request?.sessionKey
+    const mount =
+      sessionKey === undefined ? runtimeRoot : (this.sandboxMountFor(agent.id, { sessionKey }) ?? runtimeRoot)
+    return this.clusterSessionRootAt(agent, mount, request)
   }
 
   async prepareClusterWorkspace(

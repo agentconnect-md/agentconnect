@@ -99,3 +99,24 @@ it('keeps writes in the captured organization and propagates a failed preview', 
   await expect(api.createDecision(decision)).rejects.toMatchObject({ status: 503 })
   expect(String(fetcher.mock.calls[1]?.[0])).toContain('/orgs/example-org/decisions')
 })
+
+it('reads and saves shared-bot routing on the bot routing resource', async () => {
+  const api = createDecisionApi('example-org')
+  const detail = { botId: 'bot 1', config: null, channelIds: [], readiness: { status: 'ready' } }
+  const fetcher = vi.fn<typeof fetch>(async () => Response.json(detail))
+  vi.stubGlobal('fetch', fetcher)
+  await expect(api.getRouting('bot 1')).resolves.toMatchObject({ botId: 'bot 1' })
+  const input = {
+    config: { enabled: false, decisionId: 'd1', rules: [], otherwise: { type: 'skip' as const } },
+    channelIds: ['C1'],
+    removals: [{ channelId: 'C2', settings: { trigger: 'mention' as const }, agentId: 'a1' }]
+  }
+  await api.saveRouting('bot 1', input)
+  const [readUrl, readInit] = fetcher.mock.calls[0]!
+  const [writeUrl, writeInit] = fetcher.mock.calls[1]!
+  expect(String(readUrl)).toContain('/orgs/example-org/bots/bot%201/decision-routing')
+  expect(readInit?.method ?? 'GET').toBe('GET')
+  expect(String(writeUrl)).toContain('/orgs/example-org/bots/bot%201/decision-routing')
+  expect(writeInit?.method).toBe('PUT')
+  expect(JSON.parse(writeInit!.body as string)).toEqual(input)
+})

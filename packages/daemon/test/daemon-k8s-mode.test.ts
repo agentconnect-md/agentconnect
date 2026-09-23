@@ -1598,18 +1598,21 @@ describe("a host start in a session's own pod leaves the agent's checkout alone 
     const checkout = vi.spyOn(inner.workspaces, 'prepareClusterWorkspace').mockResolvedValue('/agent/checkout')
     const skills = vi.spyOn(inner, 'reconcileClusterSkills').mockResolvedValue(undefined)
     vi.spyOn(inner, 'ensureRuntimeInstalled').mockResolvedValue(undefined)
-    vi.spyOn(inner.workspaces, 'offDiskSessionGitDirs').mockResolvedValue([])
+    const gitListing = vi.spyOn(inner.workspaces, 'offDiskSessionGitDirs').mockResolvedValue([])
     const launches: { hostKey: string; cwd: string }[] = []
+    // The clones' `.git` each launch was handed, apart from `launches` so the cwd assertions stay exact.
+    const gitDirs: Array<string[] | undefined> = []
     vi.spyOn(inner, 'buildAcpHost').mockImplementation((...args: unknown[]) => {
-      const launch = args[2] as { hostKey: string; cwd: string }
+      const launch = args[2] as { hostKey: string; cwd: string; sessionGitDirs?: string[] }
       launches.push({ hostKey: launch.hostKey, cwd: launch.cwd })
+      gitDirs.push(launch.sessionGitDirs)
       const first = launches.length === 1
       const start = async () => {
         if (opts.failFirstStart && first) throw new Error('initialize failed')
       }
       return { host: { start, stop: async () => {} } }
     })
-    return { instance, inner, agent, bound, preparation, checkout, skills, launches }
+    return { instance, inner, agent, bound, preparation, checkout, skills, launches, gitListing, gitDirs }
   }
 
   const modelEntry = (sessionKey: string) => ({
@@ -1629,6 +1632,34 @@ describe("a host start in a session's own pod leaves the agent's checkout alone 
       expect(pool.skills.mock.calls.map((call) => call[1])).toEqual([SESSION_POD])
       expect(pool.launches).toEqual([{ hostKey: sessionHostKey('bot-a', KEY), cwd: SESSION_CWD }])
       expect(pool.inner.hostLaunch.get(sessionHostKey('bot-a', KEY)).cwd).toBe(SESSION_CWD)
+    } finally {
+      await pool.instance.stop()
+    }
+  })
+
+  // Codex's `:workspace` pins a clone's `.git` read-only, so a restarted key-server host — a refreshed credential, a reaped host — needs the grants an ordinary start gives.
+  it('hands a key-server host the clones its session pod already holds, as an ordinary start does', async () => {
+    const pool = await poolMember({ isolation: 'session', failFirstStart: true })
+    try {
+      const clones = [`${SESSION_CWD}/.git`, join('/agent', 'sessions', sessionKeyDirName(KEY), 'repos/acme/lib/.git')]
+      pool.gitListing.mockResolvedValue(clones)
+      await pool.inner.startModelSessionRuntime(pool.agent, modelEntry(KEY))
+      // Listed on every attempt, as the replacement of a failed child is a fresh launch.
+      expect(pool.gitListing.mock.calls).toEqual([
+        [pool.agent, KEY],
+        [pool.agent, KEY]
+      ])
+      expect(pool.gitDirs).toEqual([clones, clones])
+
+      // A listing that fails grants nothing and still starts the host.
+      const fresh = await poolMember({ isolation: 'session' })
+      try {
+        fresh.gitListing.mockRejectedValue(new Error('no bound channel'))
+        await fresh.inner.startModelSessionRuntime(fresh.agent, modelEntry(KEY))
+        expect(fresh.gitDirs).toEqual([[]])
+      } finally {
+        await fresh.instance.stop()
+      }
     } finally {
       await pool.instance.stop()
     }
@@ -1657,6 +1688,9 @@ describe("a host start in a session's own pod leaves the agent's checkout alone 
         expect(pool.bound).toEqual([AGENT_POD])
         expect(pool.skills.mock.calls.map((call) => call[1])).toEqual([AGENT_POD])
         expect(pool.launches).toEqual([{ hostKey: sessionHostKey('bot-a', scenario.key), cwd: '/agent/checkout' }])
+        // Neither holds clones of its own, so nothing is listed for it.
+        expect(pool.gitListing).not.toHaveBeenCalled()
+        expect(pool.gitDirs).toEqual([undefined])
       } finally {
         await pool.instance.stop()
       }
@@ -1892,7 +1926,7 @@ describe('the idle sweep keeps the agent pod only for its own work (#1896)', () 
       await new Promise((resolve) => setTimeout(resolve, 20))
       return suspended.includes(AGENT_POD)
     }
-    return { instance, inner, suspendsAgentPod }
+    return { instance, inner, suspendsAgentPod, suspended }
   }
 
   it('lets the agent pod go under an isolated session’s host, dispatch or turn, and keeps it for its own', async () => {
@@ -1974,6 +2008,53 @@ describe('the idle sweep keeps the agent pod only for its own work (#1896)', () 
       // The agent pod's own session speaking keeps it, as before.
       await row(SHARED, 'shared', late)
       expect(await pool.suspendsAgentPod()).toBe(false)
+    } finally {
+      await pool.instance.stop()
+    }
+  })
+
+  it('lets the agent’s shared host, and with it the agent pod, go under an isolated session’s traffic, and keeps both for a shared one’s', async () => {
+    const store = await LocalStore.open(':memory:')
+    const pool = await poolMember(store)
+    const { inner } = pool
+    const sharedHost = agentHostKey('bot-a')
+    const host = { stop: vi.fn(async () => {}) }
+    const row = (key: string, workspaceIsolation: 'shared' | 'session', updatedAt: number) =>
+      store.upsertSession({
+        key,
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread: key,
+        acpSessionId: null,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt,
+        workspaceIsolation
+      })
+    try {
+      const ttl = inner.cfg.limits.agentIdleTimeoutMs
+      /** One full idle sweep over a shared host started two windows ago: whether it stopped the host and suspended the agent pod. */
+      const sweep = async () => {
+        inner.hosts.set(sharedHost, host)
+        inner.hostStartedAt.set(sharedHost, Date.now() - 2 * ttl)
+        host.stop.mockClear()
+        pool.suspended.length = 0
+        await inner.sweepIdle()
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        return { hostStopped: host.stop.mock.calls.length > 0, podSuspended: pool.suspended.includes(AGENT_POD) }
+      }
+      // An isolated session busy right up to the sweep, on its own host, while the shared one went quiet two windows ago.
+      expect(inner.hostKeyFor('bot-a', ISOLATED)).not.toBe(sharedHost)
+      await row(ISOLATED, 'session', Date.now())
+      await row(SHARED, 'shared', Date.now() - 2 * ttl)
+      expect(await sweep()).toEqual({ hostStopped: true, podSuspended: true })
+      // A shared session speaking keeps the host it runs on, and that host keeps the pod.
+      const speaking = 'slack:C1:T4:bot-a'
+      inner.sessionIsolation.set(speaking, 'shared')
+      expect(inner.hostKeyFor('bot-a', speaking)).toBe(sharedHost)
+      await row(speaking, 'shared', Date.now())
+      expect(await sweep()).toEqual({ hostStopped: false, podSuspended: false })
     } finally {
       await pool.instance.stop()
     }
