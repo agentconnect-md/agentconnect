@@ -16,9 +16,13 @@ describe('wireWorkspacePlane', () => {
     const workspaces = new WorkspaceManager()
     wireWorkspacePlane(workspaces, testPlane({ workspacesOffDisk: true, gitRunnerFor, workspaceFsFor, clearPath }))
 
-    const abort = new AbortController().signal
-    expect(workspaces.resolveGitRunner('agent-a', '/agent/checkout', abort)).toBe(runner)
-    expect(gitRunnerFor).toHaveBeenCalledWith('agent-a', '/agent/checkout', abort)
+    const abort = new AbortController()
+    expect(workspaces.resolveGitRunner('agent-a', '/agent/checkout', abort.signal)).toBe(runner)
+    expect(gitRunnerFor).toHaveBeenCalledWith('agent-a', '/agent/checkout', expect.any(AbortSignal))
+    // The plane gets the caller's abort joined with the shutdown cancel, so the caller's still ends its Git.
+    const passed = gitRunnerFor.mock.calls[0]![2]!
+    abort.abort()
+    expect(passed.aborted).toBe(true)
     expect(workspaces.fsFor('agent-a')).toBe(fs)
     expect(workspaces.sandboxMountFor('agent-a')).toBe('/agent')
     expect(await workspaces.clearPath('agent-a', '/agent/checkout')).toBe('read-only volume')
