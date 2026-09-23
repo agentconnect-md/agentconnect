@@ -647,56 +647,120 @@ describe('SlackHttpIngest channel membership events', () => {
     // revocation that predates the credential it would kill.
     await ingest.handleEvent({ type }, 1_700_000_000_000)
 
-    expect(onBotRevoked).toHaveBeenCalledWith(type, 1_700_000_000_000)
+    expect(onBotRevoked).toHaveBeenCalledWith(type, { evidence: 'event', eventAtMs: 1_700_000_000_000 })
     expect(onMessage).not.toHaveBeenCalled()
   })
 
-  // The backstop the in-memory retry queue cannot be: if the `app_uninstalled`
-  // event itself was lost (Slack acked it before the handler ran and never
-  // redelivers), the next assign / pod restart still probes auth.test and finds
-  // the credential dead.
-  it.each(['account_inactive', 'token_revoked', 'invalid_auth'])(
-    'reports a revocation when auth.test says the credential is dead (%s)',
+  // The backstop for a lost `app_uninstalled`: every assign, pod restart and periodic probe re-checks the token.
+  const platformError = (code: string) => Object.assign(new Error(code), { data: { error: code } })
+
+  it.each(['account_inactive', 'token_revoked'])(
+    'reports a probe revocation with its code when auth.test says the credential is dead (%s)',
     async (code) => {
-      const web = {
-        auth: { test: vi.fn(async () => Promise.reject(Object.assign(new Error(code), { data: { error: code } }))) }
-      }
+      const web = { auth: { test: vi.fn(async () => Promise.reject(platformError(code))) } }
       const onBotRevoked = vi.fn()
-      const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, deps(web, { onBotRevoked }))
+      const onCredentialCheck = vi.fn()
+      const ingest = new SlackHttpIngest(
+        'bot',
+        { botToken: 'xoxb', signingSecret: 's' },
+        deps(web, { onBotRevoked, onCredentialCheck })
+      )
 
       await ingest.start()
 
-      // No occurrence time: we don't know WHEN the workspace pulled the app. The
-      // revision arm is the right fence anyway — it names the credential just
-      // probed.
-      expect(onBotRevoked).toHaveBeenCalledWith('tokens_revoked')
+      // No occurrence time: the CP fences a probe on the revision it probed.
+      expect(onBotRevoked).toHaveBeenCalledWith('tokens_revoked', { evidence: 'probe', code })
+      expect(onCredentialCheck).not.toHaveBeenCalled()
     }
   )
 
-  // A false positive here would revoke a LIVE bot, so the match must stay narrow.
-  it.each(['ratelimited', 'missing_scope', 'internal_error'])(
-    'does NOT report a revocation for the transient auth.test failure %s',
-    async (code) => {
-      const web = {
-        auth: { test: vi.fn(async () => Promise.reject(Object.assign(new Error(code), { data: { error: code } }))) }
-      }
-      const onBotRevoked = vi.fn()
-      const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, deps(web, { onBotRevoked }))
-
-      await ingest.start()
-
-      expect(onBotRevoked).not.toHaveBeenCalled()
-    }
-  )
-
-  it('does NOT report a revocation for a network error with no Slack error code', async () => {
-    const web = { auth: { test: vi.fn(async () => Promise.reject(new Error('ECONNRESET'))) } }
+  // Slack also answers `invalid_auth` to a caller outside the app's IP allowlist, so it only marks the bot.
+  it('reports invalid_auth as a rejected check, never a revocation', async () => {
+    const web = { auth: { test: vi.fn(async () => Promise.reject(platformError('invalid_auth'))) } }
     const onBotRevoked = vi.fn()
-    const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, deps(web, { onBotRevoked }))
+    const onCredentialCheck = vi.fn()
+    const ingest = new SlackHttpIngest(
+      'bot',
+      { botToken: 'xoxb', signingSecret: 's' },
+      deps(web, { onBotRevoked, onCredentialCheck })
+    )
+
+    await ingest.start()
+
+    expect(onCredentialCheck).toHaveBeenCalledWith({ result: 'rejected', code: 'invalid_auth' })
+    expect(onBotRevoked).not.toHaveBeenCalled()
+  })
+
+  it('reports a successful auth.test as an ok check', async () => {
+    const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT', bot_id: 'BBOT' })) } }
+    const onBotUserId = vi.fn()
+    const onCredentialCheck = vi.fn()
+    const ingest = new SlackHttpIngest(
+      'bot',
+      { botToken: 'xoxb', signingSecret: 's' },
+      deps(web, { onBotUserId, onCredentialCheck })
+    )
+
+    await ingest.start()
+
+    expect(onBotUserId).toHaveBeenCalledWith('UBOT')
+    expect(onCredentialCheck).toHaveBeenCalledWith({ result: 'ok' })
+  })
+
+  // A false positive here would revoke or mark a LIVE bot, so the match must stay narrow.
+  it.each([
+    ['ratelimited', platformError('ratelimited')],
+    ['missing_scope', platformError('missing_scope')],
+    ['internal_error', platformError('internal_error')],
+    [
+      'an HTTP 429',
+      Object.assign(new Error('A rate limit was exceeded'), { code: 'slack_webapi_rate_limited_error', retryAfter: 30 })
+    ],
+    ['an HTTP 503', Object.assign(new Error('HTTP 503'), { code: 'slack_webapi_http_error', statusCode: 503 })],
+    ['a network error', new Error('ECONNRESET')]
+  ])('reports nothing for the auth.test failure %s', async (_label, err) => {
+    const web = { auth: { test: vi.fn(async () => Promise.reject(err)) } }
+    const onBotRevoked = vi.fn()
+    const onCredentialCheck = vi.fn()
+    const ingest = new SlackHttpIngest(
+      'bot',
+      { botToken: 'xoxb', signingSecret: 's' },
+      deps(web, { onBotRevoked, onCredentialCheck })
+    )
 
     await ingest.start()
 
     expect(onBotRevoked).not.toHaveBeenCalled()
+    expect(onCredentialCheck).not.toHaveBeenCalled()
+  })
+
+  it('re-runs the same classification on every probe, one at a time', async () => {
+    let answer: () => Promise<unknown> = async () => ({ user_id: 'UBOT' })
+    const web = { auth: { test: vi.fn(() => answer()) } }
+    const onCredentialCheck = vi.fn()
+    const ingest = new SlackHttpIngest(
+      'bot',
+      { botToken: 'xoxb', signingSecret: 's' },
+      deps(web, { onCredentialCheck })
+    )
+
+    await ingest.probeCredential() // before start there is no client to probe with
+    expect(web.auth.test).not.toHaveBeenCalled()
+
+    await ingest.start()
+    answer = async () => Promise.reject(platformError('invalid_auth'))
+    await ingest.probeCredential()
+    expect(onCredentialCheck.mock.calls).toEqual([[{ result: 'ok' }], [{ result: 'rejected', code: 'invalid_auth' }]])
+
+    // A probe still in flight absorbs an overlapping one instead of doubling the call.
+    let settle!: () => void
+    answer = () => new Promise((resolve) => (settle = () => resolve({ user_id: 'UBOT' })))
+    const first = ingest.probeCredential()
+    await ingest.probeCredential()
+    settle()
+    await first
+    expect(web.auth.test).toHaveBeenCalledTimes(3)
+    expect(onCredentialCheck).toHaveBeenLastCalledWith({ result: 'ok' })
   })
 
   it('reports a revocation with no occurrence time when the envelope omitted event_time', async () => {
@@ -709,7 +773,7 @@ describe('SlackHttpIngest channel membership events', () => {
 
     // Fail-open at the CP (an uninstall must eventually take effect), so the
     // relay reports it rather than withholding an unfenced revocation.
-    expect(onBotRevoked).toHaveBeenCalledWith('app_uninstalled', undefined)
+    expect(onBotRevoked).toHaveBeenCalledWith('app_uninstalled', { evidence: 'event' })
   })
 })
 

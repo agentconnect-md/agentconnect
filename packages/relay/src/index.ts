@@ -11,6 +11,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import {
+  BOT_CREDENTIAL_CHECK_FEATURE,
   RELAY_CP_SUBPROTOCOL,
   type RcCodeHostDelivery,
   type RcCodeHostMembershipAuthz,
@@ -196,6 +197,9 @@ async function main(): Promise<void> {
     reportBotConversation: (m) => client.emitBotConversation(m),
     reportNoticePosted: (m) => client.emitNoticePosted(m),
     reportBotRevoked: (m) => client.reportBotRevoked(m),
+    reportBotCredentialCheck: (m) => client.reportBotCredentialCheck(m),
+    credentialCheckSupported: () => client.advertisedFeature(BOT_CREDENTIAL_CHECK_FEATURE),
+    credentialProbeIntervalMs: config.RELAY_CREDENTIAL_PROBE_INTERVAL_SEC * 1000,
     selfRelayId: () => client.relayId,
     reportThreadAssign: (m) => client.emitThreadAssign(m),
     reportThreadParticipant: (m) => client.emitThreadParticipant(m),

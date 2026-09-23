@@ -6,6 +6,7 @@ import type {
   RdMsgPlatformAction,
   RdMsgIm,
   RcBotChannels,
+  RcBotCredentialCheck,
   RcThreadAssign,
   RcThreadLookupOk,
   WireFeishuCardActionEvent,
@@ -62,6 +63,8 @@ const deps = (over: Partial<RelayIngressManagerDeps> = {}): RelayIngressManagerD
   reportBotConversation: vi.fn(() => true),
   reportNoticePosted: vi.fn(() => true),
   reportBotRevoked: vi.fn(async () => true),
+  reportBotCredentialCheck: vi.fn(async () => true),
+  credentialCheckSupported: () => true,
   selfRelayId: () => SELF_RELAY,
   reportThreadAssign: vi.fn(() => true),
   reportThreadParticipant: vi.fn(() => true),
@@ -2734,5 +2737,297 @@ describe('RelayIngressManager — activation rendezvous', () => {
     // holder's, not the refusal that used to reach it.
     expect(ack).toEqual({ msgId: rd.msgId, accepted: true, response })
     expect(dropCount(manager)).toBe(0)
+  })
+})
+
+describe('RelayIngressManager credential reports (preset-agents.md §5.3)', () => {
+  const ok = (observedAtMs: number) => ({ result: 'ok' as const, observedAtMs })
+  const rejected = (observedAtMs: number, code = 'invalid_auth') => ({
+    result: 'rejected' as const,
+    code,
+    observedAtMs
+  })
+
+  const build = (over: Partial<RelayIngressManagerDeps> = {}) => {
+    const manager = new RelayIngressManager(deps(over), [...relayIngressPlugins, syntheticPlugin([])])
+    return { manager, host: internalsOf(manager).ingressHost }
+  }
+
+  it('carries a revocation’s evidence and code through to rc/bot-revoked', () => {
+    const reportBotRevoked = vi.fn(async () => true)
+    const { host } = build({ reportBotRevoked })
+
+    host.reportRevoked(BOT_ID, { reason: 'tokens_revoked', evidence: 'probe', code: 'token_revoked' }, 3)
+    host.reportRevoked(BOT_ID, { reason: 'app_uninstalled', evidence: 'event', eventAtMs: 1_000 }, 4)
+
+    expect(reportBotRevoked.mock.calls).toEqual([
+      [{ botId: BOT_ID, reason: 'tokens_revoked', evidence: 'probe', credentialRevision: 3, code: 'token_revoked' }],
+      [{ botId: BOT_ID, reason: 'app_uninstalled', evidence: 'event', credentialRevision: 4, eventAtMs: 1_000 }]
+    ])
+  })
+
+  it('reports a check once per change for the probed revision, and again after a re-assign', async () => {
+    const reportBotCredentialCheck = vi.fn(async (_m: RcBotCredentialCheck) => true)
+    const { manager, host } = build({ reportBotCredentialCheck })
+    await manager.assign(syntheticAssignment({ credentialRevision: 1 }))
+
+    host.reportCredentialCheck(BOT_ID, ok(1_000), 1)
+    host.reportCredentialCheck(BOT_ID, ok(2_000), 1) // unchanged
+    host.reportCredentialCheck(BOT_ID, rejected(3_000), 1)
+    host.reportCredentialCheck(BOT_ID, rejected(4_000), 1) // unchanged
+    host.reportCredentialCheck(BOT_ID, rejected(5_000, 'another_code'), 1)
+    host.reportCredentialCheck(BOT_ID, ok(6_000), 1)
+    expect(reportBotCredentialCheck.mock.calls.map(([m]) => m)).toEqual([
+      { botId: BOT_ID, credentialRevision: 1, result: 'ok', observedAtMs: 1_000 },
+      { botId: BOT_ID, credentialRevision: 1, result: 'rejected', code: 'invalid_auth', observedAtMs: 3_000 },
+      { botId: BOT_ID, credentialRevision: 1, result: 'rejected', code: 'another_code', observedAtMs: 5_000 },
+      { botId: BOT_ID, credentialRevision: 1, result: 'ok', observedAtMs: 6_000 }
+    ])
+
+    // The first probe after every (re)assign reports, whatever the last one said.
+    await manager.assign(syntheticAssignment({ credentialRevision: 1 }))
+    host.reportCredentialCheck(BOT_ID, ok(7_000), 1)
+    expect(reportBotCredentialCheck).toHaveBeenCalledTimes(5)
+  })
+
+  it('sends nothing without the CP feature, a known revision, or a current assignment', async () => {
+    const reportBotCredentialCheck = vi.fn(async () => true)
+    let supported = false
+    const { manager, host } = build({ reportBotCredentialCheck, credentialCheckSupported: () => supported })
+    await manager.assign(syntheticAssignment({ credentialRevision: 2 }))
+
+    host.reportCredentialCheck(BOT_ID, rejected(1_000), 2) // an older CP refuses the frame
+    supported = true
+    host.reportCredentialCheck(BOT_ID, rejected(2_000)) // nothing to fence on
+    host.reportCredentialCheck(BOT_ID, rejected(3_000), 1) // an older ingest's late probe
+    host.reportCredentialCheck(OTHER_AGENT_ID, rejected(4_000), 2) // no such bot here
+    expect(reportBotCredentialCheck).not.toHaveBeenCalled()
+
+    host.reportCredentialCheck(BOT_ID, rejected(5_000), 2)
+    expect(reportBotCredentialCheck).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps only the latest unacknowledged check per bot and retries it on a READY link', async () => {
+    vi.useFakeTimers()
+    try {
+      let settled = false
+      const reportBotCredentialCheck = vi.fn(async () => settled)
+      const { manager, host } = build({ reportBotCredentialCheck })
+      await manager.assign(syntheticAssignment({ credentialRevision: 1 }))
+
+      host.reportCredentialCheck(BOT_ID, rejected(1_000), 1)
+      host.reportCredentialCheck(BOT_ID, ok(2_000), 1) // supersedes the queued rejection
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotCredentialCheck).toHaveBeenCalledTimes(2)
+
+      await vi.advanceTimersByTimeAsync(5_000) // the CP answered neither — the retry sends only the latest
+      expect(reportBotCredentialCheck).toHaveBeenCalledTimes(3)
+      expect(reportBotCredentialCheck).toHaveBeenLastCalledWith(expect.objectContaining({ result: 'ok' }))
+
+      settled = true
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(reportBotCredentialCheck).toHaveBeenCalledTimes(4)
+      await vi.advanceTimersByTimeAsync(120_000) // settled ⇒ drained ⇒ timer disarmed
+      expect(reportBotCredentialCheck).toHaveBeenCalledTimes(4)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('replays an unacknowledged check on reconnect and drops it once the CP replies', async () => {
+    vi.useFakeTimers()
+    try {
+      let ready = false
+      const reportBotCredentialCheck = vi.fn(async () => ready)
+      const { manager, host } = build({ reportBotCredentialCheck })
+      await manager.assign(syntheticAssignment({ credentialRevision: 1 }))
+
+      host.reportCredentialCheck(BOT_ID, rejected(1_000), 1) // link down
+      await vi.advanceTimersByTimeAsync(0)
+
+      ready = true
+      manager.flushPendingReports()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotCredentialCheck).toHaveBeenCalledTimes(2)
+      expect(reportBotCredentialCheck).toHaveBeenLastCalledWith(
+        expect.objectContaining({ result: 'rejected', observedAtMs: 1_000 })
+      )
+
+      manager.flushPendingReports() // replied (applied or not) ⇒ nothing left
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotCredentialCheck).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('drops a queued check when the bot is re-assigned with a newer revision or unassigned', async () => {
+    vi.useFakeTimers()
+    try {
+      const reportBotCredentialCheck = vi.fn(async () => false) // never answered
+      const { manager, host } = build({ reportBotCredentialCheck })
+      await manager.assign(syntheticAssignment({ credentialRevision: 1 }))
+      host.reportCredentialCheck(BOT_ID, rejected(1_000), 1)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotCredentialCheck).toHaveBeenCalledTimes(1)
+
+      // The same credential re-assigned: the check still describes it.
+      await manager.assign(syntheticAssignment({ credentialRevision: 1 }))
+      manager.flushPendingReports()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotCredentialCheck).toHaveBeenCalledTimes(2)
+
+      // A newer credential makes it moot.
+      await manager.assign(syntheticAssignment({ credentialRevision: 2 }))
+      manager.flushPendingReports()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotCredentialCheck).toHaveBeenCalledTimes(2)
+
+      host.reportCredentialCheck(BOT_ID, rejected(2_000), 2)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotCredentialCheck).toHaveBeenCalledTimes(3)
+      await manager.unassign(BOT_ID)
+      manager.flushPendingReports()
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(reportBotCredentialCheck).toHaveBeenCalledTimes(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('drops queued checks once the CP stops advertising the feature', async () => {
+    vi.useFakeTimers()
+    try {
+      let supported = true
+      const reportBotCredentialCheck = vi.fn(async () => false)
+      const { manager, host } = build({ reportBotCredentialCheck, credentialCheckSupported: () => supported })
+      await manager.assign(syntheticAssignment({ credentialRevision: 1 }))
+      host.reportCredentialCheck(BOT_ID, rejected(1_000), 1)
+      await vi.advanceTimersByTimeAsync(0)
+
+      // Reconnected to an older CP: its bot-assign replay re-probes under the revocation fallback instead.
+      supported = false
+      manager.flushPendingReports()
+      supported = true
+      manager.flushPendingReports()
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(reportBotCredentialCheck).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('RelayIngressManager periodic credential probe', () => {
+  interface ProbingIngest extends RelayBotIngress {
+    probes: number
+  }
+
+  /** @param randoms Values `random()` returns in order, then 0.5. */
+  const build = (randoms: number[] = [], over: Partial<RelayIngressManagerDeps> = {}) => {
+    const built: ProbingIngest[] = []
+    const plugin: RelayPlatformIngressPlugin = {
+      ...syntheticPlugin([]),
+      buildIngest: () => {
+        const ingest: ProbingIngest = {
+          probes: 0,
+          stop: () => {},
+          probeCredential: async () => {
+            ingest.probes += 1
+          }
+        }
+        built.push(ingest)
+        return ingest
+      }
+    }
+    const random = vi.fn(() => randoms.shift() ?? 0.5)
+    const manager = new RelayIngressManager(deps({ credentialProbeIntervalMs: 1_000, random, ...over }), [
+      ...relayIngressPlugins,
+      plugin
+    ])
+    return { built, manager }
+  }
+
+  it.each([0, 0.25, 0.75])('runs the first probe at a random offset inside the first interval (%s)', async (r) => {
+    vi.useFakeTimers()
+    try {
+      const { built, manager } = build([r])
+      await manager.assign(syntheticAssignment())
+      const offset = 1_000 * r
+
+      if (offset > 0) {
+        await vi.advanceTimersByTimeAsync(offset - 1)
+        expect(built[0]!.probes).toBe(0)
+      }
+      await vi.advanceTimersByTimeAsync(offset > 0 ? 1 : 0)
+      expect(built[0]!.probes).toBe(1)
+      await manager.stopAll()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('repeats at the interval ± 10%', async () => {
+    vi.useFakeTimers()
+    try {
+      // Offset 500, then the jitter's two extremes: 900 and 1,100.
+      const { built, manager } = build([0.5, 0, 1])
+      await manager.assign(syntheticAssignment())
+
+      await vi.advanceTimersByTimeAsync(500)
+      expect(built[0]!.probes).toBe(1)
+      await vi.advanceTimersByTimeAsync(899)
+      expect(built[0]!.probes).toBe(1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(built[0]!.probes).toBe(2)
+      await vi.advanceTimersByTimeAsync(1_099)
+      expect(built[0]!.probes).toBe(2)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(built[0]!.probes).toBe(3)
+      await manager.stopAll()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('defaults to an hourly interval', async () => {
+    vi.useFakeTimers()
+    try {
+      const { built, manager } = build([0.5], { credentialProbeIntervalMs: undefined })
+      await manager.assign(syntheticAssignment())
+
+      await vi.advanceTimersByTimeAsync(1_799_999)
+      expect(built[0]!.probes).toBe(0)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(built[0]!.probes).toBe(1)
+      await manager.stopAll()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clears the schedule on unassign, re-assign and stopAll', async () => {
+    vi.useFakeTimers()
+    try {
+      const { built, manager } = build()
+      await manager.assign(syntheticAssignment())
+      await manager.unassign(BOT_ID)
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(built[0]!.probes).toBe(0)
+
+      // A re-assign replaces the old ingest's schedule rather than adding one beside it.
+      await manager.assign(syntheticAssignment())
+      await manager.assign(syntheticAssignment({ credentialRevision: 2 }))
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(built[1]!.probes).toBe(0)
+      expect(built[2]!.probes).toBe(2)
+
+      await manager.stopAll()
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(built[2]!.probes).toBe(2)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

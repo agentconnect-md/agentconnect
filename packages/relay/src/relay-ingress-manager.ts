@@ -27,6 +27,7 @@ import type {
   RdMsgIm,
   RcBotChannels,
   RcBotConversation,
+  RcBotCredentialCheck,
   RcBotRevoked,
   WireNormalizedMessage,
   RcThreadAssign,
@@ -46,6 +47,7 @@ import { DemuxIndex, IngressPool, relayIngressPlugins } from './platforms/regist
 import type {
   HandledDelivery,
   RelayBotIngress,
+  RelayCredentialCheck,
   RelayForwardOutcome,
   RelayIngressHost,
   RelayIngressSidecar,
@@ -59,12 +61,14 @@ import type { RelayDaemonConnection } from './relay-daemon-connection.js'
  *  down. Bounded so a long CP outage can't grow it without limit; oldest-cleared. */
 const MAX_PENDING_REPORTS = 10_000
 
-/** Backoff for re-reporting an unacknowledged revocation while the CP link stays
- *  READY. The CP answers a transient persistence failure with a retryable error
- *  WITHOUT dropping the socket, so `onReady` (reconnect-only) can never be the
- *  sole retry trigger. Bounded: 5s → 10s → … → 60s. */
-const REVOKE_RETRY_INITIAL_MS = 5_000
-const REVOKE_RETRY_MAX_MS = 60_000
+/** Backoff (5s → 60s) re-sending an unacknowledged revocation or check on a READY link, since a retryable CP error keeps the socket and `onReady` never fires. */
+const ACK_RETRY_INITIAL_MS = 5_000
+const ACK_RETRY_MAX_MS = 60_000
+
+/** Default interval between periodic credential probes of one bot. */
+const CREDENTIAL_PROBE_INTERVAL_MS = 3_600_000
+/** Each later probe lands at the interval ± this fraction, so a pod's bots drift apart. */
+const CREDENTIAL_PROBE_JITTER = 0.1
 
 /** Provably-older ordering between two revoke reports for one bot: by credential
  *  generation first, then by Slack's occurrence time when the generations agree
@@ -112,6 +116,14 @@ export interface RelayIngressManagerDeps {
    *  acked the HTTP event before this ran and never redelivers it, and a dead token
    *  gives the CP nothing to observe. */
   reportBotRevoked: (m: RcBotRevoked) => Promise<boolean>
+  /** Report a probe answer that does not revoke (→ `rc/bot-credential-check`) and wait for the CP's reply; `false` keeps it queued. */
+  reportBotCredentialCheck: (m: RcBotCredentialCheck) => Promise<boolean>
+  /** Whether the CP this relay last registered with advertised `bot-credential-check-v1` (kept while the link is down). */
+  credentialCheckSupported: () => boolean
+  /** Interval between periodic credential probes of each bot; defaults to one hour. */
+  credentialProbeIntervalMs?: number
+  /** Randomness for the probe schedule's first offset and jitter; defaults to `Math.random`. */
+  random?: () => number
   /** Report the thread's now-resolved owner to the CP (→ `rc/thread-assign`). Returns
    *  `false` if the CP link was not READY and the frame was dropped, so the manager can
    *  retry it when the link recovers ({@link RelayIngressManager.flushPendingReports}). */
@@ -194,17 +206,20 @@ export class RelayIngressManager {
         return this.sendWithRendezvous(daemon, msg, msg.botId, context)
       },
       reportChannels: (snapshot) => this.reportChannels(snapshot),
-      reportRevoked: (botId, reason, eventAtMs, credentialRevision) => {
-        // The revision is the OBSERVING assignment's, captured by the plugin at
-        // buildIngest — never the mutable current one, which a fire-and-forget
-        // older ingest could otherwise use to revoke a replacement credential.
+      reportRevoked: (botId, revocation, credentialRevision) => {
+        // The revision is the OBSERVING assignment's, captured by the plugin at buildIngest.
         this.reportRevoked({
           botId,
-          reason: reason as 'app_uninstalled' | 'tokens_revoked',
+          reason: revocation.reason,
+          evidence: revocation.evidence,
           ...(credentialRevision !== undefined ? { credentialRevision } : {}),
-          ...(eventAtMs !== undefined ? { eventAtMs } : {})
+          ...(revocation.eventAtMs !== undefined ? { eventAtMs: revocation.eventAtMs } : {}),
+          ...(revocation.code !== undefined ? { code: revocation.code } : {})
         })
       },
+      reportCredentialCheck: (botId, check, credentialRevision) =>
+        this.reportCredentialCheck(botId, check, credentialRevision),
+      credentialCheckSupported: () => this.deps.credentialCheckSupported(),
       directory: {
         agents: (botId) => this.router.get(botId)?.agents ?? [],
         channelOwner: (botId, channelId) => this.router.channelOwner(botId, channelId),
@@ -259,6 +274,12 @@ export class RelayIngressManager {
    *  so a dropped report leaves the console showing an uninstalled app as active
    *  forever. Flushed on READY by {@link flushPendingReports}. */
   private readonly pendingRevokedReports = new Map<string, RcBotRevoked>()
+  /** The latest unacknowledged credential check per bot, replayed across reconnects until the CP replies. */
+  private readonly pendingCredentialChecks = new Map<string, RcBotCredentialCheck>()
+  /** The last check reported per bot since its (re)assign (`revision\0result\0code`), so only a change is sent. */
+  private readonly lastCredentialChecks = new Map<string, string>()
+  /** Each pooled ingest's next periodic credential probe. */
+  private readonly credentialProbeTimers = new Map<string, ReturnType<typeof setTimeout>>()
   /** §14 one-time gating-notice latch (`botId:channel`) on the AUTHORITY pod —
    *  correct because only one pod ever posts (deterministic per-bot authority). */
   private readonly gatedNoticesSent = new Set<string>()
@@ -343,10 +364,9 @@ export class RelayIngressManager {
     else this.pendingChannelReports.set(m.botId, m)
   }
 
-  /** Backoff timer re-driving unacknowledged revocation reports on a READY link
-   *  (see REVOKE_RETRY_INITIAL_MS); armed whenever the queue is non-empty. */
-  private revokeRetryTimer: ReturnType<typeof setTimeout> | undefined
-  private revokeRetryDelayMs = REVOKE_RETRY_INITIAL_MS
+  /** Backoff timer re-driving unacknowledged revocations and credential checks on a READY link; armed while either queue is non-empty. */
+  private ackRetryTimer: ReturnType<typeof setTimeout> | undefined
+  private ackRetryDelayMs = ACK_RETRY_INITIAL_MS
 
   /** Report a revocation and keep it queued until the CP ACKNOWLEDGES the commit.
    *  Queued FIRST, cleared only on the ack: a send the socket accepted is not
@@ -376,33 +396,110 @@ export class RelayIngressManager {
         // report, and with it the only signal its dead credential ever produces.
         if (committed && this.pendingRevokedReports.get(m.botId) === m) {
           this.pendingRevokedReports.delete(m.botId)
-          if (this.pendingRevokedReports.size === 0) this.revokeRetryDelayMs = REVOKE_RETRY_INITIAL_MS
+          this.resetAckRetryIfDrained()
         }
       })
       .catch(() => {
         /* stays queued — the finally below arms the retry */
       })
-      .finally(() => this.armRevokeRetry())
+      .finally(() => this.armAckRetry())
   }
 
-  /** Arm the READY-link retry for whatever is still queued. Single timer, bounded
-   *  exponential backoff, disarmed by a drained queue; `onReady`'s flush resets
-   *  the delay (a fresh link deserves a fast first attempt). */
-  private armRevokeRetry(): void {
-    if (this.revokeRetryTimer || this.pendingRevokedReports.size === 0) return
-    const delay = this.revokeRetryDelayMs
-    this.revokeRetryDelayMs = Math.min(this.revokeRetryDelayMs * 2, REVOKE_RETRY_MAX_MS)
-    this.revokeRetryTimer = setTimeout(() => {
-      this.revokeRetryTimer = undefined
+  /** Report a probe answer that does not revoke, once per change for the probed revision, and keep it queued until the CP replies. */
+  private reportCredentialCheck(botId: string, check: RelayCredentialCheck, credentialRevision?: number): void {
+    // The CP fences a check on its revision, and an older CP would refuse the frame outright.
+    if (credentialRevision === undefined || !this.deps.credentialCheckSupported()) return
+    const held = this.router.get(botId)
+    // An unassigned bot, or an older ingest's late probe of a replaced credential, describes nothing this relay serves.
+    if (!held || (held.credentialRevision !== undefined && held.credentialRevision > credentialRevision)) return
+    const key = `${credentialRevision}\u0000${check.result}\u0000${check.result === 'rejected' ? check.code : ''}`
+    if (this.lastCredentialChecks.get(botId) === key) return
+    this.lastCredentialChecks.set(botId, key)
+    const m: RcBotCredentialCheck =
+      check.result === 'rejected'
+        ? { botId, credentialRevision, result: 'rejected', code: check.code, observedAtMs: check.observedAtMs }
+        : { botId, credentialRevision, result: 'ok', observedAtMs: check.observedAtMs }
+    this.pendingCredentialChecks.set(botId, m)
+    this.sendCredentialCheck(m)
+  }
+
+  /** Send one queued check; any CP reply (applied or not) settles it, while a missing one leaves it for the retry. */
+  private sendCredentialCheck(m: RcBotCredentialCheck): void {
+    if (!this.deps.credentialCheckSupported()) {
+      // A CP that stopped advertising checks gets none; its bot-assign replay re-probes under the fallback.
+      if (this.pendingCredentialChecks.get(m.botId) === m) this.pendingCredentialChecks.delete(m.botId)
+      this.resetAckRetryIfDrained()
+      return
+    }
+    void this.deps
+      .reportBotCredentialCheck(m)
+      .then((settled) => {
+        // Clear only this exact check: a newer one may have replaced it while this one was in flight.
+        if (settled && this.pendingCredentialChecks.get(m.botId) === m) {
+          this.pendingCredentialChecks.delete(m.botId)
+          this.resetAckRetryIfDrained()
+        }
+      })
+      .catch(() => {
+        /* stays queued — the finally below arms the retry */
+      })
+      .finally(() => this.armAckRetry())
+  }
+
+  private resetAckRetryIfDrained(): void {
+    if (this.pendingRevokedReports.size === 0 && this.pendingCredentialChecks.size === 0) {
+      this.ackRetryDelayMs = ACK_RETRY_INITIAL_MS
+    }
+  }
+
+  /** Arm the READY-link retry for whatever is still queued: one timer, bounded backoff, disarmed by drained queues and reset by `onReady`'s flush. */
+  private armAckRetry(): void {
+    if (this.ackRetryTimer || (this.pendingRevokedReports.size === 0 && this.pendingCredentialChecks.size === 0)) {
+      return
+    }
+    const delay = this.ackRetryDelayMs
+    this.ackRetryDelayMs = Math.min(this.ackRetryDelayMs * 2, ACK_RETRY_MAX_MS)
+    this.ackRetryTimer = setTimeout(() => {
+      this.ackRetryTimer = undefined
       for (const [, m] of [...this.pendingRevokedReports]) this.reportRevoked(m)
+      for (const [, m] of [...this.pendingCredentialChecks]) this.sendCredentialCheck(m)
     }, delay)
     // Never hold the process open for a retry timer.
-    this.revokeRetryTimer.unref?.()
+    this.ackRetryTimer.unref?.()
   }
 
-  /** Re-emit reports, channel snapshots, and revocations dropped while the CP link
-   *  was down (wired to the client's onReady). Each queue stops at the first frame
-   *  that still can't be sent, keeping the rest. */
+  /** Arm `botId`'s next periodic credential probe `delayMs` from now; each run re-arms at the interval ± 10% before probing. */
+  private armCredentialProbe(botId: string, ingest: RelayBotIngress, delayMs: number): void {
+    const timer = setTimeout(() => {
+      if (this.credentialProbeTimers.get(botId) !== timer) return
+      this.armCredentialProbe(botId, ingest, this.credentialProbeDelay())
+      ingest.probeCredential?.().catch((err: unknown) => {
+        this.deps.log.warn(`relay-ingress(${botId}): credential probe failed: ${(err as Error).message}`)
+      })
+    }, delayMs)
+    // Never hold the process open for a probe.
+    timer.unref?.()
+    this.credentialProbeTimers.set(botId, timer)
+  }
+
+  private get credentialProbeIntervalMs(): number {
+    return this.deps.credentialProbeIntervalMs ?? CREDENTIAL_PROBE_INTERVAL_MS
+  }
+
+  /** The gap between two periodic probes of one bot: the interval ± 10%. */
+  private credentialProbeDelay(): number {
+    const random = this.deps.random ?? Math.random
+    return this.credentialProbeIntervalMs * (1 - CREDENTIAL_PROBE_JITTER + 2 * CREDENTIAL_PROBE_JITTER * random())
+  }
+
+  private clearCredentialProbe(botId: string): void {
+    const timer = this.credentialProbeTimers.get(botId)
+    if (timer === undefined) return
+    clearTimeout(timer)
+    this.credentialProbeTimers.delete(botId)
+  }
+
+  /** Re-emit every report queue on the client's onReady; each stops at the first frame that still can't be sent, and acknowledged ones clear on their reply. */
   flushPendingReports(): void {
     for (const [key, m] of [...this.pendingReports]) {
       if (!this.deps.reportThreadAssign(m)) break
@@ -421,8 +518,9 @@ export class RelayIngressManager {
     // the CP's fence needs after an outage that spanned a re-install. Async: each
     // entry clears only when the CP acknowledges the commit, and a fresh link
     // resets the READY-retry backoff.
-    this.revokeRetryDelayMs = REVOKE_RETRY_INITIAL_MS
+    this.ackRetryDelayMs = ACK_RETRY_INITIAL_MS
     for (const [, m] of [...this.pendingRevokedReports]) this.reportRevoked(m)
+    for (const [, m] of [...this.pendingCredentialChecks]) this.sendCredentialCheck(m)
   }
 
   /** `rc/bot-assign` — (re)load the routing table + (re)build the bot's HTTP ingest. */
@@ -430,6 +528,12 @@ export class RelayIngressManager {
     // A full (re)assignment can mean new installs. Stale report latches would starve
     // a later install of its own configurable direct row.
     this.clearConversationReportLatches(a.botId)
+    // The first probe after every (re)assign reports; a queued check of an older credential is moot.
+    this.lastCredentialChecks.delete(a.botId)
+    const queuedCheck = this.pendingCredentialChecks.get(a.botId)
+    if (queuedCheck && a.credentialRevision !== undefined && queuedCheck.credentialRevision < a.credentialRevision) {
+      this.pendingCredentialChecks.delete(a.botId)
+    }
     this.router.upsert(a)
     // Rebuild the ingest (secrets or transport may have rotated). Idempotent.
     await this.stopIngest(a.botId)
@@ -451,6 +555,10 @@ export class RelayIngressManager {
       ...(a.apiAppId ? { appId: a.apiAppId } : {}),
       ...(a.teamId ? { tenantId: a.teamId } : {})
     })
+    // The first periodic probe lands at a random point in the first interval, so a pod never probes every bot at once.
+    if (ingest.probeCredential) {
+      this.armCredentialProbe(a.botId, ingest, this.credentialProbeIntervalMs * (this.deps.random ?? Math.random)())
+    }
     await (ingest as { start?: () => Promise<void> }).start?.()
   }
 
@@ -481,6 +589,8 @@ export class RelayIngressManager {
     this.clearConversationReportLatches(botId)
     this.forgetDemux(botId)
     this.router.remove(botId)
+    this.pendingCredentialChecks.delete(botId)
+    this.lastCredentialChecks.delete(botId)
     await this.stopIngest(botId)
   }
 
@@ -599,10 +709,11 @@ export class RelayIngressManager {
   /** Close every ingest (relay shutdown) — across every REGISTERED platform,
    *  not the union of two named pools (audit F4). */
   async stopAll(): Promise<void> {
-    if (this.revokeRetryTimer) {
-      clearTimeout(this.revokeRetryTimer)
-      this.revokeRetryTimer = undefined
+    if (this.ackRetryTimer) {
+      clearTimeout(this.ackRetryTimer)
+      this.ackRetryTimer = undefined
     }
+    for (const botId of [...this.credentialProbeTimers.keys()]) this.clearCredentialProbe(botId)
     const bots = new Set<string>()
     for (const { pool } of this.ingressPlugins.values()) for (const [botId] of pool.entries()) bots.add(botId)
     await Promise.all([...bots].map((id) => this.stopIngest(id)))
@@ -679,6 +790,7 @@ export class RelayIngressManager {
   }
 
   private async stopIngest(botId: string): Promise<void> {
+    this.clearCredentialProbe(botId)
     for (const { pool } of this.ingressPlugins.values()) {
       const cur = pool.get(botId)
       if (!cur) continue

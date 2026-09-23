@@ -265,7 +265,16 @@ credential frames use full-replace or idempotent-upsert semantics so replay
 converges cleanly. `rc/bot-revoked` and `rc/bot-credential-check` are the
 acknowledged reports: the relay keeps each until the CP replies, and the CP
 revokes only on the first and only marks the bot on a rejected check
-([preset-agents.md](preset-agents.md) §5.3).
+([preset-agents.md](preset-agents.md) §5.3). Both come from a platform event or
+from the relay's credential probe (Slack's `auth.test`), which runs when a bot is
+assigned and then every `RELAY_CREDENTIAL_PROBE_INTERVAL_SEC` seconds (default
+3600, jittered). A definitive answer (`account_inactive`, `token_revoked`) is an
+`rc/bot-revoked` with `evidence: 'probe'` and the code; an ambiguous
+`invalid_auth` is a `rejected` check and a success an `ok` check, sent once per
+change for the probed revision. A CP that does not advertise
+`bot-credential-check-v1` receives neither the check nor the new
+`rc/bot-revoked` fields, and the relay reports `invalid_auth` to it as a
+revocation, as before.
 
 Hook assignments and removals follow the same pool-wide projection pattern.
 Hook run reports carry identifiers and status, not the original payload.

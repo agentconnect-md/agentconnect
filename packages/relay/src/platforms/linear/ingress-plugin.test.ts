@@ -30,6 +30,8 @@ const host = (over: Partial<RelayIngressHost> = {}): RelayIngressHost => ({
   forwardAction: vi.fn(async (msg) => ({ msgId: msg.msgId, accepted: true })),
   reportChannels: () => {},
   reportRevoked: vi.fn(),
+  reportCredentialCheck: vi.fn(),
+  credentialCheckSupported: () => true,
   directory: {
     agents: () => [],
     channelOwner: () => undefined,
@@ -511,7 +513,11 @@ describe('linear ingress plugin — stop, revocation, and non-session events', (
   it('rings the revocation doorbell with the OBSERVING assignment revision', async () => {
     const h = host()
     await run(h, { type: 'OAuthApp', action: 'revoked', organizationId: ORG_ID, webhookTimestamp: NOW })
-    expect(h.reportRevoked).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111', 'tokens_revoked', NOW, 7)
+    expect(h.reportRevoked).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111',
+      { reason: 'tokens_revoked', evidence: 'event', eventAtMs: NOW },
+      7
+    )
   })
 
   it('drops any other verified event category without forwarding or reporting', async () => {

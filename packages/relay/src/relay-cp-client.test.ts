@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
+  BOT_CREDENTIAL_CHECK_FEATURE,
   buildRelayCpFrame,
   RELAY_CP_SUBPROTOCOL,
   GITEA_V1_FEATURE,
@@ -440,6 +441,81 @@ describe('RelayCpClient', () => {
 
     transport.simulateClose(1012)
     await expect(client.reportPullRequestFeedback(signal)).rejects.toMatchObject({ retryable: true })
+  })
+
+  it('sends rc/bot-revoked evidence only to a CP that advertises credential checks', async () => {
+    const report = {
+      botId: RELAY_ID,
+      reason: 'tokens_revoked',
+      credentialRevision: 3,
+      evidence: 'probe',
+      code: 'token_revoked'
+    } as const
+    const answer = async (transport: FakeTransport, pending: Promise<boolean>) => {
+      await flush()
+      const request = transport.lastReq('rc/bot-revoked')!
+      transport.inject(buildRelayCpFrame('rc/bot-revoked/ok', { botId: RELAY_ID, applied: true }, { corr: request.id }))
+      await expect(pending).resolves.toBe(true)
+      return request.payload
+    }
+
+    const older = makeClient()
+    older.client.start()
+    await flush()
+    await completeHandshake(older.transport)
+    const legacy = await answer(older.transport, older.client.reportBotRevoked(report))
+    expect(legacy).toEqual({ botId: RELAY_ID, reason: 'tokens_revoked', credentialRevision: 3 })
+
+    const current = makeClient()
+    current.client.start()
+    await flush()
+    await completeHandshake(current.transport, 15, undefined, [BOT_CREDENTIAL_CHECK_FEATURE])
+    expect(await answer(current.transport, current.client.reportBotRevoked(report))).toEqual(report)
+  })
+
+  it('reports a credential check only to a CP that advertises it, settled by any reply', async () => {
+    const check = {
+      botId: RELAY_ID,
+      credentialRevision: 3,
+      result: 'rejected',
+      code: 'invalid_auth',
+      observedAtMs: 1_000
+    } as const
+    const { client, transport } = makeClient()
+    await expect(client.reportBotCredentialCheck(check)).resolves.toBe(false) // link down
+
+    client.start()
+    await flush()
+    await completeHandshake(transport, 15, undefined, [BOT_CREDENTIAL_CHECK_FEATURE])
+    const pending = client.reportBotCredentialCheck(check)
+    await flush()
+    const request = transport.lastReq('rc/bot-credential-check')!
+    expect(request.payload).toEqual(check)
+    // `applied: false` (a replaced credential, an older observation) settles it just the same.
+    transport.inject(
+      buildRelayCpFrame('rc/bot-credential-check/ok', { botId: RELAY_ID, applied: false }, { corr: request.id })
+    )
+    await expect(pending).resolves.toBe(true)
+
+    const older = makeClient()
+    older.client.start()
+    await flush()
+    await completeHandshake(older.transport)
+    await expect(older.client.reportBotCredentialCheck(check)).resolves.toBe(false)
+    expect(older.transport.lastReq('rc/bot-credential-check')).toBeUndefined()
+  })
+
+  it('remembers what the last registration advertised while the link is down', async () => {
+    const { client, transport } = makeClient()
+    expect(client.advertisedFeature(BOT_CREDENTIAL_CHECK_FEATURE)).toBe(false)
+    client.start()
+    await flush()
+    await completeHandshake(transport, 15, undefined, [BOT_CREDENTIAL_CHECK_FEATURE])
+    expect(client.advertisedFeature(BOT_CREDENTIAL_CHECK_FEATURE)).toBe(true)
+
+    // A probe between links keeps its tier instead of falling back to revoking.
+    transport.simulateClose(1012)
+    expect(client.advertisedFeature(BOT_CREDENTIAL_CHECK_FEATURE)).toBe(true)
   })
 
   it('emitBotChannels reports the snapshot when READY and signals deferral otherwise', async () => {

@@ -362,6 +362,25 @@ installed via standard OAuth v2. Verified gaps against current code:
   revoked one, so a later revocation resolves the rejected item and opens a
   revoked item in its place.
 
+  The relay probes each assigned bot with `auth.test` when it builds the bot's
+  ingest (every assignment and every relay restart) and then periodically,
+  every `RELAY_CREDENTIAL_PROBE_INTERVAL_SEC` seconds (default 3600). The first
+  periodic probe lands at a random point within the first interval and each
+  later one at the interval ± 10%, so a relay never probes all of its bots at
+  once. `account_inactive` and `token_revoked` become a revocation with
+  `evidence: 'probe'` and the code, `invalid_auth` a `rejected` check, and a
+  success an `ok` check; any other failure (a network error, a rate limit,
+  `missing_scope`) reports nothing. The relay sends a check for the first probe
+  after each assignment and afterwards only when the result or code changes for
+  the probed revision, which bounds the traffic; the watermark already makes a
+  repeat harmless. It keeps only the latest unacknowledged check per bot,
+  replays it after a reconnect, and drops it once the Control Plane replies
+  (applied or not), when the bot is unassigned, or when an assignment carries a
+  newer revision. Against a Control Plane that does not advertise
+  `bot-credential-check-v1`, the relay keeps its earlier behavior and reports
+  `invalid_auth` as a revocation. The relay reads the advertisement from its
+  last registration, so a probe that runs while the link is down keeps its tier.
+
 - **Transport.** Distributed apps are Events-API-only — a socket-mode app token is
   per-app and cannot be demuxed per workspace — so this path hard-depends on the relay
   pool (`PUBLIC_RELAY_URL` + ≥1 connected relay), exactly like `http` transport today.

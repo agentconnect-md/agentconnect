@@ -38,6 +38,8 @@ export const RelayConfigSchema = z
     GITHUB_APP_WEBHOOK_SECRET: z.string().min(1).optional(),
     // Fallback heartbeat cadence if the CP's rc/auth/ok carries none (it always does).
     HEARTBEAT_DEFAULT_MS: z.coerce.number().int().default(15_000),
+    // Seconds between periodic re-checks of each assigned bot's platform credential (jittered ±10%, first run at a random offset).
+    RELAY_CREDENTIAL_PROBE_INTERVAL_SEC: z.coerce.number().int().positive().default(3600),
     // Comma-separated hostnames the MCP reverse proxy may resolve to PRIVATE addresses
     // (centralized-tool-management.md §5.3) — the deploy-level opt-in for internal MCP
     // upstreams. Unset ⇒ public-only (private/loopback/metadata rejected). Never a wildcard.

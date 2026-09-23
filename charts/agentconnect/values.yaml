@@ -601,6 +601,8 @@ relay:
   config:
     NODE_ENV: production
     HEARTBEAT_DEFAULT_MS: '15000'
+    # Seconds between periodic re-checks of each assigned bot's credential (jittered ±10%).
+    RELAY_CREDENTIAL_PROBE_INTERVAL_SEC: '3600'
   extraEnv: {}
   resources:
     requests:

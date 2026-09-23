@@ -47,7 +47,14 @@
  * the dedup id (it derives from parsed action semantics); core owns the table.
  */
 import type { FastifyInstance } from 'fastify'
-import type { RcBotChannels, RdAck, RdMsgPlatformAction, WireNormalizedMessage } from '@agentconnect.md/protocol'
+import type {
+  BotRevocationEvidence,
+  RcBotChannels,
+  RcBotRevoked,
+  RdAck,
+  RdMsgPlatformAction,
+  WireNormalizedMessage
+} from '@agentconnect.md/protocol'
 import type { BotAssignment, RouteTarget } from '../bot-arbitration.js'
 import type { Logger } from '../log.js'
 
@@ -85,6 +92,8 @@ export interface RelayBotIngress {
    * how a third platform's ingest came to leak (audit F2).
    */
   stop(): Promise<void> | void
+  /** OPTIONAL: re-check the credential with the platform and report the verdict through the host; core runs it on a jittered interval while the ingest is pooled. */
+  probeCredential?(): Promise<void>
   /**
    * OPTIONAL relay-side egress/read facet (§8: "Slack performs relay-side
    * egress …; Feishu deliberately keeps egress on the daemon. Optional by
@@ -129,6 +138,18 @@ export interface RelayIngressSidecar {
  *  message; it does not promise a daemon took it (delivery is bounded loss). */
 export type RelayForwardOutcome = 'accepted' | 'refused'
 
+/** A definitive credential loss: a platform lifecycle `event` (its time in ms when known) or a `probe` the platform answered with `code`. */
+export interface RelayRevocation {
+  reason: RcBotRevoked['reason']
+  evidence: BotRevocationEvidence
+  eventAtMs?: number
+  code?: string
+}
+
+/** A probe answer that does not revoke, observed at `observedAtMs` on the host clock: `ok`, or an ambiguous `rejected` with the platform's code. */
+export type RelayCredentialCheck =
+  { result: 'ok'; observedAtMs: number } | { result: 'rejected'; code: string; observedAtMs: number }
+
 export interface RelayIngressHost {
   /** Forward one NORMALIZED inbound message. Core owns arbitration: it resolves
    *  the owning agent/daemon and constructs the pre-addressed `rd/msg` — the
@@ -150,13 +171,12 @@ export interface RelayIngressHost {
   /** Report the bot's channel-membership snapshot (queued while the CP link is
    *  down; a newer snapshot supersedes). */
   reportChannels(snapshot: RcBotChannels): void
-  /** Report a platform-side revocation for `botId`. `credentialRevision` is
-   *  the generation of the ASSIGNMENT THAT OBSERVED the dead credential — the
-   *  plugin captures it at buildIngest time, because assignments start
-   *  fire-and-forget and an older ingest's lifecycle probe can finish after a
-   *  newer assignment installed: fencing with the mutable current revision
-   *  would let that stale observation revoke the replacement credential. */
-  reportRevoked(botId: string, reason: string, eventAtMs?: number, credentialRevision?: number): void
+  /** Report a definitive credential loss, fenced with the OBSERVING ingest's `credentialRevision` (captured at buildIngest), never the mutable current one. */
+  reportRevoked(botId: string, revocation: RelayRevocation, credentialRevision?: number): void
+  /** Report a probe answer that does not revoke; core sends it only to a CP that accepts checks, and only when it changed for the probed revision. */
+  reportCredentialCheck(botId: string, check: RelayCredentialCheck, credentialRevision?: number): void
+  /** Whether the CP accepts credential checks; without them a plugin reports an ambiguous rejection as a revocation, as older CPs expect. */
+  credentialCheckSupported(): boolean
   /** Arbitration reads — never the router object itself. */
   directory: {
     agents(botId: string): { agentId: string; name: string }[]

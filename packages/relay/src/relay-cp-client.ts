@@ -13,6 +13,7 @@
  * daemon-facing `rd/hello` handler calls to delegate credential checks to the CP.
  */
 import {
+  BOT_CREDENTIAL_CHECK_FEATURE,
   buildRelayCpFrame,
   decodeRelayCpFrame,
   GITEA_V1_FEATURE,
@@ -47,6 +48,7 @@ import {
   type RcSetChannelAgent,
   type RcBotChannels,
   type RcBotConversation,
+  type RcBotCredentialCheck,
   type RcBotRevoked,
   type RcNoticePosted,
   type RcThreadAssign,
@@ -164,6 +166,8 @@ export class RelayCpClient {
   /** FIFO of `rc/run-report` EVTs the link wasn't up for, replayed on READY. */
   private readonly pendingRunReports: RcRunReport[] = []
   private serverFeatures = new Set<string>()
+  /** What the latest registration advertised; unlike `serverFeatures`, kept while the link is down. */
+  private registeredFeatures = new Set<string>()
   /** Controls that arrived with `rc/registered`, before this link turned READY. */
   private registerControls?: RelayCpFrame[]
 
@@ -195,6 +199,11 @@ export class RelayCpClient {
   /** True once the relay↔CP link has completed registration and is heartbeating. */
   isReady(): boolean {
     return this.state === 'READY'
+  }
+
+  /** Whether the CP this relay last registered with advertised `feature`, answered from that registration while the link is down. */
+  advertisedFeature(feature: string): boolean {
+    return this.registeredFeatures.has(feature)
   }
 
   /**
@@ -451,8 +460,11 @@ export class RelayCpClient {
       this.deps.log.warn(`relay: deferring rc/bot-revoked for ${m.botId} (link ${this.state})`)
       return false
     }
+    // An older CP predates the evidence fields, so it gets the report without them.
+    const { evidence: _evidence, code: _code, ...legacy } = m
+    const report = this.serverFeatures.has(BOT_CREDENTIAL_CHECK_FEATURE) ? m : legacy
     try {
-      const rep = await this.sendRequest(buildRelayCpFrame('rc/bot-revoked', m), {
+      const rep = await this.sendRequest(buildRelayCpFrame('rc/bot-revoked', report), {
         maxTries: 1,
         ackTimeoutMs: ACK_TIMEOUT_MS
       })
@@ -463,6 +475,25 @@ export class RelayCpClient {
       // No COMMIT ack — keep it queued. A socket that accepted the bytes proves
       // nothing about the CP having persisted the revocation.
       this.deps.log.warn(`relay: rc/bot-revoked for ${m.botId} unacknowledged: ${(err as Error).message}`)
+      return false
+    }
+  }
+
+  /** Report one probe answer that does not revoke and wait for the CP's reply, which settles it whether or not it applied; false keeps it queued. */
+  async reportBotCredentialCheck(m: RcBotCredentialCheck): Promise<boolean> {
+    if (this.state !== 'READY' || !this.transport) {
+      this.deps.log.warn(`relay: deferring rc/bot-credential-check for ${m.botId} (link ${this.state})`)
+      return false
+    }
+    if (!this.serverFeatures.has(BOT_CREDENTIAL_CHECK_FEATURE)) return false
+    try {
+      const rep = await this.sendRequest(buildRelayCpFrame('rc/bot-credential-check', m), {
+        maxTries: 1,
+        ackTimeoutMs: ACK_TIMEOUT_MS
+      })
+      return rep.type === 'rc/bot-credential-check/ok'
+    } catch (err) {
+      this.deps.log.warn(`relay: rc/bot-credential-check for ${m.botId} unacknowledged: ${(err as Error).message}`)
       return false
     }
   }
@@ -580,6 +611,7 @@ export class RelayCpClient {
     const registeredPayload = registered.payload as RcRegistered
     this.relayId = registeredPayload.relayId
     this.serverFeatures = new Set(registeredPayload.serverFeatures)
+    this.registeredFeatures = new Set(registeredPayload.serverFeatures)
     this.deps.onRegistered?.(this.relayId)
 
     this.state = 'READY'
