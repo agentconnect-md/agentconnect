@@ -60,6 +60,7 @@ export class PodWorkspaceFs implements WorkspaceFs {
     for (const part of ancestors(path)) this.dirs.add(part)
   }
 
+  /** A test's inspection of what the daemon wrote; the seam itself only reads through {@link readFileBytes}. */
   async readFile(path: string): Promise<string | undefined> {
     this.reach(path)
     return this.files.get(path)

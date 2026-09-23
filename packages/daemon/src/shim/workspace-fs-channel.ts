@@ -57,23 +57,13 @@ export class ShimWorkspaceFs implements WorkspaceFs {
     await this.files.mkdir(this.rel(path))
   }
 
-  async readFile(path: string): Promise<string | undefined> {
-    try {
-      return (await this.files.readFile(this.rel(path)))?.content
-    } catch (err) {
-      // A refusal reads as absent, like the local seam's catch. A transport failure must NOT: "the
-      // channel dropped" is not evidence that the marker is missing, and a caller would act on it.
-      if (err instanceof MemoryPathError) return undefined
-      throw err
-    }
-  }
-
   async readFileBytes(path: string, maxBytes: number): Promise<{ bytes: Buffer } | { tooLarge: number } | undefined> {
     try {
       const read = await this.files.readFileBytes(this.rel(path), maxBytes)
       if (read === null) return undefined
       return 'tooLarge' in read ? { tooLarge: read.tooLarge } : { bytes: read.bytes }
     } catch (err) {
+      // A refusal reads as absent; a dropped channel is not evidence the file is missing, so it throws.
       if (err instanceof MemoryPathError) return undefined
       throw err
     }

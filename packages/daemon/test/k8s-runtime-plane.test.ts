@@ -566,7 +566,9 @@ describe('one pod per session on the plane (git-workspace-model §11)', () => {
     })
     // A read that resolves a session's secondary clone through the agent pod's marker refuses the same way.
     await expect(
-      plane.workspaceFsFor('agent-a')!.fs.readFile('/agent/repos/example-org/example-repo/.materialization.json')
+      plane
+        .workspaceFsFor('agent-a')!
+        .fs.readFileBytes('/agent/repos/example-org/example-repo/.materialization.json', 1024)
     ).rejects.toMatchObject(refusal)
 
     // Git on the agent pod's paths refuses rather than running on this member's disk; the session's own path still runs.
