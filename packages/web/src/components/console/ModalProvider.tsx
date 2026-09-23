@@ -157,13 +157,13 @@ export function ModalProvider({ children }: { children: ReactNode }) {
               open.kind === 'nativeIntegration' && open.opts?.nativeUi ? nativeUiTitle(open.opts.nativeUi) : undefined
             }
             className={
-              // Leave room for the section rail and runtime routing rules in every agent editor.
+              // Agent editors use the design's widest modal (880px): section rail beside the Decision rule table.
               open.kind === 'agent' ||
               open.kind === 'editAgent' ||
               (open.kind === 'nativeIntegration' &&
                 (open.opts?.nativeUi?.resourceUri === AGENT_SETUP_URI ||
                   open.opts?.nativeUi?.resourceUri === AGENT_TOOLS_URI))
-                ? 'modal desktop:max-w-[1040px]'
+                ? 'modal desktop:max-w-[880px]'
                 : open.kind === 'integration' || open.kind === 'nativeIntegration'
                   ? 'modal desktop:max-w-[700px]'
                   : 'modal'

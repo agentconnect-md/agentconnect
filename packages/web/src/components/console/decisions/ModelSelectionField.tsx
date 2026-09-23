@@ -21,7 +21,7 @@ import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 
 // The rule table's desktop columns: number, answer, probability, arrow, provider and model, actions.
 const RULE_GRID =
-  'grid grid-cols-1 items-center gap-2 desktop:grid-cols-[24px_minmax(0,1.1fr)_118px_14px_minmax(0,1fr)_76px] desktop:gap-[10px]'
+  'grid grid-cols-1 items-center gap-2 desktop:grid-cols-[24px_minmax(0,1.1fr)_100px_14px_minmax(0,1fr)_76px] desktop:gap-[10px]'
 const ROW_ACTION =
   'flex h-6 w-6 items-center justify-center rounded-[5px] text-(--text-tertiary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary) disabled:pointer-events-none disabled:opacity-35'
 
@@ -245,7 +245,7 @@ export function ModelSelectionField({
           {value && decision && (
             <>
               <div className="overflow-hidden rounded-md border border-(--border-default)">
-                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-(--border-subtle) bg-(--surface-app) px-3 py-[5px] font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[0.06em] text-(--text-tertiary) desktop:grid-cols-[24px_minmax(0,1.1fr)_118px_14px_minmax(0,1fr)_76px] desktop:gap-[10px]">
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-(--border-subtle) bg-(--surface-app) px-3 py-[5px] font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[0.06em] text-(--text-tertiary) desktop:grid-cols-[24px_minmax(0,1.1fr)_100px_14px_minmax(0,1fr)_76px] desktop:gap-[10px]">
                   <span className="hidden desktop:inline">#</span>
                   <span className="flex items-center gap-1">
                     {t(decision.question.type === 'choice' ? 'answerColumn' : 'condition')}
