@@ -1315,52 +1315,58 @@ describe('one ACP host per session for a runtime whose session MCP servers are p
     }
   )
 
-  it('carries the legacy HOME through real launch assembly while keeping new sessions on their own HOME', async () => {
-    const runtime = 'test-acp'
-    const root = withRuntimes(
-      scaffold({ runtime, workspace: { mode: 'from-scratch', path: 'workspace', isolation: 'shared' } }, 'shared'),
-      { [runtime]: { command: 'node', args: ['unused'], sessionMcpServers: 'per-process' } }
-    )
-    const daemon = new Daemon({ root, sandboxMechanism: 'bwrap', probeRuntimes: async () => [] })
-    try {
-      await daemon.start()
-      const manager = useMicrosandbox(daemon)
-      const agent = (daemon as any).agents.get('bot-a')
-      const agentHome = join(realpathSync(agent.dir), 'home')
-      mkdirSync(agentHome, { recursive: true })
-      writeFileSync(join(agentHome, 'session-history'), 'preserved')
-      const sharedEnvironment = (daemon as any).microsandboxContext(agent, agent.workspace.path).environment
-      for (const thread of ['T1', 'T2', 'new']) {
-        const hostKey = sessionHostKey('bot-a', KEY(thread))
-        if (thread !== 'new') (daemon as any).legacyMicrosandboxSessions.add(hostKey)
-        const cwd = thread === 'new' ? agent.workspace.path : join(agent.workspace.path, thread)
-        mkdirSync(cwd, { recursive: true })
-        const host = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
-          hostKey,
-          runInSandbox: true,
-          cwd
-        }).host
-        expect(host.opts.hostKey).toBe(hostKey)
-        const home =
-          thread === 'new' ? join(realpathSync(agent.dir), 'runtime-homes', hostKeyDirName(hostKey), 'home') : agentHome
-        expect(host.opts.env.HOME).toBe(home)
-        expect(manager.driverFor).toHaveBeenLastCalledWith(
-          expect.objectContaining({
-            id: thread === 'new' ? `bot-a/${hostKeyDirName(hostKey)}` : 'bot-a/agent',
-            mounts: expect.arrayContaining([{ source: home, target: home, mode: 'writable' }])
-          })
-        )
-        if (thread !== 'new') {
-          expect(manager.driverFor).toHaveBeenLastCalledWith(sharedEnvironment)
-          expect((daemon as any).microsandboxContext(agent, cwd, hostKey).environment).toEqual(sharedEnvironment)
+  // VM mount preparation needs POSIX guest paths, and the helper alias targets a host path.
+  it.skipIf(process.platform === 'win32')(
+    'carries the legacy HOME through real launch assembly while keeping new sessions on their own HOME',
+    async () => {
+      const runtime = 'test-acp'
+      const root = withRuntimes(
+        scaffold({ runtime, workspace: { mode: 'from-scratch', path: 'workspace', isolation: 'shared' } }, 'shared'),
+        { [runtime]: { command: 'node', args: ['unused'], sessionMcpServers: 'per-process' } }
+      )
+      const daemon = new Daemon({ root, sandboxMechanism: 'bwrap', probeRuntimes: async () => [] })
+      try {
+        await daemon.start()
+        const manager = useMicrosandbox(daemon)
+        const agent = (daemon as any).agents.get('bot-a')
+        const agentHome = join(realpathSync(agent.dir), 'home')
+        mkdirSync(agentHome, { recursive: true })
+        writeFileSync(join(agentHome, 'session-history'), 'preserved')
+        const sharedEnvironment = (daemon as any).microsandboxContext(agent, agent.workspace.path).environment
+        for (const thread of ['T1', 'T2', 'new']) {
+          const hostKey = sessionHostKey('bot-a', KEY(thread))
+          if (thread !== 'new') (daemon as any).legacyMicrosandboxSessions.add(hostKey)
+          const cwd = thread === 'new' ? agent.workspace.path : join(agent.workspace.path, thread)
+          mkdirSync(cwd, { recursive: true })
+          const host = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
+            hostKey,
+            runInSandbox: true,
+            cwd
+          }).host
+          expect(host.opts.hostKey).toBe(hostKey)
+          const home =
+            thread === 'new'
+              ? join(realpathSync(agent.dir), 'runtime-homes', hostKeyDirName(hostKey), 'home')
+              : agentHome
+          expect(host.opts.env.HOME).toBe(home)
+          expect(manager.driverFor).toHaveBeenLastCalledWith(
+            expect.objectContaining({
+              id: thread === 'new' ? `bot-a/${hostKeyDirName(hostKey)}` : 'bot-a/agent',
+              mounts: expect.arrayContaining([{ source: home, target: home, mode: 'writable' }])
+            })
+          )
+          if (thread !== 'new') {
+            expect(manager.driverFor).toHaveBeenLastCalledWith(sharedEnvironment)
+            expect((daemon as any).microsandboxContext(agent, cwd, hostKey).environment).toEqual(sharedEnvironment)
+          }
         }
+        expect(readFileSync(join(agentHome, 'session-history'), 'utf8')).toBe('preserved')
+      } finally {
+        await daemon.stop()
+        rmSync(root, { recursive: true, force: true })
       }
-      expect(readFileSync(join(agentHome, 'session-history'), 'utf8')).toBe('preserved')
-    } finally {
-      await daemon.stop()
-      rmSync(root, { recursive: true, force: true })
     }
-  })
+  )
 
   it('gives each session its own host in the shared workspace, holding only that session’s bridge token', async () => {
     const opencode = { command: 'node', args: ['unused'] }
