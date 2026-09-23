@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   existsSync,
   mkdirSync,
@@ -23,6 +23,9 @@ import {
 } from '../src/runtimes/runtime-home.js'
 import { extractOmpCredentials } from '../src/runtimes/omp-credentials.js'
 import { discoverSeededRuntimeCredentials } from '../src/runtimes/runtime-seeded-credentials.js'
+import { fifoWriter, killFifoWriters, mkfifo } from './fifo-support.js'
+
+afterEach(killFifoWriters)
 
 function fixture(): { root: string; hostHome: string; scopeDir: string } {
   const root = mkdtempSync(join(tmpdir(), 'ac-runtime-home-'))
@@ -121,6 +124,22 @@ describe('private runtime HOME', () => {
     })
     expect(existsSync(join(home, '.claude.json'))).toBe(false)
   })
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses a FIFO in place of retained private Claude config instead of reading what it sends',
+    () => {
+      const { hostHome, scopeDir } = fixture()
+      writeFileSync(join(hostHome, '.claude.json'), JSON.stringify({ primaryApiKey: 'synthetic-key' }))
+      const home = prepareRuntimeHome('claude-acp', scopeDir, { HOME: hostHome })
+      const privateConfig = join(home, '.claude.json')
+      unlinkSync(privateConfig)
+      mkfifo(privateConfig)
+      fifoWriter(privateConfig, JSON.stringify({ primaryApiKey: 'synthetic-planted' }))
+      expect(() => prepareRuntimeHome('claude-acp', scopeDir, { HOME: hostHome })).toThrow(
+        /\.claude\.json is not a regular file/
+      )
+    }
+  )
 
   it('fills a missing saved Claude API key in retained private config without replacing private settings', () => {
     const { hostHome, scopeDir } = fixture()

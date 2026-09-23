@@ -94,7 +94,7 @@ import { GITCRED_SOCKET_ENV } from './gitcred/env.js'
 import { IMPLICIT_CREDENTIAL_PROVIDER, parseManagedBaseUrl, stripHostPathPrefix } from './gitcred/managed-hosts.js'
 import { codeHostCredentials, credentialProviderOf, type ManagedWorkspaceRepo } from './codehost/credentials.js'
 import { tmpdir } from 'node:os'
-import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises'
+import { mkdtemp, readdir, rm } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
 import { readCliEntry, runCliUpgrade } from './lifecycle/cli-upgrade.js'
@@ -487,6 +487,7 @@ import { WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createWorkspaceScope } from './cp/workspace-scope.js'
 import { createWorkspaceFileLinkResolver, type WorkspaceFileLinkResolver } from './messages/workspace-file-links.js'
 import { canonicalWorkspacePath, containedWorkspacePath, WorkspaceViolationError } from './workspace/workspace-files.js'
+import { readRegularFile, RegularFileError } from './fs/regular-file.js'
 import { localWorkspaceFs, type WorkspaceFs } from './workspace/workspace-fs.js'
 import type { SaveAttachmentResult } from './mcp/ops/platform-reads.js'
 import { saveAttachmentTo, type SaveAttachmentTarget } from './mcp/ops/save-attachment.js'
@@ -3288,15 +3289,15 @@ export class Daemon {
           return { ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'not-found' }
         }
         if (!resolved) return { ok: false, reason: 'not-found' }
-        const info = await stat(resolved).catch(() => undefined)
-        if (!info?.isFile()) return { ok: false, reason: 'not-found' }
-        if (info.size > cap) return { ok: false, reason: 'too-large', detail: `${info.size} bytes > ${cap}-byte cap` }
-        // Single-shot (§4): one read; the sniff, the cap re-check, and the upload all
-        // consume this buffer. The re-check closes the stat→read race on a growing file.
-        const bytes = await readFile(resolved).catch(() => undefined)
-        if (!bytes) return { ok: false, reason: 'not-found' }
-        if (bytes.byteLength > cap) {
-          return { ok: false, reason: 'too-large', detail: `${bytes.byteLength} bytes > ${cap}-byte cap` }
+        // Single-shot (§4) from one descriptor: the cwd is runtime-writable, so a FIFO or a swapped-in symlink is refused, not read.
+        let bytes: Buffer
+        try {
+          bytes = await readRegularFile(resolved, cap)
+        } catch (err) {
+          if (err instanceof RegularFileError && err.reason === 'too-large') {
+            return { ok: false, reason: 'too-large', detail: `${err.size} bytes > ${cap}-byte cap` }
+          }
+          return { ok: false, reason: 'not-found' }
         }
         return imageOf(bytes)
       },

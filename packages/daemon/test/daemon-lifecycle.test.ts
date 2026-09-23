@@ -17,6 +17,7 @@ import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { PodWorkspaceFs } from './fixtures/pod-workspace-fs.js'
 import { WAIT, waitBudget } from './wait-support.js'
 import { testPlane } from './workspace-plane-support.js'
+import { fifoWriter, killFifoWriters, mkfifo, statsBeforeSwap } from './fifo-support.js'
 
 const TRANSPORT_SCOPE = `slack:${createHash('sha256').update('slack\0p').digest('hex').slice(0, 24)}`
 
@@ -287,6 +288,56 @@ describe('Daemon session lifecycle (#118)', () => {
         })
         expect(await d.mcp.deps.readWorkspaceImage(ctx, 'out/chart.png')).toEqual({ ok: false, reason: 'sandboxed' })
       } finally {
+        await daemon.stop()
+      }
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'reads a local image from one regular-file descriptor and refuses a FIFO swapped in after the check',
+    async () => {
+      const root = scaffold({ maxOutboundFileBytes: 128 })
+      const daemon = new Daemon({ root, hostFactory: () => quietHost() as never })
+      try {
+        await daemon.start()
+        const d = daemon as any
+        await vi.waitFor(() => expect(d.sessionRetentionSweepInFlight).toBe(false))
+        const out = join(root, 'agents', 'bot-a', 'workspace', 'out')
+        mkdirSync(out, { recursive: true })
+        const png = Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=',
+          'base64'
+        )
+        writeFileSync(join(out, 'chart.png'), png)
+        writeFileSync(join(out, 'large.png'), Buffer.concat([png, Buffer.alloc(200)]))
+        const ctx = {
+          agentId: 'bot-a',
+          platform: 'slack',
+          channel: 'C1',
+          thread: 'T1',
+          transportScope: TRANSPORT_SCOPE
+        }
+        expect(await d.mcp.deps.readWorkspaceImage(ctx, 'out/chart.png')).toMatchObject({
+          ok: true,
+          mimeType: 'image/png'
+        })
+        expect(await d.mcp.deps.readWorkspaceImage(ctx, 'out/large.png')).toEqual({
+          ok: false,
+          reason: 'too-large',
+          detail: `${png.length + 200} bytes > 128-byte cap`
+        })
+
+        const pipe = join(out, 'pipe.png')
+        mkfifo(pipe)
+        fifoWriter(pipe, png)
+        const restore = statsBeforeSwap([pipe], join(out, 'chart.png'))
+        try {
+          expect(await d.mcp.deps.readWorkspaceImage(ctx, 'out/pipe.png')).toEqual({ ok: false, reason: 'not-found' })
+        } finally {
+          restore()
+        }
+      } finally {
+        killFifoWriters()
         await daemon.stop()
       }
     }

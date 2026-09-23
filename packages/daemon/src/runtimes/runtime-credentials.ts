@@ -7,7 +7,6 @@ import {
   lstatSync,
   mkdirSync,
   readdirSync,
-  readFileSync,
   readlinkSync,
   realpathSync,
   renameSync,
@@ -18,6 +17,7 @@ import {
 } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import type { RuntimeDef } from '../config/config-schema.js'
+import { readRegularFileSync } from '../fs/regular-file.js'
 import {
   resolveClaudeCredentialSources,
   resolveCodexCredentialSources,
@@ -75,15 +75,22 @@ function secureCredentialFile(path: string): void {
   }
 }
 
+const MAX_CREDENTIAL_FILE_BYTES = 2 * 1024 * 1024
+
+// Both the private HOME and the shared host credential dir are runtime-writable, so no read here may wait on a FIFO.
+function credentialBytes(path: string): Buffer {
+  return readRegularFileSync(path, MAX_CREDENTIAL_FILE_BYTES)
+}
+
 function sameFileContents(a: string, b: string): boolean {
-  const left = readFileSync(a)
-  const right = readFileSync(b)
+  const left = credentialBytes(a)
+  const right = credentialBytes(b)
   return left.length === right.length && timingSafeEqual(left, right)
 }
 
 function claudeCredentialGeneration(path: string): number | undefined {
   try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8')) as {
+    const parsed = JSON.parse(credentialBytes(path).toString('utf8')) as {
       claudeAiOauth?: { expiresAt?: unknown; expires_at?: unknown }
     }
     const value = parsed.claudeAiOauth?.expiresAt ?? parsed.claudeAiOauth?.expires_at
@@ -165,7 +172,10 @@ function prepareClaudeCredentials(env: NodeJS.ProcessEnv): SharedRuntimeCredenti
 
 function refreshTimestamp(path: string): number | undefined {
   try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8')) as { last_refresh?: unknown; lastRefresh?: unknown }
+    const parsed = JSON.parse(credentialBytes(path).toString('utf8')) as {
+      last_refresh?: unknown
+      lastRefresh?: unknown
+    }
     const value = parsed.last_refresh ?? parsed.lastRefresh
     if (typeof value !== 'string') return undefined
     const timestamp = Date.parse(value)

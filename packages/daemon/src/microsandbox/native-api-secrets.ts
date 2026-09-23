@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
+import { readRegularFileSync } from '../fs/regular-file.js'
 import { CODEX_DEFAULT_ENDPOINT, objectFromJson, record } from '../runtimes/codex-config.js'
 import {
   resolveClaudeCredentialSources,
@@ -14,9 +15,7 @@ import type { MicrosandboxCredentials, MicrosandboxSecret } from './secrets.js'
 
 function readFile(path: string): string | undefined {
   try {
-    const stat = statSync(path)
-    if (!stat.isFile() || stat.size > MAX_SEED_FILE_BYTES) throw new Error('invalid source')
-    return readFileSync(path, 'utf8')
+    return readRegularFileSync(path, MAX_SEED_FILE_BYTES, { followSymlinks: true }).toString('utf8')
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
     throw new Error('Cannot read the host runtime API credential/configuration file')

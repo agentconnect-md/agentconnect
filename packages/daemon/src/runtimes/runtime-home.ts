@@ -8,7 +8,6 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync,
   readSync,
   readdirSync,
   renameSync,
@@ -21,6 +20,7 @@ import { home as hostHomeDir, runtimeStateLocations } from './probe.js'
 import { extractOmpCredentials } from './omp-credentials.js'
 import { MAX_SEED_FILE_BYTES } from './runtime-seeded-credentials.js'
 import { withDescentSync } from '../shim/safe-descent.js'
+import { readRegularFileSync, RegularFileError } from '../fs/regular-file.js'
 
 const LEGACY_RUNTIME_STATE: Record<string, string[]> = {
   'claude-acp': ['.claude'],
@@ -135,8 +135,11 @@ export function projectRuntimeHomeSeedFile(
   })
 }
 
+// A retained private `.claude.json` carries per-project state and can outgrow the seed bound legitimately.
+const MAX_PRIVATE_CONFIG_BYTES = 64 * 1024 * 1024
+
 function projectedJson(source: string, keys: readonly string[]): string | undefined {
-  const raw = readFileSync(source, 'utf8')
+  const raw = readRegularFileSync(source, MAX_SEED_FILE_BYTES).toString('utf8')
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
@@ -169,7 +172,9 @@ function copySeedFile(
         const sourceStat = lstatSync(source)
         if (!sourceStat.isFile() || sourceStat.size > MAX_SEED_FILE_BYTES) return
         const projected = JSON.parse(projectedJson(source, ['primaryApiKey']) ?? '{}') as Record<string, unknown>
-        const existing: unknown = JSON.parse(readFileSync(destination, 'utf8'))
+        const existing: unknown = JSON.parse(
+          readRegularFileSync(destination, MAX_PRIVATE_CONFIG_BYTES).toString('utf8')
+        )
         if (
           existing &&
           typeof existing === 'object' &&
@@ -183,8 +188,9 @@ function copySeedFile(
             mode: 0o600
           })
         }
-      } catch {
-        // Existing private config remains authoritative when either projection is unreadable.
+      } catch (error) {
+        // A FIFO or device in place of either file fails like a symlink; otherwise the private config stays authoritative.
+        if (error instanceof RegularFileError && error.reason === 'not-a-file') throw error
       }
     }
     return
