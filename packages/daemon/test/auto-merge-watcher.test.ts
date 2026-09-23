@@ -923,6 +923,82 @@ describe('asking a pod whether anything is armed, across a channel renewal', () 
     expect(await askArmed(async () => undefined, 'agent-1')).toBe(false)
   })
 
+  /** A pod connection that records each request's op and answers with `answer`, or never answers when it is undefined. */
+  function recordingConnection(answer?: Record<string, unknown>) {
+    const listeners: Array<(text: string) => void> = []
+    const ops: string[] = []
+    const connection = {
+      binding: {
+        agentId: 'agent-1',
+        sandboxUid: 'sb-1',
+        generation: 3,
+        grants: ['automerge'],
+        podName: 'p',
+        podUid: 'u',
+        expiresAtMs: Number.MAX_SAFE_INTEGER
+      },
+      issuedCredential: `cred-${Math.random()}`,
+      send: (frame: { type: string; id: string; payload?: { op?: string } }) => {
+        if (frame.type !== 'shim/request') return
+        ops.push(String(frame.payload?.op))
+        if (answer === undefined) return
+        const reply = JSON.stringify({ type: 'shim/response', id: frame.id, ok: true, payload: answer })
+        queueMicrotask(() => listeners.forEach((listener) => listener(reply)))
+      },
+      onFrame: (listener: (text: string) => void) => listeners.push(listener),
+      close: () => {}
+    } as unknown as ShimConnection
+    return { connection, ops }
+  }
+
+  /** A watcher over ONE session pod whose channel is the real session, as the plane hands it out. */
+  function watcherOver(session: ShimSession) {
+    return new AutoMergeWatcher({
+      knownAgent: () => true,
+      clusterPlaced: () => true,
+      podsOf: () => ['agent-1/session-aaa'],
+      sandboxAt: async () => new ShimAutoMergeClient(session),
+      placementOf: async () => 'agent-1/session-aaa',
+      capabilityFor: () => 'cap',
+      tokenFor: async () => 'ghs_x'
+    })
+  }
+
+  it('asks a disarm again on the channel a rebind re-attached, so the watcher really stops', async () => {
+    // A same-generation rebind fails the request in flight while the pod's registry and its watcher live on.
+    const session = new ShimSession('agent-1', 3, timers)
+    const first = recordingConnection()
+    session.attach(first.connection)
+    const off = watcherOver(session).set(TARGET, false)
+    await vi.waitFor(() => expect(first.ops).toEqual(['disarm']))
+
+    const second = recordingConnection({ armed: false })
+    session.attach(second.connection)
+    expect(await off).toEqual({ ...TARGET, armed: false })
+    expect(second.ops).toEqual(['disarm'])
+  })
+
+  it('fails a disarm lost twice rather than report the box off over a watcher that may still tick', async () => {
+    const session = new ShimSession('agent-1', 3, timers)
+    const first = recordingConnection()
+    session.attach(first.connection)
+    let answer: unknown
+    const off = watcherOver(session)
+      .set(TARGET, false)
+      .then(
+        (state) => (answer = state),
+        (err: unknown) => (answer = err)
+      )
+    await vi.waitFor(() => expect(first.ops).toEqual(['disarm']))
+    const second = recordingConnection()
+    session.attach(second.connection)
+    await vi.waitFor(() => expect(second.ops).toEqual(['disarm']))
+
+    session.attach(recordingConnection({ armed: false }).connection)
+    await off
+    expect(answer).toBeInstanceOf(ShimChannelLostError)
+  })
+
   it('lets an arm’s scan see the lost channel that the box’s own read answers as nothing armed', async () => {
     const session = new ShimSession('agent-1', 3, timers)
     const first = podConnection()

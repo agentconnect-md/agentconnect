@@ -139,6 +139,32 @@ describe('in-sandbox automerge handler', () => {
     expect(spawned[0]!.child.killed).toEqual(['SIGTERM'])
   })
 
+  it('holds a retried disarm until the watcher the first one is ending has exited', async () => {
+    // The first disarm's answer can be lost to a channel rebind; the daemon's retry must not answer while the child is still going.
+    const children: ReturnType<typeof wedgedChild>[] = []
+    const handler = createAutoMergeHandler({
+      entryPath: import.meta.filename,
+      spawnChild: () => {
+        const child = wedgedChild()
+        children.push(child)
+        return child as never
+      }
+    })
+    await handler(ARM)
+
+    const answered: string[] = []
+    void handler({ ...READ, op: 'disarm' }).then(() => answered.push('first'))
+    void handler({ ...READ, op: 'disarm' }).then(() => answered.push('retry'))
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(answered).toEqual([])
+    expect(children[0]!.killed).toEqual(['SIGTERM'])
+
+    children[0]!.emit('exit', 0)
+    await vi.waitFor(() => expect([...answered].sort()).toEqual(['first', 'retry']))
+    // With nothing ending any more, a later disarm answers at once.
+    expect(await handler({ ...READ, op: 'disarm' })).toEqual({ armed: false })
+  })
+
   it('SIGKILLs a watcher that ignores SIGTERM instead of hanging the disarm', async () => {
     const spawned: ReturnType<typeof wedgedChild>[] = []
     const handler = createAutoMergeHandler({

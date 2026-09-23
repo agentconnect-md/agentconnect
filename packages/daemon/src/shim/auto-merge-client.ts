@@ -12,8 +12,9 @@ export class ShimAutoMergeClient implements AutoMergeSandbox {
     return this.request({ ...call, op: 'arm' })
   }
 
+  /** A lost channel propagates: a same-generation rebind loses the request, not the watcher, so the caller asks again rather than report the box off over one still ticking. */
   disarm(call: SandboxCall): Promise<SandboxState> {
-    return this.request({ ...call, op: 'disarm' })
+    return this.send({ ...call, op: 'disarm' })
   }
 
   state(call: SandboxCall): Promise<SandboxState> {
@@ -34,7 +35,7 @@ export class ShimAutoMergeClient implements AutoMergeSandbox {
     try {
       return await this.send(payload)
     } catch (err) {
-      // For the box's own ops a lost channel is a pod that went away mid-request, which IS the answer: nothing is watching any more.
+      // For an arm or a read a lost channel is a pod that went away mid-request, and the next read corrects it; a disarm never comes here.
       if (err instanceof ShimChannelLostError) return { armed: false }
       throw err
     }

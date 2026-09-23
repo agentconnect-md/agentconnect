@@ -176,7 +176,7 @@ export class AutoMergeWatcher {
 
   private async disarm(target: AutoMergeTarget): Promise<AutoMergeState> {
     if (this.deps.clusterPlaced(target.agentId)) {
-      // Every pod is asked and every answer awaited, each pod's own disarm fencing its tick in flight, so `armed:false` is never reported while a merge could still begin in any of them.
+      // Every pod is asked and every answer awaited, each fencing its tick in flight; a request lost to a rebind is asked again once and fails the disarm if lost twice, so `armed:false` never covers a live watcher.
       const answers = await Promise.allSettled(
         this.deps.podsOf(target.agentId).map((subject) => this.askPod(subject, (s) => s.disarm(this.call(target))))
       )
