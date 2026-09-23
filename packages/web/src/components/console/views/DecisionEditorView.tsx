@@ -162,11 +162,14 @@ function DecisionEditor() {
   const editable = myRole !== 'viewer' && (!id || (!!definition && definition.canEdit !== false))
   const [draft, setDraft] = useState<Draft | null>(null)
   const initialSharing = useRef<SharingValue | null>(null)
-  const [usages, setUsages] = useState<DecisionUsage[]>([])
+  const [usageState, setUsageState] = useState<{
+    status: 'loading' | 'ready' | 'error'
+    usages: DecisionUsage[]
+  }>({ status: id ? 'loading' : 'ready', usages: [] })
   const [issues, setIssues] = useState<DecisionValidationIssue[]>([])
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
-  const [confirmAgentFilterChange, setConfirmAgentFilterChange] = useState(false)
+  const [confirmAgentAnswerChange, setConfirmAgentAnswerChange] = useState(false)
   const [history, setHistory] = useState<Array<{ sender: string; text: string }>>([])
   const [current, setCurrent] = useState('')
   const [running, setRunning] = useState(false)
@@ -208,9 +211,10 @@ function DecisionEditor() {
   useEffect(() => {
     if (!id) return
     let live = true
+    setUsageState({ status: 'loading', usages: [] })
     void api.getDecision(id).then(
-      (detail) => live && setUsages(detail.usages),
-      () => live && setUsages([])
+      (detail) => live && setUsageState({ status: 'ready', usages: detail.usages }),
+      () => live && setUsageState({ status: 'error', usages: [] })
     )
     return () => {
       live = false
@@ -282,12 +286,7 @@ function DecisionEditor() {
     draft && definition
       ? gated.filter((usage) => decisionConditionNeedsReview(definition.question, questionFrom(draft), usage.when))
       : []
-  const agentFiltersMayBreak =
-    !!draft &&
-    !!definition &&
-    usages.length > 0 &&
-    (definition.question.type !== draft.type ||
-      JSON.stringify(definition.question.criteria) !== JSON.stringify(questionFrom(draft).criteria))
+  const usages = usageState.usages
 
   if (!featureFlagEnabled('decisions')) return <DecisionsNotOffered />
 
@@ -433,8 +432,8 @@ function DecisionEditor() {
     }
   }
 
-  const save = async (confirmedAgentFilterChange = false) => {
-    if (!editable) return
+  const save = async (confirmedAgentAnswerChange = false) => {
+    if (!editable || saving) return
     const found = validate()
     setIssues(found)
     setSaveError(null)
@@ -452,13 +451,28 @@ function DecisionEditor() {
       setSaveError(parsed.error.issues[0]?.message ?? t('errors.unknown'))
       return
     }
-    if (agentFiltersMayBreak && !confirmedAgentFilterChange) {
-      setConfirmAgentFilterChange(true)
-      return
-    }
+    const answerChanged =
+      !!definition &&
+      (definition.question.type !== parsed.data.question.type ||
+        JSON.stringify(definition.question.criteria) !== JSON.stringify(parsed.data.question.criteria))
     setSaving(true)
     try {
       if (id) {
+        if (answerChanged) {
+          let detail
+          try {
+            detail = await api.getDecision(id)
+          } catch {
+            setUsageState({ status: 'error', usages: [] })
+            setSaveError(t('agentAnswerChange.usageError'))
+            return
+          }
+          setUsageState({ status: 'ready', usages: detail.usages })
+          if (detail.usages.some((usage) => usage.kind === 'agent_tool') && !confirmedAgentAnswerChange) {
+            setConfirmAgentAnswerChange(true)
+            return
+          }
+        }
         const { visibility, sharedWith, ...question } = parsed.data
         await api.updateDecision(
           id,
@@ -495,17 +509,17 @@ function DecisionEditor() {
         </Button>
       </div>
 
-      {confirmAgentFilterChange && (
+      {confirmAgentAnswerChange && (
         <ConfirmationDialog
-          title={t('agentFilterChange.title')}
-          confirmLabel={t('agentFilterChange.confirm')}
+          title={t('agentAnswerChange.title')}
+          confirmLabel={t('agentAnswerChange.confirm')}
           busy={saving}
-          busyLabel={t('agentFilterChange.saving')}
+          busyLabel={t('agentAnswerChange.saving')}
           error={saveError}
           onConfirm={() => void save(true)}
-          onClose={() => setConfirmAgentFilterChange(false)}
+          onClose={() => setConfirmAgentAnswerChange(false)}
         >
-          {t('agentFilterChange.body')}
+          {t('agentAnswerChange.body')}
         </ConfirmationDialog>
       )}
 
@@ -761,7 +775,11 @@ function DecisionEditor() {
             <div className="cardhead justify-between">
               <span className="cardtitle">{t('usedBy.title')}</span>
               <span className="font-mono text-[11px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
-                {t('places', { count: usages.length + gated.length })}
+                {usageState.status === 'ready'
+                  ? t('places', { count: usages.length + gated.length })
+                  : usageState.status === 'loading'
+                    ? t('usedBy.loading')
+                    : t('usedBy.error')}
               </span>
             </div>
             <div className="py-[6px]">
@@ -784,7 +802,7 @@ function DecisionEditor() {
                   </div>
                 )
               })}
-              {usages.length + gated.length === 0 ? (
+              {usageState.status === 'ready' && usages.length + gated.length === 0 ? (
                 <div className="px-4 py-[10px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
                   {t('notUsed')}
                 </div>

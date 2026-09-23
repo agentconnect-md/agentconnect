@@ -251,10 +251,18 @@ describe('DecisionEditorView', () => {
   it('warns before saving changed answers used by agents', async () => {
     params = { id: 'support-category' }
     await render()
+    const getDecision = store.api.getDecision.bind(store.api)
+    vi.spyOn(store.api, 'getDecision').mockImplementation(async (id) => {
+      const detail = await getDecision(id)
+      return {
+        ...detail,
+        usages: [...detail.usages, { kind: 'agent_tool', id: 'example-agent', label: 'Example agent' }]
+      }
+    })
     const update = vi.spyOn(store.api, 'updateDecision')
     await type('input[placeholder="What this answer means"]', 0, 'Updated answer')
     await click(byText('Save'))
-    expect(byText('Review agent filters')).toBeTruthy()
+    expect(byText('Review agents using this decision')).toBeTruthy()
     expect(update).not.toHaveBeenCalled()
     await click(byText('Save changes'))
     expect(update).toHaveBeenCalledOnce()

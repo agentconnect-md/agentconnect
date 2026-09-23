@@ -4122,6 +4122,8 @@
     },
     "usedBy": {
       "title": "Used by",
+      "loading": "Loading uses…",
+      "error": "Uses unavailable",
       "kind": {
         "gate": "channel gate",
         "shared_bot_routing": "shared bot routing",
@@ -4213,11 +4215,12 @@
       }
     },
     "breaksChannels": "These channel bindings lose their trigger condition: {names}. They are flagged Needs review after saving; nothing is reselected for you.",
-    "agentFilterChange": {
-      "title": "Review agent filters",
-      "body": "This decision is already in use. Changing its type or answer options may make an agent's filters stop matching. Review and adjust the agent's filters after saving.",
+    "agentAnswerChange": {
+      "title": "Review agents using this decision",
+      "body": "This decision is attached to an agent. Changing its type or answer options changes the answers that agent receives. If an agent's instructions refer to the old answers, update them after saving.",
       "confirm": "Save changes",
-      "saving": "Saving…"
+      "saving": "Saving…",
+      "usageError": "Could not check where this decision is used. Try saving again."
     },
     "notOffered": {
       "title": "Decisions are not enabled",
