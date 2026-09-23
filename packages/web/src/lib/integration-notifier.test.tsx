@@ -26,20 +26,20 @@ const revokedRow: IntegrationRow = {
 }
 
 describe('syncIntegrationNotifications', () => {
-  it('syncs nothing until integrations have loaded and the roster is ready', () => {
+  it('syncs nothing until both integrations and the agent roster have loaded successfully', () => {
     const sync = vi.fn()
     syncIntegrationNotifications(
-      { integrations: [], integrationsLoaded: false, agents, agentsLoading: false, orgPath },
+      { integrations: [], integrationsLoaded: false, agents, agentsLoaded: true, orgPath },
       sync
     )
     syncIntegrationNotifications(
-      { integrations: [revokedRow], integrationsLoaded: true, agents: [], agentsLoading: true, orgPath },
+      { integrations: [revokedRow], integrationsLoaded: true, agents: [], agentsLoaded: false, orgPath },
       sync
     )
     expect(sync).not.toHaveBeenCalled()
 
     syncIntegrationNotifications(
-      { integrations: [revokedRow], integrationsLoaded: true, agents, agentsLoading: false, orgPath },
+      { integrations: [revokedRow], integrationsLoaded: true, agents, agentsLoaded: true, orgPath },
       sync
     )
     expect(sync).toHaveBeenCalledWith('integrations', [
@@ -52,8 +52,16 @@ describe('useIntegrationNotifier', () => {
   it('leaves a revoked item open while either read is loading, and resolves it once the loaded list clears', async () => {
     localStorage.clear()
     const latest: { current: ReturnType<typeof useNotifications> | null } = { current: null }
-    function Harness(props: { integrations: IntegrationRow[]; integrationsLoaded: boolean; agentsLoading: boolean }) {
-      useIntegrationNotifier({ ...props, agents, orgPath })
+    function Harness({
+      roster = agents,
+      ...props
+    }: {
+      integrations: IntegrationRow[]
+      integrationsLoaded: boolean
+      agentsLoaded: boolean
+      roster?: typeof agents
+    }) {
+      useIntegrationNotifier({ ...props, agents: roster, orgPath })
       const notifications = useNotifications()
       useEffect(() => {
         latest.current = notifications
@@ -74,15 +82,15 @@ describe('useIntegrationNotifier', () => {
 
     const items = () => latest.current?.notifications.map((n) => [n.title, n.read, n.resolvedAt !== undefined])
 
-    await render({ integrations: [revokedRow], integrationsLoaded: true, agentsLoading: false })
+    await render({ integrations: [revokedRow], integrationsLoaded: true, agentsLoaded: true })
     expect(items()).toEqual([['Integration revoked', false, false]])
     expect(latest.current?.toasts).toHaveLength(1)
 
-    await render({ integrations: [], integrationsLoaded: false, agentsLoading: false })
-    await render({ integrations: [], integrationsLoaded: true, agentsLoading: true })
+    await render({ integrations: [], integrationsLoaded: false, agentsLoaded: true })
+    await render({ integrations: [revokedRow], integrationsLoaded: true, agentsLoaded: false, roster: [] })
     expect(items()).toEqual([['Integration revoked', false, false]])
 
-    await render({ integrations: [{ ...revokedRow, revoked: false }], integrationsLoaded: true, agentsLoading: false })
+    await render({ integrations: [{ ...revokedRow, revoked: false }], integrationsLoaded: true, agentsLoaded: true })
     expect(items()).toEqual([['Revocation resolved', true, true]])
     expect(latest.current?.toasts).toEqual([])
 

@@ -11,8 +11,8 @@ interface IntegrationNotifierInputs {
   /** Until the list has answered once, its empty default must not resolve every item. */
   integrationsLoaded: boolean
   agents: readonly IntegrationAgentView[]
-  /** While the roster is loading, a new item would not be able to name its agent. */
-  agentsLoading: boolean
+  /** Until the roster has answered once, its empty default would drop every item; loading and a failed pull alike. */
+  agentsLoaded: boolean
   orgPath: (path: string) => string
 }
 
@@ -20,7 +20,7 @@ type SyncSourceSnapshot = (scope: NotificationSourceScope, items: NotificationSn
 
 /** Keep the bell's `integrations` scope equal to the viewer's revoked integrations, once both reads have landed. */
 export function syncIntegrationNotifications(inputs: IntegrationNotifierInputs, sync: SyncSourceSnapshot): void {
-  if (!inputs.integrationsLoaded || inputs.agentsLoading) return
+  if (!inputs.integrationsLoaded || !inputs.agentsLoaded) return
   sync('integrations', revokedIntegrationNotifications(inputs.integrations, inputs.agents, inputs.orgPath))
 }
 
@@ -28,14 +28,14 @@ export function useIntegrationNotifier({
   integrations,
   integrationsLoaded,
   agents,
-  agentsLoading,
+  agentsLoaded,
   orgPath
 }: IntegrationNotifierInputs): void {
   const { syncSourceSnapshot } = useNotifications()
   useEffect(() => {
     syncIntegrationNotifications(
-      { integrations, integrationsLoaded, agents, agentsLoading, orgPath },
+      { integrations, integrationsLoaded, agents, agentsLoaded, orgPath },
       syncSourceSnapshot
     )
-  }, [integrations, integrationsLoaded, agents, agentsLoading, orgPath, syncSourceSnapshot])
+  }, [integrations, integrationsLoaded, agents, agentsLoaded, orgPath, syncSourceSnapshot])
 }

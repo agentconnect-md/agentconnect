@@ -356,6 +356,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
     daemons,
     agents,
     agentsLoading,
+    agentsLoaded,
     crons,
     allSessions,
     memberSets,
@@ -368,7 +369,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
   useDaemonNotifier(daemons)
   useSessionAccessNotifier({ sessionAccessSnapshot, usageAccessSnapshot, orgPath })
   useApprovalNotifier({ pendingApprovalSessions, agents, agentsLoading, orgPath })
-  useIntegrationNotifier({ integrations, integrationsLoaded, agents, agentsLoading, orgPath })
+  useIntegrationNotifier({ integrations, integrationsLoaded, agents, agentsLoaded, orgPath })
   // Mobile-only chrome state: which bottom sheet is open, and the full-screen search.
   const [mobileSheet, setMobileSheet] = useState<'more' | 'org' | null>(null)
   const [mobileSearch, setMobileSearch] = useState(false)
