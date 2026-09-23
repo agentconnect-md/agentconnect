@@ -1048,7 +1048,7 @@ export default function AddAgentModal({
               enabled={featureFlagEnabled('decisions')}
               runInSandbox={effectiveRunInSandbox}
               fastMode={fastMode}
-              onFastModeChange={fastModeAvailable || modelSelection ? setFastMode : undefined}
+              onFastModeChange={setFastMode}
               onFallbackChange={(target) => {
                 if (target.runtime !== effectiveRuntime) setPermissionMode(permissionModeDefault(target.runtime))
                 setRuntime(target.runtime)

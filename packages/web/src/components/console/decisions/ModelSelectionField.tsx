@@ -11,6 +11,7 @@ import {
   type DecisionRuntimeTarget
 } from '@agentconnect.md/protocol/decision'
 import { fetchAgentDecisions } from '@/lib/api'
+import { fastModeAvailableFor, modelCapability } from '@/lib/data'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { useOrgs } from '@/lib/org-context'
 import { RuntimeModelSelect, type RuntimeModelSource } from '@/components/console/RuntimeModelSelect'
@@ -18,6 +19,12 @@ import { DecisionConditionFields } from './DecisionConditionFields'
 import { RuntimeSelectionSample } from './RuntimeSelectionSample'
 import { Button, Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
+
+// The rule table's desktop columns: number, answer, probability, arrow, provider and model, actions.
+const RULE_GRID =
+  'grid grid-cols-1 items-center gap-2 desktop:grid-cols-[24px_minmax(0,1.1fr)_118px_14px_minmax(0,1fr)_76px] desktop:gap-[10px]'
+const ROW_ACTION =
+  'flex h-6 w-6 items-center justify-center rounded-[5px] text-(--text-tertiary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary) disabled:pointer-events-none disabled:opacity-35'
 
 function nextCondition(question: DecisionQuestion, rules: AgentModelSelection['rules']): DecisionCondition {
   if (question.type === 'score') return { type: 'score', min: 0, max: question.criteria.length - 1 }
@@ -92,8 +99,12 @@ export function ModelSelectionField({
     ;[rules[index], rules[index + step]] = [rules[index + step]!, rules[index]!]
     onChange({ ...value, rules })
   }
-  const fixedPicker = (
+  // Fast mode is one agent setting; each picker only reports whether its own model offers it.
+  const fastAvailable = (target: DecisionRuntimeTarget) =>
+    fastModeAvailableFor(target.runtime, modelCapability(source, target.runtime, target.model))
+  const fallbackPicker = (dense: boolean) => (
     <RuntimeModelSelect
+      dense={dense}
       allowRuntimeOnly={!active}
       value={fallback}
       onChange={onFallbackChange}
@@ -101,16 +112,19 @@ export function ModelSelectionField({
       runtimes={runtimes}
       runInSandbox={runInSandbox}
       fastMode={fastMode}
+      fastModeAvailable={fastAvailable(fallback)}
       onFastModeChange={onFastModeChange}
     />
   )
   const fallbackPanel = (
-    <div className="grid items-center gap-3 rounded-b-lg bg-(--surface-sunken) p-3 desktop:grid-cols-2">
-      <div>
-        <strong className="text-[13px]">{t('fallbackTitle')}</strong>
-        <p className="mt-1 mb-0 text-[12px] text-(--text-tertiary)">{t('fallback')}</p>
+    <div className="grid grid-cols-1 items-center gap-3 bg-(--surface-sunken) px-3 py-[10px] desktop:grid-cols-[minmax(0,1fr)_minmax(0,280px)]">
+      <div className="flex min-w-0 flex-col gap-[2px]">
+        <span className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+          {t('fallbackTitle')}
+        </span>
+        <span className="font-sans text-[11.5px] leading-normal text-(--text-tertiary)">{t('fallback')}</span>
       </div>
-      {fixedPicker}
+      {fallbackPicker(true)}
     </div>
   )
   return (
@@ -147,72 +161,74 @@ export function ModelSelectionField({
       {!active ? (
         <div className="fld">
           <span className="fldlbl">{t('providerModel')}</span>
-          {fixedPicker}
+          <div className="w-[280px] max-w-full">{fallbackPicker(false)}</div>
         </div>
       ) : (
         <>
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-[10px]">
             <AnchoredFlyout
               role="dialog"
               ariaLabel={t('savedDecisions')}
-              width={340}
+              width={320}
               matchTriggerWidth
               estimatedHeight={320}
               align="start"
-              triggerClassName="min-w-0 flex-1"
+              triggerClassName="block w-[280px] min-w-0 max-w-full"
               trigger={({ open, menuId, toggle }) => (
                 <button
                   type="button"
-                  className="inp flex w-full items-center gap-2 text-left"
+                  className={`inp h-8 min-h-0 w-full cursor-pointer gap-[7px] px-[10px] py-0 text-left text-[12.5px] font-medium hover:border-(--border-strong) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`}
                   aria-label={t('savedDecisions')}
                   aria-haspopup="dialog"
                   aria-expanded={open}
                   aria-controls={open ? menuId : undefined}
                   onClick={toggle}
                 >
-                  <Icon name="git-branch" size={16} />
-                  <span className="flex-1 truncate">
+                  <Icon name="git-branch" size={13} className="flex-none text-(--text-tertiary)" />
+                  <span className="min-w-0 flex-1 truncate">
                     {decision?.name ??
                       retained?.find((item) => item.id === value?.decisionId)?.name ??
                       t('chooseDecision')}
                   </span>
-                  <Icon name="chevron-down" size={14} />
+                  <Icon
+                    name="chevron-down"
+                    size={14}
+                    className={`flex-none text-(--text-tertiary) transition-transform ${open ? 'rotate-180' : ''}`}
+                  />
                 </button>
               )}
             >
               {({ close }) => (
                 <div className="max-h-80 overflow-y-auto">
-                  <div className="p-2 font-mono text-[11px] uppercase tracking-wider text-(--text-tertiary)">
-                    {t('savedDecisions')}
-                  </div>
+                  <div className="fhdr">{t('savedDecisions')}</div>
                   {decisions.map((item) => (
                     <div key={item.id} className="flex items-center gap-1">
                       <button
                         type="button"
-                        className={`flex min-w-0 flex-1 flex-col rounded-md px-2 py-[7px] text-left ${value?.decisionId === item.id ? 'bg-(--brand-soft)' : 'hover:bg-(--surface-hover)'}`}
+                        className={`fopt min-h-[38px] min-w-0 flex-1 flex-col items-start justify-center gap-px py-1 ${value?.decisionId === item.id ? 'on' : ''}`}
                         onClick={() => {
                           selectDecision(item.id)
                           close(true)
                         }}
                       >
-                        <span className="text-[13px] font-semibold">{item.name}</span>
-                        <span className="font-mono text-[11px] text-(--text-tertiary)">
+                        <span className="max-w-full truncate">{item.name}</span>
+                        <span className="max-w-full truncate font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">
                           {t(item.question.type)} · {item.providerId}
                         </span>
                       </button>
                       <a
-                        className="iconbtn"
+                        className={ROW_ACTION}
                         href={orgPath(`/decisions/${item.id}`)}
                         target="_blank"
                         rel="noreferrer"
                         title={t('openDecision', { name: item.name })}
                       >
-                        <Icon name="arrow-up-right" size={16} />
+                        <Icon name="arrow-up-right" size={13} />
                       </a>
                     </div>
                   ))}
                   {!decisions.length && (
-                    <div className="p-2 text-[12px] text-(--text-tertiary)">
+                    <div className="px-2 py-3 font-sans text-[12px] leading-normal text-(--text-tertiary)">
                       {loading ? t('loading') : t('emptyDecisions')}
                     </div>
                   )}
@@ -220,10 +236,10 @@ export function ModelSelectionField({
               )}
             </AnchoredFlyout>
             {decision && (
-              <span className="inline-flex items-center gap-2 rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-2 text-[12px] text-(--text-secondary)">
-                <Icon name="lock" size={13} />
+              <span className="inline-flex h-6 min-w-0 items-center gap-[6px] rounded-[5px] border border-(--border-subtle) bg-(--surface-sunken) px-2 font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)">
+                <Icon name="lock" size={11} className="flex-none text-(--text-tertiary)" />
                 {t('evaluator')}
-                <span className="font-mono text-(--text-primary)">
+                <span className="truncate font-mono text-(--text-primary)">
                   {decision.providerId} · {decision.model}
                 </span>
               </span>
@@ -232,11 +248,13 @@ export function ModelSelectionField({
           {value && !decision && (
             <p className="m-0 text-[12px] text-(--text-secondary)">{loading ? t('loading') : t('retained')}</p>
           )}
-          {!decision && fallbackPanel}
+          {!decision && (
+            <div className="overflow-hidden rounded-md border border-(--border-default)">{fallbackPanel}</div>
+          )}
           {value && decision && (
             <>
-              <div className="rounded-lg border border-(--border-subtle)">
-                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-t-lg border-b border-(--border-subtle) bg-(--surface-sunken) px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-(--text-tertiary) desktop:grid-cols-[20px_minmax(0,1fr)_116px_16px_minmax(0,1.4fr)_78px]">
+              <div className="overflow-hidden rounded-md border border-(--border-default)">
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-(--border-subtle) bg-(--surface-app) px-3 py-[5px] font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[0.06em] text-(--text-tertiary) desktop:grid-cols-[24px_minmax(0,1.1fr)_118px_14px_minmax(0,1fr)_76px] desktop:gap-[10px]">
                   <span className="hidden desktop:inline">#</span>
                   <span className="flex items-center gap-1">
                     {t(decision.question.type === 'choice' ? 'answerColumn' : 'condition')}
@@ -270,8 +288,8 @@ export function ModelSelectionField({
                   <span className="hidden desktop:inline">{t('providerModel')}</span>
                   <Button
                     variant="secondary"
-                    size="sm"
-                    className="justify-self-end normal-case tracking-normal"
+                    size="xs"
+                    className="h-6 gap-1 justify-self-end px-2 font-sans normal-case tracking-normal"
                     ariaLabel={t('addRule')}
                     disabled={value.rules.length >= 32}
                     onClick={() =>
@@ -286,11 +304,10 @@ export function ModelSelectionField({
                   </Button>
                 </div>
                 {value.rules.map((rule, index) => (
-                  <div
-                    key={index}
-                    className="grid grid-cols-1 items-center gap-2 border-b border-(--border-subtle) p-3 desktop:grid-cols-[20px_minmax(0,1fr)_116px_16px_minmax(0,1.4fr)_78px]"
-                  >
-                    <span className="font-mono text-[12px] text-(--text-tertiary)">{index + 1}</span>
+                  <div key={index} className={`${RULE_GRID} border-b border-(--border-subtle) px-3 py-2`}>
+                    <span className="font-mono text-[11px] font-semibold leading-normal text-(--text-tertiary)">
+                      {index + 1}
+                    </span>
                     {rule.when.type === 'choice' &&
                     decision.question.type === 'choice' &&
                     Object.keys(rule.when.thresholds).length === 1 ? (
@@ -313,10 +330,10 @@ export function ModelSelectionField({
                             })
                           }
                         />
-                        <div className="flex items-center gap-2">
-                          <span className="text-(--text-tertiary)">≥</span>
+                        <div className="flex items-center gap-[5px]">
+                          <span className="font-mono text-[12px] leading-normal text-(--text-tertiary)">≥</span>
                           <input
-                            className="inp w-16"
+                            className="inp mn h-[30px] min-h-0 w-[58px] px-[6px] py-0 text-center text-[12px] font-medium"
                             type="number"
                             min={0}
                             max={100}
@@ -337,7 +354,7 @@ export function ModelSelectionField({
                               })
                             }
                           />
-                          <span className="text-[12px] text-(--text-tertiary)">%</span>
+                          <span className="font-mono text-[12px] leading-normal text-(--text-tertiary)">%</span>
                         </div>
                       </>
                     ) : (
@@ -350,21 +367,25 @@ export function ModelSelectionField({
                         />
                       </div>
                     )}
-                    <Icon name="arrow-right" size={16} className="hidden text-(--text-tertiary) desktop:block" />
+                    <Icon name="arrow-right" size={13} className="hidden text-(--text-tertiary) desktop:block" />
                     <RuntimeModelSelect
+                      dense
                       value={rule}
                       ariaLabel={t('ruleModel', { index: index + 1 })}
                       source={source}
                       runtimes={runtimes}
                       runInSandbox={runInSandbox}
+                      fastMode={fastMode}
+                      fastModeAvailable={fastAvailable(rule)}
+                      onFastModeChange={onFastModeChange}
                       onChange={(target) => replaceRule(index, { ...rule, ...target })}
                     />
-                    <div className="flex justify-end gap-1">
+                    <div className="flex justify-end gap-[2px]">
                       {([-1, 1] as const).map((step) => (
                         <button
                           key={step}
                           type="button"
-                          className="iconbtn h-6 w-6"
+                          className={ROW_ACTION}
                           disabled={index + step < 0 || index + step >= value.rules.length}
                           aria-label={t(step < 0 ? 'moveUp' : 'moveDown', { index: index + 1 })}
                           onClick={() => move(index, step)}
@@ -374,7 +395,7 @@ export function ModelSelectionField({
                       ))}
                       <button
                         type="button"
-                        className="iconbtn h-6 w-6"
+                        className={ROW_ACTION}
                         aria-label={t('removeRule', { index: index + 1 })}
                         onClick={() => onChange({ ...value, rules: value.rules.filter((_, i) => i !== index) })}
                       >
@@ -437,18 +458,18 @@ function AnswerSelect({
       trigger={({ open, menuId, toggle }) => (
         <button
           type="button"
-          className={`inp w-full cursor-pointer gap-2 text-left hover:border-(--border-strong) hover:bg-(--surface-hover) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`}
+          className={`inp mn min-h-[30px] w-full cursor-pointer gap-2 px-[9px] py-1 text-left text-[12px] font-medium hover:border-(--border-strong) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`}
           aria-label={ariaLabel}
           aria-haspopup="menu"
           aria-expanded={open}
           aria-controls={open ? menuId : undefined}
           onClick={toggle}
         >
-          <span className="min-w-0 flex-1 font-mono break-all">{value}</span>
+          <span className="min-w-0 flex-1 break-all">{value}</span>
           <Icon
             name="chevron-down"
-            size={14}
-            className={`flex-none transition-transform ${open ? 'rotate-180' : ''}`}
+            size={13}
+            className={`flex-none text-(--text-tertiary) transition-transform ${open ? 'rotate-180' : ''}`}
           />
         </button>
       )}
@@ -461,7 +482,7 @@ function AnswerSelect({
             role="menuitemradio"
             aria-checked={answer === value}
             title={description}
-            className={`fopt min-h-8 gap-2 py-[6px] ${answer === value ? 'on' : ''}`}
+            className={`fopt min-h-[30px] gap-2 py-1 text-[12px] ${answer === value ? 'on' : ''}`}
             onClick={() => {
               onChange(answer)
               close(true)

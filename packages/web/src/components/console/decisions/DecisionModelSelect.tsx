@@ -36,7 +36,7 @@ export function DecisionModelSelect({
   const selected = profiles.find((entry) => entry.id === providerId)
   const options = profiles.find((entry) => entry.id === browsing)?.models ?? []
   const mark = (id: string) => (
-    <span className="inline-flex h-5 w-5 flex-none items-center justify-center">
+    <span className="flex h-[15px] w-[15px] flex-none items-center justify-center">
       <ModelMark model={`${id}/`} fallbackRuntime="" fillPct={100} />
     </span>
   )
@@ -45,7 +45,7 @@ export function DecisionModelSelect({
     <AnchoredFlyout
       role="dialog"
       ariaLabel={t('providerModel')}
-      width={460}
+      width={420}
       align="end"
       className="p-0!"
       triggerClassName="block min-w-0"
@@ -53,7 +53,7 @@ export function DecisionModelSelect({
         <button
           type="button"
           disabled={disabled}
-          className={`inp min-h-9 w-full cursor-pointer gap-2 text-left hover:border-(--border-strong) hover:bg-(--surface-hover) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`}
+          className={`inp min-h-9 w-full cursor-pointer gap-2 text-left hover:border-(--border-strong) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`}
           aria-label={t('providerModel')}
           aria-haspopup="dialog"
           aria-expanded={open}
@@ -70,23 +70,21 @@ export function DecisionModelSelect({
           <Icon
             name="chevron-down"
             size={14}
-            className={`flex-none transition-transform ${open ? 'rotate-180' : ''}`}
+            className={`flex-none text-(--text-tertiary) transition-transform ${open ? 'rotate-180' : ''}`}
           />
         </button>
       )}
     >
       {({ close }) => (
-        <div className="grid grid-cols-[minmax(105px,1fr)_minmax(0,2fr)]">
-          <div className="max-h-[320px] overflow-y-auto border-r border-(--border-subtle) bg-(--surface-sunken) p-2">
-            <div className="px-2 py-1 font-mono text-[11px] uppercase tracking-wider text-(--text-tertiary)">
-              {t('provider')}
-            </div>
+        <div className="flex">
+          <div className="max-h-[320px] w-[168px] flex-none overflow-y-auto border-r border-(--border-subtle) bg-(--surface-app) p-1">
+            <div className="fhdr">{t('provider')}</div>
             {profiles.map((entry) => (
               <button
                 key={entry.id}
                 type="button"
                 aria-pressed={browsing === entry.id}
-                className={`fopt min-h-8 gap-2 rounded-md px-2 py-[6px] text-[13px] ${browsing === entry.id ? 'on' : ''}`}
+                className={`fopt min-h-8 ${browsing === entry.id ? 'on' : ''}`}
                 onClick={() => setBrowsing(entry.id)}
               >
                 {mark(entry.id)}
@@ -94,13 +92,13 @@ export function DecisionModelSelect({
               </button>
             ))}
           </div>
-          <div className="max-h-[320px] min-w-0 overflow-y-auto p-2">
+          <div className="max-h-[320px] min-w-0 flex-1 overflow-y-auto p-[6px]">
             {options.map((entry) => (
               <button
                 key={entry.id}
                 type="button"
                 aria-pressed={providerId === browsing && model === entry.id}
-                className={`fopt min-h-8 rounded-md px-2 py-[6px] text-[13px] ${providerId === browsing && model === entry.id ? 'on' : ''}`}
+                className={`fopt min-h-[30px] ${providerId === browsing && model === entry.id ? 'on' : ''}`}
                 onClick={() => {
                   onChange({ providerId: browsing, model: entry.id })
                   close(true)

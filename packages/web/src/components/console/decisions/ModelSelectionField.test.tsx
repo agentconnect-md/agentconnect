@@ -117,3 +117,33 @@ it('selects a complete answer in the themed menu while preserving its probabilit
   )
   expect(document.querySelector('[role="menu"]')).toBeNull()
 })
+
+it('offers the agent Fast mode from a rule picker as well as the fallback', async () => {
+  const onFastModeChange = vi.fn()
+  container = document.createElement('div')
+  document.body.appendChild(container)
+  root = createRoot(container)
+  await act(async () =>
+    root!.render(
+      <ModelSelectionField
+        value={{
+          decisionId: '44444444-4444-4444-8444-444444444444',
+          rules: [{ when: { type: 'choice', thresholds: { deploy: 0.6 } }, runtime: 'claude', model: 'model-standard' }]
+        }}
+        onChange={vi.fn()}
+        onValidityChange={vi.fn()}
+        source={{ runtimeModels: [{ runtime: 'claude', version: '', models: ['model-standard'] }] }}
+        runtimes={['claude']}
+        fallback={{ runtime: 'claude', model: 'model-standard' }}
+        onFallbackChange={vi.fn()}
+        fastMode={false}
+        onFastModeChange={onFastModeChange}
+      />
+    )
+  )
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('[aria-label="Provider and model for rule 1"]')!.click()
+  )
+  await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Fast mode"]')!.click())
+  expect(onFastModeChange).toHaveBeenCalledWith(true)
+})

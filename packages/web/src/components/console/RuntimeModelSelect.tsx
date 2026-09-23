@@ -11,6 +11,15 @@ import type { DecisionRuntimeTarget } from '@agentconnect.md/protocol/decision'
 
 export type RuntimeModelSource = Pick<DaemonRow, 'runtimeModels'>
 
+// A runtime mark centred in its box; the bare <AgentMark> img otherwise sits at the box's top-left.
+function RuntimeMark({ runtime, box }: { runtime: string; box: string }) {
+  return (
+    <span className={`flex flex-none items-center justify-center ${box}`}>
+      <AgentMark model={runtime} fillPct={100} />
+    </span>
+  )
+}
+
 export function RuntimeModelSelect({
   value,
   onChange,
@@ -18,8 +27,10 @@ export function RuntimeModelSelect({
   runtimes,
   ariaLabel,
   compact = false,
+  dense = false,
   decision,
   fastMode,
+  fastModeAvailable = true,
   onFastModeChange,
   allowRuntimeOnly = false,
   runInSandbox = false,
@@ -31,11 +42,15 @@ export function RuntimeModelSelect({
   runtimes?: readonly string[]
   ariaLabel?: string
   compact?: boolean
+  /** The 30px table-cell trigger used by Decision rule rows. */
+  dense?: boolean
   allowRuntimeOnly?: boolean
   runInSandbox?: boolean
   readOnly?: boolean
   decision?: { name: string; selected: boolean; onSelect(): void }
   fastMode?: boolean
+  /** Whether the selected model offers Fast mode; the row stays visible but disabled when not. */
+  fastModeAvailable?: boolean
   onFastModeChange?(value: boolean): void
 }) {
   const t = useTranslations('Agents.dialog.runtimeModel')
@@ -69,12 +84,14 @@ export function RuntimeModelSelect({
         `${label(item.runtime)} ${model.value} ${model.name ?? ''}`.toLowerCase().includes(search.toLowerCase())
       )
     }))
+  const fastOn = !!fastMode && fastModeAvailable
+  const runtimeOnly = allowRuntimeOnly && !search && matching[0]?.options.length === 0 ? matching[0] : undefined
   return (
     <AnchoredFlyout
       role="dialog"
       ariaLabel={ariaLabel ?? t('title')}
-      width={600}
-      estimatedHeight={390}
+      width={readOnly ? 320 : 480}
+      estimatedHeight={readOnly ? 48 : 390}
       align={compact ? 'start' : 'end'}
       className="p-0!"
       triggerClassName="block min-w-0"
@@ -83,8 +100,10 @@ export function RuntimeModelSelect({
           type="button"
           className={
             compact
-              ? 'inline-flex h-7 max-w-[260px] items-center gap-2 rounded-full px-[10px] text-[12.5px] hover:bg-(--surface-hover)'
-              : `inp flex w-full min-w-0 cursor-pointer items-center gap-2 text-left hover:border-(--border-strong) hover:bg-(--surface-hover) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`
+              ? 'inline-flex h-7 max-w-[260px] items-center gap-[7px] rounded-full px-[10px] font-sans text-[12.5px] font-medium leading-normal hover:bg-(--surface-hover)'
+              : dense
+                ? `inp h-[30px] min-h-0 w-full cursor-pointer gap-2 px-[9px] py-0 text-left text-[12px] font-medium hover:border-(--border-strong) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`
+                : `inp h-8 min-h-0 w-full cursor-pointer gap-2 px-[10px] py-0 text-left text-[12.5px] font-medium hover:border-(--border-strong) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`
           }
           aria-label={ariaLabel ?? t('title')}
           aria-haspopup="dialog"
@@ -96,165 +115,169 @@ export function RuntimeModelSelect({
             toggle()
           }}
         >
-          <span className="inline-flex h-5 w-5 flex-none">
-            {decision?.selected ? (
-              <Icon name="git-branch" size={18} color="var(--brand)" />
-            ) : (
-              <AgentMark model={value.runtime} />
-            )}
-          </span>
-          <span className="min-w-0 flex-1 truncate">
+          {decision?.selected ? (
+            <Icon name="git-branch" size={13} color="var(--brand)" className="flex-none" />
+          ) : (
+            <RuntimeMark runtime={value.runtime} box="h-[14px] w-[14px]" />
+          )}
+          <span className="min-w-0 flex-1 truncate text-left">
             {decision?.selected ? t('byDecision') : modelName || label(value.runtime) || t('choose')}
           </span>
           {!decision?.selected && selectedWarning && (
-            <span title={warningLabel(selectedWarning)}>
+            <span className="flex flex-none" title={warningLabel(selectedWarning)}>
               <Icon name="triangle-alert" size={13} color="var(--status-paused)" />
             </span>
           )}
-          {fastMode && (
-            <span className="flex-none rounded-xs bg-(--brand-soft) px-1 text-[10px] font-semibold text-(--brand-soft-text)">
+          {fastOn && (
+            <span className="flex-none rounded-xs bg-(--brand-soft) px-[5px] py-px font-mono text-[10px] font-semibold leading-normal tracking-[0.04em] text-(--brand-soft-text)">
               FAST
             </span>
           )}
           <Icon
             name="chevron-down"
-            size={14}
-            className={`flex-none transition-transform ${open ? 'rotate-180' : ''}`}
+            size={compact ? 11 : 13}
+            className={`flex-none text-(--text-tertiary) transition-transform ${open ? 'rotate-180' : ''}`}
           />
         </button>
       )}
     >
-      {({ close }) => (
-        <div>
-          {readOnly && (
-            <div className="flex items-start gap-2 border-b border-(--border-subtle) px-3 py-2 text-[12px] text-(--text-secondary)">
-              <Icon name="lock" size={14} className="mt-px flex-none" />
-              {t('readOnly')}
-            </div>
-          )}
-          {decision && (
-            <button
-              type="button"
-              disabled={readOnly}
-              className={`flex w-full items-center gap-3 border-b border-(--border-subtle) p-3 text-left ${decision.selected ? 'bg-(--brand-soft)' : 'hover:bg-(--surface-hover)'}`}
-              onClick={() => {
-                decision.onSelect()
-                close(true)
-              }}
-            >
-              <Icon name="git-branch" size={18} />
-              <span className="flex-1">
-                <strong className="block text-[13px]">{t('byDecision')}</strong>
-                <span className="text-[12px] text-(--text-secondary)">
-                  {t('decisionHelp', { name: decision.name })}
-                </span>
-              </span>
-              <span className="text-[11px] text-(--text-tertiary)">{t('agentSetting')}</span>
-            </button>
-          )}
-          <div className="grid grid-cols-[minmax(105px,1fr)_minmax(0,2fr)]">
-            <div className="max-h-[320px] overflow-y-auto border-r border-(--border-subtle) bg-(--surface-sunken) p-2">
-              <div className="px-2 py-1 font-mono text-[11px] uppercase tracking-wider text-(--text-tertiary)">
-                {t('provider')}
-              </div>
-              {profiles.map((item) => (
+      {({ close }) =>
+        readOnly ? (
+          <div className="flex items-center gap-2 px-3 py-[10px] font-sans text-[12px] leading-normal text-(--text-secondary)">
+            <Icon name="lock" size={13} className="flex-none text-(--text-tertiary)" />
+            {t('readOnly')}
+          </div>
+        ) : (
+          <div>
+            {decision && (
+              <div className="border-b border-(--border-subtle) p-1">
                 <button
-                  key={item.runtime}
                   type="button"
-                  aria-pressed={provider === item.runtime && !search}
-                  className={`fopt min-h-8 gap-2 rounded-md px-2 py-[6px] text-[13px] ${provider === item.runtime && !search ? 'on' : ''}`}
+                  className={`fopt min-h-10 ${decision.selected ? 'on' : ''}`}
                   onClick={() => {
-                    setProvider(item.runtime)
-                    setSearch('')
+                    decision.onSelect()
+                    close(true)
                   }}
                 >
-                  <span className="inline-flex h-5 w-5 flex-none">
-                    <AgentMark model={item.runtime} />
-                  </span>
-                  <span className="min-w-0 flex-1 truncate">{label(item.runtime)}</span>
-                  <span className="text-[11px] text-(--text-tertiary)">{item.options.length}</span>
-                  {item.warning && (
-                    <span title={warningLabel(item.warning)}>
-                      <Icon name="triangle-alert" size={12} color="var(--status-paused)" />
+                  <Icon name="git-branch" size={14} className="flex-none text-(--text-tertiary)" />
+                  <span className="min-w-0 flex-1 text-left">
+                    <span className="block">{t('byDecision')}</span>
+                    <span className="block truncate font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                      {t('decisionHelp', { name: decision.name })}
                     </span>
-                  )}
+                  </span>
+                  <span className="flex-none font-mono text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
+                    {t('agentSetting')}
+                  </span>
                 </button>
-              ))}
-            </div>
-            <div className="min-w-0 p-2">
-              <input
-                autoFocus
-                className="inp mb-2 min-h-8 w-full py-[6px]"
-                aria-label={t('search')}
-                placeholder={t('search')}
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-              />
-              <div className="max-h-[260px] overflow-y-auto">
-                {matching.map(
-                  (item) =>
-                    item.options.length > 0 && (
-                      <div key={item.runtime}>
-                        {item.options.map((model) => (
-                          <button
-                            type="button"
-                            disabled={readOnly}
-                            key={model.value}
-                            title={model.description}
-                            aria-label={`${label(item.runtime)} · ${model.name ?? model.value}`}
-                            aria-pressed={
-                              !decision?.selected && value.runtime === item.runtime && value.model === model.value
-                            }
-                            className={`fopt min-h-8 gap-2 rounded-md px-2 py-[6px] text-[13px] disabled:cursor-not-allowed disabled:opacity-60 ${!decision?.selected && value.runtime === item.runtime && value.model === model.value ? 'on' : ''}`}
-                            onClick={() => {
-                              onChange({ runtime: item.runtime, model: model.value })
-                              close(true)
-                            }}
-                          >
-                            <span className="min-w-0 flex-1 truncate">{model.name ?? model.value}</span>
-                            {search && (
-                              <span className="truncate text-[11px] font-normal text-(--text-tertiary)">
-                                {label(item.runtime)}
-                              </span>
-                            )}
-                          </button>
-                        ))}
-                      </div>
-                    )
-                )}
-                {allowRuntimeOnly && !search && matching[0] && matching[0].options.length === 0 && (
+              </div>
+            )}
+            <div className="flex">
+              <div className="max-h-[320px] w-[168px] flex-none overflow-y-auto border-r border-(--border-subtle) bg-(--surface-app) p-1">
+                <div className="fhdr">{t('provider')}</div>
+                {profiles.map((item) => (
                   <button
+                    key={item.runtime}
                     type="button"
-                    disabled={readOnly}
-                    className="fopt p-3 text-[12px]"
+                    aria-pressed={provider === item.runtime && !search}
+                    className={`fopt min-h-8 ${provider === item.runtime && !search ? 'on' : ''}`}
                     onClick={() => {
-                      onChange({ runtime: matching[0]!.runtime, model: '' })
-                      close(true)
+                      setProvider(item.runtime)
+                      setSearch('')
                     }}
                   >
-                    {label(matching[0].runtime)}
+                    <RuntimeMark runtime={item.runtime} box="h-[15px] w-[15px]" />
+                    <span className="min-w-0 flex-1 truncate text-left">{label(item.runtime)}</span>
+                    {item.warning && (
+                      <span className="flex flex-none" title={warningLabel(item.warning)}>
+                        <Icon name="triangle-alert" size={12} color="var(--status-paused)" />
+                      </span>
+                    )}
+                    <span className="flex-none font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                      {item.options.length}
+                    </span>
                   </button>
-                )}
-                {matching.every((item) => !item.options.length) && (
-                  <div className="p-3 text-[12px] text-(--text-tertiary)">{t('empty')}</div>
-                )}
+                ))}
+              </div>
+              <div className="flex min-w-0 flex-1 flex-col p-[6px]">
+                <input
+                  autoFocus
+                  className="fsearch"
+                  aria-label={t('search')}
+                  placeholder={t('search')}
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                />
+                <div className="max-h-[264px] overflow-y-auto">
+                  {matching.map(
+                    (item) =>
+                      item.options.length > 0 && (
+                        <div key={item.runtime}>
+                          {search && <div className="fhdr">{label(item.runtime)}</div>}
+                          {item.options.map((model) => {
+                            const on =
+                              !decision?.selected && value.runtime === item.runtime && value.model === model.value
+                            return (
+                              <button
+                                type="button"
+                                key={model.value}
+                                title={model.description}
+                                aria-label={`${label(item.runtime)} · ${model.name ?? model.value}`}
+                                aria-pressed={on}
+                                className={`fopt min-h-[30px] ${on ? 'on' : ''}`}
+                                onClick={() => {
+                                  onChange({ runtime: item.runtime, model: model.value })
+                                  close(true)
+                                }}
+                              >
+                                <span className="min-w-0 flex-1 truncate text-left">{model.name ?? model.value}</span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      )
+                  )}
+                  {runtimeOnly && (
+                    <button
+                      type="button"
+                      className={`fopt min-h-[30px] ${value.runtime === runtimeOnly.runtime && !value.model ? 'on' : ''}`}
+                      onClick={() => {
+                        onChange({ runtime: runtimeOnly.runtime, model: '' })
+                        close(true)
+                      }}
+                    >
+                      {label(runtimeOnly.runtime)}
+                    </button>
+                  )}
+                  {!runtimeOnly && matching.every((item) => !item.options.length) && (
+                    <div className="px-2 py-[14px] font-sans text-[12px] leading-normal text-(--text-tertiary)">
+                      {t('empty')}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
+            {onFastModeChange && (
+              <div className="flex items-center gap-[10px] border-t border-(--border-subtle) px-[11px] pt-[7px] pb-2">
+                <Toggle
+                  checked={fastOn}
+                  disabled={!fastModeAvailable}
+                  onChange={onFastModeChange}
+                  ariaLabel={t('fastMode')}
+                />
+                <span
+                  className={`flex-1 font-sans text-[13px] font-medium leading-normal ${fastModeAvailable ? 'text-(--text-primary)' : 'text-(--text-disabled)'}`}
+                >
+                  {t('fastMode')}
+                </span>
+                <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                  {t('lowerLatency')}
+                </span>
+              </div>
+            )}
           </div>
-          {onFastModeChange && (
-            <div className="flex items-center gap-3 border-t border-(--border-subtle) px-3 py-2">
-              <Toggle
-                checked={fastMode ?? false}
-                disabled={readOnly}
-                onChange={onFastModeChange}
-                ariaLabel={t('fastMode')}
-              />
-              <span className="text-[13px] font-medium">{t('fastMode')}</span>
-              <span className="ml-auto text-[12px] text-(--text-tertiary)">{t('lowerLatency')}</span>
-            </div>
-          )}
-        </div>
-      )}
+        )
+      }
     </AnchoredFlyout>
   )
 }
