@@ -155,6 +155,17 @@ describe('planReplay — batch and skip', () => {
     expect(p.shape).toBe('skip')
     expect(p.context).toEqual([])
     expect(p.deliveredThrough).toBe(at(5))
+    expect(
+      plan({ gap: [entry(at(5), 'bot')], triggerTs: at(3), markerBefore: at(4), retryAdmittedTurn: true }).shape
+    ).toBe('inorder')
+    const retried = plan({
+      gap: [entry(at(5), 'person'), entry(at(6), 'bot')],
+      triggerTs: at(3),
+      markerBefore: at(4),
+      retryAdmittedTurn: true
+    })
+    expect(retried.shape).toBe('inorder')
+    expect(retried.context.map((e) => e.ts)).toEqual([at(5)])
   })
 
   it('never skips a plain in-order activation with an empty gap', () => {

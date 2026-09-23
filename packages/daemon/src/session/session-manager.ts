@@ -339,6 +339,8 @@ export class SessionManager {
     options: {
       runtimeTarget?: DecisionRuntimeTarget
       initializeOnly?: boolean
+      /** Durable replay owns this turn even if its trigger is behind the read cursor. */
+      retryAdmittedTurn?: boolean
       /** True only when the daemon attached trusted CallMeta for this turn.
        * `source: agent` alone is insufficient: background-task and orchestration
        * wakes deliberately use that source without being direct agent calls. */
@@ -824,7 +826,8 @@ export class SessionManager {
         triggerTs: ts,
         markerBefore,
         ordering,
-        firstPromptAfterOwnRootInitialization
+        firstPromptAfterOwnRootInitialization,
+        retryAdmittedTurn: options.retryAdmittedTurn
       })
       const renderContext = (entries: readonly TranscriptEntry[]): string =>
         renderReplayContext(entries, this.deps.quoteForContextEvent)
