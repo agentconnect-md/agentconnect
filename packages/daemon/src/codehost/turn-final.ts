@@ -85,6 +85,12 @@ export interface CodeHostTurnFinal<P extends CodeHostProvider = CodeHostProvider
   finalPoster(target: CodeHostReplyTarget, deps: CodeHostFinalPosterDeps): CodeHostFinalPoster
   /** Host content this delivery's prompt needs fetched first (gitea-integration.md §8); absent for a host whose deliveries are complete on the wire. */
   promptSupplement?(msg: RdMsgHook, deps: CodeHostPromptSupplementDeps): Promise<HookPromptSupplement | undefined>
+  pullRequestDescription(
+    source: CodeHostReplySource,
+    agentId: string,
+    host: CodeHostTurnFinalHost,
+    signal: AbortSignal
+  ): Promise<string | undefined>
   /** True when this provider's poster names WHY its one comment is absent (§14.1); GitHub's reports none. */
   readonly reportsAbsentOutput: boolean
 }
@@ -98,6 +104,19 @@ const TURN_FINALS: { readonly [P in CodeHostProvider]: CodeHostTurnFinal<P> } = 
 
 /** Every registered member, in provider order — the order a member that claims its own delivery resolves in. */
 const TURN_FINAL_MEMBERS: readonly CodeHostTurnFinal[] = Object.values(TURN_FINALS)
+
+export async function codeHostPullRequestDescription(
+  source: CodeHostReplySource,
+  agentId: string,
+  host: CodeHostTurnFinalHost,
+  signal: AbortSignal
+): Promise<string | undefined> {
+  for (const member of TURN_FINAL_MEMBERS) {
+    const description = await member.pullRequestDescription(source, agentId, host, signal)
+    if (description !== undefined) return description
+  }
+  return undefined
+}
 
 /** The module owning one reply target, and therefore this turn's poster, lease and acknowledgement. */
 export function turnFinalFor(target: Pick<CodeHostReplyTarget, 'provider'>): CodeHostTurnFinal {

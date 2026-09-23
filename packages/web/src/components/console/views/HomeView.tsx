@@ -1,5 +1,8 @@
 'use client'
 
+import { RuntimeModelSelect } from '@/components/console/RuntimeModelSelect'
+import { useDecisionsPrototype } from '@/lib/decisions/provider'
+
 // The chat-first console landing. A composer ("Ask an agent") is the primary
 // posture; sending hands off to a live session (openPlayground → pgSend →
 // /sessions/{id}), which IS the design's "the same page becomes the
@@ -27,7 +30,7 @@ import {
   MOBILE_SESSION_ROWS
 } from '@/components/console/dashboard-rows'
 import { Icon } from '@/components/ui'
-import { AgentIconView, ModelMark, LoadingState, LogoMark, Spinner } from '@/components/marks'
+import { AgentIconView, LoadingState, LogoMark, Spinner } from '@/components/marks'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { useProfile } from '@/lib/profile'
 import { featureFlagEnabled, type FeatureFlagId } from '@/lib/feature-flags'
@@ -44,6 +47,7 @@ import {
   preferredModelFor,
   modelCapability,
   effortChoicesFor,
+  fastModeAvailableFor,
   displayedEffort,
   isGitWorkspace,
   resolveEffortForModel,
@@ -105,7 +109,7 @@ export default function HomeView() {
   const firstName = user.name.trim().split(/\s+/)[0] ?? ''
   const { orgPath } = useOrgs()
   const { agents, daemons, crons, allSessions, usage24h, getAgent, loading, memberSets, orgSetIds } = useConsoleData()
-  const { openPlayground, pgSend, pgSetModel, pgSetEffort, pgSetPermissionPreset } = usePlayground()
+  const { openPlayground, pgSend, pgSetModel, pgSetEffort, pgSetPermissionPreset, pgStageRuntime } = usePlayground()
   const formatAgo = (iso: string | null): string => {
     if (!iso) return t('time.never')
     const timestamp = Date.parse(iso)
@@ -220,7 +224,13 @@ export default function HomeView() {
   const imageInputRef = useRef<HTMLInputElement>(null)
   // Which selector menu is open (only one at a time), and the run-runtime overrides.
   const [menu, setMenu] = useState<'agent' | 'model' | 'effort' | 'permission' | 'add' | 'attach' | null>(null)
-  const [runtime, setRuntime] = useState<{ model?: string; effort?: string; permissionPreset?: string }>({})
+  const [runtime, setRuntime] = useState<{
+    runtime?: string
+    model?: string
+    effort?: string
+    permissionPreset?: string
+    fastMode?: boolean
+  }>({})
   const [worktreeOverride, setWorktreeOverride] = useState<boolean>()
   const gitWorkspace = agent?.workspace && isGitWorkspace(agent.workspace) ? agent.workspace : undefined
   const defaultWorktree = gitWorkspace?.worktree === true
@@ -261,7 +271,12 @@ export default function HomeView() {
         : owningDaemon
           ? orgPath(`/daemons/${owningDaemon.daemonId}`)
           : null
-  const runtimeProfile = owningDaemon?.runtimeModels.find((r) => r.runtime === agent?.runtime)
+  const { decisions } = useDecisionsPrototype()
+  const selectedRuntime = runtime.runtime ?? agent?.runtime ?? ''
+  const runtimeChangesAllowed = agent?.allowRuntimeChangesInChat === true
+  const byDecision = !!agent?.modelSelection && !runtime.model && !runtime.runtime
+  const selectedDecision = decisions.find((item) => item.id === agent?.modelSelection?.decisionId)
+  const runtimeProfile = owningDaemon?.runtimeModels.find((r) => r.runtime === selectedRuntime)
   const models = runtimeProfile?.models ?? []
   const modelCatalog = runtimeProfile?.modelCatalog ?? undefined
 
@@ -270,12 +285,12 @@ export default function HomeView() {
   // this on send, so the pill's label is exactly the model the turn runs — not a display
   // that silently differs from the daemon default for a blank/stale stored model.
   const defaultModel =
-    agent && models.includes(agent.model)
+    agent && selectedRuntime === agent.runtime && models.includes(agent.model)
       ? agent.model
-      : preferredModelFor(owningDaemon, agent?.runtime ?? '') || agent?.model || ''
+      : preferredModelFor(owningDaemon, selectedRuntime) || agent?.model || ''
   const model = runtime.model ?? defaultModel
   const modelChoices = (models.length ? models : model ? [model] : []).map((m) => {
-    const description = agent ? modelTooltip(owningDaemon, agent.runtime, m) : undefined
+    const description = agent ? modelTooltip(owningDaemon, selectedRuntime, m) : undefined
     return { value: m, label: modelLabel(m), ...(description ? { description } : {}) }
   })
 
@@ -283,9 +298,9 @@ export default function HomeView() {
   // runtime catalog — the same catalog-aware helpers the session and add/edit controls
   // use — not the static tables. So a runtime with no such vocabulary (e.g. opencode)
   // shows no effort/permission control instead of Claude-style values it doesn't accept.
-  const capability = agent ? modelCapability(owningDaemon, agent.runtime, model) : undefined
-  const effortList = agent ? effortChoicesFor(agent.runtime, capability) : []
-  const showEffort = capability?.efforts ? effortList.length > 0 : agent ? supportsModes(agent.runtime) : false
+  const capability = agent ? modelCapability(owningDaemon, selectedRuntime, model) : undefined
+  const effortList = agent ? effortChoicesFor(selectedRuntime, capability) : []
+  const showEffort = capability?.efforts ? effortList.length > 0 : agent ? supportsModes(selectedRuntime) : false
   // Resolve the raw effort (override → agent default) against the SELECTED model's
   // offered levels, so the shown value is always one send can stage — never a phantom
   // the new model doesn't offer (e.g. keeping `xhigh` after switching to a low/medium
@@ -297,15 +312,15 @@ export default function HomeView() {
   const rawEffort = runtime.effort ?? agent?.reasoning ?? ''
   const effort =
     agent && showEffort
-      ? resolveEffortForModel(agent.runtime, capability, rawEffort) ||
+      ? resolveEffortForModel(selectedRuntime, capability, rawEffort) ||
         displayedEffort('', effortList, capability?.defaultEffort) ||
         effortList[0]?.value ||
         ''
       : ''
   const effortChoices = effortList.map((o) => ({ value: o.value, label: o.label, description: o.description }))
 
-  const permissionList = agent ? permissionModeChoicesFor(agent.runtime, modelCatalog) : []
-  const showPermission = agent ? !!modelCatalog?.permissionModes?.length || supportsModes(agent.runtime) : false
+  const permissionList = agent ? permissionModeChoicesFor(selectedRuntime, modelCatalog) : []
+  const showPermission = agent ? !!modelCatalog?.permissionModes?.length || supportsModes(selectedRuntime) : false
   const permissionMode = showPermission
     ? resolvedPermissionMode(agent?.permissionMode ?? '', permissionList, modelCatalog)
     : ''
@@ -317,13 +332,14 @@ export default function HomeView() {
   }))
 
   // Why the composer can't start a session for the selected agent (null ⇒ it can).
+  const executionAgent = agent && runtime.runtime ? { ...agent, runtime: runtime.runtime, model } : agent
   const blocked: 'offline' | 'auth' | 'image' | null = !agent
     ? null
     : !agentOnline
       ? 'offline'
-      : imageBinaryMissingFor(agent)
+      : imageBinaryMissingFor(executionAgent!)
         ? 'image'
-        : authRequiredFor(agent)
+        : authRequiredFor(executionAgent!)
           ? 'auth'
           : null
   // A multi-agent create needs every roster pick startable — the "+" menu only
@@ -358,10 +374,16 @@ export default function HomeView() {
     // is a synchronous ref write, so pgSend's payload picks it up (PlaygroundProvider).
     // Multi-agent conversations expose no runtime controls: every participant
     // runs its configured defaults (webchat-multi-agents.md §9.1).
-    if (!multi) {
-      if (model) pgSetModel(id, agent.id, model)
-      if (effort) pgSetEffort(id, agent.id, effort)
-      if (permissionPreset) pgSetPermissionPreset(id, agent.id, permissionPreset)
+    if (!multi && runtimeChangesAllowed) {
+      if (!byDecision && model) {
+        if (runtime.runtime && runtime.runtime !== agent.runtime)
+          pgStageRuntime(id, { runtime: runtime.runtime, model })
+        else pgSetModel(id, agent.id, model)
+      }
+      if (runtime.fastMode !== undefined) pgStageRuntime(id, { fastMode: runtime.fastMode })
+      if (effort && (!byDecision || runtime.effort)) pgSetEffort(id, agent.id, effort)
+      if (permissionPreset && (!byDecision || runtime.permissionPreset))
+        pgSetPermissionPreset(id, agent.id, permissionPreset)
     }
     // The image rides as an explicit argument: the session id was just minted, so
     // a setPgImage(id) state write could not land before this same-tick send.
@@ -682,26 +704,32 @@ export default function HomeView() {
                     onChange={(v) => setMemberIds((cur) => (cur.includes(v) ? cur : [...cur, v]))}
                   />
                 )}
-                {!multi && modelChoices.length > 0 && (
-                  <ComposerMenu
-                    title={t('composer.model')}
-                    value={model}
-                    options={modelChoices}
-                    open={menu === 'model'}
-                    align="left"
-                    placement="down"
-                    triggerClassName="inline-flex h-7 items-center gap-[3px] rounded-full px-[10px] max-desktop:px-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)"
-                    tooltips={false}
-                    leading={
-                      <span className="inline-flex h-4 w-4 flex-none items-center justify-center">
-                        <ModelMark model={model} fallbackRuntime={agent.runtime} />
-                      </span>
+                {!multi && (modelChoices.length > 0 || byDecision) && (
+                  <RuntimeModelSelect
+                    compact
+                    disabled={!runtimeChangesAllowed}
+                    runInSandbox={agent.runInSandbox}
+                    value={{ runtime: selectedRuntime, model }}
+                    source={owningDaemon}
+                    decision={
+                      agent.modelSelection
+                        ? {
+                            name: selectedDecision?.name ?? t('composer.byDecision'),
+                            selected: byDecision,
+                            onSelect: () => setRuntime((current) => ({ fastMode: current.fastMode }))
+                          }
+                        : undefined
                     }
-                    onOpenChange={(o) => setMenu(o ? 'model' : null)}
-                    onChange={(m) => setRuntime((r) => ({ ...r, model: m }))}
+                    fastMode={runtime.fastMode ?? agent.fastMode}
+                    onFastModeChange={
+                      byDecision || fastModeAvailableFor(selectedRuntime, capability)
+                        ? (fastMode) => setRuntime((current) => ({ ...current, fastMode }))
+                        : undefined
+                    }
+                    onChange={(target) => setRuntime({ ...target, fastMode: runtime.fastMode })}
                   />
                 )}
-                {!multi && showEffort && effortChoices.length > 0 && (
+                {!multi && runtimeChangesAllowed && showEffort && effortChoices.length > 0 && (
                   <ComposerMenu
                     title={t('composer.effort')}
                     value={effort}
@@ -715,7 +743,7 @@ export default function HomeView() {
                     onChange={(v) => setRuntime((r) => ({ ...r, effort: v }))}
                   />
                 )}
-                {!multi && showPermission && permissionChoices.length > 0 && (
+                {!multi && runtimeChangesAllowed && showPermission && permissionChoices.length > 0 && (
                   <ComposerMenu
                     title={t('composer.permission')}
                     value={permissionPreset}

@@ -7,12 +7,9 @@ import {
   effortField,
   effortLabel,
   FALLBACK_RUNTIME_IDS,
-  imageBinaryMissingRuntimeIds,
-  loginRequiredRuntimeIds,
   selectableRuntimeIds,
   fastModeAvailableFor,
   modelCapability,
-  modelOptionsFor,
   displayedEffort,
   preferredModelFor,
   resolveEffortForModel,
@@ -43,8 +40,8 @@ import { Spinner } from '@/components/marks'
 import { Button, Icon, Toggle } from '@/components/ui'
 import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
 import { useModal } from '@/components/console/ModalProvider'
-import { ModelSelect } from '@/components/console/ModelSelect'
-import { RuntimeSelect } from '@/components/console/RuntimeSelect'
+import { ModelSelectionField } from '@/components/console/decisions/ModelSelectionField'
+import type { AgentModelSelection } from '@agentconnect.md/protocol/decision'
 import { editAgentCapabilitySource, editAgentDaemonChoices, preselectPlacementReset } from './edit-agent-daemon-choice'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
@@ -158,6 +155,9 @@ export default function EditAgentModal({
   const initialDaemonId = useRef(initialPlacementValue)
   const [model, setModel] = useState('')
   const initialModel = useRef('')
+  const [modelSelection, setModelSelection] = useState<AgentModelSelection | null>(null)
+  const initialModelSelection = useRef<AgentModelSelection | null>(null)
+  const [modelSelectionValid, setModelSelectionValid] = useState(true)
   const [outputMode, setOutputMode] = useState<OutputMode | ''>('')
   const initialOutputMode = useRef<OutputMode | ''>('')
   const [showFooter, setShowFooter] = useState(agent.showFooter)
@@ -242,6 +242,8 @@ export default function EditAgentModal({
         initialDaemonId.current = placement
         setModel(dto.model ?? '')
         initialModel.current = dto.model ?? ''
+        setModelSelection(dto.modelSelection ?? null)
+        initialModelSelection.current = dto.modelSelection ?? null
         setEffort(dto.reasoningEffort ?? '')
         initialEffort.current = dto.reasoningEffort ?? ''
         const nextOutputMode = isOutputMode(dto.outputMode) ? dto.outputMode : ''
@@ -487,11 +489,6 @@ export default function EditAgentModal({
   const reportedRuntimeIds = daemon ? selectableRuntimeIds(daemon, runtime) : []
   const runtimeIds = daemon ? reportedRuntimeIds : FALLBACK_RUNTIME_IDS
   const runtimeOptions = runtime && !runtimeIds.includes(runtime) ? [runtime, ...runtimeIds] : runtimeIds
-  // Runtimes the daemon reports as logged out — marked in the picker, never blocked.
-  // An agent may legitimately sit on one (docs/designs/preset-agents.md §3.2), so this
-  // surfaces the state on the choice rather than taking the choice away.
-  const runtimesNeedingLogin = loginRequiredRuntimeIds(daemon)
-  const runtimesMissingImageBinary = effectiveRunInSandbox ? imageBinaryMissingRuntimeIds(daemon) : []
   const runtimeMeta = acpRuntime(acpRegistry, runtime)
   // Models are only what the daemon reports for this runtime — advertised ids
   // verbatim, never a synthesized "Default" entry: an agent without an explicit
@@ -505,9 +502,6 @@ export default function EditAgentModal({
   const modelCatalog = runtimeProfile?.modelCatalog ?? undefined
   const selectedModel =
     model && (reportedModels.includes(model) || daemonChanged) ? model : preferredModelFor(daemon, runtime)
-  const modelOptions =
-    selectedModel && !reportedModels.includes(selectedModel) ? [selectedModel, ...reportedModels] : reportedModels
-  const modelSelectable = modelOptions.length > 0
   const runtimeSupportsModes = supportsModes(runtime)
   // Dynamic-first vocabularies (runtime-model-catalog.md §7): the SELECTED
   // model's discovered capability drives the effort/fast controls, the catalog's
@@ -586,12 +580,16 @@ export default function EditAgentModal({
     Object.keys(envRecord).length !== Object.keys(initialEnvRecord.current).length ||
     Object.keys(envRecord).some((k) => envRecord[k] !== initialEnvRecord.current[k])
   const secretsChanged = Object.keys(secretsPatch).length > 0
+  const modelSelectionChanged = JSON.stringify(modelSelection) !== JSON.stringify(initialModelSelection.current)
+  const validateModelSelection =
+    modelSelectionChanged || model !== initialModel.current || runtime !== initialRuntime.current || daemonChanged
   const envSecretError = envSecretsError(envRows, secretRows)
   const patch: UpdateAgentInput = {
     ...(normalizedDisplayName !== (initialDisplayName.current.trim() || null)
       ? { displayName: normalizedDisplayName }
       : {}),
-    ...(model !== initialModel.current ? { model: model || null } : {}),
+    ...(model !== initialModel.current ? { model: model || (modelSelection ? selectedModel : null) } : {}),
+    ...(modelSelectionChanged ? { modelSelection, ...(modelSelection && !model ? { model: selectedModel } : {}) } : {}),
     ...(runtime.trim() !== initialRuntime.current ? { runtime: runtime.trim() } : {}),
     ...(effort !== initialEffort.current ? { reasoningEffort: effort || null } : {}),
     ...(outputMode !== initialOutputMode.current ? { outputMode: outputMode || null } : {}),
@@ -614,7 +612,7 @@ export default function EditAgentModal({
     !sameIds(outboundSelected, initialOutboundSelected.current)
 
   const save = async () => {
-    if (saving) return
+    if (saving || (validateModelSelection && !modelSelectionValid)) return
     if (envSecretError) {
       setErr(t(`errors.${envSecretError.key}`, envSecretError.values))
       return
@@ -788,8 +786,8 @@ export default function EditAgentModal({
                     autoFocus={!agent.builtin}
                   />
                 </div>
-                {/* Daemon / Runtime / Model share one 3-up row inside the Basics grid, as in Add agent. */}
-                <div className="desktop:col-span-2 grid grid-cols-1 gap-[14px] desktop:grid-cols-3">
+                {/* Placement belongs to Basics; runtime and model are configured together below. */}
+                <div className="desktop:col-span-2 grid grid-cols-1 gap-[14px]">
                   <div className="fld">
                     <div className="flex items-center justify-between gap-3">
                       <span className="fldlbl">{t('runsOn')}</span>
@@ -823,37 +821,9 @@ export default function EditAgentModal({
                       }}
                     />
                   </div>
-                  <div className="fld">
-                    <span className="fldlbl">{t('runtime')}</span>
-                    <RuntimeSelect
-                      value={runtime}
-                      options={runtimeOptions}
-                      needsLogin={runtimesNeedingLogin}
-                      imageBinaryMissing={runtimesMissingImageBinary}
-                      onChange={onRuntimeChange}
-                    />
-                  </div>
-                  <div className="fld">
-                    <span className="fldlbl">{t('model')}</span>
-                    {/* No advertised models ⇒ nothing to choose: an inert em-dash field
-                        rather than a fabricated "Default" entry the runtime never offered. */}
-                    <ModelSelect
-                      value={selectedModel}
-                      options={modelOptionsFor(daemon, runtime, modelOptions).map((option) =>
-                        reportedModels.includes(option.value) ? option : { ...option, unavailable: true }
-                      )}
-                      disabledHint={t('noSelectableModels')}
-                      onChange={(next) => {
-                        setModel(next)
-                        // Picking a model resolves an effort the new model doesn't offer:
-                        // its default level, else the nearest available tier.
-                        setEffort((cur) => resolveEffortForModel(runtime, modelCapability(daemon, runtime, next), cur))
-                      }}
-                    />
-                  </div>
-                  {/* Wide prose — it spans the row under the three pickers. */}
+                  {/* Keep the placement warning with the daemon selector. */}
                   {sourceDaemon && sourceUnavailable && (
-                    <div className="desktop:col-span-3 flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[10px]">
+                    <div className="flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[10px]">
                       <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
                       <div className="min-w-0 flex-1">
                         <div className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
@@ -881,11 +851,32 @@ export default function EditAgentModal({
             </section>
 
             <section ref={sectionRef('runtime')} className="mt-5 border-t border-(--border-subtle) pt-5">
-              <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                {t('sections.runtime')}
-              </div>
+              <ModelSelectionField
+                agentId={agent.id}
+                value={modelSelection}
+                onChange={setModelSelection}
+                onValidityChange={setModelSelectionValid}
+                fallback={{ runtime: runtime, model: selectedModel }}
+                source={daemon}
+                runtimes={runtimeOptions}
+                enabled={featureFlagEnabled('decisions')}
+                runInSandbox={effectiveRunInSandbox}
+                fastMode={fastMode}
+                onFastModeChange={fastModeAvailable || modelSelection ? setFastMode : undefined}
+                onFallbackChange={(target) => {
+                  if (target.runtime !== runtime) onRuntimeChange(target.runtime)
+                  setModel(target.model)
+                  setEffort((current) =>
+                    resolveEffortForModel(
+                      target.runtime,
+                      modelCapability(daemon, target.runtime, target.model),
+                      current
+                    )
+                  )
+                }}
+              />
               <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
-                {(showEffort || fastModeAvailable || showPermission) && (
+                {(showEffort || showPermission) && (
                   <div className="fld desktop:col-span-2">
                     <div className="grid grid-cols-1 gap-x-7 gap-y-[14px] desktop:grid-cols-[minmax(0,1fr)_auto]">
                       {showEffort && (
@@ -907,31 +898,6 @@ export default function EditAgentModal({
                                 {o.label}
                               </button>
                             ))}
-                          </div>
-                        </div>
-                      )}
-                      {fastModeAvailable && (
-                        <div className="flex flex-col gap-[6px]">
-                          <span className="fldlbl">{t('fastMode')}</span>
-                          <div className="pillbar self-start">
-                            <button
-                              type="button"
-                              className={
-                                fastMode ? 'pill on px-[10px] py-1 text-[12px]' : 'pill px-[10px] py-1 text-[12px]'
-                              }
-                              onClick={() => setFastMode(true)}
-                            >
-                              {t('on')}
-                            </button>
-                            <button
-                              type="button"
-                              className={
-                                fastMode ? 'pill px-[10px] py-1 text-[12px]' : 'pill on px-[10px] py-1 text-[12px]'
-                              }
-                              onClick={() => setFastMode(false)}
-                            >
-                              {t('off')}
-                            </button>
                           </div>
                         </div>
                       )}
@@ -1106,7 +1072,7 @@ export default function EditAgentModal({
         </Button>
         <Button
           variant={forceMove ? 'danger' : 'primary'}
-          disabled={saving || !loaded || sourceBlocksSafeMove}
+          disabled={saving || !loaded || sourceBlocksSafeMove || (validateModelSelection && !modelSelectionValid)}
           onClick={() => void save()}
         >
           <Icon name={forceMove ? 'triangle-alert' : 'check'} size={15} />

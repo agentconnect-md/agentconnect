@@ -382,7 +382,8 @@ export interface TurnRun {
   /** Logical session key. */
   readonly key: string
   readonly plan: TurnPlan
-  readonly agent: LoadedAgent
+  // Session runtime selection replaces only the execution fields before opening the host.
+  agent: LoadedAgent
   readonly replyConn: ReplyConnection | undefined
   /** The platform egress transport this turn leased, when its output does not go through
    *  `replyConn`. Resolved ONCE, with the lease, and handed to the output surface as-is. */

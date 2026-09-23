@@ -65,7 +65,7 @@ export function AgentDecisionsCard({ agentId, canEdit }: { agentId: string; canE
     <div className="card overflow-hidden max-desktop:rounded-lg desktop:max-w-[760px]">
       <div className="cardhead flex-wrap gap-2">
         <span className="cardtitle">{t('title')}</span>
-        {menu}
+        {menu && <div className="ml-auto">{menu}</div>}
       </div>
       {failure && (
         <div role="alert" className="px-4 py-3 text-[13px] text-(--status-error)">

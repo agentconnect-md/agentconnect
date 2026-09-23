@@ -14,6 +14,7 @@ import type { CodeHostReplyTarget } from '../codehost/reply-target.js'
 import { gitlabApiBaseUrl } from './api-base.js'
 import { GITLAB_HOST_MISMATCH_REASON } from './host-fence.js'
 import { GitlabFinalPoster } from './poster.js'
+import { readPullDescription } from '../codehost/pull-description.js'
 
 /** What GitLab's members read back on the daemon: the §14.1 effect lease, and the instance its spec names. */
 export interface GitlabTurnFinalHost {
@@ -101,5 +102,15 @@ export const gitlabTurnFinal: CodeHostTurnFinal<'gitlab'> = {
   worktreeCleanup,
   effectLease,
   finalPoster,
+  pullRequestDescription: async (source, agentId, host, signal) => {
+    if (source.gitlab?.target.kind !== 'merge_request') return undefined
+    const target = replyTarget(source)!
+    return readPullDescription(
+      effectLease(agentId, target, host),
+      `/projects/${encodeURIComponent(target.repo)}/merge_requests/${target.number}`,
+      'description',
+      signal
+    )
+  },
   reportsAbsentOutput: true
 }

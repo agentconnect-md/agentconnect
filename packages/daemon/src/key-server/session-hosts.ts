@@ -1,4 +1,5 @@
 import { sessionHostKey, type HostKey } from '../acp/host-key.js'
+import { agentWithRuntime } from '../decisions/model-selection.js'
 import type { AcpHost } from '../acp/acp-host.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { RuntimeDef } from '../config/config-schema.js'
@@ -26,7 +27,7 @@ export const internalSessionKey = {
 /** What the pool still needs from the daemon: host construction, store reads, org lookup, log. */
 export interface ModelSessionHostPoolHost {
   log(): Logger
-  agent(agentId: string): LoadedAgent | undefined
+  agent(agentId: string, sessionKey?: string): LoadedAgent | undefined
   runtime(kind: string): RuntimeDef | undefined
   orgForAgent(agentId: string): string | undefined
   modelOverride(sessionKey: string): Promise<string | undefined>
@@ -227,11 +228,8 @@ export class ModelSessionHostPool {
     if (!keyServer) throw new Error('key-server is not configured')
     const runtime = this.host.runtime(agent.runtime)
     if (!runtime) throw new Error(`runtime "${agent.runtime}" is unavailable`)
-    const target = modelProviderTarget(
-      agent,
-      runtime,
-      effectiveModel ?? (await this.host.modelOverride(sessionKey)) ?? agent.runtimeOverrides?.model
-    )
+    const model = effectiveModel ?? (await this.host.modelOverride(sessionKey)) ?? agent.runtimeOverrides?.model
+    const target = modelProviderTarget(agent, runtime, model)
     if (!target) throw new Error(`runtime "${agent.runtime}" does not support MODEL_TOKEN translation`)
     const now = this.opts.now()
     let entry = this.entries.get(sessionKey)
@@ -299,7 +297,7 @@ export class ModelSessionHostPool {
       // of seeing an entry with no host, stopping nothing, and leaking the process it misses.
       const starting: Promise<AcpHost> = (owner.starting ??= shareStartup(() =>
         this.host
-          .startRuntime(agent, owner)
+          .startRuntime(model ? agentWithRuntime(agent, { runtime: agent.runtime, model }) : agent, owner)
           .then((started) => {
             owner.host = started
             return started
@@ -324,7 +322,7 @@ export class ModelSessionHostPool {
     const credentialHost = this.entries.get(sessionKey)
     if (credentialHost) return credentialHost.target
     if (this.keyServer || !this.opts.k8s || !this.staticModelCredentials) return undefined
-    const agent = this.host.agent(agentId)
+    const agent = this.host.agent(agentId, sessionKey)
     const runtime = agent ? this.host.runtime(agent.runtime) : undefined
     const target = agent && runtime ? modelProviderTarget(agent, runtime) : undefined
     // A partial map binds only the providers it configures; the rest keep their runtime-owned auth.
@@ -337,7 +335,7 @@ export class ModelSessionHostPool {
   crossesHostProvider(sessionKey: string, agentId: string, model: string): boolean {
     const bound = this.boundTarget(sessionKey, agentId)
     if (!bound) return false
-    const agent = this.host.agent(agentId)
+    const agent = this.host.agent(agentId, sessionKey)
     const runtime = agent ? this.host.runtime(agent.runtime) : undefined
     const target = agent && runtime ? modelProviderTarget(agent, runtime, model) : undefined
     return !target || JSON.stringify(target) !== JSON.stringify(bound)

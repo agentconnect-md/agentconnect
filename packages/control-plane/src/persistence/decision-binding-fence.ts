@@ -3,6 +3,23 @@ import { Prisma } from '../generated/prisma/client.js'
 import type { OrgId } from '../domain/ids.js'
 import type { ResourceVisibility } from './ports.js'
 import { lockResourceWriteMemberships } from './resource-membership-lock.js'
+import { DecisionQuestion, decisionModelSelectionIssues, type AgentModelSelection } from '@agentconnect.md/protocol'
+
+export class ModelSelectionInvalid extends Error {}
+
+export async function validateModelSelection(
+  tx: Prisma.TransactionClient,
+  orgId: OrgId,
+  selection: AgentModelSelection | null | undefined,
+  fallbackModel: string | null | undefined
+): Promise<void> {
+  if (!selection) return
+  if (!fallbackModel) throw new ModelSelectionInvalid('Choose a default model before enabling model selection.')
+  const row = await tx.decision.findFirst({ where: { orgId, id: selection.decisionId } })
+  if (!row) throw new DecisionBindingDenied()
+  const issues = decisionModelSelectionIssues(DecisionQuestion.parse(row.question), selection)
+  if (issues.length) throw new ModelSelectionInvalid(issues[0]!.message)
+}
 
 export class DecisionBindingDenied extends Error {
   constructor() {
@@ -18,7 +35,7 @@ export async function enterDecisionBindingFence(
   orgId: OrgId,
   submitted: readonly string[] | null | undefined,
   actorUserId: string | undefined
-): Promise<(held: readonly string[]) => void> {
+): Promise<(held: readonly string[], requested?: readonly string[]) => void> {
   if (!submitted?.length) return () => {}
   if (!actorUserId) throw new DecisionBindingDenied()
   await lockResourceWriteMemberships(tx, { orgId, visibility: 'org', actorUserId })
@@ -32,7 +49,7 @@ export async function enterDecisionBindingFence(
   const visible = new Set(
     rows.filter((row) => canView(row, { userId: actorUserId, role: member.role })).map((row) => row.id)
   )
-  return (held) => {
-    if (submitted.some((id) => !held.includes(id) && !visible.has(id))) throw new DecisionBindingDenied()
+  return (held, requested = submitted) => {
+    if (requested.some((id) => !held.includes(id) && !visible.has(id))) throw new DecisionBindingDenied()
   }
 }
