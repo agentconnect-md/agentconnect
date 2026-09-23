@@ -12,9 +12,9 @@ import {
   parseValueFlag,
   withResolvedRoot
 } from './route.js'
+import { cliCommand, setInvocation } from './invocation.js'
 import { runLogin } from './login.js'
 import {
-  commandSelector,
   controllerFor,
   isElevated,
   listInstances,
@@ -81,6 +81,8 @@ async function main(): Promise<void> {
   if (instance !== undefined) argv = withResolvedRoot(argv, root)
   const cliEntry = fileURLToPath(import.meta.url)
   selfHealCliEntry(root, cliEntry)
+  // Elevated, PATH is sudo's secure_path; the pre-sudo snapshot is what the operator's shell resolves.
+  setInvocation({ cliEntry, path: servicePath ?? process.env.PATH, platform: process.platform })
 
   // ── Route by the first positional command (honoring global options before it),
   //    reserving only CLI-owned commands; everything else delegates verbatim (§4.2).
@@ -122,12 +124,12 @@ async function main(): Promise<void> {
   // and every suggested follow-up command repeats that selector so a copy-paste
   // lands on this instance rather than the default one.
   const serviceTarget = () => ({ root, ...(instance !== undefined ? { instance } : {}) })
-  const selector = commandSelector(serviceTarget())
+  const selector = cliCommand(serviceTarget())
   const controller = () => resolveController(serviceTarget())
   const requireInstalled = (c: ReturnType<typeof controller>): void => {
     if (!c.isInstalled()) {
       console.error(
-        `agentconnect: no service installed (${c.label}) — run \`agentconnect${selector} install-service\` first, or \`agentconnect${selector} run\` for foreground`
+        `agentconnect: no service installed (${c.label}) — run \`${selector} install-service\` first, or \`${selector} run\` for foreground`
       )
       process.exit(1)
     }
@@ -184,7 +186,7 @@ async function main(): Promise<void> {
         console.log('agentconnect: service restarted')
       } catch (err) {
         console.error(
-          `agentconnect restart: service stopped but failed to start again — run \`agentconnect${selector} up\` to retry: ${(err as Error).message}`
+          `agentconnect restart: service stopped but failed to start again — run \`${selector} up\` to retry: ${(err as Error).message}`
         )
         process.exit(1)
       }
@@ -198,7 +200,7 @@ async function main(): Promise<void> {
         const s = await controller().status()
         if (!s.installed) {
           console.log(
-            `service: not installed (${s.label}). Run \`agentconnect${selector} install-service\` or \`agentconnect${selector} run\`.`
+            `service: not installed (${s.label}). Run \`${selector} install-service\` or \`${selector} run\`.`
           )
           return
         }
@@ -224,7 +226,7 @@ async function main(): Promise<void> {
             `Neither a polkit rule nor a sudoers grant could be installed on this host, so \`up\`/\`down\`/\`restart\` need sudo (\`sudo systemctl start ${outcome.controller.label}\`).`
           )
         }
-        console.log(`Run \`agentconnect${selector} up\` to start it.`)
+        console.log(`Run \`${selector} up\` to start it.`)
       } catch (err) {
         fail('install-service', err)
       }
@@ -251,7 +253,7 @@ async function main(): Promise<void> {
         const found = listInstances()
         if (found.length === 0) {
           console.log(
-            'no daemon service installed — run `agentconnect install-service` (add `--instance <name>` for a second one)'
+            `no daemon service installed — run \`${cliCommand()} install-service\` (add \`--instance <name>\` for a second one)`
           )
           return
         }

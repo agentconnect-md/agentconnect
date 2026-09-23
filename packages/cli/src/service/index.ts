@@ -8,7 +8,8 @@ import { resolve } from 'node:path'
 import { isElevated, resolveServiceAccount, type ServiceAccount } from './account.js'
 import { findInstanceUnit, listInstances } from './discover.js'
 import { defaultExec } from './exec.js'
-import { clearInstancePointer, commandSelector, resolveServiceTarget, writeInstancePointer } from './instance.js'
+import { cliCommand } from '../invocation.js'
+import { clearInstancePointer, resolveServiceTarget, writeInstancePointer } from './instance.js'
 import { LaunchdController } from './launchd.js'
 import { SystemdController } from './systemd.js'
 import type { ControllerDeps, Exec, InstalledUnit, InstallOpts, ServiceController } from './types.js'
@@ -41,7 +42,7 @@ export { SystemdController, systemdUnitName, type SystemdScope } from './systemd
 export function pickController(platform: NodeJS.Platform, deps: ControllerDeps): ServiceController {
   if (platform === 'darwin') return new LaunchdController(deps)
   if (platform === 'linux') return new SystemdController(deps)
-  throw new Error(`system service install is not supported on ${platform} yet — use \`agentconnect run\``)
+  throw new Error(`system service install is not supported on ${platform} yet — use \`${cliCommand()} run\``)
 }
 
 /**
@@ -174,7 +175,7 @@ export async function installService(target: ControllerTarget, opts: InstallOpts
   const legacy = findUserScopeUnit(target)
   if (legacy) {
     throw new Error(
-      `${legacy.label} is still installed under ~/.config/systemd/user — run \`agentconnect${commandSelector({ root, ...(instance ? { instance } : {}) })} install-service\` WITHOUT sudo (it retires that unit, then asks for root itself)`
+      `${legacy.label} is still installed under ~/.config/systemd/user — run \`${cliCommand({ root, ...(instance ? { instance } : {}) })} install-service\` WITHOUT sudo (it retires that unit, then asks for root itself)`
     )
   }
   // Moving an instance to another root is only safe while it is stopped:
@@ -190,7 +191,7 @@ export async function installService(target: ControllerTarget, opts: InstallOpts
     }).status()
     if (running.running) {
       throw new Error(
-        `${previous.label} is running against ${previous.root} — run \`agentconnect${commandSelector({ root: previous.root, ...(instance ? { instance } : {}) })} down\` before moving this instance to ${root}`
+        `${previous.label} is running against ${previous.root} — run \`${cliCommand({ root: previous.root, ...(instance ? { instance } : {}) })} down\` before moving this instance to ${root}`
       )
     }
     // The old root's pointer would otherwise keep claiming a unit that no longer
