@@ -39,8 +39,8 @@ export interface WorkspaceScope {
   /** The root in EXECUTION coordinates — under `--k8s`, the sandbox pod's volume. */
   location(agentId: string, sessionId?: string, repo?: string): Promise<WorkspaceLocation | undefined>
   gitRoot(agentId: string, sessionId?: string, repo?: string): Promise<string | undefined>
-  /** The origin and branch a network git operation on this scope may reach. */
-  target(agentId: string, repo?: string): Promise<WorkspaceGitTarget | undefined>
+  /** The origin and branch a network git operation on this scope may reach; a session names its own clone's. */
+  target(agentId: string, repo?: string, sessionId?: string): Promise<WorkspaceGitTarget | undefined>
   /** Whether git on this scope rides the daemon credential helper; answered without touching any volume. */
   usesGithubApp(agentId: string, repo?: string): boolean
 }
@@ -84,6 +84,14 @@ export function createWorkspaceScope(deps: WorkspaceScopeDeps): WorkspaceScope {
     }
   }
 
+  // An isolated session's secondary branch is the one its own clone attests; everything else reads the agent's checkout.
+  const secondaryTarget = async (agent: Agent, repo: string, sessionId?: string) => {
+    const session = sessionId === undefined ? undefined : await deps.sessionOf(agent.id, sessionId)
+    return session?.workspaceIsolation === 'session'
+      ? await deps.workspaces.sessionConsoleSecondaryRoot(agent, repo, session.key)
+      : await deps.workspaces.consoleSecondaryRoot(agent, repo)
+  }
+
   const location = async (
     agentId: string,
     sessionId?: string,
@@ -107,13 +115,12 @@ export function createWorkspaceScope(deps: WorkspaceScopeDeps): WorkspaceScope {
   return {
     location,
     gitRoot: async (agentId, sessionId, repo) => (await location(agentId, sessionId, repo))?.root,
-    target: async (agentId, repo) => {
+    target: async (agentId, repo, sessionId) => {
       const agent = deps.agentOf(agentId)
       if (!agent) return undefined
       if (repo !== undefined) {
-        const root = await deps.workspaces.consoleSecondaryRoot(agent, repo)
-        // Rows exist only for App-covered repositories, so a secondary root always rides the helper;
-        // the branch is the one its `.materialization.json` attests, never the primary's.
+        const root = await secondaryTarget(agent, repo, sessionId)
+        // Rows exist only for App-covered repositories, so a secondary always rides the helper; its branch is its checkout's attested one, never the primary's.
         return root
           ? {
               repo: root.cloneUrl,

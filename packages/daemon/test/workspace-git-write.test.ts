@@ -633,6 +633,20 @@ describe('workspace git push preconditions (data, not errors)', () => {
       ahead: 0,
       detail: 'Everything is already pushed.'
     })
+    // A session's push is authorized against that session's own target, whose clone attests it.
+    const asked: unknown[][] = []
+    const scoped = createWorkspaceGit(
+      workspaces,
+      async () => dir,
+      () => undefined,
+      async (...args) => {
+        asked.push(args)
+        return githubTarget()
+      },
+      () => IDENTITY
+    )
+    expect(await scoped.push({ agentId: 'a', sessionId: 'sid-1' })).toMatchObject({ ok: true, ahead: 0 })
+    expect(asked).toEqual([['a', undefined, 'sid-1']])
   })
 
   it('refuses when the checkout origin is not the authorized remote, without counting against it', async () => {

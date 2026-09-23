@@ -321,6 +321,22 @@ describe('createWorkspaceGit.log against a real repo', () => {
       expect(l.commits.map((c) => c.subject)).toEqual(['the session’s own work'])
     })
 
+    it('asks the base of a session’s checkout of that session, whose own clone attests it', async () => {
+      const asked: unknown[][] = []
+      const seam = createWorkspaceGit(
+        workspaces,
+        async () => branched,
+        () => undefined,
+        async (...args) => {
+          asked.push(args)
+          return args[2] === 'sid-1' ? target : undefined
+        }
+      )
+      const l = await seam.log({ agentId: AGENT, sessionId: 'sid-1', repo: 'acme/infra', limit: 20 })
+      expect(asked).toEqual([[AGENT, 'acme/infra', 'sid-1']])
+      expect(l.base).toBe('origin/main')
+    })
+
     it('keeps the whole history on the base branch itself — there is nothing to exclude there', async () => {
       git(branched, 'checkout', '-q', 'main')
       try {
