@@ -4213,6 +4213,12 @@
       }
     },
     "breaksChannels": "These channel bindings lose their trigger condition: {names}. They are flagged Needs review after saving; nothing is reselected for you.",
+    "agentFilterChange": {
+      "title": "Review agent filters",
+      "body": "This decision is already in use. Changing its type or answer options may make an agent's filters stop matching. Review and adjust the agent's filters after saving.",
+      "confirm": "Save changes",
+      "saving": "Saving…"
+    },
     "notOffered": {
       "title": "Decisions are not enabled",
       "body": "This console has not turned on the Decisions surface. An administrator can enable it with the decisions feature flag."

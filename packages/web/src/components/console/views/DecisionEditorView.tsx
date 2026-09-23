@@ -7,6 +7,7 @@ import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
+import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
 import { LoadingState } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
@@ -165,6 +166,7 @@ function DecisionEditor() {
   const [issues, setIssues] = useState<DecisionValidationIssue[]>([])
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [confirmAgentFilterChange, setConfirmAgentFilterChange] = useState(false)
   const [history, setHistory] = useState<Array<{ sender: string; text: string }>>([])
   const [current, setCurrent] = useState('')
   const [running, setRunning] = useState(false)
@@ -280,6 +282,12 @@ function DecisionEditor() {
     draft && definition
       ? gated.filter((usage) => decisionConditionNeedsReview(definition.question, questionFrom(draft), usage.when))
       : []
+  const agentFiltersMayBreak =
+    !!draft &&
+    !!definition &&
+    usages.length > 0 &&
+    (definition.question.type !== draft.type ||
+      JSON.stringify(definition.question.criteria) !== JSON.stringify(questionFrom(draft).criteria))
 
   if (!featureFlagEnabled('decisions')) return <DecisionsNotOffered />
 
@@ -425,7 +433,7 @@ function DecisionEditor() {
     }
   }
 
-  const save = async () => {
+  const save = async (confirmedAgentFilterChange = false) => {
     if (!editable) return
     const found = validate()
     setIssues(found)
@@ -442,6 +450,10 @@ function DecisionEditor() {
     const parsed = DecisionDraft.safeParse(input)
     if (!parsed.success) {
       setSaveError(parsed.error.issues[0]?.message ?? t('errors.unknown'))
+      return
+    }
+    if (agentFiltersMayBreak && !confirmedAgentFilterChange) {
+      setConfirmAgentFilterChange(true)
       return
     }
     setSaving(true)
@@ -482,6 +494,20 @@ function DecisionEditor() {
           {id ? t('save') : t('create')}
         </Button>
       </div>
+
+      {confirmAgentFilterChange && (
+        <ConfirmationDialog
+          title={t('agentFilterChange.title')}
+          confirmLabel={t('agentFilterChange.confirm')}
+          busy={saving}
+          busyLabel={t('agentFilterChange.saving')}
+          error={saveError}
+          onConfirm={() => void save(true)}
+          onClose={() => setConfirmAgentFilterChange(false)}
+        >
+          {t('agentFilterChange.body')}
+        </ConfirmationDialog>
+      )}
 
       <div className="grid grid-cols-1 items-start gap-[18px] desktop:grid-cols-[minmax(0,1fr)_400px]">
         <div className="flex min-w-0 flex-col gap-4">

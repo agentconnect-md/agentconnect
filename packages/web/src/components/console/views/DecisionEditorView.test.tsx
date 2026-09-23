@@ -248,6 +248,18 @@ describe('DecisionEditorView', () => {
     })
   })
 
+  it('warns before saving changed answers used by agents', async () => {
+    params = { id: 'support-category' }
+    await render()
+    const update = vi.spyOn(store.api, 'updateDecision')
+    await type('input[placeholder="What this answer means"]', 0, 'Updated answer')
+    await click(byText('Save'))
+    expect(byText('Review agent filters')).toBeTruthy()
+    expect(update).not.toHaveBeenCalled()
+    await click(byText('Save changes'))
+    expect(update).toHaveBeenCalledOnce()
+  })
+
   it('replaces the criteria wholesale when the question type changes', async () => {
     await render()
     await click(byText('Score'))
