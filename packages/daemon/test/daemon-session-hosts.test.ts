@@ -534,6 +534,20 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     await daemon.stop()
   })
 
+  it('keeps the self-hosted cold gate for a review host started in the cwd it prepared', async () => {
+    const { daemon } = await startDaemon(scaffold())
+    const preparation = vi.spyOn(daemon as any, 'runAgentWorkspacePreparation')
+    const agent = (daemon as any).agents.get('bot-a')
+    const cwd = join((daemon as any).workspaces.sessionDir(agent, KEY('T1')), 'workspace')
+    mkdirSync(cwd, { recursive: true })
+
+    await (daemon as any).sessions.deps.hostFor('bot-a', { sessionKey: KEY('T1'), isolation: 'session' }, cwd)
+
+    expect(preparation.mock.calls.map((call) => call[1])).toEqual([undefined])
+    expect((daemon as any).hostLaunch.get(sessionHostKey('bot-a', KEY('T1'))).cwd).toBe(cwd)
+    await daemon.stop()
+  })
+
   it('keys a session by the isolation ITS row reports, not the agent default it may differ from', async () => {
     // The console's workspace routing, retention and preparation all read that row: a tier chosen from
     // anything else would put the runtime in a directory none of them addresses.

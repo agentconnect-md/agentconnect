@@ -5394,6 +5394,32 @@ export class Daemon {
     )
   }
 
+  /** Whether this session's host runs in the session's own pool pod (§11), whose start needs nothing of the agent's checkout. */
+  private runsInSessionPod(agent: Agent, sessionKey: string | undefined): sessionKey is string {
+    return this.k8sPlane !== undefined && this.confinedSession(agent, sessionKey)
+  }
+
+  /** The cold gate of a host in its session's own pod whose workspace another step prepares: re-verify that pod's skills and answer the session's cwd there, never touching the agent's checkout. */
+  private prepareSessionPodLaunch(agent: Agent, sessionKey: string, allowAgentDrain = false): Promise<string> {
+    const plane = this.k8sPlane!
+    const pod = sandboxSubjectFor(sessionHostKey(agent.id, sessionKey))
+    return withStartupPhase('workspace', () =>
+      this.enqueueAgentWorkspacePreparation(
+        agent,
+        () =>
+          this.withSandboxVolume(pod, async () => {
+            await this.reconcileClusterSkills(agent, pod)
+            return this.workspaces.clusterWorkspaceCwd(agent, plane.workspaceRootFor(pod), {
+              sessionKey,
+              isolation: 'session'
+            })
+          }),
+        undefined,
+        allowAgentDrain
+      )
+    )
+  }
+
   private async waitForWorkspacePreparations(agentId: string): Promise<void> {
     while (true) {
       const tail = this.workspacePreparationTails.get(agentId)
@@ -6066,7 +6092,10 @@ export class Daemon {
     const attempts = Math.max(1, this.cfg.limits.agentStartAttempts)
     let lastError: unknown
     for (let attempt = 1; attempt <= attempts; attempt++) {
-      const cwd = await this.prepareAgentWorkspace(agent, undefined, undefined)
+      // A session in its own pod prepares its workspace when it opens, after this launch; the gate re-verifies that pod alone.
+      const cwd = this.runsInSessionPod(agent, entry.sessionKey)
+        ? await this.prepareSessionPodLaunch(agent, entry.sessionKey)
+        : await this.prepareAgentWorkspace(agent, undefined, undefined)
       const hostKey = sessionHostKey(agent.id, entry.sessionKey)
       const { host, configFileState } = this.buildAcpHost(agent, this.cfg, {
         hostKey,
@@ -16723,20 +16752,20 @@ export class Daemon {
       if (this.hostStartGeneration.get(key) !== generation) {
         throw new Error(`host start superseded for ${label}`)
       }
-      // This is the cold-host gate for every daemon caller and every fresh spawn
-      // attempt. A failed ACP child had workspace write authority; re-verify the
-      // immutable skill receipts after it is fully reaped and before constructing
-      // its replacement, rather than trusting the first attempt's gate.
-      const prepared = await this.prepareAgentWorkspace(
-        agent,
-        undefined,
-        bound && bound.cwd === undefined ? bound.workspace : undefined,
-        allowAgentDrain
-      )
+      const boundKey = bound && hostKeySessionKey(key)
+      // The cold gate, before every fresh spawn: a failed child had write authority, so its replacement re-verifies the skill receipts; a review in its own pod needs only that, its cwd already prepared.
+      const prepared =
+        bound?.cwd !== undefined && this.runsInSessionPod(agent, boundKey)
+          ? await this.prepareSessionPodLaunch(agent, boundKey, allowAgentDrain)
+          : await this.prepareAgentWorkspace(
+              agent,
+              undefined,
+              bound && bound.cwd === undefined ? bound.workspace : undefined,
+              allowAgentDrain
+            )
       if (!this.usesMicrosandbox(agent))
         await withStartupPhase('runtime', () => this.ensureRuntimeInstalled(agent.runtime, true))
       // Clones off this disk are listed where they are, since the launch cannot read them itself; no answer grants nothing.
-      const boundKey = bound && hostKeySessionKey(key)
       const listing = boundKey ? this.workspaces.offDiskSessionGitDirs(agent, boundKey) : undefined
       const sessionGitDirs = listing
         ? await listing.catch((err: unknown) => {
