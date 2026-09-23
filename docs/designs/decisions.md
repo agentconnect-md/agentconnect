@@ -1779,6 +1779,10 @@ settings; the shared Agent configuration is never changed. The saved configurati
 survives later turns, context resets, and daemon restart/resume. Changing or removing an Agent binding affects
 new sessions. Sessions that have already prompted are not evaluated retroactively.
 Actual runtime/model observations continue to drive metadata, status, and usage.
+Session metadata also reports the saved effort, approval mode, and Fast mode instead
+of the Agent's current defaults. Authorized in-session overrides still take precedence,
+as does an explicitly reported approval mode. An empty saved effort means the runtime
+default, and a saved false Fast mode remains off.
 
 In the new-chat composer, an Agent with a binding starts on **By decision**. The
 picker's top row names the saved Decision; choosing a concrete provider/model is

@@ -14,6 +14,7 @@ async function world() {
   const now = 1_000_000
   const sync = vi.fn<(event: EventSession) => Promise<'acknowledged' | 'unsupported'>>(async () => 'acknowledged')
   const cp = { state: 'READY', supportsServerFeature: () => true, syncEventSession: sync }
+  const agent = { id: AGENT, reasoningEffort: 'high', permissionMode: 'agent', fastMode: true }
   const host: SessionMetadataHost = {
     store: () => store,
     warn: vi.fn(),
@@ -23,7 +24,7 @@ async function world() {
     controlPlaneConfigured: () => true,
     draining: () => false,
     cpClient: () => cp as never,
-    agents: () => new Map([[AGENT, { id: AGENT } as never]]),
+    agents: () => new Map([[AGENT, agent as never]]),
     servesAgent: () => true,
     sessionLink: (id) => `https://console.example.test/sessions/${id}`,
     sessionThreadUrl: () => undefined
@@ -72,14 +73,22 @@ async function world() {
 }
 
 describe('session metadata names its classification by the logical session', () => {
-  it('publishes each session runtime and model selection independently', async () => {
+  it('publishes each session runtime, model, and run settings independently', async () => {
     const w = await world()
-    await w.store.pinDecisionModel(w.dm.key, { runtime: 'runtime-a', model: 'model-a' })
-    await w.store.pinDecisionModel(w.channel.key, { runtime: 'runtime-b', model: 'model-b' })
+    const dmTarget = { runtime: 'runtime-a', model: 'model-a', effort: '', permissionMode: 'auto', fastMode: false }
+    const channelTarget = {
+      runtime: 'runtime-b',
+      model: 'model-b',
+      effort: 'low',
+      permissionMode: 'plan',
+      fastMode: true
+    }
+    await w.store.pinDecisionModel(w.dm.key, dmTarget)
+    await w.store.pinDecisionModel(w.channel.key, channelTarget)
     await w.start()
     const seen = await w.events()
-    expect(seen.get(w.dm.outward)).toMatchObject({ runtime: 'runtime-a', model: 'model-a' })
-    expect(seen.get(w.channel.outward)).toMatchObject({ runtime: 'runtime-b', model: 'model-b' })
+    expect(seen.get(w.dm.outward)).toMatchObject(dmTarget)
+    expect(seen.get(w.channel.outward)).toMatchObject(channelTarget)
     w.outbox.dispose()
     await w.store.close()
   })
