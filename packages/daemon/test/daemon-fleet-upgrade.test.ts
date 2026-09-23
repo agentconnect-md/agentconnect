@@ -2,11 +2,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { RESERVED_RESTART_CODE } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
+import { FakeClock } from './cp/fake-clock.js'
 
 const roots: string[] = []
 
-function scaffold(): string {
+function scaffold(limits?: Record<string, number>): string {
   const root = mkdtempSync(join(tmpdir(), 'agentconnect-fleet-upgrade-'))
   roots.push(root)
   writeFileSync(
@@ -14,7 +16,8 @@ function scaffold(): string {
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
-      runtimes: { claude: { command: 'node', args: ['unused'] } }
+      runtimes: { claude: { command: 'node', args: ['unused'] } },
+      ...(limits ? { limits } : {})
     })
   )
   const cliEntry = join(root, 'agentconnect-cli.js')
@@ -52,6 +55,32 @@ describe('daemon fleet upgrade coordination', () => {
     outcome.restart()
     await vi.waitFor(() => expect(requestExit).toHaveBeenCalledTimes(1))
     expect(reportLifecycleProgress).toHaveBeenCalledWith({ operationId: 'upgrade-1', phase: 'restarting' })
+  })
+
+  it('exits for the relaunch when stop() is still parked past the drain budget', async () => {
+    const clock = new FakeClock()
+    const requestExit = vi.fn()
+    const root = scaffold({ shutdownDrainMs: 5_000 })
+    const daemon = new Daemon({ root, supervisor: 'cli', clock, requestExit })
+    await daemon.start()
+    const realStop = daemon.stop.bind(daemon)
+    const stop = vi.fn(() => new Promise<void>(() => {}))
+    Object.assign(daemon, { stop })
+    const error = vi.spyOn((daemon as any).log, 'error')
+
+    try {
+      expect((daemon as any).fleetUpgrade.scheduleFleetExit('restart')).toMatchObject({ accepted: true })
+      await vi.waitFor(() => expect(stop).toHaveBeenCalledTimes(1))
+      clock.advance(34_999)
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(requestExit).not.toHaveBeenCalled()
+
+      clock.advance(1)
+      await vi.waitFor(() => expect(requestExit).toHaveBeenCalledWith(RESERVED_RESTART_CODE))
+      expect(error).toHaveBeenCalledWith('cp: restart shutdown still running after 35s — exiting anyway')
+    } finally {
+      await realStop()
+    }
   })
 
   it('reports preparation failure without stopping the serving daemon', async () => {
