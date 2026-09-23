@@ -194,6 +194,12 @@ export type SessionRootScope = Pick<PrepareSessionWorkspaceRequest, 'isolation' 
  *  names no worktree. */
 export type ClusterSessionScope = Pick<PrepareSessionWorkspaceRequest, 'isolation'> & { sessionKey?: string }
 
+/** Runs `work` with the agent's own volume reachable; a pool preparation of an isolated session holds only its own pod and reaches the agent's through this, for work due there. */
+export type AgentVolumeReach = <T>(work: () => Promise<T>) => Promise<T>
+
+/** The agent's volume is already reachable: this disk, an executor's holder, or a preparation that holds the agent pod throughout. */
+const reachInPlace: AgentVolumeReach = (work) => work()
+
 /** What a secondary root's `.materialization.json` records about the checkout beside it. */
 interface SecondaryMaterialization {
   /** Absent in a marker written before GitLab roots existed, which means github. */
@@ -731,22 +737,35 @@ export class WorkspaceManager {
     return this.confinedSessionDir(agent, scope.sessionKey)
   }
 
-  /** The recorded subtree whose checkout is this session's cwd, durable so a restart re-prepares the same one; `migrate` is preparation's alone, which still holds the agent's filesystem and moves a confined session's record from beside the agent's subtree into its own directory. */
+  /** The recorded subtree whose checkout is this session's cwd, durable so a restart re-prepares the same one; `migrate` is preparation's alone, the one reader that moves a confined session's record from beside the agent's subtree into its own directory. */
   private async recordedSessionCwdSubtree(
     agent: Agent,
     scope: SessionRootScope & { sessionKey: string },
-    migrate?: { confined?: boolean }
+    migrate?: { confined?: boolean; reach?: AgentVolumeReach }
   ): Promise<string | undefined> {
     const own = this.sessionCwdRecordDir(agent, scope, migrate?.confined)
     if (own === undefined) return (await this.legacySessionCwdSubtree(agent, scope.sessionKey))?.subtreeName
-    // A confined session's readers ask its own directory alone, so a turn never needs the agent's filesystem.
-    const recorded = await this.sessionCwdRecordAt(agent, scope.sessionKey, own)
-    if (recorded !== undefined || migrate === undefined) return recorded
-    const legacy = await this.legacySessionCwdSubtree(agent, scope.sessionKey)
-    if (legacy === undefined) return undefined
-    await this.writeSessionCwdRecord(agent, scope.sessionKey, own, legacy.subtreeName)
-    await this.forgetLegacySessionCwdRoots(agent, this.sessionWorktreeId(scope.sessionKey))
-    return legacy.subtreeName
+    // A confined session's own directory answers alone — for a turn always, for preparation unless the session predates its record.
+    if (migrate === undefined || !(await this.mayHoldLegacySessionCwd(agent, scope.sessionKey, own))) {
+      return await this.sessionCwdRecordAt(agent, scope.sessionKey, own)
+    }
+    return await (migrate.reach ?? reachInPlace)(async () => {
+      const legacy = await this.legacySessionCwdSubtree(agent, scope.sessionKey)
+      // Recorded either way, the primary included, so no later preparation asks the agent's filesystem again.
+      await this.writeSessionCwdRecord(agent, scope.sessionKey, own, legacy?.subtreeName)
+      if (legacy !== undefined) await this.forgetLegacySessionCwdRoots(agent, this.sessionWorktreeId(scope.sessionKey))
+      return legacy?.subtreeName
+    })
+  }
+
+  /** Whether a confined session's cwd may be recorded only beside the agent's subtree: it has no record of its own, which every preparation now writes, yet holds a clone of an additional repository, which is all such a record can name. */
+  private async mayHoldLegacySessionCwd(agent: Agent, sessionKey: string, sessionDir: string): Promise<boolean> {
+    const fs = this.fsFor(agent.id, { sessionKey })
+    if ((await fs.stat(sessionCwdRecordIn(sessionDir))) !== 'missing') return false
+    for (const root of this.secondaryRootsFor(agent)) {
+      if ((await fs.stat(join(sessionRootCloneIn(sessionDir, root.subtreeName), '.git'))) !== 'missing') return true
+    }
+    return false
   }
 
   /** A confined session's record in its own directory; the session's runtime can write there too, so it counts only as a subtree name whose clone the session holds. */
@@ -762,16 +781,16 @@ export class WorkspaceManager {
       : undefined
   }
 
-  /** Record in a confined session's own directory that one secondary root's clone is its cwd. */
+  /** Record in a confined session's own directory which secondary root's clone is its cwd, `null` for the primary. */
   private async writeSessionCwdRecord(
     agent: Agent,
     sessionKey: string,
     sessionDir: string,
-    subtreeName: string
+    subtreeName: string | undefined
   ): Promise<void> {
     await this.fsFor(agent.id, { sessionKey }).writeFile(
       sessionCwdRecordIn(sessionDir),
-      JSON.stringify({ subtreeName }, null, 2) + '\n',
+      JSON.stringify({ subtreeName: subtreeName ?? null }, null, 2) + '\n',
       { mode: 0o600 }
     )
   }
@@ -2055,12 +2074,16 @@ export class WorkspaceManager {
     }
   }
 
-  /** The authorized root a session already stands in, from its record — the one read that migrates a confined session's record into its own directory. */
+  /** The authorized root a session already stands in, from its record — the one read that migrates a confined session's record into its own directory, reaching the agent's volume for that alone. */
   private async resumedReviewedRoot(
     agent: Agent,
-    request: PrepareSessionWorkspaceRequest
+    request: PrepareSessionWorkspaceRequest,
+    reach?: AgentVolumeReach
   ): Promise<SecondaryWorkspaceRoot | undefined> {
-    const recorded = await this.recordedSessionCwdSubtree(agent, request, { confined: request.confined === true })
+    const recorded = await this.recordedSessionCwdSubtree(agent, request, {
+      confined: request.confined === true,
+      reach
+    })
     if (recorded === undefined) return undefined
     const key = repoKey(recorded)
     return this.secondaryRootsFor(agent).find((entry) => repoKey(entry.subtreeName) === key)
@@ -2181,7 +2204,8 @@ export class WorkspaceManager {
     agent: Agent,
     root: WorkspaceRoot,
     request: PrepareSessionWorkspaceRequest,
-    discover?: (read: () => Promise<Set<string>>) => Promise<void>
+    discover?: (read: () => Promise<Set<string>>) => Promise<void>,
+    reach: AgentVolumeReach = reachInPlace
   ): Promise<{ path: string; branch: string }> {
     // By the SESSION, not the agent: its clones may live on a machine that holds nothing else of it (session-executors.md §7).
     const fs = this.fsFor(agent.id, { sessionKey: request.sessionKey })
@@ -2232,7 +2256,9 @@ export class WorkspaceManager {
       }
     } else {
       // Before anything touches the clone, so one that attests another repository is left as it is.
-      if (secondary) taken = { ...root, branch: (await this.attestedSessionRoot(agent, secondary, cwd, fs)).branch }
+      if (secondary) {
+        taken = { ...root, branch: (await this.attestedSessionRoot(agent, secondary, cwd, fs, reach)).branch }
+      }
       if (taken.githubApp) {
         // A resumed clone gets the canonical origin and a live helper pin.
         await this.convergeOriginInPlaceFor(agent.id, taken, cwd)
@@ -2245,16 +2271,17 @@ export class WorkspaceManager {
     return { path: cwd, branch: taken.branch }
   }
 
-  /** What a resumed secondary clone attests about itself; one cloned before clones carried it takes the agent's marker once, which preparation still reaches, and anything not attesting this repository is refused. */
+  /** What a resumed secondary clone attests about itself; one cloned before clones carried it takes the agent's marker once, reaching the agent's volume for that read alone, and anything not attesting this repository is refused. */
   private async attestedSessionRoot(
     agent: Agent,
     root: SecondaryWorkspaceRoot,
     clone: string,
-    fs: WorkspaceFs
+    fs: WorkspaceFs,
+    reach: AgentVolumeReach
   ): Promise<SecondaryMaterialization> {
     let recorded = await this.sessionRootAttestation(fs, clone)
     if (recorded === undefined) {
-      recorded = await this.agentRootMaterialization(agent, root)
+      recorded = await reach(() => this.agentRootMaterialization(agent, root))
       if (recorded !== undefined && attestsRoot(recorded, root)) {
         await fs.writeFile(sessionRootAttestationIn(clone), secondaryMaterializationText(recorded), { mode: 0o600 })
       }
@@ -2428,16 +2455,22 @@ export class WorkspaceManager {
   async prepareClusterWorkspace(
     agent: Agent,
     runtimeRoot: string | undefined,
-    request?: PrepareSessionWorkspaceRequest
+    request?: PrepareSessionWorkspaceRequest,
+    reach: AgentVolumeReach = reachInPlace
   ): Promise<string> {
     const root = runtimeRoot ?? DEFAULT_SHIM_WORKSPACE_ROOT
     // A pool member is always the confined tier (§11): an isolated session prepares on its own pod, whether or not the request says so.
     const confined =
       request?.confined || request?.isolation === 'session' ? { ...request!, confined: true as const } : undefined
-    // The agent pod's half runs first, because a due conversion belongs to whichever preparation lands first after the edit — which is the ONLY thing a confined one goes there for.
-    await this.prepareClusterCheckout(agent, root, confined)
-    if (confined) return await this.prepareClusterConfinedSession(agent, root, confined)
-    return await this.prepareClusterSessionCwd(agent, root, request)
+    if (!confined) {
+      await this.prepareClusterCheckout(agent, root, undefined)
+      return await this.prepareClusterSessionCwd(agent, root, request)
+    }
+    // A due conversion is the one thing a confined preparation does on the agent pod, and it goes first, since it belongs to whichever preparation lands first after the edit; the member-local markers say whether one is due, so the pod is reached only then.
+    if (this.clusterConversionDue(agent, this.readMaterialization(agent), this.materializationKey(agent))) {
+      await reach(() => this.prepareClusterCheckout(agent, root, confined))
+    }
+    return await this.prepareClusterConfinedSession(agent, root, confined, reach)
   }
 
   /** A session placed on an executor (session-executors.md §7): the confined half alone, because the agent's primary checkout stays on its holder and that machine's environment holds only this session's clones. */
@@ -2579,27 +2612,31 @@ export class WorkspaceManager {
     if (confined) await this.requireEmptiedSandboxPath(agent.id, this.sessionDir(agent, confined.sessionKey))
   }
 
-  // §11 on a pool: the session's clones live on ITS pod under `<mount>/sessions/<leaf>`, cloned from the remotes exactly as a confined self-hosted session's are; neither the agent pod's checkout nor its secondary roots are consulted.
+  // §11 on a pool: the session's clones live on ITS pod under `<mount>/sessions/<leaf>`, cloned from the remotes exactly as a confined self-hosted session's are; neither the agent pod's checkout nor its secondary roots are consulted, and `reach` is taken only to move over a record an older daemon left beside them for this session.
   private async prepareClusterConfinedSession(
     agent: Agent,
     mount: string,
-    request: PrepareSessionWorkspaceRequest
+    request: PrepareSessionWorkspaceRequest,
+    reach: AgentVolumeReach = reachInPlace
   ): Promise<string> {
     if (request.githubReviewRevisionOnly) {
       if (agent.workspace.mode !== 'git-repo' || request.isolation !== 'session' || request.review) {
         throw new Error('github revision-only workspace requires an isolated git-repo review session')
       }
-      await this.forgetSessionCwdRoots(agent, request.sessionKey, this.sessionDir(agent, request.sessionKey))
-      // An empty daemon-owned cwd INSIDE the session directory, so the session's own pod answers for it.
-      return await this.prepareGithubRevisionOnlyWorkspace(
-        agent,
-        PRIMARY_CHECKOUT_DIR,
-        this.sessionDir(agent, request.sessionKey)
-      )
+      const sessionDir = this.sessionDir(agent, request.sessionKey)
+      // A record of another root would refuse this fallback; only a session that predates its own can have one beside the agent's subtree.
+      if (await this.mayHoldLegacySessionCwd(agent, request.sessionKey, sessionDir)) {
+        await reach(() => this.forgetLegacySessionCwdRoots(agent, this.sessionWorktreeId(request.sessionKey)))
+      }
+      await this.fsFor(agent.id, { sessionKey: request.sessionKey }).rmTree(sessionCwdRecordIn(sessionDir))
+      // An empty daemon-owned cwd INSIDE the session directory, so the session's own pod answers for it, then recorded as the primary's.
+      const cwd = await this.prepareGithubRevisionOnlyWorkspace(agent, PRIMARY_CHECKOUT_DIR, sessionDir)
+      await this.writeSessionCwdRecord(agent, request.sessionKey, sessionDir, undefined)
+      return cwd
     }
     const reviewRoot = this.reviewedSecondaryRoot(agent, request)
-    const cwdRoot = reviewRoot ?? (await this.resumedReviewedRoot(agent, request))
-    return this.prepareConfinedSession(agent, mount, request, cwdRoot, {})
+    const cwdRoot = reviewRoot ?? (await this.resumedReviewedRoot(agent, request, reach))
+    return this.prepareConfinedSession(agent, mount, request, cwdRoot, {}, reach)
   }
 
   // Discover roots in order, overlapping each checkout with the next root's preparation, with at most two in flight.
@@ -2608,7 +2645,8 @@ export class WorkspaceManager {
     mount: string | undefined,
     request: PrepareSessionWorkspaceRequest,
     cwdRoot: SecondaryWorkspaceRoot | undefined,
-    opts: PrepareWorkspaceOptions
+    opts: PrepareWorkspaceOptions,
+    reach: AgentVolumeReach = reachInPlace
   ): Promise<string> {
     const secondaries = this.secondaryRootsAt(agent, mount)
     // The agent's own roots, in its coordinates, only to name what `readyRoots` hands a shared reader; nothing here reads or writes them.
@@ -2643,8 +2681,9 @@ export class WorkspaceManager {
         discovered = resolve
       })
       const preparation = (async () => {
-        // A secondary's clone resolves and attests itself, so the agent's subtree is neither read nor its worktree stub reclaimed here.
-        const root = plan.secondary ? { ...plan.secondary, worktreesPath: '' } : plan.root
+        // No worktree stub is reclaimed beside a secondary's subtree, nor off this disk beside the primary, where it would be on the agent pod: those are pre-§11 leftovers for retention's legacy half.
+        const root =
+          plan.secondary || mount !== undefined ? { ...(plan.secondary ?? plan.root), worktreesPath: '' } : plan.root
         const { path, branch } = await this.prepareRootSessionClone(
           agent,
           root,
@@ -2658,7 +2697,8 @@ export class WorkspaceManager {
               }
             }
             discovered()
-          }
+          },
+          reach
         )
         if (plan.required) cwd = path
         if (plan.secondary) ready.set(plan.secondary.subtreeName, { ...referenceOf(plan.secondary), branch })
@@ -2692,14 +2732,10 @@ export class WorkspaceManager {
       agent.workspace.mode === 'from-scratch' && !cwdRoot ? cwd : this.resolveRootAcpCwd(agent.id, cwd, agentDir),
       opts
     )
-    // Recorded last, in the session's own directory: it goes where the session runs and with it at retirement.
-    if (cwdRoot) {
-      await this.writeSessionCwdRecord(
-        agent,
-        request.sessionKey,
-        this.sessionDir(agent, request.sessionKey),
-        cwdRoot.subtreeName
-      )
+    // Recorded last, in the session's own directory, which goes where the session runs; the primary too, so only a session prepared before this has none and asks the agent's subtree.
+    const sessionDir = this.sessionDir(agent, request.sessionKey)
+    if (cwdRoot || (await this.fsFor(agent.id, { sessionKey: request.sessionKey }).stat(sessionDir)) === 'dir') {
+      await this.writeSessionCwdRecord(agent, request.sessionKey, sessionDir, cwdRoot?.subtreeName)
     }
     return acpCwd
   }

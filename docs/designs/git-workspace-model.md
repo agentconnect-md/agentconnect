@@ -307,7 +307,7 @@ Layout, one directory per session, removed whole at retirement:
 ├── workspace/            # primary clone — the session cwd
 ├── repos/<owner>/<repo>/ # one clone per secondary root (multi-repository-workspaces.md decision 4), attested inside its .git
 ├── home/                 # private HOME, XDG_RUNTIME_DIR, runtime state
-└── .session-cwd.json     # which secondary root's clone is the cwd, once a review made it one
+└── .session-cwd.json     # which root's clone is the cwd: the primary, or the secondary a review made it
 ```
 
 The primary checkout keeps its roles for `shared` isolation, the console's
@@ -357,18 +357,21 @@ time on shared filesystems.
   `unpack-objects`, which degraded every review in a confined session to
   revision-only. Retirement is deliberately not in that class: it judges a clone
   with no network target at all.
-- **The cwd record is the session's.** When a review makes a secondary root the
-  working directory, the daemon names that root in `.session-cwd.json` inside the
-  session directory, so a restart re-prepares the same cwd. It is written and read
-  through the filesystem that holds the session (its pod, its executor, or this
-  disk) and goes with the directory at retirement, so no turn of a confined session
-  reads the agent's subtrees for it. The session's runtime can write its own
-  directory, so the record counts only when it is a regular file naming a subtree
-  whose clone the session holds. The worktree tier keeps its record beside the
-  agent's subtree of that root (`repos/<a>/<b>/.session-cwd-<id>.json`). A confined
-  session that still has its record there is moved over by its next preparation,
-  which reads the agent's filesystem anyway; until then its turns name no reviewed
-  root.
+- **The cwd record is the session's.** Every preparation of a confined session
+  names its working directory in `.session-cwd.json` inside the session directory:
+  the secondary root a review made the cwd, else the primary. A restart then
+  re-prepares the same cwd. It is written and read through the filesystem that
+  holds the session (its pod, its executor, or this disk) and goes with the
+  directory at retirement, so no turn of a confined session reads the agent's
+  subtrees for it. The session's runtime can write its own directory, so the record
+  counts only when it is a regular file naming a subtree whose clone the session
+  holds. The worktree tier keeps its record beside the agent's subtree of that root
+  (`repos/<a>/<b>/.session-cwd-<id>.json`). Since every preparation writes one, a
+  confined session with no record at all was prepared before sessions kept it; if
+  it holds a clone of an additional repository, which is all a record there can
+  name, its next preparation looks beside the agent's subtrees once and records
+  what it finds, the primary included. On a pool that is the one time its
+  preparation reaches the agent pod; until then its turns name no reviewed root.
 - **A secondary root's clone answers for itself.** It is taken at the remote's
   default branch as of clone time, asked with `ls-remote --symref` from beside the
   clone, so from the machine and over the credential route the clone itself uses.
@@ -385,8 +388,8 @@ time on shared filesystems.
   materialized ([k8s-daemon-pool.md](k8s-daemon-pool.md) §4, decision 1). A session's
   console push and log read the same record. A clone taken before clones carried
   one adopts the agent subtree's record once, if it names the same repository,
-  through the agent's filesystem that preparation still reaches; otherwise it is
-  omitted like a mismatch.
+  reaching the agent pod for that read alone on a pool; otherwise it is omitted
+  like a mismatch, and asks again at its next preparation.
 - **Retirement** applies the same dirty and unique-commit rules in the clone —
   every local ref counts, not only HEAD, because the directory is the object
   store and a side branch or a stash is work the checked-out branch cannot speak
@@ -455,7 +458,13 @@ own pod before the row goes, and the claim — volume and all — goes with the 
 with a removed agent, or with a replaced workspace once its conversion runs on
 the volume, which is the same fail-closed gate that empties the primary checkout
 and the first point after the edit at which anything is authoritative. HOME is
-per pod by construction.
+per pod by construction. The session's preparation holds its own pod alone and
+reaches the agent pod only for work due there: a conversion the member's own
+markers say is due, or the one-time moves above for a session or clone that
+predates its own record. A worktree a session left on the agent pod before this
+tier is judged by retention only while the agent pod is bound, never woken for it,
+unless the session has no pod of its own, whose workspace can only be there; a row
+that goes first leaves such a worktree in place, unjudged and never removed.
 
 **Every Git of this tier runs inside the pod's closed inventory.** On a pool
 member the daemon does not spawn Git at all: each invocation crosses the shim's
