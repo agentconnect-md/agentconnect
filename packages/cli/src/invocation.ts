@@ -1,7 +1,7 @@
 /** How the operator ran this CLI, so a suggested command pastes back as-is: bare bin, npx, or `node <entry>`. */
 import { existsSync, realpathSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
-import { commandSelector } from './service/instance.js'
+import { commandSelector, shellArg } from './service/instance.js'
 import { CLI_VERSION } from './version.js'
 
 const PACKAGE = '@agentconnect.md/cli'
@@ -24,10 +24,6 @@ function safeRealpath(p: string): string | undefined {
   } catch {
     return undefined
   }
-}
-
-function shellArg(value: string): string {
-  return /^[A-Za-z0-9_@%+=:,./\\-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`
 }
 
 /** The PATH `agentconnect` that resolves to this very file, if any — another install would run a different CLI. */

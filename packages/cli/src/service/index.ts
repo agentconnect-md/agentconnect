@@ -9,7 +9,7 @@ import { isElevated, resolveServiceAccount, type ServiceAccount } from './accoun
 import { findInstanceUnit, listInstances } from './discover.js'
 import { defaultExec } from './exec.js'
 import { cliCommand } from '../invocation.js'
-import { clearInstancePointer, resolveServiceTarget, writeInstancePointer } from './instance.js'
+import { clearInstancePointer, resolveServiceTarget, shellArg, writeInstancePointer } from './instance.js'
 import { LaunchdController } from './launchd.js'
 import { SystemdController } from './systemd.js'
 import type { ControllerDeps, Exec, InstalledUnit, InstallOpts, ServiceController } from './types.js'
@@ -183,6 +183,12 @@ export async function installService(target: ControllerTarget, opts: InstallOpts
   // report the new root while the live daemon still serves the old one. Refuse,
   // and name the command that makes the move safe.
   const previous = findInstanceUnit(instance, scope)
+  // A bare `--root` names no instance, so it means "a daemon on this root", never "move the default one here".
+  if (previous && previous.root !== root && instance === undefined) {
+    throw new Error(
+      `${previous.label} already runs the daemon on ${previous.root} — to add a second one on ${root}, name it: \`${cliCommand()} --instance <name> --root ${shellArg(root)} install-service\`; to move the default service there instead, run \`${cliCommand({ root: previous.root })} uninstall-service\` first`
+    )
+  }
   if (previous && previous.root !== root) {
     const running = await controllerFor(previous, {
       ...scope,

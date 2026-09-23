@@ -322,6 +322,11 @@ that separates them (`packages/cli/src/service/instance.ts`):
   and is refused outright while that service is still running — rewriting the
   unit does not move the live process, so discovery would report the new root
   while the running daemon still served the old one;
+- a bare `--root` names no instance, so `install-service` refuses it when the
+  default unit already drives another root, stopped or not, and names both ways
+  out: `--instance <name> --root <dir>` for a second daemon, or
+  `uninstall-service` first to move the default one. Treating it as a move would
+  re-point the default service and silently orphan the root it served;
 - `install-service` records `{ instance, label }` in `<root>/service.json`, so a
   command that knows only the root — notably the CP-commanded
   `upgrade --to <v> --root <root>` the daemon spawns (§6.2) — addresses that
