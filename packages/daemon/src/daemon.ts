@@ -81,7 +81,7 @@ import { microsandboxGitRunner } from './microsandbox/git.js'
 import { ShimWorkspaceFs } from './shim/workspace-fs-channel.js'
 import { ShimWorkspaceFiles } from './shim/workspace-files-channel.js'
 import { ClusterSkillClient } from './shim/skill-client.js'
-import type { ShimRequester } from './shim/channels.js'
+import { ShimChannelLostError, type ShimRequester } from './shim/channels.js'
 import type { ClusterSkillLedger } from './store/cluster-skill-ledger.js'
 import { legacySandboxSkillLedger } from './skills/sandbox-skill-ledger.js'
 import { microsandboxSkillTarget } from './microsandbox/shim.js'
@@ -194,8 +194,8 @@ import type { SpawnFile } from './acp/spawn-driver.js'
 import { writeGhShim } from './cp/gh-shim.js'
 import { glabSessionEnv, writeGlabShim } from './cp/glab-shim.js'
 import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
-import { AutoMergeWatcher } from './github/auto-merge/watcher.js'
-import { SandboxHolds } from './k8s/sandbox-hold.js'
+import { AutoMergeViolationError, AutoMergeWatcher } from './github/auto-merge/watcher.js'
+import { AUTO_MERGE_HOLDER, SandboxHolds } from './k8s/sandbox-hold.js'
 import {
   agentSandboxSubject,
   sandboxSubjectFor,
@@ -925,7 +925,7 @@ export class Daemon {
   /** Public commit attribution selected by the CP deployment's GitHub App. */
   private gitCommitIdentity?: GitCommitIdentity
   private gitCredServer?: GitCredServer
-  /** Console keep-alive leases over cluster agents' pods — in memory, renewed by an open page. */
+  /** Leases over cluster pods, in memory: an open page's keep-alive, and this daemon's own on a pod it saw a watcher armed in. */
   private readonly sandboxHolds = new SandboxHolds({ now: () => Date.now() })
   /** Merge-when-ready's in-memory armed set (github/auto-merge). Built with the credential server,
    *  because a watcher that cannot mint a gh token has nothing to poll with. Never persisted: this
@@ -2423,6 +2423,9 @@ export class Daemon {
       // plane's presence — not a channel's attachment — is what decides where a watcher may live.
       clusterPlaced: () => this.k8sPlane !== undefined,
       sandboxFor: (agentId) => this.k8sPlane?.autoMergeFor(agentId),
+      holdSandbox: (agentId) => this.k8sPlane?.holdIfBound(agentSandboxSubject(agentId)),
+      onArmed: (agentId) =>
+        this.sandboxHolds.renew(agentSandboxSubject(agentId), AUTO_MERGE_HOLDER, ['auto-merge-armed']),
       capabilityFor: (agentId) => this.gitCredServer!.capabilityFor(agentId),
       tokenFor: async (agentId, repoFullName) =>
         (await this.gitCreds.get(agentId, 'helper', { plane: 'gh', repo: repoFullName })).token,
@@ -19145,14 +19148,20 @@ export class Daemon {
           : await this.store.sessionLastActivityTs(sessionKey)
       const last = Math.max(activity ?? 0, since)
       const quiet = now - last > ttl
-      // An open page watching THIS pod's dirty volume or armed merge watcher defers the suspend; its lease lapses within one TTL of closing (§11).
+      // A lease on THIS pod defers the suspend: an open page's dirty volume or armed watcher, or this daemon's own on a watcher it saw armed; each lapses within one TTL (§11).
       if (this.sandboxHolds.holds(subject)) {
         if (quiet)
           this.log.debug?.(`idle: holding the sandbox "${subject}" — ${this.sandboxHolds.reasons(subject).join(', ')}`)
         continue
       }
       // Inside the window only a pod that never came up goes, judged by the plane against the launch it reads: the agent's traffic says nothing about that pod, and it holds its node's resources while it waits.
-      void (quiet ? plane.suspendIdle(subject) : plane.suspendStalled(subject))
+      void (
+        !quiet
+          ? plane.suspendStalled(subject)
+          : leaf === undefined
+            ? this.suspendUnlessWatching(plane, subject)
+            : plane.suspendIdle(subject)
+      )
         .then((outcome) => {
           if (outcome !== 'suspended') return
           this.log.info(
@@ -19162,6 +19171,29 @@ export class Daemon {
         })
         .catch((err) => this.log.warn(`idle: suspending the sandbox "${subject}" failed: ${formatErr(err)}`))
     }
+  }
+
+  /** Suspend a quiet pod unless a merge-when-ready watcher is armed in it, by the pod's own registry; nothing about the watcher is stored, so a restarted or new holder learns it here. */
+  private async suspendUnlessWatching(
+    plane: K8sRuntimePlane,
+    subject: string
+  ): Promise<'suspended' | 'busy' | 'absent'> {
+    const armed = await plane.armedIn(subject).catch((err: unknown) => {
+      // A channel lost even on the retry is no answer either way: the pod waits for the next sweep, with no hold taken.
+      if (err instanceof ShimChannelLostError) return undefined
+      // Not evidence of a watcher, as for the keep-alive: an image with none refuses, and a pod that cannot answer is not kept for it.
+      if (!(err instanceof AutoMergeViolationError))
+        this.log.warn(`idle: could not ask the sandbox "${subject}" for an armed merge watcher: ${formatErr(err)}`)
+      return false
+    })
+    if (armed === undefined) {
+      this.log.debug?.(`idle: the sandbox "${subject}" lost its channel while asked for a merge watcher — deferred`)
+      return 'busy'
+    }
+    if (armed) this.sandboxHolds.renew(subject, AUTO_MERGE_HOLDER, ['auto-merge-armed'])
+    // Re-read AFTER the round trip and in the tick that opens the lease's gate: an arm answered meanwhile renewed this hold, and one still in flight retains the pod.
+    if (this.sandboxHolds.holds(subject)) return 'busy'
+    return await plane.suspendIdle(subject)
   }
 
   /**

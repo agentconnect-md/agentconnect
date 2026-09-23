@@ -6,6 +6,8 @@ import { AGENT_WAKE_FEATURE, DAEMON_BOOTSTRAP_UPGRADE_FEATURE } from '@agentconn
 import { Daemon } from '../src/daemon.js'
 import { agentHostKey, sessionHostKey } from '../src/acp/host-key.js'
 import { wireWorkspacePlane } from '../src/execution/plane.js'
+import { SANDBOX_HOLD_TTL_MS, SandboxHolds } from '../src/k8s/sandbox-hold.js'
+import { ShimChannelLostError } from '../src/shim/channels.js'
 import { sandboxSubjectFor } from '../src/k8s/sandbox-identity.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import { LocalStore } from '../src/store/local-store.js'
@@ -113,6 +115,7 @@ function daemon(opts: {
               workspacesOffDisk: true,
               gitRunnerFor: () => undefined,
               launched: () => [],
+              armedIn: async () => false,
               suspendIdle: async () => 'absent',
               suspendStalled: async () => 'absent',
               discardAgent: async () => {},
@@ -589,6 +592,165 @@ describe('daemon --k8s mode', () => {
       // The agent's own pod and the sibling session's are judged on their own keys, and suspend.
       await vi.waitFor(() => expect([...suspended].sort()).toEqual(['watched', 'watched/session-clean']))
       expect(suspended).not.toContain(dirty)
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('keeps the agent pod while a watcher is armed in it with no page and no host, and lets it go after', async () => {
+    const suspended: string[] = []
+    const asked: string[] = []
+    let armed: boolean | Error = true
+    const k8sDaemon = daemon({
+      root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
+      k8s: true,
+      plane: {
+        launched: () => [
+          { subject: 'watched', agentId: 'watched', since: 0 },
+          { subject: 'watched/session-quiet', agentId: 'watched', since: 0 }
+        ],
+        armedIn: async (subject: string) => {
+          asked.push(subject)
+          if (armed instanceof Error) throw armed
+          return armed
+        },
+        suspendIdle: async (subject: string) => {
+          suspended.push(subject)
+          return 'suspended'
+        }
+      }
+    })
+    try {
+      await k8sDaemon.start()
+      const inner = k8sDaemon as any
+      let now = Date.now()
+      inner.sandboxHolds = new SandboxHolds({ now: () => now })
+      const sweep = async (): Promise<void> => {
+        await inner.sweepIdleSandboxes(now, inner.cfg.limits.agentIdleTimeoutMs)
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      }
+
+      // Nothing is stored anywhere: the pod's own registry answers, and the answer is held. The watcher lives in the agent pod only, so a session pod is not asked.
+      await sweep()
+      expect(asked).toEqual(['watched'])
+      expect(suspended).toEqual(['watched/session-quiet'])
+      expect(inner.sandboxHolds.reasons('watched')).toEqual(['auto-merge-armed'])
+      // While the hold is live the sweep leaves the pod alone without asking again.
+      await sweep()
+      expect(asked).toHaveLength(1)
+      expect(suspended).toEqual(['watched/session-quiet', 'watched/session-quiet'])
+
+      // Merged: the watcher exits, the hold lapses within its TTL, and the pod reports nothing armed.
+      armed = false
+      now += SANDBOX_HOLD_TTL_MS
+      await sweep()
+      expect(asked).toHaveLength(2)
+      expect(suspended).toContain('watched')
+
+      // A pod that cannot answer is not kept for a watcher it may not have.
+      suspended.length = 0
+      armed = new Error('shim timed out')
+      await sweep()
+      expect(suspended).toContain('watched')
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('defers a pod whose channel was lost while asked, until it answers', async () => {
+    // A renewal that fails the question on its retry too says nothing about the watcher: suspending on it would kill a live one.
+    const suspended: string[] = []
+    let answer: 'lost' | boolean = 'lost'
+    const k8sDaemon = daemon({
+      root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
+      k8s: true,
+      plane: {
+        launched: () => [{ subject: 'watched', agentId: 'watched', since: 0 }],
+        armedIn: async () => {
+          if (answer === 'lost') throw new ShimChannelLostError('shim channel renewed')
+          return answer
+        },
+        suspendIdle: async (subject: string) => {
+          suspended.push(subject)
+          return 'suspended'
+        }
+      }
+    })
+    try {
+      await k8sDaemon.start()
+      const inner = k8sDaemon as any
+      const sweep = async (): Promise<void> => {
+        await inner.sweepIdleSandboxes(Date.now(), inner.cfg.limits.agentIdleTimeoutMs)
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      }
+
+      await sweep()
+      expect(suspended).toEqual([])
+      // Deferred, not held: the next sweep asks again rather than waiting out a TTL.
+      expect(inner.sandboxHolds.holds('watched')).toBe(false)
+
+      answer = false
+      await sweep()
+      expect(suspended).toEqual(['watched'])
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('never suspends a pod whose watcher was armed while the sweep was asking it', async () => {
+    // The pod's answer predates the arm; the arm renews the sweep's hold before its own round-trip hold goes, and the sweep re-reads its holds in the tick it suspends.
+    const suspended: string[] = []
+    const held: string[] = []
+    let answer: (armed: boolean) => void = () => {}
+    let answerAsked: () => void = () => {}
+    const asked = new Promise<void>((resolve) => (answerAsked = resolve))
+    const pod = {
+      arm: async () => ({ armed: true }),
+      disarm: async () => ({ armed: false }),
+      state: async () => ({ armed: true }),
+      anyArmed: async () => true
+    }
+    const k8sDaemon = daemon({
+      root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
+      k8s: true,
+      plane: {
+        launched: () => [{ subject: 'bot-a', agentId: 'bot-a', since: 0 }],
+        autoMergeFor: () => pod,
+        holdIfBound: (subject: string) => {
+          held.push(subject)
+          return () => held.push(`released ${subject}`)
+        },
+        armedIn: () =>
+          new Promise<boolean>((resolve) => {
+            answer = resolve
+            answerAsked()
+          }),
+        suspendIdle: async (subject: string) => {
+          suspended.push(subject)
+          return 'suspended'
+        }
+      }
+    })
+    try {
+      await k8sDaemon.start()
+      const inner = k8sDaemon as any
+      inner.agents.set('bot-a', poolAgent('shared'))
+      // The pre-arm GitHub probe cannot reach GitHub here, which never blocks an arm.
+      inner.gitCreds = {
+        get: async () => {
+          throw new Error('no GitHub in this test')
+        }
+      }
+      await inner.sweepIdleSandboxes(Date.now(), inner.cfg.limits.agentIdleTimeoutMs)
+      await asked
+      // The operator ticks the box while the sweep's question is still out.
+      const state = await inner.autoMergeWatcher.set({ agentId: 'bot-a', repoFullName: 'acme/app', prNumber: 7 }, true)
+      expect(state).toMatchObject({ armed: true, placement: 'sandbox' })
+      expect(held).toEqual(['bot-a', 'released bot-a'])
+      answer(false)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(suspended).toEqual([])
+      expect(inner.sandboxHolds.reasons('bot-a')).toEqual(['auto-merge-armed'])
     } finally {
       await k8sDaemon.stop()
     }

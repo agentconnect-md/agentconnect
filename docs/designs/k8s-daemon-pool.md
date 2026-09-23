@@ -273,9 +273,30 @@ Three properties make that safe to hand a browser:
   page whose session pod went to sleep still holds the agent's pod for a watcher
   armed in it — otherwise a visible page would silently disarm its own box.
 
+**An armed merge watcher holds its pod with no page open.** A page's lease covers
+the watcher only while someone is looking, so the daemon holds for it too. Before
+it suspends a quiet agent pod, the sweep asks that pod's own merge-when-ready
+registry — the same `list` the keep-alive reads — and, if anything is armed, renews
+a lease of its own on that SUBJECT (`AUTO_MERGE_HOLDER`, `k8s/sandbox-hold.ts`).
+While that lease is live the pod is skipped without asking; once it lapses the
+next sweep asks again, so a watcher that merged, saw its pull request closed or
+was disarmed lets the pod go within one TTL. A lost channel is not an answer: a
+routine renewal fails the request in flight while the watcher runs on, so the
+question is asked once more on the re-attached channel, and a pod that loses it
+again is left for the next sweep without a lease. A pod with no channel to ask,
+or one that answers with an error, is not kept for a watcher it may not have. The
+question is a round trip, so both sides of it
+are fenced: an arm holds the pod — the synchronous retain the idle gate reads —
+from before it is sent until it has renewed the sweep's lease; the sweep re-reads
+its leases in the same tick it publishes the suspension; and a pod whose
+suspension is already in flight cannot be retained, so an arm against it is
+refused as `sandbox-asleep` instead of starting a watcher the write then kills.
+
 Nothing about this is persisted anywhere — not in the CP, which only relays the
-frame, and not on the pod's volume. A daemon restart forgets every lease, and
-the page's next renewal re-takes the one it still wants.
+frame, and not on the pod's volume. A daemon restart forgets every lease; the
+page's next renewal re-takes the one it still wants, and the sweep re-learns a
+watcher by asking its pod — binding the channel of a Running pod it took over,
+never claiming or waking one.
 
 A sleeping agent still belongs to a duty group (§6), and if that group
 contains a daemon-held bot the group stays claimed while the agent sleeps —

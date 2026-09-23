@@ -5,6 +5,10 @@ import { MAX_AUTO_MERGE_DETAIL } from '@agentconnect.md/protocol'
 import { describe, expect, it, vi } from 'vitest'
 import { AutoMergeLoop } from '../src/github/auto-merge/loop.js'
 import { AutoMergeViolationError, AutoMergeWatcher, type AutoMergeSandbox } from '../src/github/auto-merge/watcher.js'
+import { ShimAutoMergeClient, askArmed } from '../src/shim/auto-merge-client.js'
+import { ShimChannelLostError } from '../src/shim/channels.js'
+import type { ShimConnection } from '../src/shim/connection.js'
+import { ShimSession } from '../src/shim/session.js'
 
 /** A hand-driven interval: `fire()` runs one tick, so a test never waits out a poll. */
 function fakeTimers() {
@@ -354,6 +358,61 @@ describe('AutoMergeWatcher', () => {
     expect(await watcher.armedFor('agent-1')).toBe(false)
   })
 
+  it('holds the pod across an arm and renews the idle sweep’s own hold before letting go', async () => {
+    // The sweep asks the pod, then suspends in the tick it re-reads its holds: this order is what leaves no gap an arm can land in unseen.
+    const sandbox = fakeSandbox()
+    const events: string[] = []
+    const arm = sandbox.arm
+    sandbox.arm = async (call) => {
+      events.push('sent')
+      return await arm(call)
+    }
+    const watcher = new AutoMergeWatcher({
+      knownAgent: () => true,
+      clusterPlaced: () => true,
+      sandboxFor: () => sandbox,
+      holdSandbox: () => {
+        events.push('held')
+        return () => events.push('released')
+      },
+      onArmed: (agentId) => events.push(`renewed ${agentId}`),
+      capabilityFor: () => 'cap',
+      tokenFor: async () => 'ghs_x',
+      fetchImpl: githubStub([prAnswer([{ __typename: 'CheckRun', name: 'build', status: 'QUEUED' }])]).fetchImpl
+    })
+
+    await watcher.set(TARGET, true)
+    expect(events).toEqual(['held', 'sent', 'renewed agent-1', 'released'])
+
+    // A failed arm renews nothing and still lets go.
+    events.length = 0
+    sandbox.arm = async () => {
+      throw new Error('the shim went away')
+    }
+    await expect(watcher.set({ ...TARGET, prNumber: 8 }, true)).rejects.toThrow(/went away/)
+    expect(events).toEqual(['held', 'released'])
+  })
+
+  it('refuses to arm a pod the idle sweep is already suspending, sending nothing', async () => {
+    // Its channel is still attached until the suspend write lands; a watcher started now would die with it behind a checked box.
+    const sandbox = fakeSandbox()
+    const onArmed = vi.fn()
+    const watcher = new AutoMergeWatcher({
+      knownAgent: () => true,
+      clusterPlaced: () => true,
+      sandboxFor: () => sandbox,
+      holdSandbox: () => undefined,
+      onArmed,
+      capabilityFor: () => 'cap',
+      tokenFor: async () => 'ghs_x',
+      fetchImpl: githubStub([prAnswer([{ __typename: 'CheckRun', name: 'build', status: 'QUEUED' }])]).fetchImpl
+    })
+
+    await expect(watcher.set(TARGET, true)).rejects.toMatchObject({ reason: 'sandbox-asleep' })
+    expect(sandbox.ops).toEqual([])
+    expect(onArmed).not.toHaveBeenCalled()
+  })
+
   it('refuses to arm a pull request that is mergeable NOW — one click must not squash-merge', async () => {
     // The loop's first tick is immediate, so arming a green pull request would merge it inside one
     // round trip. The direct Merge button is that action, and it takes two presses.
@@ -516,5 +575,73 @@ describe('AutoMergeWatcher', () => {
 
     watcher.stop()
     expect(await watcher.state(TARGET)).toEqual({ ...TARGET, armed: false })
+  })
+})
+
+describe('asking a pod whether anything is armed, across a channel renewal', () => {
+  const timers = {
+    setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms),
+    clearTimeout: (handle: unknown) => clearTimeout(handle as NodeJS.Timeout)
+  }
+
+  /** A pod connection at the session's generation that answers every request with `armed`, or never answers when it is undefined. */
+  function podConnection(armed?: boolean) {
+    const listeners: Array<(text: string) => void> = []
+    const sent: string[] = []
+    const connection = {
+      binding: {
+        agentId: 'agent-1',
+        sandboxUid: 'sb-1',
+        generation: 3,
+        grants: ['automerge'],
+        podName: 'p',
+        podUid: 'u',
+        expiresAtMs: Number.MAX_SAFE_INTEGER
+      },
+      issuedCredential: `cred-${Math.random()}`,
+      send: (frame: { type: string; id: string }) => {
+        if (frame.type !== 'shim/request') return
+        sent.push(frame.id)
+        if (armed === undefined) return
+        const reply = JSON.stringify({ type: 'shim/response', id: frame.id, ok: true, payload: { armed } })
+        queueMicrotask(() => listeners.forEach((listener) => listener(reply)))
+      },
+      onFrame: (listener: (text: string) => void) => listeners.push(listener),
+      close: () => {}
+    } as unknown as ShimConnection
+    return { connection, sent }
+  }
+
+  it('asks the renewed channel again rather than reading a lost request as "nothing armed"', async () => {
+    // A routine same-generation rebind fails the requests in flight and keeps the session; the watcher it asked about is untouched.
+    const session = new ShimSession('agent-1', 3, timers)
+    const first = podConnection()
+    session.attach(first.connection)
+    const asking = askArmed(async () => session, 'agent-1')
+    const state = new ShimAutoMergeClient(session).state({ agentId: 'agent-1', repoFullName: 'acme/repo', prNumber: 7 })
+    await vi.waitFor(() => expect(first.sent).toHaveLength(2))
+
+    session.attach(podConnection(true).connection)
+    await expect(asking).resolves.toBe(true)
+    // The box's own reads keep their answer: a lost channel there is a pod that went away.
+    await expect(state).resolves.toEqual({ armed: false })
+  })
+
+  it('reports a channel lost on the retry too as unknown, never as nothing armed', async () => {
+    const session = new ShimSession('agent-1', 3, timers)
+    const first = podConnection()
+    session.attach(first.connection)
+    const asking = askArmed(async () => session, 'agent-1')
+    await vi.waitFor(() => expect(first.sent).toHaveLength(1))
+    const second = podConnection()
+    session.attach(second.connection)
+    await vi.waitFor(() => expect(second.sent).toHaveLength(1))
+
+    session.attach(podConnection(true).connection)
+    await expect(asking).rejects.toBeInstanceOf(ShimChannelLostError)
+  })
+
+  it('answers false for a pod with no channel at all, as before', async () => {
+    expect(await askArmed(async () => undefined, 'agent-1')).toBe(false)
   })
 })

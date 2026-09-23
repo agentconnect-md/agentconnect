@@ -21,22 +21,29 @@ export class ShimAutoMergeClient implements AutoMergeSandbox {
     return this.request({ ...call, op: 'state' })
   }
 
-  /** Whether ANY watcher is armed in this pod — the sandbox keep-alive's question, asked of the
-   *  registry that owns the answer rather than of a daemon-side index a restart would empty. */
+  /** Whether ANY watcher is armed in this pod, asked of the registry that owns the answer; a lost channel propagates, since a renewal loses the request and not the watcher, and a suspend decided on it would kill one. */
   async anyArmed(agentId: string): Promise<boolean> {
-    const answer = await this.request({ agentId, op: 'list' })
-    return answer.armed
+    return (await this.send({ agentId, op: 'list' })).armed
   }
 
   private async request(payload: Record<string, unknown>): Promise<SandboxState> {
     try {
+      return await this.send(payload)
+    } catch (err) {
+      // For the box's own ops a lost channel is a pod that went away mid-request, which IS the answer: nothing is watching any more.
+      if (err instanceof ShimChannelLostError) return { armed: false }
+      throw err
+    }
+  }
+
+  private async send(payload: Record<string, unknown>): Promise<SandboxState> {
+    try {
       const answer = (await this.requester.request('automerge', payload)) as SandboxState
       return { armed: answer?.armed === true, ...pick(answer) }
     } catch (err) {
-      // A lost channel is a pod that went away mid-request, which for this feature IS the answer:
-      // nothing is watching any more. An image that ships no watcher is a refusal the console shows.
-      if (err instanceof ShimChannelLostError) return { armed: false }
+      if (err instanceof ShimChannelLostError) throw err
       const message = err instanceof Error ? err.message : String(err)
+      // An image that ships no watcher is a refusal the console shows.
       if (message.includes(AUTO_MERGE_UNSUPPORTED_IMAGE)) {
         throw new AutoMergeViolationError('unsupported-image', message)
       }
@@ -51,6 +58,23 @@ export class ShimAutoMergeClient implements AutoMergeSandbox {
       }
       throw err
     }
+  }
+}
+
+/** Ask a pod's registry, retrying once on the session a renewal re-attached; a second lost channel propagates as "unknown", and no channel at all answers false. */
+export async function askArmed(
+  sessionFor: () => Promise<ShimRequester | undefined>,
+  agentId: string
+): Promise<boolean> {
+  const ask = async (): Promise<boolean> => {
+    const session = await sessionFor()
+    return session ? await new ShimAutoMergeClient(session).anyArmed(agentId) : false
+  }
+  try {
+    return await ask()
+  } catch (err) {
+    if (!(err instanceof ShimChannelLostError)) throw err
+    return await ask()
   }
 }
 
