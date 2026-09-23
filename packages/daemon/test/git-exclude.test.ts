@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -139,6 +139,46 @@ describe('excludeManagedSkillBundles', () => {
     expect(content).toContain('# my own notes')
     expect(content).not.toContain('agentconnect-managed')
     expect(content).not.toContain('/.claude/skills/')
+  })
+
+  it('leaves an exclude file past the cap as it is', async () => {
+    const commonDir = mkdtempSync(join(tmpdir(), 'ac-git-exclude-large-'))
+    try {
+      mkdirSync(join(commonDir, 'info'))
+      const large = `${'#'.repeat(2 * 1024 * 1024)}\n`
+      writeFileSync(join(commonDir, 'info', 'exclude'), large)
+
+      await excludeManagedSkillBundles(commonDir, [BUNDLE])
+
+      expect(readFileSync(join(commonDir, 'info', 'exclude'), 'utf8')).toBe(large)
+    } finally {
+      rmSync(commonDir, { recursive: true, force: true })
+    }
+  })
+
+  it.skipIf(process.platform === 'win32')('replaces a pipe the runtime left as the exclude file', async () => {
+    const commonDir = mkdtempSync(join(tmpdir(), 'ac-git-exclude-pipe-'))
+    const excludeFile = join(commonDir, 'info', 'exclude')
+    let writer: ChildProcess | undefined
+    try {
+      mkdirSync(join(commonDir, 'info'))
+      execFileSync('mkfifo', [excludeFile])
+      // A writer turns a blocking read into a wrong answer rather than a hung worker.
+      writer = spawn(process.execPath, [
+        '-e',
+        'require("fs").writeFileSync(process.argv[1], "/piped/\\n")',
+        excludeFile
+      ])
+
+      await excludeManagedSkillBundles(commonDir, [BUNDLE])
+
+      expect(readFileSync(excludeFile, 'utf8')).toBe(
+        `# BEGIN agentconnect-managed skills\n/${BUNDLE}/\n# END agentconnect-managed skills\n`
+      )
+    } finally {
+      writer?.kill()
+      rmSync(commonDir, { recursive: true, force: true })
+    }
   })
 
   it('anchors an agentDir agent’s bundles at the checkout root, not at its cwd', () => {

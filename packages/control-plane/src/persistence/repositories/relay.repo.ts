@@ -7,8 +7,9 @@
  * no secret material.
  */
 import { randomUUID } from 'node:crypto'
-import type { Relay } from '../../generated/prisma/client.js'
-import type { PrismaLike } from '../prisma.js'
+import { Prisma, type Relay } from '../../generated/prisma/client.js'
+import { withAmbientTx, type PrismaLike } from '../prisma.js'
+import { recomputeCredentialMarks } from './bot-credential-mark.js'
 import type { RelayRepo, RelayRecord } from '../ports.js'
 
 function toRecord(r: Relay): RelayRecord {
@@ -50,15 +51,18 @@ export class PgRelayRepo implements RelayRepo {
   }
 
   async sweepStale(staleBefore: Date): Promise<number> {
-    const res = await this.db.relay.deleteMany({
-      where: {
-        OR: [
-          { lastSeenAt: { lt: staleBefore } },
-          // Registered but never heartbeated and now older than the window.
-          { lastSeenAt: null, createdAt: { lt: staleBefore } }
-        ]
-      }
+    return withAmbientTx(this.db, async (tx) => {
+      // A relay not seen since the cutoff, or registered and never heartbeated since before it.
+      const stale = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM relay
+        WHERE "lastSeenAt" < ${staleBefore} OR ("lastSeenAt" IS NULL AND "createdAt" < ${staleBefore})
+        FOR UPDATE`
+      if (stale.length === 0) return 0
+      // Locks go relay → bot → observation, as a credential check takes them; losing rows can only clear or re-code a mark.
+      await tx.$queryRaw`SELECT id FROM bot WHERE "credentialRejectedAt" IS NOT NULL ORDER BY id FOR UPDATE`
+      const res = await tx.relay.deleteMany({ where: { id: { in: stale.map((r) => r.id) } } })
+      await recomputeCredentialMarks(tx, Prisma.sql`b."credentialRejectedAt" IS NOT NULL`)
+      return res.count
     })
-    return res.count
   }
 }

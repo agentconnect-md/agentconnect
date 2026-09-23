@@ -117,8 +117,8 @@ export const SESSION_WAKE_FEATURE = 'session-wake-v1'
 /** Relay reports body-free GitHub feedback and daemon durably continues the linked session. */
 export const PULL_REQUEST_FEEDBACK_FEATURE = 'pull-request-feedback-v1'
 
-/** CP accepts `rc/bot-credential-check` and records `rc/bot-revoked` evidence; a relay sends neither to an older CP, which would revoke on an ambiguous answer instead. */
-export const BOT_CREDENTIAL_CHECK_FEATURE = 'bot-credential-check-v1'
+/** CP keeps each relay's `rc/bot-credential-check` and aggregates the mark, and records `rc/bot-revoked` evidence; a relay sends neither to an older CP and revokes on an ambiguous answer there instead. */
+export const BOT_CREDENTIAL_CHECK_FEATURE = 'bot-credential-check-v2'
 
 /** How long the CP must let ONE `workspace/gitmessage` REQ run before giving up, and it must send it
  * single-shot (`{ ackTimeoutMs: WORKSPACE_GIT_MESSAGE_BUDGET_MS, maxTries: 1 }`). The default 5s ack

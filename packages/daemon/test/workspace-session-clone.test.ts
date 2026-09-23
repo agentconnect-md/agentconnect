@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import {
   existsSync,
   mkdirSync,
@@ -448,6 +448,47 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
       expect(await workspaces.readySecondaryRoots(agent, request)).toEqual([])
       // A resumed session keeps its existing clone; a new one never creates the duplicate.
       expect(existsSync(join(leafOf(agent), 'repos', 'acme', 'infra', '.git'))).toBe(mode === 'resume')
+    }
+  )
+
+  it.each(process.platform === 'win32' ? ['symlink'] : ['symlink', 'fifo'])(
+    'resumes past a %s the runtime left as its clone .gitmodules and withholds nothing',
+    async (kind) => {
+      const agent = agentFixture({ additionalRepos: [{ repoFullName: 'acme/infra', repoId: '42' }] })
+      serveAll(agent)
+      await workspaces.prepareWorkspace(agent)
+      const root = workspaces.secondaryRoots(agent)[0]!
+      git(root.path, ['remote', 'set-url', 'origin', root.cloneUrl])
+      const request = confined()
+      const path = await workspaces.prepareSessionWorkspace(agent, request)
+      git(join(leafOf(agent), 'repos', 'acme', 'infra'), ['remote', 'set-url', 'origin', root.cloneUrl])
+      const declaration = '[submodule "infra"]\n\turl = https://github.com/acme/infra.git\n'
+      let writer: ChildProcess | undefined
+      if (kind === 'symlink') {
+        // Past the 256 KiB byte cap yet under it in UTF-16 units, so a followed link would declare the root.
+        const target = join(tempRoot('ac-session-clone-gitmodules-'), 'large')
+        writeFileSync(target, `${declaration}# ${'é'.repeat(200_000)}\n`)
+        symlinkSync(target, join(path, '.gitmodules'))
+      } else {
+        execFileSync('mkfifo', [join(path, '.gitmodules')])
+        // A writer turns a blocking read into a wrong answer rather than a hung worker.
+        writer = spawn(process.execPath, [
+          '-e',
+          'require("fs").writeFileSync(...process.argv.slice(1))',
+          join(path, '.gitmodules'),
+          declaration
+        ])
+      }
+
+      try {
+        await workspaces.prepareSessionWorkspace(agent, request)
+      } finally {
+        writer?.kill()
+      }
+
+      expect((await workspaces.readySecondaryRoots(agent, request)).map((root) => root.repoFullName)).toEqual([
+        'acme/infra'
+      ])
     }
   )
 

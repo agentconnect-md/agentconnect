@@ -9,7 +9,7 @@
  * immediately (Slack's 3s window) and forward asynchronously — a forward miss is
  * still counted as bounded loss by the forwarder, honestly declared.
  *
- * The bot's Slack user id + bot id are resolved here via `auth.test` on `start()`.
+ * The bot's Slack user id + bot id are resolved here via `auth.test` on `start()` and each periodic probe.
  * The user id drives mention matching; both identities suppress exact self echoes.
  * The `WebClient` also opens the config modal (`views.open`).
  *
@@ -312,21 +312,27 @@ function fetchWithDispatcher(dispatcher: Dispatcher): FetchFunction {
   return (url, init) => undiciFetch(url, { ...(init as Parameters<typeof undiciFetch>[1]), dispatcher })
 }
 
-/**
- * Slack error codes that mean THIS TOKEN IS DEAD, as opposed to a transient
- * failure. Deliberately narrow: a false positive would revoke a live bot, so
- * network errors, rate limits, and `missing_scope` must NOT match.
- *
- * `account_inactive` is what a workspace uninstall leaves behind;
- * `token_revoked` / `invalid_auth` cover an explicitly killed token.
- */
-const DEAD_CREDENTIAL_ERRORS = new Set(['account_inactive', 'token_revoked', 'invalid_auth'])
+/** `auth.test` codes proving the token is dead (`account_inactive` is what an uninstall leaves); a false positive revokes a live bot, so keep it narrow. */
+const REVOKED_CREDENTIAL_ERRORS = new Set(['account_inactive', 'token_revoked'])
 
-function isDeadCredentialError(err: unknown): boolean {
+/** Codes Slack also returns for a live token, e.g. to a caller outside the app's IP allowlist, so they only mark the bot. */
+const REJECTED_CREDENTIAL_ERRORS = new Set(['invalid_auth'])
+
+/** The credential tier of one failed `auth.test`; undefined for anything else (network, rate limit, `missing_scope`, …). */
+export function classifyAuthTestFailure(err: unknown): { tier: 'revoked' | 'rejected'; code: string } | undefined {
   // @slack/web-api puts the API's `error` string on `err.data.error`.
   const code = (err as { data?: { error?: unknown } })?.data?.error
-  return typeof code === 'string' && DEAD_CREDENTIAL_ERRORS.has(code)
+  if (typeof code !== 'string') return undefined
+  if (REVOKED_CREDENTIAL_ERRORS.has(code)) return { tier: 'revoked', code }
+  if (REJECTED_CREDENTIAL_ERRORS.has(code)) return { tier: 'rejected', code }
+  return undefined
 }
+
+/** How the ingest learned its token is dead: a lifecycle `event` (Slack's `event_time` in ms when present) or a `probe` Slack answered with `code`. */
+export type SlackRevocationProof = { evidence: 'event'; eventAtMs?: number } | { evidence: 'probe'; code: string }
+
+/** An `auth.test` answer that does not revoke: `ok`, or `rejected` with Slack's ambiguous code. */
+export type SlackCredentialCheck = { result: 'ok' } | { result: 'rejected'; code: string }
 
 /** Top-level chat subtypes. Structural/system records stay out of routing. */
 function isRoutableSubtype(subtype: string | undefined): boolean {
@@ -386,12 +392,10 @@ export interface SlackHttpIngestDeps {
   onSessionShortcut: (shortcut: HttpSlackSessionShortcut) => boolean
   /** Forward the native agent-session Stop to the daemon owning that conversation. */
   onSessionStopped: (stop: HttpSlackSessionStop) => void
-  /** The workspace uninstalled the app / revoked its tokens — the bot's credential
-   *  is dead; report upstream so the CP marks it revoked. */
-  /** `eventAtMs` = Slack's envelope `event_time` (when the uninstall HAPPENED),
-   *  forwarded so the CP can reject an event that predates the credential it
-   *  would revoke. Undefined when the envelope carried no `event_time`. */
-  onBotRevoked?: (reason: 'app_uninstalled' | 'tokens_revoked', eventAtMs?: number) => void
+  /** The bot's credential is definitively dead (an uninstall, a token revocation, or a probe saying so); report it so the CP revokes the bot. */
+  onBotRevoked?: (reason: 'app_uninstalled' | 'tokens_revoked', proof: SlackRevocationProof) => void
+  /** A probe answer that does not revoke: `ok` clears an earlier rejection, `rejected` only marks the bot. */
+  onCredentialCheck?: (check: SlackCredentialCheck) => void
   /** Test seam for the bot-token Web API client. */
   webClientFactory?: (botToken: string, options?: WebClientOptions) => WebClient
   log: Logger
@@ -403,6 +407,7 @@ export class SlackHttpIngest {
   private slackBotId = ''
   private channelRefresh?: Promise<void>
   private channelRefreshQueued = false
+  private probing = false
   /** users.info label cache for DM counterpart names (null = lookup failed). */
   private readonly userNames = new Map<string, string | null>()
 
@@ -457,41 +462,44 @@ export class SlackHttpIngest {
     }
   }
 
-  /** Best-effort setup: resolve the bot user id for arbitration. No socket to open —
-   *  inbound arrives on the pool-wide HTTP routes and is dispatched via `handle*`. */
+  /** Build the Web API client and run the first credential probe; inbound arrives on the pool-wide HTTP routes, so no socket opens. */
   async start(): Promise<void> {
     const dispatcher = proxyDispatcher()
     const options: WebClientOptions = dispatcher ? { fetch: fetchWithDispatcher(dispatcher) } : {}
     this.web = this.deps.webClientFactory
       ? this.deps.webClientFactory(this.secrets.botToken, options)
       : new WebClient(this.secrets.botToken, options)
-    // Resolve the bot user id (best-effort — arbitration degrades to keyword/default
-    // if it fails; a later re-assign retries).
+    await this.probeCredential()
+  }
+
+  /** Run `auth.test` (at start and on core's periodic schedule): learn the bot identity, and report the answer's credential tier. */
+  async probeCredential(): Promise<void> {
+    const web = this.web
+    if (!web || this.probing) return
+    this.probing = true
     try {
-      const auth = await this.web.auth.test()
+      const auth = await web.auth.test()
+      // Best-effort identity: arbitration degrades to keyword/default until a probe resolves it.
       if (auth.bot_id) this.slackBotId = auth.bot_id
       if (auth.user_id) {
         this.botUserId = auth.user_id
         this.deps.onBotUserId(auth.user_id)
       }
+      this.deps.onCredentialCheck?.({ result: 'ok' })
     } catch (err) {
       this.deps.log.warn(`slack-http-ingest(${this.botId}): auth.test failed: ${(err as Error).message}`)
-      // A DEAD-credential answer is positive evidence, not a transient miss: it
-      // says the token this very assignment carries no longer works. Report it as
-      // a revocation so the CP converges even when the `app_uninstalled` event
-      // itself was lost — Slack acks that event before the handler runs and never
-      // redelivers it, and a relay that crashed holding a queued report would
-      // otherwise leave an uninstalled app shown as active forever. Every
-      // (re)assign and every pod restart re-probes here, so this is the backstop
-      // the in-memory retry queue cannot be.
-      //
-      // No `eventAtMs`: we don't know WHEN the workspace pulled the app. The
-      // revision arm alone is the correct fence here anyway — it identifies the
-      // exact credential this probe just found dead.
-      if (isDeadCredentialError(err)) {
-        this.deps.log.warn(`slack-http-ingest(${this.botId}): credential is dead — reporting revocation`)
-        this.deps.onBotRevoked?.('tokens_revoked')
+      // A dead answer is the backstop for a lost `app_uninstalled`; no `eventAtMs`, so the CP fences on the probed revision alone.
+      const verdict = classifyAuthTestFailure(err)
+      if (verdict?.tier === 'revoked') {
+        this.deps.log.warn(
+          `slack-http-ingest(${this.botId}): credential is dead (${verdict.code}) — reporting revocation`
+        )
+        this.deps.onBotRevoked?.('tokens_revoked', { evidence: 'probe', code: verdict.code })
+      } else if (verdict?.tier === 'rejected') {
+        this.deps.onCredentialCheck?.({ result: 'rejected', code: verdict.code })
       }
+    } finally {
+      this.probing = false
     }
   }
 
@@ -508,7 +516,7 @@ export class SlackHttpIngest {
       // before the chat filters. `tokens_revoked` is treated as a full revoke —
       // the app has exactly one bot token, and Slack sends it when that dies.
       if (event?.type === 'app_uninstalled' || event?.type === 'tokens_revoked') {
-        this.deps.onBotRevoked?.(event.type, eventAtMs)
+        this.deps.onBotRevoked?.(event.type, { evidence: 'event', ...(eventAtMs !== undefined ? { eventAtMs } : {}) })
         return
       }
       // The native Stop button — not chat either, and the one non-chat event this transport

@@ -19,6 +19,7 @@ export const MOCKING_TESTS = [
   'test/runtime-install-repair-collapse.test.ts',
   'test/skill-workspace-mutator.test.ts',
   'test/telegram-connection.test.ts',
+  'test/workspace-fs.test.ts',
   'test/workspace-git.test.ts',
   'test/workspace.test.ts'
 ]

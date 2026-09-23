@@ -160,7 +160,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
   let botRevokedAt: Date | null
   // What the committed revocation recorded, and every credential check the repo was asked to apply.
   let botRevocation: BotRevocationRecord | null
-  let credentialChecks: BotCredentialCheck[]
+  let credentialChecks: (BotCredentialCheck & { relayId: string })[]
   let removals: { daemonId: string; integrationId: string }[]
   // One-shot barrier for deterministic channel-mutation concurrency tests.
   let blockNextChannelList: (() => Promise<void>) | null
@@ -210,8 +210,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         return true
       },
       // The revision CAS alone; the mark's own semantics are the repository's and are covered against Postgres.
-      recordCredentialCheck: async (_id, check) => {
-        credentialChecks.push(check)
+      recordCredentialCheck: async (_id, relayId, check) => {
+        credentialChecks.push({ relayId, ...check })
         return check.revision === botRow.credentialRevision
       }
     }
@@ -1639,17 +1639,15 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     const observedAtMs = Date.UTC(2026, 8, 1)
 
     await expect(
-      makeOrch().recordCredentialCheck({
-        botId: BOT,
-        credentialRevision: 1,
-        result: 'rejected',
-        code: 'invalid_auth',
-        observedAtMs
-      })
+      makeOrch().recordCredentialCheck(
+        { botId: BOT, credentialRevision: 1, result: 'rejected', code: 'invalid_auth', observedAtMs },
+        RELAY
+      )
     ).resolves.toEqual({ applied: true })
 
+    // The reporting relay rides along: the mark aggregates each relay's own latest observation.
     expect(credentialChecks).toEqual([
-      { result: 'rejected', code: 'invalid_auth', revision: 1, observedAt: new Date(observedAtMs) }
+      { relayId: RELAY, result: 'rejected', code: 'invalid_auth', revision: 1, observedAt: new Date(observedAtMs) }
     ])
     expect(botRevokedAt).toBeNull()
     expect(integrations.map((i) => i.status)).toEqual(['active', 'active'])
@@ -1661,9 +1659,9 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     botRow = bot({ credentialRevision: 2 })
 
     await expect(
-      makeOrch().recordCredentialCheck({ botId: BOT, credentialRevision: 1, result: 'ok', observedAtMs: 1 })
+      makeOrch().recordCredentialCheck({ botId: BOT, credentialRevision: 1, result: 'ok', observedAtMs: 1 }, RELAY)
     ).resolves.toEqual({ applied: false })
-    expect(credentialChecks).toEqual([{ result: 'ok', revision: 1, observedAt: new Date(1) }])
+    expect(credentialChecks).toEqual([{ relayId: RELAY, result: 'ok', revision: 1, observedAt: new Date(1) }])
   })
 
   it('revokeBot is idempotent — a duplicate report finds no active installs', async () => {

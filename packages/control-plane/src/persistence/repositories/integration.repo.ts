@@ -24,6 +24,7 @@ import {
   type User
 } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
+import { recomputeCredentialMarks } from './bot-credential-mark.js'
 import { BotExternalIdentityTaken, BotMissing, BotStillShared } from '../errors.js'
 import type {
   BotRepo,
@@ -381,23 +382,25 @@ export class PgBotRepo implements BotRepo {
   }
 
   async bumpCredential(id: BotId, at: Date): Promise<number> {
-    // One statement, one event: no reader sees a fresh credential still carrying the dead one's revocation, evidence or mark.
-    const row = await this.db.bot.update({
-      where: { id },
-      data: {
-        credentialRevision: { increment: 1 },
-        credentialInstalledAt: at,
-        revokedAt: null,
-        revokedReason: null,
-        revokedEvidence: null,
-        revokedCode: null,
-        credentialRejectedAt: null,
-        credentialRejectedCode: null,
-        credentialCheckedAt: null
-      },
-      select: { credentialRevision: true }
+    // One transaction: no reader sees a fresh credential still carrying the dead one's revocation, evidence, mark or observations.
+    return withAmbientTx(this.db, async (tx) => {
+      const row = await tx.bot.update({
+        where: { id },
+        data: {
+          credentialRevision: { increment: 1 },
+          credentialInstalledAt: at,
+          revokedAt: null,
+          revokedReason: null,
+          revokedEvidence: null,
+          revokedCode: null,
+          credentialRejectedAt: null,
+          credentialRejectedCode: null
+        },
+        select: { credentialRevision: true }
+      })
+      await tx.botCredentialObservation.deleteMany({ where: { botId: id } })
+      return row.credentialRevision
     })
-    return row.credentialRevision
   }
 
   async revokeIfCurrent(
@@ -420,22 +423,29 @@ export class PgBotRepo implements BotRepo {
     return count > 0
   }
 
-  async recordCredentialCheck(id: BotId, check: BotCredentialCheck): Promise<boolean> {
-    const at = check.observedAt
-    // One conditional UPDATE per result, fenced on the probed revision and a strictly newer observation than the watermark.
-    const count =
-      check.result === 'rejected'
-        ? await this.db.$executeRaw`
-            UPDATE bot SET "credentialCheckedAt" = ${at}, "credentialRejectedAt" = COALESCE("credentialRejectedAt", ${at}),
-              "credentialRejectedCode" = ${check.code}, "updatedAt" = CURRENT_TIMESTAMP
-            WHERE id = ${id} AND "credentialRevision" = ${check.revision}
-              AND ("credentialCheckedAt" IS NULL OR "credentialCheckedAt" < ${at})`
-        : await this.db.$executeRaw`
-            UPDATE bot SET "credentialCheckedAt" = ${at}, "credentialRejectedAt" = NULL,
-              "credentialRejectedCode" = NULL, "updatedAt" = CURRENT_TIMESTAMP
-            WHERE id = ${id} AND "credentialRevision" = ${check.revision}
-              AND ("credentialCheckedAt" IS NULL OR "credentialCheckedAt" < ${at})`
-    return count > 0
+  async recordCredentialCheck(id: BotId, relayId: string, check: BotCredentialCheck): Promise<boolean> {
+    return withAmbientTx(this.db, async (tx) => {
+      // Locks go relay → bot → observation, the sweeper's order too; a relay it already removed writes nothing.
+      const relay = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM relay WHERE id = ${relayId}::uuid FOR KEY SHARE`
+      if (relay.length === 0) return false
+      // The bot row lock orders this against `bumpCredential` and other relays' checks, so the fence and the aggregate agree.
+      const bot = await tx.$queryRaw<{ credentialRevision: number }[]>`
+        SELECT "credentialRevision" FROM bot WHERE id = ${id} FOR UPDATE`
+      if (bot[0]?.credentialRevision !== check.revision) return false
+      const code = check.result === 'rejected' ? check.code : null
+      // Only a strictly newer observation replaces this relay's row.
+      const written = await tx.$executeRaw`
+        INSERT INTO bot_credential_observation ("botId", "relayId", "credentialRevision", result, code, "observedAt")
+        VALUES (${id}::uuid, ${relayId}::uuid, ${check.revision}::int, ${check.result}::text, ${code}::text,
+          ${check.observedAt}::timestamptz)
+        ON CONFLICT ("botId", "relayId") DO UPDATE SET "credentialRevision" = EXCLUDED."credentialRevision",
+          result = EXCLUDED.result, code = EXCLUDED.code, "observedAt" = EXCLUDED."observedAt"
+        WHERE bot_credential_observation."observedAt" < EXCLUDED."observedAt"
+          OR bot_credential_observation."credentialRevision" <> EXCLUDED."credentialRevision"`
+      if (written === 0) return false
+      await recomputeCredentialMarks(tx, Prisma.sql`b.id = ${id}::uuid`)
+      return true
+    })
   }
 
   async delete(orgId: OrgId, id: BotId): Promise<void> {

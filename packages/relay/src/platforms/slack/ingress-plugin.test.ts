@@ -15,6 +15,8 @@ const host = (over: Partial<RelayIngressHost> = {}): RelayIngressHost => ({
   forwardAction: vi.fn(async (msg) => ({ msgId: msg.msgId, accepted: true })),
   reportChannels: () => {},
   reportRevoked: vi.fn(),
+  reportCredentialCheck: vi.fn(),
+  credentialCheckSupported: () => true,
   directory: {
     agents: () => [],
     channelOwner: () => undefined,
@@ -35,6 +37,22 @@ const host = (over: Partial<RelayIngressHost> = {}): RelayIngressHost => ({
   log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
   ...over
 })
+
+/** A Slack assignment built at revision 1 — the OBSERVING generation every report must carry. */
+const slackAssignment = (): BotAssignment =>
+  ({
+    botId: 'bot-1',
+    platform: 'slack',
+    secrets: { botToken: 'xoxb-1', signingSecret: 'sig' },
+    credentialRevision: 1,
+    members: [],
+    agents: [],
+    routes: [],
+    gatedAgentIds: [],
+    mutedChannels: [],
+    gatedOffChannels: [],
+    noticedDmConversations: []
+  }) as unknown as BotAssignment
 
 const SHORTCUT = {
   triggerId: 'trigger-1',
@@ -167,33 +185,79 @@ describe('slack ingress plugin — review-pinned regressions', () => {
   })
 
   it('revocation reports carry the OBSERVING assignment revision, not the current one', () => {
-    // Assignments start fire-and-forget: an older ingest's auth.test can finish
-    // after a newer assignment installed. Fencing with the mutable current
-    // revision would let that stale observation revoke the replacement
-    // credential — the report must carry the generation this ingest was built
-    // from.
+    // An older ingest's report can land after a re-assign bumped the live revision; it must fence on its own.
     const h = host()
-    const assignment = {
-      botId: 'bot-1',
-      platform: 'slack',
-      secrets: { botToken: 'xoxb-1', signingSecret: 'sig' },
-      credentialRevision: 1,
-      members: [],
-      agents: [],
-      routes: [],
-      gatedAgentIds: [],
-      mutedChannels: [],
-      gatedOffChannels: [],
-      noticedDmConversations: []
-    } as unknown as BotAssignment
-    const ingest = slackIngressPlugin.buildIngest(assignment, h)!
-    // Simulate the platform revoking AFTER a re-assign bumped the live revision:
-    // the callback wired at buildIngest must still report revision 1.
+    const ingest = slackIngressPlugin.buildIngest(slackAssignment(), h)!
     ;(
       ingest as unknown as {
-        deps: { onBotRevoked?: (reason: string, eventAtMs?: number) => void }
+        deps: { onBotRevoked?: (reason: string, proof: { evidence: 'event'; eventAtMs?: number }) => void }
       }
-    ).deps.onBotRevoked?.('app_uninstalled', 1_720_000_000_000)
-    expect(h.reportRevoked).toHaveBeenCalledWith('bot-1', 'app_uninstalled', 1_720_000_000_000, 1)
+    ).deps.onBotRevoked?.('app_uninstalled', { evidence: 'event', eventAtMs: 1_720_000_000_000 })
+    expect(h.reportRevoked).toHaveBeenCalledWith(
+      'bot-1',
+      { reason: 'app_uninstalled', evidence: 'event', eventAtMs: 1_720_000_000_000 },
+      1
+    )
+  })
+})
+
+describe('slack ingress plugin — credential probe tiers', () => {
+  const NOW = 1_720_000_000_000
+  const platformError = (code: string) => Object.assign(new Error(code), { data: { error: code } })
+
+  /** Build the real ingest and run one probe against a stubbed `auth.test`. */
+  const probe = async (h: RelayIngressHost, answer: () => Promise<unknown>): Promise<void> => {
+    const ingest = slackIngressPlugin.buildIngest(slackAssignment(), h)!
+    ;(ingest as unknown as { web: unknown }).web = { auth: { test: answer } }
+    await ingest.probeCredential()
+  }
+
+  it('reports a definitive answer as a probe revocation with its code', async () => {
+    const h = host()
+    await probe(h, async () => Promise.reject(platformError('token_revoked')))
+    expect(h.reportRevoked).toHaveBeenCalledWith(
+      'bot-1',
+      { reason: 'tokens_revoked', evidence: 'probe', code: 'token_revoked' },
+      1
+    )
+    expect(h.reportCredentialCheck).not.toHaveBeenCalled()
+  })
+
+  it('reports invalid_auth as a rejected check to a CP that accepts checks', async () => {
+    const h = host()
+    await probe(h, async () => Promise.reject(platformError('invalid_auth')))
+    expect(h.reportCredentialCheck).toHaveBeenCalledWith(
+      'bot-1',
+      { result: 'rejected', code: 'invalid_auth', observedAtMs: NOW },
+      1
+    )
+    expect(h.reportRevoked).not.toHaveBeenCalled()
+  })
+
+  it('keeps revoking on invalid_auth for a CP without credential checks', async () => {
+    const h = host({ credentialCheckSupported: () => false })
+    await probe(h, async () => Promise.reject(platformError('invalid_auth')))
+    expect(h.reportRevoked).toHaveBeenCalledWith(
+      'bot-1',
+      { reason: 'tokens_revoked', evidence: 'probe', code: 'invalid_auth' },
+      1
+    )
+    expect(h.reportCredentialCheck).not.toHaveBeenCalled()
+  })
+
+  it('reports a successful probe as an ok check', async () => {
+    const h = host()
+    await probe(h, async () => ({ user_id: 'UBOT' }))
+    expect(h.reportCredentialCheck).toHaveBeenCalledWith('bot-1', { result: 'ok', observedAtMs: NOW }, 1)
+    expect(h.reportRevoked).not.toHaveBeenCalled()
+  })
+
+  it('reports nothing for a rate-limited probe', async () => {
+    const h = host()
+    await probe(h, async () =>
+      Promise.reject(Object.assign(new Error('rate limited'), { code: 'slack_webapi_rate_limited_error' }))
+    )
+    expect(h.reportRevoked).not.toHaveBeenCalled()
+    expect(h.reportCredentialCheck).not.toHaveBeenCalled()
   })
 })
