@@ -178,8 +178,9 @@ live reply and saved transcript use the same destination.
 
 ## Session startup shows what the turn is waiting for
 
-Before an agent can respond, its turn may need to start a sandbox, prepare a workspace,
-clone a repository, and start or resume its runtime session. Each real wait updates one
+Before an agent can respond, its turn may need to wait for the agent to restart after a
+settings change, start a sandbox, prepare a workspace, clone a repository, and start or
+resume its runtime session. Each real wait updates one
 startup notice. Stages that do not run are skipped, including sandbox startup when the
 current session's own sandbox is already bound. Git clone has its own label within
 workspace preparation; checkout and skills installation use the workspace label.
@@ -197,6 +198,21 @@ startup updates and clearing.
 
 Each observer belongs to its turn. Turns joining a shared host start see its current
 phase, and a cancelled or displaced turn cannot publish late updates into its successor.
+
+## A settings change does not cut a running answer
+
+Changing an agent setting that needs a fresh agent process — its model, reasoning
+effort, modes, runtime, environment, secrets, skills, memory, or description — applies
+from the next turn. A turn already running finishes first; a message that would start
+on the old process waits, showing that the agent is restarting, and then runs with the
+new settings. Where each session has its own process, other sessions start at once.
+
+The wait is bounded. A turn still running at the limit, or one still starting when the
+change lands, is stopped and its message runs again on the new process, and the
+conversation is told that the message will be picked up again. A console turn cannot be
+re-run and is told to send its message again. A daemon restart that stops a turn tells
+the conversation the same way. A workspace change still stops running turns at once,
+with a notice to send the message again.
 
 ## A trigger is acknowledged before it is answered
 

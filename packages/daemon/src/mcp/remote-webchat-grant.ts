@@ -219,6 +219,11 @@ export class RemoteWebchatGrantManager {
     await this.revoke(conversationId, current.entitlement, reason)
   }
 
+  /** Conversations holding an active grant for `agentId`. */
+  conversationsForAgent(agentId: string): string[] {
+    return [...this.active].filter(([, descriptor]) => descriptor.agentId === agentId).map(([id]) => id)
+  }
+
   async revokeAgent(agentId: string, reason: WebchatMcpGrantRevoke['reason']): Promise<void> {
     const entries = [...this.active.entries()].filter(([, descriptor]) => descriptor.agentId === agentId)
     const results = await Promise.allSettled(

@@ -763,6 +763,47 @@ describe('Daemon interrupt safety gates', () => {
     }
   })
 
+  it('tells the conversation why a live turn ended when a workspace change cuts it', async () => {
+    let yieldPrompt!: (value: unknown) => void
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-live'),
+      hasSession: vi.fn(() => true),
+      modelOptions: vi.fn(() => null),
+      prompt: vi.fn(() => new Promise((resolve) => (yieldPrompt = resolve))),
+      cancel: vi.fn(async () => yieldPrompt({ stopReason: 'cancelled' })),
+      stop: vi.fn(async () => {})
+    }
+    const root = scaffold()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => host as any })
+    await daemon.start()
+    await (daemon as any).watcher.close()
+    ;(daemon as any).watcher = undefined
+    const appended = vi.spyOn((daemon as any).store, 'appendTranscript')
+    const turn = (daemon as any).dispatch(AGENT_ID, dm('C1', 'T1', '100', 'long question'))
+
+    try {
+      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
+
+      // A workspace change re-materializes the checkout, so it still cuts the live turn at once.
+      updateAgent(root, {
+        workspace: { mode: 'from-scratch', path: join(root, 'agents', AGENT_ID, 'workspace-new') }
+      })
+      await daemon.reconcile()
+
+      expect(host.cancel).toHaveBeenCalledWith('acp-live')
+      expect(appended).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: '⚠️ The agent restarted to apply its new configuration — this turn was stopped; send your message again.'
+        })
+      )
+      await expect(turn).resolves.toBeNull()
+    } finally {
+      await Promise.allSettled([turn])
+      await daemon.stop()
+    }
+  })
+
   it('shares one Slack top-level loop circuit across agents and fresh message roots', async () => {
     const root = scaffold()
     const agentDir = join(root, 'agents', 'bot-b')

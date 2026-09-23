@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 
-export type StartupPhase = 'sandbox' | 'workspace' | 'clone' | 'runtime'
+export type StartupPhase = 'sandbox' | 'workspace' | 'clone' | 'runtime' | 'restart'
 type Report = (phase: StartupPhase | undefined) => void
 const context = new AsyncLocalStorage<{ report: Report; phase?: StartupPhase }>()
 const shared = new WeakMap<Promise<unknown>, { report: Report; phase?: StartupPhase; listeners: Set<Report> }>()

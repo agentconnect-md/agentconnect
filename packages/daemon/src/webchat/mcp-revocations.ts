@@ -49,6 +49,19 @@ export class WebchatMcpRevocations {
     }
   }
 
+  async revokeRemoteWebchatConversations(
+    conversationIds: readonly string[],
+    reason: Parameters<RemoteWebchatGrantManager['revokeConversation']>[1]
+  ): Promise<void> {
+    const grants = this.host.remoteWebchatGrants()
+    if (!grants || conversationIds.length === 0) return
+    const results = await Promise.allSettled(conversationIds.map((id) => grants.revokeConversation(id, reason)))
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+    if (!failed) return
+    this.host.warn(`remote MCP cleanup revoke deferred to durable retry (${formatErr(failed.reason)})`)
+    void this.drainWebchatMcpRevocations()
+  }
+
   /** Deliver queued (`revoking`) grant-ledger rows to the CP. Runs on CP READY,
    *  after any failed lifecycle revoke, and from the idle sweep, so a revocation
    *  that missed its moment (disconnect, restart, transient error) still lands.
