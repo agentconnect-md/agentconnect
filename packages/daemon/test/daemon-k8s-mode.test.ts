@@ -1713,6 +1713,118 @@ describe("a host start in a session's own pod leaves the agent's checkout alone 
     }
   })
 
+  /** Run a turn's real openSession on a key-server pool whose cold host starts as the pool starts it, and return the options `sessions.handle` was given. */
+  async function openKeyServerTurn(
+    pool: Awaited<ReturnType<typeof poolMember>>,
+    opts: { started?: boolean; row?: Record<string, unknown>; reviewCwd?: string } = {}
+  ): Promise<{ preparedWorkspaceCwd?: string }> {
+    const inner = pool.inner
+    let handed: { preparedWorkspaceCwd?: string } = {}
+    inner.githubReviews = {
+      prepareGithubReviewWorkspace: async () =>
+        opts.reviewCwd === undefined
+          ? {}
+          : { workspaceIsolation: 'session', forceWorkspaceIsolation: true, preparedWorkspaceCwd: opts.reviewCwd }
+    }
+    inner.store.getSession = async () => opts.row
+    inner.store.getDisplayNames = async (ids: string[]) =>
+      new Map(ids.filter((id) => id === 'U0').map((id) => [id, 'Opener']))
+    // The real pool, with the key-server grant stood in: its host starts as the pool starts it.
+    vi.spyOn(inner.modelSessions, 'enabled', 'get').mockReturnValue(true)
+    vi.spyOn(inner.modelSessions, 'hasStartedHost').mockReturnValue(opts.started === true)
+    vi.spyOn(inner.modelSessions, 'ensure').mockImplementation(async (agent: unknown, key: unknown) => ({
+      host: opts.started ? {} : await inner.startModelSessionRuntime(agent, modelEntry(key as string)),
+      hostKey: sessionHostKey('bot-a', key as string),
+      stop: async () => {},
+      waitForCleanup: async () => {}
+    }))
+    inner.sessions = {
+      handle: async (...args: unknown[]) => {
+        handed = args[7] as { preparedWorkspaceCwd?: string }
+        return { sessionId: 'acp-1', blocks: [], created: true }
+      }
+    }
+    const run = {
+      entry: {
+        agentId: 'bot-a',
+        initAbort: new AbortController(),
+        msg: { platform: 'webchat', channel: 'C1', msgId: 'm1', sender: { id: 'U1', name: 'Alice' }, text: 'hi' }
+      },
+      key: KEY,
+      plan: { deliveryBinding: {} },
+      agent: inner.agents.get('bot-a'),
+      // A turn that fails to open surfaces its cause here rather than through the failure delivery.
+      evaluation: {
+        failEvaluation: (err: unknown) => {
+          throw err
+        }
+      }
+    }
+    await inner.openSession(run, () => {})
+    return handed
+  }
+
+  // Codex's `:workspace` profile is fixed at spawn, so a new session's first key-server host must launch after its clones exist.
+  it("prepares a new session's own pod before its first key-server launch, which then lists its clones", async () => {
+    const pool = await poolMember()
+    try {
+      const clones = [`${SESSION_CWD}/.git`]
+      pool.gitListing.mockImplementation(async () => (pool.checkout.mock.calls.length > 0 ? clones : []))
+      const handed = await openKeyServerTurn(pool)
+      const request = { sessionKey: KEY, isolation: 'session', initiatedBy: 'Alice' }
+      expect(pool.preparation.mock.calls.map((call) => call[1])).toEqual([request])
+      expect(pool.checkout.mock.calls).toEqual([
+        [pool.agent, '/agent', { ...request, confined: true }, expect.any(Function)]
+      ])
+      expect(pool.gitDirs).toEqual([clones])
+      // The session pod alone: the preparation, then the launch's own gate.
+      expect(pool.bound).toEqual([SESSION_POD, SESSION_POD])
+      // The turn opens in what was prepared rather than preparing again.
+      expect(handed.preparedWorkspaceCwd).toBe('/agent/checkout')
+    } finally {
+      await pool.instance.stop()
+    }
+  })
+
+  it("names a cold host's preparation for the session's opener, as the session itself does", async () => {
+    const pool = await poolMember()
+    try {
+      await openKeyServerTurn(pool, { row: { key: KEY, workspaceIsolation: 'session', triggeredBy: 'U0' } })
+      expect(pool.preparation.mock.calls.map((call) => call[1])).toEqual([
+        { sessionKey: KEY, isolation: 'session', initiatedBy: 'Opener' }
+      ])
+    } finally {
+      await pool.instance.stop()
+    }
+  })
+
+  it('prepares nothing ahead of a warm key-server host, a review that prepared its own cwd, or a shared session', async () => {
+    const warm = await poolMember()
+    try {
+      expect((await openKeyServerTurn(warm, { started: true })).preparedWorkspaceCwd).toBeUndefined()
+      expect(warm.preparation).not.toHaveBeenCalled()
+    } finally {
+      await warm.instance.stop()
+    }
+    const review = await poolMember()
+    try {
+      expect((await openKeyServerTurn(review, { reviewCwd: SESSION_CWD })).preparedWorkspaceCwd).toBe(SESSION_CWD)
+      expect(review.preparation).not.toHaveBeenCalled()
+      expect(review.launches).toEqual([{ hostKey: sessionHostKey('bot-a', KEY), cwd: SESSION_CWD }])
+    } finally {
+      await review.instance.stop()
+    }
+    const shared = await poolMember()
+    try {
+      shared.inner.agents.set('bot-a', { ...poolAgent('shared'), dir: shared.agent.dir })
+      expect((await openKeyServerTurn(shared)).preparedWorkspaceCwd).toBeUndefined()
+      // Only the launch's own agent-pod preparation, which carries no session request.
+      expect(shared.preparation.mock.calls.map((call) => call[1])).toEqual([undefined])
+    } finally {
+      await shared.instance.stop()
+    }
+  })
+
   it('still prepares the session request itself for a host start given no cwd', async () => {
     const pool = await poolMember()
     try {
@@ -2107,10 +2219,13 @@ async function openSessionClaim(
   inner.githubReviews = { prepareGithubReviewWorkspace: async () => ({}) }
   inner.store.getSession = async () =>
     scenario.recorded === undefined ? undefined : { key, workspaceIsolation: scenario.recorded }
+  // The cold host's own preparation is not what this reports; its pod has its own rows above.
+  inner.prepareAgentWorkspace = async () => '/agent/checkout'
   inner.modelSessions = {
     enabled: true,
     keys: () => [],
     release: async () => {},
+    hasStartedHost: () => false,
     ensure: async () => {
       claimed = inner.podSubjectFor(agent, sessionHostKey('bot-a', key))
       return { host: {}, hostKey: sessionHostKey('bot-a', key), stop: async () => {}, waitForCleanup: async () => {} }

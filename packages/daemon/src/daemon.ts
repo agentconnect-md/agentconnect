@@ -346,6 +346,7 @@ import {
   type RetiredRootRemoval,
   type SessionWorktreeRemoval
 } from './workspace/workspace-manager.js'
+import { sessionInitiatedBy } from './workspace/session-branch.js'
 import { ManagedSkillCache } from './skills/managed-skill-cache.js'
 import { acceptedDreamSkillSources } from './skills/dream-skills.js'
 import { acquireGitSkillSource, gitSkillRepositoryPath } from './skills/skill-git-source.js'
@@ -6319,13 +6320,13 @@ export class Daemon {
     const attempts = Math.max(1, this.cfg.limits.agentStartAttempts)
     let lastError: unknown
     for (let attempt = 1; attempt <= attempts; attempt++) {
-      // A session in its own pod prepares its workspace when it opens, after this launch; the gate re-verifies that pod alone.
+      // A session in its own pod is prepared by its turn before a cold launch (openSession); the gate re-verifies that pod alone.
       const inSessionPod = this.runsInSessionPod(agent, entry.sessionKey)
       const cwd = inSessionPod
         ? await this.prepareSessionPodLaunch(agent, entry.sessionKey)
         : await this.prepareAgentWorkspace(agent, undefined, undefined)
       const hostKey = sessionHostKey(agent.id, entry.sessionKey)
-      // The clones it already holds on that pod, as an ordinary start lists them; a session opening after this launch has none yet.
+      // The clones it holds on that pod, as an ordinary start lists them.
       const sessionGitDirs = inSessionPod
         ? await this.listSessionGitDirs(agent, entry.sessionKey, hostKeyLabel(hostKey))
         : undefined
@@ -13353,12 +13354,25 @@ export class Daemon {
       agent = run.agent = this.sessionAgent(agentId, key) ?? agent
       await this.placeSessionOnExecutor(agent, key)
       const reviewWorkspace = await this.githubReviews.prepareGithubReviewWorkspace(entry, key, agent)
+      let launchWorkspaceCwd: string | undefined
       if (this.modelSessions.enabled) {
         const currentAgent = this.sessionAgent(agentId, key) ?? agent
         const manualModel = currentAgent.allowRuntimeChangesInChat
           ? (webchat?.runtime?.model ?? (await this.store.getModelOverride(key)))
           : undefined
         const firstTurnModel = manualModel ?? this.selectedSessionModel(run)
+        // A cold host in the session's own pod is handed only the clones there at spawn, so the session's preparation runs first, as an ordinary start's does.
+        if (
+          reviewWorkspace.preparedWorkspaceCwd === undefined &&
+          this.runsInSessionPod(currentAgent, key) &&
+          !this.modelSessions.hasStartedHost(key)
+        ) {
+          launchWorkspaceCwd = await this.prepareAgentWorkspace(currentAgent, undefined, {
+            sessionKey: key,
+            isolation: 'session',
+            initiatedBy: await sessionInitiatedBy((ids) => this.store.getDisplayNames(ids), persisted?.triggeredBy, msg)
+          })
+        }
         entry.selectedHost = await this.modelSessions.ensure(currentAgent, key, firstTurnModel)
       }
       // A prior provider post-turn operation is serialized. Managed needs this
@@ -13414,7 +13428,8 @@ export class Daemon {
           ...(remoteMcpServer ? { additionalMcpServers: [remoteMcpServer] } : {}),
           ...(entry.selectedHost ? { host: entry.selectedHost.host } : {}),
           ...(webchatIsolation ? { workspaceIsolation: webchatIsolation } : {}),
-          ...reviewWorkspace
+          ...reviewWorkspace,
+          ...(launchWorkspaceCwd !== undefined ? { preparedWorkspaceCwd: launchWorkspaceCwd } : {})
         }
       )
       const target = this.sessionRuntimes.get(key)
