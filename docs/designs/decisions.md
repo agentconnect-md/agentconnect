@@ -1757,17 +1757,33 @@ current draft's real matching function but makes no evaluator request. Changing
 the draft changes the routing explanation, not the illustrative answer.
 
 **Input and timing.** Before host startup, the serving daemon reads the bound
-definition and evaluates it. Chat uses the opening message. PR/MR hooks, including
-comments and review events, use the root PR/MR description fetched through the code
-host's existing repository grant. The input is not the comment, diff, or assembled
-agent prompt. Other hook types use fallback.
+definition and evaluates it. Chat uses the recorded opening message and the recent
+conversation history available before that row, including messages that did not
+wake an agent. It reuses the channel gate's organization- and bot-scoped observation
+window and state builder (§8.2): at most 100 prior messages, newest context retained
+within the full-request budget and presented oldest-first with sender, physical
+thread, timestamp, and quote information. Messages recorded after the opening row
+are excluded. The state adds `source: "chat"`; `currentMessage.text` remains the
+opening text, not the assembled agent prompt. An oversized current message that
+cannot fit the request uses the configured fallback without evaluating a prefix.
 
-The state is `{ source, currentMessage: { text }, history: [], truncated }`, where
-`source` is `chat` or `pull_request`. Text is bounded to an 8 KiB UTF-8 prefix with
-explicit truncation. Description reads have a five-second deadline and bounded
-response size. Evaluation reuses the evaluator's deadline. Input and provider
-results stay daemon-local. Future agent routing can supply conversation history
-through this state without changing the Decision resource.
+Shared-bot routing already records its bounded forwarded history before the current
+message on a remote daemon. Model selection reads those same observations; an
+independent target store marks `context.partial` with `forwarded_history`, because
+the forwarded window may omit older observations. A shared data-plane store reads
+the common observation window directly. No platform history request or agent turn
+is needed. When no recorded opening row is available, including a fresh Console
+chat, the existing opening-only state remains
+`{ source: "chat", currentMessage: { text }, history: [], truncated }`, with text
+bounded to an 8 KiB UTF-8 prefix. An empty history does not cause a later re-evaluation.
+
+PR/MR hooks, including comments and review events, still use the root PR/MR
+description fetched through the code host's existing repository grant, not the
+comment, diff, or assembled agent prompt. Their state remains
+`{ source: "pull_request", currentMessage: { text }, history: [], truncated }`, with
+an 8 KiB UTF-8 prefix and explicit truncation. Description reads have a five-second
+deadline and bounded response size. Other hook types use fallback. Evaluation
+reuses the evaluator's deadline. Input and provider results stay on the data plane.
 
 **Matching and fallback.** Choice chooses the highest passing probability; ties
 follow rule order. Boolean values cannot appear in multiple rules. Score ranges

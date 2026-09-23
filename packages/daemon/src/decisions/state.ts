@@ -9,6 +9,7 @@ const BYTES_PER_TOKEN = 4
 export const DECISION_HISTORY_ENTRY_MAX_BYTES = 16 * 1024
 
 export interface DecisionStateInput {
+  source?: 'chat'
   current: ChannelTextRow
   /** Newest-first, as `LocalStore.decisionWindow` returns it. */
   history: readonly ChannelTextRow[]
@@ -24,6 +25,7 @@ export interface DecisionStateInput {
   full: boolean
   /** This record of the conversation began after the conversation did. */
   rootMissing: boolean
+  forwardedHistory?: boolean
   question: DecisionQuestion
   model: string
 }
@@ -75,9 +77,11 @@ export function buildDecisionState(input: DecisionStateInput): DecisionStateResu
     if (current.threadId === null || included.some((entry) => entry.threadId === null))
       reasons.push('legacy_thread_unknown')
     if (input.rootMissing) reasons.push('observation_started_after_conversation')
+    if (input.forwardedHistory) reasons.push('forwarded_history')
     return {
       reasons,
       state: {
+        ...(input.source ? { source: input.source } : {}),
         currentMessage: current,
         history: [...included].reverse(),
         conversation: input.conversation ?? {},
