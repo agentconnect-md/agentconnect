@@ -521,6 +521,60 @@ describe('config change respawn', () => {
     }
   })
 
+  it('keeps holding a model session turn while its released pool entry is still stopping', async () => {
+    const old = blockingHost('old')
+    const root = scaffold()
+    const daemon = await boot(root, [old.host])
+    const convKey = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
+    // A key-server model session: its pool entry is gone as soon as release starts, before the stop finishes.
+    let pooled = false
+    let finishRelease!: () => void
+    const released = new Promise<void>((resolve) => (finishRelease = resolve))
+    const pool = (daemon as any).modelSessions
+    vi.spyOn(pool, 'has').mockImplementation((key: any) => pooled && key === convKey)
+    vi.spyOn(pool, 'releaseForAgent').mockResolvedValue(undefined)
+    vi.spyOn(pool, 'release').mockImplementation(() => {
+      pooled = false
+      return released
+    })
+    const dones: Array<{ stopReason?: string }> = []
+    const sink = { output: () => {}, done: (event: { stopReason?: string }) => dones.push(event) }
+
+    try {
+      await (daemon as any).webchatTransport.dispatchWebchatTurn(
+        AGENT_ID,
+        CONV,
+        'long question',
+        { id: 'alice', name: 'alice' },
+        sink
+      )
+      await vi.waitFor(() => expect(old.host.prompt).toHaveBeenCalledTimes(1), WAIT)
+      pooled = true
+      updateAgent(root, { description: 'be terse' })
+      await daemon.reconcile()
+
+      old.release()
+      await vi.waitFor(() => expect(pool.release).toHaveBeenCalledWith(convKey), WAIT)
+      // The owner lookup no longer names the model session, yet the next message still waits for it.
+      await (daemon as any).webchatTransport.dispatchWebchatTurn(
+        AGENT_ID,
+        CONV,
+        'second',
+        { id: 'alice', name: 'alice' },
+        sink
+      )
+      await vi.waitFor(() => expect((daemon as any).respawnHeldEntries.size).toBe(1), WAIT)
+      expect(old.host.prompt).toHaveBeenCalledTimes(1)
+
+      finishRelease()
+      await vi.waitFor(() => expect((daemon as any).respawnHeldEntries.size).toBe(0), WAIT)
+    } finally {
+      old.release()
+      finishRelease()
+      await daemon.stop()
+    }
+  })
+
   it('tells a turn cut while still starting up that it will be picked up again, and replays it', async () => {
     const stuck = stuckStartHost()
     const fresh = answeringHost('new')

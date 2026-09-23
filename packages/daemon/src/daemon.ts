@@ -15189,9 +15189,16 @@ export class Daemon {
     return record.retired.then(() => cut)
   }
 
+  /** The retirement a turn of `key` waits for; a released model session's hold stays under its own session key. */
+  private retirementFor(agentId: string, key: string): HostRetirement | undefined {
+    return (
+      this.retiringHosts.get(this.sessionOwnerKey(agentId, key)) ?? this.retiringHosts.get(sessionHostKey(agentId, key))
+    )
+  }
+
   /** Park a turn bound for a retiring process until its successor can start. True when it waited. */
   private async waitForHostRetirement(entry: QueueEntry, key: string): Promise<boolean> {
-    let retiring = this.retiringHosts.get(this.sessionOwnerKey(entry.agentId, key))
+    let retiring = this.retirementFor(entry.agentId, key)
     if (!retiring || retiring.entries.has(entry)) return false
     this.respawnHeldEntries.add(entry)
     // An interrupt (pause, removal, shutdown) reaches a parked turn through closeStartup or initAbort.
@@ -15208,7 +15215,7 @@ export class Daemon {
       await withStartupPhase('restart', async () => {
         while (retiring && !entry.cancelledReason && !entry.initAbort.signal.aborted) {
           await Promise.race([retiring.retired, woken])
-          retiring = this.retiringHosts.get(this.sessionOwnerKey(entry.agentId, key))
+          retiring = this.retirementFor(entry.agentId, key)
         }
       })
     } finally {
