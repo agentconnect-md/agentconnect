@@ -112,7 +112,8 @@ function VisibilityTiles({ restricted, onPick }: { restricted: boolean; onPick: 
     )
   }
   return (
-    <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,300px),1fr))] gap-[10px]">
+    // 280px is the narrowest tile that keeps the longest description on one line beside its icon and radio.
+    <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,280px),1fr))] gap-[10px]">
       {tile('org', 'globe', t('everyone'), t('everyoneDescription'))}
       {tile('restricted', 'lock', t('selected'), t('selectedDescription'))}
     </div>
