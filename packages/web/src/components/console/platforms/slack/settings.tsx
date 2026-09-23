@@ -141,8 +141,8 @@ function SlackRowActions({ bot, canWrite }: { bot: BotDto; canWrite: boolean }) 
   const reinstalling = card.reinstallingBot(bot.id)
   return (
     <>
-      {/* A revoked built-in app is repaired by reinstalling it, straight from the row; a pending one can be restarted. */}
-      {bot.prebuilt && bot.revokedAt && (
+      {/* A revoked or rejected built-in app is repaired by reinstalling it, straight from the row; a pending one can be restarted. */}
+      {bot.prebuilt && (bot.revokedAt || bot.credentialRejectedAt) && (
         <SlackReinstallButton
           busy={reinstalling}
           disabled={refreshing && !reinstalling}
@@ -392,6 +392,9 @@ export const slackSettingsFragments: WebBotSettingsFragments = {
   // registry projection (audit §10.6 F14).
   copy: {
     revokedHint: 'The Slack workspace uninstalled this app or revoked its tokens — re-install to reconnect',
+    // `invalid_auth` answers both a dead token and a caller outside the app's IP allowlist, so the sentence names both fixes.
+    rejectedHint:
+      'Slack rejected this app’s bot token — add AgentConnect’s addresses to the app’s IP allowlist, or re-install the app or replace its token',
     shareHint: {
       available: 'Allow several agents to share this bot across channels',
       unavailable: 'HTTP transport required to share'

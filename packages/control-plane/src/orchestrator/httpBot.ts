@@ -17,7 +17,9 @@
  */
 import type {
   AttributedRoute,
+  BotRevocationEvidence,
   RcBotAssign,
+  RcBotCredentialCheck,
   RcConversationDefault,
   BindMatch,
   RcThreadAssign,
@@ -268,7 +270,8 @@ export class HttpBotOrchestrator {
   async revokeBot(
     botId: string,
     reason: 'app_uninstalled' | 'tokens_revoked',
-    fence: { revision?: number; eventAtMs?: number } = {}
+    fence: { revision?: number; eventAtMs?: number } = {},
+    proof: { evidence?: BotRevocationEvidence; code?: string } = {}
   ): Promise<{ applied: boolean }> {
     const bot = await this.bots.getUnscoped(BotId(botId))
     // Unknown bot: nothing to apply and nothing that will ever change that, so
@@ -276,10 +279,17 @@ export class HttpBotOrchestrator {
     if (!bot) return { applied: false }
     // Snapshot members BEFORE the flip — listForBot is active-only.
     const installs = await this.integrations.listForBot(bot.id)
-    const { applied } = await this.botCredential.revoke(bot.id, new Date(), {
-      ...(fence.revision !== undefined ? { revision: fence.revision } : {}),
-      ...(fence.eventAtMs !== undefined ? { eventAt: new Date(fence.eventAtMs) } : {})
-    })
+    // A reporter that names no evidence predates the field, and only lifecycle events existed then.
+    const record = { reason, evidence: proof.evidence ?? 'event', code: proof.code ?? null } as const
+    const { applied } = await this.botCredential.revoke(
+      bot.id,
+      new Date(),
+      {
+        ...(fence.revision !== undefined ? { revision: fence.revision } : {}),
+        ...(fence.eventAtMs !== undefined ? { eventAt: new Date(fence.eventAtMs) } : {})
+      },
+      record
+    )
     if (!applied) {
       this.log.info(
         { botId: bot.id, reason, reportedRevision: fence.revision, currentRevision: bot.credentialRevision },
@@ -311,10 +321,31 @@ export class HttpBotOrchestrator {
       })
     }
     this.log.info(
-      { botId: bot.id, reason, transport: bot.transport, installs: installs.length },
+      {
+        botId: bot.id,
+        reason,
+        evidence: record.evidence,
+        code: record.code,
+        transport: bot.transport,
+        installs: installs.length
+      },
       'http-bot: bot revoked by workspace'
     )
     return { applied: true }
+  }
+
+  /** `rc/bot-credential-check`: an ambiguous rejection only marks the bot and `ok` clears it — never a revocation, an integration flip, a spec pull or a release. */
+  async recordCredentialCheck(m: RcBotCredentialCheck): Promise<{ applied: boolean }> {
+    const observedAt = new Date(m.observedAtMs)
+    const check =
+      m.result === 'rejected'
+        ? { result: m.result, code: m.code, revision: m.credentialRevision, observedAt }
+        : { result: m.result, revision: m.credentialRevision, observedAt }
+    const applied = await this.bots.recordCredentialCheck(BotId(m.botId), check)
+    const log = { botId: m.botId, result: m.result, revision: m.credentialRevision, applied }
+    if (applied && m.result === 'rejected') this.log.warn({ ...log, code: m.code }, 'http-bot: credential rejected')
+    else this.log.info(log, 'http-bot: credential check recorded')
+    return { applied }
   }
 
   /** Converge EVERY http+active bot — the failover / broad-change worklist. */

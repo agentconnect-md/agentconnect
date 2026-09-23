@@ -14,6 +14,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { generateKeyPairSync, randomUUID } from 'node:crypto'
 import { WebSocket } from 'ws'
 import {
+  BOT_CREDENTIAL_CHECK_FEATURE,
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
@@ -1257,5 +1258,67 @@ describe('webchat session-continuation mint + verify', () => {
 
     relayWs.close()
     daemonWs.close()
+  })
+})
+
+// The relay gates its new credential signals on the advertised feature; an older relay's revocation still lands.
+describe('bot credential evidence over the relay wire', () => {
+  const seedBot = async (): Promise<string> => {
+    const id = randomUUID()
+    await prisma.bot.create({ data: { id, orgId: DEFAULT_ORG_ID, name: `bot-${id.slice(0, 8)}`, transport: 'http' } })
+    return id
+  }
+
+  it('advertises the check, applies it, and records each revocation’s evidence', async () => {
+    const { base } = await start()
+    const ws = await dial(`${base}/api/v1/relays/ws`, RELAY_CP_SUBPROTOCOL)
+    sendFrame(ws, 'rc/auth', { method: 'token', credential: RELAY_TOKEN })
+    await nextFrame(ws, 'rc/auth/ok')
+    sendFrame(ws, 'rc/register', { name: 'pod-evidence', daemonUrl: 'wss://evidence.example.test' })
+    const registered = (await nextFrame(ws, 'rc/registered')).payload as RcRegistered
+    expect(registered.serverFeatures).toContain(BOT_CREDENTIAL_CHECK_FEATURE)
+
+    const rejected = await seedBot()
+    const observedAtMs = Date.now()
+    sendFrame(ws, 'rc/bot-credential-check', {
+      botId: rejected,
+      credentialRevision: 1,
+      result: 'rejected',
+      code: 'invalid_auth',
+      observedAtMs
+    })
+    expect((await nextFrame(ws, 'rc/bot-credential-check/ok')).payload).toEqual({ botId: rejected, applied: true })
+    expect(await prisma.bot.findUniqueOrThrow({ where: { id: rejected } })).toMatchObject({
+      credentialRejectedAt: new Date(observedAtMs),
+      credentialRejectedCode: 'invalid_auth',
+      revokedAt: null
+    })
+
+    // An older relay names no evidence: recorded as the lifecycle event it must have been.
+    const legacy = await seedBot()
+    sendFrame(ws, 'rc/bot-revoked', { botId: legacy, reason: 'app_uninstalled' })
+    expect((await nextFrame(ws, 'rc/bot-revoked/ok')).payload).toEqual({ botId: legacy, applied: true })
+    expect(await prisma.bot.findUniqueOrThrow({ where: { id: legacy } })).toMatchObject({
+      revokedReason: 'app_uninstalled',
+      revokedEvidence: 'event',
+      revokedCode: null
+    })
+
+    const probed = await seedBot()
+    sendFrame(ws, 'rc/bot-revoked', {
+      botId: probed,
+      reason: 'tokens_revoked',
+      credentialRevision: 1,
+      evidence: 'probe',
+      code: 'token_revoked'
+    })
+    expect((await nextFrame(ws, 'rc/bot-revoked/ok')).payload).toEqual({ botId: probed, applied: true })
+    expect(await prisma.bot.findUniqueOrThrow({ where: { id: probed } })).toMatchObject({
+      revokedReason: 'tokens_revoked',
+      revokedEvidence: 'probe',
+      revokedCode: 'token_revoked'
+    })
+
+    ws.close()
   })
 })

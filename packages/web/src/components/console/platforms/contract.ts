@@ -408,6 +408,8 @@ export interface WebBotCardCopy {
    * today, so no other module should invent prose about how it got there.
    */
   revokedHint?: string
+  /** Tooltip on the `rejected` badge and pill, shown while an ambiguous check rejected the bot's current credential; the host appends the platform's code. Absent ⇒ the host's provider-free sentence. */
+  rejectedHint?: string
   /**
    * Tooltip on the Sharable toggle (:1095-1109), per arm — the HOST picks
    * which arm by its own predicate (`(bot.transport ?? 'socket') === 'socket'`),

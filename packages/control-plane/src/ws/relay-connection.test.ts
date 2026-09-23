@@ -2,6 +2,7 @@ import { PLACEMENT_ONLY, PlacementResolver } from '../orchestrator/placementReso
 import { systemClock } from '../domain/clock.js'
 import { describe, it, expect, vi } from 'vitest'
 import {
+  BOT_CREDENTIAL_CHECK_FEATURE,
   buildRelayCpFrame,
   PULL_REQUEST_FEEDBACK_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
@@ -101,6 +102,7 @@ function build(
     deploymentConfig?: ConstructorParameters<typeof RelayConnection>[1]['deploymentConfig']
     onThreadAssign?: ConstructorParameters<typeof RelayConnection>[1]['onThreadAssign']
     onThreadParticipant?: ConstructorParameters<typeof RelayConnection>[1]['onThreadParticipant']
+    onBotCredentialCheck?: ConstructorParameters<typeof RelayConnection>[1]['onBotCredentialCheck']
     clock?: Clock
   } = {}
 ) {
@@ -125,6 +127,7 @@ function build(
   const onRunReport = vi.fn(async () => {})
   const onBotChannels = vi.fn(async () => {})
   const onBotRevoked = vi.fn(async () => ({ applied: true }))
+  const onBotCredentialCheck = over.onBotCredentialCheck ?? vi.fn(async () => ({ applied: true }))
   const onThreadAssign = over.onThreadAssign ?? vi.fn(async () => {})
   const onThreadParticipant = over.onThreadParticipant ?? vi.fn(async () => {})
   const relayReg = new RelayRegistry()
@@ -147,6 +150,7 @@ function build(
     onBotConversation: vi.fn(async () => {}),
     onNoticePosted: vi.fn(async () => {}),
     onBotRevoked,
+    onBotCredentialCheck,
     onThreadAssign,
     onThreadParticipant,
     threadLookup: vi.fn(async (m) => ({ ...m, target: null, participants: [] })),
@@ -168,6 +172,7 @@ function build(
     onRunReport,
     onBotChannels,
     onBotRevoked,
+    onBotCredentialCheck,
     onThreadAssign,
     onThreadParticipant,
     authorizeGithubComment,
@@ -388,7 +393,7 @@ describe('RelayConnection FSM', () => {
     expect(upsertByName).toHaveBeenCalledWith('pod-0', 'wss://pod-0.example.test', new Date(NOW), [])
     expect(transport.lastRep('rc/registered')!.payload).toEqual({
       relayId: RELAY_ID,
-      serverFeatures: [PULL_REQUEST_FEEDBACK_FEATURE]
+      serverFeatures: [PULL_REQUEST_FEEDBACK_FEATURE, BOT_CREDENTIAL_CHECK_FEATURE]
     })
     expect(conn.state).toBe('READY')
     expect(conn.relayId).toBe(RELAY_ID)
@@ -526,6 +531,7 @@ describe('RelayConnection FSM', () => {
       onBotConversation: vi.fn(async () => {}),
       onNoticePosted: vi.fn(async () => {}),
       onBotRevoked: vi.fn(async () => ({ applied: true })),
+      onBotCredentialCheck: vi.fn(async () => ({ applied: true })),
       onThreadAssign: vi.fn(async () => {}),
       onThreadParticipant: vi.fn(async () => {}),
       threadLookup: vi.fn(async (m) => ({ ...m, target: null, participants: [] })),
@@ -609,6 +615,81 @@ describe('RelayConnection FSM', () => {
     await Promise.resolve()
 
     expect(onBotRevoked).toHaveBeenCalledWith(revoked)
+    expect(transport.lastRep('rc/bot-revoked/ok')!.payload).toEqual({ botId: revoked.botId, applied: true })
+  })
+
+  it('rc/bot-revoked hands a probe’s evidence and code to the revocation handler', async () => {
+    const { transport, onBotRevoked } = build()
+    await toReady(transport)
+    const revoked = {
+      botId: '22222222-2222-4222-8222-222222222222',
+      reason: 'tokens_revoked' as const,
+      credentialRevision: 4,
+      evidence: 'probe' as const,
+      code: 'account_inactive'
+    }
+
+    transport.feed('rc/bot-revoked', revoked)
+    await Promise.resolve()
+
+    expect(onBotRevoked).toHaveBeenCalledWith(revoked)
+  })
+
+  it('rc/bot-credential-check in READY reaches its handler and is acknowledged with the verdict', async () => {
+    const onBotCredentialCheck = vi.fn(async () => ({ applied: false }))
+    const { transport } = build({ onBotCredentialCheck })
+    await toReady(transport)
+    const check = {
+      botId: '22222222-2222-4222-8222-222222222222',
+      credentialRevision: 3,
+      result: 'rejected' as const,
+      code: 'invalid_auth',
+      observedAtMs: NOW
+    }
+
+    transport.feed('rc/bot-credential-check', check)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(onBotCredentialCheck).toHaveBeenCalledWith(check)
+    expect(transport.lastRep('rc/bot-credential-check/ok')!.payload).toEqual({ botId: check.botId, applied: false })
+  })
+
+  // Acknowledged like a revocation: a failed write must not read as done, or the relay would drop the check.
+  it('answers a failed rc/bot-credential-check with a retryable error and keeps the link', async () => {
+    const onBotCredentialCheck = vi.fn(async () => {
+      throw new Error('db down')
+    })
+    const { conn, transport } = build({ onBotCredentialCheck })
+    await toReady(transport)
+
+    transport.feed('rc/bot-credential-check', {
+      botId: '22222222-2222-4222-8222-222222222222',
+      credentialRevision: 3,
+      result: 'ok',
+      observedAtMs: NOW
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(transport.lastRep('rc/bot-credential-check/ok')).toBeUndefined()
+    expect(transport.lastRep('error')!.payload).toMatchObject({ code: 'INTERNAL', retryable: true })
+    expect(conn.state).toBe('READY')
+  })
+
+  it('rc/bot-credential-check before READY is a PROTOCOL_STATE error', async () => {
+    const { transport, onBotCredentialCheck } = build()
+
+    transport.feed('rc/bot-credential-check', {
+      botId: '22222222-2222-4222-8222-222222222222',
+      credentialRevision: 3,
+      result: 'ok',
+      observedAtMs: NOW
+    })
+    await Promise.resolve()
+
+    expect(onBotCredentialCheck).not.toHaveBeenCalled()
+    expect(transport.lastRep('error')?.payload).toMatchObject({ code: 'PROTOCOL_STATE' })
   })
 
   it('rc/run-report before READY is a PROTOCOL_STATE error', async () => {

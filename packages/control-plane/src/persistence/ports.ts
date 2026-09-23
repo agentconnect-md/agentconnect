@@ -43,7 +43,8 @@ import type {
   CodeHostProvider,
   HookKind,
   PullRequestFeedbackSignal,
-  SessionStayedHomeReason
+  SessionStayedHomeReason,
+  BotRevocationEvidence
 } from '@agentconnect.md/protocol'
 import type {
   CodeHostReviewLockReason,
@@ -3127,6 +3128,19 @@ export interface BotIdentityColumns {
  */
 export type BotIdentityProjector = (input: CreateBotInput) => BotIdentityColumns
 
+/** What a definitive revocation records beside its time (preset-agents.md §5.3). */
+export interface BotRevocationRecord {
+  reason: 'app_uninstalled' | 'tokens_revoked'
+  evidence: BotRevocationEvidence
+  /** The platform's own code, when the reporter carried one. */
+  code: string | null
+}
+
+/** A probe answer that is not a revocation: `rejected` marks the bot, `ok` clears the mark; both fenced by the probed revision. */
+export type BotCredentialCheck = { revision: number; observedAt: Date } & (
+  { result: 'ok' } | { result: 'rejected'; code: string }
+)
+
 /** Domain view of a `bot` row + its current installs (joined). NEVER carries tokens. */
 export interface BotRecord {
   id: BotId
@@ -3145,9 +3159,15 @@ export interface BotRecord {
   workspaceName: string | null
   /** Slack bot user id, persisted from the OAuth exchange; null for legacy bots. */
   botUserId: string | null
-  /** Stamped when the workspace uninstalled the app / revoked its tokens
-   *  (`rc/bot-revoked`); a platform-app re-install clears it. */
+  /** Stamped when the credential was definitively revoked (`rc/bot-revoked`, `integration/revoked`); a fresh credential clears it. */
   revokedAt: Date | null
+  /** How that revocation was learned; null on a live bot and on one revoked before these were recorded. */
+  revokedReason: BotRevocationRecord['reason'] | null
+  revokedEvidence: BotRevocationEvidence | null
+  revokedCode: string | null
+  /** An ambiguous probe rejected the CURRENT credential (first seen, and the platform's code): a mark only, the bot stays live. */
+  credentialRejectedAt: Date | null
+  credentialRejectedCode: string | null
   /** Install generation of the CURRENT credential — advanced on every (re)install.
    *  Echoed through rc/bot-assign → rc/bot-revoked so a revocation observed under
    *  an older generation cannot kill a newer one (Slack does not order lifecycle
@@ -3281,42 +3301,17 @@ export interface BotRepo {
    *  the same value {@link BotIdentityProjector} writes. Legacy rows (NULL
    *  identity) are unreachable here by design. */
   getByExternalIdentity(platform: string, externalAppId: string, externalTenantId: string): Promise<BotRecord | null>
-  /**
-   * A fresh credential landed on an EXISTING bot (platform re-install / token
-   * rotation): advance the install generation, stamp when it landed, and clear
-   * any revocation in ONE statement. Returns the new revision so the caller can
-   * log/broadcast it. Anything that observed the previous credential is now
-   * stale by construction.
-   *
-   * This is also the ONLY way to un-revoke a bot — there is deliberately no bare
-   * `setRevoked(id, null)`: reviving a credential without advancing its
-   * generation would leave a delayed uninstall from the dead one able to kill it.
-   *
-   * System-tier (§3.4): reached only through {@link BotCredentialWriter}, whose
-   * install arm runs after the platform callback has resolved the row by its
-   * external demux identity — a deliberately cross-org lookup that already
-   * settles which organization owns the credential.
-   */
+  /** A fresh credential landed (re-install / rotation): advance the generation, stamp it, and clear the revocation, its evidence and any rejected mark in ONE statement — the only way to un-revoke; system-tier, reached through {@link BotCredentialWriter}. */
   bumpCredential(id: BotId, at: Date): Promise<number>
-  /**
-   * Compare-and-set revocation. Callers go through {@link BotCredentialWriter},
-   * which pairs this with the integration flip in one transaction — on its own
-   * it settles only the bot row.
-   * Refuses (returns false, writing nothing) when the reported generation is no
-   * longer current, so a delayed uninstall from a prior install cannot kill the
-   * credential that replaced it:
-   *  - `revision` — the generation the reporting relay held. A mismatch means a
-   *    re-install has happened since; refuse.
-   *  - `eventAt` — when Slack says the event HAPPENED. Refuse if the current
-   *    credential was installed at-or-after it (covers the common case where the
-   *    relay already received the newer assignment and would echo its revision).
-   * Both are optional: a report carrying neither still applies (fail-open — an
-   * uninstall must eventually take effect).
-   *
-   * System-tier (§3.4): relay-reported lifecycle, already fenced by the
-   * credential generation CAS above — a stronger axis than the owning org.
-   */
-  revokeIfCurrent(id: BotId, at: Date, fence: { revision?: number; eventAt?: Date }): Promise<boolean>
+  /** Compare-and-set revocation recording how it was learned, refused (nothing written) when `revision` is no longer current or the current credential was installed at-or-after `eventAt` — each arm skipped when absent; system-tier, reached through {@link BotCredentialWriter}. */
+  revokeIfCurrent(
+    id: BotId,
+    at: Date,
+    fence: { revision?: number; eventAt?: Date },
+    record: BotRevocationRecord
+  ): Promise<boolean>
+  /** Apply a probe's non-revoking answer to the CURRENT credential, only when strictly newer than the last one applied: `rejected` sets the mark (first-seen time kept, code updated), `ok` clears it; false ⇒ a replaced credential, an unknown bot or a stale observation, nothing written. System-tier, relay-reported like a revocation. */
+  recordCredentialCheck(id: BotId, check: BotCredentialCheck): Promise<boolean>
   /** Callers must refuse while the bot is installed (FK Restrict backstops).
    *  Org-fenced: a cross-org id throws the same Prisma P2025 as an absent row. */
   delete(orgId: OrgId, id: BotId): Promise<void>
@@ -4332,9 +4327,13 @@ export interface BotCredentialWriter {
     at: Date,
     options?: { restoreRevokedMemberships?: boolean }
   ): Promise<number>
-  /** Apply `rc/bot-revoked` behind its generation fence, flipping the bot and
-   *  its active installs together. */
-  revoke(botId: BotId, at: Date, fence: { revision?: number; eventAt?: Date }): Promise<RevokeBotResult>
+  /** Apply a definitive revocation behind its generation fence, recording how it was learned and flipping the bot and its active installs together. */
+  revoke(
+    botId: BotId,
+    at: Date,
+    fence: { revision?: number; eventAt?: Date },
+    record: BotRevocationRecord
+  ): Promise<RevokeBotResult>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

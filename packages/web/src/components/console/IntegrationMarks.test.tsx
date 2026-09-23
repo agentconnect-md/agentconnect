@@ -102,4 +102,23 @@ describe('IntegrationMarks', () => {
     expect(node.querySelectorAll('[data-revoked-dot]')).toHaveLength(1)
     expect(node.textContent).toContain('+4')
   })
+
+  it('dots a rejected integration’s mark the same way, and leads with it too', async () => {
+    const node = await render(
+      <IntegrationMarks
+        integrations={[
+          { id: 'i1', platform: 'slack', revoked: false },
+          { id: 'i2', platform: 'telegram', revoked: false },
+          { id: 'i3', platform: 'lark', revoked: false },
+          { id: 'i4', platform: 'discord', revoked: false, rejected: true }
+        ]}
+        hookKinds={[]}
+      />
+    )
+
+    const dots = node.querySelectorAll('[data-revoked-dot]')
+    expect(dots).toHaveLength(1)
+    expect(dots[0]!.parentElement!.querySelector('[data-mark="discord"]')).not.toBeNull()
+    expect(node.querySelector('[data-mark]')?.getAttribute('data-mark')).toBe('discord')
+  })
 })

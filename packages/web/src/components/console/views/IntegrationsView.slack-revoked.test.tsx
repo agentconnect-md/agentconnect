@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// A revoked bot row: the built-in Slack app reinstalls straight from the row, and the agents it served stay listed as revoked.
+// A revoked or rejected bot row: the built-in Slack app reinstalls straight from the row, and a revoked app's agents stay listed as revoked.
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -57,6 +57,7 @@ vi.mock('@/lib/api', async (importOriginal) => ({
 }))
 
 const IntegrationsView = (await import('./IntegrationsView')).default
+const { botCardCopy } = await import('@/components/console/platforms/registry')
 
 function bot(over: Partial<BotDto> = {}): BotDto {
   return {
@@ -250,5 +251,46 @@ describe('a revoked built-in Slack app’s row', () => {
     const row = await botRow()
     expect(reinstallIn(row)).toBeNull()
     expect(row.querySelector('button[aria-label="Replace bot token"]')).not.toBeNull()
+  })
+
+  it('titles the revoked badge with the code the revocation recorded', async () => {
+    mocks.bots = [bot({ revokedCode: 'token_revoked' })]
+    const badge = [...(await botRow()).querySelectorAll('.badge')].find((b) => b.textContent === 'revoked')!
+    expect(badge.getAttribute('title')).toBe(`${botCardCopy('slack').revokedHint} (token_revoked)`)
+  })
+})
+
+// An ambiguous rejection is a mark on a live app: its own badge, the same repairs, and agents that are not revoked.
+describe('a rejected Slack app’s row', () => {
+  const rejected = { revokedAt: null, credentialRejectedAt: '2026-09-01T00:00:00.000Z', agentIds: ['agent-a'] }
+
+  beforeEach(() => {
+    mocks.integrations = [{ ...install('agent-a', false), rejected: true, credentialCode: 'invalid_auth' }]
+  })
+
+  it('shows a rejected badge titled with the module’s sentence and the code, in place of revoked', async () => {
+    mocks.bots = [bot({ ...rejected, credentialRejectedCode: 'invalid_auth' })]
+    const row = await botRow()
+    const badges = [...row.querySelectorAll('.badge')].map((b) => b.textContent)
+    expect(badges).toContain('rejected')
+    expect(badges).not.toContain('revoked')
+    const badge = [...row.querySelectorAll('.badge')].find((b) => b.textContent === 'rejected')!
+    expect(badge.className).toContain('bg-(--status-error-soft)')
+    expect(badge.getAttribute('title')).toBe(`${botCardCopy('slack').rejectedHint} (invalid_auth)`)
+    // Its integrations are still active, so the agents it serves are not marked revoked.
+    const agent = row.querySelector<HTMLAnchorElement>('a[aria-label="Open pilot configuration"]')!
+    expect(agent.title).toBe('pilot')
+  })
+
+  it('reinstalls a built-in app straight from the row', async () => {
+    mocks.bots = [bot(rejected)]
+    expect(reinstallIn(await botRow())?.className).toContain('border-(--status-error)')
+  })
+
+  it('highlights a custom app’s token replacement', async () => {
+    mocks.bots = [bot({ ...rejected, prebuilt: false, slackAppId: 'A0CUSTOM01' })]
+    const replace = (await botRow()).querySelector<HTMLButtonElement>('button[aria-label="Replace bot token"]')!
+    expect(replace.className).toContain('border-(--amber-500)')
+    expect(replace.title).toBe('Reconnect with a new bot token')
   })
 })

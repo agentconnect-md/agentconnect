@@ -2187,7 +2187,16 @@ export interface IntegrationRow {
   status: StatusKey
   /** The backing bot's credential was revoked, so this integration cannot reach its platform. */
   revoked: boolean
+  /** The platform rejected the backing bot's current credential on an ambiguous check; the integration stays active. */
+  rejected?: boolean
+  /** The platform's own code behind `revoked`, else behind `rejected`, when one was recorded. */
+  credentialCode?: string | null
   channels: IntegrationChannelRow[]
+}
+
+/** Whether an integration's credential needs attention: revoked, or rejected by an ambiguous check. */
+export function credentialAttention(integration: Pick<IntegrationRow, 'revoked' | 'rejected'>): boolean {
+  return integration.revoked || !!integration.rejected
 }
 
 export const INTEGRATIONS: IntegrationRow[] = (

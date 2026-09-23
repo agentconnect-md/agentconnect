@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { integrationRowFromDto } from './data-context'
-import type { IntegrationDto } from './api'
+import type { BotDto, IntegrationDto } from './api'
 
 /** A field the projection forgets reads as its default, so the console shows a state the server does not have. */
 const dto = (over: Partial<IntegrationDto['channels'][number]> = {}, status = 'active'): IntegrationDto =>
@@ -50,5 +50,27 @@ describe('integrationRowFromDto', () => {
   it('marks a revoked integration as revoked, and only that status', () => {
     expect(integrationRowFromDto(dto({}, 'revoked'), new Map(), new Map()).revoked).toBe(true)
     expect(integrationRowFromDto(dto({}, 'active'), new Map(), new Map()).revoked).toBe(false)
+  })
+
+  it('takes the rejected mark from its bot, and the code that matches the row’s state', () => {
+    const bot = {
+      id: 'bot-1',
+      revokedCode: 'token_revoked',
+      credentialRejectedAt: '2026-09-01T00:00:00.000Z',
+      credentialRejectedCode: 'invalid_auth'
+    } as BotDto
+    const bots = new Map([['bot-1', bot]])
+
+    expect(integrationRowFromDto(dto(), new Map(), bots)).toMatchObject({
+      revoked: false,
+      rejected: true,
+      credentialCode: 'invalid_auth'
+    })
+    expect(integrationRowFromDto(dto({}, 'revoked'), new Map(), bots)).toMatchObject({
+      revoked: true,
+      credentialCode: 'token_revoked'
+    })
+    const live = new Map([['bot-1', { id: 'bot-1', credentialRejectedAt: null } as BotDto]])
+    expect(integrationRowFromDto(dto(), new Map(), live)).toMatchObject({ rejected: false, credentialCode: null })
   })
 })

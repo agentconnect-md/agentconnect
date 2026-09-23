@@ -29,7 +29,8 @@ import {
   botSharingEditable,
   channelListSemantics,
   platformRegistry,
-  platformSharingFixed
+  platformSharingFixed,
+  withCredentialCode
 } from '@/components/console/platforms/registry'
 import {
   BOT_PLATFORM_TABS,
@@ -447,15 +448,22 @@ function BotsCard({
                   {b.prebuilt && (
                     <span className="badge bg-(--surface-active) text-(--text-tertiary)">{t('builtin')}</span>
                   )}
-                  {/* Workspace uninstalled the app / revoked its tokens (rc/bot-revoked):
-                    the credential is dead until a re-install refreshes it. The
-                    sentence is the module's (§10 `settingsFragments.copy`) — only
-                    Slack can name the lifecycle event that put the bot here. */}
-                  {b.revokedAt && (
-                    <span className="badge bg-(--status-error-soft) text-(--status-error)" title={rowCopy.revokedHint}>
+                  {/* A dead credential, else an ambiguously rejected one; the sentence is the module's, the code the platform's. */}
+                  {b.revokedAt ? (
+                    <span
+                      className="badge bg-(--status-error-soft) text-(--status-error)"
+                      title={withCredentialCode(rowCopy.revokedHint, b.revokedCode)}
+                    >
                       {t('revoked')}
                     </span>
-                  )}
+                  ) : b.credentialRejectedAt ? (
+                    <span
+                      className="badge bg-(--status-error-soft) text-(--status-error)"
+                      title={withCredentialCode(rowCopy.rejectedHint, b.credentialRejectedCode)}
+                    >
+                      {t('rejected')}
+                    </span>
+                  ) : null}
                   {RowBadges && <RowBadges bot={b} />}
                 </div>
                 {/* The host picks the arm by transport; the module owns both
