@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { AgentDecisionIds } from '../decision.js'
 import { CodeHostProviderString } from '../code-host.js'
 import { AgentMemoryBinding } from './memory-connection.js'
 import { IntegrationSpec } from './integration.js'
@@ -411,6 +412,7 @@ export const AgentSpec = z.object({
   // current CP projects only `InstallableAgentSkills`; the daemon independently
   // applies the same strict acquisition/size admission before any host starts.
   skills: z.array(CompatibleAgentSkillEntry).default([]),
+  decisionIds: AgentDecisionIds.optional(),
   // Centrally accepted `.skill` ZIP revisions. Unlike Git source entries above,
   // these are digest-addressed metadata; the daemon downloads/cache-verifies the
   // bundle through managed-skill/read before session start.

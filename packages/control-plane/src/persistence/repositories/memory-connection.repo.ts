@@ -97,6 +97,7 @@ function toConnection(row: ExternalMemoryConnection): ExternalMemoryConnectionRe
     profile: row.profile,
     manifestDigest: row.manifestDigest,
     capabilities: row.capabilities as Record<string, unknown> | null,
+    configSchema: row.configSchema as Record<string, unknown> | null,
     declaredEgressHosts: row.declaredEgressHosts,
     reasonCode: row.reasonCode,
     createdByUserId: row.createdByUserId,
@@ -157,6 +158,8 @@ export class PgExternalMemoryConnectionRepo implements ExternalMemoryConnectionR
           profile: null,
           manifestDigest: null,
           capabilities: Prisma.DbNull,
+          // configSchema survives: it describes the PLUGIN, not this revision, so the console keeps
+          // rendering settings as fields instead of falling back to raw JSON until the next probe.
           declaredEgressHosts: [],
           reasonCode: null
         }
@@ -184,6 +187,9 @@ export class PgExternalMemoryConnectionRepo implements ExternalMemoryConnectionR
         ...(fact.manifestDigest !== undefined ? { manifestDigest: fact.manifestDigest } : {}),
         ...(fact.capabilities !== undefined
           ? { capabilities: fact.capabilities as unknown as Prisma.InputJsonValue }
+          : {}),
+        ...(fact.configSchema !== undefined
+          ? { configSchema: fact.configSchema as unknown as Prisma.InputJsonValue }
           : {}),
         ...(fact.declaredEgressHosts !== undefined ? { declaredEgressHosts: fact.declaredEgressHosts } : {}),
         reasonCode: fact.reasonCode ?? null

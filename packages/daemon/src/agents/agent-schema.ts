@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import {
+  AgentDecisionIds,
   AgentMemoryBinding,
   CompatibleAgentSkillEntry,
   IntegrationCoreEnvelope,
@@ -178,6 +179,7 @@ export const AgentSchema = z.object({
   // install. Supersedes the deprecated
   // `workspace.skills` string list below (which is now an unused no-op).
   skills: z.array(CompatibleAgentSkillEntry).default([]),
+  decisionIds: AgentDecisionIds.optional(),
   // Centrally accepted immutable `.skill` revisions. Content stays in the
   // daemon-owned cache and is materialized into the workspace before session
   // creation; this metadata is the exact CP-authorized revision set.

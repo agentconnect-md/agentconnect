@@ -44,17 +44,18 @@ new immutable revision. Internal identifiers (digests, Dream and session ids)
 are not shown.
 
 **Suggestions** is an owner-only tab that lists Dream candidates by review
-state, with the pending count on the tab. Each card shows its title or skill
+state, with the pending count on the tab. Each row shows its title or skill
 name, the proposing agent, source-session count, creation time, and whether it
-updates an existing artifact. The body — rendered Markdown or the complete file
-tree — is fetched from the source daemon only on inspection, and acceptance
-carries the token that inspection mints (§7.3), so the card offers `Inspect`
-beside the two decisions and keeps `Accept` disabled until the complete body
-has rendered. Each control keeps one meaning, so a stray second click cannot
-land on a decision the first click armed. Rejecting needs no inspection: it
-installs nothing. A reviewed card keeps one line of outcome: the accepted
-revision, linked to its entry, or the rejection and its reason. Rejected items
-remain in history.
+updates an existing artifact. Opening a pending row is the inspection: the body
+— rendered Markdown or the complete file tree — is fetched from the source
+daemon the moment the row opens, never for rows nobody opens, and the two
+decisions sit beside it in the opened row rather than on the list. Acceptance
+carries the token that the fetch mints (§7.3), so `Accept` stays disabled until
+the complete body has rendered; opening a row is not a decision, so a stray
+second click on it only closes the row. Rejecting needs no body: it installs
+nothing, so it is available as soon as the row opens. A reviewed row keeps one
+line of outcome: the accepted revision, with the row linking to its entry, or
+the rejection and its reason. Rejected items remain in history.
 
 Managed organization skills appear in the existing **Skills library** card on
 Tools & Skills, alongside Git-backed sources. A managed tile is labeled as an
@@ -292,8 +293,8 @@ artifact/revision. It has no candidate body column.
 
 ### 7.3 Accept
 
-1. An owner inspects a pending suggestion. The control plane resolves the source
-   agent's current daemon, requests the body over `knowledge/suggestion/read`,
+1. An owner opens a pending suggestion, which inspects it. The control plane
+   resolves the source agent's current daemon, requests the body over `knowledge/suggestion/read`,
    validates it, and returns an opaque snapshot token covering body digest,
    metadata, target fence, and provenance.
 2. Acceptance submits that exact snapshot token. The route rejects a token that

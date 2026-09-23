@@ -6,7 +6,11 @@ import {
   type MemoryPluginManifest
 } from '@agentconnect.md/protocol'
 import { CpMemoryConnectionRegistry } from '../../src/cp/memory-connection-registry.js'
-import type { MemoryPluginClient, MemoryPluginClientOptions } from '../../src/memory-plugin/client.js'
+import {
+  MemoryPluginProtocolError,
+  type MemoryPluginClient,
+  type MemoryPluginClientOptions
+} from '../../src/memory-plugin/client.js'
 
 const CONNECTION_ID = '11111111-1111-4111-8111-111111111111'
 const DIGEST = `sha256:${'a'.repeat(64)}`
@@ -100,6 +104,7 @@ describe('CpMemoryConnectionRegistry', () => {
       version: '1.2.3',
       profile: MEMORY_PLUGIN_PROFILE,
       manifestDigest: DIGEST,
+      configSchema: manifest.connection.configSchema,
       declaredEgressHosts: ['api.example-memory.com'],
       status: 'ready'
     })
@@ -118,6 +123,9 @@ describe('CpMemoryConnectionRegistry', () => {
     await vi.waitFor(() => expect(registry.facts()[0]?.status).toBe('invalid'))
     expect(registry.facts()[0]?.reasonCode).toBe('conformance_failed')
     expect(registry.clientFor(CONNECTION_ID)).toBeUndefined()
+    // The manifest conformed; only this config did not. Reporting its schema is what lets the console
+    // offer typed fields to repair the very config that failed.
+    expect(registry.facts()[0]?.configSchema).toEqual(manifest.connection.configSchema)
 
     registry.upsert(
       spec({
@@ -127,6 +135,18 @@ describe('CpMemoryConnectionRegistry', () => {
     )
     await vi.waitFor(() => expect(registry.facts()[0]).toMatchObject({ revision: 2, status: 'invalid' }))
     expect(registry.admissionError(CONNECTION_ID)).toContain('conformance')
+    await registry.close()
+  })
+
+  it('reports no schema when the plugin never produced a conformance-checked manifest', async () => {
+    const registry = new CpMemoryConnectionRegistry({
+      connect: async () => {
+        throw new MemoryPluginProtocolError('manifest rejected')
+      }
+    })
+    registry.upsert(spec())
+    await vi.waitFor(() => expect(registry.facts()[0]?.status).toBe('invalid'))
+    expect(registry.facts()[0]?.configSchema).toBeUndefined()
     await registry.close()
   })
 

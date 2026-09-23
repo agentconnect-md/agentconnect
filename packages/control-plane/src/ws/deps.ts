@@ -29,7 +29,8 @@ import type {
   AgentRecord,
   BotRecord,
   AgentMemoryHistoryRepo,
-  ProviderKeyStore
+  ProviderKeyStore,
+  DecisionRepo
 } from '../persistence/ports.js'
 import type { AgentMemoryStoreService } from '../agent-memory/store.service.js'
 import type { UsageWriter } from '../usage/writer.js'
@@ -183,6 +184,7 @@ export interface DaemonWsDeps {
    *  broker calls; absent ⇒ `linearcred/request` answers SCOPE_DENIED. */
   linearTokens?: Pick<LinearTokenService, 'accessToken'>
   providerKey?: Pick<ProviderKeyStore, 'get'>
+  decision?: Pick<DecisionRepo, 'listForAgent' | 'getForAgent'>
   /** R1 action-time formal-review broker; absent ⇒ review/start REQs fail closed. */
   githubReviewBroker?: GithubReviewBrokerService
   /** Provider-neutral formal reviews: publication lease, operation ledger, outcome

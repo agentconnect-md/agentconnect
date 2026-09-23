@@ -8,6 +8,7 @@ import { LocalStore, sessionKey, type InboxRow } from '../src/store/local-store.
 import { statePath } from '../src/paths.js'
 import { Daemon } from '../src/daemon.js'
 import { stableMessageId } from '../src/messages/normalized.js'
+import { interruptedDeliveryText } from '../src/session/thread-context.js'
 import type { WebchatOutput, WebchatDone } from '@agentconnect.md/protocol'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT, waitBudget } from './wait-support.js'
@@ -1323,6 +1324,70 @@ describe('daemon durable inbox', () => {
     // All three rows SURVIVE (head + queued rest) so a subsequent replayInbox would recover them.
     expect((await inbox(root)).map((r) => r.id).sort()).toEqual(['slack:C1:100', 'slack:C1:200', 'slack:C1:300'])
   })
+
+  it.each([
+    { load: 'restores the session', historyRestored: true },
+    { load: 'fails', historyRestored: false }
+  ])(
+    'a turn cut off by shutdown is replayed with an interruption note when session/load $load',
+    async ({ historyRestored }) => {
+      const releases: Array<(err?: Error) => void> = []
+      const before = {
+        start: vi.fn(async () => {}),
+        newSession: vi.fn(async () => 'acp-1'),
+        hasSession: vi.fn(() => true),
+        prompt: vi.fn(async () => {
+          await new Promise<void>((resolve, reject) => releases.push((err) => (err ? reject(err) : resolve())))
+          return 'end_turn'
+        }),
+        cancel: vi.fn(async () => releases.shift()?.(new Error('cancelled by shutdown'))),
+        stop: vi.fn(async () => {})
+      }
+      const root = scaffold()
+      const first = await boot(root, before)
+      ;(first as any).cfg.limits.shutdownDrainMs = 0
+      void (first as any).dispatch('bot-a', msg('100', 'review this'), 'int-a').catch(() => {})
+      await vi.waitFor(() => expect(before.prompt).toHaveBeenCalledTimes(1), WAIT)
+      await first.stop()
+
+      // A fresh process: nothing is live until session/load or session/new makes it so.
+      const live = new Set<string>()
+      const prompts: string[] = []
+      let created = 0
+      const after = {
+        start: vi.fn(async () => {}),
+        newSession: vi.fn(async () => {
+          const id = `acp-new-${++created}`
+          live.add(id)
+          return id
+        }),
+        hasSession: vi.fn((id: string) => live.has(id)),
+        loadSupported: vi.fn(() => true),
+        loadSession: vi.fn(async (id: string) => {
+          if (!historyRestored) throw new Error('session not found')
+          live.add(id)
+        }),
+        prompt: vi.fn(async (_sid: string, blocks: { text?: string }[]) => {
+          prompts.push(blocks.map((b) => b.text ?? '').join('|'))
+          return 'end_turn'
+        }),
+        cancel: vi.fn(async () => {}),
+        stop: vi.fn(async () => {})
+      }
+      const second = await boot(root, after)
+      await vi.waitFor(() => expect(prompts).toHaveLength(1), WAIT)
+      expect(after.loadSession.mock.calls[0]?.[0]).toBe('acp-1')
+      expect(prompts[0]).toContain('review this')
+      expect(prompts[0]).toContain(interruptedDeliveryText(historyRestored))
+
+      // A live delivery is not a replay, so it carries no note.
+      await (second as any).dispatch('bot-a', msg('200', 'fresh ask', 'T2'), 'int-a')
+      expect(prompts[1]).toContain('fresh ask')
+      expect(prompts[1]).not.toContain('AgentConnect delivery note')
+      await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
+      await second.stop()
+    }
+  )
 
   it('a webchat message is NOT durably persisted (live sink cannot be restored)', async () => {
     const g = gatedHost()

@@ -24,14 +24,15 @@ const tmp = (prefix: string) => mkdtempSync(join(tmpdir(), prefix))
 
 const ACCOUNT = { user: 'agent', uid: 1000, gid: 1000, home: '/home/agent' }
 
-/** A Linux target whose system-unit and polkit directories are temporary, so an
- *  install under test never touches /etc. */
+/** A Linux target whose system-unit, polkit and sudoers directories are temporary,
+ *  so an install under test never touches /etc. */
 function linuxScope() {
   return {
     platform: 'linux' as const,
     home: tmp('ac-home-'),
     systemUnitDir: tmp('ac-sys-'),
     polkitDir: tmp('ac-polkit-'),
+    sudoersDir: tmp('ac-sudoers-'),
     account: ACCOUNT,
     exec
   }

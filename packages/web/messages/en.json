@@ -2685,6 +2685,20 @@
         "saving": "Saving…",
         "close": "Close",
         "done": "Done"
+      },
+      "decisions": {
+        "title": "Decisions",
+        "add": "Add Decision",
+        "available": "Available Decisions",
+        "noMore": "No more Decisions available",
+        "loading": "Loading Decisions",
+        "empty": "No Decisions attached",
+        "hint": "Attach a Decision so this agent can evaluate it during a conversation.",
+        "unavailable": "Unavailable Decision",
+        "remove": "Remove from agent",
+        "boolean": "Boolean",
+        "choice": "Choice",
+        "score": "Score"
       }
     }
   },
@@ -3443,6 +3457,7 @@
     },
     "emptySuggestions": "{state, select, pending {No pending suggestions} accepted {No accepted suggestions} other {No rejected suggestions}}",
     "emptySuggestionsHint": "Dreams propose knowledge and skills here for review.",
+    "suggestionCount": "{count, plural, one {# suggestion} other {# suggestions}}",
     "proposedBy": "Proposed by {name}",
     "publishedBy": "Published by {name}",
     "reviewedBy": "reviewed by {name}",
@@ -3452,18 +3467,17 @@
     "replacesRevision": "Replaces rev {revision}",
     "unavailable": "Unavailable",
     "unavailableHint": "Can't review while the proposing agent is offline.",
-    "inspect": "Inspect",
-    "inspectHint": "Inspect the full text to enable Accept.",
     "reject": "Reject",
     "rejecting": "Rejecting…",
     "accept": "Accept",
     "accepting": "Accepting…",
     "acceptedAs": "Accepted as rev {revision}",
     "rejectedLabel": "Rejected",
-    "open": "Open",
     "loadSuggestionError": "Could not load this suggestion.",
+    "retry": "Retry",
     "binary": "binary",
     "binaryAsset": "Binary asset",
+    "filesCount": "{count, plural, one {# file} other {# files}}",
     "detail": {
       "notFoundTitle": "Knowledge not found",
       "notFoundPre": "No entry ",
@@ -3576,8 +3590,10 @@
         "noCredentials": "No credentials required.",
         "sentAsHeader": "sent as {header}",
         "passedToCommand": "passed to the local command",
-        "settings": "Settings (JSON)",
+        "settings": "Settings",
+        "settingsJson": "Settings (JSON)",
         "settingsHint": "Plugin-specific and non-secret.",
+        "notSet": "Not set",
         "replaceSecrets": "Replace credentials",
         "creating": "Creating…",
         "createConnection": "Create connection",
@@ -3590,7 +3606,10 @@
           "endpointRequired": "Plugin URL is required.",
           "commandRefRequired": "Command is required.",
           "credentialFieldsInvalid": "Every credential field needs a name and a header.",
-          "missingSecretValues": "Enter the required credential(s): {names}."
+          "missingSecretValues": "Enter the required credential(s): {names}.",
+          "fieldRequired": "{label} is required.",
+          "fieldNumber": "{label} must be a number.",
+          "fieldInteger": "{label} must be a whole number."
         }
       }
     }
@@ -4110,7 +4129,8 @@
       "title": "Used by",
       "kind": {
         "gate": "channel gate",
-        "shared_bot_routing": "shared bot routing"
+        "shared_bot_routing": "shared bot routing",
+        "agent_tool": "agent tool"
       },
       "needsReview": "needs review",
       "ok": "ok"

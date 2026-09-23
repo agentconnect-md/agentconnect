@@ -770,6 +770,7 @@ export function applySpecFields(
   // Skill sources are CP-owned and self-contained (design: shared-skills.md); mirror
   // the mcpServers contract — always shipped, so an emptied list clears on disk.
   if (spec.skills !== undefined) raw.skills = spec.skills
+  if (spec.decisionIds !== undefined) raw.decisionIds = spec.decisionIds
   // Managed skill metadata is also a complete CP-owned set. The archive bytes
   // are fetched separately and never enter agent.json.
   if (spec.managedSkills !== undefined) raw.managedSkills = spec.managedSkills

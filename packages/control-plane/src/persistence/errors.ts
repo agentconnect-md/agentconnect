@@ -60,7 +60,7 @@ export class MemberSetInUse extends Error {
 export class DecisionInUse extends Error {
   readonly code = 'DECISION_IN_USE' as const
   constructor(readonly decisionId: string) {
-    super(`decision ${decisionId} is still used by a conversation`)
+    super(`decision ${decisionId} is still used by a conversation or an agent`)
     this.name = 'DecisionInUse'
   }
 }

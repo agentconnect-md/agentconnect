@@ -351,6 +351,7 @@ export interface AgentDto {
   mcpServers: string[] // daemon-configured MCP server names attached at session/new; empty ⇒ none
   skills: string[] // enabled shared-skills "<source>/<skill>" / "<source>/*"; empty ⇒ none
   managedSkills?: string[] // enabled centrally accepted immutable skill ids; absent on older CPs
+  decisionIds?: string[] // explicitly attached saved Decisions
   memory: AgentMemoryConfig | null // memory backend; null ⇒ managed default
   createdAt: string // ISO-8601
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for daemon/CLI-created
@@ -1025,6 +1026,7 @@ export interface UpdateAgentInput {
   skills?: string[]
   /** Enabled centrally accepted managed skill ids; replaced wholesale. */
   managedSkills?: string[]
+  decisionIds?: string[]
   /** Memory backend; null clears (revert to managed default). */
   memory?: AgentMemoryConfig | null
   /** Accept a change the CP otherwise refuses with a 409, such as moving the memory home back to `daemon` (keeps no memory). */
@@ -1226,6 +1228,7 @@ export interface CreateAgentInput {
   skills?: string[]
   /** Enabled centrally accepted managed skill ids; absent ⇒ none. */
   managedSkills?: string[]
+  decisionIds?: string[]
   /** Memory backend; absent ⇒ managed default. */
   memory?: AgentMemoryConfig
   /** Request an OS sandbox for this agent; absent ⇒ false unless daemon policy requires it. */
@@ -2632,8 +2635,20 @@ export async function fetchToolBody(sessionId: string, toolCallId: string): Prom
 // Fetch one agent's raw spec (GET /agents/:id). Returns the wire DTO (not the
 // lean UI `Agent`) because the edit form needs fields the UI shape drops — notably
 // `description`.
-export async function fetchAgentDto(agentId: string): Promise<AgentDto> {
-  return apiGet<AgentDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}`)
+export async function fetchAgentDto(agentId: string, orgId?: string): Promise<AgentDto> {
+  return apiGet<AgentDto>(`${orgBase(orgId)}/agents/${encodeURIComponent(agentId)}`)
+}
+
+export interface AgentDecisionDto {
+  id: string
+  name: string
+  providerId: string
+  model: string
+  questionType: 'boolean' | 'choice' | 'score'
+}
+
+export async function fetchAgentDecisions(agentId: string, orgId?: string): Promise<AgentDecisionDto[]> {
+  return apiGet(`${orgBase(orgId)}/agents/${encodeURIComponent(agentId)}/decisions`)
 }
 
 // ── workspace file browsing ─────────────────────────────────────────────────
@@ -4630,6 +4645,8 @@ export interface ExternalMemoryConnectionDto {
   profile: string | null
   manifestDigest: string | null
   capabilities: Record<string, unknown> | null
+  /** The plugin's bounded settings schema, known once a probe has reported; null until then. */
+  configSchema: Record<string, unknown> | null
   declaredEgressHosts: string[]
   reasonCode: string | null
   createdBy: string | null

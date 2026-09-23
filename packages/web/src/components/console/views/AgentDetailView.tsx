@@ -61,6 +61,8 @@ import { IntegrationMarks } from '@/components/console/IntegrationMarks'
 import { AgentSecretsCard } from '@/components/console/AgentSecretsCard'
 import { AgentToolsCard } from '@/components/console/AgentToolsCard'
 import { AgentSkillsCard } from '@/components/console/AgentSkillsCard'
+import { AgentDecisionsCard } from '@/components/console/AgentDecisionsCard'
+import { featureFlagEnabled } from '@/lib/feature-flags'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { IntegrationChannelList, roomGlyph, rowLabel } from '@/components/console/IntegrationChannelList'
@@ -2678,6 +2680,9 @@ export default function AgentDetailView() {
             canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit}
           />
           <AgentSkillsCard agentId={da.id} canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit} />
+          {featureFlagEnabled('decisions') && (
+            <AgentDecisionsCard key={da.id} agentId={da.id} canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit} />
+          )}
           <div className="card overflow-hidden max-desktop:rounded-lg desktop:max-w-[760px]">
             <div className="border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal desktop:py-[13px]">
               {t('tools.loadedFromWorkspace')}

@@ -69,6 +69,7 @@ async function connectionDto(
     profile: row.profile,
     manifestDigest: row.manifestDigest,
     capabilities: row.capabilities,
+    configSchema: row.configSchema,
     declaredEgressHosts: row.declaredEgressHosts,
     reasonCode: row.reasonCode,
     createdBy: row.createdByUserId,

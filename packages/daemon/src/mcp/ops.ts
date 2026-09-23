@@ -1,4 +1,11 @@
 import {
+  listDecisions,
+  evaluateDecision,
+  LIST_DECISIONS_ARGS,
+  EVALUATE_DECISION_ARGS,
+  type DecisionDeps
+} from './ops/decisions.js'
+import {
   memoryEntryWriteAsk,
   describeMemoryEntries,
   listMemoryEntries,
@@ -178,6 +185,7 @@ export interface OpsDeps
     MessagingDeps,
     DirectoryDeps,
     KnowledgeDeps,
+    DecisionDeps,
     OrchestrationDeps,
     GithubReviewDeps,
     CodeHostEffectDeps,
@@ -246,6 +254,8 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['listChannelAgents', listAgents],
   ['findKnowledge', findKnowledge],
   ['listKnowledge', listKnowledge],
+  ['listDecisions', listDecisions],
+  ['evaluateDecision', evaluateDecision],
   ['listOrgSkills', listOrgSkills],
   ['sendMessage', sendMessage],
   ['startOrchestration', startOrchestration],
@@ -313,6 +323,8 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['listChannelAgents', LIST_AGENTS_ARGS],
   ['findKnowledge', FIND_KNOWLEDGE_ARGS],
   ['listKnowledge', LIST_KNOWLEDGE_ARGS],
+  ['listDecisions', LIST_DECISIONS_ARGS],
+  ['evaluateDecision', EVALUATE_DECISION_ARGS],
   ['listOrgSkills', LIST_ORG_SKILLS_ARGS],
   ['startOrchestration', START_ORCHESTRATION_ARGS],
   ['getOrchestration', ORCHESTRATION_OWNER_ARGS],

@@ -5,8 +5,9 @@
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { currentDistEntry, defaultRoot } from '../paths.js'
-import type { ServiceAccount } from './account.js'
+import { isElevated, type ServiceAccount } from './account.js'
 import { POLKIT_RULES_DIR, polkitRulesSupported, removePolkitRule, writePolkitRule } from './polkit.js'
+import { removeSudoersRule, SUDOERS_DIR, sudoersRulePath, systemctlPath, writeSudoersRule } from './sudoers.js'
 import type { ControllerDeps, InstalledUnit, InstallOpts, ServiceController, ServiceStatus } from './types.js'
 
 const DEFAULT_UNIT = 'agentconnect.service'
@@ -165,17 +166,22 @@ WantedBy=${wantedBy}
 `
 }
 
+/** How systemctl and sudo word a missing authorization. */
+const DENIED = /authentic|polkit|denied|permission|password is required/i
+
 export class SystemdController implements ServiceController {
   readonly label: string
   readonly scope: SystemdScope
   private readonly unitPath: string
   private readonly polkitDir: string
+  private readonly sudoersDir: string
 
   constructor(private readonly deps: ControllerDeps) {
     this.label = systemdUnitName(deps.instance)
     this.scope = deps.scope ?? 'system'
     this.unitPath = join(systemdUnitDir(this.scope, deps.home, deps.systemUnitDir), this.label)
     this.polkitDir = deps.polkitDir ?? POLKIT_RULES_DIR
+    this.sudoersDir = deps.sudoersDir ?? SUDOERS_DIR
   }
 
   private systemctl(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -217,12 +223,30 @@ export class SystemdController implements ServiceController {
     if (enabled.code !== 0) throw new Error(`systemctl could not enable ${this.label}: ${enabled.stderr.trim()}`)
     if (polkitRulesSupported(this.polkitDir)) {
       writePolkitRule({ unitLabel: this.label, user: account.user, dir: this.polkitDir })
+      removeSudoersRule(this.label, this.sudoersDir) // a polkit upgrade since the last install made it redundant
+    } else {
+      await writeSudoersRule({ unitLabel: this.label, user: account.user, exec: this.deps.exec, dir: this.sudoersDir })
     }
   }
 
-  /** Whether `up`/`down` will work for the daemon account without sudo. */
+  /** Whether `up`/`down` will work for the daemon account without a password. Only
+   *  meaningful elevated: an ordinary account usually cannot read /etc/sudoers.d. */
   hasUnprivilegedControl(): boolean {
-    return this.scope === 'user' || polkitRulesSupported(this.polkitDir)
+    return (
+      this.scope === 'user' ||
+      polkitRulesSupported(this.polkitDir) ||
+      existsSync(sudoersRulePath(this.label, this.sudoersDir))
+    )
+  }
+
+  /** A system-unit lifecycle verb: polkit first, then the sudoers grant on a host without rules.d. */
+  private async control(verb: 'start' | 'stop'): Promise<{ code: number; stdout: string; stderr: string }> {
+    const r = await this.systemctl([verb, this.label])
+    if (r.code === 0 || !DENIED.test(r.stderr) || isElevated() || polkitRulesSupported(this.polkitDir)) return r
+    const viaSudo = await this.deps.exec('sudo', ['-n', systemctlPath(), verb, this.label])
+    return viaSudo.code === 0
+      ? viaSudo
+      : { ...viaSudo, stderr: `${r.stderr.trim()}; sudo -n: ${viaSudo.stderr.trim()}` }
   }
 
   async uninstall(): Promise<void> {
@@ -234,6 +258,7 @@ export class SystemdController implements ServiceController {
     if (this.scope === 'system') {
       await this.systemctl(['disable', this.label])
       removePolkitRule(this.label, this.polkitDir)
+      removeSudoersRule(this.label, this.sudoersDir)
     }
     if (this.isInstalled()) rmSync(this.unitPath)
     await this.systemctl(['daemon-reload'])
@@ -241,14 +266,14 @@ export class SystemdController implements ServiceController {
 
   async up(): Promise<void> {
     // User scope keeps `enable --now`: those units have no install-time enable step.
-    const args = this.scope === 'system' ? ['start', this.label] : ['enable', '--now', this.label]
-    const r = await this.systemctl(args)
+    const r =
+      this.scope === 'system' ? await this.control('start') : await this.systemctl(['enable', '--now', this.label])
     if (r.code !== 0) throw new Error(`systemctl could not start the service: ${this.explain(r.stderr)}`)
   }
 
   async down(): Promise<void> {
-    const args = this.scope === 'system' ? ['stop', this.label] : ['disable', '--now', this.label]
-    const r = await this.systemctl(args)
+    const r =
+      this.scope === 'system' ? await this.control('stop') : await this.systemctl(['disable', '--now', this.label])
     if (this.scope === 'system' && r.code !== 0) {
       throw new Error(`systemctl could not stop the service: ${this.explain(r.stderr)}`)
     }
@@ -258,10 +283,10 @@ export class SystemdController implements ServiceController {
    *  what to do; name the missing grant and the command that works regardless. */
   private explain(stderr: string): string {
     const text = stderr.trim()
-    if (!/authentic|polkit|denied|permission/i.test(text)) return text
+    if (!DENIED.test(text)) return text
     const why = polkitRulesSupported(this.polkitDir)
-      ? `reinstall with \`sudo agentconnect install-service\` to refresh the polkit rule for ${this.label}`
-      : 'this host has no polkit rules.d backend, so unit control needs root'
+      ? `reinstall with \`agentconnect install-service\` to refresh the polkit rule for ${this.label}`
+      : `this host has no polkit rules.d backend and no sudoers grant for ${this.label} — reinstall with \`agentconnect install-service\` to write one`
     return `${text} — ${why}, or run \`sudo systemctl ${this.scope === 'system' ? '' : '--user '}start ${this.label}\``
   }
 

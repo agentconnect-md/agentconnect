@@ -34,7 +34,7 @@ const DefinitionDto = z.object({
 })
 const IdParam = z.object({ id: z.string().uuid() })
 const UsageDto = z.object({
-  kind: z.enum(['gate', 'shared_bot_routing']),
+  kind: z.enum(['gate', 'shared_bot_routing', 'agent_tool']),
   id: z.string(),
   label: z.string(),
   integrationId: z.string().optional(),
@@ -133,6 +133,15 @@ export function decisionRoutes(deps: HttpDeps) {
     // Distinct conversations, counted across sibling rows the same way as the visible set.
     const conversationCount = (usages: readonly DecisionChannelUsage[]) =>
       new Set(usages.map((u) => `${u.botId}\u0000${u.channelId}`)).size
+    const agentUsages = async (req: FastifyRequest) =>
+      (await deps.repos.agent.list(orgOf(req), ctxOf(req))).flatMap((agent) =>
+        (agent.decisionIds ?? []).map((decisionId) => ({
+          decisionId,
+          kind: 'agent_tool' as const,
+          id: agent.id,
+          label: agent.displayName ?? agent.name
+        }))
+      )
     // A preview borrows a visible placed agent's credential identity without executing that agent.
     const executionAgent = async (req: FastifyRequest, daemonId: string) => {
       const agents = await deps.repos.agent.list(orgOf(req), ctxOf(req))
@@ -221,13 +230,13 @@ export function decisionRoutes(deps: HttpDeps) {
         }
       },
       async (req) => {
-        const rows = await deps.repos.decision.list(orgOf(req), ctxOf(req))
-        const { visible: usages } = await visibleUsages(
+        const [rows, agents] = await Promise.all([deps.repos.decision.list(orgOf(req), ctxOf(req)), agentUsages(req)])
+        const { visible: gates } = await visibleUsages(
           req,
           rows.map((row) => row.id)
         )
         const counts = new Map<string, number>()
-        for (const usage of usages) counts.set(usage.decisionId, (counts.get(usage.decisionId) ?? 0) + 1)
+        for (const usage of [...gates, ...agents]) counts.set(usage.decisionId, (counts.get(usage.decisionId) ?? 0) + 1)
         return rows.map((row) => ({ ...dto(row, req), usageCount: counts.get(row.id) ?? 0 }))
       }
     )
@@ -248,8 +257,12 @@ export function decisionRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const row = await visible(req, req.params.id)
         if (!row) return reply.code(404).send(notFound)
-        const { visible: usages } = await visibleUsages(req, [row.id])
-        return { decision: dto(row, req), usages: usages.map(usageDto) }
+        const { visible: gates } = await visibleUsages(req, [row.id])
+        const agents = (await agentUsages(req)).filter((usage) => usage.decisionId === row.id)
+        return {
+          decision: dto(row, req),
+          usages: [...gates.map(usageDto), ...agents.map(({ decisionId: _decisionId, ...usage }) => usage)]
+        }
       }
     )
 
@@ -323,7 +336,7 @@ export function decisionRoutes(deps: HttpDeps) {
           summary: 'Delete a Decision',
           operationId: 'deleteDecision',
           description:
-            'Deletes a visible definition. Refused with 409 and a permission-filtered usage summary while any conversation gate references it.',
+            'Deletes a visible definition. Refused with 409 and a permission-filtered usage summary while a conversation gate or an agent still references it.',
           params: IdParam,
           response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: DecisionInUseDto }
         }
@@ -333,13 +346,20 @@ export function decisionRoutes(deps: HttpDeps) {
         if (!(await visible(req, req.params.id))) return reply.code(404).send(notFound)
         const inUse = async () => {
           const { all, visible: shown } = await visibleUsages(req, [req.params.id])
-          const total = conversationCount(all)
+          const agents = (await agentUsages(req)).filter((usage) => usage.decisionId === req.params.id)
+          const conversations = conversationCount(all)
+          const parts = [
+            ...(conversations ? [`${conversations} conversation${conversations === 1 ? '' : 's'}`] : []),
+            ...(agents.length ? [`${agents.length} agent${agents.length === 1 ? '' : 's'}`] : [])
+          ]
           return reply.code(409).send({
             error: 'Conflict',
             statusCode: 409,
-            message: `This Decision is used by ${total} conversation${total === 1 ? '' : 's'}.`,
-            usages: shown.map(usageDto),
-            hiddenUsageCount: Math.max(0, total - shown.length)
+            message: parts.length
+              ? `This Decision is used by ${parts.join(' and ')}.`
+              : 'This Decision is still in use.',
+            usages: [...shown.map(usageDto), ...agents.map(({ decisionId: _decisionId, ...usage }) => usage)],
+            hiddenUsageCount: Math.max(0, conversations - shown.length)
           })
         }
         if ((await deps.repos.integrationChannel.listDecisionUsages(orgOf(req), [req.params.id])).length > 0)
@@ -347,7 +367,7 @@ export function decisionRoutes(deps: HttpDeps) {
         try {
           await deps.repos.decision.delete(orgOf(req), req.params.id, ctxOf(req))
         } catch (err) {
-          // A gate saved between the pre-check and the delete: the FK refuses it.
+          // An agent attachment, or a gate saved between the pre-check and the delete (the FK refuses it).
           if (err instanceof DecisionInUse) return inUse()
           throw err
         }

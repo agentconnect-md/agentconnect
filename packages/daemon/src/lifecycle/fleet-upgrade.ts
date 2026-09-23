@@ -17,6 +17,9 @@ export interface FleetUpgradeHost {
   log: () => Logger
   clock: () => Clock
   shutdownDrainMs: () => number
+  /** The whole drain budget stop() is about to spend (pool, duty reserve included). */
+  shutdownDrainBudgetMs: () => number
+  raceDeadline: (work: Promise<unknown>, ms: number) => Promise<'done' | 'timeout'>
   /** Who supervises this process — 'cli', 'service', 'k8s', or absent (bare `run`). */
   supervisor: () => string | undefined
   k8s: () => boolean
@@ -29,6 +32,9 @@ export interface FleetUpgradeHost {
 }
 
 type FleetExitKind = 'restart' | 'upgrade'
+
+// Teardown allowance past the drain budget before a CP-commanded exit stops waiting on stop(); the pool pod's grace period keeps the same margin.
+const FLEET_EXIT_TEARDOWN_GRACE_MS = 30_000
 
 type FleetAdmission =
   { accepted: false; reason: string } | { accepted: true; root: string; cliEntry?: string; willDrainUntil?: string }
@@ -139,7 +145,13 @@ export class FleetUpgradeCoordinator {
     void (async () => {
       try {
         await this.reportProgress(operationId, 'restarting')
-        await this.host.stop()
+        // stop() parks forever on a host it failed to stop; exiting is this path's backstop, as a kill timeout is for SIGTERM.
+        const budgetMs = this.host.shutdownDrainBudgetMs() + FLEET_EXIT_TEARDOWN_GRACE_MS
+        const settled = await this.host.raceDeadline(this.host.stop(), budgetMs)
+        const log = this.host.log()
+        if (settled === 'timeout') {
+          log.error(`cp: ${kind} shutdown still running after ${Math.round(budgetMs / 1000)}s — exiting anyway`)
+        }
       } catch (err) {
         this.host.log().error(`cp: ${kind} shutdown failed: ${formatErr(err)}`)
       } finally {

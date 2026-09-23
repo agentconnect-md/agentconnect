@@ -38,6 +38,7 @@ export interface ServiceCommandParams {
   home?: string
   systemUnitDir?: string
   polkitDir?: string
+  sudoersDir?: string
   elevateDeps?: ElevateDeps
   ownershipDeps?: OwnershipDeps
 }
@@ -54,7 +55,8 @@ function targetOf(p: ServiceCommandParams): ControllerTarget {
     ...(p.exec !== undefined ? { exec: p.exec } : {}),
     ...(p.home !== undefined ? { home: p.home } : {}),
     ...(p.systemUnitDir !== undefined ? { systemUnitDir: p.systemUnitDir } : {}),
-    ...(p.polkitDir !== undefined ? { polkitDir: p.polkitDir } : {})
+    ...(p.polkitDir !== undefined ? { polkitDir: p.polkitDir } : {}),
+    ...(p.sudoersDir !== undefined ? { sudoersDir: p.sudoersDir } : {})
   }
 }
 

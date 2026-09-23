@@ -2685,6 +2685,20 @@
         "saving": "保存中…",
         "close": "关闭",
         "done": "完成"
+      },
+      "decisions": {
+        "title": "Decisions",
+        "add": "添加 Decision",
+        "available": "可用的 Decisions",
+        "noMore": "没有更多可用的 Decision",
+        "loading": "正在加载 Decisions",
+        "empty": "尚未添加 Decision",
+        "hint": "添加 Decision 后，此 Agent 可以在对话中调用它进行判断。",
+        "unavailable": "Decision 不可用",
+        "remove": "从 Agent 移除",
+        "boolean": "布尔值",
+        "choice": "选项",
+        "score": "评分"
       }
     }
   },
@@ -3443,6 +3457,7 @@
     },
     "emptySuggestions": "{state, select, pending {暂无待处理建议} accepted {暂无已接受建议} other {暂无已拒绝建议}}",
     "emptySuggestionsHint": "Dream 会在这里提出知识和技能建议，等待审核。",
+    "suggestionCount": "{count, plural, other {# 条建议}}",
     "proposedBy": "提议者：{name}",
     "publishedBy": "发布者：{name}",
     "reviewedBy": "审核者：{name}",
@@ -3452,18 +3467,17 @@
     "replacesRevision": "替换版本 {revision}",
     "unavailable": "不可用",
     "unavailableHint": "提议的 Agent 离线时无法审核。",
-    "inspect": "查看",
-    "inspectHint": "查看完整内容后即可接受。",
     "reject": "拒绝",
     "rejecting": "正在拒绝…",
     "accept": "接受",
     "accepting": "正在接受…",
     "acceptedAs": "已接受为版本 {revision}",
     "rejectedLabel": "已拒绝",
-    "open": "打开",
     "loadSuggestionError": "无法加载此建议。",
+    "retry": "重试",
     "binary": "二进制",
     "binaryAsset": "二进制资源",
+    "filesCount": "{count, plural, other {# 个文件}}",
     "detail": {
       "notFoundTitle": "未找到知识",
       "notFoundPre": "此组织中没有条目 ",
@@ -3576,8 +3590,10 @@
         "noCredentials": "无需凭据。",
         "sentAsHeader": "作为 {header} 发送",
         "passedToCommand": "传递给本地命令",
-        "settings": "设置（JSON）",
+        "settings": "设置",
+        "settingsJson": "设置（JSON）",
         "settingsHint": "插件特定的非敏感配置。",
+        "notSet": "未设置",
         "replaceSecrets": "替换凭据",
         "creating": "正在创建…",
         "createConnection": "创建连接",
@@ -3590,7 +3606,10 @@
           "endpointRequired": "插件 URL 为必填项。",
           "commandRefRequired": "命令为必填项。",
           "credentialFieldsInvalid": "每个凭据字段都需要名称和请求头。",
-          "missingSecretValues": "请填写必填凭据：{names}。"
+          "missingSecretValues": "请填写必填凭据：{names}。",
+          "fieldRequired": "{label} 为必填项。",
+          "fieldNumber": "{label} 必须是数字。",
+          "fieldInteger": "{label} 必须是整数。"
         }
       }
     }
@@ -4110,7 +4129,8 @@
       "title": "使用处",
       "kind": {
         "gate": "频道门控",
-        "shared_bot_routing": "共享 Bot 路由"
+        "shared_bot_routing": "共享 Bot 路由",
+        "agent_tool": "Agent 工具"
       },
       "needsReview": "需要复核",
       "ok": "正常"

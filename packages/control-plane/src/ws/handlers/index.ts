@@ -1,3 +1,4 @@
+import { handleDecisionRead } from './decisions.js'
 import {
   handleMemoryTransaction,
   handleMemoryHistoryAppend,
@@ -122,6 +123,8 @@ export class FrameRouter {
       'gitcred/request': handleGitCredRequest,
       'linearcred/request': handleLinearCredRequest,
       'provider-credentials/request': handleProviderCredentials,
+      'decision/list': handleDecisionRead,
+      'decision/get': handleDecisionRead,
       'webchat/mcp-grant/issue': handleWebchatMcpGrantIssue,
       'webchat/mcp-grant/accept': handleWebchatMcpGrantAccept,
       'webchat/mcp-grant/revoke': handleWebchatMcpGrantRevoke,
