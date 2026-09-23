@@ -19,6 +19,8 @@ vi.mock('@/lib/decisions/provider', () => ({
     ]
   })
 }))
+vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (path: string) => path }) }))
+vi.mock('@/lib/acp-registry', () => ({ useAcpRegistry: () => ({}), acpRuntime: () => undefined }))
 import { ModelSelectionField } from './ModelSelectionField'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -38,9 +40,10 @@ it('creates a binding, flags overlapping intervals, removes rules, and returns t
         value={value}
         onChange={setValue}
         onValidityChange={validity}
-        models={[{ value: 'model-standard' }]}
-        fallbackModel="model-standard"
-        supported
+        source={{ runtimeModels: [{ runtime: 'claude', version: '', models: ['model-standard'] }] }}
+        runtimes={['claude']}
+        fallback={{ runtime: 'claude', model: 'model-standard' }}
+        onFallbackChange={vi.fn()}
       />
     )
   }
@@ -48,11 +51,9 @@ it('creates a binding, flags overlapping intervals, removes rules, and returns t
   document.body.appendChild(container)
   root = createRoot(container)
   await act(async () => root!.render(<Form />))
-  const select = container.querySelector('select')!
-  await act(async () => {
-    select.value = select.options[1]!.value
-    select.dispatchEvent(new Event('change', { bubbles: true }))
-  })
+  await act(async () =>
+    [...container.querySelectorAll('button')].find((button) => button.textContent === 'By decision')!.click()
+  )
   expect(validity).toHaveBeenLastCalledWith(true)
   expect(container.textContent).toContain('0 ≤ score ≤ 2')
   await act(async () =>
@@ -62,10 +63,9 @@ it('creates a binding, flags overlapping intervals, removes rules, and returns t
   expect(container.querySelector('[role="alert"]')).not.toBeNull()
   await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Remove rule 2"]')!.click())
   expect(validity).toHaveBeenLastCalledWith(true)
-  await act(async () => {
-    select.value = ''
-    select.dispatchEvent(new Event('change', { bubbles: true }))
-  })
+  await act(async () =>
+    [...container.querySelectorAll('button')].find((button) => button.textContent === 'Fixed')!.click()
+  )
   expect(container.textContent).not.toContain('0 ≤ score ≤ 2')
   expect(validity).toHaveBeenLastCalledWith(true)
 })

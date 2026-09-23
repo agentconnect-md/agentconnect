@@ -468,6 +468,9 @@ import { DecisionEvaluator, type DecisionEvaluationInput } from './decisions/eva
 import {
   evaluateSessionModel,
   modelSelectionConfiguration,
+  pinnedDecisionTarget,
+  agentWithRuntime,
+  configuredRuntimeAgent,
   modelSelectionState,
   pinnedDecisionModel
 } from './decisions/model-selection.js'
@@ -4797,12 +4800,20 @@ export class Daemon {
     return effectiveSessionIsolation(agent) === 'session'
   }
 
-  // Microsandbox sessions own their runtime even when they share workspace files.
+  private readonly sessionRuntimes = new Map<string, { runtime: string; model: string }>()
+
+  private sessionAgent(agentId: string, key?: string): LoadedAgent | undefined {
+    const agent = this.agents.get(agentId)
+    return agent ? agentWithRuntime(agent, key ? this.sessionRuntimes.get(key) : undefined) : undefined
+  }
+
+  // Session-selected runtimes and confined workspaces own their host.
   private hostKeyFor(agentId: string, sessionKey?: string): HostKey {
     const agent = this.agents.get(agentId)
     if (sessionKey === undefined || !agent) return agentHostKey(agentId)
     const key = sessionHostKey(agentId, sessionKey)
-    return this.confinedSession(agent, sessionKey) ||
+    return this.sessionRuntimes.has(sessionKey) ||
+      this.confinedSession(agent, sessionKey) ||
       (this.usesMicrosandbox(agent) && !this.legacyMicrosandboxSessions.has(key))
       ? key
       : agentHostKey(agentId)
@@ -5325,6 +5336,7 @@ export class Daemon {
   }
 
   private workspacePreparationAuthority(agent: Agent): string {
+    agent = configuredRuntimeAgent(agent)
     const dir = (agent as Agent & { dir?: string }).dir
     return JSON.stringify({
       dir,
@@ -5511,7 +5523,7 @@ export class Daemon {
     const host = this.hosts.get(key)
     if (host) return host
     const agentId = hostKeyAgentId(key)
-    const agent = this.agents.get(agentId)!
+    const agent = this.sessionAgent(agentId, hostKeySessionKey(key))!
     const launchCwd = cwd ?? agent.workspace.path
     const built = this.buildAcpHost(agent, cfg, {
       hostKey: key,
@@ -6082,12 +6094,12 @@ export class Daemon {
   private modelSessionPoolHost(): ModelSessionHostPoolHost {
     return {
       log: () => this.log,
-      agent: (agentId) => this.agents.get(agentId),
+      agent: (agentId, key) => this.sessionAgent(agentId, key),
       runtime: (kind) => this.runtimes[kind],
       orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
       modelOverride: async (sessionKey) => {
         const session = await this.store.getSession(sessionKey)
-        const agent = session?.agentId ? this.agents.get(session.agentId) : undefined
+        const agent = session?.agentId ? this.sessionAgent(session.agentId, sessionKey) : undefined
         return (
           (await this.store.getModelOverride(sessionKey)) ?? pinnedDecisionModel(session?.decisionModel, agent?.runtime)
         )
@@ -7352,8 +7364,8 @@ export class Daemon {
 
   /** Whether this agent is backed by Codex ACP. Registry ids are canonical, while
    *  command/args matching keeps user-defined runtime aliases working. */
-  private isCodexRuntime(agentId: string): boolean {
-    const agent = this.agents.get(agentId)
+  private isCodexRuntime(agentId: string, sessionKey?: string): boolean {
+    const agent = this.sessionAgent(agentId, sessionKey)
     if (!agent) return false
     const runtime = this.runtimes[agent.runtime]
     return [agent.runtime, runtime?.command, ...(runtime?.args ?? [])]
@@ -8235,12 +8247,8 @@ export class Daemon {
       const host = this.hostForOwner(this.sessionOwnerKey(agent.id, session.key))
       if (!session.acpSessionId || host?.hasSession?.(session.acpSessionId) !== true) continue
       const sessionId = session.acpSessionId
-      void this.applyConfiguredRuntimeSettings(
-        agent,
-        host,
-        sessionId,
-        pinnedDecisionModel(session.decisionModel, agent.runtime)
-      )
+      const target = pinnedDecisionTarget(session.decisionModel)
+      void this.applyConfiguredRuntimeSettings(agentWithRuntime(agent, target), host, sessionId, target?.model)
         .then(async () => {
           await this.commands.refreshStatusBarForKey(session.key)
         })
@@ -12933,7 +12941,8 @@ export class Daemon {
   ): Promise<
     { kind: 'opened'; handled: HandledTurnSession; restoreDeliveryBinding: () => void } | { kind: 'cancelled' }
   > {
-    const { entry, key, plan, agent, replyConn, evaluation } = run
+    const { entry, key, plan, replyConn, evaluation } = run
+    let agent = run.agent
     const { agentId, msg, integrationId, webchat, callMeta, hookContext } = entry
     // The per-conversation Worktree choice this turn carries, in the isolation vocabulary the row, the host key and the pod claim all speak.
     const webchatIsolation =
@@ -12955,17 +12964,18 @@ export class Daemon {
     // §11: this session's OWN isolation, learned here because the model-session host below claims its pod before `sessions.handle` records the row — its row, else this turn's explicit choice, else the agent's default, which is the order SessionManager decides it in.
     this.sessionIsolation.set(key, persisted?.workspaceIsolation ?? effectiveSessionIsolation(agent, webchatIsolation))
     // …and WHERE it runs, which the host key below reads: decided once at birth, recorded, and kept for the session's life (session-executors.md §7).
-    await this.placeSessionOnExecutor(agent, key)
     let remoteMcpServer: import('@agentclientprotocol/sdk').McpServer | undefined
     try {
-      const reviewWorkspace = await this.githubReviews.prepareGithubReviewWorkspace(entry, key, agent)
       await this.selectSessionModel(run, persisted)
+      agent = run.agent = this.sessionAgent(agentId, key) ?? agent
+      await this.placeSessionOnExecutor(agent, key)
+      const reviewWorkspace = await this.githubReviews.prepareGithubReviewWorkspace(entry, key, agent)
       if (this.modelSessions.enabled) {
-        const currentAgent = this.agents.get(agentId) ?? agent
+        const currentAgent = this.sessionAgent(agentId, key) ?? agent
         const manualModel = currentAgent.allowRuntimeChangesInChat
           ? (webchat?.runtime?.model ?? (await this.store.getModelOverride(key)))
           : undefined
-        const firstTurnModel = manualModel ?? this.selectedSessionModel(run, currentAgent)
+        const firstTurnModel = manualModel ?? this.selectedSessionModel(run)
         entry.selectedHost = await this.modelSessions.ensure(currentAgent, key, firstTurnModel)
       }
       // A prior provider post-turn operation is serialized. Managed needs this
@@ -13008,6 +13018,7 @@ export class Daemon {
         callMeta?.needsReply,
         {
           initializeOnly: plan.initializeOnly,
+          runtimeTarget: this.sessionRuntimes.get(key),
           // CallMeta is the trusted distinction between a real A2A delivery and
           // synthetic `source: agent` wakes (background task/orchestration). A webchat
           // roster continuation carries CallMeta for its hop/rendezvous chain but is a
@@ -13023,6 +13034,8 @@ export class Daemon {
           ...reviewWorkspace
         }
       )
+      const target = this.sessionRuntimes.get(key)
+      if (target) await this.store.pinDecisionModel(key, target.runtime, target.model)
       if (remoteMcpServer && handled.additionalMcpServersAttached === false) {
         this.log.warn('remote MCP descriptor was rejected by the runtime; ordinary webchat continued without it')
       }
@@ -13083,37 +13096,56 @@ export class Daemon {
     return { kind: 'opened', handled, restoreDeliveryBinding }
   }
 
-  private selectedSessionModel(run: TurnRun, agent: LoadedAgent): string | undefined {
-    const selected = run.entry.modelSelection
-    if (!selected || selected.runtime !== agent.runtime) return undefined
-    if (selected.configuration === undefined || selected.configuration === modelSelectionConfiguration(agent))
-      return selected.model
-    return agent.runtimeOverrides?.model
+  private selectedSessionModel(run: TurnRun): string | undefined {
+    return this.sessionRuntimes.get(run.key)?.model
   }
 
   private async selectSessionModel(run: TurnRun, persisted: SessionRecord | undefined): Promise<void> {
     const { entry, key, plan } = run
     const agent = this.agents.get(entry.agentId)
-    if (agent && persisted?.decisionModel) {
-      const model = pinnedDecisionModel(persisted.decisionModel, agent.runtime)
-      if (model) entry.modelSelection = { runtime: agent.runtime, model }
+    if (!agent) return
+    const saved = pinnedDecisionTarget(persisted?.decisionModel)
+    if (saved) {
+      if (
+        agent.allowRuntimeChangesInChat &&
+        entry.webchat?.runtime?.runtime &&
+        entry.webchat.runtime.runtime !== saved.runtime
+      )
+        throw new Error('Choose a runtime before starting a new session.')
+      this.sessionRuntimes.set(key, saved)
       return
     }
-    if (persisted && (await this.store.getObservedModel(key)) !== undefined) return
-    const selection = agent?.modelSelection
-    if (!agent || !selection || plan.initializeOnly || !agent.runtimeOverrides?.model) return
-    if (!this.runtimeFacts.canSwitchModels(agent.runtime)) return
-    if (agent.allowRuntimeChangesInChat && (entry.webchat?.runtime?.model || (await this.store.getModelOverride(key))))
+    this.sessionRuntimes.delete(key)
+    if (persisted && (await this.store.getObservedModel(key)) !== undefined) {
+      if (
+        agent.allowRuntimeChangesInChat &&
+        entry.webchat?.runtime?.runtime &&
+        entry.webchat.runtime.runtime !== agent.runtime
+      )
+        throw new Error('Choose a runtime before starting a new session.')
       return
+    }
+    const manual = agent.allowRuntimeChangesInChat ? entry.webchat?.runtime : undefined
+    if (manual?.runtime) {
+      const target = { runtime: manual.runtime, model: manual.model ?? '' }
+      if (!this.sessionRuntimeSupported(agent, target))
+        throw new Error('The selected runtime and model are unavailable.')
+      this.sessionRuntimes.set(key, target)
+      return
+    }
+    const selection = agent.modelSelection
+    if (!selection || plan.initializeOnly || !agent.runtimeOverrides?.model) return
     const configuration = modelSelectionConfiguration(agent)
     const orgId = this.cpCollab.orgForAgent(agent.id)
     const client = this.cpClient
-    let model: string | undefined
-    if (client?.supportsServerFeature(DECISION_MODEL_SELECTION_V1_FEATURE)) {
-      model = await evaluateSessionModel({
+    let target: { runtime: string; model: string } | undefined
+    const manualModel =
+      manual?.model ?? (agent.allowRuntimeChangesInChat ? await this.store.getModelOverride(key) : undefined)
+    if (!manualModel && client?.supportsServerFeature(DECISION_MODEL_SELECTION_V1_FEATURE)) {
+      target = await evaluateSessionModel({
         agentId: agent.id,
         selection,
-        models: this.runtimeFacts.profileFor(agent.runtime).models,
+        supported: (candidate) => this.sessionRuntimeSupported(agent, candidate),
         signal: entry.initAbort.signal,
         evaluationId: randomUUID(),
         current: () =>
@@ -13139,7 +13171,18 @@ export class Daemon {
       })
     }
     entry.initAbort.signal.throwIfAborted()
-    entry.modelSelection = { configuration, runtime: agent.runtime, model: model ?? agent.runtimeOverrides.model }
+    const currentAgent = this.agents.get(agent.id)
+    if (!currentAgent || modelSelectionConfiguration(currentAgent) !== configuration) return
+    target ??= { runtime: agent.runtime, model: manualModel ?? agent.runtimeOverrides.model }
+    this.sessionRuntimes.set(key, target)
+  }
+
+  private sessionRuntimeSupported(agent: LoadedAgent, target: { runtime: string; model: string }): boolean {
+    return (
+      !!this.runtimes[target.runtime] &&
+      this.runtimeFacts.profileFor(target.runtime).models.includes(target.model) &&
+      !this.activationCapabilityError(agentWithRuntime(agent, target))
+    )
   }
 
   /** Persist the staged first-turn runtime choices a webchat composer sent with this message.
@@ -13579,11 +13622,11 @@ export class Daemon {
       entry.selectedHost = p.selectedHost
     }
     const host = p.selectedHost.host
-    const runtimeAgent = this.agents.get(agentId)
+    const runtimeAgent = this.sessionAgent(agentId, key)
     const allowRuntimeChangesInChat = runtimeAgent?.allowRuntimeChangesInChat === true
     // Manual choices win over the model pinned when this session started.
     const override = allowRuntimeChangesInChat ? await this.store.getModelOverride(key) : undefined
-    const automaticModel = runtimeAgent ? this.selectedSessionModel(run, runtimeAgent) : undefined
+    const automaticModel = runtimeAgent ? this.selectedSessionModel(run) : undefined
     const selectedModel = override ?? automaticModel
     if (selectedModel && this.modelSessions.crossesHostProvider(key, agentId, selectedModel)) {
       // A live host can only use the provider credentials it started with.
@@ -13633,14 +13676,14 @@ export class Daemon {
     // Runtime setters above await the adapter and can race another reconciliation.
     // Fence immediately before prompt; a revoked permission must be restored
     // synchronously here, not by reconcile's fire-and-forget live-session sweep.
-    const promptAgent = this.agents.get(agentId)
+    const promptAgent = this.sessionAgent(agentId, key)
     if (webchat?.runtime && promptAgent?.allowRuntimeChangesInChat !== true) {
       await this.store.clearRuntimeConfigOverrides(agentId)
       await this.applyConfiguredRuntimeSettings(
         promptAgent ?? agent,
         host,
         sessionId,
-        promptAgent ? this.selectedSessionModel(run, promptAgent) : undefined
+        promptAgent ? this.selectedSessionModel(run) : undefined
       )
     }
     return { host, modelOverride: promptAgent?.allowRuntimeChangesInChat ? override : undefined }
@@ -13667,17 +13710,6 @@ export class Daemon {
         : advertisedModel === 'default'
           ? undefined
           : advertisedModel
-    const currentAgent = this.agents.get(run.entry.agentId)
-    if (
-      run.entry.modelSelection?.configuration !== undefined &&
-      run.entry.modelSelection.configuration === modelSelectionConfiguration(currentAgent)
-    ) {
-      const selected =
-        modelOverride === undefined
-          ? (turnModel ?? currentAgent?.runtimeOverrides?.model ?? run.entry.modelSelection.model)
-          : run.entry.modelSelection.model
-      await this.store.pinDecisionModel(run.key, run.entry.modelSelection.runtime, selected)
-    }
     await this.store.setObservedModel(run.key, turnModel ?? null)
     return turnModel
   }
@@ -13853,7 +13885,7 @@ export class Daemon {
     let regenerationStartedAt: number | undefined
     let regenerationApprovalWaitBaseline = 0
     let { promptBlocks, finalCaptureInput, baseRevision, providerCheckpoint } = turn
-    const codexUsageIsPerPrompt = plan.codexUsageIsPerPrompt
+    const codexUsageIsPerPrompt = this.isCodexRuntime(entry.agentId, key)
 
     while (true) {
       if (p.plan.stageAnswer) this.discardStagedAttempt(p)
@@ -15805,7 +15837,9 @@ export class Daemon {
     acpSessionId?: string,
     opts: { breakdown?: boolean } = {}
   ): Promise<StatusBarInfo> {
-    const agent = this.agents.get(agentId)
+    const saved = pinnedDecisionTarget((await this.store.getSession(sessionKey))?.decisionModel)
+    if (saved) this.sessionRuntimes.set(sessionKey, saved)
+    const agent = this.sessionAgent(agentId, sessionKey)
     const usage = await this.store.getUsage(sessionKey)
     const outwardSessionId = acpSessionId
       ? await this.store.ensureOutwardSessionId(sessionKey, agentId, this.clock.now())
@@ -15845,6 +15879,7 @@ export class Daemon {
       ? (permissionMode?.current ?? agent?.permissionMode)
       : (agent?.permissionMode ?? permissionMode?.current)
     return {
+      runtime: agent?.runtime,
       model: model?.current ?? modelOverride ?? agent?.runtimeOverrides?.model ?? fallbackModel,
       effort: effortOverride ?? effort?.current ?? agent?.reasoningEffort,
       permissionMode: permissionModeOverride ?? currentPermissionMode,
@@ -16848,7 +16883,7 @@ export class Daemon {
     const agentId = hostKeyAgentId(key)
     const label = hostKeyLabel(key)
     if (this.hostStartGeneration.get(key) !== generation) throw new Error(`host start superseded for ${label}`)
-    const agent = this.agents.get(agentId)
+    const agent = this.sessionAgent(agentId, hostKeySessionKey(key))
     if (!agent) throw new Error(`unknown agent ${agentId}`)
     // A session-bound host launches in its session's directory, so the cold gate below prepares it before the spawn.
     const bound = hostKeySessionKey(key) === undefined ? undefined : session

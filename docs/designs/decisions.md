@@ -1655,23 +1655,31 @@ routing out of Stage 2. The temporary Console `decisions` flag also gates its
 attachment card and must be removed with the other gates at final release.
 Agent-level answer filtering is a separate future capability described below.
 
-### 10.6. Agent model selection
+### 10.6. Agent runtime and model selection
 
-An Agent can use a Decision to select its runtime model **once at the start of a
-new session**. The Decision defines the question and evaluator model; the Agent
-owns the answer-to-runtime-model mapping and its default model. This is independent
-of MCP Decision attachments and does not wait for live message triggers.
+An Agent can use a Decision to choose a **runtime and model together, once when a
+new session starts**. The reusable Decision owns its question and evaluator model.
+The Agent owns conditions, execution targets, rule order, and the fallback pair.
+This consumer is independent of MCP Decision attachments and live message triggers.
 
-The Agent create/edit Runtime section offers a fixed default or a Decision binding:
+The Agent create/edit **Runtime** section has two modes, **Fixed** and **By decision**.
+Both use the same Provider · model picker: runtimes on the left, their advertised
+models on the right, search across every runtime, and the supported Fast mode
+control at the bottom. Catalog contents come from the selected daemon, group, or
+managed pool; screenshots do not define a static model catalog. Login and missing
+installation states remain visible. A runtime with no model selector can still be
+chosen in Fixed mode, without inventing a model id.
 
 ```json
 {
+  "runtime": "claude",
   "model": "model-standard",
   "modelSelection": {
     "decisionId": "33333333-3333-4333-8333-333333333333",
     "rules": [
       {
         "when": { "type": "choice", "thresholds": { "complex": 0.7 } },
+        "runtime": "codex",
         "model": "model-capable"
       }
     ]
@@ -1679,65 +1687,82 @@ The Agent create/edit Runtime section offers a fixed default or a Decision bindi
 }
 ```
 
-`modelSelection: null` removes the binding. Every target is a model advertised by
-the Agent's selected runtime, not a different runtime. The default model remains
-required. Initial support uses runtimes that can set a session model over ACP;
-launch-only model configuration is unavailable in this selector. Runtime catalogs
-expose that capability as `modelSwitching`.
+With a binding, the existing Agent `runtime` and `model` fields are the explicit
+**Fallback provider and model**. Without it they are the Fixed pair.
+`modelSelection: null` removes the binding. Each rule needs a runtime and one of
+its advertised models. The fallback model is required while a binding exists.
+Launch-time model configuration is supported because selection precedes host start.
+Live model switching continues to follow the runtime's `modelSwitching` capability.
 
-**Input and timing.** Before the first actual prompt, the serving daemon reads the
-bound definition and evaluates it. Chat uses the opening message. A PR/MR hook,
-including a comment or review event, uses the root PR/MR description fetched through
-the code host's existing repository grant. It never substitutes the comment, diff,
-or assembled agent prompt. Other hook types keep the configured default.
+**Editor.** By decision offers saved Decisions with name, question type, evaluator,
+and a separate link to open each definition. The selected evaluator is read-only:
+it belongs to the Decision and is distinct from every execution target. Rules
+show the answer condition, target pair, move-up/down controls, and Remove. Choice
+uses a probability threshold per answer; Boolean uses the selected value; Score
+uses non-overlapping intervals. Fallback appears below the rules. Basics summarizes
+the mode as **Runtime and model · By decision · Decision name**. A retained hidden
+Decision keeps its saved rules without disclosing its question.
+
+The collapsible **Try a sample** panel is explicitly labeled **Sample data**. It
+shows illustrative Chat and PR/MR input, a typed sample answer, the matching rule,
+whether fallback was needed, and the resulting runtime/model. It applies the
+current draft's real matching function but makes no evaluator request. Changing
+the draft changes the routing explanation, not the illustrative answer.
+
+**Input and timing.** Before host startup, the serving daemon reads the bound
+definition and evaluates it. Chat uses the opening message. PR/MR hooks, including
+comments and review events, use the root PR/MR description fetched through the code
+host's existing repository grant. The input is not the comment, diff, or assembled
+agent prompt. Other hook types use fallback.
 
 The state is `{ source, currentMessage: { text }, history: [], truncated }`, where
-`source` is `chat` or `pull_request`. Text is bounded to an 8 KiB UTF-8 prefix;
-truncation is explicit. Description reads have a five-second network deadline and
-bounded response size; evaluation reuses the existing evaluator's deadline. Input
-and provider results stay daemon-local. Future agent routing may supply conversation
-history through this same state, without changing the Decision resource.
+`source` is `chat` or `pull_request`. Text is bounded to an 8 KiB UTF-8 prefix with
+explicit truncation. Description reads have a five-second deadline and bounded
+response size. Evaluation reuses the evaluator's deadline. Input and provider
+results stay daemon-local. Future agent routing can supply conversation history
+through this state without changing the Decision resource.
 
-**One result for the session.** Choice rules use per-key probability thresholds.
-If several rules pass, the rule with the highest passing probability wins; ties
-use configured rule order. Boolean values cannot appear in multiple rules. Score
-ranges cannot overlap, using the same half-open intervals as routing, with an
-inclusive upper bound at the rubric maximum. No match, invalidated rules, missing
-definition, unavailable provider, or an unadvertised target keeps the default.
+**Matching and fallback.** Choice chooses the highest passing probability; ties
+follow rule order. Boolean values cannot appear in multiple rules. Score ranges
+cannot overlap, using half-open intervals with an inclusive rubric maximum.
+No match, invalidated rules, missing definition, unavailable evaluation, or an
+unavailable/incompatible target uses the configured fallback pair. A failure to
+start that fallback remains a visible startup error.
 
-The daemon saves the selected model or fallback before prompting and keeps it for
-the logical session across later turns, native context resets, and restart/resume.
-Existing sessions that have already prompted are not evaluated retroactively.
-Changing or removing the binding affects new sessions. Explicit per-session model
-choices take priority when in-chat runtime changes are allowed; they remain separate
-from the saved Decision result. Clearing such an override restores the saved result
-when one exists, otherwise the default.
-The Agent's runtime must remain the same for a saved model to apply.
+**One pair for the session.** The choice is resolved before executor placement,
+provider credential selection, and runtime startup. Execution uses a session-owned
+host and an effective Agent configuration with the chosen pair; the shared Agent
+configuration is never changed. The saved pair survives later turns, context
+resets, and daemon restart/resume. Changing or removing an Agent binding affects
+new sessions. Sessions that have already prompted are not evaluated retroactively.
+Actual runtime/model observations continue to drive metadata, status, and usage.
 
-The chosen model is resolved before session-scoped runtime credentials and host
-startup. Existing provider-binding checks remain in force. The runtime's actual
-reported model continues to drive session metadata and usage attribution. An
-unsupported or rejected model does not fabricate a successful model switch.
+In the new-chat composer, an Agent with a binding starts on **By decision**. The
+picker's top row names the saved Decision; choosing a concrete provider/model is
+a manual override for that new session when chat runtime changes are allowed.
+Returning to By decision clears that staged pair. Merely displaying the fallback
+must not send a model override and accidentally bypass evaluation. Runtime choice
+is fixed after the session starts; existing supported in-session model, effort,
+permission, and Fast mode controls keep their current authorization boundaries.
+Manual model changes remain separate from the saved selection.
 
-**Authorization and persistence.** Agent CRUD accepts the optional binding and
-stores it with the other runtime settings; AgentSpec replicates it to the daemon.
-Adding a binding requires permission to edit the Agent and view the Decision.
-Retained bindings survive later visibility changes, as MCP attachments do. Used-by
-shows model-selection consumers, and deletion is blocked while any Agent holds a
-binding. Agent metadata reads with `purpose=model_selection` return the retained
-name and type without revealing a hidden question.
+**Authorization and persistence.** Agent CRUD stores the optional binding with
+other runtime settings; AgentSpec replicates it. Adding a binding requires Agent
+edit permission and visibility of the Decision. Retained bindings survive later
+visibility changes. Used-by includes these consumers, and deletion is blocked while
+any Agent holds the binding. Agent metadata reads with `purpose=model_selection`
+return retained name/type without revealing a hidden question.
 
-The daemon reads a definition using `decision/get` with `purpose=model_selection`,
-negotiated by `decision-model-selection-v1`. The CP authorizes the exact binding and
-serving placement before and after the read. This grant does not put the Decision
-in MCP `listDecisions` or authorize a normal tool read. Older peers retain the
-default model. A daemon-store migration adds the session's saved runtime/model
-pair; no message content or provider credentials are added to CP storage.
+`decision/get` with `purpose=model_selection`, negotiated by
+`decision-model-selection-v1`, checks the exact binding and current placement before
+and after asynchronous reads. This grants no MCP tool attachment or tool read.
+The session store saves the selected runtime/model pair; no message content or
+provider credentials are added to CP storage.
 
-The temporary Console `decisions` flag gates the new configuration field and must
-be removed at final release. Acceptance checks cover once-per-session evaluation,
-restart and fallback persistence, manual precedence, configuration changes, Choice
-ties, Score overlap, PR-description inputs, and binding authorization/revocation.
+The temporary Console `decisions` flag gates By decision configuration and must be
+removed at final release. Acceptance covers cross-runtime startup, isolation between
+conversations, once-per-session evaluation, restart and fallback persistence, manual
+precedence, rule order, score intervals, PR-description input, and binding access.
 
 ## 11. Future possibilities
 

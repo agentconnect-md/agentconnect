@@ -162,6 +162,7 @@ export type RdHelloOk = z.infer<typeof RdHelloOk>
 // rest are the session controls the old daemon↔CP webchat EVTs carried.
 //
 export const WebchatRuntimeConfig = z.object({
+  runtime: z.string().min(1).max(128).optional(),
   model: z.string().min(1).optional(),
   effort: z.string().min(1).optional(),
   permissionMode: z.string().min(1).optional(),

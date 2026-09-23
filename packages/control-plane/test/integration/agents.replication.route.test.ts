@@ -144,7 +144,10 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
     })
     expect(decision.statusCode).toBe(201)
     const decisionId = decision.json().id as string
-    const modelSelection = { decisionId, rules: [{ when: { type: 'boolean', values: [true] }, model: 'opus' }] }
+    const modelSelection = {
+      decisionId,
+      rules: [{ when: { type: 'boolean', values: [true] }, runtime: 'claude', model: 'opus' }]
+    }
 
     const patch = await app.app.inject({
       method: 'PATCH',

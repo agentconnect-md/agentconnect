@@ -116,7 +116,7 @@ describe('writeAgentSpec — merge (agent.json exists)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-write-model-decision-'))
     const modelSelection = {
       decisionId: '33333333-3333-4333-8333-333333333333',
-      rules: [{ when: { type: 'boolean', values: [true] }, model: 'model-capable' }]
+      rules: [{ when: { type: 'boolean', values: [true] }, runtime: 'claude', model: 'model-capable' }]
     }
     const file = seedAgent(dir, 'bot-a', { id: 'bot-a', name: 'bot-a', runtime: 'claude', modelSelection })
     writeAgentSpec(dir, 'bot-a', baseSpec(), deps)

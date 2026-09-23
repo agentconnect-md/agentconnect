@@ -67,7 +67,7 @@ describe('Decision configuration reads for agent tools', () => {
       decisionIds: [],
       modelSelection: {
         decisionId: decision.id,
-        rules: [{ when: { type: 'boolean' as const, values: [true] }, model: 'model-a' }]
+        rules: [{ when: { type: 'boolean' as const, values: [true] }, runtime: 'claude', model: 'model-a' }]
       }
     }
     agent.mockResolvedValue(bound)

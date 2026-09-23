@@ -17,7 +17,7 @@ const decision: DecisionToolDefinition = {
 }
 const selection: AgentModelSelection = {
   decisionId: decision.id,
-  rules: [{ when: { type: 'boolean', values: [true] }, model: 'model-capable' }]
+  rules: [{ when: { type: 'boolean', values: [true] }, runtime: 'claude', model: 'model-capable' }]
 }
 afterEach(() => vi.unstubAllGlobals())
 
@@ -36,7 +36,8 @@ describe('session model evaluation', () => {
     const input = {
       agentId: 'example-agent',
       selection,
-      models: ['model-capable'],
+      supported: (target: { runtime: string; model: string }) =>
+        target.runtime === 'claude' && target.model === 'model-capable',
       signal: new AbortController().signal,
       evaluationId: 'example-evaluation',
       current,
@@ -44,8 +45,8 @@ describe('session model evaluation', () => {
       state: async () => state,
       evaluate
     }
-    expect(await evaluateSessionModel(input)).toBe('model-capable')
-    expect(await evaluateSessionModel({ ...input, models: [] })).toBeUndefined()
+    expect(await evaluateSessionModel(input)).toEqual({ runtime: 'claude', model: 'model-capable' })
+    expect(await evaluateSessionModel({ ...input, supported: () => false })).toBeUndefined()
     current.mockReturnValueOnce(true).mockReturnValueOnce(true).mockReturnValueOnce(true).mockReturnValueOnce(false)
     expect(await evaluateSessionModel(input)).toBeUndefined()
     expect(
@@ -56,7 +57,7 @@ describe('session model evaluation', () => {
         ...input,
         selection: {
           ...selection,
-          rules: [{ when: { type: 'choice', thresholds: { unknown: 0.5 } }, model: 'model-capable' }]
+          rules: [{ when: { type: 'choice', thresholds: { unknown: 0.5 } }, runtime: 'claude', model: 'model-capable' }]
         }
       })
     ).toBeUndefined()

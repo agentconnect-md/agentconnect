@@ -83,7 +83,7 @@ describe('Decision management and standalone preview', () => {
     ).json().id
     const modelSelection = {
       decisionId: id,
-      rules: [{ when: { type: 'boolean', values: [true] }, model: 'model-capable' }]
+      rules: [{ when: { type: 'boolean', values: [true] }, runtime: 'claude', model: 'model-capable' }]
     }
     const patch = (app: HttpApp, payload: object) => app.app.inject({ method: 'PATCH', url, payload })
     expect((await patch(editor, { model: 'model-standard', modelSelection })).statusCode).toBe(403)
@@ -94,7 +94,7 @@ describe('Decision management and standalone preview', () => {
           model: 'model-standard',
           modelSelection: {
             ...modelSelection,
-            rules: [{ when: { type: 'score', min: 0, max: 1 }, model: 'model-capable' }]
+            rules: [{ when: { type: 'score', min: 0, max: 1 }, runtime: 'claude', model: 'model-capable' }]
           }
         })
       ).statusCode

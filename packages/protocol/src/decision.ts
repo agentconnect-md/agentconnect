@@ -113,10 +113,13 @@ export type DecisionCondition = z.infer<typeof DecisionCondition>
 export const ChannelDecisionGate = z.strictObject({ type: z.literal('gate'), decisionId: Id, when: DecisionCondition })
 export type ChannelDecisionGate = z.infer<typeof ChannelDecisionGate>
 
+export const DecisionRuntimeTarget = z.strictObject({ runtime: Text.max(128), model: Text.max(256) })
+export type DecisionRuntimeTarget = z.infer<typeof DecisionRuntimeTarget>
+
 export const AgentModelSelection = z.strictObject({
   decisionId: z.string().uuid(),
   rules: z
-    .array(z.strictObject({ when: DecisionCondition, model: Text.max(256) }))
+    .array(DecisionRuntimeTarget.extend({ when: DecisionCondition }))
     .min(1)
     .max(32)
 })
@@ -301,22 +304,23 @@ export function decisionModelSelectionIssues(
 }
 
 // A model consumer selects one winner; equal choice probabilities retain the configured rule order.
-export function selectDecisionModel(
+export function selectDecisionTarget(
   question: DecisionQuestion,
   selection: AgentModelSelection,
   answer: DecisionAnswer
-): string | undefined {
+): DecisionRuntimeTarget | undefined {
   requireValid(decisionModelSelectionIssues(question, selection))
   parseDecisionAnswer(question, answer)
-  let selected: { model: string; probability: number } | undefined
+  let selected: { target: DecisionRuntimeTarget; probability: number } | undefined
   for (const rule of selection.rules) {
     const match = matchDecisionCondition(question, rule.when, answer)
     if (!match.matched) continue
     const probability =
       answer.type === 'choice' ? Math.max(...match.matchedKeys.map((key) => answer.probabilities[key]!)) : 1
-    if (!selected || probability > selected.probability) selected = { model: rule.model, probability }
+    if (!selected || probability > selected.probability)
+      selected = { target: { runtime: rule.runtime, model: rule.model }, probability }
   }
-  return selected?.model
+  return selected?.target
 }
 
 export function parseDecisionAnswer(question: DecisionQuestion, input: unknown): DecisionAnswer {
