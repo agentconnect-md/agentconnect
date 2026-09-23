@@ -617,6 +617,62 @@ describe('SessionManager', () => {
     await (await store).close()
   })
 
+  // decisions.md §8.4 / message-intake.md §5.2: a By decision admission's background and evidence blocks.
+  it('places background before thread context and evidence after the trigger, outside recall, identically each time', async () => {
+    const evidence = {
+      verdict: { seq: 0, subject: 'bot-a' },
+      decisionId: 'd-1',
+      question: { type: 'boolean' as const, instructions: 'Is help needed?', criteria: { true: 'Yes', false: 'No' } },
+      condition: { type: 'boolean' as const, values: [true] },
+      result: {
+        status: 'answered' as const,
+        answer: { type: 'boolean' as const, value: true, probability: 0.9 },
+        matchedKeys: []
+      },
+      requestedModel: 'jev-1.13.0',
+      actualModel: 'jev-1.13.0',
+      evaluatedMessageId: '100.3',
+      snapshotSeq: 0,
+      partial: { partial: false, reasons: [], omittedMessages: 0 }
+    }
+    const run = async () => {
+      const store = await newStore()
+      const row = async (ts: string, thread: string, sender: string, text: string): Promise<number> => {
+        await store.appendTranscript({ channel: 'C1', thread, ts, sender, kind: 'text', text, orgAgentId: 'bot-a' })
+        return (await store.channelRecordRef('C1', ts, 'bot-a'))!.seq
+      }
+      const background = await row('50.1', '50.1', 'U2', 'elsewhere in the channel')
+      await row('100.2', '100.1', 'U4', 'earlier in this thread')
+      const current = await row('100.3', '100.1', 'U1', 'help please')
+      const sm = new SessionManager({ store, hostFor: async () => fakeHost(), agentById: () => agent, memory })
+      const result = await sm.handle(
+        'bot-a',
+        msg({
+          ts: '100.3',
+          text: 'help please',
+          channelIntake: { seq: current, backgroundSeqs: [background], evidence: { ...evidence, snapshotSeq: current } }
+        })
+      )
+      await store.close()
+      return result
+    }
+    const first = await run()
+    const texts = first.blocks.map((b: any) => b.text as string)
+    const at = (prefix: string) => texts.findIndex((t) => t.startsWith(prefix))
+    const background = at('(Background conversation')
+    const context = texts.findIndex((t) => t.includes('[U4] earlier in this thread'))
+    const trigger = texts.findIndex((t) => t.startsWith('[U1] help please'))
+    const decision = at('(Decision evidence')
+    expect(background).toBeGreaterThanOrEqual(0)
+    expect(texts[background]).toContain('[U2] (thread 50.1) elsewhere in the channel')
+    expect(background).toBeLessThan(context)
+    expect(context).toBeLessThan(trigger)
+    expect(decision).toBe(trigger + 1)
+    expect(first.captureInput).not.toContain('Background conversation')
+    expect(first.captureInput).not.toContain('Decision evidence')
+    expect((await run()).blocks).toEqual(first.blocks)
+  })
+
   it('fails open when recall errors and never exposes a plugin error body in the prompt', async () => {
     const store = await newStore()
     const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any

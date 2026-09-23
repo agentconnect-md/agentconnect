@@ -186,7 +186,26 @@ export const canonicalColumns = [
   'windowStartedAt',
   'workspaceIncarnation',
   'workspaceIsolation',
-  'writeMarker'
+  'writeMarker',
+  'decisionId',
+  'unavailableReason',
+  'cancelReason',
+  'configJson',
+  'inputJson',
+  'answerJson',
+  'deliveryJson',
+  'suppliedSeqsJson',
+  'requestedModel',
+  'actualModel',
+  'latencyMs',
+  'inputTokens',
+  'outputTokens',
+  'deadlineAt',
+  'ownerFence',
+  'settledAt',
+  'finishedAt',
+  'bodiesStrippedAt',
+  'releasedSeq'
 ] as const
 
 /** Lower-cased column name → the camelCase spelling every row shape expects back. */

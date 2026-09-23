@@ -90,12 +90,16 @@ session by the thread, `append` still keys it by the per-agent reservation of
 channel-session-mode.md §3.3. What changes is that the transcript no longer has to be laid out along
 it.
 
-**Stage 1 keeps a coordinate disjunct, deliberately.** Until §5.2's admitted-history / background
-split exists, the only thing that feeds a `createNew` session the §8.5 cross-agent catch-up is the
-physical-thread partition — a peer's replies carry the _peer's_ admission, and "not admitted at all"
-is not the set they fall in. So the Stage 1 session scope is `thread = <coordinate> OR admitted into
-<sessionKey>`: exact for `append` (its coordinate is no thread) and unchanged-from-today for
-`createNew`. The disjunct is removed with the Stage 3 background block, which is what replaces it.
+**The session scope keeps a coordinate disjunct, deliberately.** The only thing that feeds a
+`createNew` session the §8.5 cross-agent catch-up is the physical-thread partition — a peer's replies
+carry the _peer's_ admission, and "not admitted at all" is not the set they fall in. So the session
+scope is `thread = <coordinate> OR admitted into <sessionKey>`: exact for `append` (its coordinate is
+no thread) and unchanged-from-today for `createNew`. Stage 3's background block does not replace it.
+Background is chosen once per admission, before the turn starts, while a peer's reply in the thread
+usually lands _during_ the turn and reaches it only through the turn-final context refresh and the
+next turn's gap replay, both of which read this scope; non-Slack platforms have no provider backfill
+to fall back on either. The two sets are kept disjoint instead: §5.2's background excludes exactly
+the `thread = <coordinate>` rows, so a row is never both history and background.
 
 **The two coordinates of channel-session-mode.md §3.1 stay split, and gain a third reader.** The
 delivery coordinate (`msg.thread`) says where an answer posts; the session coordinate says which
@@ -270,9 +274,10 @@ or terminally rejected, not when their turns finish (decisions.md §7.4).
 
 ### 5.2 What the admission gives the agent
 
-The prompt for an admitted message is built from the channel record: rows admitted into this
-session are its history; rows in this conversation since the session's last delivered `seq` that are
-_not_ admitted are **background** (decisions.md §4 "Supplying an activated agent"), included once and
+The prompt for an admitted message is built from the channel record: the session's history is its
+§3 scope — rows admitted into this session, plus, for `createNew`, the rows of its physical thread;
+rows in this conversation outside that scope since the session's last admitted `seq` are
+**background** (decisions.md §4 "Supplying an activated agent"), included once and
 marked as such; the `decision_verdict`, if any, is the **evidence** block of §8.4. Because there is
 one record, the "subtract stable message IDs already delivered" step of §8.4 is a `NOT EXISTS` on
 `transcript_recipient` rather than a reconciliation between two stores.

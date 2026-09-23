@@ -107,3 +107,19 @@ export function threadKeyForUpdate(platform: string, channel: string, thread: st
 export function threadKeyForPost(platform: string, channel: string, ts: string, isDm = false): string {
   return STRATEGIES.get(platform)?.key(channel, ts, isDm) ?? ts
 }
+
+// Which root row's ts a physical thread names, where the platform's model makes it one; absent means "no root row to look for".
+const THREAD_ROOTS = new Map<string, (thread: string, isDm: boolean) => string | undefined>([
+  ['slack', (thread) => thread],
+  ['feishu', (thread, isDm) => (isDm ? undefined : thread)],
+  ['telegram', (thread) => /^tg:(\d+)$/.exec(thread)?.[1]]
+])
+
+/** How this platform's physical threads name their root row's ts, or `undefined` for an unregistered platform. */
+export function threadRootResolver(
+  platform: string,
+  isDm = false
+): ((thread: string) => string | undefined) | undefined {
+  const root = THREAD_ROOTS.get(platform)
+  return root ? (thread) => root(thread, isDm) : undefined
+}

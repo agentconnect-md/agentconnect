@@ -48,8 +48,16 @@ export function steeredTranscriptText(msg: NormalizedMessage): string {
 
 /** What the running turn receives: the same `[sender] text` shape as a trigger prompt, with the
  *  attachment marker the agent needs to forward a file by name. Attachment bytes are not sent. */
-export function steerPromptBlocks(msg: NormalizedMessage): ContentBlock[] {
+export function steerPromptBlocks(
+  msg: NormalizedMessage,
+  intake: { background?: string; evidence?: string } = {}
+): ContentBlock[] {
   const text = `[${msg.sender.id}] ${msg.turnBody?.prompt ?? msg.text}`
   const mention = attachmentMention(msg.attachments)
-  return [{ type: 'text', text: mention ? `${text}\n${mention}` : text }]
+  // A By decision delivery carries its background before and its evidence after, as a trigger prompt does.
+  return [
+    ...(intake.background ? [{ type: 'text' as const, text: intake.background }] : []),
+    { type: 'text', text: mention ? `${text}\n${mention}` : text },
+    ...(intake.evidence ? [{ type: 'text' as const, text: intake.evidence }] : [])
+  ]
 }

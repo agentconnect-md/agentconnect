@@ -40,6 +40,38 @@ async function sharedMembers(first: string, second: string): Promise<[LocalStore
 
 const solo = async (): Promise<LocalStore> => await openTestStore({ database: pg ? undefined : memoryStoreDatabase() })
 
+/** One terminal and one pending decision verdict, both stamped `at`; kept apart so the per-rule counts elsewhere hold. */
+async function seedDecisionVerdicts(s: LocalStore, agentId: string, at: number): Promise<void> {
+  for (const ts of ['1', '2']) {
+    await s.appendTranscript({
+      channel: 'C-dv',
+      thread: ts,
+      ts,
+      sender: 'U1',
+      kind: 'text',
+      text: ts,
+      orgAgentId: agentId
+    })
+    const { seq, orgId } = (await s.channelRecordRef('C-dv', ts, agentId))!
+    await s.reserveDecisionVerdict({
+      seq,
+      subject: agentId,
+      orgId,
+      channel: 'C-dv',
+      agentId,
+      integrationId: 'int-dv',
+      decisionId: 'd-1',
+      configJson: '{}',
+      deliveryJson: '{}',
+      requestedModel: 'jev-1.13.0',
+      deadlineAt: at + 5_000,
+      ownerFence: 'member-a:boot',
+      createdAt: at
+    })
+    if (ts === '1') await s.finishDecisionVerdict(seq, agentId, null, 'canceled', 'stop', at)
+  }
+}
+
 /** One row in every table the rule table names, all stamped `at`. */
 async function seedEveryTable(s: LocalStore, agentId: string, tag: string, at: number, owner: string): Promise<void> {
   const hookId = `hook-${tag}`
@@ -173,6 +205,7 @@ describe('store retention rule table', () => {
     const s = await solo()
     await seedEveryTable(s, LIVE, 'fresh', AT, 'member-a')
     await s.putMemoryEntryContinuation(LIVE, '{}', AT + 30 * 60 * 1000)
+    await seedDecisionVerdicts(s, LIVE, AT)
 
     const { instance } = sweeper(s, AT + 1_000)
     const summary = await instance.sweep()

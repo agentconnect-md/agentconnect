@@ -44,8 +44,10 @@ export interface EvaluationDispatchOptions {
   requireDurable?: boolean
   /** Stable target-scoped inbox id for one physical event delivered to several local agents. */
   deliveryId?: string
-  /** Synchronous admission barrier, settled before any turn can start. */
-  onAdmission?: (result: { accepted: boolean; reason?: string; duplicate?: boolean }) => void
+  /** A permanent receipt minted with the admission row; an existing one makes the delivery a duplicate. */
+  receiptId?: string
+  /** Admission barrier, settled before any turn can start. */
+  onAdmission?: (result: { accepted: boolean; reason?: string; duplicate?: boolean }) => void | Promise<void>
 }
 
 /** Exactly what the evaluation hooks touch on the Daemon — nothing wider. */
@@ -202,8 +204,8 @@ export class DaemonEvaluationHooks {
      *  agent-authored platform mention, whose already-computed hop depth must reach the
      *  admitted turn (§4.1). Absent for ordinary human ingress. */
     callMeta?: CallMeta,
-    /** Extra dispatch options for the caller's delivery contract. */
-    dispatchOpts?: Omit<EvaluationDispatchOptions, 'onAdmission'>
+    /** Extra dispatch options; a caller's `onAdmission` runs after the handle's own settlement. */
+    dispatchOpts?: EvaluationDispatchOptions
   ): { handle: DeliveryHandle; turn: Promise<string | null> } {
     const turnId = stableTurnId(agentId, msg)
     let settleAdmission!: (admission: DeliveryAdmission) => void
@@ -217,6 +219,7 @@ export class DaemonEvaluationHooks {
         } else {
           settleAdmission({ admitted: false, reason: deliveryRejectionReason(result) })
         }
+        return dispatchOpts?.onAdmission?.(result)
       }
     })
     const completion: Promise<DeliveryCompletion> = turn.then(

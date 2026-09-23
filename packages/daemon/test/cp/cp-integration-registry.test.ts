@@ -38,6 +38,15 @@ describe('CpIntegrationRegistry (memory-only)', () => {
     expect(reg.forAgent(A1)[0]).toMatchObject({ id: 'i1', origin: 'cp', config: { botToken: 'xoxb-two' } })
   })
 
+  it('reports convergence only once a full roster arrived, not on a single upsert', () => {
+    const { reg } = makeReg()
+    expect(reg.hasConverged()).toBe(false)
+    reg.upsert(integration('i1'))
+    expect(reg.hasConverged()).toBe(false)
+    reg.converge([])
+    expect(reg.hasConverged()).toBe(true)
+  })
+
   it('keeps agent ownership, removes by id, and exact-prunes one agent only', () => {
     const { reg } = makeReg()
     reg.converge([integration('i1'), integration('i2'), integration('i3', A2)])

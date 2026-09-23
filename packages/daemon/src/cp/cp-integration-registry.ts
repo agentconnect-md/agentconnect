@@ -60,6 +60,7 @@ interface Entry {
 
 export class CpIntegrationRegistry {
   private readonly entries = new Map<string, Entry>()
+  private converged = false
 
   constructor(
     _agentsDir: string,
@@ -91,7 +92,13 @@ export class CpIntegrationRegistry {
       if (integration) this.apply(spec.integrationId, { agentId: spec.agentId, integration })
       else this.deps.warn?.(`cp: integration ${spec.integrationId} carried no usable platform payload — ignored`)
     }
+    this.converged = true
     this.onChange()
+  }
+
+  /** True once a full roster arrived, so an integration absent here is really gone rather than unsynced. */
+  hasConverged(): boolean {
+    return this.converged
   }
 
   // Validates the new bundle once (logging disabled bindings) before it replaces the old one.

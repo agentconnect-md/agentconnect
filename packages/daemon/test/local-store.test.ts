@@ -3650,6 +3650,45 @@ describe('the observation floor (message-intake.md §8 rule 2)', () => {
   })
 })
 
+// message-intake.md §4.3: v25 adds the verdict and release tables, created by the CREATE block on both paths.
+describe.skipIf(pg)('the v24 → v25 decision tables', () => {
+  const userVersion = (path: string): number => {
+    const db = new DatabaseSync(path)
+    const v = (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
+    db.close()
+    return v
+  }
+  const tables = (path: string): string[] => {
+    const db = new DatabaseSync(path)
+    const rows = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'decision_%' ORDER BY name")
+      .all() as { name: string }[]
+    db.close()
+    return rows.map((r) => r.name)
+  }
+
+  it('creates both tables on a fresh store and stamps the current version', async () => {
+    expect(SCHEMA_VERSION).toBe(25)
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v25-')), 'local.sqlite')
+    await (await LocalStore.open(path)).close()
+    expect(tables(path)).toEqual(['decision_release', 'decision_verdict'])
+    expect(userVersion(path)).toBe(SCHEMA_VERSION)
+  })
+
+  it('adds both tables to a v24 store', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v24-')), 'local.sqlite')
+    await (await LocalStore.open(path)).close()
+    const old = new DatabaseSync(path)
+    old.exec('DROP TABLE decision_verdict; DROP TABLE decision_release; PRAGMA user_version = 24')
+    old.close()
+    const upgraded = await LocalStore.open(path)
+    expect(await upgraded.listPendingDecisionVerdicts()).toEqual([])
+    await upgraded.close()
+    expect(tables(path)).toEqual(['decision_release', 'decision_verdict'])
+    expect(userVersion(path)).toBe(SCHEMA_VERSION)
+  })
+})
+
 // message-intake.md §10. SQLite-only fixture building (raw v23 DDL), but every assertion below
 // is about the MIGRATED store, which the `store-postgres` project exercises through its own arm.
 describe.skipIf(pg)('the v23 → v24 channel-record migration', () => {

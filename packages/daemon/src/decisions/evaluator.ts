@@ -18,7 +18,25 @@ export interface DecisionEvaluationInput {
   evaluationId: string
   decision: Pick<DecisionDraft, 'providerId' | 'model' | 'question'>
   state: Record<string, unknown>
+  /** Epoch ms the whole decision stage must finish by; it shortens the evaluator's own timeout. */
+  deadlineAt?: number
 }
+
+/** The exact request body sent to the provider; state building measures its byte budget against it. */
+export function decisionRequestBody(input: {
+  decision: Pick<DecisionDraft, 'model' | 'question'>
+  state: Record<string, unknown>
+}): string {
+  const question = DecisionQuestion.parse(input.decision.question)
+  return JSON.stringify({
+    model: input.decision.model,
+    state: input.state,
+    questions: { decision: { ...question, type: question.type === 'boolean' ? 'noul' : question.type } }
+  })
+}
+
+/** The provider's serialized input cap (decisions.md §7.3). */
+export const DECISION_REQUEST_MAX_BYTES = 32 * 1024
 
 export interface DecisionEvaluatorDeps {
   orgForAgent(agentId: string): string | undefined
@@ -48,15 +66,22 @@ export class DecisionEvaluator {
   }
 
   async evaluate(input: DecisionEvaluationInput, cancellation?: AbortSignal): Promise<DecisionEvaluation> {
-    const signal = AbortSignal.any([
-      this.shutdown.signal,
-      AbortSignal.timeout(this.deps.timeoutMs ?? 5_000),
-      ...(cancellation ? [cancellation] : [])
-    ])
-    signal.throwIfAborted()
     const unavailable = (
       reason: Extract<DecisionEvaluation, { status: 'unavailable' }>['reason']
     ): DecisionEvaluation => ({ status: 'unavailable', reason })
+    const now = this.deps.now?.() ?? Date.now()
+    const timeoutMs = Math.min(
+      this.deps.timeoutMs ?? 5_000,
+      input.deadlineAt === undefined ? Number.POSITIVE_INFINITY : input.deadlineAt - now
+    )
+    this.shutdown.signal.throwIfAborted()
+    cancellation?.throwIfAborted()
+    if (timeoutMs <= 0) return unavailable('timeout')
+    const signal = AbortSignal.any([
+      this.shutdown.signal,
+      AbortSignal.timeout(timeoutMs),
+      ...(cancellation ? [cancellation] : [])
+    ])
     const { agentId, evaluationId, decision } = input
     const orgId = this.deps.orgForAgent(agentId)
     if (!orgId) return unavailable('credentials')
@@ -67,12 +92,8 @@ export class DecisionEvaluator {
       if (!supportsDecision(decision)) return unavailable('unsupported_input')
       if (!evaluationId.trim() || evaluationId.length > 128 || !decision.model.trim() || decision.model.length > 128)
         return unavailable('unsupported_input')
-      body = JSON.stringify({
-        model: decision.model,
-        state: input.state,
-        questions: { decision: { ...question, type: question.type === 'boolean' ? 'noul' : question.type } }
-      })
-      if (Buffer.byteLength(body, 'utf8') > 32 * 1024) return unavailable('unsupported_input')
+      body = decisionRequestBody(input)
+      if (Buffer.byteLength(body, 'utf8') > DECISION_REQUEST_MAX_BYTES) return unavailable('unsupported_input')
     } catch {
       return unavailable('unsupported_input')
     }
