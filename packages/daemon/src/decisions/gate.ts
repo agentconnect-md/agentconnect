@@ -13,6 +13,7 @@ import {
   gateFingerprint,
   resolveDecisionBundle,
   type FrozenGateConfig,
+  type ResolvedDecisionBundle,
   type ResolvedDecisionGate
 } from './bundle.js'
 import type { DecisionEvaluationInput } from './evaluator.js'
@@ -117,6 +118,14 @@ interface Waiter {
   completion: (value: DeliveryCompletion) => void
 }
 
+/** A verdict between its pre-release recheck and dispatch; `refused` without a reason leaves the row for later. */
+interface ReleaseToken {
+  lane: Lane
+  integrationId: string
+  config: FrozenGateConfig
+  refused?: { reason?: string }
+}
+
 const verdictKey = (seq: number, subject: string): string => `${seq}:${subject}`
 const laneId = (lane: Lane): string => `${lane.orgId}\u0000${lane.channel}\u0000${lane.subject}`
 const conversationId = (orgId: string, channel: string): string => `${orgId}\u0000${channel}`
@@ -139,7 +148,10 @@ export class DecisionGate {
   private readonly lanes = new Map<string, Lane>()
   private readonly draining = new Map<string, Promise<void>>()
   private readonly redrain = new Set<string>()
-  private readonly releasing = new Map<string, { lane: Lane; canceled: boolean }>()
+  private readonly releasing = new Map<string, ReleaseToken>()
+  // The latest bundle each integration applied (null once removed); the host's view lags it by a reconcile.
+  private readonly applied = new Map<string, ResolvedDecisionBundle | null>()
+  private readonly intake = new Map<string, Promise<GateOutcome>>()
   private readonly openIngressSeqs = new Map<string, Map<number, number>>()
   private readonly progress = new Set<() => void>()
   private readonly tracked = new Set<Promise<unknown>>()
@@ -174,6 +186,29 @@ export class DecisionGate {
   /** Step 5 for one bound, enabled target: participation admits, otherwise a verdict is reserved and owned here. */
   async candidate(c: DecisionCandidate): Promise<GateOutcome> {
     if (this.closed) return { kind: 'held', reason: 'closed' }
+    const key = verdictKey(c.record.seq, c.agentId)
+    // Single-flight per verdict key: a concurrent duplicate joins the owner and never reserves on its own.
+    const owner = this.intake.get(key)
+    if (owner) return await this.joinIntake(key, owner)
+    const run = this.intakeOnce(key, c)
+    this.intake.set(key, run)
+    try {
+      return await run
+    } finally {
+      if (this.intake.get(key) === run) this.intake.delete(key)
+    }
+  }
+
+  private async joinIntake(key: string, owner: Promise<GateOutcome>): Promise<GateOutcome> {
+    // Registered before the owner can settle, so its finish always reaches this waiter.
+    const joined = this.waiterFor(key)
+    const outcome = await owner.catch((): GateOutcome => ({ kind: 'held', reason: 'record_unavailable' }))
+    if (outcome.kind === 'pending') return { kind: 'pending', handle: joined.handle }
+    joined.drop()
+    return outcome
+  }
+
+  private async intakeOnce(key: string, c: DecisionCandidate): Promise<GateOutcome> {
     const store = this.host.store()
     const { seq } = c.record
     const lane: Lane = { orgId: c.record.orgId, channel: c.record.transcriptChannel, subject: c.agentId }
@@ -185,11 +220,11 @@ export class DecisionGate {
       return { kind: 'held', reason: 'record_unavailable' }
     }
     if (existing) return this.joinExisting(existing, lane)
-    if (await this.host.participates(c.agentId, c.target).catch(() => false)) {
+    // A mention is not participation (message-intake.md §5 step 5): an explicit address is always judged.
+    if (c.target.trigger !== 'mention' && (await this.host.participates(c.agentId, c.target).catch(() => false))) {
       await this.waitBehindLane(lane, seq, this.limits.participationWaitMs)
       return { kind: 'admit' }
     }
-    const key = verdictKey(seq, c.agentId)
     // Registered BEFORE the reserve commits, so a concurrent drain never mistakes the new row for an orphan.
     const task: Task = { lane, controller: new AbortController() }
     this.tasks.set(key, task)
@@ -213,12 +248,12 @@ export class DecisionGate {
         createdAt: now
       })
     } catch (err) {
-      this.tasks.delete(key)
+      if (this.tasks.get(key) === task) this.tasks.delete(key)
       this.host.log.warn(`decision: verdict reservation failed: ${(err as Error).message}`)
       return { kind: 'held', reason: 'record_unavailable' }
     }
     if (!reserved.created) {
-      this.tasks.delete(key)
+      if (this.tasks.get(key) === task) this.tasks.delete(key)
       if (!reserved.verdict) return { kind: 'held', reason: 'record_unavailable' }
       return this.joinExisting(reserved.verdict, lane)
     }
@@ -236,7 +271,7 @@ export class DecisionGate {
       task.controller.abort(reason)
     }
     for (const release of this.releasing.values())
-      if (release.lane.subject === agentId && release.lane.channel === transcriptChannel) release.canceled = true
+      if (release.lane.subject === agentId && release.lane.channel === transcriptChannel) release.refused ??= { reason }
     const canceled = await this.host
       .store()
       .cancelPendingDecisionVerdicts({ subject: agentId, channel: transcriptChannel }, reason, this.host.now())
@@ -248,8 +283,17 @@ export class DecisionGate {
   /** A relevant binding/definition/model/provider change cancels, never reinterprets (decisions.md §8.3). */
   async onConfigApplied(integrationId: string, _previous?: DecisionBundle, next?: DecisionBundle): Promise<void> {
     const store = this.host.store()
+    const bundle = next ? resolveDecisionBundle(next) : undefined
+    this.applied.set(integrationId, bundle ?? null)
+    // Synchronously, before any await: a release already past its recheck must not reach dispatch.
+    for (const release of this.releasing.values()) {
+      if (release.integrationId !== integrationId) continue
+      if (!bundle) release.refused ??= store.isShared ? {} : { reason: 'integration_removed' }
+      else if (!this.sameGate(bundle.gates.get(release.config.binding.channel), release.config))
+        release.refused ??= { reason: 'config_changed' }
+    }
     const pending = await store.listPendingDecisionVerdicts({ integrationId })
-    if (!next) {
+    if (!bundle) {
       // On a shared store the new owner and retention reclaim the rows; only this process's work stops.
       for (const row of pending)
         this.abortTask(verdictKey(row.seq, row.subject), store.isShared ? 'ownership' : 'integration_removed')
@@ -258,11 +302,9 @@ export class DecisionGate {
       await store.purgeDecisionVerdicts({ integrationId })
       return
     }
-    const bundle = resolveDecisionBundle(next)
     for (const row of pending) {
       const config = parseJson<FrozenGateConfig>(row.configJson)
-      const gate = config ? bundle.gates.get(config.binding.channel) : undefined
-      if (gate && config && gateFingerprint(gate) === config.fingerprint) continue
+      if (config && this.sameGate(bundle.gates.get(config.binding.channel), config)) continue
       this.abortTask(verdictKey(row.seq, row.subject), 'config_changed')
       await this.cancelRow(row, 'config_changed')
     }
@@ -308,6 +350,10 @@ export class DecisionGate {
   /** Settles once no evaluation, drain, or release is in flight (tests). */
   async idle(): Promise<void> {
     while (this.tracked.size > 0) await Promise.allSettled([...this.tracked])
+  }
+
+  private sameGate(gate: ResolvedDecisionGate | undefined, config: FrozenGateConfig): boolean {
+    return gate !== undefined && gateFingerprint(gate) === config.fingerprint
   }
 
   private joinExisting(row: DecisionVerdictRow, lane: Lane): GateOutcome {
@@ -514,9 +560,11 @@ export class DecisionGate {
   private async recoverVerdict(row: DecisionVerdictRow): Promise<boolean> {
     const store = this.host.store()
     const fence = this.host.ownerFence()
+    const key = verdictKey(row.seq, row.subject)
+    // A live in-process evaluation is never an orphan; its own settle decides the verdict.
+    if (this.tasks.has(key)) return false
     if (row.ownerFence !== fence && !(await store.adoptDecisionVerdict(row.seq, row.subject, row.ownerFence, fence)))
       return false
-    const key = verdictKey(row.seq, row.subject)
     if (await store.hasInbox(decisionReceiptId(row.seq, row.subject))) {
       if (await store.finishDecisionVerdict(row.seq, row.subject, fence, 'admitted', null, this.host.now()))
         this.finished(key, 'admitted', 'recovered')
@@ -562,31 +610,30 @@ export class DecisionGate {
       await this.finish(head, 'canceled', 'delivery_missing')
       return 'next'
     }
-    const current = this.host.currentGate(head.agentId, head.integrationId, config.binding.channel)
-    if (current.status === 'unknown' && !this.host.configConverged()) return 'wait'
-    const cancel =
-      current.status === 'unknown'
-        ? 'integration_removed'
-        : current.status === 'unbound'
-          ? 'binding_removed'
-          : current.status === 'disabled'
-            ? current.reason
-            : gateFingerprint(current.gate) !== config.fingerprint || current.sessionMode !== config.sessionMode
-              ? 'config_changed'
-              : undefined
-    if (cancel) {
-      await this.finish(head, 'canceled', cancel)
+    const stale = this.staleGate(head, config)
+    if (stale === 'wait') return 'wait'
+    if (stale) {
+      await this.finish(head, 'canceled', stale)
       return 'next'
     }
-    const token = { lane, canceled: false }
+    const token: ReleaseToken = { lane, integrationId: head.integrationId, config }
     this.releasing.set(key, token)
+    // The final dispatch fence: a cancel, a close, or a gate that changed since the recheck above refuses.
+    const beforeDispatch = (): boolean => {
+      if (this.closed) return false
+      if (!token.refused) {
+        const now = this.staleGate(head, config)
+        if (now) token.refused = now === 'wait' ? {} : { reason: now }
+      }
+      return !token.refused
+    }
     let result: DecisionReleaseResult
     try {
       result = await this.host.release({
         verdict: head,
         delivery,
         evidence: this.evidenceFor(head, config),
-        beforeDispatch: () => !token.canceled && !this.closed
+        beforeDispatch
       })
     } finally {
       this.releasing.delete(key)
@@ -596,9 +643,26 @@ export class DecisionGate {
         this.finished(key, 'admitted', 'released', result.handle)
       return 'next'
     }
-    if (result.recoverable) return 'wait'
-    await this.finish(head, 'canceled', token.canceled ? 'stop' : `admission:${result.reason}`)
+    if (token.refused?.reason) {
+      await this.finish(head, 'canceled', token.refused.reason)
+      return 'next'
+    }
+    if (token.refused || result.recoverable) return 'wait'
+    await this.finish(head, 'canceled', `admission:${result.reason}`)
     return 'next'
+  }
+
+  /** The cancel reason when the applied gate no longer matches the frozen one, or 'wait' while config converges. */
+  private staleGate(head: DecisionVerdictRow, config: FrozenGateConfig): string | 'wait' | undefined {
+    const applied = this.applied.get(head.integrationId)
+    if (applied === null) return this.host.store().isShared ? 'wait' : 'integration_removed'
+    if (applied && !this.sameGate(applied.gates.get(config.binding.channel), config)) return 'config_changed'
+    const current = this.host.currentGate(head.agentId, head.integrationId, config.binding.channel)
+    if (current.status === 'unknown') return this.host.configConverged() ? 'integration_removed' : 'wait'
+    if (current.status === 'unbound') return 'binding_removed'
+    if (current.status === 'disabled') return current.reason
+    if (!this.sameGate(current.gate, config) || current.sessionMode !== config.sessionMode) return 'config_changed'
+    return undefined
   }
 
   private async finish(
@@ -705,14 +769,24 @@ export class DecisionGate {
   }
 
   private handleFor(key: string): DeliveryHandle {
+    return this.waiterFor(key).handle
+  }
+
+  private waiterFor(key: string): { handle: DeliveryHandle; drop: () => void } {
     let admission!: (value: DeliveryAdmission) => void
     let completion!: (value: DeliveryCompletion) => void
     const handle: DeliveryHandle = {
       admission: new Promise<DeliveryAdmission>((resolve) => (admission = resolve)),
       completion: new Promise<DeliveryCompletion>((resolve) => (completion = resolve))
     }
-    this.waiters.set(key, [...(this.waiters.get(key) ?? []), { admission, completion }])
-    return handle
+    const waiter: Waiter = { admission, completion }
+    this.waiters.set(key, [...(this.waiters.get(key) ?? []), waiter])
+    const drop = (): void => {
+      const rest = (this.waiters.get(key) ?? []).filter((w) => w !== waiter)
+      if (rest.length > 0) this.waiters.set(key, rest)
+      else this.waiters.delete(key)
+    }
+    return { handle, drop }
   }
 
   private finished(

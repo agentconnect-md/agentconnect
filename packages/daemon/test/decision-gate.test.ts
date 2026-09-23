@@ -387,6 +387,111 @@ describe('DecisionGate', () => {
     expect(h.calls).toHaveLength(1)
   })
 
+  it('single-flights concurrent submissions of one message: one provider call, and its skip never dispatches', async () => {
+    const h = await harness()
+    const a = await h.post()
+    const outcomes = await Promise.all([h.candidate(a), h.candidate(a)])
+    expect(outcomes.map((outcome) => outcome.kind)).toEqual(['pending', 'pending'])
+    await vi.waitFor(() => expect(h.calls).toHaveLength(1), WAIT)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(h.releases).toHaveLength(0)
+    h.calls[0]!.resolve(no)
+    await h.gate.idle()
+    expect(h.calls).toHaveLength(1)
+    expect(h.releases).toHaveLength(0)
+    expect((await h.store.getDecisionVerdict(a.record.seq, AGENT))?.state).toBe('skipped')
+    for (const outcome of outcomes)
+      expect(await (outcome as { handle: { admission: Promise<unknown> } }).handle.admission).toEqual({
+        admitted: false,
+        reason: 'gated'
+      })
+  })
+
+  it('(f) a config change applied while a release is in flight refuses its dispatch and cancels the verdict', async () => {
+    const h = await harness()
+    const a = await h.post()
+    await h.candidate(a)
+    await vi.waitFor(() => expect(h.calls).toHaveLength(1), WAIT)
+    h.calls[0]!.resolve(yes)
+    await vi.waitFor(() => expect(h.releases).toHaveLength(1), WAIT)
+    // Announced only: the fence alone would still read the old gate, so the token must carry the cancel.
+    await h.gate.onConfigApplied('int-a', bundle(), bundle({ model: 'jev-latest' }))
+    expect(h.releases[0]!.request.beforeDispatch()).toBe(false)
+    h.releases[0]!.resolve({ kind: 'rejected', reason: 'gated', recoverable: false })
+    await h.gate.idle()
+    expect(await h.store.getDecisionVerdict(a.record.seq, AGENT)).toMatchObject({
+      state: 'canceled',
+      cancelReason: 'config_changed'
+    })
+  })
+
+  it('(f) the dispatch fence rechecks the applied gate even before the config change is announced', async () => {
+    const h = await harness()
+    const a = await h.post()
+    await h.candidate(a)
+    await vi.waitFor(() => expect(h.calls).toHaveLength(1), WAIT)
+    h.calls[0]!.resolve(yes)
+    await vi.waitFor(() => expect(h.releases).toHaveLength(1), WAIT)
+    const fence = h.releases[0]!.request.beforeDispatch
+    h.state.current = { status: 'enabled', gate: gateOf(bundle()), sessionMode: 'append' }
+    expect(fence()).toBe(false)
+    h.state.current = { status: 'enabled', gate: gateOf(bundle()), sessionMode: 'createNew' }
+    h.state.applied = bundle({ instructions: 'Is this urgent?' })
+    expect(fence()).toBe(false)
+    h.releases[0]!.resolve({ kind: 'rejected', reason: 'gated', recoverable: false })
+    await h.gate.idle()
+    expect(await h.store.getDecisionVerdict(a.record.seq, AGENT)).toMatchObject({
+      state: 'canceled',
+      cancelReason: 'config_changed'
+    })
+  })
+
+  it('(f) a verdict frozen under the lagging host gate never releases once a new config was announced', async () => {
+    const h = await harness()
+    // Announced while the host's agents still serve the old gate, so intake freezes the old config.
+    await h.gate.onConfigApplied('int-a', bundle(), bundle({ model: 'jev-latest' }))
+    const a = await h.post()
+    expect((await h.candidate(a)).kind).toBe('pending')
+    await vi.waitFor(() => expect(h.calls).toHaveLength(1), WAIT)
+    h.calls[0]!.resolve(yes)
+    await h.gate.idle()
+    expect(h.releases).toHaveLength(0)
+    expect(await h.store.getDecisionVerdict(a.record.seq, AGENT)).toMatchObject({
+      state: 'canceled',
+      cancelReason: 'config_changed'
+    })
+  })
+
+  it('(f) a verdict never releases once its integration removal was announced but not yet reconciled', async () => {
+    const h = await harness()
+    await h.gate.onConfigApplied('int-a', bundle(), undefined)
+    const a = await h.post()
+    expect((await h.candidate(a)).kind).toBe('pending')
+    await vi.waitFor(() => expect(h.calls).toHaveLength(1), WAIT)
+    h.calls[0]!.resolve(yes)
+    await h.gate.idle()
+    expect(h.releases).toHaveLength(0)
+    expect(await h.store.getDecisionVerdict(a.record.seq, AGENT)).toMatchObject({
+      state: 'canceled',
+      cancelReason: 'integration_removed'
+    })
+  })
+
+  it('judges an @mention in a thread the agent participates in; an unmentioned reply there bypasses', async () => {
+    const h = await harness({ participates: (msg) => msg.thread === 'T-joined' })
+    const mention = await h.post('C1', { thread: 'T-joined', trigger: 'mention', mentionedBots: ['U_BOT'] })
+    expect((await h.candidate(mention)).kind).toBe('pending')
+    await vi.waitFor(() => expect(h.calls).toHaveLength(1), WAIT)
+    h.calls[0]!.resolve(no)
+    await h.gate.idle()
+    expect((await h.store.getDecisionVerdict(mention.record.seq, AGENT))?.state).toBe('skipped')
+    expect(h.releases).toHaveLength(0)
+    const reply = await h.post('C1', { thread: 'T-joined' })
+    expect(await h.candidate(reply)).toEqual({ kind: 'admit' })
+    expect(await h.store.getDecisionVerdict(reply.record.seq, AGENT)).toBeUndefined()
+    expect(h.calls).toHaveLength(1)
+  })
+
   it('bounds active evaluations per provider and answers a full queue with capacity', async () => {
     const h = await harness()
     const posted: Awaited<ReturnType<typeof h.post>>[] = []

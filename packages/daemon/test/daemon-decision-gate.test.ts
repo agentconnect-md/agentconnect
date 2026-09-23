@@ -222,6 +222,45 @@ describe('By decision gate (daemon)', () => {
     await daemon.stop()
   })
 
+  it('judges an @mention reply in a thread the agent participates in; an unmentioned reply there bypasses', async () => {
+    const { daemon, store, channel, scope, evaluate, dispatch, gate: g } = await boot()
+    evaluate.mockResolvedValue(no)
+    const thread = '1720000000.000950'
+    const key = `slack:C1:${thread}:bot-a${scope ? `:${scope}` : ''}`
+    await store.upsertSession({
+      key,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread,
+      transportScope: scope ?? null,
+      acpSessionId: null,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    await store.recordThreadParticipation({
+      channel: 'C1',
+      thread,
+      agentId: 'bot-a',
+      sessionKey: key,
+      transportScope: scope
+    })
+    await route(daemon, human({ text: '<@U_FAKE_BOT> in our thread', mentionedBots: ['U_FAKE_BOT'], thread }))
+    await g.idle()
+    expect(evaluate).toHaveBeenCalledTimes(1)
+    expect((await verdicts(store)).map((v) => v.state)).toEqual(['skipped'])
+    expect(dispatch).not.toHaveBeenCalled()
+    await route(daemon, human({ text: 'plain reply in our thread', thread }))
+    await vi.waitFor(
+      async () => expect((await admissions(store, channel)).map((a) => a.text)).toContain('plain reply in our thread'),
+      WAIT
+    )
+    expect(evaluate).toHaveBeenCalledTimes(1)
+    expect(await verdicts(store)).toHaveLength(1)
+    await daemon.stop()
+  })
+
   it('(e) a real !stop cancels the pending verdict without waiting for the evaluator', async () => {
     const { daemon, store, evaluate, dispatch, gate: g } = await boot()
     let seen: AbortSignal | undefined
