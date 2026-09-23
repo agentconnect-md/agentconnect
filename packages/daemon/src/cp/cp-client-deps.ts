@@ -413,7 +413,8 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
             agentPod: (id) => agentSandboxSubject(id),
             holdIfBound: (subject) => host.k8sPlane()!.holdIfBound(subject),
             knownAgent: (id) => host.agents().has(id),
-            armedFor: async (id) => (await host.autoMerge()?.armedFor(id)) === true,
+            boundPods: (id) => host.k8sPlane()!.boundSubjects(id),
+            armedIn: (subject) => host.k8sPlane()!.armedIn(subject),
             gitStatus: (id, sessionId) => workspaceGit.status(id, sessionId),
             holds: host.sandboxHolds(),
             log: { debug: (m) => host.log().debug?.(m) }

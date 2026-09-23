@@ -1029,10 +1029,12 @@ Decisions recorded while building it:
   (`autoMergeWaitingOn` / `autoMergeError`), since the usual cure is that next
   commit.
 - **Where the watcher runs, and why nothing is stored.** A cluster-placed agent's
-  watcher is a process IN ITS POD: a new `automerge` shim capability
-  (`src/shim/auto-merge-handler.ts`) spawns one `/opt/agentconnect/shim/auto-merge.js`
-  per armed pull request, which fetches its own clamped `gh` token per tick over
-  the existing gitcred tunnel. A locally-placed agent has no pod, so the loop
+  watcher is a process IN A POD — the arming isolated session's own
+  ([k8s-daemon-pool.md](k8s-daemon-pool.md) §4), else the agent's: a new
+  `automerge` shim capability (`src/shim/auto-merge-handler.ts`) spawns one
+  `/opt/agentconnect/shim/auto-merge.js` per armed pull request, which fetches its
+  own clamped `gh` token per tick over the existing gitcred tunnel, opened on a
+  session pod under its agent's policy. A locally-placed agent has no pod, so the loop
   runs in its daemon (`github/auto-merge/watcher.ts` dispatches on `clusterPlaced`,
   for the reason the next bullet records). Its own capability rather than
   a widening of `exec`: that channel is git-only and enforced IN the pod on
@@ -1052,6 +1054,12 @@ Decisions recorded while building it:
   `clusterPlaced` — a property of the DAEMON (`--k8s` runs every agent in a pod)
   — and a cluster agent with no live channel refuses to arm with `sandbox-asleep`
   rather than arming somewhere else; the console's own wake action is the fix.
+  WHICH pod is decided once per arm by the same rule: the arming session's tier,
+  read off its own directory as its wake is routed, never whichever pod is
+  attached. The watcher stays keyed by the pull request, so reads and disarm need
+  no placement at all — they ask every pod of the agent — and an arm first asks
+  those pods whether any already watches it, one arm or disarm per pull request at
+  a time, so the pull request has one watcher however many sessions name it.
 - **Arming refuses a pull request that is mergeable NOW (`already-mergeable`).**
   The loop's first tick is immediate, so arming a green pull request would
   squash-merge it inside one round trip — irreversible, from a single click on a
@@ -1083,7 +1091,8 @@ Decisions recorded while building it:
   POST — a fence placed before that await has already passed by the time the
   request goes out. The in-pod child runs the same fence off `SIGTERM`, and the
   handler's disarm waits for that exit (SIGKILL bounds a wedged child) rather than
-  answering the moment the signal is sent.
+  answering the moment the signal is sent. A disarm asks every pod of the agent and
+  answers only after each has, so the fence holds wherever the watcher was placed.
 - **Both status strings are clamped where they are PROJECTED, not per hop.**
   `AutoMergeState` bounds `waitingOn`/`lastError` at `MAX_AUTO_MERGE_DETAIL` and
   the daemon does not validate on send, so one long GitHub message (the
@@ -1093,7 +1102,9 @@ Decisions recorded while building it:
 - **The CP relays merge-when-ready and stores none of it.** No table, no
   migration, no background loop, no register-time replay: `automerge/set` and
   `automerge/state` are scoped request/reply frames like `task/list`, gated on
-  the daemon advertising `auto-merge-v1`. The GET overlays the live answer onto
+  the daemon advertising `auto-merge-v1`. An arm names the arming session only to
+  a daemon advertising `auto-merge-session-v1`, and only when that session is the
+  watcher's agent's own; an older daemon gets the frame it always got. The GET overlays the live answer onto
   the projection per caller (never cached), and `autoMergeArmed: null` means
   nobody could be asked — an offline daemon, or one too old — which the panel
   draws differently from a confident "not armed". A lost overlay never fails the
@@ -1104,7 +1115,7 @@ Decisions recorded while building it:
   `auto-refresh.ts`), because the page's whole state is what an operator leaves
   open — and because two of those reads are what the daemon holds the session's
   pod for: an uncommitted worktree, or an armed merge-when-ready watcher, which
-  for a cluster agent is a process inside that pod. The hold itself is a separate
+  for a cluster agent is a process inside the pod it was armed in. The hold itself is a separate
   lease the page renews (`POST /sessions/:id/sandbox-keep-alive`, 60 s inside the
   daemon's 180 s TTL); the DAEMON decides whether to hold, so the console asserts
   nothing, and the lease lapses on its own when the page closes. See

@@ -32,6 +32,18 @@ describe('tunnel binder', () => {
     expect(request).toHaveBeenCalledWith('tunnel', { op: 'listen', tunnel: 'gitcred' })
   })
 
+  it('opens a session pod’s tunnels by its agent’s policy, so a watcher armed there can fetch its token', async () => {
+    const tunnelsFor = vi.fn(() => ['gitcred' as const])
+    const { session, request } = fakeSession(1)
+    await new TunnelBinder({ tunnelsFor, tunnelSocketPath: () => '/daemon/gitcred.sock', log }).ensure(
+      'agent-a/session-0123',
+      session
+    )
+
+    expect(tunnelsFor).toHaveBeenCalledWith('agent-a')
+    expect(request).toHaveBeenCalledWith('tunnel', { op: 'listen', tunnel: 'gitcred' })
+  })
+
   it('keeps one proxy per agent across preparations of the same launch', async () => {
     const subject = binder()
     const { session, request } = fakeSession(1)

@@ -212,12 +212,15 @@ describe('AutoMergeLoop', () => {
 })
 
 /** A pod channel that records what the daemon forwarded, and holds its own armed set. */
-function fakeSandbox(): AutoMergeSandbox & { ops: string[] } {
+function fakeSandbox(): AutoMergeSandbox & { ops: string[]; armed: Set<string> } {
   const armed = new Set<string>()
   const key = (c: { repoFullName: string; prNumber: number }) => `${c.repoFullName}#${c.prNumber}`
   const ops: string[] = []
+  const state = (c: { repoFullName: string; prNumber: number }) =>
+    armed.has(key(c)) ? { armed: true, waitingOn: 'checks running: build' } : { armed: false }
   return {
     ops,
+    armed,
     arm: async (c) => {
       ops.push(`arm ${key(c)} cap=${c.capability ?? 'none'}`)
       armed.add(key(c))
@@ -230,26 +233,50 @@ function fakeSandbox(): AutoMergeSandbox & { ops: string[] } {
     },
     state: async (c) => {
       ops.push(`state ${key(c)}`)
-      return armed.has(key(c)) ? { armed: true, waitingOn: 'checks running: build' } : { armed: false }
+      return state(c)
     },
-    anyArmed: async () => {
-      ops.push('list')
-      return armed.size > 0
+    watching: async (c) => {
+      ops.push(`watching ${key(c)}`)
+      return state(c)
     }
   }
 }
 
 const TARGET = { agentId: 'agent-1', repoFullName: 'acme/repo', prNumber: 7 }
+const AGENT_POD = 'agent-1'
+const SESSION_POD = 'agent-1/session-aaa'
+const SIBLING_POD = 'agent-1/session-bbb'
+
+/** The cluster seams over a fixed set of bound pods; an isolated session's arm is placed in the pod its id names. */
+function inPods(pods: Record<string, AutoMergeSandbox | undefined>, placement: Record<string, string> = {}) {
+  return {
+    clusterPlaced: () => true,
+    podsOf: () => Object.keys(pods),
+    sandboxAt: async (subject: string) => pods[subject],
+    placementOf: async (agentId: string, sessionId?: string) =>
+      (sessionId === undefined ? undefined : placement[sessionId]) ?? agentId
+  }
+}
+
+/** No pods at all: a daemon that runs no sandboxes. */
+const LOCAL = {
+  clusterPlaced: () => false,
+  podsOf: () => [],
+  sandboxAt: async () => undefined,
+  placementOf: async (agentId: string) => agentId
+}
+
+const QUEUED = () => githubStub([prAnswer([{ __typename: 'CheckRun', name: 'build', status: 'QUEUED' }])]).fetchImpl
 
 describe('AutoMergeWatcher', () => {
   it('routes a SANDBOX agent to its pod, carrying the credential capability', async () => {
     const sandbox = fakeSandbox()
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
-      clusterPlaced: () => true,
-      sandboxFor: () => sandbox,
+      ...inPods({ [AGENT_POD]: sandbox }),
       capabilityFor: () => 'cap_secret',
-      tokenFor: async () => 'ghs_x'
+      tokenFor: async () => 'ghs_x',
+      fetchImpl: QUEUED()
     })
 
     expect(await watcher.set(TARGET, true)).toEqual({
@@ -259,10 +286,271 @@ describe('AutoMergeWatcher', () => {
       waitingOn: 'checks running: build'
     })
     expect(await watcher.state(TARGET)).toMatchObject({ armed: true, placement: 'sandbox' })
-    expect(sandbox.ops[0]).toBe('arm acme/repo#7 cap=cap_secret')
+    expect(sandbox.ops).toContain('arm acme/repo#7 cap=cap_secret')
 
     expect(await watcher.set(TARGET, false)).toEqual({ ...TARGET, armed: false })
     expect(await watcher.state(TARGET)).toEqual({ ...TARGET, armed: false })
+  })
+
+  it('watches an isolated session’s arm in that session’s pod, leaving the agent pod untouched', async () => {
+    const agentPod = fakeSandbox()
+    const sessionPod = fakeSandbox()
+    const held: string[] = []
+    const renewed: string[] = []
+    const placedFor: Array<string | undefined> = []
+    const pods = inPods({ [AGENT_POD]: agentPod, [SESSION_POD]: sessionPod }, { 'session-1': SESSION_POD })
+    const watcher = new AutoMergeWatcher({
+      knownAgent: () => true,
+      ...pods,
+      placementOf: async (agentId, sessionId) => {
+        placedFor.push(sessionId)
+        return await pods.placementOf(agentId, sessionId)
+      },
+      holdSandbox: (subject) => {
+        held.push(subject)
+        return () => {}
+      },
+      onArmed: (subject) => renewed.push(subject),
+      capabilityFor: () => 'cap',
+      tokenFor: async () => 'ghs_x',
+      fetchImpl: QUEUED()
+    })
+
+    expect(await watcher.set(TARGET, true, 'session-1')).toMatchObject({ armed: true, placement: 'sandbox' })
+    expect(placedFor).toEqual(['session-1'])
+    expect(sessionPod.ops).toContain('arm acme/repo#7 cap=cap')
+    // The agent pod was only asked whether it already watches this pull request.
+    expect(agentPod.ops).toEqual(['watching acme/repo#7'])
+    // The sweep's hold is taken and renewed on the pod that runs the watcher.
+    expect(held).toEqual([SESSION_POD])
+    expect(renewed).toEqual([SESSION_POD])
+  })
+
+  it('arms a shared session, and an arm naming no session, in the agent pod', async () => {
+    const agentPod = fakeSandbox()
+    const sessionPod = fakeSandbox()
+    const watcher = new AutoMergeWatcher({
+      knownAgent: () => true,
+      // A shared session's tier places it with the agent, whatever pod is bound beside it.
+      ...inPods({ [AGENT_POD]: agentPod, [SESSION_POD]: sessionPod }, { 'shared-session': AGENT_POD }),
+      capabilityFor: () => 'cap',
+      tokenFor: async () => 'ghs_x',
+      fetchImpl: githubStub([
+        prAnswer([{ __typename: 'CheckRun', name: 'build', status: 'QUEUED' }]),
+        prAnswer([{ __typename: 'CheckRun', name: 'build', status: 'QUEUED' }])
+      ]).fetchImpl
+    })
+
+    await watcher.set(TARGET, true, 'shared-session')
+    await watcher.set({ ...TARGET, prNumber: 8 }, true)
+    expect(agentPod.ops.filter((op) => op.startsWith('arm'))).toEqual([
+      'arm acme/repo#7 cap=cap',
+      'arm acme/repo#8 cap=cap'
+    ])
+    expect(sessionPod.ops.filter((op) => op.startsWith('arm'))).toEqual([])
+  })
+
+  it('reads and disarms a watcher wherever it lives, asking every bound pod', async () => {
+    const agentPod = fakeSandbox()
+    const sessionPod = fakeSandbox()
+    sessionPod.armed.add('acme/repo#7')
+    const watcher = new AutoMergeWatcher({
+      knownAgent: () => true,
+      ...inPods({ [AGENT_POD]: agentPod, [SESSION_POD]: sessionPod }),
+      capabilityFor: () => 'cap',
+      tokenFor: async () => 'ghs_x'
+    })
+
+    // Found in the session pod although the read named no session.
+    expect(await watcher.state(TARGET)).toMatchObject({ armed: true, placement: 'sandbox' })
+    expect(await watcher.set(TARGET, false)).toEqual({ ...TARGET, armed: false })
+    expect(sessionPod.ops).toContain('disarm acme/repo#7')
+    expect(agentPod.ops).toContain('disarm acme/repo#7')
+    expect(await watcher.state(TARGET)).toEqual({ ...TARGET, armed: false })
+  })
+
+  it('answers the watcher another pod already runs, starting nothing where the new arm would place it', async () => {
+    const opener = fakeSandbox()
+    const reviewer = fakeSandbox()
+    opener.armed.add('acme/repo#7')
+    const renewed: string[] = []
+    const watcher = new AutoMergeWatcher({
+      knownAgent: () => true,
+      ...inPods(
+        { [AGENT_POD]: fakeSandbox(), [SESSION_POD]: opener, [SIBLING_POD]: reviewer },
+        {
+          opener: SESSION_POD,
+          reviewer: SIBLING_POD
+        }
+      ),
+      onArmed: (subject) => renewed.push(subject),
+      capabilityFor: () => 'cap',
+      tokenFor: async () => 'ghs_x',
+      fetchImpl: QUEUED()
+    })
+
+    expect(await watcher.set(TARGET, true, 'reviewer')).toMatchObject({ armed: true, placement: 'sandbox' })
+    expect(reviewer.ops.filter((op) => op.startsWith('arm'))).toEqual([])
+    expect(opener.ops.filter((op) => op.startsWith('arm'))).toEqual([])
+    // Still the sweep's reason to keep the pod that runs it.
+    expect(renewed).toEqual([SESSION_POD])
+  })
+
+  it('starts ONE watcher when two sessions arm the same pull request at once', async () => {
+    // Both would find nothing if their scans overlapped; the per-pull-request queue makes the second scan see the first arm.
+    const first = fakeSandbox()
+    const second = fakeSandbox()
+    let probes = 0
+    let open: () => void = () => {}
+    const opened = new Promise<void>((resolve) => (open = resolve))
+    const fetchImpl = vi.fn(async () => {
+      probes += 1
+      await opened
+      return json(prAnswer([{ __typename: 'CheckRun', name: 'build', status: 'QUEUED' }]))
+    })
+    const watcher = new AutoMergeWatcher({
+      knownAgent: () => true,
+      ...inPods(
+        { [AGENT_POD]: fakeSandbox(), [SESSION_POD]: first, [SIBLING_POD]: second },
+        {
+          a: SESSION_POD,
+          b: SIBLING_POD
+        }
+      ),
+      capabilityFor: () => 'cap',
+      tokenFor: async () => 'ghs_x',
+      fetchImpl
+    })
+
+    const one = watcher.set(TARGET, true, 'a')
+    const two = watcher.set(TARGET, true, 'b')
+    await vi.waitFor(() => expect(probes).toBe(1))
+    // Time for an unqueued second arm to reach its own probe, which is the race this pins.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    open()
+    expect(await one).toMatchObject({ armed: true })
+    expect(await two).toMatchObject({ armed: true, placement: 'sandbox' })
+    const arms = [...first.ops, ...second.ops].filter((op) => op.startsWith('arm'))
+    expect(arms).toEqual(['arm acme/repo#7 cap=cap'])
+    expect(first.ops).toContain('arm acme/repo#7 cap=cap')
+    // The second arm never reached the pre-arm probe: its scan answered first.
+    expect(probes).toBe(1)
+  })
+
+  it('asks a pod again when a renewal loses the scan, and refuses the arm when it loses it twice', async () => {
+    const lost = () => new ShimChannelLostError('shim channel renewed')
+    const agentPod = fakeSandbox()
+    const sessionPod = fakeSandbox()
+    let losses = 1
+    const watching = sessionPod.watching
+    sessionPod.watching = async (c) => {
+      if (losses-- > 0) throw lost()
+      return await watching(c)
+    }
+    sessionPod.armed.add('acme/repo#7')
+    const watcher = new AutoMergeWatcher({
+      knownAgent: () => true,
+      ...inPods({ [AGENT_POD]: agentPod, [SESSION_POD]: sessionPod }),
+      capabilityFor: () => 'cap',
+      tokenFor: async () => 'ghs_x',
+      fetchImpl: QUEUED()
+    })
+
+    // One loss: asked again on the re-attached channel, which answers that it watches already.
+    expect(await watcher.set(TARGET, true)).toMatchObject({ armed: true })
+    expect(agentPod.ops.filter((op) => op.startsWith('arm'))).toEqual([])
+
+    // Two: unknown, so nothing is armed anywhere rather than a second watcher beside a live one.
+    losses = 2
+    await expect(watcher.set(TARGET, true)).rejects.toBeInstanceOf(ShimChannelLostError)
+    expect(agentPod.ops.filter((op) => op.startsWith('arm'))).toEqual([])
+  })
+
+  it('answers a disarm only once every pod has disarmed, and never `armed:false` over a pod that failed', async () => {
+    const agentPod = fakeSandbox()
+    const sessionPod = fakeSandbox()
+    sessionPod.armed.add('acme/repo#7')
+    let exited: (() => void) | undefined
+    const disarm = sessionPod.disarm
+    // The pod's disarm waits for its watcher child to exit, which fences the tick in flight.
+    sessionPod.disarm = async (c) => {
+      await new Promise<void>((resolve) => (exited = resolve))
+      return await disarm(c)
+    }
+    const watcher = new AutoMergeWatcher({
+      knownAgent: () => true,
+      ...inPods({ [AGENT_POD]: agentPod, [SESSION_POD]: sessionPod }),
+      capabilityFor: () => 'cap',
+      tokenFor: async () => 'ghs_x'
+    })
+
+    let answered = false
+    const off = watcher.set(TARGET, false).then((state) => {
+      answered = true
+      return state
+    })
+    await vi.waitFor(() => expect(exited).toBeDefined())
+    await vi.waitFor(() => expect(agentPod.ops).toContain('disarm acme/repo#7'))
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(answered).toBe(false)
+    exited!()
+    expect(await off).toEqual({ ...TARGET, armed: false })
+
+    sessionPod.disarm = async () => {
+      throw new Error('shim timed out')
+    }
+    await expect(watcher.set(TARGET, false)).rejects.toThrow(/timed out/)
+  })
+
+  it('skips a pod whose image ships no watcher, and leaves a read unknown when a pod cannot answer', async () => {
+    const unsupported = () => {
+      throw new AutoMergeViolationError('unsupported-image', 'no watcher in this image')
+    }
+    const agentPod = fakeSandbox()
+    const oldPod: AutoMergeSandbox = {
+      arm: async () => unsupported(),
+      disarm: async () => unsupported(),
+      state: async () => unsupported(),
+      watching: async () => unsupported()
+    }
+    const watcher = new AutoMergeWatcher({
+      knownAgent: () => true,
+      ...inPods({ [AGENT_POD]: agentPod, [SESSION_POD]: oldPod }),
+      capabilityFor: () => 'cap',
+      tokenFor: async () => 'ghs_x',
+      fetchImpl: QUEUED()
+    })
+    expect(await watcher.state(TARGET)).toEqual({ ...TARGET, armed: false })
+    expect(await watcher.set(TARGET, true)).toMatchObject({ armed: true })
+    expect(await watcher.set(TARGET, false)).toEqual({ ...TARGET, armed: false })
+
+    const broken: AutoMergeSandbox = { ...oldPod, state: async () => Promise.reject(new Error('shim timed out')) }
+    const unsure = new AutoMergeWatcher({
+      knownAgent: () => true,
+      ...inPods({ [AGENT_POD]: fakeSandbox(), [SESSION_POD]: broken }),
+      capabilityFor: () => 'cap',
+      tokenFor: async () => 'ghs_x'
+    })
+    await expect(unsure.state(TARGET)).rejects.toThrow(/timed out/)
+  })
+
+  it('reads back unchecked once a retired session’s pod, and its watcher, are gone', async () => {
+    const sessionPod = fakeSandbox()
+    const pods: Record<string, AutoMergeSandbox | undefined> = { [AGENT_POD]: fakeSandbox(), [SESSION_POD]: sessionPod }
+    const watcher = new AutoMergeWatcher({
+      knownAgent: () => true,
+      ...inPods(pods, { 'session-1': SESSION_POD }),
+      capabilityFor: () => 'cap',
+      tokenFor: async () => 'ghs_x',
+      fetchImpl: QUEUED()
+    })
+    await watcher.set(TARGET, true, 'session-1')
+    expect(await watcher.state(TARGET)).toMatchObject({ armed: true })
+
+    // Retirement deletes the claim: the pod leaves this member's launches, its watcher with it.
+    delete pods[SESSION_POD]
+    expect(await watcher.state(TARGET)).toEqual({ ...TARGET, armed: false })
+    expect(await watcher.set(TARGET, false)).toEqual({ ...TARGET, armed: false })
   })
 
   it('runs the loop HERE for a local agent, and reports `daemon` placement', async () => {
@@ -272,8 +560,7 @@ describe('AutoMergeWatcher', () => {
     const { timers } = fakeTimers()
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
-      clusterPlaced: () => false, // a daemon that runs no sandboxes at all
-      sandboxFor: () => undefined,
+      ...LOCAL, // a daemon that runs no sandboxes at all
       capabilityFor: () => 'cap_secret',
       // The daemon's own clamped credential path is what a local loop polls with.
       tokenFor: async () => 'ghs_x',
@@ -281,7 +568,8 @@ describe('AutoMergeWatcher', () => {
       timers
     })
 
-    const armed = await watcher.set(TARGET, true)
+    // A session names no pod here: the loop is this process's whatever armed it.
+    const armed = await watcher.set(TARGET, true, 'session-1')
     expect(armed).toMatchObject({ armed: true, placement: 'daemon' })
     expect(await watcher.state(TARGET)).toMatchObject({ armed: true, placement: 'daemon' })
 
@@ -290,45 +578,40 @@ describe('AutoMergeWatcher', () => {
     expect(await watcher.state(TARGET)).toEqual({ ...TARGET, armed: false })
   })
 
-  it('answers `armedFor` from the POD for a sandbox agent, and from its own map for a local one', async () => {
-    // The sandbox keep-alive's question. Asked of the pod because that is where the armed set lives:
-    // a daemon-side index would answer `false` after a restart while the pod was still merging.
-    const sandbox = fakeSandbox()
-    const cluster = new AutoMergeWatcher({
-      knownAgent: () => true,
-      clusterPlaced: () => true,
-      sandboxFor: () => sandbox,
-      capabilityFor: () => 'cap',
-      tokenFor: async () => 'ghs_x'
+  it('starts ONE local loop when two arms of the same pull request overlap', async () => {
+    // The pre-arm probe is a round trip between the "already held?" check and the map write, so unserialized arms both passed it.
+    let open: () => void = () => {}
+    const opened = new Promise<void>((resolve) => (open = resolve))
+    const fetchImpl = vi.fn(async () => {
+      await opened
+      return json(prAnswer([{ __typename: 'CheckRun', name: 'build', status: 'QUEUED' }]))
     })
-    expect(await cluster.armedFor('agent-1')).toBe(false)
-    await cluster.set(TARGET, true)
-    expect(await cluster.armedFor('agent-1')).toBe(true)
-    expect(sandbox.ops).toContain('list')
-
-    const github = githubStub([prAnswer([{ __typename: 'CheckRun', name: 'build', status: 'QUEUED' }])])
     const { timers } = fakeTimers()
-    const local = new AutoMergeWatcher({
+    const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
-      clusterPlaced: () => false,
-      sandboxFor: () => undefined,
+      ...LOCAL,
       capabilityFor: () => 'cap',
       tokenFor: async () => 'ghs_x',
-      fetchImpl: github.fetchImpl,
+      fetchImpl,
       timers
     })
-    expect(await local.armedFor('agent-1')).toBe(false)
-    await local.set(TARGET, true)
-    expect(await local.armedFor('agent-1')).toBe(true)
-    // Keyed per agent: another agent's armed watcher is not this one's reason to hold a pod.
-    expect(await local.armedFor('agent-2')).toBe(false)
+
+    const one = watcher.set(TARGET, true)
+    const two = watcher.set(TARGET, true)
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    open()
+    expect(await one).toMatchObject({ armed: true, placement: 'daemon' })
+    expect(await two).toMatchObject({ armed: true, placement: 'daemon' })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    // One probe and one tick: the second arm found the loop the first had started.
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 
   it('refuses an agent this daemon does not hold, with the machine reason the CP maps to a status', async () => {
     const watcher = new AutoMergeWatcher({
       knownAgent: () => false,
-      clusterPlaced: () => false,
-      sandboxFor: () => undefined,
+      ...LOCAL,
       capabilityFor: () => 'cap',
       tokenFor: async () => 'ghs_x'
     })
@@ -337,25 +620,29 @@ describe('AutoMergeWatcher', () => {
     await expect(watcher.state(TARGET)).rejects.toBeInstanceOf(AutoMergeViolationError)
   })
 
-  it('refuses to arm a cluster agent whose sandbox is asleep, rather than starting a loop elsewhere', async () => {
-    // The split-brain this predicate exists to prevent: `sandboxFor` answers on ATTACHMENT, and a
-    // suspended sandbox is an ordinary state. Arming a daemon-local loop here would leave it polling
-    // — and merging — where the next `state`/`disarm` (taken once the pod attaches) could not see it.
+  it('refuses to arm a cluster agent whose pod is asleep, rather than starting a loop elsewhere', async () => {
+    // Placement is a property of the daemon, not of attachment: a local loop started here would poll — and merge — where no later read of the pods could see it.
     const github = githubStub([prAnswer([{ __typename: 'CheckRun', name: 'build', status: 'QUEUED' }])])
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
-      clusterPlaced: () => true,
-      sandboxFor: () => undefined, // cluster-placed, but its pod is not up
+      ...inPods({ [AGENT_POD]: undefined }, { 'session-1': SESSION_POD }),
       capabilityFor: () => 'cap',
       tokenFor: async () => 'ghs_x',
       fetchImpl: github.fetchImpl
     })
 
-    await expect(watcher.set(TARGET, true)).rejects.toMatchObject({ reason: 'sandbox-asleep' })
+    await expect(watcher.set(TARGET, true)).rejects.toMatchObject({
+      reason: 'sandbox-asleep',
+      message: expect.stringContaining('agent’s sandbox')
+    })
+    // An isolated session's own pod asleep says so, whatever the agent's is doing.
+    await expect(watcher.set(TARGET, true, 'session-1')).rejects.toMatchObject({
+      reason: 'sandbox-asleep',
+      message: expect.stringContaining('session’s sandbox')
+    })
     // And the reads agree: nothing is watching, which is the truth for a pod that is down.
     expect(await watcher.state(TARGET)).toEqual({ ...TARGET, armed: false })
     expect(await watcher.set(TARGET, false)).toEqual({ ...TARGET, armed: false })
-    expect(await watcher.armedFor('agent-1')).toBe(false)
   })
 
   it('holds the pod across an arm and renews the idle sweep’s own hold before letting go', async () => {
@@ -369,20 +656,19 @@ describe('AutoMergeWatcher', () => {
     }
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
-      clusterPlaced: () => true,
-      sandboxFor: () => sandbox,
-      holdSandbox: () => {
-        events.push('held')
+      ...inPods({ [AGENT_POD]: sandbox }),
+      holdSandbox: (subject) => {
+        events.push(`held ${subject}`)
         return () => events.push('released')
       },
-      onArmed: (agentId) => events.push(`renewed ${agentId}`),
+      onArmed: (subject) => events.push(`renewed ${subject}`),
       capabilityFor: () => 'cap',
       tokenFor: async () => 'ghs_x',
-      fetchImpl: githubStub([prAnswer([{ __typename: 'CheckRun', name: 'build', status: 'QUEUED' }])]).fetchImpl
+      fetchImpl: QUEUED()
     })
 
     await watcher.set(TARGET, true)
-    expect(events).toEqual(['held', 'sent', 'renewed agent-1', 'released'])
+    expect(events).toEqual(['held agent-1', 'sent', 'renewed agent-1', 'released'])
 
     // A failed arm renews nothing and still lets go.
     events.length = 0
@@ -390,7 +676,7 @@ describe('AutoMergeWatcher', () => {
       throw new Error('the shim went away')
     }
     await expect(watcher.set({ ...TARGET, prNumber: 8 }, true)).rejects.toThrow(/went away/)
-    expect(events).toEqual(['held', 'released'])
+    expect(events).toEqual(['held agent-1', 'released'])
   })
 
   it('refuses to arm a pod the idle sweep is already suspending, sending nothing', async () => {
@@ -399,17 +685,16 @@ describe('AutoMergeWatcher', () => {
     const onArmed = vi.fn()
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
-      clusterPlaced: () => true,
-      sandboxFor: () => sandbox,
+      ...inPods({ [AGENT_POD]: sandbox }),
       holdSandbox: () => undefined,
       onArmed,
       capabilityFor: () => 'cap',
       tokenFor: async () => 'ghs_x',
-      fetchImpl: githubStub([prAnswer([{ __typename: 'CheckRun', name: 'build', status: 'QUEUED' }])]).fetchImpl
+      fetchImpl: QUEUED()
     })
 
     await expect(watcher.set(TARGET, true)).rejects.toMatchObject({ reason: 'sandbox-asleep' })
-    expect(sandbox.ops).toEqual([])
+    expect(sandbox.ops.filter((op) => op.startsWith('arm'))).toEqual([])
     expect(onArmed).not.toHaveBeenCalled()
   })
 
@@ -419,8 +704,7 @@ describe('AutoMergeWatcher', () => {
     const github = githubStub([prAnswer()])
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
-      clusterPlaced: () => false,
-      sandboxFor: () => undefined,
+      ...LOCAL,
       capabilityFor: () => 'cap',
       tokenFor: async () => 'ghs_x',
       fetchImpl: github.fetchImpl
@@ -434,8 +718,7 @@ describe('AutoMergeWatcher', () => {
     const { timers } = fakeTimers()
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
-      clusterPlaced: () => false,
-      sandboxFor: () => undefined,
+      ...LOCAL,
       capabilityFor: () => 'cap',
       tokenFor: async () => {
         throw new Error('no gh credentials')
@@ -458,8 +741,7 @@ describe('AutoMergeWatcher', () => {
     const { timers } = fakeTimers()
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
-      clusterPlaced: () => false,
-      sandboxFor: () => undefined,
+      ...LOCAL,
       capabilityFor: () => 'cap',
       tokenFor: async () => 'ghs_x',
       fetchImpl: github.fetchImpl,
@@ -490,8 +772,7 @@ describe('AutoMergeWatcher', () => {
     const { timers } = fakeTimers()
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
-      clusterPlaced: () => false,
-      sandboxFor: () => undefined,
+      ...LOCAL,
       capabilityFor: () => 'cap_secret',
       tokenFor: async () => 'ghs_x',
       fetchImpl,
@@ -540,8 +821,7 @@ describe('AutoMergeWatcher', () => {
     const { timers } = fakeTimers()
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
-      clusterPlaced: () => false,
-      sandboxFor: () => undefined,
+      ...LOCAL,
       capabilityFor: () => 'cap_secret',
       tokenFor: async () => 'ghs_x',
       fetchImpl: github.fetchImpl,
@@ -551,7 +831,6 @@ describe('AutoMergeWatcher', () => {
     await watcher.set(TARGET, true)
     // The closed tick is terminal: the entry goes, not just its timer.
     await vi.waitFor(async () => expect(await watcher.state(TARGET)).toEqual({ ...TARGET, armed: false }))
-    expect(await watcher.armedFor(TARGET.agentId)).toBe(false)
 
     // Reopened: arming must build a NEW loop rather than hand back the stale stopped one forever.
     expect(await watcher.set(TARGET, true)).toMatchObject({ armed: true, placement: 'daemon' })
@@ -562,8 +841,7 @@ describe('AutoMergeWatcher', () => {
     const { timers } = fakeTimers()
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
-      clusterPlaced: () => false,
-      sandboxFor: () => undefined,
+      ...LOCAL,
       capabilityFor: () => 'cap',
       tokenFor: async () => 'ghs_x',
       fetchImpl: github.fetchImpl,
@@ -643,5 +921,20 @@ describe('asking a pod whether anything is armed, across a channel renewal', () 
 
   it('answers false for a pod with no channel at all, as before', async () => {
     expect(await askArmed(async () => undefined, 'agent-1')).toBe(false)
+  })
+
+  it('lets an arm’s scan see the lost channel that the box’s own read answers as nothing armed', async () => {
+    const session = new ShimSession('agent-1', 3, timers)
+    const first = podConnection()
+    session.attach(first.connection)
+    const client = new ShimAutoMergeClient(session)
+    const call = { agentId: 'agent-1', repoFullName: 'acme/repo', prNumber: 7 }
+    const scan = client.watching(call)
+    const read = client.state(call)
+    await vi.waitFor(() => expect(first.sent).toHaveLength(2))
+
+    session.attach(podConnection(true).connection)
+    await expect(scan).rejects.toBeInstanceOf(ShimChannelLostError)
+    await expect(read).resolves.toEqual({ armed: false })
   })
 })

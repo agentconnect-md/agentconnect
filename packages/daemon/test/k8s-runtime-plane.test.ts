@@ -507,9 +507,14 @@ describe('one pod per session on the plane (git-workspace-model §11)', () => {
     expect(plane.runsInSandbox('agent-a')).toBe(true)
     expect(plane.sandboxBound(session)).toBe(true)
     expect(plane.sandboxBound('agent-a')).toBe(false)
-    // Memory and merge-when-ready are the agent pod's, so they are unreachable — never the session pod's by mistake.
+    // Memory is the agent pod's, so it is unreachable — never the session pod's by mistake.
     expect(plane.memoryFsFor('agent-a')).toBeUndefined()
-    expect(plane.autoMergeFor('agent-a')).toBeUndefined()
+    // Merge-when-ready asks each pod for itself: the session pod's channel answers, granted the capability, while the agent pod's has none.
+    expect(plane.autoMergeSubjects('agent-a')).toEqual(['agent-a', session])
+    expect(plane.boundSubjects('agent-a')).toEqual([session])
+    expect(await plane.autoMergeAt('agent-a', true)).toBeUndefined()
+    expect(await plane.autoMergeAt(session)).toBeDefined()
+    expect(plane.dialer.connectionsFor(session)[0]?.binding.grants).toContain('automerge')
 
     // A path under the session directory is the session pod's; everything else is the agent pod's and
     // refuses rather than falling back onto the session pod.
@@ -527,6 +532,11 @@ describe('one pod per session on the plane (git-workspace-model §11)', () => {
     expect(plane.workspaceIncarnationFor?.(session)).toBe(
       cluster.claims.get(plane.driver.claimName(session))!.metadata!.uid
     )
+
+    // Retirement deletes the claim and its pod, and the watcher in it with them: nothing is left to ask, or to bind.
+    await plane.discardSession('agent-a', leaf)
+    expect(plane.autoMergeSubjects('agent-a')).toEqual(['agent-a'])
+    expect(await plane.autoMergeAt(session, true)).toBeUndefined()
   })
 
   it("refuses an unbound agent pod's paths with the typed reason the console wakes on, for files and git alike", async () => {

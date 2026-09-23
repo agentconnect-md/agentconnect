@@ -94,6 +94,9 @@ export const TASK_LIST_FEATURE = 'task-list-v1'
  * daemon without it rather than offering a control that can never arm. */
 export const AUTO_MERGE_FEATURE = 'auto-merge-v1'
 
+/** Daemon honours `automerge/set.sessionId` — an isolated session's arm is watched in that session's own pod; an older daemon strips the field and arms in the agent pod, so the CP sends it only to one advertising this. */
+export const AUTO_MERGE_SESSION_FEATURE = 'auto-merge-session-v1'
+
 /** Daemon serves `sandbox/keepalive` — an open console page holding a cluster agent's pod against the
  * idle sweep while its worktree is dirty or a merge-when-ready watcher is armed in it. Checked before
  * sending, like every other new frame: an older daemon ignores it silently, so the REQ would burn its

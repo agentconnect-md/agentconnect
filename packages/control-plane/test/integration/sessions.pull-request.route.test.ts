@@ -16,7 +16,7 @@ import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { systemClock } from '../../src/domain/clock.js'
-import { AUTO_MERGE_FEATURE, SANDBOX_KEEP_ALIVE_FEATURE } from '@agentconnect.md/protocol'
+import { AUTO_MERGE_FEATURE, AUTO_MERGE_SESSION_FEATURE, SANDBOX_KEEP_ALIVE_FEATURE } from '@agentconnect.md/protocol'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import { ProtocolError } from '../../src/domain/errors.js'
 
@@ -181,7 +181,7 @@ const EDGE_CAPABILITIES = {
  *  reads it back. In-memory here exactly as it is at the real edge — there is no row to fake. */
 function fakeEdge(opts: { fail?: Error; placement?: 'sandbox' | 'daemon' } = {}) {
   const armed = new Map<string, { waitingOn?: string }>()
-  const calls: Array<{ op: 'set' | 'state'; enabled?: boolean; daemonId?: string }> = []
+  const calls: Array<{ op: 'set' | 'state'; enabled?: boolean; daemonId?: string; sessionId?: string }> = []
   const state = (repoFullName: string, prNumber: number) => {
     const held = armed.get(`${repoFullName}#${prNumber}`)
     return {
@@ -196,9 +196,9 @@ function fakeEdge(opts: { fail?: Error; placement?: 'sandbox' | 'daemon' } = {})
     autoMergeSet: async (
       daemonId: string,
       _orgId: string,
-      req: { repoFullName: string; prNumber: number; enabled: boolean }
+      req: { repoFullName: string; prNumber: number; enabled: boolean; sessionId?: string }
     ) => {
-      calls.push({ op: 'set', enabled: req.enabled, daemonId })
+      calls.push({ op: 'set', enabled: req.enabled, daemonId, ...(req.sessionId ? { sessionId: req.sessionId } : {}) })
       if (opts.fail) throw opts.fail
       const key = `${req.repoFullName}#${req.prNumber}`
       if (req.enabled) armed.set(key, {})
@@ -607,6 +607,52 @@ describe('POST /sessions/:id/pull-request/auto-merge', () => {
 
     const read = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${session}/pull-request` })
     expect(read.json()).toMatchObject({ autoMergeArmed: false, autoMergePlacement: null })
+  })
+
+  it('names the arming session to a daemon that watches it in the session’s own pod, and none on a disarm', async () => {
+    await seedDaemon(prisma, DAEMON, {
+      capabilities: { ...EDGE_CAPABILITIES, features: [AUTO_MERGE_FEATURE, AUTO_MERGE_SESSION_FEATURE] }
+    })
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const session = await seedSessionMeta(prisma, randomUUID(), AGENT, { daemonId: DAEMON })
+    await seedPullRequestRun(session)
+    const edge = fakeEdge({ placement: 'sandbox' })
+    const running = app(githubStub([]).view, undefined, fakeGithub(), undefined, edge.control)
+
+    expect((await post(running, session)).statusCode).toBe(200)
+    expect((await post(running, session, false)).statusCode).toBe(200)
+    // The watcher stays keyed by the pull request, so a disarm finds it without naming anyone.
+    expect(edge.calls).toEqual([
+      { op: 'set', enabled: true, daemonId: DAEMON, sessionId: session },
+      { op: 'set', enabled: false, daemonId: DAEMON }
+    ])
+  })
+
+  it('sends an older daemon the arm it always got, with no session to strip', async () => {
+    const session = await seedAgentAndSession()
+    await seedPullRequestRun(session)
+    const edge = fakeEdge()
+    const running = app(githubStub([]).view, undefined, fakeGithub(), undefined, edge.control)
+
+    expect((await post(running, session)).statusCode).toBe(200)
+    expect(edge.calls).toEqual([{ op: 'set', enabled: true, daemonId: DAEMON }])
+  })
+
+  it('names no session when the pull request’s run belongs to another agent than the session', async () => {
+    // The watcher is the run agent's, and this session's pod is not one of that agent's pods.
+    const OTHER = 'b5b5b5b5-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    await seedDaemon(prisma, DAEMON, {
+      capabilities: { ...EDGE_CAPABILITIES, features: [AUTO_MERGE_FEATURE, AUTO_MERGE_SESSION_FEATURE] }
+    })
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedAgent(prisma, OTHER, { daemonId: DAEMON })
+    const session = await seedSessionMeta(prisma, randomUUID(), AGENT, { daemonId: DAEMON })
+    await seedPullRequestRun(session, { agentId: OTHER })
+    const edge = fakeEdge()
+    const running = app(githubStub([]).view, undefined, fakeGithub(), undefined, edge.control)
+
+    expect((await post(running, session)).statusCode).toBe(200)
+    expect(edge.calls).toEqual([{ op: 'set', enabled: true, daemonId: DAEMON }])
   })
 
   it('refuses a read-tier agent with 403 before reaching the edge — the disabled-control contract', async () => {

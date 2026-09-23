@@ -2,14 +2,19 @@ import { describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AGENT_WAKE_FEATURE, DAEMON_BOOTSTRAP_UPGRADE_FEATURE } from '@agentconnect.md/protocol'
+import {
+  AGENT_WAKE_FEATURE,
+  AUTO_MERGE_SESSION_FEATURE,
+  DAEMON_BOOTSTRAP_UPGRADE_FEATURE
+} from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { agentHostKey, sessionHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
 import { wireWorkspacePlane } from '../src/execution/plane.js'
 import { SANDBOX_HOLD_TTL_MS, SandboxHolds } from '../src/k8s/sandbox-hold.js'
 import { internalSessionKey } from '../src/key-server/session-hosts.js'
 import { ShimChannelLostError } from '../src/shim/channels.js'
-import { agentSandboxSubject, sandboxSubjectFor } from '../src/k8s/sandbox-identity.js'
+import { agentSandboxSubject, sandboxSubjectFor, sandboxSubjectForPath } from '../src/k8s/sandbox-identity.js'
+import { DEFAULT_SHIM_WORKSPACE_ROOT } from '../src/shim/protocol.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { DATA_PLANE_CONFIG_PATH } from '../src/store/postgres-config.js'
@@ -460,6 +465,8 @@ describe('daemon --k8s mode', () => {
     try {
       await k8sDaemon.start()
       expect((k8sDaemon as any).registrationFeatures()).toContain(AGENT_WAKE_FEATURE)
+      // And a watcher placed by the arming session, which only a pod-per-session daemon has.
+      expect((k8sDaemon as any).registrationFeatures()).toContain(AUTO_MERGE_SESSION_FEATURE)
     } finally {
       await k8sDaemon.stop()
     }
@@ -613,7 +620,7 @@ describe('daemon --k8s mode', () => {
         armedIn: async (subject: string) => {
           asked.push(subject)
           if (armed instanceof Error) throw armed
-          return armed
+          return subject === 'watched' && armed
         },
         suspendIdle: async (subject: string) => {
           suspended.push(subject)
@@ -630,22 +637,23 @@ describe('daemon --k8s mode', () => {
         await inner.sweepIdleSandboxes(now, inner.cfg.limits.agentIdleTimeoutMs)
         await new Promise((resolve) => setTimeout(resolve, 20))
       }
+      const askedAgentPod = () => asked.filter((subject) => subject === 'watched')
 
-      // Nothing is stored anywhere: the pod's own registry answers, and the answer is held. The watcher lives in the agent pod only, so a session pod is not asked.
+      // Nothing is stored anywhere: each pod's own registry answers for itself, and an armed answer is held.
       await sweep()
-      expect(asked).toEqual(['watched'])
+      expect(asked).toEqual(['watched', 'watched/session-quiet'])
       expect(suspended).toEqual(['watched/session-quiet'])
       expect(inner.sandboxHolds.reasons('watched')).toEqual(['auto-merge-armed'])
       // While the hold is live the sweep leaves the pod alone without asking again.
       await sweep()
-      expect(asked).toHaveLength(1)
+      expect(askedAgentPod()).toHaveLength(1)
       expect(suspended).toEqual(['watched/session-quiet', 'watched/session-quiet'])
 
       // Merged: the watcher exits, the hold lapses within its TTL, and the pod reports nothing armed.
       armed = false
       now += SANDBOX_HOLD_TTL_MS
       await sweep()
-      expect(asked).toHaveLength(2)
+      expect(askedAgentPod()).toHaveLength(2)
       expect(suspended).toContain('watched')
 
       // A pod that cannot answer is not kept for a watcher it may not have.
@@ -653,6 +661,46 @@ describe('daemon --k8s mode', () => {
       armed = new Error('shim timed out')
       await sweep()
       expect(suspended).toContain('watched')
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('keeps a SESSION pod while a watcher an isolated session armed runs in it, and lets it go after', async () => {
+    // Merge-when-ready moved into the session pod that armed it (k8s-daemon-pool §4), so the sweep asks that pod too.
+    const session = 'watched/session-armed'
+    const suspended: string[] = []
+    let armed = true
+    const k8sDaemon = daemon({
+      root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
+      k8s: true,
+      plane: {
+        launched: () => [{ subject: session, agentId: 'watched', since: 0 }],
+        armedIn: async (subject: string) => subject === session && armed,
+        suspendIdle: async (subject: string) => {
+          suspended.push(subject)
+          return 'suspended'
+        }
+      }
+    })
+    try {
+      await k8sDaemon.start()
+      const inner = k8sDaemon as any
+      let now = Date.now()
+      inner.sandboxHolds = new SandboxHolds({ now: () => now })
+      const sweep = async (): Promise<void> => {
+        await inner.sweepIdleSandboxes(now, inner.cfg.limits.agentIdleTimeoutMs)
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      }
+
+      await sweep()
+      expect(suspended).toEqual([])
+      expect(inner.sandboxHolds.reasons(session)).toEqual(['auto-merge-armed'])
+
+      armed = false
+      now += SANDBOX_HOLD_TTL_MS
+      await sweep()
+      expect(suspended).toEqual([session])
     } finally {
       await k8sDaemon.stop()
     }
@@ -709,14 +757,15 @@ describe('daemon --k8s mode', () => {
       arm: async () => ({ armed: true }),
       disarm: async () => ({ armed: false }),
       state: async () => ({ armed: true }),
-      anyArmed: async () => true
+      watching: async () => ({ armed: false })
     }
     const k8sDaemon = daemon({
       root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
       k8s: true,
       plane: {
         launched: () => [{ subject: 'bot-a', agentId: 'bot-a', since: 0 }],
-        autoMergeFor: () => pod,
+        autoMergeSubjects: () => ['bot-a'],
+        autoMergeAt: async () => pod,
         holdIfBound: (subject: string) => {
           held.push(subject)
           return () => held.push(`released ${subject}`)
@@ -752,6 +801,71 @@ describe('daemon --k8s mode', () => {
       await new Promise((resolve) => setTimeout(resolve, 20))
       expect(suspended).toEqual([])
       expect(inner.sandboxHolds.reasons('bot-a')).toEqual(['auto-merge-armed'])
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('places an arm by the arming session’s tier: an isolated session’s own pod, a shared one’s agent pod (§4)', async () => {
+    const ISOLATED = 'slack:C1:T1:bot-a'
+    const SHARED = 'slack:C1:T2:bot-a'
+    const sessionPod = sandboxSubjectFor(sessionHostKey('bot-a', ISOLATED))
+    const pod = () => {
+      const ops: string[] = []
+      return {
+        ops,
+        arm: async (call: { prNumber: number }) => {
+          ops.push(`arm #${call.prNumber}`)
+          return { armed: true }
+        },
+        disarm: async () => ({ armed: false }),
+        state: async () => ({ armed: false }),
+        watching: async () => ({ armed: false })
+      }
+    }
+    const pods: Record<string, ReturnType<typeof pod>> = { 'bot-a': pod(), [sessionPod]: pod() }
+    const k8sDaemon = daemon({
+      root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
+      k8s: true,
+      plane: {
+        // The routing every read uses: a path under the session directory is that session's pod.
+        subjectForPath: (agentId: string, path?: string) =>
+          sandboxSubjectForPath(agentId, path, DEFAULT_SHIM_WORKSPACE_ROOT),
+        workspaceFsFor: () => undefined,
+        workspaceRootFor: () => undefined,
+        autoMergeSubjects: () => Object.keys(pods),
+        autoMergeAt: async (subject: string) => pods[subject],
+        holdIfBound: () => () => {}
+      }
+    })
+    try {
+      await k8sDaemon.start()
+      const inner = k8sDaemon as any
+      inner.agents.set('bot-a', poolAgent('session'))
+      // The pre-arm GitHub probe cannot reach GitHub here, which never blocks an arm.
+      inner.gitCreds = {
+        get: async () => {
+          throw new Error('no GitHub in this test')
+        }
+      }
+      const rows: Record<string, unknown> = {
+        'outward-isolated': { key: ISOLATED, sessionId: 'outward-isolated', workspaceIsolation: 'session' },
+        'outward-shared': { key: SHARED, sessionId: 'outward-shared', workspaceIsolation: 'shared' }
+      }
+      vi.spyOn(inner.store, 'getSessionByOutwardId').mockImplementation(async (id: unknown) => rows[id as string])
+      const arm = (prNumber: number, sessionId?: string) =>
+        inner.autoMergeWatcher.set({ agentId: 'bot-a', repoFullName: 'acme/app', prNumber }, true, sessionId)
+
+      expect(await arm(1, 'outward-isolated')).toMatchObject({ armed: true, placement: 'sandbox' })
+      await arm(2, 'outward-shared')
+      // No session (an older Control Plane), or one this member does not know: the agent pod, as before.
+      await arm(3)
+      await arm(4, 'outward-unknown')
+
+      expect(pods[sessionPod]!.ops).toEqual(['arm #1'])
+      expect(pods['bot-a']!.ops).toEqual(['arm #2', 'arm #3', 'arm #4'])
+      // The sweep's own hold is renewed on the pod that runs the watcher.
+      expect(inner.sandboxHolds.reasons(sessionPod)).toEqual(['auto-merge-armed'])
     } finally {
       await k8sDaemon.stop()
     }

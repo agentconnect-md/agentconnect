@@ -244,8 +244,8 @@ session page renews a LEASE (`POST /sessions/:id/sandbox-keep-alive` →
 `sweepIdleSandboxes` skips a POD whose lease is live. The lease is keyed by
 sandbox SUBJECT, so a page watching an isolated session's worktree holds that
 session's own pod and neither the agent's nor a sibling session's (§11); an armed
-merge watcher is a process in the agent's pod and holds that one, whatever
-worktree the page is looking at.
+merge watcher holds the pod it runs in — the isolated session's own that armed it,
+else the agent's — whatever worktree the page is looking at.
 
 Three properties make that safe to hand a browser:
 
@@ -269,14 +269,16 @@ Three properties make that safe to hand a browser:
   status read that the routed runner then serves by waking a suspended session
   pod. And it is HELD across that read rather than only checked before it: the
   idle gate reads its holds synchronously, so the hold excludes the sweep instead
-  of racing it. The two facts are judged **independently**, one pod each, so a
-  page whose session pod went to sleep still holds the agent's pod for a watcher
-  armed in it — otherwise a visible page would silently disarm its own box.
+  of racing it. The facts are judged **independently**, one pod each, so a page
+  whose session pod went to sleep still holds the agent's pod for a watcher armed
+  in it — otherwise a visible page would silently disarm its own box — and every
+  other bound pod of the agent is asked for its own watchers, since the pull
+  request a page shows may have been armed from another session.
 
 **An armed merge watcher holds its pod with no page open.** A page's lease covers
 the watcher only while someone is looking, so the daemon holds for it too. Before
-it suspends a quiet agent pod, the sweep asks that pod's own merge-when-ready
-registry — the same `list` the keep-alive reads — and, if anything is armed, renews
+it suspends a quiet pod — the agent's or a session's — the sweep asks that pod's
+own merge-when-ready registry — the same `list` the keep-alive reads — and, if anything is armed, renews
 a lease of its own on that SUBJECT (`AUTO_MERGE_HOLDER`, `k8s/sandbox-hold.ts`).
 While that lease is live the pod is skipped without asking; once it lapses the
 next sweep asks again, so a watcher that merged, saw its pull request closed or
@@ -371,7 +373,7 @@ as reasons. With the agent pod unbound they fail or wake it:
 | Post-turn memory distillation runs on the `internal:memory:<agent>` or agent host                                                                             | after each turn, `autoDistill` only                                             | wakes the agent pod                                            | keep for now (decision 2)                                                                                                          |
 | Retention's legacy worktree half; the hourly retired-roots sweep                                                                                              | hourly                                                                          | wakes the agent pod                                            | done: judged only while the agent pod is bound, for a session with a pod of its own; the sweep likewise                            |
 | Attachment writes and image reads decide "pod workspace?" from the agent pod's recorded mount                                                                 | per attachment                                                                  | a member that never bound the agent pod writes to its own disk | decide from the session's own scope and mount                                                                                      |
-| Merge-when-ready watcher                                                                                                                                      | while armed                                                                     | the watcher dies with the pod                                  | an armed watcher holds its pod (#2290); later it moves into the session pod that armed it                                          |
+| Merge-when-ready watcher                                                                                                                                      | while armed                                                                     | the watcher dies with the pod                                  | done: an isolated session's arm is watched in its own pod, which the sweep holds while it is armed                                 |
 
 **Fail closed first.** The plane gives no git runner for an agent-pod path whose
 pod is unbound, and `WorkspaceManager.runnerFor` used to fall back to a local one,
@@ -414,12 +416,26 @@ directory, where the same code also serves executors and local confined sessions
 facts that belong to the agent are either re-derived on the session side or
 fetched by waking the agent pod on demand.
 
-**Merge-when-ready moves last.** Once the companion is gone, a PR armed from an
-isolated session is watched in that session's pod. Arm carries the session;
-`shared` sessions keep arming in the agent pod. Reads ask every bound pod of the
-agent, which is complete because an armed pod is held against the sweep. A
-session's retirement deletes its pod and its watcher with it, and the box reads
-back unchecked. Nothing is persisted, as before.
+**Merge-when-ready moves into the session pod (done).** A PR armed from an
+isolated session is watched in that session's own pod; a `shared` session, or an
+arm that names no session, keeps arming in the agent pod. One predicate places
+each arm: the session's own directory, routed as its wake is (`sessionPodOf`),
+never whichever pod happens to be bound. The watcher stays keyed by (agent,
+repository, pull request), because two sessions can name the same pull request —
+the one that opened it and a later PR-triggered one — so there is one watcher per
+pull request wherever it runs. An arm first asks every pod of the agent this
+member holds and, if one already watches that pull request, answers its state and
+starts nothing; arms and disarms of one pull request are serialized in the daemon,
+so two concurrent arms cannot both find nothing, and a pod whose channel is lost
+twice during that question fails the arm rather than risk a second watcher. Reads
+ask every bound pod, which is complete because an armed pod is held against the
+sweep; a disarm asks every pod, binding a launched pod that is up but never waking
+one, and answers only once each has fenced its tick in flight. `automerge/set`
+carries the arming session only to a member advertising `auto-merge-session-v1`,
+and only when the session belongs to the watcher's agent; an older member would
+strip it and arm in the agent pod, as it did before. A session's retirement
+deletes its pod and its watcher with it, and the box reads back unchecked.
+Nothing is persisted, as before.
 
 **Order**, each change shippable on its own:
 
@@ -437,7 +453,7 @@ back unchecked. Nothing is persisted, as before.
    retention's legacy half runs only when the agent pod is bound.
 8. Drop the companion; the idle sweep keeps the agent pod only for hosts that run
    in it, and judges its idleness by its own use, not by isolated sessions' traffic.
-9. Merge-when-ready into the session pod.
+9. Merge-when-ready into the session pod (done).
 10. A session-scoped wake, so the console can resume a sleeping session pod
     without the agent pod.
 

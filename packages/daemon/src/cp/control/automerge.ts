@@ -9,7 +9,9 @@ export interface AutoMergeControlDeps {
 
 export const autoMergeSet: ControlHandler<AutoMergeControlDeps> = (frame: AnyFrame, deps, wire) => {
   const req = frame.payload as AutoMergeSetReq
-  answer(wire, frame, 'automerge/set', 'automerge/set/result', deps.autoMerge?.set(req, req.enabled))
+  // The session only places an arm; the watcher stays keyed by the pull request.
+  const target = { agentId: req.agentId, repoFullName: req.repoFullName, prNumber: req.prNumber }
+  answer(wire, frame, 'automerge/set', 'automerge/set/result', deps.autoMerge?.set(target, req.enabled, req.sessionId))
 }
 
 export const autoMergeState: ControlHandler<AutoMergeControlDeps> = (frame: AnyFrame, deps, wire) => {

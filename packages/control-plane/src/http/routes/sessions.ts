@@ -36,6 +36,7 @@ import { makeSessionAccessResolver } from '../session-access.js'
 import { resolveContinuationHost } from '../session-continuation.js'
 import { Tag } from '../plugins/openapi.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
+import { autoMergeSetRequest } from '../../orchestrator/autoMerge.js'
 import { ConnectionClosed } from '../../ws/registry.js'
 import { sessionContentReaders } from '../../domain/session-content.js'
 import { visibilityStateOf } from '../../orchestrator/visibilityPush.js'
@@ -1393,7 +1394,7 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Arm or disarm auto-merge on the session’s pull request',
           description:
-            'Arms or disarms merge-when-ready (squash) for this session’s pull request. The watcher runs at the EDGE — in the agent’s sandbox when its work runs in a pod, otherwise in the owning daemon’s process — and polls GitHub until the pull request is open, undrafted, conflict-free, with no failing or running check and no requested changes, then squash-merges the head it judged. It is deliberately NOT GitHub’s own auto-merge: `enablePullRequestAutoMerge` refuses every pull request that is not BLOCKED, so on a repository without required status checks it can never be armed at all. Nothing is persisted: the armed set is in memory at the edge, so a reclaimed sandbox or a restarted daemon forgets it and the box reads back unchecked. Arming needs the owning agent’s clamped grant to carry `pull_requests: write`, so a read- or comment-tier agent is refused (403); idempotent — asking for the state it is already in returns that state. 404 mirrors the GET. 409 with a `code` for every refusal the edge names: `AUTO_MERGE_SANDBOX_ASLEEP` (a cluster agent whose pod is down — its watcher belongs in that pod, so start the sandbox first), `AUTO_MERGE_ALREADY_MERGEABLE` (the pull request can be merged now, and arming would merge it on the first tick with no confirmation — use the Merge route, which the console confirms), `AUTO_MERGE_UNSUPPORTED_IMAGE` (a sandbox from an image predating the watcher — resume it), `DAEMON_FEATURE_MISSING`, `NO_DAEMON`. 503 when the daemon is unreachable.',
+            'Arms or disarms merge-when-ready (squash) for this session’s pull request. The watcher runs at the EDGE — in a sandbox pod when the agent’s work runs in pods (an isolated session’s own pod when armed from that session on a daemon advertising `auto-merge-session-v1`, otherwise the agent’s), else in the owning daemon’s process — and polls GitHub until the pull request is open, undrafted, conflict-free, with no failing or running check and no requested changes, then squash-merges the head it judged. It is deliberately NOT GitHub’s own auto-merge: `enablePullRequestAutoMerge` refuses every pull request that is not BLOCKED, so on a repository without required status checks it can never be armed at all. A pull request is watched in one place however many sessions name it: arming one already watched returns that watcher’s state, and disarming finds it wherever it runs. Nothing is persisted: the armed set is in memory at the edge, so a reclaimed sandbox, a retired session’s pod or a restarted daemon forgets it and the box reads back unchecked. Arming needs the owning agent’s clamped grant to carry `pull_requests: write`, so a read- or comment-tier agent is refused (403); idempotent — asking for the state it is already in returns that state. 404 mirrors the GET. 409 with a `code` for every refusal the edge names: `AUTO_MERGE_SANDBOX_ASLEEP` (the pod the watcher belongs in is down — an isolated session’s own, else the agent’s — so start that sandbox first), `AUTO_MERGE_ALREADY_MERGEABLE` (the pull request can be merged now, and arming would merge it on the first tick with no confirmation — use the Merge route, which the console confirms), `AUTO_MERGE_UNSUPPORTED_IMAGE` (a sandbox from an image predating the watcher — resume it), `DAEMON_FEATURE_MISSING`, `NO_DAEMON`. 503 when the daemon is unreachable.',
           operationId: 'setSessionPullRequestAutoMerge',
           params: IdParam,
           body: SessionPullRequestAutoMergeBodyDto,
@@ -1449,12 +1450,14 @@ export function sessionRoutes(deps: HttpDeps) {
           })
         }
         try {
-          const state = await deps.control.autoMergeSet(servingDaemonId, orgOf(req), {
-            agentId: agent.id,
-            repoFullName: linked.repoFullName,
-            prNumber: linked.pullNumber,
-            enabled: req.body.enabled
-          })
+          // An arm names this session so a pod-per-session daemon watches it in the session's own pod; the watcher stays keyed by the pull request.
+          const frame = autoMergeSetRequest(
+            { agentId: agent.id, repoFullName: linked.repoFullName, prNumber: linked.pullNumber },
+            req.body.enabled,
+            { id: owned.session.id, agentId: owned.session.agentId },
+            daemon.capabilities.features
+          )
+          const state = await deps.control.autoMergeSet(servingDaemonId, orgOf(req), frame)
           return {
             armed: state.armed,
             placement: state.placement ?? null,
@@ -1549,7 +1552,7 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Hold this session’s sandbox while its page is open',
           description:
-            'Renews an open console page’s lease on the agent’s sandbox pod, so the idle sweep does not suspend work the page is watching. The DAEMON decides whether to hold, from facts the console cannot assert: uncommitted files in this session’s worktree, or an armed merge-when-ready watcher — which for a cluster agent is a process inside that very pod, so a suspend would silently disarm it. The answer says which reasons applied and for how long the hold stands; the console renews inside that window while its document is visible, and the hold lapses within one TTL when the page closes, the tab goes to the background, or the machine sleeps. Nothing is persisted, there is nothing to release, and a suspended pod is never woken by this call (`asleep: true`). `placement: daemon` means the agent runs no sandbox at all, which is an answer rather than an error. 404 mirrors the session reads; 409 when no daemon serves the agent or it is too old to hold a lease; 503 when its daemon is unreachable.',
+            'Renews an open console page’s lease on the agent’s sandbox pod, so the idle sweep does not suspend work the page is watching. The DAEMON decides whether to hold, from facts the console cannot assert: uncommitted files in this session’s worktree, or an armed merge-when-ready watcher — which for a cluster agent is a process inside the pod it was armed in, so a suspend would silently disarm it. The answer says which reasons applied and for how long the hold stands; the console renews inside that window while its document is visible, and the hold lapses within one TTL when the page closes, the tab goes to the background, or the machine sleeps. Nothing is persisted, there is nothing to release, and a suspended pod is never woken by this call (`asleep: true`). `placement: daemon` means the agent runs no sandbox at all, which is an answer rather than an error. 404 mirrors the session reads; 409 when no daemon serves the agent or it is too old to hold a lease; 503 when its daemon is unreachable.',
           operationId: 'keepSessionSandboxAlive',
           params: IdParam,
           response: { 200: SessionSandboxKeepAliveDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }

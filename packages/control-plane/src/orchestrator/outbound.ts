@@ -568,15 +568,7 @@ export class ControlSender {
     return c.conn.request<SandboxKeepAlive>('sandbox/keepalive', req, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
-  /**
-   * Arm or disarm the EDGE's merge-when-ready watcher (REQ → `automerge/set/result`).
-   *
-   * A relay, not a record: the CP stores no armed intent, runs no loop and replays nothing on
-   * reconnect. The watcher is in the agent's sandbox (cluster placement) or its daemon's memory
-   * (local), so a reclaimed pod or a restarted daemon forgets — and the console's next read says
-   * so instead of showing a box armed against nothing. Explicit orgId for the same reason the
-   * agent frames take one: a pool member resolves the org from the agents it was told about.
-   */
+  /** Arm or disarm the EDGE's merge-when-ready watcher (REQ → `automerge/set/result`) — a relay that stores nothing; explicit orgId because a pool member resolves the org from the agents it was told about. */
   async autoMergeSet(daemonId: string, orgId: string, req: AutoMergeSetReq): Promise<AutoMergeState> {
     const c = this.must(daemonId)
     return c.conn.request<AutoMergeState>('automerge/set', req, { epoch: c.sessionEpoch }, undefined, orgId)
