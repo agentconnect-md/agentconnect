@@ -34,6 +34,8 @@ export function settingsFields(schema: unknown): SettingsField[] | null {
   const root = asObject(schema)
   const properties = root ? asObject(root.properties) : null
   if (!root || !properties) return null
+  // Only a closed object has an exhaustive property list; anything else can carry settings no field would reach.
+  if (root.additionalProperties !== false) return null
   const required = new Set(
     Array.isArray(root.required) ? root.required.filter((name): name is string => typeof name === 'string') : []
   )
@@ -41,7 +43,8 @@ export function settingsFields(schema: unknown): SettingsField[] | null {
   for (const [name, raw] of Object.entries(properties)) {
     const node = asObject(raw)
     if (!node) return null
-    const types = (Array.isArray(node.type) ? node.type : [node.type]).filter((type) => type !== 'null')
+    // A nullable scalar has no distinct empty state in a text field, so it stays on the JSON fallback.
+    const types = Array.isArray(node.type) ? node.type : [node.type]
     const type = types.length === 1 && typeof types[0] === 'string' ? types[0] : null
     if (!type || !SCALAR_TYPES.has(type)) return null
     const options = Array.isArray(node.enum)

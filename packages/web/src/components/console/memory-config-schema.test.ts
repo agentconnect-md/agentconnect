@@ -34,10 +34,20 @@ describe('memory connection settings schema', () => {
     ).toBeNull()
     expect(settingsFields({ type: 'object', properties: { mixed: { type: ['string', 'number'] } } })).toBeNull()
     expect(settingsFields(null)).toBeNull()
-    // A nullable scalar still renders as its scalar.
-    expect(settingsFields({ type: 'object', properties: { note: { type: ['string', 'null'] } } })?.[0]?.kind).toBe(
-      'string'
-    )
+  })
+
+  it('keeps a schema on the JSON fallback when a field would not represent it exactly', () => {
+    const closed = (properties: Record<string, unknown>) => ({
+      type: 'object',
+      properties,
+      additionalProperties: false
+    })
+    // A nullable scalar has no distinct empty state in a text field, so saving one would be lossy.
+    expect(settingsFields(closed({ note: { type: ['string', 'null'] } }))).toBeNull()
+    // An open object accepts settings no generated field would reach.
+    expect(settingsFields({ type: 'object', properties: { a: { type: 'string' } } })).toBeNull()
+    expect(settingsFields({ type: 'object', properties: {}, additionalProperties: true })).toBeNull()
+    expect(settingsFields({ type: 'object', properties: {}, additionalProperties: { type: 'string' } })).toBeNull()
   })
 
   it('round-trips a config through form values, applying schema defaults on the way in', () => {

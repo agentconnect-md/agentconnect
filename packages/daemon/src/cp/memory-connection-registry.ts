@@ -389,8 +389,12 @@ export class CpMemoryConnectionRegistry {
         void entry.client.close().catch(() => undefined)
         entry.client = undefined
       }
+      // connect() conformance-checks the manifest, including its bounded configSchema, so a schema from a
+      // connected client stays reportable when only THIS connection's config failed — that is what repairs it.
+      const verifiedSchema = client?.manifest.connection.configSchema ?? entry.client?.manifest.connection.configSchema
       entry.fact = {
         ...probingFact(entry.spec),
+        ...(verifiedSchema ? { configSchema: verifiedSchema } : {}),
         status: invalid ? 'invalid' : 'degraded',
         reasonCode: staticFailure ? error.reasonCode : invalid ? 'conformance_failed' : 'plugin_unavailable'
       }
