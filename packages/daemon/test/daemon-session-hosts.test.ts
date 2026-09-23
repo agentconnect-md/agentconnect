@@ -112,6 +112,7 @@ function useMicrosandbox(daemon: Daemon, environments: string[] = []) {
     refreshEnvironment: vi.fn(async () => {}),
     environmentIds: vi.fn(async () => environments),
     suspend: vi.fn(async () => {}),
+    suspendUnlessBusy: vi.fn(async () => true),
     suspendIdle: vi.fn(async () => {}),
     stopAll: vi.fn(async () => {}),
     discard: vi.fn(async () => {}),
@@ -630,6 +631,25 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
       await (daemon as any).dispatch('bot-a', dm('300', 'resume', 'T1'), 'int-a')
       expect(hosts[2]!.loadSession).toHaveBeenCalled()
       expect(hosts[2]!.newSession).not.toHaveBeenCalled()
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('completes a host stop whose VM still runs another execution, leaving the VM for the idle sweep', async () => {
+    const root = scaffold({}, 'shared')
+    const { daemon, hosts } = await startDaemon(root)
+    const manager = useMicrosandbox(daemon)
+    manager.suspendUnlessBusy.mockResolvedValue(false)
+    manager.suspend.mockRejectedValue(new Error('microsandbox environment bot-a/agent has 1 active executions'))
+    try {
+      await (daemon as any).hydrateMicrosandboxSessions()
+      await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+      await expect((daemon as any).stopHost('bot-a')).resolves.toBeUndefined()
+      expect(hosts[0]!.stop).toHaveBeenCalled()
+      expect(manager.suspendUnlessBusy).toHaveBeenCalledOnce()
+      expect(manager.suspend).not.toHaveBeenCalled()
+      expect((daemon as any).hosts.size).toBe(0)
     } finally {
       await daemon.stop()
     }

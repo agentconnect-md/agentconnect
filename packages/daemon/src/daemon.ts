@@ -17836,7 +17836,11 @@ export class Daemon {
         if (hostResult?.status === 'rejected') throw hostResult.reason
         if (launch && this.microsandbox) {
           const agent = this.agents.get(agentId)
-          if (agent) await this.microsandbox.suspend(this.microsandboxPlacement(agent, launch.cwd, key).id)
+          const id = agent ? this.microsandboxPlacement(agent, launch.cwd, key).id : undefined
+          // The host is gone; an execution still in its VM (an aborted clone unwinding, a sibling host) is not this stop's to end.
+          if (id && !(await this.microsandbox.suspendUnlessBusy(id))) {
+            this.log.info(`microsandbox: environment ${id} still has executions running — left for the idle sweep`)
+          }
         }
       })
       .finally(() => {

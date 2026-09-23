@@ -325,6 +325,13 @@ export class MicrosandboxManager {
     await this.closeEnvironment(id, false, options.drain === true)
   }
 
+  /** Stop the VM unless something still runs in it, leaving a busy one to the idle sweep or shutdown; says whether it stopped. */
+  async suspendUnlessBusy(id: string): Promise<boolean> {
+    if (this.environments.get(id)?.active) return false
+    await this.suspend(id)
+    return true
+  }
+
   async discard(id: string): Promise<void> {
     await this.closeEnvironment(id, true)
   }

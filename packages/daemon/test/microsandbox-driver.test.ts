@@ -900,6 +900,27 @@ describe('microsandbox process and VM ownership', () => {
     await manager.suspend(environment.id)
   })
 
+  it('leaves a VM with an execution still running up instead of refusing, and stops it once idle', async () => {
+    const { manager, environment, processes, runWith, created } = await fixture()
+    let releaseClose!: () => void
+    const closeGate = new Promise<void>((resolve) => {
+      releaseClose = resolve
+    })
+    runWith((process) => {
+      process.close.mockImplementationOnce(() => closeGate)
+      process.push(undefined)
+    })
+    const execution = manager.exec(environment, 'test', [])
+    void execution.catch(() => {})
+    await vi.waitFor(() => expect(processes[0]!.close).toHaveBeenCalledOnce())
+    await expect(manager.suspendUnlessBusy(environment.id)).resolves.toBe(false)
+    expect(created[0]!.status).not.toBe('stopped')
+    releaseClose()
+    await expect(execution).rejects.toThrow('guest execution failed')
+    await expect(manager.suspendUnlessBusy(environment.id)).resolves.toBe(true)
+    expect(created[0]!.status).toBe('stopped')
+  })
+
   it('fences saved VMs at startup and refuses changed persistent configuration', async () => {
     const { manager, options, environment, request, created } = await fixture()
     const runtime = await manager.driverFor(environment).launch(request)
