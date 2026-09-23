@@ -2598,8 +2598,9 @@ export class WorkspaceManager {
     try {
       await this.runnerFor(agentId, checkout).withEnv(workspaceGitLocalEnv()).raw(['rev-parse', '--git-dir'])
       return true
-    } catch {
-      // Missing directory, empty directory, or a partial clone — all "clone it".
+    } catch (err) {
+      // Only git's own answer means "clone it": an unreached pod still holds the checkout the clone's cleanup would empty.
+      if (err instanceof GitTransportError || err instanceof WorkspaceViolationError) throw err
       return false
     }
   }
