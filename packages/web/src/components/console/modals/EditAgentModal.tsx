@@ -34,6 +34,7 @@ import { useModal } from '@/components/console/ModalProvider'
 import { ModelSelectionField } from '@/components/console/decisions/ModelSelectionField'
 import type { AgentModelSelection } from '@agentconnect.md/protocol/decision'
 import { editAgentCapabilitySource, editAgentDaemonChoices, preselectPlacementReset } from './edit-agent-daemon-choice'
+import { storedModelAfterPick } from './fallback-model'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import {
@@ -820,7 +821,7 @@ export default function EditAgentModal({
                 runInSandbox={effectiveRunInSandbox}
                 onFallbackChange={(target) => {
                   if (target.runtime !== runtime) onRuntimeChange(target.runtime)
-                  setModel(target.model)
+                  setModel((stored) => storedModelAfterPick(target, runtime, selectedModel, stored))
                   setEffort(
                     (current) =>
                       target.effort ??
