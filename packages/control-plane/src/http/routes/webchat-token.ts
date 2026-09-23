@@ -62,10 +62,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
     const r = app.withTypeProvider<ZodTypeProvider>()
     const sessionAccess = makeSessionAccessResolver(deps)
 
-    /** The identity the token attests. The handle is the transcript author line AND the name
-     *  the daemon puts in a session worktree's branch, so the profile's full name wins over
-     *  the sign-in address (`dev/jane-doe/…`, not `dev/jane-example-com/…`); the avatar is
-     *  what a platform mirror of a console turn posts under. */
+    /** The identity the token attests: the handle names transcript lines and session branches, so the full name beats the sign-in address (`a10t/jane-doe/…`, not `a10t/jane-example-com/…`); the avatar is what a mirrored console turn posts under. */
     const authorIdentity = async (
       userId: string,
       email: string | undefined

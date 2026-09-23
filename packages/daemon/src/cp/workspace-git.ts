@@ -508,10 +508,7 @@ export function createWorkspaceGit(
       // Through the runner, so a cluster-backed workspace answers by running git in its own sandbox rather than on a disk this daemon cannot see.
       const git = base.withEnv({ ...workspaceGitLocalEnv(), GIT_OPTIONAL_LOCKS: '0' })
 
-      // What a reader of THIS checkout is asking about: a session worktree on its own
-      // `dev/<user>/<words>` wants the commits it adds over the base branch, not the repository's
-      // history — the base's newest commit is not this session's work. On the base branch itself
-      // there is nothing to exclude, so the full history stands (the agent workspace page's view).
+      // A session on its own `a10t/<user>/<words>` wants only the commits it adds over the base; on the base itself the full history stands.
       const baseRef = await logBaseRef(
         git,
         (await workspaceTargetByAgent(req.agentId, req.repo, req.sessionId))?.branch
@@ -681,8 +678,7 @@ export function createWorkspaceGit(
       try {
         const git = base.withEnv(workspaceGitLocalEnv())
         const branch = await currentBranch(git)
-        // A session worktree now checks out its own `dev/<user>/<words>` branch, so this
-        // answers only a worktree created before that, or one the agent detached itself.
+        // A session checks out its own `a10t/<user>/<words>` branch, so this answers only an older worktree or one the agent detached.
         if (!branch) {
           return pushRefusal(
             agentId,

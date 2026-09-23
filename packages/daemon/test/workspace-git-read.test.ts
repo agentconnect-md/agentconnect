@@ -284,10 +284,7 @@ describe('createWorkspaceGit.log against a real repo', () => {
     expect(l.truncated).toBe(true)
   })
 
-  // A session worktree checks out its own `dev/<user>/<words>` from `refs/remotes/origin/<base>`,
-  // so the answer a reader wants there is what the BRANCH adds — the base branch's newest commit is
-  // not this session's work. The exclusion is asked of the configured branch only, and only when HEAD
-  // is some other branch, so the agent's primary checkout keeps its full history.
+  // A session on its own `a10t/<user>/<words>` wants what the branch adds over the base; the primary checkout keeps its full history.
   describe('the range one checkout is measured over', () => {
     const target = { repo: 'https://github.com/acme/api.git', branch: 'main', githubApp: false }
     let branched: string
