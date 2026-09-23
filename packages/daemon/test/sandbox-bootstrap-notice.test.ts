@@ -47,7 +47,8 @@ function coldSandbox(daemon: Daemon): void {
     gitRunnerFor: () => undefined,
     workspaceFsFor: () => undefined,
     memoryFsFor: () => new LocalMemoryFs(mkdtempSync(join(tmpdir(), 'ac-sandbox-notice-mem-'))),
-    autoMergeFor: () => undefined,
+    autoMergeSubjects: () => [],
+    autoMergeAt: async () => undefined,
     releaseAgent: () => {},
     launched: () => [],
     stop: async () => {}

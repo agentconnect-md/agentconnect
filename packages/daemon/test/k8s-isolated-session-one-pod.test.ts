@@ -285,7 +285,8 @@ function planeOver(
       return undefined
     },
     armedIn: async (subject: string) => {
-      reached.push(`armed ${subject}`)
+      // A session pod is asked about its own watcher now that one may run there; only an ask of the agent pod counts.
+      if (subject === AGENT_POD) reached.push(`armed ${subject}`)
       return false
     },
     memoryFsFor: () => {
@@ -293,6 +294,7 @@ function planeOver(
       return undefined
     },
     runsInSandbox: (agentId: string) => [AGENT_POD, ...driver.sessionSubjectsOf(agentId)].some(bound),
+    boundSubjects: (agentId: string) => [AGENT_POD, ...driver.sessionSubjectsOf(agentId)].filter(bound),
     subjectForPath: (agentId: string, path?: string) => route(agentId, path),
     sandboxBound: bound,
     holdIfBound: (subject: string) => (bound(subject) ? driver.retainLaunched(subject) : undefined),

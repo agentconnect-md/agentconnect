@@ -167,9 +167,12 @@ export interface K8sRuntimePlane extends ExecutionPlane {
    *  each path to its pod. Undefined keeps the caller on this daemon's own disk, which is what a
    *  self-hosted agent beside a cluster one needs. */
   workspaceFsFor: (agentId: string) => WorkspacePlacement | undefined
-  /** The agent pod's merge-when-ready channel — the watcher runs IN that pod so its armed set dies
-   *  with it, which is the lifetime the console projects. */
-  autoMergeFor: (agentId: string) => ShimAutoMergeClient | undefined
+  /** Every pod of the agent a merge watcher may run in: its own, then each session pod launched here (§11). */
+  autoMergeSubjects: (agentId: string) => SandboxSubject[]
+  /** One pod's merge-when-ready channel while bound — with `bind`, also a launched pod that is up, never woken; its armed set dies with the pod. */
+  autoMergeAt: (subject: string, bind?: boolean) => Promise<ShimAutoMergeClient | undefined>
+  /** Every pod of the agent bound right now, its own first. */
+  boundSubjects: (agentId: string) => SandboxSubject[]
   /** Whether a merge-when-ready watcher is armed in one subject's pod, asked of its own registry; a launched pod with no channel yet is bound, never claimed or woken, and a channel lost twice rejects with `ShimChannelLostError`. */
   armedIn: (subject: string) => Promise<boolean>
   /** The agent's managed memory tree on its OWN pod's volume: one root beside the checkout
@@ -473,10 +476,12 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       })
       return { fs, mount }
     },
-    autoMergeFor: (agentId) => {
-      const session = boundSession(agentSandboxSubject(agentId))
+    autoMergeSubjects: (agentId) => [agentSandboxSubject(agentId), ...driver.sessionSubjectsOf(agentId)],
+    autoMergeAt: async (subject, bind = false) => {
+      const session = boundSession(subject) ?? (bind ? await driver.bindLaunched(subject as SandboxSubject) : undefined)
       return session ? new ShimAutoMergeClient(session) : undefined
     },
+    boundSubjects: (agentId) => boundSubjectsOf(agentId),
     armedIn: (subject) =>
       askArmed(
         async () => boundSession(subject) ?? (await driver.bindLaunched(subject as SandboxSubject)),

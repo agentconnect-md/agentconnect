@@ -4,8 +4,7 @@ import { AutoMergeViolationError } from '../github/auto-merge/watcher.js'
 import { AUTO_MERGE_UNSUPPORTED_IMAGE } from './auto-merge-handler.js'
 import { ShimChannelLostError, type ShimRequester } from './channels.js'
 
-/** The daemon side of the `automerge` channel: three ops on one bound shim, keyed by the pull
- *  request the caller names. Lives beside the handler it talks to, like the git runner does. */
+/** The daemon side of the `automerge` channel on one bound shim, keyed by the pull request the caller names. */
 export class ShimAutoMergeClient implements AutoMergeSandbox {
   constructor(private readonly requester: ShimRequester) {}
 
@@ -13,12 +12,18 @@ export class ShimAutoMergeClient implements AutoMergeSandbox {
     return this.request({ ...call, op: 'arm' })
   }
 
+  /** A lost channel propagates: a same-generation rebind loses the request, not the watcher, so the caller asks again rather than report the box off over one still ticking. */
   disarm(call: SandboxCall): Promise<SandboxState> {
-    return this.request({ ...call, op: 'disarm' })
+    return this.send({ ...call, op: 'disarm' })
   }
 
   state(call: SandboxCall): Promise<SandboxState> {
     return this.request({ ...call, op: 'state' })
+  }
+
+  /** The same read with a lost channel propagated, so an arm's scan asks again instead of taking a renewal for "nothing here". */
+  watching(call: SandboxCall): Promise<SandboxState> {
+    return this.send({ ...call, op: 'state' })
   }
 
   /** Whether ANY watcher is armed in this pod, asked of the registry that owns the answer; a lost channel propagates, since a renewal loses the request and not the watcher, and a suspend decided on it would kill one. */
@@ -30,7 +35,7 @@ export class ShimAutoMergeClient implements AutoMergeSandbox {
     try {
       return await this.send(payload)
     } catch (err) {
-      // For the box's own ops a lost channel is a pod that went away mid-request, which IS the answer: nothing is watching any more.
+      // For an arm or a read a lost channel is a pod that went away mid-request, and the next read corrects it; a disarm never comes here.
       if (err instanceof ShimChannelLostError) return { armed: false }
       throw err
     }

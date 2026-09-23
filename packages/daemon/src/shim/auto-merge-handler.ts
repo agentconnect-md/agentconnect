@@ -81,6 +81,8 @@ export function createAutoMergeHandler(
   deps: AutoMergeHandlerDeps = {}
 ): (payload: unknown) => Promise<AutoMergeHandlerState> {
   const entries = new Map<string, Entry>()
+  // Watchers a disarm is still ending: a disarm retried after its first request was lost waits for the same exit.
+  const ending = new Map<string, Promise<void>>()
   const paths = deps.paths ?? DEFAULT_SHIM_PATHS
   const entryPath = deps.entryPath ?? paths.autoMergeEntry
   const spawnChild =
@@ -99,12 +101,18 @@ export function createAutoMergeHandler(
     if (p.op === 'state') return entry ? { ...entry.status } : { armed: false }
 
     if (p.op === 'disarm') {
-      // Dropped from the registry FIRST, so a concurrent `state` never reports a watcher being torn
-      // down, then awaited: the child fences its own in-flight tick before exiting, so answering only
-      // after it is gone means this `armed:false` cannot have a squash landing behind it.
+      // Dropped from the registry first so no `state` reports a watcher being torn down, then answered only after the child — which fences its own tick — has exited, whichever disarm started it.
       if (entry) {
         entries.delete(id)
-        await endChild(entry.child)
+        const done = endChild(entry.child)
+        ending.set(id, done)
+        try {
+          await done
+        } finally {
+          if (ending.get(id) === done) ending.delete(id)
+        }
+      } else {
+        await ending.get(id)
       }
       return { armed: false }
     }

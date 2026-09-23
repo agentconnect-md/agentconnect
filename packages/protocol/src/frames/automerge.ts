@@ -1,20 +1,6 @@
 import { z } from 'zod'
 
-/**
- * Merge-when-ready (C→D REQ → REP) — the PR panel's auto-merge toggle, served at the EDGE.
- *
- * GitHub's own `enablePullRequestAutoMerge` cannot back this control: it refuses any pull
- * request that is not BLOCKED, so on a repository without required status checks — the common
- * case — arming is impossible in every state (`clean status` / `unstable status`). The watcher
- * is therefore ours, and it lives where the agent runs: in the agent's sandbox for a
- * cluster-placed agent, in the owning daemon's process for a local one.
- *
- * Nothing is persisted anywhere. The armed set is IN-MEMORY at the edge, so a reclaimed
- * sandbox or a restarted daemon simply forgets — the box reads back unchecked, which is the
- * honest projection of "nobody is watching this pull request any more". The CP stores none of
- * it and runs no loop; it relays these two frames for the console and forgets them too
- * (body-locality — webchat-side-panels.md §2).
- */
+// Merge-when-ready (C→D REQ → REP), served at the EDGE because GitHub's auto-merge refuses any pull request that is not BLOCKED: a cluster agent's watcher runs in a pod (an isolated session's own, else the agent's), a local one's in its daemon, in memory only — the CP relays and stores nothing.
 
 /** Machine-readable `reason` on an auto-merge `BAD_PAYLOAD` error frame's `details`, so the CP
  *  answers with a code the console can branch on instead of the 503 that reads as an offline
@@ -36,8 +22,7 @@ export type AutoMergeErrorReason = z.infer<typeof AutoMergeErrorReason>
  *  names, refusal messages), so it is bounded on the wire rather than trusted. */
 export const MAX_AUTO_MERGE_DETAIL = 300
 
-/** The pull request a watcher is addressed by. Not a session: the watcher outlives any one
- *  turn, and two sessions on one agent's shared checkout can name the same pull request. */
+/** The pull request a watcher is addressed by — never a session, since two sessions (the one that opened it, a later PR-triggered one) can name the same pull request. */
 export const AutoMergeTarget = z.object({
   agentId: z.string().min(1), // the agent id the CP addresses this daemon's agents by, as `agent/wake` does
   repoFullName: z.string().min(3).max(200), // "owner/repo"
@@ -45,9 +30,12 @@ export const AutoMergeTarget = z.object({
 })
 export type AutoMergeTarget = z.infer<typeof AutoMergeTarget>
 
-/** C→D REQ: arm or disarm the watcher. Idempotent — asking for the state it is already in
- *  answers with that state and starts nothing. */
-export const AutoMergeSetReq = AutoMergeTarget.extend({ enabled: z.boolean() })
+/** C→D REQ: arm or disarm the watcher — idempotent, so asking for the state it is already in answers that state and starts nothing. */
+export const AutoMergeSetReq = AutoMergeTarget.extend({
+  enabled: z.boolean(),
+  /** The session arming it, which places the watcher (its own pod when isolated) but never keys it; sent only on an arm, to a daemon advertising `auto-merge-session-v1`. */
+  sessionId: z.string().min(1).optional()
+})
 export type AutoMergeSetReq = z.infer<typeof AutoMergeSetReq>
 
 /** C→D REQ: what the edge currently holds for this pull request. */

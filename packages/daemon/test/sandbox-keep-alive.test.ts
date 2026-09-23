@@ -15,7 +15,8 @@ interface Overrides {
   /** The pod this page's worktree lives on, as the routing resolves it. */
   podOf: (agentId: string, sessionId?: string) => string
   knownAgent: boolean
-  armed: boolean | Error
+  /** The pods a merge watcher is armed in, or the error every such read fails with. */
+  armed: string[] | Error
   status: { isRepo?: boolean; clean?: boolean } | Error
   statusOf: (agentId: string, sessionId?: string) => { isRepo?: boolean; clean?: boolean }
 }
@@ -31,19 +32,21 @@ function build(overrides: Partial<Overrides> = {}) {
     if (overrides.status instanceof Error) throw overrides.status
     return overrides.statusOf?.(agentId, sessionId) ?? overrides.status ?? { isRepo: true, clean: true }
   })
+  const armedIn = vi.fn(async (subject: string) => {
+    if (overrides.armed instanceof Error) throw overrides.armed
+    return (overrides.armed ?? []).includes(subject)
+  })
   const deps: SandboxKeepAliveDepsInternal = {
     podFor: async (agentId, sessionId) => overrides.podOf?.(agentId, sessionId) ?? AGENT_POD,
     agentPod: (agentId) => agentId,
+    boundPods: () => [...bound],
+    armedIn,
     holdIfBound: (subject) => {
       if (!bound.has(subject)) return undefined
       heldDuring.push(subject)
       return () => released.push(subject)
     },
     knownAgent: () => overrides.knownAgent ?? true,
-    armedFor: async () => {
-      if (overrides.armed instanceof Error) throw overrides.armed
-      return overrides.armed === true
-    },
     gitStatus,
     holds
   }
@@ -52,6 +55,7 @@ function build(overrides: Partial<Overrides> = {}) {
     deps,
     holds,
     gitStatus,
+    armedIn,
     heldDuring,
     released,
     advance: (ms: number) => (now += ms)
@@ -75,14 +79,14 @@ describe('sandbox keep-alive', () => {
   })
 
   it('holds an armed merge-when-ready watcher even on a clean tree — the watcher lives in that pod', async () => {
-    const { keepAlive, holds } = build({ armed: true })
+    const { keepAlive, holds } = build({ armed: [AGENT_POD] })
 
     expect(await keepAlive(REQ)).toMatchObject({ held: true, reasons: ['auto-merge-armed'] })
     expect(holds.reasons('agent-1')).toEqual(['auto-merge-armed'])
   })
 
   it('reports both reasons when both apply', async () => {
-    const { keepAlive } = build({ armed: true, status: { isRepo: true, clean: false } })
+    const { keepAlive } = build({ armed: [AGENT_POD], status: { isRepo: true, clean: false } })
     expect((await keepAlive(REQ)).reasons).toEqual(['auto-merge-armed', 'uncommitted-files'])
   })
 
@@ -123,7 +127,7 @@ describe('sandbox keep-alive', () => {
   })
 
   it('keeps the other reason when one of the two reads fails', async () => {
-    const statusFailed = build({ armed: true, status: new Error('sandbox unavailable') })
+    const statusFailed = build({ armed: [AGENT_POD], status: new Error('sandbox unavailable') })
     expect(await statusFailed.keepAlive(REQ)).toMatchObject({ held: true, reasons: ['auto-merge-armed'] })
 
     const armedFailed = build({ armed: new Error('channel lost'), status: { isRepo: true, clean: false } })
@@ -142,7 +146,7 @@ describe('sandbox keep-alive', () => {
   })
 
   it('a renewal is a fresh deadline, and replaces the reasons it was taken for', async () => {
-    const { keepAlive, deps, holds, advance } = build({ armed: true, status: { isRepo: true, clean: false } })
+    const { keepAlive, deps, holds, advance } = build({ armed: [AGENT_POD], status: { isRepo: true, clean: false } })
     await keepAlive(REQ)
     advance(SANDBOX_HOLD_TTL_MS - 1_000)
 
@@ -222,13 +226,11 @@ describe('sandbox keep-alive', () => {
     })
 
     it('keeps the armed watcher’s lease on the AGENT pod while this page’s session pod sleeps', async () => {
-      // The watcher is a process in the agent's pod and has nothing to do with which worktree this page
-      // is watching. Judging the two facts on one pod let the session pod going to sleep release the
-      // watcher's lease, so the sweep could take the agent pod and silently disarm a visible page's box.
+      // A watcher armed from a shared session runs in the agent pod; judged on this page's pod instead, its lease went with that pod's sleep.
       const { keepAlive, holds, gitStatus } = build({
         bound: [AGENT_POD],
         podOf: () => SESSION_POD,
-        armed: true,
+        armed: [AGENT_POD],
         status: { isRepo: true, clean: false }
       })
 
@@ -247,7 +249,7 @@ describe('sandbox keep-alive', () => {
     })
 
     it('drops both leases when the agent pod is asleep beside this page’s', async () => {
-      const { keepAlive, holds, gitStatus } = build({ bound: [], podOf: () => SESSION_POD, armed: true })
+      const { keepAlive, holds, gitStatus } = build({ bound: [], podOf: () => SESSION_POD, armed: [AGENT_POD] })
       holds.renew(AGENT_POD, 'session-1', ['auto-merge-armed'])
       holds.renew(SESSION_POD, 'other-session', ['uncommitted-files'])
 
@@ -275,11 +277,10 @@ describe('sandbox keep-alive', () => {
     })
 
     it('an armed watcher holds the AGENT pod while the dirty tree holds this page’s session pod', async () => {
-      // The two facts are about two pods: the watcher is a process in the agent's own pod, the edits
-      // are on the session volume. One poll reports both and leases each where it belongs.
+      // Two facts about two pods — a watcher armed from a shared session, edits on the session volume — each leased where it belongs.
       const { keepAlive, holds } = build({
         podOf: () => SESSION_POD,
-        armed: true,
+        armed: [AGENT_POD],
         status: { isRepo: true, clean: false }
       })
 
@@ -317,6 +318,41 @@ describe('sandbox keep-alive', () => {
       const state = build({ podOf: () => SESSION_POD, status: new Error('channel lost') })
       await state.keepAlive(REQ)
       expect(state.released).toEqual([AGENT_POD, SESSION_POD])
+    })
+
+    it('holds THIS session’s pod for a watcher armed in it, and leaves the agent pod suspendable', async () => {
+      // An isolated session's arm runs its watcher in that session's own pod (k8s-daemon-pool §4).
+      const { keepAlive, holds } = build({ podOf: () => SESSION_POD, armed: [SESSION_POD] })
+
+      expect(await keepAlive(REQ)).toMatchObject({ held: true, reasons: ['auto-merge-armed'] })
+      expect(holds.reasons(SESSION_POD)).toEqual(['auto-merge-armed'])
+      expect(holds.holds(AGENT_POD)).toBe(false)
+    })
+
+    it('holds a sibling session’s pod while a watcher runs in it, and releases it once it runs none', async () => {
+      // The pull request this page shows may have been armed from another session, whose pod runs its watcher.
+      const sibling = 'agent-1/session-xyz'
+      const state = build({ bound: [AGENT_POD, SESSION_POD, sibling], podOf: () => SESSION_POD, armed: [sibling] })
+
+      expect(await state.keepAlive(REQ)).toMatchObject({ held: true, reasons: ['auto-merge-armed'] })
+      expect(state.holds.reasons(sibling)).toEqual(['auto-merge-armed'])
+      expect(state.holds.holds(SESSION_POD)).toBe(false)
+      expect(state.holds.holds(AGENT_POD)).toBe(false)
+      // Asked under its own hold, like every other pod read.
+      expect(state.released).toContain(sibling)
+
+      // Merged: RELEASED on the next poll rather than left to lapse.
+      const merged = createSandboxKeepAlive({ ...state.deps, armedIn: async () => false })
+      expect(await merged(REQ)).toMatchObject({ held: false, reasons: [] })
+      expect(state.holds.holds(sibling)).toBe(false)
+    })
+
+    it('never asks a pod that is not bound', async () => {
+      const sibling = 'agent-1/session-xyz'
+      const { keepAlive, armedIn } = build({ bound: [AGENT_POD], podOf: () => AGENT_POD, armed: [sibling] })
+
+      expect(await keepAlive(REQ)).toMatchObject({ held: false })
+      expect(armedIn.mock.calls.map(([subject]) => subject)).toEqual([AGENT_POD])
     })
 
     it('a session page whose pod cannot be routed falls back to the agent’s own pod', async () => {

@@ -50,6 +50,7 @@ import {
   MAX_TASK_LIST_TASKS,
   TASK_LIST_FEATURE,
   AUTO_MERGE_FEATURE,
+  AUTO_MERGE_SESSION_FEATURE,
   SANDBOX_KEEP_ALIVE_FEATURE,
   RUNTIME_COMMANDS_FEATURE,
   AGENT_WAKE_FEATURE,
@@ -513,6 +514,7 @@ import { isNoResponseBody } from './session/no-response.js'
 import { sessionReplyRoute } from './session/reply-route.js'
 import { WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createWorkspaceScope } from './cp/workspace-scope.js'
+import { sessionPodOf } from './cp/agent-wake.js'
 import { createWorkspaceFileLinkResolver, type WorkspaceFileLinkResolver } from './messages/workspace-file-links.js'
 import { canonicalWorkspacePath, containedWorkspacePath, WorkspaceViolationError } from './workspace/workspace-files.js'
 import { readRegularFile, RegularFileError } from './fs/regular-file.js'
@@ -2473,18 +2475,16 @@ export class Daemon {
       this.log.warn(`gitcred: glab wrapper shim write failed — spawning agents without it (${formatErr(err)})`)
     }
     await this.gitCredServer.start()
-    // The watcher dispatches on placement: a cluster agent's pod gets the `automerge` channel and
-    // owns the loop, a local agent gets a loop in this process. Both read a token through the same
-    // clamped credential path the agent's own gh does.
+    // A cluster agent's watcher runs in a pod's `automerge` channel, a local agent's loop in this process; both read a token through the clamped credential path the agent's own gh does.
     this.autoMergeWatcher = new AutoMergeWatcher({
       knownAgent: (agentId) => this.agents.has(agentId),
-      // A `--k8s` daemon runs every agent in a pod (the plane refuses to run one locally), so the
-      // plane's presence — not a channel's attachment — is what decides where a watcher may live.
+      // A `--k8s` daemon runs every agent in a pod, so the plane's presence — not a channel's attachment — decides where a watcher may live.
       clusterPlaced: () => this.k8sPlane !== undefined,
-      sandboxFor: (agentId) => this.k8sPlane?.autoMergeFor(agentId),
-      holdSandbox: (agentId) => this.k8sPlane?.holdIfBound(agentSandboxSubject(agentId)),
-      onArmed: (agentId) =>
-        this.sandboxHolds.renew(agentSandboxSubject(agentId), AUTO_MERGE_HOLDER, ['auto-merge-armed']),
+      podsOf: (agentId) => this.k8sPlane?.autoMergeSubjects(agentId) ?? [],
+      sandboxAt: async (subject, bind) => await this.k8sPlane?.autoMergeAt(subject, bind),
+      placementOf: (agentId, sessionId) => this.autoMergePlacement(agentId, sessionId),
+      holdSandbox: (subject) => this.k8sPlane?.holdIfBound(subject),
+      onArmed: (subject) => this.sandboxHolds.renew(subject, AUTO_MERGE_HOLDER, ['auto-merge-armed']),
       capabilityFor: (agentId) => this.gitCredServer!.capabilityFor(agentId),
       tokenFor: async (agentId, repoFullName) =>
         (await this.gitCreds.get(agentId, 'helper', { plane: 'gh', repo: repoFullName })).token,
@@ -6096,6 +6096,8 @@ export class Daemon {
       RUNTIME_COMMANDS_FEATURE,
       // Only a cluster daemon has a sandbox to wake; elsewhere the CP answers `unsupported` unsent.
       ...(this.k8s ? [AGENT_WAKE_FEATURE, SESSION_WAKE_FEATURE] : []),
+      // Only a cluster daemon places a watcher by session; elsewhere the loop runs in this process either way.
+      ...(this.k8s ? [AUTO_MERGE_SESSION_FEATURE] : []),
       // A managed pool refreshes on its timer alone; only a deployment that opts in takes requests.
       ...(this.k8sProbeOnDemand ? [RUNTIME_PROBE_FEATURE] : []),
       WORKSPACE_GIT_MESSAGE_FEATURE,
@@ -19873,13 +19875,7 @@ export class Daemon {
         continue
       }
       // Inside the window only a pod that never came up goes, judged by the plane against the launch it reads: the agent's traffic says nothing about that pod, and it holds its node's resources while it waits.
-      void (
-        !quiet
-          ? plane.suspendStalled(subject)
-          : leaf === undefined
-            ? this.suspendUnlessWatching(plane, subject)
-            : plane.suspendIdle(subject)
-      )
+      void (!quiet ? plane.suspendStalled(subject) : this.suspendUnlessWatching(plane, subject))
         .then((outcome) => {
           if (outcome !== 'suspended') return
           this.log.info(
@@ -19891,7 +19887,25 @@ export class Daemon {
     }
   }
 
-  /** Suspend a quiet pod unless a merge-when-ready watcher is armed in it, by the pod's own registry; nothing about the watcher is stored, so a restarted or new holder learns it here. */
+  /** Where an arm's watcher lives (k8s-daemon-pool §4): an isolated session's own pod when it has one, else the agent's — off the session's directory and its claim, never off what is attached. */
+  private async autoMergePlacement(agentId: string, sessionId?: string): Promise<string> {
+    const plane = this.k8sPlane
+    const agentPod = agentSandboxSubject(agentId)
+    if (!plane || sessionId === undefined) return agentPod
+    const scope = createWorkspaceScope({
+      workspaces: this.workspaces,
+      agentOf: (id) => this.agents.get(id),
+      sessionOf: (id, outwardId) => this.store.getSessionByOutwardId(outwardId, id),
+      runtimeRootOf: (id) => plane.workspaceRootFor(id)
+    })
+    // A session this member does not know names no pod of its own, so its arm lands where an unscoped one would.
+    const pod = (await sessionPodOf(scope, plane, agentId, sessionId)) ?? agentPod
+    if (pod === agentPod) return agentPod
+    // No claim means no pod of its own — a pre-§11 worktree or a session not yet prepared keeps its workspace on the agent pod, as retention judges it.
+    return (await plane.hasSandbox(pod)) ? pod : agentPod
+  }
+
+  /** Suspend a quiet pod — the agent's or a session's — unless a merge-when-ready watcher is armed in it, by the pod's own registry; nothing about the watcher is stored, so a restarted or new holder learns it here. */
   private async suspendUnlessWatching(
     plane: K8sRuntimePlane,
     subject: string

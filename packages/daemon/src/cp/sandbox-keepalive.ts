@@ -5,14 +5,16 @@ import { AGENT_WIDE_HOLDER, type SandboxHolds } from '../k8s/sandbox-hold.js'
 export interface SandboxKeepAliveDepsInternal {
   /** The pod this page's session lives on, off its own directory as its wake and reads route it — never the agent's for an isolated session, whatever its primary is; the agent's with no session. */
   podFor: (agentId: string, sessionId?: string) => Promise<string>
-  /** The agent's own pod — where an armed merge watcher runs, whatever worktree this page is watching. */
+  /** The agent's own pod, always judged: a page whose own pod sleeps still answers for the agent's. */
   agentPod: (agentId: string) => string
+  /** Every pod of the agent bound right now — where an armed merge watcher can be running (§11). */
+  boundPods: (agentId: string) => string[]
+  /** Whether a merge watcher is armed in one pod, asked of that pod's own registry. */
+  armedIn: (subject: string) => Promise<boolean>
   /** Hold one pod against the idle sweep while it is bound, or undefined when it is asleep or was never placed there. */
   holdIfBound: (subject: string) => (() => void) | undefined
   /** Whether this daemon holds the agent at all — an unknown id holds nothing. */
   knownAgent: (agentId: string) => boolean
-  /** Whether ANY pull request is armed for this agent, wherever its watcher lives. */
-  armedFor: (agentId: string) => Promise<boolean>
   /** The session worktree's git status, as the Git panel reads it. */
   gitStatus: (agentId: string, sessionId?: string) => Promise<{ isRepo?: boolean; clean?: boolean }>
   holds: SandboxHolds
@@ -51,9 +53,9 @@ export function createSandboxKeepAlive(
       }
       return true
     }
-    // A registry read that fails is not evidence of an armed watcher, so it costs this reason only.
-    const readWatcher = async (): Promise<void> => {
-      if (await deps.armedFor(agentId).catch(() => false)) byPod.get(agentPod)!.push('auto-merge-armed')
+    // Each pod answers for the watchers armed IN it, so the reason holds the pod that runs one; a failed read is no evidence and costs that reason only.
+    const readWatcher = (subject: string) => async (): Promise<void> => {
+      if (await deps.armedIn(subject).catch(() => false)) byPod.get(subject)!.push('auto-merge-armed')
     }
     const readTree = async (): Promise<void> => {
       try {
@@ -65,16 +67,21 @@ export function createSandboxKeepAlive(
       }
     }
     // Judged INDEPENDENTLY, one pod each, so a sleeping session pod is not read while the agent's still reports its watcher; one pod when they are the same.
+    const ownPod = async (): Promise<void> => {
+      await readWatcher(pod)()
+      await readTree()
+    }
     let bound: boolean
     if (pod === agentPod) {
-      bound = await onPod(pod, async () => {
-        await readWatcher()
-        await readTree()
-      })
+      bound = await onPod(pod, ownPod)
     } else {
-      await onPod(agentPod, readWatcher)
-      bound = await onPod(pod, readTree)
+      await onPod(agentPod, readWatcher(agentPod))
+      bound = await onPod(pod, ownPod)
     }
+    // A watcher another session armed runs in that session's pod: each such bound pod is asked, and released here when it runs none.
+    const others = deps.boundPods(agentId).filter((subject) => !byPod.has(subject))
+    for (const subject of others) byPod.set(subject, [])
+    await Promise.all(others.map((subject) => onPod(subject, readWatcher(subject))))
     let ttlMs: number | undefined
     for (const [subject, held] of byPod) {
       // RELEASE rather than lapse: a tree that just went clean should be suspendable on the sweep's
