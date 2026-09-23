@@ -132,6 +132,7 @@ describe('LocalStore session executor', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v19-')), 'local.sqlite')
     await (await LocalStore.open(path)).close()
     const old = new DatabaseSync(path)
+    old.exec('ALTER TABLE sessions DROP COLUMN decisionModel')
     old.exec('ALTER TABLE sessions DROP COLUMN executorDaemonId')
     old.exec('ALTER TABLE sessions DROP COLUMN stayedHomeReason')
     old.exec('ALTER TABLE sessions DROP COLUMN originCodeHostReplyTarget')
