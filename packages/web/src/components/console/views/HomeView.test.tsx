@@ -27,6 +27,7 @@ vi.mock('@/components/console/RuntimeModelSelect', () => ({
     value: { runtime: string; model: string }
     source?: { runtimeModels: Array<{ runtime: string; models: string[] }> }
     decision?: { selected: boolean }
+    settings?: Partial<Record<'effort' | 'approval', { value: string; options: readonly { value: string }[] }>>
     onChange(value: { runtime: string; model: string }): void
   }) => {
     mocks.menus.push({
@@ -34,6 +35,14 @@ vi.mock('@/components/console/RuntimeModelSelect', () => ({
       value: props.decision?.selected ? 'By decision' : props.value.model,
       options: props.source?.runtimeModels.find((item) => item.runtime === props.value.runtime)?.models ?? []
     })
+    // Effort and approval now live in the picker footer; report them the way the old chips did.
+    for (const [key, title] of [
+      ['effort', 'Effort'],
+      ['approval', 'Permission']
+    ] as const) {
+      const control = props.settings?.[key]
+      if (control) mocks.menus.push({ title, value: control.value, options: control.options.map((o) => o.value) })
+    }
     return (
       <button data-runtime-choice onClick={() => props.onChange({ runtime: 'codex', model: 'code-model' })}>
         Choose runtime

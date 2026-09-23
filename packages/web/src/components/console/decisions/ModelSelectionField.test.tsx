@@ -220,9 +220,12 @@ it('edits the agent run settings from the fixed picker', async () => {
     )
   )
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Provider and model"]')!.click())
-  await act(async () =>
-    document.querySelector<HTMLButtonElement>('[role="group"][aria-label="Approval"] [aria-pressed="false"]')!.click()
-  )
+  const approval = document.querySelector<HTMLSelectElement>('select[aria-label="Approval"]')!
+  const other = [...approval.options].find((option) => option.value !== 'default')!.value
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(approval, other)
+    approval.dispatchEvent(new Event('change', { bubbles: true }))
+  })
   expect(onFallbackChange).toHaveBeenCalledWith(
     expect.objectContaining({ runtime: 'claude', model: 'model-standard', effort: 'medium' })
   )

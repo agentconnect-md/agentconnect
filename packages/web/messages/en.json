@@ -2319,7 +2319,6 @@
       },
       "runtimeModel": {
         "title": "Provider and model",
-        "runSettings": "Run settings · {model}",
         "effort": "Effort",
         "approval": "Approval",
         "provider": "Provider",
@@ -2331,6 +2330,7 @@
         "agentSetting": "Agent setting",
         "decisionHelp": "{name} picks the runtime and model when the session starts",
         "fastMode": "Fast mode",
+        "fast": "Fast",
         "lowerLatency": "Lower latency",
         "imageBinaryMissing": "Binary not installed in image",
         "readOnly": "Runtime changes are disabled for this chat."

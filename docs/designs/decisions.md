@@ -1679,12 +1679,15 @@ This consumer is independent of MCP Decision attachments and live message trigge
 The Agent create/edit **Runtime** section has two modes, **Fixed** and **By decision**.
 Both use the same Provider · model picker: runtimes on the left, their advertised
 models on the right, and search across every runtime. The Fixed picker and each
-By decision rule and fallback picker have a **Run settings** section below the model
-list: model-specific Effort, runtime-specific Approval, and Fast mode, which appears
-only when the chosen model offers it. There are no separate Effort or Permission mode
-fields. Selecting a model keeps the picker open so these settings can be adjusted
-together. The closed trigger shows the model with its effort in parentheses, for
-example `5.6 Sol (Extra High)`, and the FAST badge when enabled.
+By decision rule and fallback picker end in one run-settings row below the model
+list: a model-specific Effort select, a runtime-specific Approval select, and a Fast
+switch that appears only when the chosen model offers it. There are no separate
+Effort or Permission mode fields. Selecting a model keeps the picker open so these
+settings can be adjusted together. The closed trigger shows the model with its effort
+in parentheses, for example `5.6 Sol (Extra High)`, and the FAST badge when enabled.
+The chat composers use the same picker and row for the session's own settings, and
+their pill reads `model · effort · approval`; there are no separate effort or
+permission chips.
 Catalog contents come from the selected daemon, group, or managed pool;
 screenshots do not define a static model catalog. Login and missing
 installation states remain visible. A runtime with no model selector can still be
