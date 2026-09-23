@@ -8,7 +8,6 @@ import {
   effortLabel,
   FALLBACK_RUNTIME_IDS,
   selectableRuntimeIds,
-  fastModeAvailableFor,
   modelCapability,
   displayedEffort,
   preferredModelFor,
@@ -519,7 +518,6 @@ export default function EditAgentModal({
     capability?.efforts && effort && !effortChoices.some((o) => o.value === effort)
       ? [...effortChoices, { value: effort, label: `${effortLabel(runtime, effort)} (unavailable)` }]
       : effortChoices
-  const fastModeAvailable = fastModeAvailableFor(runtime, capability)
   const permissionChoices = permissionModeChoicesFor(runtime, modelCatalog)
   // Visibility follows the resolved vocabulary, which is empty for a runtime without permission modes.
   const showPermission = permissionChoices.length > 0
@@ -862,7 +860,7 @@ export default function EditAgentModal({
                 enabled={featureFlagEnabled('decisions')}
                 runInSandbox={effectiveRunInSandbox}
                 fastMode={fastMode}
-                onFastModeChange={fastModeAvailable || modelSelection ? setFastMode : undefined}
+                onFastModeChange={setFastMode}
                 onFallbackChange={(target) => {
                   if (target.runtime !== runtime) onRuntimeChange(target.runtime)
                   setModel(target.model)

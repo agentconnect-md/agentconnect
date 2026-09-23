@@ -721,11 +721,8 @@ export default function HomeView() {
                         : undefined
                     }
                     fastMode={runtime.fastMode ?? agent.fastMode}
-                    onFastModeChange={
-                      byDecision || fastModeAvailableFor(selectedRuntime, capability)
-                        ? (fastMode) => setRuntime((current) => ({ ...current, fastMode }))
-                        : undefined
-                    }
+                    fastModeAvailable={byDecision || fastModeAvailableFor(selectedRuntime, capability)}
+                    onFastModeChange={(fastMode) => setRuntime((current) => ({ ...current, fastMode }))}
                     onChange={(target) => setRuntime({ ...target, fastMode: runtime.fastMode })}
                   />
                 )}

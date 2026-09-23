@@ -83,10 +83,7 @@ it('shows the selected Fast mode on the closed form selector', async () => {
   expect(trigger.textContent).toContain('FAST')
 })
 
-it('opens read-only chat settings without allowing runtime or Fast overrides', async () => {
-  const onChange = vi.fn()
-  const onSelect = vi.fn()
-  const onFastModeChange = vi.fn()
+it('opens read-only chat settings to the notice alone, without runtime or Fast choices', async () => {
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -96,26 +93,41 @@ it('opens read-only chat settings without allowing runtime or Fast overrides', a
         compact
         readOnly
         value={{ runtime: 'codex', model: 'model-standard' }}
-        onChange={onChange}
-        decision={{ name: 'Task type', selected: true, onSelect }}
-        onFastModeChange={onFastModeChange}
+        onChange={vi.fn()}
+        decision={{ name: 'Task type', selected: true, onSelect: vi.fn() }}
+        onFastModeChange={vi.fn()}
         source={{ runtimeModels: [{ runtime: 'codex', version: '', models: ['model-standard'] }] }}
       />
     )
   )
   await act(async () => container.querySelector('button')!.click())
   const dialog = document.querySelector('[role="dialog"]')!
-  expect(dialog.textContent).toContain('Runtime changes are disabled for this chat.')
-  const model = dialog.querySelector<HTMLButtonElement>('[aria-label="Codex · model-standard"]')!
-  const fast = dialog.querySelector<HTMLButtonElement>('[aria-label="Fast mode"]')!
-  const decision = [...dialog.querySelectorAll('button')].find((button) => button.textContent?.includes('By decision'))!
-  expect([model.disabled, fast.disabled, decision.disabled]).toEqual([true, true, true])
-  await act(async () => {
-    model.click()
-    fast.click()
-    decision.click()
-  })
-  expect(onChange).not.toHaveBeenCalled()
-  expect(onSelect).not.toHaveBeenCalled()
+  expect(dialog.textContent).toBe('Runtime changes are disabled for this chat.')
+  expect(dialog.querySelectorAll('button, input')).toHaveLength(0)
+})
+
+it('keeps Fast mode visible but disabled when the selected model does not offer it', async () => {
+  const onFastModeChange = vi.fn()
+  container = document.createElement('div')
+  document.body.appendChild(container)
+  root = createRoot(container)
+  await act(async () =>
+    root.render(
+      <RuntimeModelSelect
+        value={{ runtime: 'codex', model: 'model-standard' }}
+        onChange={vi.fn()}
+        fastMode
+        fastModeAvailable={false}
+        onFastModeChange={onFastModeChange}
+        source={{ runtimeModels: [{ runtime: 'codex', version: '', models: ['model-standard'] }] }}
+      />
+    )
+  )
+  const trigger = container.querySelector('button')!
+  expect(trigger.textContent).not.toContain('FAST')
+  await act(async () => trigger.click())
+  const fast = document.querySelector<HTMLButtonElement>('[aria-label="Fast mode"]')!
+  expect([fast.disabled, fast.getAttribute('aria-checked')]).toEqual([true, 'false'])
+  await act(async () => fast.click())
   expect(onFastModeChange).not.toHaveBeenCalled()
 })

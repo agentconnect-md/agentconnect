@@ -5846,14 +5846,11 @@ export default function SessionDetailView() {
                                     : undefined
                                 }
                                 fastMode={pgFastMode}
-                                onFastModeChange={
-                                  pgFastModeAvailable || byDecision
-                                    ? (fast) => {
-                                        setRuntimeSelection({ fast })
-                                        pgSetFast(session.id, session.agentId ?? '', fast, webchatConversationId)
-                                      }
-                                    : undefined
-                                }
+                                fastModeAvailable={pgFastModeAvailable || byDecision}
+                                onFastModeChange={(fast) => {
+                                  setRuntimeSelection({ fast })
+                                  pgSetFast(session.id, session.agentId ?? '', fast, webchatConversationId)
+                                }}
                                 onChange={(target) => {
                                   const currentEffort =
                                     runtimeSelection?.effort ?? session.effort ?? owner?.reasoning ?? ''

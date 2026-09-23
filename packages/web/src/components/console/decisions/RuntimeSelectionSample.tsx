@@ -161,8 +161,8 @@ export function RuntimeSelectionSample({
         </div>
         <div className="flex items-center gap-2 border-t border-(--border-subtle) pt-3 text-[13px]">
           <span className="text-(--text-tertiary)">{t('startsOn')}</span>
-          <span className="inline-flex h-5 w-5">
-            <AgentMark model={target.runtime} />
+          <span className="flex h-[15px] w-[15px] flex-none items-center justify-center">
+            <AgentMark model={target.runtime} fillPct={100} />
           </span>
           <strong>{model}</strong>
           <span className="font-mono text-[11px] text-(--text-tertiary)">{runtimeLabel(target.runtime)}</span>
