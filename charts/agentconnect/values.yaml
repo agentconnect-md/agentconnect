@@ -209,6 +209,10 @@ daemonPool:
   # switch belongs in the SAME change that turns the other writer on, with active sessions
   # drained across it (the application's usage-reporting design has no live writer handoff).
   usageReporting: true
+  # Minutes between re-probes of the runtime image, so a model a provider adds appears without a
+  # restart. The pool elects one member per interval to spend a probe pod; 0 turns the timer off.
+  # With features.managed off, the console's cluster page can also request a probe on demand.
+  runtimeProbeIntervalMinutes: 60
   # Session-scoped model credentials (the `agentconnect.key-server/v1` contract). Empty url ⇒
   # members mint nothing and sandboxes run on the `modelEgress` floor alone. Set, each member
   # fetches a per-session credential from this endpoint and injects it into the sandbox at spawn,

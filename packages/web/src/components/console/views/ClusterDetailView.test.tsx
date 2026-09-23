@@ -21,12 +21,15 @@ const mocks = vi.hoisted(() => ({
   usage: {} as Record<string, unknown>,
   topUps: {} as Record<string, unknown>,
   keys: [] as unknown[][],
-  push: vi.fn()
+  push: vi.fn(),
+  role: 'viewer',
+  probe: vi.fn(async () => ({ state: 'probing', members: 2 })),
+  refreshDaemons: vi.fn(async () => {})
 }))
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mocks.push }) }))
 vi.mock('@/lib/org-context', () => ({
-  useOrgs: () => ({ activeOrg: { id: 'org-pool' }, myRole: 'viewer', orgPath: (p: string) => `/acme${p}` })
+  useOrgs: () => ({ activeOrg: { id: 'org-pool' }, myRole: mocks.role, orgPath: (p: string) => `/acme${p}` })
 }))
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
@@ -34,8 +37,13 @@ vi.mock('@/lib/data-context', () => ({
     daemonsLoading: mocks.daemonsLoading,
     agents: mocks.agents,
     agentsLoading: mocks.agentsLoading,
-    memberSetsLoading: mocks.memberSetsLoading
+    memberSetsLoading: mocks.memberSetsLoading,
+    refreshDaemons: mocks.refreshDaemons
   })
+}))
+vi.mock('@/lib/api', async (original) => ({
+  ...(await original<typeof import('@/lib/api')>()),
+  probePoolRuntimes: mocks.probe
 }))
 vi.mock('@/lib/acp-registry', () => ({ useAcpRegistry: () => ({}), acpRuntime: () => undefined }))
 // The Credits card is the page's only fetcher, and it reads three independent sources, so
@@ -173,6 +181,9 @@ beforeEach(() => {
   mocks.topUps = { data: [] }
   mocks.keys = []
   mocks.push.mockClear()
+  mocks.role = 'viewer'
+  mocks.probe.mockClear()
+  mocks.refreshDaemons.mockClear()
   setFlags('daemon-pool')
 })
 
@@ -328,6 +339,51 @@ describe('ClusterDetailView', () => {
     host.remove()
 
     expect(opened).toContain('npx -y @agentconnect.md/cli auth --runtime claude-acp')
+  })
+
+  it('offers an owner a runtime refresh when the cluster’s members take requests', () => {
+    mocks.role = 'owner'
+    mocks.daemons = [member('p1', { caps: { platforms: [], runtimes: [], acp: true, features: ['runtime-probe-v1'] } })]
+    expect(render()).toContain('Refresh runtimes')
+  })
+
+  it('offers no runtime refresh to a non-owner, or where no serving member takes requests', () => {
+    const taking = { caps: { platforms: [], runtimes: [], acp: true, features: ['runtime-probe-v1'] } }
+    mocks.daemons = [member('p1', taking)]
+    expect(render()).not.toContain('Refresh runtimes')
+    mocks.role = 'owner'
+    mocks.daemons = [member('p1'), member('gone', { status: 'offline', ...taking })]
+    expect(render()).not.toContain('Refresh runtimes')
+  })
+
+  it('asks the pool to probe and re-reads the fleet while it does', async () => {
+    vi.useFakeTimers()
+    mocks.role = 'owner'
+    mocks.daemons = [member('p1', { caps: { platforms: [], runtimes: [], acp: true, features: ['runtime-probe-v1'] } })]
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => {
+        root.render(
+          <ModalProvider>
+            <ClusterDetailView />
+          </ModalProvider>
+        )
+      })
+      const button = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Refresh runtimes')!
+      await act(async () => button.click())
+      expect(mocks.probe).toHaveBeenCalledOnce()
+      expect(host.innerHTML).toContain('Refreshing runtimes…')
+      await act(async () => vi.advanceTimersByTime(20_000))
+      expect(mocks.refreshDaemons).toHaveBeenCalledOnce()
+      await act(async () => vi.advanceTimersByTime(5 * 60_000))
+      expect(host.innerHTML).toContain('Refresh runtimes')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      vi.useRealTimers()
+    }
   })
 
   it('says so when no pool member has registered at all', () => {
@@ -524,6 +580,12 @@ describe('ClusterDetailView — managed (AgentConnect Cloud)', () => {
     expect(html).toContain('>a1<')
     expect(html).toContain('2 models')
     expect(html).toContain('Runtimes available')
+  })
+
+  it('offers no runtime refresh: Cloud refreshes on its own schedule', () => {
+    mocks.role = 'owner'
+    mocks.daemons = [member('p1', { caps: { platforms: [], runtimes: [], acp: true, features: ['runtime-probe-v1'] } })]
+    expect(render()).not.toContain('Refresh runtimes')
   })
 
   it('says where Cloud usage is billed', () => {

@@ -198,7 +198,7 @@ import {
   MemoryStoreReq
 } from './frames/memory-store.js'
 import { LocalSkillsReq, LocalSkillsList } from './frames/skill.js'
-import { RuntimeCommandsReq, RuntimeCommandsList } from './frames/runtime-command.js'
+import { RuntimeCommandsReq, RuntimeCommandsList, RuntimeProbeReq } from './frames/runtime-command.js'
 import {
   KnowledgeSearchReq,
   KnowledgeSearchOk,
@@ -550,6 +550,7 @@ export const FRAME_SCHEMAS = {
   'daemon/lifecycle/progress': DaemonLifecycleProgress,
   'daemon/restart': DaemonRestart,
   'daemon/upgrade': DaemonUpgrade,
+  'daemon/runtimes/probe': RuntimeProbeReq,
   // ── generic replies ──
   'daemon/control/ack': DaemonControlAck,
   ack: Ack,
@@ -844,6 +845,7 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('daemon/lifecycle/progress', FRAME_SCHEMAS['daemon/lifecycle/progress']),
   frame('daemon/restart', FRAME_SCHEMAS['daemon/restart']),
   frame('daemon/upgrade', FRAME_SCHEMAS['daemon/upgrade']),
+  frame('daemon/runtimes/probe', FRAME_SCHEMAS['daemon/runtimes/probe']),
   frame('daemon/control/ack', FRAME_SCHEMAS['daemon/control/ack']),
   frame('ack', FRAME_SCHEMAS['ack']),
   frame('error', FRAME_SCHEMAS['error'])

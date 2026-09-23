@@ -199,6 +199,12 @@ export const McpServerFactDto = z.object({
 /** A CP-commanded daemon restart/upgrade (cli-daemon-split.md §7). Returned by the
  *  upgrade/restart POSTs so the console can track ITS command by `id`, and embedded in
  *  the fleet read model as each daemon's most-recent op. `status` is expiry-projected. */
+/** `POST /daemons/pool/runtime-probe` — `probing` names the members that accepted; `unsupported` = no member takes requests. */
+export const PoolRuntimeProbeDto = z.object({
+  state: z.enum(['probing', 'unsupported']),
+  members: z.number().int().nonnegative()
+})
+
 export const DaemonLifecycleOpDto = z.object({
   id: z.string(),
   op: z.enum(['restart', 'upgrade']),

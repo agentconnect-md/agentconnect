@@ -3846,6 +3846,16 @@ export async function restartDaemon(daemonId: string): Promise<DaemonLifecycleOp
   return apiPost<DaemonLifecycleOpDto>(`${orgBase()}/daemons/${encodeURIComponent(daemonId)}/restart`, {})
 }
 
+export interface PoolRuntimeProbeDto {
+  state: 'probing' | 'unsupported'
+  members: number
+}
+
+// Ask the self-hosted pool to re-probe its runtime image; the refreshed runtimes land in the capability read minutes later. Owner-only.
+export async function probePoolRuntimes(): Promise<PoolRuntimeProbeDto> {
+  return apiPost<PoolRuntimeProbeDto>(`${orgBase()}/daemons/pool/runtime-probe`, {})
+}
+
 // Command a daemon to install `version` via its CLI, then drain + relaunch onto it.
 // Returns the opened op; same track-by-id contract as restart above.
 export async function upgradeDaemon(daemonId: string, version: string): Promise<DaemonLifecycleOpDto> {

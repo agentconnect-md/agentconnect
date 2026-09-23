@@ -466,6 +466,27 @@ describe('CpClient dispatch', () => {
     expect(ack.payload).toEqual({ ok: false, reason: 'unknown cron' })
   })
 
+  it('daemon/runtimes/probe starts a probe and acks where the deployment takes requests', async () => {
+    const runtimeProbe = vi.fn()
+    const { t } = await readyClient({ runtimeProbe })
+    const f = JSON.parse(frame('daemon/runtimes/probe', {}, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    expect(runtimeProbe).toHaveBeenCalledOnce()
+    const ack = JSON.parse(t.sent[0]!)
+    expect(ack.type).toBe('ack')
+    expect(ack.corr).toBe(f.id)
+    expect(ack.payload).toEqual({ ok: true })
+  })
+
+  it('daemon/runtimes/probe is refused, not ignored, where the deployment takes no requests', async () => {
+    const { t } = await readyClient()
+    const f = JSON.parse(frame('daemon/runtimes/probe', {}, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    const ack = JSON.parse(t.sent[0]!)
+    expect(ack.type).toBe('ack')
+    expect(ack.payload.ok).toBe(false)
+  })
+
   it('errors a cron with a bad schedule', async () => {
     const { t } = await readyClient({
       configApply: {

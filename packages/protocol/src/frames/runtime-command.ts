@@ -51,3 +51,7 @@ export function isSkillCommand(command: Pick<RuntimeCommand, 'name' | 'descripti
   if (command.name.includes(':')) return true
   return /\((?:user|project)\)$/.test(command.description.trimEnd())
 }
+
+/** CP → daemon: re-probe the runtime image now (a pool member joins the pool-wide probe); acked with `ack`. */
+export const RuntimeProbeReq = z.object({}).strict()
+export type RuntimeProbeReq = z.infer<typeof RuntimeProbeReq>

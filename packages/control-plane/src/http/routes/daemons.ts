@@ -12,13 +12,17 @@
  */
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
-import { DAEMON_BOOTSTRAP_UPGRADE_FEATURE, SESSION_RETENTION_RE } from '@agentconnect.md/protocol'
+import {
+  DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
+  RUNTIME_PROBE_FEATURE,
+  SESSION_RETENTION_RE
+} from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import type { DaemonView, DaemonLiveness, DaemonRegistry } from '../../ports.js'
 import { isSyntheticEmail } from '../../persistence/ports.js'
 import { DaemonId } from '../../domain/ids.js'
-import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
+import { orgOf, denyViewerWrite, denyNonOwner, ctxOf } from '../rbac.js'
 import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
 import { resolveShareSet } from '../sharing.js'
 import {
@@ -26,6 +30,7 @@ import {
   DaemonCapabilityListDto,
   DaemonViewDto,
   DaemonLifecycleOpDto,
+  PoolRuntimeProbeDto,
   UpdateDaemonBody,
   DaemonUpgradeBody,
   SetSharingBody,
@@ -43,6 +48,9 @@ import { Tag } from '../plugins/openapi.js'
  *  A still-`pending` op older than this reads as no-longer-in-flight and is closed
  *  `failed` on the next register (cli-daemon-split.md §7). */
 const LIFECYCLE_DEADLINE_MS = 15 * 60_000
+
+/** A pool probe requested within this window is answered by the one already started, not sent again. */
+const POOL_RUNTIME_PROBE_DEBOUNCE_MS = 30_000
 
 /** Backoff for the background arm-write recovery (§7). Bounded to well within
  *  {@link LIFECYCLE_DEADLINE_MS} so a transient DB blip recovers before the op expires. */
@@ -277,6 +285,48 @@ export function daemonRoutes(deps: HttpDeps) {
         const rows = await deps.registry.listAvailable(orgOf(req), ctx)
         // Capability needs no lifecycle op, so this read skips that query entirely.
         return rows.map((d) => capabilityOf(toDto(d, deps.liveness, ctx, graceMs, Date.now(), release(), null)))
+      }
+    )
+
+    // One fan-out per window for the whole install: the pool is shared, and every accepted request costs a probe pod.
+    let lastPoolProbe: { at: number; members: number } | undefined
+    r.post(
+      '/daemons/pool/runtime-probe',
+      {
+        schema: {
+          tags: [Tag.Daemons],
+          summary: 'Refresh the pool’s runtimes',
+          description:
+            'Ask every live install-wide pool member that takes requests to re-probe its runtime image now, so a model a provider added since the last probe appears without a restart. The members elect one to claim a probe sandbox and the rest adopt its answer; the refreshed runtimes arrive through GET /daemons/capabilities once it finishes, typically within a few minutes. 202 with the members that accepted; 200 unsupported when no member takes requests (a managed pool refreshes on its own schedule). Requests within 30 s of the last one join it. Organization owners only; 503 when no member can be reached.',
+          operationId: 'probePoolRuntimes',
+          response: { 200: PoolRuntimeProbeDto, 202: PoolRuntimeProbeDto, 403: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyNonOwner(req, reply)) return
+        const members = (await deps.registry.listAvailable(orgOf(req), ctxOf(req))).filter(
+          (d) => d.orgId === null && d.capabilities.features.includes(RUNTIME_PROBE_FEATURE)
+        )
+        if (members.length === 0) return reply.code(200).send({ state: 'unsupported', members: 0 })
+        const now = Date.now()
+        if (lastPoolProbe && now - lastPoolProbe.at < POOL_RUNTIME_PROBE_DEBOUNCE_MS) {
+          return reply.code(202).send({ state: 'probing', members: lastPoolProbe.members })
+        }
+        const live = members.filter((d) => {
+          const conn = deps.liveness.get(d.daemonId)
+          return Boolean(conn?.reachable && conn.state === 'READY')
+        })
+        const acks = await Promise.allSettled(live.map((d) => deps.control.runtimeProbe(d.daemonId)))
+        const accepted = acks.filter((ack) => ack.status === 'fulfilled' && ack.value.ok).length
+        if (accepted === 0) {
+          return reply.code(503).send({
+            error: 'Service Unavailable',
+            statusCode: 503,
+            message: 'no pool member accepted the probe request'
+          })
+        }
+        lastPoolProbe = { at: now, members: accepted }
+        return reply.code(202).send({ state: 'probing', members: accepted })
       }
     )
 

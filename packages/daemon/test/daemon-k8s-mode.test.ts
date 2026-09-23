@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AGENT_WAKE_FEATURE, DAEMON_BOOTSTRAP_UPGRADE_FEATURE } from '@agentconnect.md/protocol'
+import { AGENT_WAKE_FEATURE, DAEMON_BOOTSTRAP_UPGRADE_FEATURE, RUNTIME_PROBE_FEATURE } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { agentHostKey, sessionHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
 import { wireWorkspacePlane } from '../src/execution/plane.js'
@@ -462,6 +462,25 @@ describe('daemon --k8s mode', () => {
       expect((k8sDaemon as any).registrationFeatures()).toContain(AGENT_WAKE_FEATURE)
     } finally {
       await k8sDaemon.stop()
+    }
+  })
+
+  it('advertises runtime probe requests only where the deployment opts in', async () => {
+    const managed = daemon({ root: root({ declared: { runtimes: [{ id: 'claude' }] } }), k8s: true })
+    try {
+      await managed.start()
+      expect((managed as any).registrationFeatures()).not.toContain(RUNTIME_PROBE_FEATURE)
+    } finally {
+      await managed.stop()
+    }
+    vi.stubEnv('AC_RUNTIME_PROBE_ON_DEMAND', 'true')
+    const selfHosted = daemon({ root: root({ declared: { runtimes: [{ id: 'claude' }] } }), k8s: true })
+    try {
+      await selfHosted.start()
+      expect((selfHosted as any).registrationFeatures()).toContain(RUNTIME_PROBE_FEATURE)
+    } finally {
+      await selfHosted.stop()
+      vi.unstubAllEnvs()
     }
   })
 
@@ -1122,6 +1141,52 @@ describe('daemon --k8s mode', () => {
       const profile = (k8sDaemon as any).runtimeFacts.profileFor('claude')
       expect(profile.version).toBe('1.2.3')
       expect(profile.models).toEqual(['sonnet'])
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
+  // A request asks for an answer newer than itself, so a fresh pool answer no longer satisfies it.
+  it('probes again on request even while the pool answer is fresh, and publishes the new one', async () => {
+    const store = await LocalStore.open(':memory:')
+    await store.publishRuntimeImageProbe({
+      imageRef: 'runtime-sandbox:test',
+      now: Date.now(),
+      payload: JSON.stringify({
+        table: { runtimes: [{ id: 'claude', version: '1.2.3', command: 'claude-agent-acp' }] },
+        results: [{ runtime: 'claude', ok: true, models: ['sonnet'], acpProtocolVersion: 1 }]
+      })
+    })
+    const probeRuntimes = vi.fn(async (sweep: any) => {
+      const table = { runtimes: [{ id: 'claude', version: '1.2.3' }] }
+      await sweep?.(table, { agentId: 'ac-runtime-probe-abc', cwd: '/agent' })
+      return table
+    })
+    const k8sDaemon = daemon({
+      root: root(),
+      k8s: true,
+      store,
+      probeHostFactory: () =>
+        ({
+          start: async () => {},
+          newSession: async () => 's',
+          modelOptions: () => ({ models: ['sonnet', 'a-model-added-since'], current: 'sonnet' }),
+          acpProtocolVersion: () => 1,
+          stop: async () => {}
+        }) as never,
+      plane: { probeRuntimes }
+    })
+    try {
+      await k8sDaemon.start()
+      await vi.waitFor(() => expect((k8sDaemon as any).k8sRuntimeProbed).toBe(true))
+      await (k8sDaemon as any).k8sProbeSchedule.idle()
+      expect(probeRuntimes).not.toHaveBeenCalled()
+      ;(k8sDaemon as any).k8sProbeSchedule.request()
+      await (k8sDaemon as any).k8sProbeSchedule.idle()
+      expect(probeRuntimes).toHaveBeenCalledOnce()
+      expect((k8sDaemon as any).runtimeFacts.profileFor('claude').models).toEqual(['sonnet', 'a-model-added-since'])
+      const published = await store.readRuntimeImageProbe('runtime-sandbox:test')
+      expect(JSON.parse(published!.payload).results[0].models).toEqual(['sonnet', 'a-model-added-since'])
     } finally {
       await k8sDaemon.stop()
     }
