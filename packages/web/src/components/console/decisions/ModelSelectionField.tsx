@@ -16,6 +16,7 @@ import { useOrgs } from '@/lib/org-context'
 import { RuntimeModelSelect, type RuntimeModelSource } from '@/components/console/RuntimeModelSelect'
 import { DecisionConditionFields } from './DecisionConditionFields'
 import { RuntimeSelectionSample } from './RuntimeSelectionSample'
+import { DecisionPicker } from './DecisionPicker'
 import { Button, Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 
@@ -157,83 +158,34 @@ export function ModelSelectionField({
       ) : (
         <>
           <div className="flex flex-wrap items-center gap-[10px]">
-            <AnchoredFlyout
-              role="dialog"
-              ariaLabel={t('savedDecisions')}
-              width={320}
-              matchTriggerWidth
-              estimatedHeight={320}
-              align="start"
-              triggerClassName="block w-[280px] min-w-0 max-w-full"
-              trigger={({ open, menuId, toggle }) => (
-                <button
-                  type="button"
-                  className={`inp h-8 min-h-0 w-full cursor-pointer gap-[7px] px-[10px] py-0 text-left text-[12.5px] font-medium hover:border-(--border-strong) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`}
-                  aria-label={t('savedDecisions')}
-                  aria-haspopup="dialog"
-                  aria-expanded={open}
-                  aria-controls={open ? menuId : undefined}
-                  onClick={toggle}
-                >
-                  <Icon name="git-branch" size={13} className="flex-none text-(--text-tertiary)" />
-                  <span className="min-w-0 flex-1 truncate">
-                    {decision?.name ??
-                      retained?.find((item) => item.id === value?.decisionId)?.name ??
-                      t('chooseDecision')}
-                  </span>
-                  <Icon
-                    name="chevron-down"
-                    size={14}
-                    className={`flex-none text-(--text-tertiary) transition-transform ${open ? 'rotate-180' : ''}`}
-                  />
-                </button>
-              )}
-            >
-              {({ close }) => (
-                <div className="max-h-80 overflow-y-auto">
-                  <div className="fhdr">{t('savedDecisions')}</div>
-                  {decisions.map((item) => (
-                    <div key={item.id} className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        className={`fopt min-h-[38px] min-w-0 flex-1 flex-col items-start justify-center gap-px py-1 ${value?.decisionId === item.id ? 'on' : ''}`}
-                        onClick={() => {
-                          selectDecision(item.id)
-                          close(true)
-                        }}
-                      >
-                        <span className="max-w-full truncate">{item.name}</span>
-                        <span className="max-w-full truncate font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                          {t(item.question.type)} · {item.providerId}
-                        </span>
-                      </button>
-                      <a
-                        className={ROW_ACTION}
-                        href={orgPath(`/decisions/${item.id}`)}
-                        target="_blank"
-                        rel="noreferrer"
-                        title={t('openDecision', { name: item.name })}
-                      >
-                        <Icon name="arrow-up-right" size={13} />
-                      </a>
-                    </div>
-                  ))}
-                  {!decisions.length && (
-                    <div className="px-2 py-3 font-sans text-[12px] leading-normal text-(--text-tertiary)">
-                      {loading ? t('loading') : t('emptyDecisions')}
-                    </div>
-                  )}
-                </div>
-              )}
-            </AnchoredFlyout>
+            <DecisionPicker
+              decisions={decisions}
+              value={value?.decisionId}
+              placeholder={retained?.find((item) => item.id === value?.decisionId)?.name ?? t('chooseDecision')}
+              loading={loading}
+              onSelect={(entry) => selectDecision(entry.id)}
+              create={{ href: orgPath('/decisions/new'), newTab: true }}
+            />
             {decision && (
-              <span className="inline-flex h-6 min-w-0 items-center gap-[6px] rounded-[5px] border border-(--border-subtle) bg-(--surface-sunken) px-2 font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)">
-                <Icon name="lock" size={11} className="flex-none text-(--text-tertiary)" />
-                {t('evaluator')}
-                <span className="truncate font-mono text-(--text-primary)">
-                  {decision.providerId} · {decision.model}
+              <>
+                <span className="inline-flex h-6 min-w-0 items-center gap-[6px] rounded-[5px] border border-(--border-subtle) bg-(--surface-sunken) px-2 font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)">
+                  <Icon name="lock" size={11} className="flex-none text-(--text-tertiary)" />
+                  {t('evaluator')}
+                  <span className="truncate font-mono text-(--text-primary)">
+                    {decision.providerId} · {decision.model}
+                  </span>
                 </span>
-              </span>
+                <a
+                  className={ROW_ACTION}
+                  href={orgPath(`/decisions/${decision.id}`)}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={t('openDecision', { name: decision.name })}
+                  aria-label={t('openDecision', { name: decision.name })}
+                >
+                  <Icon name="arrow-up-right" size={13} />
+                </a>
+              </>
             )}
           </div>
           {value && !decision && (

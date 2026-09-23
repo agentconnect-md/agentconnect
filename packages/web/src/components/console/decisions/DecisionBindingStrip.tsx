@@ -7,7 +7,6 @@ import { usePathname, useSearchParams } from 'next/navigation'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
-import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { useOrgs } from '@/lib/org-context'
 import { defaultConditionFor, emptyConditionFor, gateIssues, useDecisionsPrototype } from '@/lib/decisions/provider'
 import { bindingSaveError, type BindingSaveError, type GateStatus, type SavedGate } from '@/lib/decisions/binding'
@@ -16,6 +15,7 @@ import type { DecisionConversationRef } from '@agentconnect.md/protocol/decision
 import { DecisionConditionFields, conditionSummary } from './DecisionConditionFields'
 import { DecisionEvaluationsPanel } from './DecisionEvaluationsPanel'
 import { DecisionGateTry } from './DecisionGateTry'
+import { DecisionPicker } from './DecisionPicker'
 
 /** True when a condition is missing or selects no answer, so a repair still waits on the operator. */
 function selectsNothing(when: DecisionCondition | null): boolean {
@@ -301,79 +301,21 @@ export function DecisionBindingStrip({
         <div className="fld">
           <span className="fldlbl">{t('binding.decision')}</span>
           <div className="flex flex-wrap items-center gap-[9px]">
-            <AnchoredFlyout
-              ariaLabel={t('binding.decision')}
-              align="start"
-              width={280}
-              estimatedHeight={10 + Math.max(1, decisions.length) * 44}
-              triggerClassName="inline-flex min-w-[220px] max-desktop:w-full max-desktop:min-w-0"
-              trigger={({ open, menuId, toggle }) => (
-                <button
-                  type="button"
-                  disabled={!canWrite || busy}
-                  aria-haspopup="menu"
-                  aria-expanded={open}
-                  aria-controls={open ? menuId : undefined}
-                  onClick={toggle}
-                  className={`inp min-h-8 w-full justify-between gap-2 text-left ${
-                    canWrite && !busy ? 'cursor-pointer' : 'cursor-default opacity-60'
-                  }`}
-                >
-                  <span className="font-sans text-[12.5px] font-normal leading-normal">
-                    {decision?.name ?? t('binding.selectDecision')}
-                  </span>
-                  <Icon name="chevron-down" size={14} color="var(--text-tertiary)" className="flex-none" />
-                </button>
-              )}
-            >
-              {({ close }) => (
-                <>
-                  {loading ? (
-                    <div className="px-[9px] py-[7px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                      {t('loading')}
-                    </div>
-                  ) : decisions.length === 0 ? (
-                    <div className="px-[9px] py-[7px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                      {t('binding.noDecisions')}
-                    </div>
-                  ) : (
-                    decisions.map((entry) => (
-                      <button
-                        key={entry.id}
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={entry.id === activeDraft.decisionId}
-                        className={entry.id === activeDraft.decisionId ? 'fopt on' : 'fopt'}
-                        onClick={() => {
-                          close(true)
-                          // Re-picking the current Decision keeps the draft, so a repair is never reseeded with defaults.
-                          if (entry.id !== activeDraft.decisionId) change(entry.id, defaultConditionFor(entry))
-                        }}
-                      >
-                        <span className="flex min-w-0 flex-1 flex-col items-start">
-                          <span className="truncate">{entry.name}</span>
-                          <span className="mono text-[11px] text-(--text-tertiary)">
-                            {t(`types.${entry.question.type}`)} · {entry.model}
-                          </span>
-                        </span>
-                      </button>
-                    ))
-                  )}
-                  <div className="my-1 h-px bg-(--border-subtle)" />
-                  <Link
-                    href={`${orgPath('/decisions/new')}?returnTo=${encodeURIComponent(returnTo)}`}
-                    className="fopt no-underline"
-                    onClick={() => {
-                      beginInlineCreate(bindingKey)
-                      close()
-                    }}
-                  >
-                    <Icon name="plus" size={15} color="var(--text-tertiary)" />
-                    {t('createDecision')}
-                  </Link>
-                </>
-              )}
-            </AnchoredFlyout>
+            <DecisionPicker
+              decisions={decisions}
+              value={activeDraft.decisionId}
+              loading={loading}
+              disabled={!canWrite || busy}
+              triggerClassName="block w-[280px] min-w-0 max-w-full max-desktop:w-full"
+              // Re-picking the current Decision keeps the draft, so a repair is never reseeded with defaults.
+              onSelect={(entry) => {
+                if (entry.id !== activeDraft.decisionId) change(entry.id, defaultConditionFor(entry))
+              }}
+              create={{
+                href: `${orgPath('/decisions/new')}?returnTo=${encodeURIComponent(returnTo)}`,
+                onClick: () => beginInlineCreate(bindingKey)
+              }}
+            />
             {decision && (
               <>
                 <Link
