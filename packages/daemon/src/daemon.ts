@@ -294,7 +294,12 @@ import {
 } from './platforms/integration-config.js'
 import type { InteractionActor } from './platforms/contract.js'
 import { compoundMentionAddressesFor } from './platforms/mention-address.js'
-import { rootPostNeedsThreadMaterialization, rootPostThreadName, threadKeyForPost } from './platforms/thread-keys.js'
+import {
+  rootPostNeedsThreadMaterialization,
+  rootPostThreadName,
+  threadKeyForPost,
+  threadRootResolver
+} from './platforms/thread-keys.js'
 import { isMalformedPlatformTurn } from './platforms/malformed-turn.js'
 import { physicalThreadOf, registerThreadPromotion, threadPromotionFor } from './platforms/thread-promotion.js'
 import { discordThreadPromotion } from './platforms/discord/thread-promotion.js'
@@ -496,6 +501,7 @@ import {
   type RouterAdmitResult
 } from './decisions/router.js'
 import { routerFingerprint, resolveDecisionBundle } from './decisions/bundle.js'
+import { buildDecisionState } from './decisions/state.js'
 import {
   DecisionGate,
   DEFAULT_DECISION_GATE_LIMITS,
@@ -8794,6 +8800,7 @@ export class Daemon {
     }
     trace.stage = 'normalize'
     const normalized = fromPlatformMessage(msg.payload, this.transportScopeForIntegrationIds([msg.integrationId]))
+    normalized.forwardedHistory = !this.store.isShared && !msg.trustedRouting
     // Direct ingress resolves provider ids before onInbound(); HTTP ingress
     // bypasses that callback, but its send-only connection exposes the same API.
     // Mirror the lookup here so session metadata/history can label the sender.
@@ -13555,7 +13562,7 @@ export class Daemon {
             decisionId: selection.decisionId,
             purpose: 'model_selection'
           }),
-        state: async () => {
+        state: async (decision) => {
           if (entry.hookContext) {
             const description = await this.githubReviews.pullRequestDescription(
               entry.hookContext,
@@ -13563,7 +13570,32 @@ export class Daemon {
             )
             return description === undefined ? undefined : modelSelectionState('pull_request', description)
           }
-          return entry.msg.source === 'user' ? modelSelectionState('chat', entry.msg.text) : undefined
+          const msg = entry.msg
+          if (msg.source !== 'user') return undefined
+          const channel = transcriptChannelKey(msg.channel, msg.transportScope)
+          const record = await this.store.channelRecordRef(channel, transcriptCoords(msg).ts, agent.id)
+          if (!record) return modelSelectionState('chat', msg.text)
+          const window = await this.store.decisionWindow(
+            record.orgId,
+            channel,
+            record.seq,
+            undefined,
+            threadRootResolver(msg.platform, msg.isDm)
+          )
+          if (!window.current) return modelSelectionState('chat', msg.text)
+          const built = buildDecisionState({
+            source: 'chat',
+            ...window,
+            current: window.current,
+            addressing: {
+              mentions: msg.mentionedBots,
+              target: { agentId: agent.id, via: msg.trigger === 'mention' ? 'mention' : 'implicit' }
+            },
+            forwardedHistory: msg.forwardedHistory,
+            question: decision.question,
+            model: decision.model
+          })
+          return built.unsupported ? modelSelectionState('chat', msg.text) : built.state
         },
         evaluate: (input, signal) => this.decisionEvaluator.evaluate(input, signal)
       })

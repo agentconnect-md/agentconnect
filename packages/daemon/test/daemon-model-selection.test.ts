@@ -12,6 +12,11 @@ import { Daemon } from '../src/daemon.js'
 import { EvaluationEventCollector } from '../src/evaluation/index.js'
 import type { ExecutorPlane } from '../src/execution/executor-plane.js'
 import { fakeCpClient } from './webchat-continuation-fixture.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import { transcriptChannelKey } from '../src/store/local-store.js'
+import type { NormalizedMessage } from '../src/messages/normalized.js'
+import type { DecisionEvaluator } from '../src/decisions/evaluator.js'
+import { WAIT } from './wait-support.js'
 
 const agentId = 'example-agent'
 const decisionId = '33333333-3333-4333-8333-333333333333'
@@ -21,7 +26,7 @@ afterEach(async () => {
   for (const daemon of daemons.splice(0)) await daemon.stop()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
-function scaffold() {
+function scaffold(chat = false) {
   const root = mkdtempSync(join(tmpdir(), 'ac-model-decision-'))
   roots.push(root)
   writeFileSync(
@@ -41,7 +46,16 @@ function scaffold() {
       name: 'Example agent',
       runtime: 'test',
       workspace: { mode: 'from-scratch', path: join(dir, 'workspace') },
-      integrations: [],
+      integrations: chat
+        ? [
+            {
+              id: 'int-model',
+              platform: 'slack',
+              core: { bindRules: [{ match: { kind: 'mention' } }] },
+              config: { botToken: 'xoxb', appToken: 'xapp' }
+            }
+          ]
+        : [],
       memory: { provider: 'none' },
       allowRuntimeChangesInChat: true,
       runtimeOverrides: { model: 'model-standard' },
@@ -64,6 +78,7 @@ async function start(root: string) {
   const started: Array<{ runtime: string; model?: string }> = []
   const daemon = new Daemon({
     root,
+    slackAppFactory: fakeSlackAppFactory(),
     evaluation: { observer: new EvaluationEventCollector(), runId: 'model-selection' },
     hostFactory: (agent, onUpdate) =>
       ({
@@ -124,9 +139,20 @@ async function start(root: string) {
   daemons.push(daemon)
   await daemon.start()
   const internal = daemon as any
+  if (internal.connByIntegration.has('int-model')) {
+    internal.connByIntegration.set('int-model', {
+      workspaceId: () => 'T_FAKE_TEAM',
+      setStatus: vi.fn(async () => {}),
+      react: vi.fn(async () => {}),
+      postMessage: vi.fn(async () => 'reply-1'),
+      postBlocks: vi.fn(async () => 'status-bar'),
+      updateBlocks: vi.fn(async () => {})
+    })
+  }
   internal.cpClient = {
     ...fakeCpClient(),
     emitEventSession: vi.fn(),
+    emitIntegrationChannels: vi.fn(),
     supportsServerFeature: (feature: string) => feature === DECISION_MODEL_SELECTION_V1_FEATURE,
     decisionGet: vi.fn(async () => ({
       decision: {
@@ -146,7 +172,7 @@ async function start(root: string) {
   vi.spyOn(internal.runtimeFacts, 'profileFor').mockReturnValue({
     models: ['model-standard', 'model-capable', 'model-manual']
   })
-  const evaluate = vi.spyOn(internal.decisionEvaluator, 'evaluate').mockResolvedValue({
+  const evaluate = vi.spyOn(internal.decisionEvaluator as DecisionEvaluator, 'evaluate').mockResolvedValue({
     status: 'answered',
     model: 'jev-latest',
     usage: { inputTokens: 1, outputTokens: 1 },
@@ -160,6 +186,144 @@ async function start(root: string) {
 }
 
 describe('session-pinned Decision model', () => {
+  it('selects from observed chat history before the opening message, scoped to its bot and conversation', async () => {
+    const { daemon, internal, evaluate, prompted } = await start(scaffold(true))
+    const message = (n: number, text: string, over: Partial<NormalizedMessage> = {}): NormalizedMessage => ({
+      msgId: `slack:C1:1720000000.00000${n}`,
+      traceId: `trace-${n}`,
+      source: 'user',
+      platform: 'slack',
+      channel: 'C1',
+      thread: `1720000000.00000${n}`,
+      sender: { id: 'U1', isBot: false },
+      text,
+      mentionedBots: [],
+      isDm: false,
+      ...over
+    })
+    const route = (msg: NormalizedMessage) => internal.onInboundOutcome(msg, ['int-model'])
+    expect(await route(message(1, 'The migration keeps failing'))).toMatchObject({ kind: 'rejected' })
+    expect(await route(message(2, 'It also breaks login', { sender: { id: 'U2', isBot: false } }))).toMatchObject({
+      kind: 'rejected'
+    })
+    await route(message(3, 'Unrelated conversation', { channel: 'C2' }))
+    await internal.store.recordObservations(agentId, transcriptChannelKey('C1', 'other-bot'), [
+      { ts: '1720000000.000004', thread: null, sender: 'U3', text: 'Another bot conversation' }
+    ])
+    expect(evaluate).not.toHaveBeenCalled()
+    expect(await internal.store.listSessions(agentId)).toHaveLength(0)
+
+    const definition = await internal.cpClient.decisionGet()
+    let release!: () => void
+    const waiting = new Promise<void>((resolve) => (release = resolve))
+    internal.cpClient.decisionGet.mockClear().mockImplementationOnce(async () => {
+      await waiting
+      return definition
+    })
+    const opening = message(5, 'Can you fix that?', {
+      mentionedBots: ['U_FAKE_BOT'],
+      quoted: { sender: 'U2', text: 'It also breaks login' }
+    })
+    const dispatched = await route(opening)
+    await vi.waitFor(() => expect(internal.cpClient.decisionGet).toHaveBeenCalledOnce(), WAIT)
+    await route(message(6, 'A later message must not affect the choice'))
+    release()
+    expect(await dispatched.handle.completion).toMatchObject({ status: 'completed' })
+    await daemon.waitForEvaluationIdle()
+    expect(evaluate).toHaveBeenCalledOnce()
+    const state = evaluate.mock.calls[0]![0].state
+    expect(state).toMatchObject({
+      source: 'chat',
+      currentMessage: {
+        id: '1720000000.000005',
+        sender: { id: 'U1' },
+        text: 'Can you fix that?',
+        quote: { sender: 'U2', text: 'It also breaks login' }
+      },
+      addressing: { mentions: ['U_FAKE_BOT'], target: { agentId, via: 'mention' } },
+      context: { partial: false }
+    })
+    expect(state.history).toEqual([
+      expect.objectContaining({ sender: { id: 'U1' }, text: 'The migration keeps failing' }),
+      expect.objectContaining({ sender: { id: 'U2' }, text: 'It also breaks login' })
+    ])
+    const followup = await route(message(7, 'Thanks', { thread: '1720000000.000005' }))
+    expect(await followup.handle.completion).toMatchObject({ status: 'completed' })
+    await daemon.waitForEvaluationIdle()
+    expect(evaluate).toHaveBeenCalledOnce()
+    expect(prompted).toEqual(['model-capable', 'model-capable'])
+    const oversized = await route(message(8, 'A large error log\n'.repeat(3000), { mentionedBots: ['U_FAKE_BOT'] }))
+    expect(await oversized.handle.completion).toMatchObject({ status: 'completed' })
+    await daemon.waitForEvaluationIdle()
+    expect(evaluate).toHaveBeenCalledTimes(2)
+    expect(evaluate.mock.calls[1]![0].state).toMatchObject({ history: [], truncated: true })
+    expect(prompted.at(-1)).toBe('model-capable')
+  })
+
+  it.each([true, false])('marks independent relay history as partial (Decision routed=%s)', async (routed) => {
+    const { daemon, internal, evaluate, prompted } = await start(scaffold(true))
+    const { decision } = await internal.cpClient.decisionGet()
+    if (routed)
+      internal.agents.get(agentId).integrations[0].core = {
+        bindRules: [{ channel: 'C1', match: { kind: 'decision' } }],
+        decisions: {
+          bindings: [{ channel: 'C1', consumer: { type: 'shared_bot_routing' }, enabled: true }],
+          definitions: []
+        }
+      }
+    const ack = await internal.handleRelayIm({
+      source: 'im',
+      agentId,
+      integrationId: 'int-model',
+      sessionKey: 'C1/1720000000.000002',
+      msgId: 'forward-1',
+      chatId: 'C1',
+      payload: {
+        msgId: 'slack:C1:1720000000.000002',
+        traceId: 'trace-forward',
+        source: 'user',
+        platform: 'slack',
+        channel: 'C1',
+        thread: '1720000000.000002',
+        sender: { id: 'U1', isBot: false },
+        text: 'Can you fix that?',
+        mentionedBots: [],
+        isDm: false
+      },
+      ...(routed
+        ? {
+            trustedRouteSelection: {
+              selectionId: '2:router:example-bot',
+              hostSeq: 2,
+              decisionId,
+              question: decision.question,
+              requestedModel: decision.model,
+              result: { status: 'not_evaluated', reason: 'all_participants' },
+              effect: 'participant',
+              constrained: false,
+              targetAgentIds: [agentId],
+              evaluatedMessageId: 'slack:C1:1720000000.000002',
+              partial: { partial: false, reasons: [], omittedMessages: 0 },
+              hostDaemonId: '44444444-4444-4444-8444-444444444444'
+            },
+            backfill: [
+              { ts: '1720000000.000001', thread: '1720000000.000001', sender: 'U2', text: 'The migration broke login' }
+            ]
+          }
+        : {})
+    })
+    expect(ack).toMatchObject({ accepted: true, ...(routed ? { routeAdmission: 'admitted' } : {}) })
+    await vi.waitFor(() => expect(prompted).toEqual(['model-capable']), WAIT)
+    await daemon.waitForEvaluationIdle()
+    expect(evaluate).toHaveBeenCalledOnce()
+    expect(evaluate.mock.calls[0]![0].state).toMatchObject({
+      source: 'chat',
+      currentMessage: { text: 'Can you fix that?' },
+      history: routed ? [{ text: 'The migration broke login', sender: { id: 'U2' } }] : [],
+      context: { partial: true, reasons: ['forwarded_history'] }
+    })
+  })
+
   it.each([true, false])('honors a manual runtime pair only with the chat grant (allowed=%s)', async (allowed) => {
     const { internal, prompted, executionRuntimes, evaluate } = await start(scaffold())
     internal.agents.get(agentId).allowRuntimeChangesInChat = allowed

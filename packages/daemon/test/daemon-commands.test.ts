@@ -105,6 +105,13 @@ function idleHost() {
   }
 }
 
+function relayRoutingDaemon(): Daemon {
+  const daemon = new Daemon()
+  ;(daemon as any).store = { isShared: false }
+  ;(daemon as any).recordChannelInbound = vi.fn()
+  return daemon
+}
+
 /** Make bot-a routable for DMs + explicit @mention and wire a fake reply connection. */
 function makeRoutable(daemon: Daemon) {
   const a = (daemon as any).agents.get('bot-a')
@@ -255,7 +262,7 @@ describe('Daemon in-conversation commands', () => {
   })
 
   it('passes shared-bot rd/msg(im) through Slack name resolution before dispatch', async () => {
-    const daemon = new Daemon()
+    const daemon = relayRoutingDaemon()
     const conn = {}
     const noteMessage = vi.fn()
     const dispatch = vi.fn(async () => {})
@@ -277,14 +284,13 @@ describe('Daemon in-conversation commands', () => {
     }
 
     expect(await (daemon as any).handleRelayMsg(msg, () => {})).toEqual({ msgId: 'relay-names', accepted: true })
-    expect(noteMessage).toHaveBeenCalledWith(conn, payload)
-    expect(dispatch).toHaveBeenCalledWith('bot-a', payload, 'int-a')
+    expect(noteMessage).toHaveBeenCalledWith(conn, expect.objectContaining(payload))
+    expect(dispatch).toHaveBeenCalledWith('bot-a', expect.objectContaining(payload), 'int-a')
   })
 
   it('stamps trigger=mention on relay im when the message mentions the integration bot', async () => {
-    // Relay arbitration never populates the wire `trigger`; the daemon recomputes it
-    // from the mention list + this integration's own bot identity (see handleRelayIm).
-    const daemon = new Daemon()
+    // The daemon reconstructs the activation cause from the integration's bot identity.
+    const daemon = relayRoutingDaemon()
     const dispatch = vi.fn(async () => {})
     ;(daemon as any).agents.set('bot-a', {})
     ;(daemon as any).connByIntegration.set('int-a', { botUserId: 'U-SELF' })
@@ -306,7 +312,7 @@ describe('Daemon in-conversation commands', () => {
   })
 
   it('leaves trigger unset on relay im when the mention list does not name this bot', async () => {
-    const daemon = new Daemon()
+    const daemon = relayRoutingDaemon()
     const dispatch = vi.fn(async () => {})
     ;(daemon as any).agents.set('bot-a', {})
     ;(daemon as any).connByIntegration.set('int-a', { botUserId: 'U-SELF' })
@@ -328,16 +334,14 @@ describe('Daemon in-conversation commands', () => {
   })
 
   it('an explicit mention un-mutes a !stop-muted relay session; anything else stays dropped', async () => {
-    // Without the recomputed trigger the mute check can never see 'mention' on the
-    // relay path — a !stop-muted agent in a shared channel would be dead forever.
-    const daemon = new Daemon()
+    // A reconstructed mention must wake a stopped relay session.
+    const daemon = relayRoutingDaemon()
     const dispatch = vi.fn(async () => {})
     const setSessionMuted = vi.fn()
     ;(daemon as any).agents.set('bot-a', {})
     ;(daemon as any).connByIntegration.set('int-a', { botUserId: 'U-SELF' })
     ;(daemon as any).commands.isSessionMuted = () => true
     ;(daemon as any).commands.setSessionMuted = setSessionMuted
-    ;(daemon as any).recordChannelInbound = vi.fn()
     ;(daemon as any).dispatch = dispatch
     const frame = (msgId: string, mentionedBots: string[]): RdMsgIm => {
       const { trigger: _t, ...bare } = dm(msgId, 'wake up')
@@ -360,7 +364,7 @@ describe('Daemon in-conversation commands', () => {
   })
 
   it('dedups shared-bot retries per bot while dispatching the same Slack message for two bots', async () => {
-    const daemon = new Daemon()
+    const daemon = relayRoutingDaemon()
     const dispatch = vi.fn(async () => {})
     ;(daemon as any).agents.set('bot-a', {})
     ;(daemon as any).agents.set('bot-b', {})
@@ -393,12 +397,12 @@ describe('Daemon in-conversation commands', () => {
     })
 
     expect(dispatch).toHaveBeenCalledTimes(2)
-    expect(dispatch).toHaveBeenNthCalledWith(1, 'bot-a', botA.payload, botA.integrationId)
-    expect(dispatch).toHaveBeenNthCalledWith(2, 'bot-b', botB.payload, botB.integrationId)
+    expect(dispatch).toHaveBeenNthCalledWith(1, 'bot-a', expect.objectContaining(botA.payload), botA.integrationId)
+    expect(dispatch).toHaveBeenNthCalledWith(2, 'bot-b', expect.objectContaining(botB.payload), botB.integrationId)
   })
 
   it('discovers an unroutable gated Feishu callback before the last-hop gate drops it', async () => {
-    const daemon = new Daemon()
+    const daemon = relayRoutingDaemon()
     const discover = vi.fn()
     const notice = vi.fn()
     const dispatch = vi.fn(async () => {})
@@ -430,8 +434,8 @@ describe('Daemon in-conversation commands', () => {
       msgId: 'relay-feishu-gated',
       accepted: true
     })
-    expect(discover).toHaveBeenCalledWith(payload, ['int-a'])
-    expect(notice).toHaveBeenCalledWith(payload, ['int-a'])
+    expect(discover).toHaveBeenCalledWith(expect.objectContaining(payload), ['int-a'])
+    expect(notice).toHaveBeenCalledWith(expect.objectContaining(payload), ['int-a'])
     expect(dispatch).not.toHaveBeenCalled()
   })
 

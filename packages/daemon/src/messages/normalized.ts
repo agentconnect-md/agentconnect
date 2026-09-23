@@ -117,6 +117,8 @@ export interface NormalizedMessage extends Omit<
   adoptedSession?: boolean
   /** By decision admission context (decisions.md §8.4): daemon-local, persisted with the inbox row, never a trigger. */
   channelIntake?: ChannelIntake
+  /** This independent store may lack observations that the relay did not forward. */
+  forwardedHistory?: boolean
 }
 
 /**

@@ -3,7 +3,8 @@ import {
   DecisionRuntimeTarget,
   type AgentModelSelection,
   type DecisionEvaluation,
-  type DecisionGetReply
+  type DecisionGetReply,
+  type DecisionToolDefinition
 } from '@agentconnect.md/protocol'
 import type { DecisionEvaluationInput } from './evaluator.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
@@ -76,7 +77,7 @@ export interface SessionModelSelectionInput {
   signal: AbortSignal
   current(): boolean
   decision(): Promise<DecisionGetReply>
-  state(): Promise<Record<string, unknown> | undefined>
+  state(decision: DecisionToolDefinition): Promise<Record<string, unknown> | undefined>
   evaluate(input: DecisionEvaluationInput, signal: AbortSignal): Promise<DecisionEvaluation>
   evaluationId: string
 }
@@ -93,7 +94,7 @@ export async function evaluateSessionModel(
   try {
     const { decision } = await input.decision()
     if (!current() || !decision || decision.id !== input.selection.decisionId) return undefined
-    const state = await input.state()
+    const state = await input.state(decision)
     if (!current() || state === undefined) return undefined
     const result = await input.evaluate(
       {
