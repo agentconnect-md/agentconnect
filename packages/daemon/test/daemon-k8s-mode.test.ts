@@ -7,6 +7,7 @@ import { Daemon } from '../src/daemon.js'
 import { agentHostKey, sessionHostKey } from '../src/acp/host-key.js'
 import { wireWorkspacePlane } from '../src/execution/plane.js'
 import { SANDBOX_HOLD_TTL_MS, SandboxHolds } from '../src/k8s/sandbox-hold.js'
+import { ShimChannelLostError } from '../src/shim/channels.js'
 import { sandboxSubjectFor } from '../src/k8s/sandbox-identity.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import { LocalStore } from '../src/store/local-store.js'
@@ -651,6 +652,46 @@ describe('daemon --k8s mode', () => {
       armed = new Error('shim timed out')
       await sweep()
       expect(suspended).toContain('watched')
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('defers a pod whose channel was lost while asked, until it answers', async () => {
+    // A renewal that fails the question on its retry too says nothing about the watcher: suspending on it would kill a live one.
+    const suspended: string[] = []
+    let answer: 'lost' | boolean = 'lost'
+    const k8sDaemon = daemon({
+      root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
+      k8s: true,
+      plane: {
+        launched: () => [{ subject: 'watched', agentId: 'watched', since: 0 }],
+        armedIn: async () => {
+          if (answer === 'lost') throw new ShimChannelLostError('shim channel renewed')
+          return answer
+        },
+        suspendIdle: async (subject: string) => {
+          suspended.push(subject)
+          return 'suspended'
+        }
+      }
+    })
+    try {
+      await k8sDaemon.start()
+      const inner = k8sDaemon as any
+      const sweep = async (): Promise<void> => {
+        await inner.sweepIdleSandboxes(Date.now(), inner.cfg.limits.agentIdleTimeoutMs)
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      }
+
+      await sweep()
+      expect(suspended).toEqual([])
+      // Deferred, not held: the next sweep asks again rather than waiting out a TTL.
+      expect(inner.sandboxHolds.holds('watched')).toBe(false)
+
+      answer = false
+      await sweep()
+      expect(suspended).toEqual(['watched'])
     } finally {
       await k8sDaemon.stop()
     }

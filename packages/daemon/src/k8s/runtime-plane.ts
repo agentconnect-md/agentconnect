@@ -17,7 +17,7 @@ import { PROBE_CLAIM_EXPIRES_ANNOTATION, PROBE_CLAIM_LABEL, PROBE_CLAIM_TTL_MS, 
 import { clusterMetrics } from '../metrics/cluster-metrics.js'
 import { ShimDialer } from '../shim/dialer.js'
 import { spawnSubject } from '../shim/binding.js'
-import { ShimAutoMergeClient } from '../shim/auto-merge-client.js'
+import { ShimAutoMergeClient, askArmed } from '../shim/auto-merge-client.js'
 import { ShimGitRunner } from '../shim/git-exec.js'
 import { ShimFileSink } from '../shim/channels.js'
 import type { ShimSession } from '../shim/session.js'
@@ -174,7 +174,7 @@ export interface K8sRuntimePlane extends ExecutionPlane {
   /** The agent pod's merge-when-ready channel — the watcher runs IN that pod so its armed set dies
    *  with it, which is the lifetime the console projects. */
   autoMergeFor: (agentId: string) => ShimAutoMergeClient | undefined
-  /** Whether a merge-when-ready watcher is armed in one subject's pod, asked of its own registry; a launched pod with no channel yet is bound, never claimed or woken. */
+  /** Whether a merge-when-ready watcher is armed in one subject's pod, asked of its own registry; a launched pod with no channel yet is bound, never claimed or woken, and a channel lost twice rejects with `ShimChannelLostError`. */
   armedIn: (subject: string) => Promise<boolean>
   /** The agent's managed memory tree on its OWN pod's volume: one root beside the checkout
    *  (`<mount>/.agentconnect/memory`), so it follows the agent across members and survives a
@@ -471,10 +471,11 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       const session = boundSession(agentSandboxSubject(agentId))
       return session ? new ShimAutoMergeClient(session) : undefined
     },
-    armedIn: async (subject) => {
-      const session = boundSession(subject) ?? (await driver.bindLaunched(subject as SandboxSubject))
-      return session ? await new ShimAutoMergeClient(session).anyArmed(sandboxSubjectAgentId(subject)) : false
-    },
+    armedIn: (subject) =>
+      askArmed(
+        async () => boundSession(subject) ?? (await driver.bindLaunched(subject as SandboxSubject)),
+        sandboxSubjectAgentId(subject)
+      ),
     memoryFsFor: (agentId) => {
       const subject = agentSandboxSubject(agentId)
       const session = boundSession(subject)

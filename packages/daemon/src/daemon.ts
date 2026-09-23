@@ -81,7 +81,7 @@ import { microsandboxGitRunner } from './microsandbox/git.js'
 import { ShimWorkspaceFs } from './shim/workspace-fs-channel.js'
 import { ShimWorkspaceFiles } from './shim/workspace-files-channel.js'
 import { ClusterSkillClient } from './shim/skill-client.js'
-import type { ShimRequester } from './shim/channels.js'
+import { ShimChannelLostError, type ShimRequester } from './shim/channels.js'
 import type { ClusterSkillLedger } from './store/cluster-skill-ledger.js'
 import { legacySandboxSkillLedger } from './skills/sandbox-skill-ledger.js'
 import { microsandboxSkillTarget } from './microsandbox/shim.js'
@@ -19156,11 +19156,17 @@ export class Daemon {
     subject: string
   ): Promise<'suspended' | 'busy' | 'absent'> {
     const armed = await plane.armedIn(subject).catch((err: unknown) => {
+      // A channel lost even on the retry is no answer either way: the pod waits for the next sweep, with no hold taken.
+      if (err instanceof ShimChannelLostError) return undefined
       // Not evidence of a watcher, as for the keep-alive: an image with none refuses, and a pod that cannot answer is not kept for it.
       if (!(err instanceof AutoMergeViolationError))
         this.log.warn(`idle: could not ask the sandbox "${subject}" for an armed merge watcher: ${formatErr(err)}`)
       return false
     })
+    if (armed === undefined) {
+      this.log.debug?.(`idle: the sandbox "${subject}" lost its channel while asked for a merge watcher — deferred`)
+      return 'busy'
+    }
     if (armed) this.sandboxHolds.renew(subject, AUTO_MERGE_HOLDER, ['auto-merge-armed'])
     // Re-read AFTER the round trip and in the tick that opens the lease's gate: an arm answered meanwhile renewed this hold, and one still in flight retains the pod.
     if (this.sandboxHolds.holds(subject)) return 'busy'

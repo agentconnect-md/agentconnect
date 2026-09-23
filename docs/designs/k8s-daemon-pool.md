@@ -280,8 +280,12 @@ registry — the same `list` the keep-alive reads — and, if anything is armed,
 a lease of its own on that SUBJECT (`AUTO_MERGE_HOLDER`, `k8s/sandbox-hold.ts`).
 While that lease is live the pod is skipped without asking; once it lapses the
 next sweep asks again, so a watcher that merged, saw its pull request closed or
-was disarmed lets the pod go within one TTL. A pod that cannot answer is not kept
-for a watcher it may not have. The question is a round trip, so both sides of it
+was disarmed lets the pod go within one TTL. A lost channel is not an answer: a
+routine renewal fails the request in flight while the watcher runs on, so the
+question is asked once more on the re-attached channel, and a pod that loses it
+again is left for the next sweep without a lease. A pod with no channel to ask,
+or one that answers with an error, is not kept for a watcher it may not have. The
+question is a round trip, so both sides of it
 are fenced: an arm holds the pod — the synchronous retain the idle gate reads —
 from before it is sent until it has renewed the sweep's lease; the sweep re-reads
 its leases in the same tick it publishes the suspension; and a pod whose
