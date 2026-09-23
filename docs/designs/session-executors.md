@@ -661,9 +661,9 @@ session's paths are routed to the executor, as they are routed to a session pod
 today; reads of the agent's primary checkout stay with the holder, where that
 checkout is.
 
-**Agent-scoped state.** A session pod on the pool binds and holds the agent's
-companion pod for three agent-scoped things; a remote session has no companion, so
-each needs a named source:
+**Agent-scoped state.** A remote session holds nothing of the agent's beside its
+own environment, as a session pod on the pool now holds only its own pod, so three
+agent-scoped things each need a named source:
 
 - _Managed memory._ Locally the runtime's memory root is a mount of the holder's
   scope directory, which cannot cross machines, so a managed tree on the holder's

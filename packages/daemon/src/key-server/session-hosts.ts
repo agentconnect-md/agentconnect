@@ -167,8 +167,11 @@ export class ModelSessionHostPool {
     return this.entries.get(sessionKey)?.host !== undefined
   }
 
-  hasStartedHostForAgent(agentId: string): boolean {
-    return [...this.entries.values()].some((entry) => entry.agentId === agentId && entry.host)
+  /** Whether the agent has a started host here, narrowed to the session keys `where` accepts. */
+  hasStartedHostForAgent(agentId: string, where: (sessionKey: string) => boolean = () => true): boolean {
+    return [...this.entries.values()].some(
+      (entry) => entry.agentId === agentId && entry.host !== undefined && where(entry.sessionKey)
+    )
   }
 
   keys(): string[] {

@@ -3566,6 +3566,16 @@ export class LocalStore {
     return row?.ts ?? null
   }
 
+  /** {@link agentLastActivityTs} over the agent's sessions that are not isolated — on a pool, the ones that run in the agent's own pod (k8s-daemon-pool §4). */
+  async agentSharedLastActivityTs(agentId: string): Promise<number | null> {
+    const row = (await this.db
+      .prepare(
+        "SELECT MAX(updatedAt) AS ts FROM sessions WHERE agentId = ? AND state != 'closed' AND (workspaceIsolation IS NULL OR workspaceIsolation != 'session')"
+      )
+      .get(agentId)) as { ts: number | null } | undefined
+    return row?.ts ?? null
+  }
+
   /** Every session key of the agent, open or closed — a row's existence is what keeps its session pod's claim (git-workspace-model §11). */
   async sessionKeysForAgent(agentId: string): Promise<string[]> {
     const rows = (await this.db.prepare('SELECT key FROM sessions WHERE agentId = ?').all(agentId)) as Array<{

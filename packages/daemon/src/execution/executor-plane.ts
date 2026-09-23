@@ -159,7 +159,7 @@ export class ExecutorPlane implements ExecutionPlane {
       ensureLaunch: (subject) => this.ensureLaunch(subject),
       endpoints: this.endpoints,
       binder: this.binder,
-      // No companion: an agent's own environment stays on its holder, so a session's launch is the only one held (§7).
+      // A session's launch is the only one held: an agent's own environment stays on its holder (§7).
       grantsFor: () => EXECUTOR_GRANTS,
       clock: this.clock,
       log: deps.log,
