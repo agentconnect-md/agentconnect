@@ -1031,6 +1031,55 @@ describe('a confined session records its cwd root in its own directory', () => {
   })
 })
 
+describe('a session directory no row names (#2283)', () => {
+  // A plane standing in for a VM that would have to boot: the orphan judgement must never ask it.
+  const refuseThePlane = () =>
+    wireTestPlane(workspaces, {
+      gitRunnerFor: () => {
+        throw new Error('the plane was asked for a runner')
+      },
+      workspaceFsFor: () => {
+        throw new Error('the plane was asked for a filesystem')
+      }
+    })
+
+  it('lists only session leaves, and removes a clean, pushed one judged on this host', async () => {
+    const agent = agentFixture()
+    serveAll(agent)
+    await workspaces.prepareSessionWorkspace(agent, confined())
+    mkdirSync(join(workspaces.agentRootFor(agent), 'sessions', 'scratch'))
+    const leaf = basename(leafOf(agent))
+    expect(workspaces.sessionDirLeaves(agent)).toEqual([leaf])
+    refuseThePlane()
+
+    expect(await workspaces.removeOrphanSessionDir(agent, leaf)).toEqual({ outcome: 'removed' })
+    expect(existsSync(leafOf(agent))).toBe(false)
+    expect(workspaces.sessionDirLeaves(agent)).toEqual([])
+  })
+
+  it('keeps one with uncommitted work or a commit no remote has', async () => {
+    const agent = agentFixture()
+    serveAll(agent)
+    const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
+    const leaf = basename(leafOf(agent))
+    refuseThePlane()
+    writeFileSync(join(cwd, 'wip.md'), 'unsaved\n')
+    expect(await workspaces.removeOrphanSessionDir(agent, leaf)).toEqual({ outcome: 'retained', reason: 'dirty' })
+    rmSync(join(cwd, 'wip.md'))
+    git(cwd, ['commit', '-q', '--allow-empty', '-m', 'only here'])
+    expect(await workspaces.removeOrphanSessionDir(agent, leaf)).toEqual({
+      outcome: 'retained',
+      reason: 'unique-commits'
+    })
+    expect(existsSync(cwd)).toBe(true)
+  })
+
+  it('refuses anything but a session leaf', async () => {
+    const agent = agentFixture()
+    expect((await workspaces.removeOrphanSessionDir(agent, '../workspace')).outcome).toBe('failed')
+  })
+})
+
 // git-workspace-model §11 "Changing the tier": the disk is the record, and every side reads it — so an
 // agent's `runInSandbox` or `workspaceIsolation` changing under a live session cannot leave preparation,
 // the launch and the reads serving three different directories.

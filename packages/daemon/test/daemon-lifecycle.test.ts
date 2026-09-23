@@ -2844,6 +2844,97 @@ describe('Daemon session retention GC (#485)', () => {
     })
   })
 
+  describe('session directories whose row is gone (#2283)', () => {
+    // A session directory holding only its runtime HOME, which carries no work of its own.
+    const sessionDirOf = (daemon: Daemon, key: string) => {
+      const dir = join((daemon as any).agents.get('bot-a').dir, 'sessions', sessionKeyDirName(key))
+      mkdirSync(join(dir, 'home'), { recursive: true })
+      writeFileSync(join(dir, 'home', 'state'), 'x')
+      return dir
+    }
+
+    const startDaemon = async (): Promise<Daemon> => {
+      const daemon = new Daemon({
+        slackAppFactory: fakeSlackAppFactory(),
+        root: scaffold(),
+        hostFactory: () => quietHost() as any,
+        clock: new FakeClock()
+      })
+      await daemon.start()
+      await sweepRetention(daemon)
+      return daemon
+    }
+
+    it('removes an orphan directory, and keeps row, dream and VM-backed ones and one holding work', async () => {
+      const daemon = await startDaemon()
+      const store = (daemon as any).store
+      await seedSession(daemon, 'has-row', 'closed', (daemon as any).clock.now())
+      await store.insertDream({
+        dreamId: 'drm-1',
+        agentId: 'bot-a',
+        status: 'failed',
+        trigger: 'manual',
+        sessionIds: [],
+        snapshotDigest: 'sha256:x',
+        createdAt: '2026-01-01T00:00:00.000Z'
+      })
+      const dreamKey = sessionKey('dream', 'memory', 'drm-1', 'bot-a')
+      const orphan = sessionDirOf(daemon, 'purged')
+      const kept = ['has-row', dreamKey, 'vm-bound'].map((key) => sessionDirOf(daemon, key))
+      // A file where a clone would be, with no `.git` to judge it by: never discarded.
+      const work = sessionDirOf(daemon, 'holds-work')
+      mkdirSync(join(work, 'workspace'))
+      writeFileSync(join(work, 'workspace', 'notes.md'), 'work\n')
+      const scratch = join((daemon as any).agents.get('bot-a').dir, 'sessions', 'scratch')
+      mkdirSync(scratch)
+      ;(daemon as any).microsandbox = {
+        environmentIds: async () => [`bot-a/${sessionKeyDirName('vm-bound')}`],
+        environment: () => ({ id: 'loaded' }),
+        discard: vi.fn(async () => {}),
+        collectImages: vi.fn(async () => {}),
+        stopAll: vi.fn(async () => {})
+      }
+      try {
+        await sweepRetention(daemon)
+        expect(existsSync(orphan)).toBe(false)
+        for (const dir of [...kept, work, scratch]) expect(existsSync(dir)).toBe(true)
+      } finally {
+        await daemon.stop()
+      }
+    })
+
+    it('leaves every directory alone while the manager of a sandboxed agent is down', async () => {
+      const daemon = await startDaemon()
+      const orphan = sessionDirOf(daemon, 'purged')
+      ;(daemon as any).usesMicrosandbox = () => true
+      try {
+        await sweepRetention(daemon)
+        expect(existsSync(orphan)).toBe(true)
+      } finally {
+        await daemon.stop()
+      }
+    })
+
+    it('keeps a directory whose row reappears while the pass waits for the admission fence', async () => {
+      const daemon = await startDaemon()
+      const dir = sessionDirOf(daemon, 'reopened')
+      let release!: () => void
+      const blocked = new Promise<void>((resolve) => (release = resolve))
+      void (daemon as any).enqueueAgentWorkspaceMutation('bot-a', () => blocked)
+      try {
+        const sweep = (daemon as any).sweepSessionRetention()
+        await vi.waitFor(() => expect((daemon as any).workspaceDispatchFences.has('bot-a')).toBe(true), WAIT)
+        await seedSession(daemon, 'reopened', 'idle', (daemon as any).clock.now())
+        release()
+        await sweep
+        expect(existsSync(dir)).toBe(true)
+      } finally {
+        release()
+        await daemon.stop()
+      }
+    })
+  })
+
   it('retention "never" disables the sweep entirely', async () => {
     const clock = new FakeClock()
     const daemon = new Daemon({

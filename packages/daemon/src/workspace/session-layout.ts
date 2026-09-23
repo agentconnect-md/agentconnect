@@ -175,6 +175,11 @@ export function hasSessionsDirIn(agentRoot: string): boolean {
   return existsSync(sessionsDirIn(agentRoot))
 }
 
+/** The worktree id a session directory's leaf carries (`session-<id>`, as sessionKeyDirName names it), else undefined. */
+export function sessionLeafId(leaf: string): string | undefined {
+  return /^session-([a-f0-9]{24})$/.exec(leaf)?.[1]
+}
+
 /** Every session directory ON DISK under `<agentRoot>/sessions`, by leaf name, sorted; symlinks are skipped. */
 export function sessionDirsIn(agentRoot: string): { leaf: string; path: string }[] {
   const parent = sessionsDirIn(agentRoot)

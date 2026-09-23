@@ -82,6 +82,7 @@ import {
   sessionCwdRecordIn,
   sessionDirIn,
   sessionGitDirsUnder,
+  sessionLeafId,
   sessionRootCloneIn,
   sessionsDirIn,
   sessionDirsIn
@@ -241,6 +242,11 @@ const SESSION_BRANCH_DRAWS = 5
 const GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/i
 /** The ref every review fetch writes and verifies, so probing this ONE answers "is this a daemon-owned review snapshot" without listing the ref root. */
 const reviewHeadRefFor = (id: string): string => `refs/agentconnect/reviews/${id}/head`
+
+/** Git this daemon runs on its own disk, with no plane between. */
+function hostGitRunner(cwd?: string, abort?: AbortSignal): GitRunner {
+  return new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort).env(env))
+}
 
 // Instance state, not module state: a process can hold more than one daemon (the test suite routinely does), and a k8s daemon and a local one place every scope differently.
 export class WorkspaceManager {
@@ -969,7 +975,7 @@ export class WorkspaceManager {
         'sandbox-unavailable'
       )
     }
-    return new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort).env(env))
+    return hostGitRunner(cwd, abort)
   }
 
   async clearSandboxPath(agentId: string, root: string): Promise<void> {
@@ -988,7 +994,7 @@ export class WorkspaceManager {
     const remote = this.resolveGitRunner(agentId, cwd, abort)
     if (remote) return remote
     if (this.offDisk({ agentId, path: cwd })) return undefined
-    return new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort).env(env))
+    return hostGitRunner(cwd, abort)
   }
 
   async convergeWorkspaceOrigin(agent: Agent, cwd = agent.workspace.path): Promise<void> {
@@ -1490,25 +1496,44 @@ export class WorkspaceManager {
     return foldSessionRemovals(results)
   }
 
+  /** Leaves of the session directories on this disk, for the sweep that starts from them rather than from rows (#2283). */
+  sessionDirLeaves(agent: Agent): string[] {
+    if (this.offDisk({ agentId: agent.id })) return []
+    return sessionDirsIn(this.agentRootFor(agent))
+      .map((dir) => dir.leaf)
+      .filter((leaf) => sessionLeafId(leaf) !== undefined)
+  }
+
+  /** Remove a session directory no row names, by a session's own rules, judged on this host since a sweep never boots a VM. */
+  async removeOrphanSessionDir(agent: Agent, leaf: string): Promise<SessionWorktreeRemoval> {
+    const id = sessionLeafId(leaf)
+    if (id === undefined) return { outcome: 'failed', error: `${leaf} is not a session directory` }
+    return this.removeSessionClones(agent, sessionDirIn(this.agentRootFor(agent), leaf), id, undefined, true)
+  }
+
   // Remove one confined session's directory with every clone in it (§11) under a session worktree's rules — clean tree, no commit unreachable from a remote, review snapshots exempt — over EVERY local ref, not just HEAD: this removes the object store, so a side branch or a stash is work the checked-out branch cannot speak for.
   private async removeSessionClones(
     agent: Agent,
     sessionDir: string,
     id: string,
-    sessionKey?: string
+    sessionKey?: string,
+    hostSide = false
   ): Promise<SessionWorktreeRemoval> {
     // Asked of the filesystem holding it: a pool session's directory is on its pod, an executor's on that machine, never on this disk.
-    const fs = this.fsFor(agent.id, sessionKey === undefined ? { path: sessionDir } : { sessionKey })
+    const fs = hostSide
+      ? localWorkspaceFs
+      : this.fsFor(agent.id, sessionKey === undefined ? { path: sessionDir } : { sessionKey })
     try {
       if ((await fs.stat(sessionDir)) === 'missing') return { outcome: 'absent' }
-      const canonical = await this.validateSessionDir(agent, sessionDir, sessionKey)
+      const canonical = await this.validateSessionDir(agent, sessionDir, sessionKey, hostSide)
       for (const clone of await sessionClonesUnder(fs, canonical)) {
         if ((await fs.stat(join(clone.path, '.git'))) === 'missing') {
           // No `.git` to interrogate: reclaim only a provably empty leftover, in one operation.
           if (!(await fs.rmdir(clone.path))) return { outcome: 'retained', reason: 'dirty' }
           continue
         }
-        const git = this.runnerFor(agent.id, clone.path).withEnv(workspaceGitLocalEnv())
+        const runner = hostSide ? hostGitRunner(clone.path) : this.runnerFor(agent.id, clone.path)
+        const git = runner.withEnv(workspaceGitLocalEnv())
         // Fetched review refs mark the clone as a daemon-owned review snapshot, reset on every delivery.
         let snapshot: boolean | undefined
         // `show-ref` on the head ref rather than `for-each-ref` over the root: the sandbox admits the one and not the other, and a review that fetched anything fetched this ref.
@@ -1543,13 +1568,18 @@ export class WorkspaceManager {
   }
 
   /** Canonicalize a session directory and prove it still resolves inside the agent directory, as every destructive worktree path does through {@link validateWorktreesRoot}. */
-  private async validateSessionDir(agent: Agent, sessionDir: string, sessionKey?: string): Promise<string> {
+  private async validateSessionDir(
+    agent: Agent,
+    sessionDir: string,
+    sessionKey?: string,
+    hostSide = false
+  ): Promise<string> {
     // Asked of the machine this session runs on: its own, a pod's, or an executor's, which is not the agent's (session-executors.md §7).
     const scope = sessionKey === undefined ? { path: sessionDir } : { sessionKey }
-    if ((await this.fsFor(agent.id, scope).stat(sessionDir)) === 'other')
-      throw new Error('session directory must not be a symlink')
+    const fs = hostSide ? localWorkspaceFs : this.fsFor(agent.id, scope)
+    if ((await fs.stat(sessionDir)) === 'other') throw new Error('session directory must not be a symlink')
     // On a pod the shim's fd-anchored descent is the containment (see validateWorktreesRoot); this side proves only that it composed the path under the mount.
-    const mount = this.sandboxMountFor(agent.id, scope)
+    const mount = hostSide ? undefined : this.sandboxMountFor(agent.id, scope)
     if (mount !== undefined) {
       if (escapesRoot(mount, sessionDir)) throw new Error('session directory resolves outside the mount')
       return sessionDir

@@ -374,6 +374,16 @@ time on shared filesystems.
   only the empty `.git`, `.agents` and `.codex` mountpoints a runtime's sandbox
   leaves where it protected a clone that is not there — is no work to judge, and
   goes with the directory (#2246).
+- **A directory whose row is gone** is found from the disk side, since retirement
+  starts from rows. A purge that could not judge the directory leaves one behind:
+  a shared store's holder purging a session whose directory is on another
+  member, for example. Each retention pass lists the session directories of every
+  loaded agent this daemon serves and retires those that no session row, dream
+  or held host maps to. It applies the same rules with the daemon's own Git on
+  this host and never boots a VM for the purpose. A directory that a microsandbox
+  environment still names waits until that VM is retired. An agent with work in
+  flight is skipped, and each directory is judged again inside the admission
+  fence (#2283).
 - **Console push and Git reads** resolve the session root as today.
 - **Sandbox grants** are per session and exact: the clone's `.git` writable,
   its `hooks` and `config` read-only, for both the outer sandbox and a runtime's

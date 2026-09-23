@@ -18569,6 +18569,8 @@ export class Daemon {
           this.log.warn(`retention: image collection failed (${formatErr(err)})`)
         }
       }
+      // After the VMs: a directory one of them still mounts waits for the pass after it is retired.
+      await this.retireOrphanSessionDirs()
       // Decision 12's removal step rides the same sweep, but not the retention window: a retired
       // root is not an expired session, and an install that keeps sessions forever still retires.
       await this.sweepRetiredWorkspaceRoots()
@@ -18695,8 +18697,8 @@ export class Daemon {
     for (const [agentId, ids] of byAgent) {
       if (this.draining) break
       try {
-        const kept = await this.keptSessionVms(agentId)
-        const orphans = ids.filter((id) => !kept.has(id))
+        const kept = await this.keptSessionLeaves(agentId)
+        const orphans = ids.filter((id) => !kept.has(id.slice(agentId.length + 1)))
         if (orphans.length === 0 || (await this.agentWorkspaceActive(agentId))) continue
         await this.withWorkspaceAdmissionFence(agentId, async () => {
           const agent = this.agents.get(agentId)
@@ -18704,12 +18706,13 @@ export class Daemon {
           for (const id of orphans) {
             if (this.draining) return
             // Re-judged inside the fence, which holds turn admission: a session reopened under the same key keeps its VM.
-            if (manager.environment(id) || (await this.keptSessionVms(agentId)).has(id)) continue
+            const leaf = id.slice(agentId.length + 1)
+            if (manager.environment(id) || (await this.keptSessionLeaves(agentId)).has(leaf)) continue
             try {
               await manager.discard(id)
               retired += 1
               this.log.info(`retention: retired session VM ${id}, whose session row is gone`)
-              await rm(join(agent.dir, 'runtime-homes', id.slice(agentId.length + 1)), { recursive: true, force: true })
+              await rm(join(agent.dir, 'runtime-homes', leaf), { recursive: true, force: true })
             } catch (err) {
               this.log.warn(`retention: could not retire session VM ${id} (${formatErr(err)})`)
             }
@@ -18722,15 +18725,61 @@ export class Daemon {
     return retired
   }
 
-  /** The session VMs of an agent that something may still use: one per stored row, per dream and per host held here. */
-  private async keptSessionVms(agentId: string): Promise<Set<string>> {
+  /** The session leaves of an agent that something may still use: one per stored row, per dream and per host held here. */
+  private async keptSessionLeaves(agentId: string): Promise<Set<string>> {
     const keys = [
       ...(await this.store.sessionKeysForAgent(agentId)).map((key) => sessionHostKey(agentId, key)),
       // A dream's host starts before its execution row exists, and a dream that fails first never writes one.
       ...(await this.store.dreamIdsForAgent(agentId)).map((dreamId) => this.dreamOwnerKey(agentId, dreamId)),
       ...this.hostKeysForAgent(agentId)
     ]
-    return new Set(keys.map((key) => `${agentId}/${hostKeyDirName(key)}`))
+    return new Set(keys.map((key) => hostKeyDirName(key)))
+  }
+
+  /** Remove session directories no row names, as a purge that could not judge them leaves them (#2283); dirty or unpushed work keeps one. */
+  private async retireOrphanSessionDirs(): Promise<void> {
+    // A pool session's directory is on its own pod, which the pool's orphan reconcile collects.
+    if (this.k8sPlane || this.draining) return
+    const retained: string[] = []
+    for (const agent of [...this.agents.values()]) {
+      if (this.draining) break
+      try {
+        if ((await this.orphanSessionLeaves(agent)).length === 0 || (await this.agentWorkspaceActive(agent.id)))
+          continue
+        await this.withWorkspaceAdmissionFence(agent.id, async () => {
+          const current = this.agents.get(agent.id)
+          if (!current || (await this.agentWorkspaceActive(agent.id))) return
+          // Re-judged inside the fence, which holds turn admission: a session reopened under the same key keeps its directory.
+          for (const leaf of await this.orphanSessionLeaves(current)) {
+            if (this.draining) return
+            const res = await this.workspaces.removeOrphanSessionDir(current, leaf)
+            if (res.outcome === 'removed')
+              this.log.info(
+                `retention: removed session directory ${leaf} of agent ${agent.id}, whose session row is gone`
+              )
+            else if (res.outcome === 'retained') retained.push(`${agent.id}/${leaf} (${res.reason})`)
+            else if (res.outcome === 'failed')
+              this.log.warn(`retention: could not remove session directory ${leaf} of agent ${agent.id} (${res.error})`)
+          }
+        })
+      } catch (err) {
+        this.log.warn(`retention: could not judge the session directories of agent ${agent.id} (${formatErr(err)})`)
+      }
+    }
+    if (retained.length > 0)
+      this.log.info(
+        `retention: keeping ${retained.length} session director${retained.length === 1 ? 'y' : 'ies'} whose row is gone — ${retained.join(', ')} (delete or push the work to release them)`
+      )
+  }
+
+  /** The agent's session directories on this disk that nothing maps to — no row, dream or host, nor a VM, which its own sweep retires first. */
+  private async orphanSessionLeaves(agent: LoadedAgent): Promise<string[]> {
+    const leaves = this.workspaces.sessionDirLeaves(agent)
+    // With the manager down its VMs cannot be listed, so no directory is known to be free of one.
+    if (leaves.length === 0 || (this.usesMicrosandbox(agent) && !this.microsandbox)) return []
+    const kept = await this.keptSessionLeaves(agent.id)
+    const vms = new Set(this.microsandbox ? await this.microsandbox.environmentIds() : [])
+    return leaves.filter((leaf) => !kept.has(leaf) && !vms.has(`${agent.id}/${leaf}`))
   }
 
   /** Whether an agent still holds live work of ANY kind — the per-agent form of the retention
