@@ -4328,6 +4328,14 @@ export class LocalStore {
     ).map((row) => this.dreamFromRow(row))
   }
 
+  /** Every dream id of the agent, whatever its status: each names a host that no session row does. */
+  async dreamIdsForAgent(agentId: string): Promise<string[]> {
+    const rows = (await this.db.prepare('SELECT dreamId FROM dreams WHERE agentId = ?').all(agentId)) as Array<{
+      dreamId: string
+    }>
+    return rows.map((row) => row.dreamId)
+  }
+
   /** Store proposals reconciled as stale during upgrade. The runner removes
    *  their daemon-local staging once agent directories are available. */
   async supersededDreams(): Promise<DreamInfo[]> {

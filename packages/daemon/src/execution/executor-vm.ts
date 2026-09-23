@@ -7,7 +7,7 @@ import { SESSIONS_DIR } from '../workspace/session-layout.js'
 import type { SessionSeed, StrategyLauncher } from './strategies.js'
 
 /** Hosted environments are keyed apart from every agent-owned one: this machine holds none of their agents. */
-const HOSTED_PREFIX = 'executor/'
+export const HOSTED_PREFIX = 'executor/'
 
 /** A hosted session's VM, whose durable state is an executor-local directory MOUNTED into it, never on its own disks (§7). */
 // `replace()` retires and destroys a VM whenever its spec or image identity changes, with no dirty check, so work on those disks would go with it.

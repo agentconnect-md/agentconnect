@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSy
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MAX_TASK_LIST_TASKS, type SessionPurged } from '@agentconnect.md/protocol'
+import { sessionKeyDirName } from '../src/acp/host-key.js'
 import { Daemon } from '../src/daemon.js'
 import { TaskViolationError } from '../src/cp/task-reader.js'
 import { configFilesDir } from '../src/shim/config-file-env.js'
@@ -2704,7 +2705,13 @@ describe('Daemon session retention GC (#485)', () => {
       })
       .mockRejectedValueOnce(new Error('temporary VM destroy failure'))
     const collectImages = vi.fn(async () => {})
-    ;(daemon as any).microsandbox = { discard, collectImages, stopAll: vi.fn(async () => {}) }
+    ;(daemon as any).microsandbox = {
+      discard,
+      collectImages,
+      environmentIds: async () => [],
+      environment: () => undefined,
+      stopAll: vi.fn(async () => {})
+    }
     try {
       await seedSession(daemon, 'expired-vm', 'closed', -8 * 24 * 3_600_000)
       await sweepRetention(daemon)
@@ -2720,6 +2727,121 @@ describe('Daemon session retention GC (#485)', () => {
     } finally {
       await daemon.stop()
     }
+  })
+
+  describe('session VMs whose row is gone (#2282)', () => {
+    const vmOf = (key: string, agentId = 'bot-a') => `${agentId}/${sessionKeyDirName(key)}`
+
+    // A manager holding `ids` on disk, of which `loaded` are also in memory; a discard removes the VM.
+    const stubMicrosandbox = (daemon: Daemon, ids: string[], loaded: string[] = []) => {
+      const live = new Set(ids)
+      const discard = vi.fn(async (id: string) => void live.delete(id))
+      const collectImages = vi.fn(async () => {})
+      ;(daemon as any).microsandbox = {
+        environmentIds: async () => [...live],
+        environment: (id: string) => (loaded.includes(id) && live.has(id) ? { id } : undefined),
+        discard,
+        collectImages,
+        stopAll: vi.fn(async () => {})
+      }
+      return { discard, collectImages }
+    }
+
+    const startDaemon = async (): Promise<Daemon> => {
+      const daemon = new Daemon({
+        slackAppFactory: fakeSlackAppFactory(),
+        root: scaffold(),
+        hostFactory: () => quietHost() as any,
+        clock: new FakeClock()
+      })
+      await daemon.start()
+      await sweepRetention(daemon)
+      return daemon
+    }
+
+    it('retires an orphan session VM with its HOME, then collects images once', async () => {
+      const daemon = await startDaemon()
+      const home = join((daemon as any).agents.get('bot-a').dir, 'runtime-homes', sessionKeyDirName('purged'))
+      mkdirSync(home, { recursive: true })
+      writeFileSync(join(home, 'state'), 'x')
+      const { discard, collectImages } = stubMicrosandbox(daemon, [vmOf('purged')])
+      try {
+        await sweepRetention(daemon)
+        expect(discard.mock.calls).toEqual([[vmOf('purged')]])
+        expect(existsSync(home)).toBe(false)
+        expect(collectImages).toHaveBeenCalledOnce()
+        await sweepRetention(daemon)
+        expect(discard).toHaveBeenCalledOnce()
+        expect(collectImages).toHaveBeenCalledOnce()
+      } finally {
+        await daemon.stop()
+      }
+    })
+
+    it('leaves row-backed, shared, loaded, dream, hosted and unknown-agent VMs alone', async () => {
+      const daemon = await startDaemon()
+      const store = (daemon as any).store
+      const now = (daemon as any).clock.now()
+      await seedSession(daemon, 'has-row', 'idle', now)
+      // A row with no ACP id yet still owns its VM.
+      await store.upsertSession({
+        key: 'no-acp-id',
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread: 'no-acp-id',
+        acpSessionId: null,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: now
+      })
+      await store.insertDream({
+        dreamId: 'drm-1',
+        agentId: 'bot-a',
+        status: 'failed',
+        trigger: 'manual',
+        sessionIds: [],
+        snapshotDigest: 'sha256:x',
+        createdAt: '2026-01-01T00:00:00.000Z'
+      })
+      const kept = [
+        vmOf('has-row'),
+        vmOf('no-acp-id'),
+        'bot-a/agent',
+        vmOf('loaded'),
+        vmOf(sessionKey('dream', 'memory', 'drm-1', 'bot-a')),
+        `executor/${sessionKeyDirName('hosted')}`,
+        vmOf('gone', 'ghost-agent')
+      ]
+      const { discard, collectImages } = stubMicrosandbox(daemon, kept, [vmOf('loaded')])
+      try {
+        await sweepRetention(daemon)
+        expect(discard).not.toHaveBeenCalled()
+        expect(collectImages).not.toHaveBeenCalled()
+      } finally {
+        await daemon.stop()
+      }
+    })
+
+    it('keeps a VM whose row reappears while the pass waits for the admission fence', async () => {
+      const daemon = await startDaemon()
+      const { discard, collectImages } = stubMicrosandbox(daemon, [vmOf('reopened')])
+      let release!: () => void
+      const blocked = new Promise<void>((resolve) => (release = resolve))
+      void (daemon as any).enqueueAgentWorkspaceMutation('bot-a', () => blocked)
+      try {
+        const sweep = (daemon as any).sweepSessionRetention()
+        await vi.waitFor(() => expect((daemon as any).workspaceDispatchFences.has('bot-a')).toBe(true), WAIT)
+        await seedSession(daemon, 'reopened', 'idle', (daemon as any).clock.now())
+        release()
+        await sweep
+        expect(discard).not.toHaveBeenCalled()
+        expect(collectImages).not.toHaveBeenCalled()
+      } finally {
+        release()
+        await daemon.stop()
+      }
+    })
   })
 
   it('retention "never" disables the sweep entirely', async () => {

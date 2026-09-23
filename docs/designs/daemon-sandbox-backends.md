@@ -276,7 +276,11 @@ because a sandbox still boots from that image's digest is kept and logged, and a
 cache that cannot be read is logged without failing startup, so collection never
 costs availability. A retained VM usually pins the previous release past
 startup, so a retention pass that discards at least one session VM runs the same
-collection again. An upgrade pre-pulls the next release's image from a separate
+collection again. The same pass also retires session VMs whose session row is
+gone, such as those left by a purge while microsandbox was unavailable, but never
+the agent's shared VM, a hosted executor VM, a loaded or dream VM, or a VM of an
+agent with work in flight.
+An upgrade pre-pulls the next release's image from a separate
 process while the old daemon still runs, so every pull records the reference it
 fetched in a file under the microsandbox state directory, and the runtime pass
 keeps that reference. No cache timestamp can stand in for the record: re-pulling
