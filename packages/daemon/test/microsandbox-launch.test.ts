@@ -16,12 +16,12 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { prepareMicrosandboxLaunch, type PrepareMicrosandboxLaunchOptions } from '../src/microsandbox/launch.js'
 import { microsandboxSupportMounts } from '../src/microsandbox/support.js'
-import { gitcredShimPath } from '../src/cp/gitcred-server.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { prepareRuntimeLaunch } from '../src/launch/prepare.js'
 import { composeRuntimeLaunch } from '../src/launch/compose.js'
 import { nativeRuntimeMemorySpecFor } from '../src/memory/runtime/capabilities.js'
 import { nativeMemoryRead, nativeMemoryWrite } from '../src/memory/runtime/native.js'
+import { SANDBOX_GIT_CREDENTIAL_HELPER } from '../src/shim/sandbox-paths.js'
 import * as credentials from '../src/runtimes/runtime-credentials.js'
 import {
   CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV,
@@ -638,7 +638,7 @@ describe('prepareMicrosandboxLaunch', () => {
 
   it('preserves the host Git helper and protects its guest alias and nested Git config as read-only mounts', () => {
     const opts = fixture()
-    const helper = gitcredShimPath(opts.root)
+    const helper = join(opts.root, 'run', 'git-credential-helper.sh')
     const gitConfig = join(opts.cwd, 'session.gitconfig')
     mkdirSync(dirname(helper), { recursive: true })
     writeFileSync(helper, 'original host helper')
@@ -657,10 +657,10 @@ describe('prepareMicrosandboxLaunch', () => {
       expect.arrayContaining([
         { source: opts.cwd, target: opts.cwd, mode: 'writable' },
         { source: gitConfig, target: gitConfig, mode: 'readonly' },
-        { source: trustedMounts[0]!.source, target: helper, mode: 'readonly' }
+        { source: trustedMounts[0]!.source, target: SANDBOX_GIT_CREDENTIAL_HELPER, mode: 'readonly' }
       ])
     )
-    for (const target of [helper, dirname(helper), gitConfig]) {
+    for (const target of [SANDBOX_GIT_CREDENTIAL_HELPER, dirname(SANDBOX_GIT_CREDENTIAL_HELPER), gitConfig]) {
       expect(() =>
         prepareMicrosandboxLaunch({
           ...opts,

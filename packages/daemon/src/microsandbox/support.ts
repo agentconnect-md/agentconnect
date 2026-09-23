@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { SandboxMount } from '../config/config-schema.js'
-import { gitcredShimPath } from '../cp/gitcred-server.js'
+import { SANDBOX_GIT_CREDENTIAL_HELPER } from '../shim/sandbox-paths.js'
 
 const GIT_CREDENTIAL_HELPER = '#!/bin/sh\nexec /opt/agentconnect/bin/git-credential "$@"\n'
 
@@ -15,7 +15,7 @@ export function microsandboxSupportMounts(root: string, sessionGitConfigPath?: s
   }
   chmodSync(source, 0o755)
   return [
-    { source: realpathSync(source), target: gitcredShimPath(root), mode: 'readonly' },
+    { source: realpathSync(source), target: SANDBOX_GIT_CREDENTIAL_HELPER, mode: 'readonly' },
     ...(sessionGitConfigPath && existsSync(sessionGitConfigPath)
       ? [{ source: sessionGitConfigPath, target: sessionGitConfigPath, mode: 'readonly' as const }]
       : [])
