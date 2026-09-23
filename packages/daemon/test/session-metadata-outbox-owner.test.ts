@@ -74,8 +74,8 @@ async function world() {
 describe('session metadata names its classification by the logical session', () => {
   it('publishes each session runtime and model selection independently', async () => {
     const w = await world()
-    await w.store.pinDecisionModel(w.dm.key, 'runtime-a', 'model-a')
-    await w.store.pinDecisionModel(w.channel.key, 'runtime-b', 'model-b')
+    await w.store.pinDecisionModel(w.dm.key, { runtime: 'runtime-a', model: 'model-a' })
+    await w.store.pinDecisionModel(w.channel.key, { runtime: 'runtime-b', model: 'model-b' })
     await w.start()
     const seen = await w.events()
     expect(seen.get(w.dm.outward)).toMatchObject({ runtime: 'runtime-a', model: 'model-a' })

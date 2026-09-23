@@ -118,8 +118,10 @@ it('selects a complete answer in the themed menu while preserving its probabilit
   expect(document.querySelector('[role="menu"]')).toBeNull()
 })
 
-it('offers the agent Fast mode from a rule picker as well as the fallback', async () => {
+it('changes a rule without changing sibling or fallback run settings', async () => {
   const onFastModeChange = vi.fn()
+  const onChange = vi.fn()
+  const onFallbackChange = vi.fn()
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -128,14 +130,37 @@ it('offers the agent Fast mode from a rule picker as well as the fallback', asyn
       <ModelSelectionField
         value={{
           decisionId: '44444444-4444-4444-8444-444444444444',
-          rules: [{ when: { type: 'choice', thresholds: { deploy: 0.6 } }, runtime: 'claude', model: 'model-standard' }]
+          rules: [
+            {
+              when: { type: 'choice', thresholds: { deploy: 0.6 } },
+              runtime: 'claude',
+              model: 'model-standard',
+              effort: 'high',
+              permissionMode: 'plan',
+              fastMode: false
+            },
+            {
+              when: { type: 'choice', thresholds: { infrastructure_maintenance: 0.6 } },
+              runtime: 'claude',
+              model: 'model-standard',
+              effort: 'low',
+              permissionMode: 'default',
+              fastMode: false
+            }
+          ]
         }}
-        onChange={vi.fn()}
+        onChange={onChange}
         onValidityChange={vi.fn()}
         source={{ runtimeModels: [{ runtime: 'claude', version: '', models: ['model-standard'] }] }}
         runtimes={['claude']}
-        fallback={{ runtime: 'claude', model: 'model-standard' }}
-        onFallbackChange={vi.fn()}
+        fallback={{
+          runtime: 'claude',
+          model: 'model-standard',
+          effort: 'medium',
+          permissionMode: 'default',
+          fastMode: false
+        }}
+        onFallbackChange={onFallbackChange}
         fastMode={false}
         onFastModeChange={onFastModeChange}
       />
@@ -145,5 +170,37 @@ it('offers the agent Fast mode from a rule picker as well as the fallback', asyn
     container.querySelector<HTMLButtonElement>('[aria-label="Provider and model for rule 1"]')!.click()
   )
   await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Fast mode"]')!.click())
-  expect(onFastModeChange).toHaveBeenCalledWith(true)
+  expect(onChange.mock.calls[0]![0].rules).toEqual([
+    {
+      when: { type: 'choice', thresholds: { deploy: 0.6 } },
+      runtime: 'claude',
+      model: 'model-standard',
+      effort: 'high',
+      permissionMode: 'plan',
+      fastMode: true
+    },
+    {
+      when: { type: 'choice', thresholds: { infrastructure_maintenance: 0.6 } },
+      runtime: 'claude',
+      model: 'model-standard',
+      effort: 'low',
+      permissionMode: 'default',
+      fastMode: false
+    }
+  ])
+  expect(onFastModeChange).not.toHaveBeenCalled()
+  expect(onFallbackChange).not.toHaveBeenCalled()
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('[aria-label="Provider and model for rule 1"]')!.click()
+  )
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Provider and model"]')!.click())
+  await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Fast mode"]')!.click())
+  expect(onFallbackChange).toHaveBeenCalledWith({
+    runtime: 'claude',
+    model: 'model-standard',
+    effort: 'medium',
+    permissionMode: 'default',
+    fastMode: true
+  })
+  expect(onChange).toHaveBeenCalledOnce()
 })

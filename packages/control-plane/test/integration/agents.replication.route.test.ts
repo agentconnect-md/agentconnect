@@ -146,7 +146,16 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
     const decisionId = decision.json().id as string
     const modelSelection = {
       decisionId,
-      rules: [{ when: { type: 'boolean', values: [true] }, runtime: 'claude', model: 'opus' }]
+      rules: [
+        {
+          when: { type: 'boolean', values: [true] },
+          runtime: 'claude',
+          model: 'opus',
+          effort: 'low',
+          permissionMode: 'plan',
+          fastMode: false
+        }
+      ]
     }
 
     const patch = await app.app.inject({

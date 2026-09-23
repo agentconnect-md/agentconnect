@@ -27,7 +27,7 @@ import { RecallObserver, runTurnRecall, type MemoryRecallLifecycleEvent } from '
 import { openRuntimeSession } from './turn/runtime-session.js'
 import { ingestInboundTranscript } from './turn/transcript-ingest.js'
 import { matchSkillInvocation, renderSkillInvocation } from './skill-invocation.js'
-import type { RuntimeCommand } from '@agentconnect.md/protocol'
+import type { DecisionRuntimeTarget, RuntimeCommand } from '@agentconnect.md/protocol'
 import { deriveTitle } from './derive-title.js'
 import { backgroundConversationText, decisionEvidenceText } from '../decisions/evidence.js'
 
@@ -337,7 +337,7 @@ export class SessionManager {
     /** A self-authored channel-root post only establishes the new logical/runtime session.
      *  It is already recorded in the transcript and must not become a model activation. */
     options: {
-      runtimeTarget?: { runtime: string; model: string }
+      runtimeTarget?: DecisionRuntimeTarget
       initializeOnly?: boolean
       /** True only when the daemon attached trusted CallMeta for this turn.
        * `source: agent` alone is insufficient: background-task and orchestration

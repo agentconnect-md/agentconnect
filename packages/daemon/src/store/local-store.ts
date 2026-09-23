@@ -17,6 +17,7 @@ import {
   ManagedMemoryHome,
   QuotedMessageSchema,
   SessionImageAttachment as SessionImageAttachmentSchema,
+  type DecisionRuntimeTarget,
   type DreamInfo,
   type ExternalSessionOrigin,
   type QuotedMessage,
@@ -3502,10 +3503,10 @@ export class LocalStore {
     await this.db.prepare('UPDATE sessions SET modelOverride = ? WHERE key = ?').run(model, key)
   }
 
-  async pinDecisionModel(key: string, runtime: string, model: string): Promise<void> {
+  async pinDecisionModel(key: string, target: DecisionRuntimeTarget): Promise<void> {
     await this.db
       .prepare('UPDATE sessions SET decisionModel = ? WHERE key = ? AND decisionModel IS NULL')
-      .run(JSON.stringify({ runtime, model }), key)
+      .run(JSON.stringify(target), key)
   }
 
   /** The session-scoped reasoning-effort override (set via the status-bar effort picker),

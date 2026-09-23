@@ -55,14 +55,13 @@ it('pins a Decision model once, independently of manual overrides and subsequent
     updatedAt: 1
   }
   await s.upsertSession(row)
-  await s.pinDecisionModel(row.key, 'claude', 'model-capable')
-  await s.pinDecisionModel(row.key, 'claude', 'model-standard')
+  const target = { runtime: 'claude', model: 'model-capable', effort: 'high', permissionMode: 'plan', fastMode: false }
+  await s.pinDecisionModel(row.key, target)
+  await s.pinDecisionModel(row.key, { runtime: 'claude', model: 'model-standard', effort: 'low', fastMode: true })
   await s.setModelOverride(row.key, 'model-manual')
   await s.clearRuntimeConfigOverrides(row.agentId)
   await s.upsertSession({ ...row, updatedAt: 2 })
-  expect((await s.getSession(row.key))?.decisionModel).toBe(
-    JSON.stringify({ runtime: 'claude', model: 'model-capable' })
-  )
+  expect((await s.getSession(row.key))?.decisionModel).toBe(JSON.stringify(target))
   expect(await s.getModelOverride(row.key)).toBeUndefined()
   await s.close()
 })

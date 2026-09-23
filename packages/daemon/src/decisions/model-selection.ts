@@ -1,6 +1,6 @@
 import {
   selectDecisionTarget,
-  type DecisionRuntimeTarget,
+  DecisionRuntimeTarget,
   type AgentModelSelection,
   type DecisionEvaluation,
   type DecisionGetReply
@@ -8,8 +8,10 @@ import {
 import type { DecisionEvaluationInput } from './evaluator.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { Agent } from '../agents/agent-schema.js'
+import { z } from 'zod'
 
 const runtimeSources = new WeakMap<Agent, Agent>()
+const PinnedRuntimeTarget = DecisionRuntimeTarget.extend({ model: z.string().max(256) })
 
 // Workspace authority remains the original configuration while execution uses a session-specific runtime.
 export function configuredRuntimeAgent(agent: Agent): Agent {
@@ -17,16 +19,21 @@ export function configuredRuntimeAgent(agent: Agent): Agent {
 }
 
 export function modelSelectionConfiguration(agent: LoadedAgent | undefined): string {
-  return JSON.stringify([agent?.runtime, agent?.runtimeOverrides?.model, agent?.modelSelection])
+  return JSON.stringify([
+    agent?.runtime,
+    agent?.runtimeOverrides?.model,
+    agent?.reasoningEffort,
+    agent?.permissionMode,
+    agent?.fastMode,
+    agent?.modelSelection
+  ])
 }
 
 export function pinnedDecisionTarget(snapshot: string | null | undefined): DecisionRuntimeTarget | undefined {
   if (!snapshot) return undefined
   try {
-    const saved = JSON.parse(snapshot) as { runtime?: unknown; model?: unknown }
-    return typeof saved.runtime === 'string' && typeof saved.model === 'string'
-      ? { runtime: saved.runtime, model: saved.model }
-      : undefined
+    const saved = PinnedRuntimeTarget.safeParse(JSON.parse(snapshot))
+    return saved.success ? saved.data : undefined
   } catch {
     return undefined
   }
@@ -45,6 +52,9 @@ export function agentWithRuntime(agent: LoadedAgent, target: DecisionRuntimeTarg
   const selected = {
     ...agent,
     runtime: target.runtime,
+    ...(target.effort !== undefined ? { reasoningEffort: target.effort || undefined } : {}),
+    ...(target.permissionMode !== undefined ? { permissionMode: target.permissionMode } : {}),
+    ...(target.fastMode !== undefined ? { fastMode: target.fastMode } : {}),
     runtimeOverrides: { env: [], secrets: [], ...agent.runtimeOverrides, model: target.model }
   }
   runtimeSources.set(selected, configuredRuntimeAgent(agent))

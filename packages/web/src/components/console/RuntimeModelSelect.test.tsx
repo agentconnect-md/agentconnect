@@ -3,6 +3,7 @@ import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, expect, it, vi } from 'vitest'
 import { RuntimeModelSelect } from './RuntimeModelSelect'
+import type { DecisionRuntimeTarget } from '@agentconnect.md/protocol/decision'
 
 vi.mock('@/lib/acp-registry', () => ({ useAcpRegistry: () => ({}), acpRuntime: () => undefined }))
 vi.mock('@/components/marks', () => ({ AgentMark: () => <span /> }))
@@ -130,4 +131,105 @@ it('keeps Fast mode visible but disabled when the selected model does not offer 
   expect([fast.disabled, fast.getAttribute('aria-checked')]).toEqual([true, 'false'])
   await act(async () => fast.click())
   expect(onFastModeChange).not.toHaveBeenCalled()
+})
+
+it('edits run settings in the open picker and adapts them when choosing another model or runtime', async () => {
+  let selected: DecisionRuntimeTarget = {
+    runtime: 'claude',
+    model: 'capable',
+    effort: 'medium',
+    permissionMode: 'default',
+    fastMode: false
+  }
+  function Form() {
+    const [value, setValue] = useState(selected)
+    return (
+      <RuntimeModelSelect
+        runSettings
+        value={value}
+        onChange={(next) => {
+          selected = next
+          setValue(next)
+        }}
+        source={{
+          runtimeModels: [
+            {
+              runtime: 'claude',
+              version: '',
+              models: ['capable', 'small'],
+              modelCatalog: {
+                source: 'acp',
+                observedAt: '2026-01-01T00:00:00Z',
+                models: [
+                  {
+                    id: 'capable',
+                    efforts: [{ value: 'medium' }, { value: 'high' }],
+                    defaultEffort: 'medium',
+                    fastMode: true
+                  },
+                  { id: 'small', efforts: [{ value: 'low' }], defaultEffort: 'low', fastMode: false }
+                ],
+                permissionModes: [{ value: 'default' }, { value: 'plan' }],
+                defaultPermissionMode: 'default'
+              }
+            },
+            {
+              runtime: 'codex',
+              version: '',
+              models: ['other'],
+              modelCatalog: {
+                source: 'acp',
+                observedAt: '2026-01-01T00:00:00Z',
+                models: [{ id: 'other', efforts: [], fastMode: false }],
+                permissionModes: [{ value: 'agent' }],
+                defaultPermissionMode: 'agent'
+              }
+            }
+          ]
+        }}
+      />
+    )
+  }
+  container = document.createElement('div')
+  document.body.appendChild(container)
+  root = createRoot(container)
+  await act(async () => root.render(<Form />))
+  const trigger = container.querySelector('button')!
+  await act(async () => trigger.click())
+  const option = (group: string, label: string) =>
+    [...document.querySelectorAll<HTMLButtonElement>(`[role="group"][aria-label="${group}"] button`)].find(
+      (button) => button.textContent === label
+    )!
+  await act(async () => option('Effort', 'High').click())
+  await act(async () => option('Approval', 'Plan').click())
+  await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Fast mode"]')!.click())
+  expect(selected).toEqual({
+    runtime: 'claude',
+    model: 'capable',
+    effort: 'high',
+    permissionMode: 'plan',
+    fastMode: true
+  })
+  expect(document.querySelector('[role="dialog"]')).not.toBeNull()
+  expect(trigger.textContent).toContain('High · Plan')
+  expect(trigger.textContent).toContain('FAST')
+  await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Claude Code · small"]')!.click())
+  expect(selected).toEqual({
+    runtime: 'claude',
+    model: 'small',
+    effort: 'low',
+    permissionMode: 'plan',
+    fastMode: false
+  })
+  expect(document.querySelector('[role="dialog"]')).not.toBeNull()
+  expect(document.querySelector<HTMLButtonElement>('[aria-label="Fast mode"]')!.disabled).toBe(true)
+  const search = document.querySelector<HTMLInputElement>('[aria-label="Search all providers"]')!
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'other')
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Codex · other"]')!.click())
+  expect(selected).toEqual({ runtime: 'codex', model: 'other', effort: '', permissionMode: 'agent', fastMode: false })
+  expect(document.querySelector('[role="group"][aria-label="Effort"]')).toBeNull()
+  expect(document.querySelector('[role="group"][aria-label="Approval"]')?.textContent).toBe('Approve for me')
 })

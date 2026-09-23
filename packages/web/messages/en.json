@@ -2321,6 +2321,9 @@
       },
       "runtimeModel": {
         "title": "Provider and model",
+        "runSettings": "Run settings · {model}",
+        "effort": "Effort",
+        "approval": "Approval",
         "provider": "Provider",
         "byDecision": "By decision",
         "choose": "Choose a provider and model",
