@@ -20113,9 +20113,9 @@ export class Daemon {
       if (res === 'timeout') {
         this.log.warn(`shutdown: deadline hit with ${this.pending.size} ACP turn(s) still in flight — cancelling`)
         forceStop(await cancelInFlight(() => true, 'daemon shutdown deadline'))
-        // stopHost is the hard deadline backstop, but closing the store underneath an
-        // uncooperative callback is worse than waiting. Abortable cold awaits and a
-        // successful host stop make these dispatch leases settle promptly.
+        // An admitted clone or checkout ignores its turn's abort by design, and no later generation remains to protect: end its Git so the cold dispatch settles.
+        this.workspaces.cancelGitForShutdown()
+        // Closing the store under an uncooperative callback is worse than waiting; cancelled Git and stopped hosts settle these leases.
         await Promise.all([...active, ...coldStops, ...forceStops])
       }
     }

@@ -302,6 +302,44 @@ describe('Daemon interrupt safety gates', () => {
     }
   })
 
+  it('settles a cold turn parked in workspace Git once the shutdown drain deadline cancels it', async () => {
+    const clock = new FakeClock()
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'sess-1'),
+      hasSession: vi.fn(() => true),
+      modelOptions: vi.fn(() => null),
+      prompt: vi.fn(async () => ({ stopReason: 'end_turn' })),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const root = scaffold({ shutdownDrainMs: 1_000 })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => host as any, clock })
+    await daemon.start()
+    // Admitted preparation Git only the shutdown cancel ends — a clone the drain window cannot outwait.
+    const preparation = vi
+      .spyOn(daemon as any, 'runAgentWorkspacePreparation')
+      .mockImplementation(() => daemon.workspaces.runnerFor(AGENT_ID, root).raw(['hash-object', '--stdin']))
+    const stream = webchatSink()
+    const ack = await (daemon as any).webchatTransport.dispatchWebchatTurn(
+      AGENT_ID,
+      CONV_1,
+      'cold',
+      { id: 'alice', name: 'alice' },
+      stream.sink
+    )
+    expect(ack.accepted).toBe(true)
+    await vi.waitFor(() => expect(preparation).toHaveBeenCalled(), WAIT)
+
+    const stopped = vi.fn()
+    void daemon.stop().then(stopped)
+    await vi.waitFor(() => {
+      clock.advance(1_000)
+      expect(stopped).toHaveBeenCalled()
+    }, WAIT)
+    expect(host.prompt).not.toHaveBeenCalled()
+  })
+
   it('force-stops a host when a cancelled cold pre-Pending session/new never returns', async () => {
     const clock = new FakeClock()
     let rejectSession!: (reason: Error) => void
