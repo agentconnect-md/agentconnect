@@ -815,7 +815,9 @@ checkout, sandbox start and `session/load`. A turn replayed after a restart
 always starts cold. So when a turn finds an existing session row but no running
 host, the daemon first reports `resuming` to the CP. It does not change the
 local row. If the turn ends before it starts, the daemon reports the row's own
-state again, so the CP never keeps `resuming`.
+state again. Both reports go through the acknowledged metadata outbox, not the
+fire-and-forget `event/session` path. That outbox sends one request at a time,
+so the CP commits `resuming` before whatever replaces it and never keeps it.
 
 ### 7.4 Message-to-Execution Flow
 

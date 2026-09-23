@@ -16662,6 +16662,7 @@ export class Daemon {
         platform: rec.platform as SessionKey['platform'],
         channel: rec.channel,
         thread: rec.thread,
+        ordered: true,
         ...(status ? { status } : {})
       })
     } catch (err) {
