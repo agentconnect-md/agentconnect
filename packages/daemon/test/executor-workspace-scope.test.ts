@@ -210,3 +210,52 @@ describe('a session prepared on an executor', () => {
     expect(await executor.stat(sessionDir)).toBe('missing')
   })
 })
+
+// Which root holds the session's cwd is the session's own fact, so it is kept where the session runs, not beside the holder's reference subtree.
+describe('a spread session’s cwd record', () => {
+  const withLibrary = () => agent([{ repoFullName: 'example-org/library', repoId: '42' }])
+  const reviewed = { ...request, reviewRepoFullName: 'example-org/library' }
+  const resumed = { sessionKey: KEY, isolation: 'session' as const }
+  const libraryClone = () => join(sessionDir, 'repos', 'example-org', 'library')
+  const record = () => join(sessionDir, '.session-cwd.json')
+  const legacyRecord = () =>
+    join(agentDir, 'repos', 'example-org', 'library', `.session-cwd-${workspaces.sessionWorktreeId(KEY)}.json`)
+
+  it('is kept and read on the machine the session runs on, never the holder', async () => {
+    const withRepo = withLibrary()
+    const cwd = await workspaces.prepareExecutorWorkspace(withRepo, executorRoot, reviewed)
+    expect(cwd).toBe(libraryClone())
+    expect(JSON.parse((await executor.readFile(record()))!)).toEqual({ subtreeName: 'example-org/library' })
+    expect(await holder.stat(legacyRecord())).toBe('missing')
+
+    // The holder answers nothing, and the standing context and session/new or load still resolve.
+    holder.ownerAsleep = () => true
+    const primaryClone = join(sessionDir, 'workspace')
+    expect((await workspaces.sessionAdditionalRoots(withRepo, resumed)).map((root) => root.path)).toEqual([
+      primaryClone
+    ])
+    expect(await workspaces.additionalWorkspaceDirectories(withRepo, cwd, resumed)).toEqual([primaryClone])
+    expectNoCrossedPaths()
+  })
+
+  it('moves a record the holder kept into the session directory when preparation runs', async () => {
+    const withRepo = withLibrary()
+    const cwd = await workspaces.prepareExecutorWorkspace(withRepo, executorRoot, reviewed)
+    await executor.rmTree(record())
+    await holder.writeFile(legacyRecord(), JSON.stringify({ repoFullName: 'example-org/library' }))
+
+    expect(await workspaces.prepareExecutorWorkspace(withRepo, executorRoot, request)).toBe(cwd)
+    expect(JSON.parse((await executor.readFile(record()))!)).toEqual({ subtreeName: 'example-org/library' })
+    expect(await holder.stat(legacyRecord())).toBe('missing')
+    expectNoCrossedPaths()
+  })
+
+  it('goes with the session directory on that machine', async () => {
+    const withRepo = withLibrary()
+    await workspaces.prepareExecutorWorkspace(withRepo, executorRoot, reviewed)
+    holder.ownerAsleep = () => true
+
+    expect((await workspaces.removeSessionWorktree(withRepo, KEY, 'clones')).outcome).toBe('removed')
+    expect(await executor.stat(record())).toBe('missing')
+  })
+})

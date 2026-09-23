@@ -4975,7 +4975,7 @@ export class Daemon {
       // none of the local work below runs — its mkdir, `existsSync(.git)` and skills installation
       // all land on this daemon's disk, describing a filesystem the runtime never reads.
       const agentPod = agentSandboxSubject(agent.id)
-      // §11: an isolated session prepares on ITS pod (its clones, its skills); the agent pod is held beside it for the secondary-root attestation and the reads that follow.
+      // §11: an isolated session prepares on ITS pod (its clones, its skills, its cwd record); the agent pod is held beside it for the secondary-root attestation and a cwd record an older daemon left beside the agent's subtree.
       const pod =
         request && this.confinedSession(agent, request.sessionKey)
           ? sandboxSubjectFor(sessionHostKey(agent.id, request.sessionKey))

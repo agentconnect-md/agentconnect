@@ -306,7 +306,8 @@ Layout, one directory per session, removed whole at retirement:
 <agentDir>/sessions/<sid>/
 ├── workspace/            # primary clone — the session cwd
 ├── repos/<owner>/<repo>/ # one clone per secondary root (multi-repository-workspaces.md decision 4)
-└── home/                 # private HOME, XDG_RUNTIME_DIR, runtime state
+├── home/                 # private HOME, XDG_RUNTIME_DIR, runtime state
+└── .session-cwd.json     # which secondary root's clone is the cwd, once a review made it one
 ```
 
 The primary checkout keeps its roles for `shared` isolation, the console's
@@ -353,6 +354,18 @@ time on shared filesystems.
   `unpack-objects`, which degraded every review in a confined session to
   revision-only. Retirement is deliberately not in that class: it judges a clone
   with no network target at all.
+- **The cwd record is the session's.** When a review makes a secondary root the
+  working directory, the daemon names that root in `.session-cwd.json` inside the
+  session directory, so a restart re-prepares the same cwd. It is written and read
+  through the filesystem that holds the session (its pod, its executor, or this
+  disk) and goes with the directory at retirement, so no turn of a confined session
+  reads the agent's subtrees for it. The session's runtime can write its own
+  directory, so the record counts only when it is a regular file naming a subtree
+  whose clone the session holds. The worktree tier keeps its record beside the
+  agent's subtree of that root (`repos/<a>/<b>/.session-cwd-<id>.json`). A confined
+  session that still has its record there is moved over by its next preparation,
+  which reads the agent's filesystem anyway; until then its turns name no reviewed
+  root.
 - **Retirement** applies the same dirty and unique-commit rules in the clone —
   every local ref counts, not only HEAD, because the directory is the object
   store and a side branch or a stash is work the checked-out branch cannot speak
