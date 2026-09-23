@@ -4,8 +4,8 @@ ARG RUNTIME_SANDBOX_BASE=ghcr.io/agentconnect-md/runtime-sandbox:base-20260911-0
 ARG RUNTIME_SANDBOX_FULL_BASE=ghcr.io/agentconnect-md/runtime-sandbox-full:base-20260911-021456@sha256:669063d1594c8610267bbcd5d9503ea5932e712774346a1b1920e6aeb18891ae
 
 ARG AGENT_BROWSER_VERSION=0.38.1
-ARG CLAUDE_ACP_VERSION=0.79.0
-ARG CODEX_ACP_VERSION=1.12.0-agentconnect.2
+ARG CLAUDE_ACP_VERSION=0.81.1
+ARG CODEX_ACP_VERSION=1.13.1-agentconnect.1
 ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.33
 
 # Release builds install applications over stable system bases, then add daemon-versioned helpers.
