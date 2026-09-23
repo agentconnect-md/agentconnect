@@ -14939,7 +14939,7 @@ export class Daemon {
     } else if (activeEntry) {
       // Cold pre-Pending webchat: there is no Pending sink yet, but the accepted
       // browser turn still needs an immediate terminal frame.
-      this.terminateQueuedSink(activeEntry, reason)
+      this.terminateQueuedSink(activeEntry, opts.notice?.lost ?? reason)
       this.settleSlackSlot(
         this.replyConnFor(activeEntry.agentId, activeEntry.integrationId),
         activeEntry.msg.channel,
@@ -14960,6 +14960,7 @@ export class Daemon {
       const active = this.activeDispatchDoneByKey.get(key)
       if (activeEntry && active) this.armColdCancelBackstop(agentId, key, reason, active)
       await this.recordOperatorInterrupt(agentId, reason, opts.actor, anchor)
+      if (opts.notice && activeEntry && !live) await this.postColdTurnCutNotice(activeEntry, key, opts.notice, opts)
       return
     }
     // Release any card the user hasn't answered: ACP requires pending permission /
@@ -14987,8 +14988,49 @@ export class Daemon {
     if (opts.notice) await this.postTurnCutNotice(live, opts.notice, opts.handoffInbox === true)
   }
 
+  /** {@link postTurnCutNotice} for a turn cut before it had a Pending: its plan is rebuilt from the entry. */
+  private async postColdTurnCutNotice(
+    entry: QueueEntry,
+    key: string,
+    notice: TurnCutNotice,
+    opts: { handoffInbox?: boolean }
+  ): Promise<void> {
+    const agent = this.agents.get(entry.agentId)
+    const { msg } = entry
+    // A browser turn got the notice in its terminal frame; a headless one has nowhere to show it.
+    const conn = msg.headless || entry.webchat ? undefined : this.replyConnFor(entry.agentId, entry.integrationId)
+    await this.postTurnCutNotice(
+      {
+        entry,
+        conn,
+        plan: {
+          agentId: entry.agentId,
+          sessionKey: key,
+          platform: msg.platform,
+          agentName: agent?.displayName?.trim() || agent?.name || entry.agentId,
+          ...(agent?.iconUrl ? { iconUrl: agent.iconUrl } : {}),
+          transcriptChannel: transcriptChannelKey(msg.channel, msg.transportScope),
+          sessionThread: sessionThreadOf(msg)
+        }
+      },
+      notice,
+      opts.handoffInbox === true
+    )
+  }
+
   /** Tell a cut turn's conversation why it ended — posted directly, since its output is suppressed. */
-  private async postTurnCutNotice(p: Pending, notice: TurnCutNotice, rowKept: boolean): Promise<void> {
+  private async postTurnCutNotice(
+    p: {
+      entry: QueueEntry
+      conn?: ReplyConnection | undefined
+      plan: Pick<
+        TurnPlan,
+        'agentId' | 'sessionKey' | 'platform' | 'agentName' | 'iconUrl' | 'transcriptChannel' | 'sessionThread'
+      >
+    },
+    notice: TurnCutNotice,
+    rowKept: boolean
+  ): Promise<void> {
     const text = rowKept && p.entry.inboxId !== undefined ? notice.replayed : notice.lost
     const { msg } = p.entry
     try {
@@ -15031,6 +15073,9 @@ export class Daemon {
     this.log.info(
       `reconcile: agent "${agentId}" respawns once its turns settle — ${busy.size} busy runtime process(es)`
     )
+    // Fence every busy process before the first await, so a turn settling meanwhile cannot start a follow-up on it.
+    const retirements = [...busy].map(([owner, turns]) => this.retireHostWhenIdle(agentId, owner, turns))
+    const idleConversations = this.webchatGrantConversations(agentId, (owner) => !busy.has(owner))
     const busyModelSessions = new Set<string>()
     for (const owner of busy.keys()) {
       const sessionKey = hostKeySessionKey(owner)
@@ -15049,14 +15094,24 @@ export class Daemon {
     } catch (err) {
       this.log.error(`reconcile: model-session teardown failed for "${agentId}": ${formatErr(err)}`)
     }
+    await this.webchatMcpRevocations.revokeRemoteWebchatConversations(idleConversations, 'agent_detached')
     for (const key of starting) {
-      await this.interruptTurn(agentId, key, 'stop', undefined, { dropQueued: true, handoffInbox: true })
+      await this.interruptTurn(agentId, key, 'stop', undefined, {
+        dropQueued: true,
+        handoffInbox: true,
+        notice: CONFIG_CHANGE_NOTICE
+      })
     }
-    const retirements = [...busy].map(([owner, turns]) => this.retireHostWhenIdle(agentId, owner, turns))
-    void Promise.all(retirements).then(async (cut) => {
-      await this.webchatMcpRevocations.revokeRemoteWebchatGrantsForAgent(agentId, 'agent_detached')
+    void Promise.all(retirements).then((cut) => {
       if (starting.length > 0 || cut.some(Boolean)) this.replayRetainedInbox(agentId)
     })
+  }
+
+  /** Conversations holding a remote webchat grant of `agentId` whose runtime process `pick` selects. */
+  private webchatGrantConversations(agentId: string, pick: (owner: HostKey) => boolean): string[] {
+    return (this.remoteWebchatGrants?.conversationsForAgent(agentId) ?? []).filter((conversationId) =>
+      pick(this.sessionOwnerKey(agentId, this.webchatTransport.webchatSessionKey(conversationId, agentId)))
+    )
   }
 
   /** Stop `owner` once `turns` settle, cutting them for replay at the drain limit. Resolves whether it cut any. */
@@ -15084,12 +15139,15 @@ export class Daemon {
       // A shutdown that began meanwhile owns what is left, this process included.
       if (this.draining) return
       const sessionKey = hostKeySessionKey(owner)
+      // Its conversations' held turns wait on this retirement, so no successor has provisioned a grant for them yet.
+      const conversations = this.webchatGrantConversations(agentId, (other) => other === owner)
       try {
         if (sessionKey !== undefined && this.modelSessions.has(sessionKey)) await this.modelSessions.release(sessionKey)
         else await this.stopHostByKey(owner)
       } catch (err) {
         this.log.error(`reconcile: host teardown failed for "${agentId}" (${owner}): ${formatErr(err)}`)
       }
+      await this.webchatMcpRevocations.revokeRemoteWebchatConversations(conversations, 'agent_detached')
     }
     const record: HostRetirement = {
       entries: new Set([...turns.values()].map((turn) => turn.entry)),

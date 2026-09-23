@@ -68,6 +68,22 @@ function blockingHost(name: string) {
   return { host, prompts, release: () => blocked.shift()?.({ stopReason: 'end_turn' }) }
 }
 
+/** A runtime whose session start never returns until the process is stopped. */
+function stuckStartHost() {
+  let fail!: (reason: Error) => void
+  const session = new Promise<never>((_resolve, reject) => (fail = reject))
+  void session.catch(() => {})
+  return {
+    start: vi.fn(async () => {}),
+    newSession: vi.fn(async () => session),
+    hasSession: vi.fn(() => true),
+    modelOptions: vi.fn(() => null),
+    prompt: vi.fn(async () => ({ stopReason: 'end_turn' })),
+    cancel: vi.fn(async () => {}),
+    stop: vi.fn(async () => fail(new Error('host stopped')))
+  }
+}
+
 /** A runtime that answers every prompt at once. */
 function answeringHost(name: string) {
   const prompts: string[] = []
@@ -312,6 +328,147 @@ describe('config change respawn', () => {
       expect(fresh.host.prompt).not.toHaveBeenCalled()
     } finally {
       old.release()
+      await daemon.stop()
+    }
+  })
+
+  it('holds a follow-up that becomes due while idle processes are still stopping', async () => {
+    const old = blockingHost('old')
+    const fresh = answeringHost('new')
+    const root = scaffold()
+    const daemon = await boot(root, [old.host, fresh.host])
+    vi.spyOn(daemon as any, 'hostKeyFor').mockImplementation((agentId: any, key: any) => sessionHostKey(agentId, key))
+    const running = (daemon as any).dispatch(AGENT_ID, msg('100', 'long question', 'T1'), 'int-a')
+    let followUp: Promise<unknown> | undefined
+    // An idle process of another session whose teardown takes a while.
+    let finishIdleStop!: () => void
+    const idleStopped = new Promise<void>((resolve) => (finishIdleStop = resolve))
+    const idleKey = sessionHostKey(AGENT_ID, 'idle-session')
+    const hostKeys = (daemon as any).hostKeysForAgent.bind(daemon)
+    vi.spyOn(daemon as any, 'hostKeysForAgent').mockImplementation((agentId: any) => [...hostKeys(agentId), idleKey])
+    const stopHostByKey = (daemon as any).stopHostByKey.bind(daemon)
+    vi.spyOn(daemon as any, 'stopHostByKey').mockImplementation((key: any) =>
+      key === idleKey ? idleStopped : stopHostByKey(key)
+    )
+
+    try {
+      await vi.waitFor(() => expect(old.host.prompt).toHaveBeenCalledTimes(1), WAIT)
+      updateAgent(root, { description: 'be terse' })
+      const reconciled = daemon.reconcile()
+      await vi.waitFor(() => expect((daemon as any).stopHostByKey).toHaveBeenCalledWith(idleKey), WAIT)
+
+      // The running turn settles mid-teardown and its session's next message arrives.
+      old.release()
+      await expect(running).resolves.toBe('acp-old')
+      followUp = (daemon as any).dispatch(AGENT_ID, msg('101', 'follow-up', 'T1'), 'int-a')
+      await vi.waitFor(() => expect(fresh.prompts).toEqual([expect.stringContaining('follow-up')]), WAIT)
+      expect(old.host.prompt).toHaveBeenCalledTimes(1)
+
+      finishIdleStop()
+      await reconciled
+      // The session resumes its conversation, now on the process started with the new config.
+      await expect(followUp).resolves.toBe('acp-old')
+      expect(old.host.stop).toHaveBeenCalledTimes(1)
+    } finally {
+      old.release()
+      finishIdleStop()
+      await Promise.allSettled([running, ...(followUp ? [followUp] : [])])
+      await daemon.stop()
+    }
+  })
+
+  it('revokes only the grants of the retiring process, not those of a session started meanwhile', async () => {
+    const old = blockingHost('old')
+    const fresh = answeringHost('new')
+    const root = scaffold()
+    const daemon = await boot(root, [old.host, fresh.host])
+    vi.spyOn(daemon as any, 'hostKeyFor').mockImplementation((agentId: any, key: any) => sessionHostKey(agentId, key))
+    const FRESH_CONV = '22222222-2222-4222-8222-222222222222'
+    const granted = [CONV]
+    const revoked: string[] = []
+    ;(daemon as any).remoteWebchatGrants = {
+      conversationsForAgent: () => [...granted],
+      revokeConversation: vi.fn(async (id: string) => {
+        revoked.push(id)
+        granted.splice(granted.indexOf(id), 1)
+      }),
+      revokeAll: vi.fn(async () => {})
+    }
+    const sink = { output: () => {}, done: () => {} }
+
+    try {
+      await (daemon as any).webchatTransport.dispatchWebchatTurn(
+        AGENT_ID,
+        CONV,
+        'long question',
+        { id: 'alice', name: 'alice' },
+        sink
+      )
+      await vi.waitFor(() => expect(old.host.prompt).toHaveBeenCalledTimes(1), WAIT)
+      updateAgent(root, { description: 'be terse' })
+      await daemon.reconcile()
+      expect(revoked).toEqual([])
+
+      // Another conversation starts on a fresh process of its own and is granted access.
+      granted.push(FRESH_CONV)
+
+      old.release()
+      await vi.waitFor(() => expect(old.host.stop).toHaveBeenCalledTimes(1), WAIT)
+      await vi.waitFor(() => expect(revoked).toEqual([CONV]), WAIT)
+      expect(granted).toEqual([FRESH_CONV])
+    } finally {
+      old.release()
+      await daemon.stop()
+    }
+  })
+
+  it('tells a turn cut while still starting up that it will be picked up again, and replays it', async () => {
+    const stuck = stuckStartHost()
+    const fresh = answeringHost('new')
+    const root = scaffold()
+    const daemon = await boot(root, [stuck, fresh.host])
+    ;(daemon as any).cfg.limits.cancelBackstopMs = 20
+    const appended = vi.spyOn((daemon as any).store, 'appendTranscript')
+    const starting = (daemon as any).dispatch(AGENT_ID, msg('100', 'early question', 'T1'), 'int-a')
+    void starting.catch(() => {})
+
+    try {
+      await vi.waitFor(() => expect(stuck.newSession).toHaveBeenCalledTimes(1), WAIT)
+      updateAgent(root, { description: 'be terse' })
+      await daemon.reconcile()
+
+      expect(appended).toHaveBeenCalledWith(expect.objectContaining({ text: REPLAYED }))
+      await vi.waitFor(() => expect(fresh.prompts).toEqual([expect.stringContaining('early question')]), WAIT)
+      await vi.waitFor(async () => expect(await inboxIds(root)).toEqual([]), WAIT)
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('tells a webchat turn cut while still starting up to send its message again', async () => {
+    const stuck = stuckStartHost()
+    const fresh = answeringHost('new')
+    const root = scaffold()
+    const daemon = await boot(root, [stuck, fresh.host])
+    ;(daemon as any).cfg.limits.cancelBackstopMs = 20
+    const dones: Array<{ error?: string }> = []
+    const sink = { output: () => {}, done: (event: { error?: string }) => dones.push(event) }
+
+    try {
+      await (daemon as any).webchatTransport.dispatchWebchatTurn(
+        AGENT_ID,
+        CONV,
+        'early question',
+        { id: 'alice', name: 'alice' },
+        sink
+      )
+      await vi.waitFor(() => expect(stuck.newSession).toHaveBeenCalledTimes(1), WAIT)
+      updateAgent(root, { description: 'be terse' })
+      await daemon.reconcile()
+
+      await vi.waitFor(() => expect(dones).toEqual([expect.objectContaining({ error: LOST })]), WAIT)
+      expect(fresh.host.prompt).not.toHaveBeenCalled()
+    } finally {
       await daemon.stop()
     }
   })
