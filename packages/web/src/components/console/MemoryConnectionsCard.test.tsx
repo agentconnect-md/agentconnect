@@ -45,7 +45,19 @@ const SPARE_INSTALLATION: MemoryPluginInstallationDto = {
   secretHeaders: [{ name: 'apiKey', header: 'Authorization', required: true }]
 }
 
-function connection(id: string): ExternalMemoryConnectionDto {
+const SCHEMA = {
+  type: 'object',
+  properties: {
+    projectId: { type: 'string', title: 'Project', minLength: 1 },
+    region: { type: 'string', enum: ['us', 'eu'] },
+    verbose: { type: 'boolean', description: 'Log every recall.' }
+  },
+  required: ['projectId'],
+  additionalProperties: false
+}
+const EMPTY_SCHEMA = { type: 'object', properties: {}, additionalProperties: false }
+
+function connection(id: string, over: Partial<ExternalMemoryConnectionDto> = {}): ExternalMemoryConnectionDto {
   return {
     id,
     installationId: INSTALLATION.id,
@@ -58,11 +70,13 @@ function connection(id: string): ExternalMemoryConnectionDto {
     profile: null,
     manifestDigest: null,
     capabilities: null,
+    configSchema: null,
     declaredEgressHosts: ['api.memory.example.test'],
     reasonCode: null,
     createdBy: null,
     createdAt: '2026-09-01T00:00:00.000Z',
-    updatedAt: '2026-09-01T00:00:00.000Z'
+    updatedAt: '2026-09-01T00:00:00.000Z',
+    ...over
   }
 }
 
@@ -112,9 +126,19 @@ async function settle(done: () => boolean): Promise<void> {
   }
 }
 
-async function render(canManage = false, installations = [INSTALLATION]): Promise<void> {
+async function render(
+  canManage = false,
+  installations = [INSTALLATION],
+  connections = [CONNECTION_A, CONNECTION_B]
+): Promise<void> {
   fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
+    if (init?.method === 'PATCH') {
+      return new Response(JSON.stringify(connections[0]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    }
     if (init?.method === 'POST' && url.includes('/memory-plugin-installations')) {
       const posted = JSON.parse(String(init.body)) as Partial<MemoryPluginInstallationDto>
       return new Response(JSON.stringify({ ...SPARE_INSTALLATION, ...posted, id: 'inst-new' }), {
@@ -131,7 +155,7 @@ async function render(canManage = false, installations = [INSTALLATION]): Promis
     const body = url.includes('/memory-plugin-installations')
       ? installations
       : url.includes('/external-memory-connections')
-        ? [CONNECTION_A, CONNECTION_B]
+        ? connections
         : []
     return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
   })
@@ -236,6 +260,53 @@ describe('external-memory connection rows', () => {
     // The required credential gates creation with one line, not a request.
     await act(async () => button(dialog, 'Create connection').click())
     expect(dialog.textContent).toContain('Enter the required credential(s): apiKey.')
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+  })
+
+  it('renders a probed settings schema as fields and saves them typed', async () => {
+    mocks.agents = []
+    const typed = connection(CONNECTION_A.id, { configSchema: SCHEMA, config: { projectId: 'p1' } })
+    await render(true, [INSTALLATION], [typed, CONNECTION_B])
+
+    await act(async () => button(row(typed.id), 'Edit connection').click())
+    const dialog = host.querySelector('.modal')!
+    expect(dialog.querySelector('textarea')).toBeNull()
+    expect(dialog.textContent).toContain('Project *')
+    expect(dialog.textContent).toContain('Log every recall.')
+    expect(input(dialog, 'input[type="text"]').value).toBe('p1')
+    await type(dialog.querySelector('select')!, '"eu"')
+    await act(async () => button(dialog, 'Save').click())
+    await settle(() => fetchMock.mock.calls.some(([, init]) => init?.method === 'PATCH'))
+    const patch = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH')
+    expect(JSON.parse(String(patch?.[1]?.body))).toEqual({ config: { projectId: 'p1', region: 'eu', verbose: false } })
+  })
+
+  it('offers nothing to edit when the plugin declares no settings and no credentials', async () => {
+    mocks.agents = []
+    const bare = connection(CONNECTION_B.id, { configSchema: EMPTY_SCHEMA })
+    await render(true, [INSTALLATION], [CONNECTION_A, bare])
+
+    expect(row(bare.id).querySelector('[aria-label="Edit connection"]')).toBeNull()
+    // A connection whose plugin has not reported yet keeps the JSON fallback.
+    await act(async () => button(row(CONNECTION_A.id), 'Edit connection').click())
+    const dialog = host.querySelector('.modal')!
+    expect(dialog.textContent).toContain('Settings (JSON)')
+    expect(dialog.querySelector('textarea')).not.toBeNull()
+  })
+
+  it('reuses the schema a sibling connection reported when adding another one on the same plugin', async () => {
+    mocks.agents = []
+    const typed = connection(CONNECTION_A.id, { configSchema: SCHEMA, config: { projectId: 'p1' } })
+    await render(true, [INSTALLATION], [typed])
+
+    await act(async () => button(host, 'Add connection').click())
+    const dialog = host.querySelector('.modal')!
+    expect((dialog.querySelector('select') as HTMLSelectElement).value).toBe(INSTALLATION.id)
+    await act(async () => button(dialog, 'Next').click())
+    expect(dialog.querySelector('textarea')).toBeNull()
+    expect(dialog.textContent).toContain('Project *')
+    await act(async () => button(dialog, 'Create connection').click())
+    expect(dialog.textContent).toContain('Project is required.')
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
   })
 

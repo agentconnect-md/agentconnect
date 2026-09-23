@@ -1657,6 +1657,7 @@ export const ExternalMemoryConnectionDto = z.object({
   profile: z.string().nullable(),
   manifestDigest: z.string().nullable(),
   capabilities: z.record(z.string(), z.unknown()).nullable(),
+  configSchema: z.record(z.string(), z.unknown()).nullable(),
   declaredEgressHosts: z.array(z.string()),
   reasonCode: z.string().nullable(),
   createdBy: z.string().nullable(),

@@ -3731,6 +3731,7 @@ model ExternalMemoryConnection {
   profile             String?
   manifestDigest      String?
   capabilities        Json?                          @db.JsonB
+  configSchema        Json?                          @db.JsonB
   declaredEgressHosts String[]                       @default([])
   reasonCode          String?
   createdByUserId     String?

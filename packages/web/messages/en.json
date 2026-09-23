@@ -3590,8 +3590,10 @@
         "noCredentials": "No credentials required.",
         "sentAsHeader": "sent as {header}",
         "passedToCommand": "passed to the local command",
-        "settings": "Settings (JSON)",
+        "settings": "Settings",
+        "settingsJson": "Settings (JSON)",
         "settingsHint": "Plugin-specific and non-secret.",
+        "notSet": "Not set",
         "replaceSecrets": "Replace credentials",
         "creating": "Creating…",
         "createConnection": "Create connection",
@@ -3604,7 +3606,10 @@
           "endpointRequired": "Plugin URL is required.",
           "commandRefRequired": "Command is required.",
           "credentialFieldsInvalid": "Every credential field needs a name and a header.",
-          "missingSecretValues": "Enter the required credential(s): {names}."
+          "missingSecretValues": "Enter the required credential(s): {names}.",
+          "fieldRequired": "{label} is required.",
+          "fieldNumber": "{label} must be a number.",
+          "fieldInteger": "{label} must be a whole number."
         }
       }
     }

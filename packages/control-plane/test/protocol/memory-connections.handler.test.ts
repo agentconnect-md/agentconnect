@@ -195,6 +195,7 @@ describe('facts/memory-connections — daemon-scoped and revision-fenced', () =>
             asyncCapture: false,
             idempotency: 'none'
           },
+          configSchema: { type: 'object', properties: { projectId: { type: 'string' } } },
           declaredEgressHosts: ['api.example-memory.com'],
           status: 'ready'
         },
@@ -212,6 +213,7 @@ describe('facts/memory-connections — daemon-scoped and revision-fenced', () =>
       expect(await connections.get(DEF_ORG, connection1.id)).toMatchObject({
         status: 'ready',
         probedRevision: 1,
+        configSchema: { type: 'object', properties: { projectId: { type: 'string' } } },
         declaredEgressHosts: ['api.example-memory.com']
       })
     })

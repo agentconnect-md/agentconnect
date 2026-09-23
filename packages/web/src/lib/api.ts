@@ -4636,6 +4636,8 @@ export interface ExternalMemoryConnectionDto {
   profile: string | null
   manifestDigest: string | null
   capabilities: Record<string, unknown> | null
+  /** The plugin's bounded settings schema, known once a probe has reported; null until then. */
+  configSchema: Record<string, unknown> | null
   declaredEgressHosts: string[]
   reasonCode: string | null
   createdBy: string | null
