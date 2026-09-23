@@ -306,7 +306,8 @@ Layout, one directory per session, removed whole at retirement:
 <agentDir>/sessions/<sid>/
 ├── workspace/            # primary clone — the session cwd
 ├── repos/<owner>/<repo>/ # one clone per secondary root (multi-repository-workspaces.md decision 4)
-└── home/                 # private HOME, XDG_RUNTIME_DIR, runtime state
+├── home/                 # private HOME, XDG_RUNTIME_DIR, runtime state
+└── .session-cwd.json     # which secondary root's clone is the cwd, once a review made it one
 ```
 
 The primary checkout keeps its roles for `shared` isolation, the console's
@@ -326,8 +327,10 @@ Session preparation runs at most two independent repository roots concurrently,
 including the working-directory root. Confined discovery starts with the cwd root,
 then the primary reference and sorted remaining secondary roots. Fresh clones read
 `.gitmodules` from their chosen Git tree before checkout, reviews use the verified
-revision, and ordinary resumes read the retained working directory. Shared working
-trees never decide these exclusions. Discovery overlaps checkout with the next
+revision, and ordinary resumes read the retained working directory. The session's
+runtime can write that directory, so its `.gitmodules` counts only as a bounded
+regular file; a link, a pipe, or an oversized file declares no submodules. Shared
+working trees never decide these exclusions. Discovery overlaps checkout with the next
 root's preparation; a
 submodule match waits for its parent to succeed before omitting the standalone
 root. A failed parent cannot hide another authorized repository, and a reviewed
@@ -353,6 +356,18 @@ time on shared filesystems.
   `unpack-objects`, which degraded every review in a confined session to
   revision-only. Retirement is deliberately not in that class: it judges a clone
   with no network target at all.
+- **The cwd record is the session's.** When a review makes a secondary root the
+  working directory, the daemon names that root in `.session-cwd.json` inside the
+  session directory, so a restart re-prepares the same cwd. It is written and read
+  through the filesystem that holds the session (its pod, its executor, or this
+  disk) and goes with the directory at retirement, so no turn of a confined session
+  reads the agent's subtrees for it. The session's runtime can write its own
+  directory, so the record counts only when it is a regular file naming a subtree
+  whose clone the session holds. The worktree tier keeps its record beside the
+  agent's subtree of that root (`repos/<a>/<b>/.session-cwd-<id>.json`). A confined
+  session that still has its record there is moved over by its next preparation,
+  which reads the agent's filesystem anyway; until then its turns name no reviewed
+  root.
 - **Retirement** applies the same dirty and unique-commit rules in the clone —
   every local ref counts, not only HEAD, because the directory is the object
   store and a side branch or a stash is work the checked-out branch cannot speak
@@ -361,6 +376,16 @@ time on shared filesystems.
   only the empty `.git`, `.agents` and `.codex` mountpoints a runtime's sandbox
   leaves where it protected a clone that is not there — is no work to judge, and
   goes with the directory (#2246).
+- **A directory whose row is gone** is found from the disk side, since retirement
+  starts from rows. A purge that could not judge the directory leaves one behind:
+  a shared store's holder purging a session whose directory is on another
+  member, for example. Each retention pass lists the session directories of every
+  loaded agent this daemon serves and retires those that no session row, dream
+  or held host maps to. It applies the same rules with the daemon's own Git on
+  this host and never boots a VM for the purpose. A directory that a microsandbox
+  environment still names waits until that VM is retired. An agent with work in
+  flight is skipped, and each directory is judged again inside the admission
+  fence (#2283).
 - **Console push and Git reads** resolve the session root as today.
 - **Sandbox grants** are per session and exact: the clone's `.git` writable,
   its `hooks` and `config` read-only, for both the outer sandbox and a runtime's

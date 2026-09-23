@@ -105,6 +105,9 @@ const channel = (
   dmUserId: null,
   sessionMode,
   triggerChosen: false,
+  decisionBinding: null,
+  decisionNeedsReview: false,
+  decisionDefinition: null,
   agentId: null
 })
 
@@ -298,6 +301,73 @@ describe('integrationToSpec mutedChannels', () => {
  * instead of the persistence fence's two messages. `toDbPlatform` itself lives
  * on unchanged at every persistence write.)
  */
+describe('By decision projection (decisions.md §7.1)', () => {
+  const DECISION = '99999999-9999-4999-8999-999999999999'
+  const definition = {
+    id: DECISION,
+    orgId: 'org',
+    name: 'Needs help',
+    providerId: 'typesafe',
+    model: 'jev-1.13.0',
+    question: {
+      type: 'boolean' as const,
+      instructions: 'Is help needed?',
+      criteria: { true: 'Yes', false: 'No' }
+    }
+  }
+  const gate = { type: 'gate' as const, decisionId: DECISION, when: { type: 'boolean' as const, values: [true] } }
+  const decisionRow = (channelId: string, over: Partial<IntegrationChannelRecord> = {}): IntegrationChannelRecord => ({
+    ...channel(channelId, 'mention'),
+    trigger: 'decision',
+    decisionBinding: gate,
+    decisionDefinition: definition,
+    ...over
+  })
+  const rows = () => [decisionRow('C1'), decisionRow('C2', { decisionNeedsReview: true }), channel('C3', 'any')]
+
+  it('emits the bundle and a scoped decision rule per enabled gate, muting held ones', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, rows())
+    expect(spec.core.bindRules).toContainEqual({ channel: 'C1', match: { kind: 'decision' } })
+    expect(spec.core.bindRules).not.toContainEqual({ channel: 'C2', match: { kind: 'decision' } })
+    expect(spec.core.mutedChannels).toEqual(['C2'])
+    expect(spec.core.decisions).toEqual({
+      bindings: [
+        { channel: 'C1', consumer: gate, enabled: true },
+        { channel: 'C2', consumer: gate, enabled: false, disabledReason: 'needs_review' }
+      ],
+      definitions: [definition]
+    })
+  })
+
+  it('never turns a gated By decision conversation into a mention rule', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, rows(), true)
+    expect(spec.core.bindRules).toEqual([
+      { channel: 'C1', match: { kind: 'decision' } },
+      { channel: 'C3', match: { kind: 'auto' } }
+    ])
+    expect(spec.core.mutedChannels).toEqual([])
+    expect(spec.core.decisions.bindings).toHaveLength(2)
+  })
+
+  it('emits an empty bundle when nothing is bound', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'mention')])
+    expect(spec.core.decisions).toEqual({ bindings: [], definitions: [] })
+  })
+
+  it('ships the bundle on a relay-managed spec without bind rules, muting held conversations', async () => {
+    const shared = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, bot({ transport: 'http' }), SECRET, rows())
+    expect(shared?.core.bindRules).toEqual([])
+    expect(shared?.core.mutedChannels).toEqual(['C2'])
+    expect(shared?.core.decisions.bindings.map((b) => [b.channel, b.enabled])).toEqual([
+      ['C1', true],
+      ['C2', false]
+    ])
+    const gated = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, bot({ transport: 'http' }), SECRET, rows(), true)
+    expect(gated?.core.bindRules).toContainEqual({ channel: 'C1', match: { kind: 'decision' } })
+    expect(gated?.core.decisions.definitions).toEqual([definition])
+  })
+})
+
 describe('integrationToSpec platform fences (§9)', () => {
   const foreign = { ...INTEGRATION, platform: 'mastodon' }
 

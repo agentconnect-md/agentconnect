@@ -26,7 +26,7 @@
  * behavior.
  */
 import type { SlackIdentity } from '../github/logto-identity.js'
-import type { AgentRecord, BotRecord, ChannelTrigger, ReportedChannel } from '../persistence/ports.js'
+import type { AgentRecord, BotRecord, SeedTrigger, ReportedChannel } from '../persistence/ports.js'
 import { isGatedAgent } from './placement.js'
 
 /** Concurrent identity reads per resolve — the audience is small and every lookup is
@@ -125,8 +125,8 @@ export async function gatedDmSeeds(
   agent: Pick<AgentRecord, 'visibility' | 'sharedWith'>,
   bot: Pick<BotRecord, 'platform' | 'teamId'>,
   deps: LinkedDmDeps
-): Promise<ReadonlyMap<string, ChannelTrigger>> {
-  const seeds = new Map<string, ChannelTrigger>()
+): Promise<ReadonlyMap<string, SeedTrigger>> {
+  const seeds = new Map<string, SeedTrigger>()
   const dms = channels.filter((c) => c.kind === 'im' && c.dmUserId)
   if (dms.length === 0) return seeds
   const linked = await linkedAudienceMemberIds(agent, bot, deps)
@@ -142,4 +142,4 @@ export type GatedDmSeedResolver = (
   channels: readonly ReportedChannel[],
   agent: Pick<AgentRecord, 'visibility' | 'sharedWith'>,
   bot: Pick<BotRecord, 'platform' | 'teamId'>
-) => Promise<ReadonlyMap<string, ChannelTrigger>>
+) => Promise<ReadonlyMap<string, SeedTrigger>>

@@ -123,7 +123,7 @@ export function toRoutesPatch(r: RcRoutes): RoutesPatch {
   return {
     members: r.members,
     agents: mapAgentDirectory(r.agents),
-    routes: r.routes,
+    routes: usableRoutes(r.routes),
     ...(r.defaultAgentId ? { defaultAgentId: r.defaultAgentId } : {}),
     ...(r.defaultDaemonId ? { defaultDaemonId: r.defaultDaemonId } : {}),
     gatedAgentIds: r.gatedAgentIds,
@@ -133,6 +133,11 @@ export function toRoutesPatch(r: RcRoutes): RoutesPatch {
     noticedDmConversations: r.noticedDmConversations,
     conversationDefaults: r.conversationDefaults
   }
+}
+
+/** Fail closed: a By decision route that names no Decision is dropped, never arbitrated as a candidate. */
+export function usableRoutes<R extends { match: { kind: string }; decisionId?: string | undefined }>(routes: R[]): R[] {
+  return routes.filter((route) => route.match.kind !== 'decision' || !!route.decisionId)
 }
 
 /** Keep the directory shape identical on full assignments and `rc/routes` updates. */
@@ -359,13 +364,22 @@ export class BotArbitrationRouter {
     return this.bots.get(botId)?.gatedOffChannels?.includes(channelId) ?? false
   }
 
-  /** True iff `channelId` has a channel-scoped `auto` owner — a rule that fires on
-   *  EVERY message. Such a channel needs no durable thread binding: any pod re-resolves
-   *  every message (incl. un-mentioned follow-ups) via the channel-ownership rung
-   *  before affinity is ever consulted, so reporting per-message would only amplify
-   *  writes + grow `shared_thread_agent` unboundedly. */
+  /** A channel-scoped `auto`/`decision` owner re-resolves every message on any pod, so it needs no durable thread binding. */
   channelAutoOwned(botId: string, channelId: string): boolean {
-    return this.bots.get(botId)?.routes.some((r) => r.scope?.channel === channelId && r.match.kind === 'auto') ?? false
+    return (
+      this.bots
+        .get(botId)
+        ?.routes.some(
+          (r) => r.scope?.channel === channelId && (r.match.kind === 'auto' || r.match.kind === 'decision')
+        ) ?? false
+    )
+  }
+
+  /** The bound Decision of a By decision conversation, for every human delivery in it. */
+  decisionIdFor(botId: string, channelId: string): string | undefined {
+    return this.bots
+      .get(botId)
+      ?.routes.find((r) => r.scope?.channel === channelId && r.match.kind === 'decision' && r.decisionId)?.decisionId
   }
 
   /** Apply a channel-owner pick to the current routing snapshot immediately.
@@ -646,7 +660,10 @@ export class BotArbitrationRouter {
     if (primary) add(primary, explicitIds.has(primary.agentId) ? 'mention' : 'implicit')
     for (const route of a.routes) {
       if (explicitIds.has(route.agentId)) add(target(route), 'mention')
-      if (route.match.kind === 'auto' && scopeMatches(route, msg)) add(target(route), 'implicit')
+      const candidate =
+        route.match.kind === 'auto' ||
+        (route.match.kind === 'decision' && verifiedAgentAuthor === undefined && !msg.sender.isBot)
+      if (candidate && scopeMatches(route, msg)) add(target(route), 'implicit')
     }
     // The verified final carries exact resolved agent ids across provider
     // splitting/echo. They JOIN the room but never replace its existing members,
@@ -714,7 +731,7 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
     ...(botUserId ? { botUserId } : {}),
     members: a.members,
     agents: mapAgentDirectory(a.agents),
-    routes: a.routes,
+    routes: usableRoutes(a.routes),
     ...(a.defaultAgentId ? { defaultAgentId: a.defaultAgentId } : {}),
     ...(a.defaultDaemonId ? { defaultDaemonId: a.defaultDaemonId } : {}),
     gatedAgentIds: a.gatedAgentIds,

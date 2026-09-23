@@ -4,11 +4,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AGENT_WAKE_FEATURE, DAEMON_BOOTSTRAP_UPGRADE_FEATURE } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
-import { agentHostKey, sessionHostKey } from '../src/acp/host-key.js'
+import { agentHostKey, sessionHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
 import { wireWorkspacePlane } from '../src/execution/plane.js'
 import { SANDBOX_HOLD_TTL_MS, SandboxHolds } from '../src/k8s/sandbox-hold.js'
+import { internalSessionKey } from '../src/key-server/session-hosts.js'
 import { ShimChannelLostError } from '../src/shim/channels.js'
-import { sandboxSubjectFor } from '../src/k8s/sandbox-identity.js'
+import { agentSandboxSubject, sandboxSubjectFor } from '../src/k8s/sandbox-identity.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { DATA_PLANE_CONFIG_PATH } from '../src/store/postgres-config.js'
@@ -1365,6 +1366,134 @@ describe('daemon --k8s mode', () => {
       expect(discarded).toEqual(['doomed'])
     } finally {
       await k8sDaemon.stop()
+    }
+  })
+})
+
+describe("a host start in a session's own pod leaves the agent's checkout alone (#1896)", () => {
+  const KEY = 'slack:C1:T1:bot-a'
+  const AGENT_POD = agentSandboxSubject('bot-a')
+  const SESSION_POD = sandboxSubjectFor(sessionHostKey('bot-a', KEY))
+  const SESSION_CWD = join('/agent', 'sessions', sessionKeyDirName(KEY), 'workspace')
+
+  /** A pool member whose plane records every pod bound, with preparation and the launch observed rather than run. */
+  async function poolMember(opts: { isolation?: 'shared' | 'session'; key?: string; failFirstStart?: boolean } = {}) {
+    const bound: string[] = []
+    const instance = daemon({
+      root: root(),
+      k8s: true,
+      plane: {
+        withSandbox: async (subject: string, work: () => Promise<unknown>) => {
+          bound.push(subject)
+          return await work()
+        },
+        ensureChannel: async () => {},
+        workspaceRootFor: () => '/agent'
+      }
+    })
+    await instance.start()
+    const inner = instance as any
+    const agent = { ...poolAgent('session'), dir: mkdtempSync(join(tmpdir(), 'ac-k8s-agent-')) }
+    inner.agents.set('bot-a', agent)
+    if (opts.isolation) inner.sessionIsolation.set(opts.key ?? KEY, opts.isolation)
+    inner.cfg.limits.agentStartAttempts = 2
+    inner.cfg.limits.agentStartBackoffMs = 0
+    const preparation = vi.spyOn(inner, 'runAgentWorkspacePreparation')
+    const checkout = vi.spyOn(inner.workspaces, 'prepareClusterWorkspace').mockResolvedValue('/agent/checkout')
+    const skills = vi.spyOn(inner, 'reconcileClusterSkills').mockResolvedValue(undefined)
+    vi.spyOn(inner, 'ensureRuntimeInstalled').mockResolvedValue(undefined)
+    vi.spyOn(inner.workspaces, 'offDiskSessionGitDirs').mockResolvedValue([])
+    const launches: { hostKey: string; cwd: string }[] = []
+    vi.spyOn(inner, 'buildAcpHost').mockImplementation((...args: unknown[]) => {
+      const launch = args[2] as { hostKey: string; cwd: string }
+      launches.push({ hostKey: launch.hostKey, cwd: launch.cwd })
+      const first = launches.length === 1
+      const start = async () => {
+        if (opts.failFirstStart && first) throw new Error('initialize failed')
+      }
+      return { host: { start, stop: async () => {} } }
+    })
+    return { instance, inner, agent, bound, preparation, checkout, skills, launches }
+  }
+
+  const modelEntry = (sessionKey: string) => ({
+    agentId: 'bot-a',
+    sessionKey,
+    target: { provider: 'anthropic', runtime: 'claude' },
+    grant: { keyId: 'key-1', key: 'model-key', requestedAtMs: 0 }
+  })
+
+  it("starts a key-server host by re-verifying the session pod's skills alone, in the session's directory", async () => {
+    const pool = await poolMember({ isolation: 'session' })
+    try {
+      await pool.inner.startModelSessionRuntime(pool.agent, modelEntry(KEY))
+      expect(pool.preparation).not.toHaveBeenCalled()
+      expect(pool.checkout).not.toHaveBeenCalled()
+      expect(pool.bound).toEqual([SESSION_POD])
+      expect(pool.skills.mock.calls.map((call) => call[1])).toEqual([SESSION_POD])
+      expect(pool.launches).toEqual([{ hostKey: sessionHostKey('bot-a', KEY), cwd: SESSION_CWD }])
+      expect(pool.inner.hostLaunch.get(sessionHostKey('bot-a', KEY)).cwd).toBe(SESSION_CWD)
+    } finally {
+      await pool.instance.stop()
+    }
+  })
+
+  it('re-verifies the session pod before every fresh key-server attempt, never the agent pod', async () => {
+    const pool = await poolMember({ isolation: 'session', failFirstStart: true })
+    try {
+      await pool.inner.startModelSessionRuntime(pool.agent, modelEntry(KEY))
+      expect(pool.launches).toHaveLength(2)
+      expect(pool.skills.mock.calls.map((call) => call[1])).toEqual([SESSION_POD, SESSION_POD])
+      expect(pool.bound).toEqual([SESSION_POD, SESSION_POD])
+      expect(pool.checkout).not.toHaveBeenCalled()
+    } finally {
+      await pool.instance.stop()
+    }
+  })
+
+  it('still prepares the agent pod for a key-server host of a shared session or an internal pass', async () => {
+    for (const scenario of [{ isolation: 'shared' as const, key: KEY }, { key: internalSessionKey.memory('bot-a') }]) {
+      const pool = await poolMember(scenario)
+      try {
+        await pool.inner.startModelSessionRuntime(pool.agent, modelEntry(scenario.key))
+        expect(pool.preparation.mock.calls.map((call) => call[1])).toEqual([undefined])
+        expect(pool.checkout.mock.calls).toEqual([[pool.agent, '/agent', undefined]])
+        expect(pool.bound).toEqual([AGENT_POD])
+        expect(pool.skills.mock.calls.map((call) => call[1])).toEqual([AGENT_POD])
+        expect(pool.launches).toEqual([{ hostKey: sessionHostKey('bot-a', scenario.key), cwd: '/agent/checkout' }])
+      } finally {
+        await pool.instance.stop()
+      }
+    }
+  })
+
+  it("starts a review's host in the cwd it prepared, re-verifying only the session pod before each attempt", async () => {
+    const pool = await poolMember({ failFirstStart: true })
+    try {
+      // Through the real seam, which learns the session's isolation from its request as a turn does.
+      await pool.inner.sessions.deps.hostFor('bot-a', { sessionKey: KEY, isolation: 'session' }, SESSION_CWD)
+      expect(pool.preparation).not.toHaveBeenCalled()
+      expect(pool.checkout).not.toHaveBeenCalled()
+      expect(pool.bound).toEqual([SESSION_POD, SESSION_POD])
+      expect(pool.skills.mock.calls.map((call) => call[1])).toEqual([SESSION_POD, SESSION_POD])
+      const launch = { hostKey: sessionHostKey('bot-a', KEY), cwd: SESSION_CWD }
+      expect(pool.launches).toEqual([launch, launch])
+    } finally {
+      await pool.instance.stop()
+    }
+  })
+
+  it('still prepares the session request itself for a host start given no cwd', async () => {
+    const pool = await poolMember()
+    try {
+      const request = { sessionKey: KEY, isolation: 'session' as const }
+      await pool.inner.sessions.deps.hostFor('bot-a', request)
+      expect(pool.preparation.mock.calls.map((call) => call[1])).toEqual([request])
+      expect(pool.checkout.mock.calls).toEqual([[pool.agent, '/agent', { ...request, confined: true }]])
+      expect(pool.skills.mock.calls.map((call) => call[1])).toEqual([SESSION_POD])
+      expect(pool.launches).toEqual([{ hostKey: sessionHostKey('bot-a', KEY), cwd: '/agent/checkout' }])
+    } finally {
+      await pool.instance.stop()
     }
   })
 })

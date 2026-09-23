@@ -22,8 +22,7 @@ export const WORKTREES_DIR = 'worktrees'
 /** What a secondary root's subtree records about the checkout beside it. */
 export const SECONDARY_MATERIALIZATION_FILE = '.materialization.json'
 
-/** Where a root's subtree records that one session's working directory is ITS worktree, not the
- *  primary's — durable, because a restart re-prepares the same session from the disk alone. */
+/** Where a root's subtree records that one worktree-tier session's cwd is ITS worktree; a confined session keeps that record in its own directory (`sessionCwdRecordIn`). */
 export function sessionCwdMarkerIn(subtree: string, sessionWorktreeId: string): string {
   return join(subtree, `.session-cwd-${sessionWorktreeId}.json`)
 }

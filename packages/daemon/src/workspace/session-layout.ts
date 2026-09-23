@@ -64,6 +64,11 @@ export function sessionHomeIn(sessionDir: string): string {
   return join(sessionDir, 'home')
 }
 
+/** `<sessionDir>/.session-cwd.json` — which secondary root's clone is the session's cwd, kept with the session wherever it runs and gone with the leaf. */
+export function sessionCwdRecordIn(sessionDir: string): string {
+  return join(sessionDir, '.session-cwd.json')
+}
+
 /** Every `repos/<a>/<b>` clone ON DISK in a session directory, sorted by name; symlinks are skipped. */
 export function sessionSecondaryClonesIn(sessionDir: string): { subtreeName: string; path: string }[] {
   const parent = join(sessionDir, SECONDARY_ROOTS_DIR)
@@ -168,6 +173,11 @@ function realDirEntries(dir: string): string[] {
 /** Whether the agent has any session directory at all — the cheap prefilter the retention GC wants. */
 export function hasSessionsDirIn(agentRoot: string): boolean {
   return existsSync(sessionsDirIn(agentRoot))
+}
+
+/** The worktree id a session directory's leaf carries (`session-<id>`, as sessionKeyDirName names it), else undefined. */
+export function sessionLeafId(leaf: string): string | undefined {
+  return /^session-([a-f0-9]{24})$/.exec(leaf)?.[1]
 }
 
 /** Every session directory ON DISK under `<agentRoot>/sessions`, by leaf name, sorted; symlinks are skipped. */

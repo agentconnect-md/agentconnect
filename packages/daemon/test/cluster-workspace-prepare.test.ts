@@ -41,6 +41,8 @@ const sessionDirOf = (key: string, agentId = 'agent-cluster'): string =>
   `${SESSIONS}/${hostKeyDirName(sessionHostKey(agentId, key))}`
 const sessionCloneOf = (key: string, repo?: string, agentId = 'agent-cluster'): string =>
   repo === undefined ? `${sessionDirOf(key, agentId)}/workspace` : `${sessionDirOf(key, agentId)}/repos/${repo}`
+/** Where a confined session records which root's clone is its cwd: its own directory, on its own pod. */
+const cwdRecordOf = (key: string): string => `${sessionDirOf(key)}/.session-cwd.json`
 
 interface Invocation {
   cwd: string | undefined
@@ -1193,14 +1195,14 @@ describe('secondary roots on the pod volume', () => {
     expect(fetch).toMatchObject({ cwd: staged })
     expect(fetch!.args).toContain(`+refs/pull/9/head:refs/agentconnect/reviews/${id}/head`)
     expect(calls.find((call) => call.args[0] === 'branch' && call.cwd === staged)!.args.at(-1)).toBe(head)
-    // The primary rides along at its default branch, and the attestation holds the cwd across a
-    // restart — a later hand-out that carries no review resolves the same working directory.
+    // The primary rides along at its default branch, and the session's own record holds the cwd across
+    // a restart — a later hand-out that carries no review resolves the same working directory.
     expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([
       sessionCloneOf('sess-review')
     ])
-    expect(JSON.parse((await pod.readFile(`${INFRA}/.session-cwd-${id}.json`))!)).toEqual({
-      repoFullName: 'acme/infra'
-    })
+    // On the session's pod, in its own directory — nothing beside the agent pod's subtree.
+    expect(JSON.parse((await pod.readFile(cwdRecordOf('sess-review')))!)).toEqual({ subtreeName: 'acme/infra' })
+    expect(await pod.stat(`${INFRA}/.session-cwd-${id}.json`)).toBe('missing')
     expect(
       await workspaces.additionalWorkspaceDirectories(agent, cwd, {
         sessionKey: 'sess-review',
@@ -1255,12 +1257,17 @@ describe('secondary roots on the pod volume', () => {
 
     await expect(workspaces.retiredSecondaryRoots(clusterAgent())).rejects.toThrow(/cannot list/)
     await expect(workspaces.sessionWorktreeRoots(agent)).rejects.toThrow(/cannot list/)
+    // A shared session's cwd record is still kept beside the agent's subtree, so its hand-out raises too.
+    await expect(
+      workspaces.additionalWorkspaceDirectories(agent, CHECKOUT, { sessionKey: 'sess-2', isolation: 'shared' })
+    ).rejects.toThrow(/cannot list/)
+    // An isolated session's is in its own directory, so its hand-out never lists the agent's.
     await expect(
       workspaces.additionalWorkspaceDirectories(agent, sessionCloneOf('sess-1'), {
         sessionKey: 'sess-1',
         isolation: 'session'
       })
-    ).rejects.toThrow(/cannot list/)
+    ).resolves.toEqual([sessionCloneOf('sess-1', 'acme/infra')])
   })
 
   it('finds a scratch agent’s secondary worktrees, which have no primary beside them', async () => {
@@ -1287,6 +1294,130 @@ describe('secondary roots on the pod volume', () => {
     expect(await workspaces.removeSessionWorktree(agent, 'sess-1')).toEqual({
       outcome: 'retained',
       reason: 'dirty'
+    })
+  })
+
+  // Which root holds an isolated session's cwd is a fact about the session, so it lives on the session's pod and a turn never needs the agent's (k8s-daemon-pool.md §4).
+  describe('an isolated session’s cwd record', () => {
+    const KEY = 'sess-review'
+    const resumed = { sessionKey: KEY, isolation: 'session' as const }
+    const legacyRecord = (): string => `${INFRA}/.session-cwd-${workspaces.sessionWorktreeId(KEY)}.json`
+    /** Only a session pod is bound: every path outside the session directories is the sleeping agent pod's. */
+    const agentPodAsleep = (): void => {
+      pod.ownerAsleep = (path) => !path.startsWith(`${SESSIONS}/`)
+    }
+    const handedOut = async (agent: Agent, key = KEY): Promise<string[]> =>
+      (await workspaces.sessionAdditionalRoots(agent, { sessionKey: key, isolation: 'session' })).map(
+        (root) => root.path
+      )
+
+    /** The formal review of the secondary root, the one preparation that makes it the session's cwd. */
+    async function reviewInfra(agent: Agent): Promise<string> {
+      const base = 'a'.repeat(40)
+      const head = 'b'.repeat(40)
+      const id = workspaces.sessionWorktreeId(KEY)
+      revs[`refs/agentconnect/reviews/${id}/base`] = base
+      revs[`refs/agentconnect/reviews/${id}/head`] = head
+      return await workspaces.prepareClusterWorkspace(agent, POD_ROOT, {
+        ...resumed,
+        reviewRepoFullName: 'acme/infra',
+        review: { pullNumber: 9, baseSha: base, headSha: head }
+      })
+    }
+
+    it('answers the standing context and session/new or load from the session pod alone', async () => {
+      const agent = agentWithRoots()
+      await workspaces.prepareClusterWorkspace(agent, POD_ROOT, { sessionKey: 'sess-plain', isolation: 'session' })
+      const cwd = await reviewInfra(agent)
+      agentPodAsleep()
+
+      // A reviewed session: its record names the secondary, so the primary rides along instead.
+      expect(await handedOut(agent)).toEqual([sessionCloneOf(KEY)])
+      expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, resumed)).toEqual([sessionCloneOf(KEY)])
+      // One that never reviewed anything has no record, and asks the agent pod nothing either.
+      const plain = { sessionKey: 'sess-plain', isolation: 'session' as const }
+      expect(await handedOut(agent, 'sess-plain')).toEqual([sessionCloneOf('sess-plain', 'acme/infra')])
+      expect(await workspaces.additionalWorkspaceDirectories(agent, sessionCloneOf('sess-plain'), plain)).toEqual([
+        sessionCloneOf('sess-plain', 'acme/infra')
+      ])
+    })
+
+    it('moves a record left beside the agent’s subtree into the session directory when preparation runs', async () => {
+      const agent = agentWithRoots()
+      const cwd = await reviewInfra(agent)
+      // What a session reviewed before its directory kept the record has there instead.
+      await pod.rmTree(cwdRecordOf(KEY))
+      await pod.writeFile(legacyRecord(), JSON.stringify({ repoFullName: 'acme/infra' }))
+
+      // A turn asks the session pod alone, so until then it names no reviewed root and never wakes the agent pod.
+      agentPodAsleep()
+      expect(await handedOut(agent)).toEqual([sessionCloneOf(KEY, 'acme/infra')])
+
+      // Preparation still holds the agent pod: it resumes the reviewed root and moves the record.
+      pod.ownerAsleep = () => false
+      expect(await workspaces.prepareClusterWorkspace(agent, POD_ROOT, resumed)).toBe(cwd)
+      expect(JSON.parse((await pod.readFile(cwdRecordOf(KEY)))!)).toEqual({ subtreeName: 'acme/infra' })
+      expect(await pod.stat(legacyRecord())).toBe('missing')
+      agentPodAsleep()
+      expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, resumed)).toEqual([sessionCloneOf(KEY)])
+    })
+
+    it('goes with the session directory, which the agent pod is not needed to remove', async () => {
+      const agent = agentWithRoots()
+      await reviewInfra(agent)
+      agentPodAsleep()
+
+      expect(await workspaces.removeSessionWorktree(agent, KEY, 'clones')).toEqual({ outcome: 'removed' })
+      expect(await pod.stat(cwdRecordOf(KEY))).toBe('missing')
+      expect(await pod.stat(sessionDirOf(KEY))).toBe('missing')
+    })
+
+    it('still sweeps a record left beside the agent’s subtree with the legacy half', async () => {
+      const agent = agentWithRoots()
+      await reviewInfra(agent)
+      await pod.writeFile(legacyRecord(), JSON.stringify({ repoFullName: 'acme/infra' }))
+
+      expect(await workspaces.removeSessionWorktree(agent, KEY, 'worktrees')).toEqual({ outcome: 'absent' })
+      expect(await pod.stat(legacyRecord())).toBe('missing')
+    })
+
+    it('is dropped, wherever it is, when a review degrades to revision-only', async () => {
+      const agent = agentWithRoots()
+      await reviewInfra(agent)
+      await pod.writeFile(legacyRecord(), JSON.stringify({ repoFullName: 'acme/infra' }))
+
+      const cwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT, {
+        ...resumed,
+        githubReviewRevisionOnly: true
+      })
+
+      expect(cwd).toBe(sessionCloneOf(KEY))
+      expect(await pod.stat(cwdRecordOf(KEY))).toBe('missing')
+      expect(await pod.stat(legacyRecord())).toBe('missing')
+      agentPodAsleep()
+      expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, resumed)).toEqual([
+        sessionCloneOf(KEY, 'acme/infra')
+      ])
+    })
+
+    it('counts only as a subtree whose clone the session holds, since its runtime can write there', async () => {
+      const agent = agentWithRoots()
+      await workspaces.prepareClusterWorkspace(agent, POD_ROOT, resumed)
+      // Names that are not a subtree are refused before any path is composed, even one that would land on a clone; a well-formed one needs the clone.
+      const forged = [
+        '../workspace',
+        'acme/infra/.',
+        'acme//infra',
+        '../../checkout',
+        'acme',
+        'example-co/shared-library'
+      ]
+      for (const subtreeName of forged) {
+        await pod.writeFile(cwdRecordOf(KEY), JSON.stringify({ subtreeName }))
+        expect(await handedOut(agent)).toEqual([sessionCloneOf(KEY, 'acme/infra')])
+      }
+      await pod.writeFile(cwdRecordOf(KEY), JSON.stringify({ subtreeName: 'acme/infra' }))
+      expect(await handedOut(agent)).toEqual([sessionCloneOf(KEY)])
     })
   })
 })

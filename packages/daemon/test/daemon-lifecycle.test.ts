@@ -4,8 +4,9 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSy
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MAX_TASK_LIST_TASKS, type SessionPurged } from '@agentconnect.md/protocol'
-import { sessionKeyDirName } from '../src/acp/host-key.js'
+import { agentHostKey, sessionHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
 import { Daemon } from '../src/daemon.js'
+import { buildCpClientDeps } from '../src/cp/cp-client-deps.js'
 import { TaskViolationError } from '../src/cp/task-reader.js'
 import { configFilesDir } from '../src/shim/config-file-env.js'
 import { readSkillLedger, skillLedgerLocation } from '../src/skills/skill-install-ledger.js'
@@ -13,7 +14,9 @@ import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { NO_RESPONSE_SENTINEL } from '../src/session/no-response.js'
 import { FakeClock } from './cp/fake-clock.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import { PodWorkspaceFs } from './fixtures/pod-workspace-fs.js'
 import { WAIT, waitBudget } from './wait-support.js'
+import { testPlane } from './workspace-plane-support.js'
 
 const TRANSPORT_SCOPE = `slack:${createHash('sha256').update('slack\0p').digest('hex').slice(0, 24)}`
 
@@ -219,6 +222,75 @@ describe('Daemon session lifecycle (#118)', () => {
       await daemon.stop()
     }
   })
+
+  // Pod coordinates are POSIX by construction.
+  it.skipIf(process.platform === 'win32')(
+    'puts a pool session’s attachment and image read on its own pod when the agent pod never bound here',
+    async () => {
+      const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as never })
+      try {
+        await daemon.start()
+        const d = daemon as any
+        // The startup retention pass must not meet the fake plane below.
+        await vi.waitFor(() => expect(d.sessionRetentionSweepInFlight).toBe(false))
+        const agent = d.agents.get('bot-a')
+        agent.workspace.mode = 'git-repo'
+        agent.workspace.gitRepo = 'https://github.com/example-org/example-repo'
+        const row = { key: KEY, sessionId: 'outward-1', workspaceIsolation: 'session' }
+        const getSession = d.store.getSession.bind(d.store)
+        vi.spyOn(d.store, 'getSession').mockImplementation(async (key: any) => (key === KEY ? row : getSession(key)))
+        vi.spyOn(d.store, 'getSessionByOutwardId').mockResolvedValue(row)
+        const pod = new PodWorkspaceFs('/agent')
+        const clone = `/agent/sessions/${sessionKeyDirName(KEY)}/workspace`
+        const png = Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=',
+          'base64'
+        )
+        vi.spyOn(pod, 'readFileBytes').mockImplementation(async (path) =>
+          path === `${clone}/out/chart.png` ? { bytes: png } : undefined
+        )
+        let bound = true
+        const plane = {
+          ...testPlane({
+            workspacesOffDisk: true,
+            workspaceFsFor: () => (bound ? { fs: pod, mount: '/agent' } : undefined)
+          }),
+          // Only the session pod ever bound on this member, so the agent pod has no recorded mount.
+          workspaceRootFor: (subject: string) => (subject === 'bot-a' ? undefined : '/agent'),
+          stop: async () => {}
+        }
+        d.k8sPlane = plane
+        d.wirePlaneResolver(plane)
+        const ctx = {
+          agentId: 'bot-a',
+          platform: 'slack',
+          channel: 'C1',
+          thread: 'T1',
+          transportScope: TRANSPORT_SCOPE
+        }
+
+        expect(await d.mcp.deps.saveAttachment(ctx, 'report.pdf', Buffer.from('%PDF-1'))).toEqual({
+          ok: true,
+          path: 'uploads/report.pdf'
+        })
+        expect(String(pod.files.get(`${clone}/uploads/report.pdf`))).toBe('%PDF-1')
+        expect(await d.mcp.deps.readWorkspaceImage(ctx, 'out/chart.png')).toMatchObject({
+          ok: true,
+          mimeType: 'image/png'
+        })
+
+        // No pod of the agent bound: both refuse rather than fall back to this member's own disk.
+        bound = false
+        expect(await d.mcp.deps.saveAttachment(ctx, 'other.pdf', Buffer.from('%PDF-2'))).toEqual({
+          ok: false,
+          reason: 'sandboxed'
+        })
+        expect(await d.mcp.deps.readWorkspaceImage(ctx, 'out/chart.png')).toEqual({ ok: false, reason: 'sandboxed' })
+      } finally {
+        await daemon.stop()
+      }
+    }
+  )
 
   it('retries microsandbox skill authority after a transient store failure', async () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as never })
@@ -714,6 +786,45 @@ describe('Daemon session lifecycle (#118)', () => {
     )
     ;(daemon as any).drainingAgents.delete('bot-a')
     await daemon.stop()
+  })
+
+  it('pulls the agent’s own checkout without stopping a confined session’s host', async () => {
+    const root = scaffold()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => quietHost() as any })
+    await daemon.start()
+    try {
+      const d = daemon as any
+      mkdirSync(join(root, 'agents', 'bot-a', 'workspace'), { recursive: true })
+      // A confined session stands in its own directory, where every root is a clone of its own.
+      mkdirSync(join(root, 'agents', 'bot-a', 'sessions', sessionKeyDirName(KEY)), { recursive: true })
+      d.sessionIsolation.set(KEY, 'session')
+      const confined = sessionHostKey('bot-a', KEY)
+      // A session-bound host that is not confined (a microsandbox runtime) shares the checkout like the agent's own.
+      const sharing = sessionHostKey('bot-a', 'slack:C1:shared')
+      const hosts = new Map([
+        [agentHostKey('bot-a'), quietHost()],
+        [confined, quietHost()],
+        [sharing, quietHost()]
+      ])
+      for (const [key, host] of hosts) d.hosts.set(key, host)
+      const stopHost = vi.spyOn(d, 'stopHost')
+      // Through the production wiring, where the console's pull frame lands.
+      const deps = buildCpClientDeps(d.cpClientDepsHost(root, 'wss://cp.example.test', () => {}))
+
+      await expect(deps.workspaceGit!.pull('bot-a')).resolves.toMatchObject({ isRepo: false })
+      expect(hosts.get(confined)!.stop).not.toHaveBeenCalled()
+      expect(hosts.get(agentHostKey('bot-a'))!.stop).toHaveBeenCalledOnce()
+      expect(hosts.get(sharing)!.stop).toHaveBeenCalledOnce()
+      expect([...d.hosts.keys()]).toEqual([confined])
+      expect(stopHost).not.toHaveBeenCalled()
+
+      // With no confined host to spare, a pull stops every host exactly as a file write does.
+      d.hosts.delete(confined)
+      await deps.workspaceGit!.pull('bot-a')
+      expect(stopHost).toHaveBeenCalledExactlyOnceWith('bot-a')
+    } finally {
+      await daemon.stop()
+    }
   })
 
   it('waits out a workspace mutation instead of failing an admitted cold host start', async () => {
@@ -2837,6 +2948,97 @@ describe('Daemon session retention GC (#485)', () => {
         await sweep
         expect(discard).not.toHaveBeenCalled()
         expect(collectImages).not.toHaveBeenCalled()
+      } finally {
+        release()
+        await daemon.stop()
+      }
+    })
+  })
+
+  describe('session directories whose row is gone (#2283)', () => {
+    // A session directory holding only its runtime HOME, which carries no work of its own.
+    const sessionDirOf = (daemon: Daemon, key: string) => {
+      const dir = join((daemon as any).agents.get('bot-a').dir, 'sessions', sessionKeyDirName(key))
+      mkdirSync(join(dir, 'home'), { recursive: true })
+      writeFileSync(join(dir, 'home', 'state'), 'x')
+      return dir
+    }
+
+    const startDaemon = async (): Promise<Daemon> => {
+      const daemon = new Daemon({
+        slackAppFactory: fakeSlackAppFactory(),
+        root: scaffold(),
+        hostFactory: () => quietHost() as any,
+        clock: new FakeClock()
+      })
+      await daemon.start()
+      await sweepRetention(daemon)
+      return daemon
+    }
+
+    it('removes an orphan directory, and keeps row, dream and VM-backed ones and one holding work', async () => {
+      const daemon = await startDaemon()
+      const store = (daemon as any).store
+      await seedSession(daemon, 'has-row', 'closed', (daemon as any).clock.now())
+      await store.insertDream({
+        dreamId: 'drm-1',
+        agentId: 'bot-a',
+        status: 'failed',
+        trigger: 'manual',
+        sessionIds: [],
+        snapshotDigest: 'sha256:x',
+        createdAt: '2026-01-01T00:00:00.000Z'
+      })
+      const dreamKey = sessionKey('dream', 'memory', 'drm-1', 'bot-a')
+      const orphan = sessionDirOf(daemon, 'purged')
+      const kept = ['has-row', dreamKey, 'vm-bound'].map((key) => sessionDirOf(daemon, key))
+      // A file where a clone would be, with no `.git` to judge it by: never discarded.
+      const work = sessionDirOf(daemon, 'holds-work')
+      mkdirSync(join(work, 'workspace'))
+      writeFileSync(join(work, 'workspace', 'notes.md'), 'work\n')
+      const scratch = join((daemon as any).agents.get('bot-a').dir, 'sessions', 'scratch')
+      mkdirSync(scratch)
+      ;(daemon as any).microsandbox = {
+        environmentIds: async () => [`bot-a/${sessionKeyDirName('vm-bound')}`],
+        environment: () => ({ id: 'loaded' }),
+        discard: vi.fn(async () => {}),
+        collectImages: vi.fn(async () => {}),
+        stopAll: vi.fn(async () => {})
+      }
+      try {
+        await sweepRetention(daemon)
+        expect(existsSync(orphan)).toBe(false)
+        for (const dir of [...kept, work, scratch]) expect(existsSync(dir)).toBe(true)
+      } finally {
+        await daemon.stop()
+      }
+    })
+
+    it('leaves every directory alone while the manager of a sandboxed agent is down', async () => {
+      const daemon = await startDaemon()
+      const orphan = sessionDirOf(daemon, 'purged')
+      ;(daemon as any).usesMicrosandbox = () => true
+      try {
+        await sweepRetention(daemon)
+        expect(existsSync(orphan)).toBe(true)
+      } finally {
+        await daemon.stop()
+      }
+    })
+
+    it('keeps a directory whose row reappears while the pass waits for the admission fence', async () => {
+      const daemon = await startDaemon()
+      const dir = sessionDirOf(daemon, 'reopened')
+      let release!: () => void
+      const blocked = new Promise<void>((resolve) => (release = resolve))
+      void (daemon as any).enqueueAgentWorkspaceMutation('bot-a', () => blocked)
+      try {
+        const sweep = (daemon as any).sweepSessionRetention()
+        await vi.waitFor(() => expect((daemon as any).workspaceDispatchFences.has('bot-a')).toBe(true), WAIT)
+        await seedSession(daemon, 'reopened', 'idle', (daemon as any).clock.now())
+        release()
+        await sweep
+        expect(existsSync(dir)).toBe(true)
       } finally {
         release()
         await daemon.stop()

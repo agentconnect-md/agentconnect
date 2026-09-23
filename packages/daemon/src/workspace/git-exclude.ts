@@ -16,6 +16,8 @@ import { localWorkspaceFs, type WorkspaceFs } from './workspace-fs.js'
 
 const BEGIN = '# BEGIN agentconnect-managed skills'
 const END = '# END agentconnect-managed skills'
+/** Far past any exclude file a person keeps; a larger one is not rewritten. */
+const MAX_EXCLUDE_BYTES = 1024 * 1024
 
 /**
  * Re-express bundle roots, which the installer reports relative to the ACP cwd, against the
@@ -56,7 +58,10 @@ export async function excludeManagedSkillBundles(
   fs: WorkspaceFs = localWorkspaceFs
 ): Promise<void> {
   const file = join(commonDir, 'info', 'exclude')
-  const current = (await fs.readFile(file)) ?? ''
+  // The runtime can write `.git`: an oversized file is left as it is, and a link or pipe in its place is replaced.
+  const read = await fs.readFileBytes(file, MAX_EXCLUDE_BYTES)
+  if (read !== undefined && 'tooLarge' in read) return
+  const current = read === undefined ? '' : read.bytes.toString('utf8')
   const kept = stripBlock(current)
   const patterns = [...new Set(relativeRoots.map(excludePattern))].sort()
   const block = patterns.length === 0 ? '' : `${[BEGIN, ...patterns, END].join('\n')}\n`

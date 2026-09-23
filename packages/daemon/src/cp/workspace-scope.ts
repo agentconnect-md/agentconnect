@@ -64,15 +64,13 @@ export function createWorkspaceScope(deps: WorkspaceScopeDeps): WorkspaceScope {
     return { root: deps.workspaces.sessionWorktreePath(agent, session.key), scratch: false, sessionKey: session.key }
   }
 
-  // A repository the agent does not authorize is refused HERE, so no root outside the set is ever
-  // addressable. A root the agent does authorize but has not materialized yet still answers: its
-  // checkout is simply absent, which reads as an empty workspace rather than an error.
+  // An unauthorized repository is refused HERE; an authorized one answers from the spec with no I/O, materialized or not (an absent checkout reads as empty).
   const secondaryLocation = async (
     agent: Agent,
     repo: string,
     sessionId?: string
   ): Promise<LocalLocation | undefined> => {
-    const root = await deps.workspaces.consoleSecondaryRoot(agent, repo)
+    const root = deps.workspaces.consoleRootNamed(agent, repo)
     if (!root) return undefined
     // A secondary root is a git checkout whatever the primary workspace mode is — never scratch.
     if (!sessionId) return { root: root.path, scratch: false }

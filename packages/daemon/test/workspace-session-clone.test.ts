@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import {
   existsSync,
   mkdirSync,
@@ -8,6 +8,7 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -447,6 +448,47 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
       expect(await workspaces.readySecondaryRoots(agent, request)).toEqual([])
       // A resumed session keeps its existing clone; a new one never creates the duplicate.
       expect(existsSync(join(leafOf(agent), 'repos', 'acme', 'infra', '.git'))).toBe(mode === 'resume')
+    }
+  )
+
+  it.each(process.platform === 'win32' ? ['symlink'] : ['symlink', 'fifo'])(
+    'resumes past a %s the runtime left as its clone .gitmodules and withholds nothing',
+    async (kind) => {
+      const agent = agentFixture({ additionalRepos: [{ repoFullName: 'acme/infra', repoId: '42' }] })
+      serveAll(agent)
+      await workspaces.prepareWorkspace(agent)
+      const root = workspaces.secondaryRoots(agent)[0]!
+      git(root.path, ['remote', 'set-url', 'origin', root.cloneUrl])
+      const request = confined()
+      const path = await workspaces.prepareSessionWorkspace(agent, request)
+      git(join(leafOf(agent), 'repos', 'acme', 'infra'), ['remote', 'set-url', 'origin', root.cloneUrl])
+      const declaration = '[submodule "infra"]\n\turl = https://github.com/acme/infra.git\n'
+      let writer: ChildProcess | undefined
+      if (kind === 'symlink') {
+        // Past the 256 KiB byte cap yet under it in UTF-16 units, so a followed link would declare the root.
+        const target = join(tempRoot('ac-session-clone-gitmodules-'), 'large')
+        writeFileSync(target, `${declaration}# ${'é'.repeat(200_000)}\n`)
+        symlinkSync(target, join(path, '.gitmodules'))
+      } else {
+        execFileSync('mkfifo', [join(path, '.gitmodules')])
+        // A writer turns a blocking read into a wrong answer rather than a hung worker.
+        writer = spawn(process.execPath, [
+          '-e',
+          'require("fs").writeFileSync(...process.argv.slice(1))',
+          join(path, '.gitmodules'),
+          declaration
+        ])
+      }
+
+      try {
+        await workspaces.prepareSessionWorkspace(agent, request)
+      } finally {
+        writer?.kill()
+      }
+
+      expect((await workspaces.readySecondaryRoots(agent, request)).map((root) => root.repoFullName)).toEqual([
+        'acme/infra'
+      ])
     }
   )
 
@@ -957,6 +999,125 @@ describe('retiring a confined session', () => {
     expect(existsSync(leafOf(agent))).toBe(false)
     expect(git(agent.workspace.path, ['worktree', 'list']).split('\n')).toHaveLength(1)
     expect(git(agent.workspace.path, ['branch', '--list', 'dev/*'])).toBe('')
+  })
+})
+
+// Which root holds a confined session's cwd is the session's own fact: recorded in its directory, read there by every turn, and gone with it (k8s-daemon-pool.md §4).
+describe('a confined session records its cwd root in its own directory', () => {
+  const INFRA = { repoFullName: 'acme/infra', repoId: '42' }
+  const scope = { sessionKey: KEY, isolation: 'session' as const }
+  const recordOf = (agent: Agent) => join(leafOf(agent), '.session-cwd.json')
+  const legacyOf = (agent: Agent) =>
+    join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra', `.session-cwd-${idOf()}.json`)
+  const handedOut = async (agent: Agent) =>
+    (await workspaces.sessionAdditionalRoots(agent, scope)).map((root) => root.path)
+
+  it('keeps the record beside its clones, not beside the agent’s subtree, and drops it with the directory', async () => {
+    const agent = agentFixture({ additionalRepos: [INFRA] })
+    serveAll(agent)
+    const cwd = await workspaces.prepareSessionWorkspace(agent, confined({ reviewRepoFullName: 'acme/infra' }))
+    expect(cwd).toBe(realpathSync(join(leafOf(agent), 'repos', 'acme', 'infra')))
+    expect(JSON.parse(readFileSync(recordOf(agent), 'utf8'))).toEqual({ subtreeName: 'acme/infra' })
+    expect(existsSync(legacyOf(agent))).toBe(false)
+
+    // A later read that names no review resolves the same cwd from the record, with the primary alongside.
+    const primary = realpathSync(join(leafOf(agent), 'workspace'))
+    expect(await handedOut(agent)).toEqual([primary])
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, scope)).toEqual([primary])
+
+    expect(await workspaces.removeSessionWorktree(agent, KEY)).toEqual({ outcome: 'removed' })
+    expect(existsSync(recordOf(agent))).toBe(false)
+  })
+
+  it('moves a record the agent’s subtree kept into the session directory, and drops both on revision-only', async () => {
+    const agent = agentFixture({ additionalRepos: [INFRA] })
+    serveAll(agent)
+    const cwd = await workspaces.prepareSessionWorkspace(agent, confined({ reviewRepoFullName: 'acme/infra' }))
+    // What a session prepared before its directory kept the record has instead; a turn reads its directory alone until then.
+    rmSync(recordOf(agent))
+    writeFileSync(legacyOf(agent), JSON.stringify({ repoFullName: 'acme/infra' }))
+    expect(await handedOut(agent)).toEqual([cwd])
+
+    // A resume converges each clone's origin, so the fixtures stand at the authorized URL again.
+    const root = workspaces.secondaryRoots(agent)[0]!
+    for (const path of [root.path, cwd]) git(path, ['remote', 'set-url', 'origin', root.cloneUrl])
+    expect(await workspaces.prepareSessionWorkspace(agent, unconfined())).toBe(cwd)
+    expect(JSON.parse(readFileSync(recordOf(agent), 'utf8'))).toEqual({ subtreeName: 'acme/infra' })
+    expect(existsSync(legacyOf(agent))).toBe(false)
+    expect(await handedOut(agent)).toEqual([realpathSync(join(leafOf(agent), 'workspace'))])
+
+    // A review that degrades to revision-only drops the record wherever it is.
+    writeFileSync(legacyOf(agent), JSON.stringify({ repoFullName: 'acme/infra' }))
+    const revisionOnly = await workspaces.prepareSessionWorkspace(agent, confined({ githubReviewRevisionOnly: true }))
+    expect(revisionOnly).toBe(realpathSync(join(leafOf(agent), 'workspace')))
+    expect(existsSync(recordOf(agent))).toBe(false)
+    expect(existsSync(legacyOf(agent))).toBe(false)
+    await expect(workspaces.additionalWorkspaceDirectories(agent, revisionOnly, scope)).resolves.toEqual([cwd])
+  })
+
+  // A file symlink needs a privilege a Windows runner may not hold; the refusal itself is `lstat`, the same there.
+  it.skipIf(process.platform === 'win32')('refuses a record the runtime replaced with a link', async () => {
+    const agent = agentFixture({ additionalRepos: [INFRA] })
+    serveAll(agent)
+    const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
+    const elsewhere = join(workspaces.agentRootFor(agent), 'elsewhere.json')
+    writeFileSync(elsewhere, JSON.stringify({ subtreeName: 'acme/infra' }))
+    symlinkSync(elsewhere, recordOf(agent))
+    const infra = realpathSync(join(leafOf(agent), 'repos', 'acme', 'infra'))
+    expect(await handedOut(agent)).toEqual([infra])
+
+    rmSync(recordOf(agent))
+    writeFileSync(recordOf(agent), JSON.stringify({ subtreeName: 'acme/infra' }))
+    expect(await handedOut(agent)).toEqual([cwd])
+  })
+})
+
+describe('a session directory no row names (#2283)', () => {
+  // A plane standing in for a VM that would have to boot: the orphan judgement must never ask it.
+  const refuseThePlane = () =>
+    wireTestPlane(workspaces, {
+      gitRunnerFor: () => {
+        throw new Error('the plane was asked for a runner')
+      },
+      workspaceFsFor: () => {
+        throw new Error('the plane was asked for a filesystem')
+      }
+    })
+
+  it('lists only session leaves, and removes a clean, pushed one judged on this host', async () => {
+    const agent = agentFixture()
+    serveAll(agent)
+    await workspaces.prepareSessionWorkspace(agent, confined())
+    mkdirSync(join(workspaces.agentRootFor(agent), 'sessions', 'scratch'))
+    const leaf = basename(leafOf(agent))
+    expect(workspaces.sessionDirLeaves(agent)).toEqual([leaf])
+    refuseThePlane()
+
+    expect(await workspaces.removeOrphanSessionDir(agent, leaf)).toEqual({ outcome: 'removed' })
+    expect(existsSync(leafOf(agent))).toBe(false)
+    expect(workspaces.sessionDirLeaves(agent)).toEqual([])
+  })
+
+  it('keeps one with uncommitted work or a commit no remote has', async () => {
+    const agent = agentFixture()
+    serveAll(agent)
+    const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
+    const leaf = basename(leafOf(agent))
+    refuseThePlane()
+    writeFileSync(join(cwd, 'wip.md'), 'unsaved\n')
+    expect(await workspaces.removeOrphanSessionDir(agent, leaf)).toEqual({ outcome: 'retained', reason: 'dirty' })
+    rmSync(join(cwd, 'wip.md'))
+    git(cwd, ['commit', '-q', '--allow-empty', '-m', 'only here'])
+    expect(await workspaces.removeOrphanSessionDir(agent, leaf)).toEqual({
+      outcome: 'retained',
+      reason: 'unique-commits'
+    })
+    expect(existsSync(cwd)).toBe(true)
+  })
+
+  it('refuses anything but a session leaf', async () => {
+    const agent = agentFixture()
+    expect((await workspaces.removeOrphanSessionDir(agent, '../workspace')).outcome).toBe('failed')
   })
 })
 

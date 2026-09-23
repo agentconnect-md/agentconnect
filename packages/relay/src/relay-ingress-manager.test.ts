@@ -13,6 +13,7 @@ import type {
   WireNormalizedMessage
 } from '@agentconnect.md/protocol'
 import {
+  DECISION_TRIGGER_V1_FEATURE,
   RD_ACK_NOT_HOLDER,
   MAX_AGENT_CALL_HOPS,
   buildRelayCpFrame,
@@ -733,6 +734,35 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     expect(reportThreadAssign).not.toHaveBeenCalled()
   })
 
+  it('names the bound Decision on a By decision delivery and skips a daemon that predates it', async () => {
+    const decisionOwned = (): BotAssignment => {
+      const a = channelOwned()
+      a.routes[a.routes.length - 1] = {
+        ...a.routes[a.routes.length - 1]!,
+        match: { kind: 'decision' },
+        decisionId: 'dec-1'
+      }
+      return a
+    }
+    const sendMsg = vi.fn(async (m: { msgId: string }): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+    let capable = true
+    const daemon = {
+      sendMsg,
+      supports: (feature: string) => capable || feature !== DECISION_TRIGGER_V1_FEATURE
+    } as unknown as RelayDaemonConnection
+    const manager = new RelayIngressManager(deps({ getDaemon: () => daemon }))
+    const internals = internalsOf(manager)
+    internals.router.upsert(decisionOwned())
+
+    await internals.forward(BOT_ID, followUp({ msgId: 'slack:C123:1', thread: undefined, text: 'anyone?' }))
+    expect(sendMsg).toHaveBeenCalledTimes(1)
+    expect(sendMsg.mock.calls[0]![0]).toMatchObject({ agentId: AGENT_ID, decisionId: 'dec-1' })
+
+    capable = false
+    await internals.forward(BOT_ID, followUp({ msgId: 'slack:C123:2', thread: undefined, text: 'still?' }))
+    expect(sendMsg).toHaveBeenCalledTimes(1)
+  })
+
   // ── send-message-routing-rework.md §4 / §4.1 / §6 — verified agent authors ──
   describe('verified agent-authored routing', () => {
     const AUTHOR_ID = '99999999-9999-4999-8999-999999999999'
@@ -793,6 +823,20 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
         // without incrementing again — doing so would halve the shared hop budget.
         trustedDeliveryHopCount: 4
       })
+    })
+
+    it('forwards agent-authored traffic in a By decision conversation without a decisionId', async () => {
+      const { internals, sendMsg } = managerWith()
+      const a = channelOwned()
+      a.routes[a.routes.length - 1] = {
+        ...a.routes[a.routes.length - 1]!,
+        match: { kind: 'decision' },
+        decisionId: 'dec-1'
+      }
+      internals.router.upsert(a)
+      await internals.forward(BOT_ID, agentFinal())
+      expect(sendMsg).toHaveBeenCalledTimes(1)
+      expect(sendMsg.mock.calls[0]![0]).not.toHaveProperty('decisionId')
     })
 
     it('does not route a streaming post', async () => {

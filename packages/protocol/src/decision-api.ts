@@ -40,6 +40,8 @@ export interface DecisionUsage {
   kind: 'gate' | 'shared_bot_routing' | 'agent_tool'
   id: string
   label: string
+  integrationId?: string
+  channelId?: string
 }
 
 export interface DecisionDetail {

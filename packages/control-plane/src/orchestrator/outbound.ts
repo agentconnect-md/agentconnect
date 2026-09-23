@@ -146,6 +146,7 @@ import {
  */
 import { createHash } from 'node:crypto'
 import { daemonSupportsAgent, encodeSpecWorkspaceForPeer } from '../domain/daemon-features.js'
+import { encodeIntegrationSpecForPeer } from '../domain/decision-trigger-features.js'
 import {
   MAX_ORGANIZATION_SUGGESTION_BODY_BYTES,
   ORGANIZATION_SUGGESTION_CHUNK_BYTES,
@@ -196,6 +197,11 @@ export class ControlSender {
     private readonly registry: ConnectionRegistry,
     private readonly launches: LaunchRepo
   ) {}
+
+  /** The features a connected daemon advertised; undefined while it is not connected. */
+  daemonFeatures(daemonId: string): readonly string[] | undefined {
+    return this.registry.get(daemonId)?.capabilities?.features
+  }
 
   /** The live connection state for a daemon, or throw {@link NoConnection}. */
   private must(daemonId: string): DaemonConnState {
@@ -382,7 +388,11 @@ export class ControlSender {
           'agent/activate',
           // Workspace dual-encoded against the connection actually selected (§8) —
           // re-derived per retry for the same reason the gate above is.
-          { ...a, spec: encodeSpecWorkspaceForPeer(a.spec, c.capabilities?.features) },
+          {
+            ...a,
+            spec: encodeSpecWorkspaceForPeer(a.spec, c.capabilities?.features),
+            integrations: a.integrations.map((i) => encodeIntegrationSpecForPeer(i, c.capabilities?.features))
+          },
           { epoch: c.sessionEpoch, agentId: a.agentId },
           { ackTimeoutMs: COLD_ACTIVATE_ACK_TIMEOUT_MS, maxTries: COLD_ACTIVATE_MAX_TRIES },
           orgId
@@ -441,7 +451,8 @@ export class ControlSender {
    */
   async integrationUpsert(daemonId: string, u: IntegrationUpsert): Promise<void> {
     const c = this.must(daemonId)
-    c.conn.send('integration/upsert', u, { epoch: c.sessionEpoch, agentId: u.agentId })
+    const spec = encodeIntegrationSpecForPeer(u, c.capabilities?.features)
+    c.conn.send('integration/upsert', spec, { epoch: c.sessionEpoch, agentId: u.agentId })
   }
 
   /** Tell a running daemon an integration was removed (live, epoch-fenced EVT).

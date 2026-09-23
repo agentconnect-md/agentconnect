@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { DecisionBundle, EMPTY_DECISION_BUNDLE } from '../decision.js'
 import { Platform } from './route.js'
 
 /**
@@ -25,7 +26,9 @@ export const BindMatch = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('mention') }),
   z.object({ kind: z.literal('dm') }),
   z.object({ kind: z.literal('keyword'), value: z.string() }),
-  z.object({ kind: z.literal('auto') })
+  z.object({ kind: z.literal('auto') }),
+  // By decision: a human-only Any-message candidate whose question comes from `core.decisions`, never a bot-to-bot rung.
+  z.object({ kind: z.literal('decision') })
 ])
 export type BindMatch = z.infer<typeof BindMatch>
 
@@ -159,24 +162,15 @@ export const IntegrationSessionMode = z.object({
 })
 export type IntegrationSessionMode = z.infer<typeof IntegrationSessionMode>
 
-/**
- * §6.3 core routing ENVELOPE (integration-plugin-architecture.md D4): the knobs CORE
- * reads — routing, gating, ingress mode — platform-independent. This is the ONLY
- * carrier of these knobs on the wire: the opaque per-platform `config` payload
- * never duplicates them (the daemon reads routing exclusively from here).
- *
- * `sessionModes` rides here rather than on `bindRules` because a relay-managed shared
- * bot ships no bindRules unless gated, while session keying stays on the daemon in every
- * mode — the same reason `mutedChannels` is a field of its own. An older daemon ignores
- * it — it carries the key but nothing reads it, since the envelope is consumed by named
- * field — so it keeps `createNew`, which is exactly today's behavior.
- */
+// §6.3 core routing envelope: the platform-independent routing, gating, and ingress knobs core reads, never duplicated in `config`.
 export const IntegrationCoreEnvelope = z.object({
   mode: z.enum(['direct', 'shared']).default('direct'),
   bindRules: z.array(IntegrationBindRule).default([]),
   mutedChannels: z.array(z.string()).default([]),
   gated: z.boolean().default(false),
-  sessionModes: z.array(IntegrationSessionMode).default([])
+  sessionModes: z.array(IntegrationSessionMode).default([]),
+  // Emitted unconditionally and stripped by readers that predate it; an empty bundle clears every binding.
+  decisions: DecisionBundle.default(EMPTY_DECISION_BUNDLE)
 })
 export type IntegrationCoreEnvelope = z.infer<typeof IntegrationCoreEnvelope>
 

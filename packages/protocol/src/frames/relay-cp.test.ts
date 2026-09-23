@@ -478,6 +478,29 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     expect(r.frame.payload.secrets.signingSecret).toBe('sign-x')
   })
 
+  it('carries a bounded decisionId on a decision route', () => {
+    const route = {
+      agentId: AGENT_ID,
+      daemonId: DAEMON_ID,
+      integrationId: RELAY_ID,
+      scope: { channel: 'C1' },
+      match: { kind: 'decision' as const },
+      decisionId: 'd1'
+    }
+    const assign = {
+      botId: DAEMON_ID,
+      platform: 'slack' as const,
+      secrets: { botToken: 'xoxb-x', signingSecret: 'sign-x' },
+      members: [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID] }],
+      routes: [route]
+    }
+    const r = decodeRelayCpFrame(envelope('rc/bot-assign', assign))
+    if (!r.ok || r.frame.type !== 'rc/bot-assign') throw new Error('expected rc/bot-assign')
+    expect(r.frame.payload.routes[0]).toEqual(route)
+    const bad = decodeRelayCpFrame(envelope('rc/bot-assign', { ...assign, routes: [{ ...route, decisionId: '' }] }))
+    expect(bad.ok).toBe(false)
+  })
+
   it('round-trips the per-conversation default rung on rc/bot-assign and rc/routes', () => {
     // linear-integration.md §6.2 — the table the relay consults between the keyword slug and
     // `defaultAgentId`, plus the axis that makes a rejected gated affinity terminal there.

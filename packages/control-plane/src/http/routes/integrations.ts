@@ -18,11 +18,17 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { manifestFor } from '@agentconnect.md/protocol'
+import { decisionConditionIssues, decisionConditionNeedsReview, manifestFor } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
-import type { AgentRecord, BotRecord, IntegrationRecord, IntegrationChannelRecord } from '../../persistence/ports.js'
+import type {
+  AgentRecord,
+  BotRecord,
+  ChannelActivation,
+  IntegrationRecord,
+  IntegrationChannelRecord
+} from '../../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
 import type { ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
@@ -34,6 +40,13 @@ import { NoConnection } from '../../orchestrator/outbound.js'
 import { installNewBot } from '../install-bot.js'
 import { removeIntegrationRow } from '../uninstall.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
+import { Prisma } from '../../generated/prisma/client.js'
+import {
+  decisionChannelView,
+  decisionGateReadiness,
+  visibleDecision,
+  type DecisionGateReadiness
+} from '../decision-access.js'
 import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
 import { relayIngress } from '../relay-ingress.js'
 import { buildCreateIntegrationBody, credentialBlockOf } from '../dto/create-integration-body.js'
@@ -51,7 +64,14 @@ import {
   type IntegrationChannelDtoT
 } from '../dto/index.js'
 
-function toChannelDto(c: IntegrationChannelRecord): IntegrationChannelDtoT {
+/** What a channel DTO needs beyond the row to describe its By decision consumer. */
+interface DecisionView {
+  names: ReadonlyMap<string, string>
+  /** Readiness of the agent whose daemon consumes this conversation (a shared bot's owner, else the install's agent). */
+  readiness?: (c: IntegrationChannelRecord) => DecisionGateReadiness | undefined
+}
+
+function toChannelDto(c: IntegrationChannelRecord, view?: DecisionView): IntegrationChannelDtoT {
   return {
     channelId: c.channelId,
     name: c.name,
@@ -64,12 +84,14 @@ function toChannelDto(c: IntegrationChannelRecord): IntegrationChannelDtoT {
     isPrivate: c.isPrivate,
     kind: c.kind,
     trigger: c.trigger,
+    decisionBinding: c.trigger === 'decision' ? c.decisionBinding : null,
+    decision: c.trigger === 'decision' ? decisionChannelView(c, view?.names ?? new Map(), view?.readiness?.(c)) : null,
     sessionMode: c.sessionMode,
     agentId: c.agentId
   }
 }
 
-function toDto(i: IntegrationRecord, channels: IntegrationChannelRecord[] = []): IntegrationDtoT {
+function toDto(i: IntegrationRecord, channels: IntegrationChannelRecord[] = [], view?: DecisionView): IntegrationDtoT {
   return {
     id: i.id,
     name: i.name,
@@ -79,7 +101,7 @@ function toDto(i: IntegrationRecord, channels: IntegrationChannelRecord[] = []):
     status: i.status,
     ...(i.feishuRegion ? { region: i.feishuRegion } : {}),
     createdAt: i.createdAt.toISOString(),
-    channels: channels.map(toChannelDto)
+    channels: channels.map((c) => toChannelDto(c, view))
   }
 }
 
@@ -127,6 +149,29 @@ export function integrationRoutes(deps: HttpDeps) {
         if (!(err instanceof NoConnection)) throw err
         app.log.debug({ integrationId: i.id, daemonId: target }, 'integration/upsert skipped: daemon offline')
       })
+    }
+
+    // Flag a just-written gate Needs review on every row that carries it (shared-bot siblings included).
+    const markDecisionReview = async (
+      integration: IntegrationRecord,
+      bot: BotRecord,
+      channelId: string,
+      gate: NonNullable<ChannelActivation & { trigger: 'decision' }>['decisionBinding'],
+      written: IntegrationChannelRecord
+    ): Promise<IntegrationChannelRecord> => {
+      const activation: ChannelActivation = { trigger: 'decision', decisionBinding: gate, decisionNeedsReview: true }
+      const targets =
+        bot.transport === 'http'
+          ? (await deps.repos.integrationChannel.listForBot(bot.id))
+              .filter((row) => row.channelId === channelId)
+              .map((row) => row.integrationId)
+          : [integration.id]
+      let result = written
+      for (const target of targets) {
+        const row = await deps.repos.integrationChannel.setTrigger(target, channelId, activation)
+        if (row && row.integrationId === written.integrationId) result = row
+      }
+      return result
     }
 
     // Shareable-install preconditions (shared-bot-relay.md §6): the platform must
@@ -556,19 +601,71 @@ export function integrationRoutes(deps: HttpDeps) {
                 agentId: owner.agentId,
                 // The same §14 rule the seeding seats take, so the console never shows a
                 // conversation Off while the compile is emitting its enabled route.
-                ...(ownerAgent && isGatedAgent(ownerAgent) ? { trigger: 'off' as const } : {})
+                ...(ownerAgent && isGatedAgent(ownerAgent)
+                  ? {
+                      trigger: 'off' as const,
+                      decisionBinding: null,
+                      decisionNeedsReview: false,
+                      decisionDefinition: null
+                    }
+                  : {})
               })
             }
           }
         }
-        return hydrated.map(({ integration, channels }) =>
-          toDto(
-            integration,
-            channels.map((channel) => {
-              const state = effective.get(`${integration.botId}\u0000${channel.channelId}`)
-              return state ? { ...channel, agentId: state.agentId, trigger: state.trigger } : channel
+        const effectiveRows = hydrated.map(({ integration, channels }) => ({
+          integration,
+          channels: channels.map((channel) => {
+            const state = effective.get(`${integration.botId}\u0000${channel.channelId}`)
+            return state
+              ? {
+                  ...channel,
+                  agentId: state.agentId,
+                  trigger: state.trigger,
+                  decisionBinding: state.decisionBinding,
+                  decisionNeedsReview: state.decisionNeedsReview,
+                  decisionDefinition: state.decisionDefinition
+                }
+              : channel
+          })
+        }))
+        // One visible-Decision read for names, and readiness only for integrations that gate a conversation.
+        const gating = effectiveRows.some(({ channels }) => channels.some((c) => c.trigger === 'decision'))
+        const names = gating
+          ? new Map((await deps.repos.decision.list(orgIdOf(req), ctxOf(req))).map((d) => [d.id, d.name]))
+          : new Map<string, string>()
+        // A shared bot's conversation is compiled for its effective owner, so readiness is that owner's.
+        const consumerOf = (integration: IntegrationRecord, c: IntegrationChannelRecord): string =>
+          bots.get(integration.botId)?.transport === 'http' ? (c.agentId ?? integration.agentId) : integration.agentId
+        const readinessMemo = new Map<string, Promise<DecisionGateReadiness | undefined>>()
+        const readinessFor = (agentId: string, bot: BotRecord): Promise<DecisionGateReadiness | undefined> => {
+          const key = `${bot.transport}\u0000${agentId}`
+          let pending = readinessMemo.get(key)
+          if (!pending) {
+            pending = deps.repos.agent
+              .get(orgIdOf(req), AgentId(agentId))
+              .then((agent) => (agent ? decisionGateReadiness(deps, agent, bot) : undefined))
+            readinessMemo.set(key, pending)
+          }
+          return pending
+        }
+        return Promise.all(
+          effectiveRows.map(async ({ integration, channels }) => {
+            if (!channels.some((c) => c.trigger === 'decision')) return toDto(integration, channels)
+            const bot = bots.get(integration.botId)
+            const byAgent = new Map<string, DecisionGateReadiness | undefined>()
+            if (bot) {
+              for (const c of channels) {
+                if (c.trigger !== 'decision') continue
+                const agentId = consumerOf(integration, c)
+                if (!byAgent.has(agentId)) byAgent.set(agentId, await readinessFor(agentId, bot))
+              }
+            }
+            return toDto(integration, channels, {
+              names,
+              readiness: (c) => byAgent.get(consumerOf(integration, c))
             })
-          )
+          })
         )
       }
     )
@@ -737,7 +834,7 @@ export function integrationRoutes(deps: HttpDeps) {
           tags: [Tag.Integrations],
           summary: 'Update a conversation',
           description:
-            "Set a conversation's trigger, session mode, or default agent, then push the updated routing configuration.",
+            "Set a conversation's trigger (Off, Mention, Any message, or By decision with its complete gate binding), session mode, or default agent, then push the updated routing configuration. Off, Mention, and Any message clear a By decision binding.",
           operationId: 'updateIntegrationChannel',
           params: IdParam.extend({ channelId: z.string().min(1) }),
           body: UpdateIntegrationChannelBody,
@@ -769,6 +866,22 @@ export function integrationRoutes(deps: HttpDeps) {
         const bot = await deps.repos.bot.get(orgIdOf(req), integration.botId)
         if (!bot) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
+        }
+        // By decision (decisions.md §6.3): 400 for the conversation kind or condition, 404 when invisible, 409 on capability.
+        const gate = req.body.trigger === 'decision' ? req.body.decisionBinding : undefined
+        let validatedDecision: Awaited<ReturnType<typeof visibleDecision>> = null
+        if (gate) {
+          const badRequest = (message: string, issues?: Array<{ path: Array<string | number>; message: string }>) =>
+            reply.code(400).send({ error: 'Bad Request', statusCode: 400, message, ...(issues ? { issues } : {}) })
+          if (existingChannel.kind === 'im') return badRequest('By decision applies only to group conversations')
+          // No channel-scoped candidate route exists where a row's owner compiles to the default rung.
+          if (manifestFor(bot.platform).ownerAsDefault)
+            return badRequest('By decision is not available for this platform')
+          validatedDecision = await visibleDecision(deps, req, gate.decisionId)
+          if (!validatedDecision)
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'decision not found' })
+          const issues = decisionConditionIssues(validatedDecision.question, gate.when)
+          if (issues.length > 0) return badRequest('The condition does not match the Decision question', issues)
         }
         const botScopedConversation = bot.transport === 'http'
         let effectiveOwner: AgentRecord | null = null
@@ -809,6 +922,17 @@ export function integrationRoutes(deps: HttpDeps) {
             })
           }
         }
+        // The consumer is the owner the relay route is compiled for, not necessarily the URL install's agent.
+        if (gate) {
+          const readiness = await decisionGateReadiness(deps, selectedOwner ?? agent, bot)
+          if (readiness.status === 'unsupported') {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: readiness.reason ?? 'A consumer of this conversation does not support By decision'
+            })
+          }
+        }
         const mutationAgents = [
           ...new Map(
             [agent, effectiveOwner, selectedOwner]
@@ -838,6 +962,7 @@ export function integrationRoutes(deps: HttpDeps) {
             refreshed.set(current.id, current)
           }
           agent = refreshed.get(agent.id)!
+          if (selectedOwner) selectedOwner = refreshed.get(selectedOwner.id) ?? selectedOwner
           // HTTP conversation ownership is bot-scoped even though membership rows are
           // stored per integration. Route the whole patch through the orchestrator
           // so every agent detail shows the same owner/trigger and exactly one row
@@ -851,6 +976,7 @@ export function integrationRoutes(deps: HttpDeps) {
               {
                 ...(req.body.agentId !== undefined ? { agentId: req.body.agentId } : {}),
                 ...(req.body.trigger !== undefined ? { trigger: req.body.trigger } : {}),
+                ...(gate ? { decisionBinding: gate } : {}),
                 ...(req.body.sessionMode !== undefined ? { sessionMode: req.body.sessionMode } : {})
               },
               {
@@ -881,10 +1007,13 @@ export function integrationRoutes(deps: HttpDeps) {
             updated = existingChannel
             if (req.body.trigger !== undefined) {
               // A human picked this, so it outranks every later default (§14.8).
+              const activation: ChannelActivation = gate
+                ? { trigger: 'decision', decisionBinding: gate, decisionNeedsReview: false }
+                : { trigger: req.body.trigger as Exclude<typeof req.body.trigger, 'decision'> }
               updated = await deps.repos.integrationChannel.setTrigger(
                 integration.id,
                 req.params.channelId,
-                req.body.trigger,
+                activation,
                 { chosen: true }
               )
             }
@@ -898,6 +1027,18 @@ export function integrationRoutes(deps: HttpDeps) {
           }
           if (!updated)
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'channel not found' })
+          // A Decision edit that committed after validation may have invalidated this gate; mark it for review.
+          if (gate && validatedDecision) {
+            const current = await deps.repos.decision.get(orgIdOf(req), gate.decisionId)
+            if (
+              current &&
+              current.updatedAt !== validatedDecision.updatedAt &&
+              decisionConditionNeedsReview(validatedDecision.question, current.question, gate.when)
+            ) {
+              updated = await markDecisionReview(integration, bot, req.params.channelId, gate, updated)
+              routesSynced = false
+            }
+          }
           // Push the change: an HTTP bot's routes hot-update on the relay; a classic
           // bot re-pushes its recomputed bindRules to the owning daemon.
           if (bot.transport === 'http') {
@@ -905,7 +1046,23 @@ export function integrationRoutes(deps: HttpDeps) {
           } else {
             await replicateUpsert(integration, agent)
           }
-          return toChannelDto(updated!)
+          const names = new Map(validatedDecision ? [[validatedDecision.id, validatedDecision.name] as const] : [])
+          if (
+            updated.trigger === 'decision' &&
+            updated.decisionBinding &&
+            !names.has(updated.decisionBinding.decisionId)
+          ) {
+            const bound = await visibleDecision(deps, req, updated.decisionBinding.decisionId)
+            if (bound) names.set(bound.id, bound.name)
+          }
+          const readiness =
+            updated.trigger === 'decision' ? await decisionGateReadiness(deps, selectedOwner ?? agent, bot) : undefined
+          return toChannelDto(updated, { names, readiness: () => readiness })
+        } catch (err) {
+          // The Decision was deleted between validation and the write (FK RESTRICT on the gate).
+          if (gate && err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003')
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'decision not found' })
+          throw err
         } finally {
           release()
         }

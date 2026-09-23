@@ -23,7 +23,7 @@ import { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import { isGatedAgent } from '../../orchestrator/placement.js'
 import { servedAgents } from '../../orchestrator/servedAgents.js'
 import type { DaemonWsDeps } from '../deps.js'
-import type { AgentRecord, ChannelTrigger, IntegrationRecord } from '../../persistence/ports.js'
+import type { AgentRecord, SeedTrigger, IntegrationRecord } from '../../persistence/ports.js'
 import type { Handler } from './index.js'
 
 /** Active integrations of the agents this daemon serves — a pool member is the placement of
@@ -55,7 +55,7 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
   if (!release) return // a placement move owns this agent; its authoritative bundle wins
   // Read after the lease releases, to decide whether the report opened anything (§14.8).
   let owner: AgentRecord | null = null
-  let seeded: ReadonlyMap<string, ChannelTrigger> | undefined
+  let seeded: ReadonlyMap<string, SeedTrigger> | undefined
   try {
     // Ownership may have changed while the first repository read was in flight.
     // Re-check under the shared mutation lease before accepting this daemon's

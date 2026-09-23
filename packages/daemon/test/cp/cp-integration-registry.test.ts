@@ -11,7 +11,14 @@ const integration = (id: string, agentId = A1, token = 'xoxb-one'): IntegrationS
   integrationId: id,
   agentId,
   platform: 'slack',
-  core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
+  core: {
+    mode: 'direct',
+    bindRules: [],
+    mutedChannels: [],
+    gated: false,
+    sessionModes: [],
+    decisions: { bindings: [], definitions: [] }
+  },
   config: { botToken: token, appToken: 'xapp-one' }
 })
 
@@ -48,7 +55,8 @@ describe('CpIntegrationRegistry (memory-only)', () => {
       bindRules: [],
       mutedChannels: [],
       gated: false,
-      sessionModes: []
+      sessionModes: [],
+      decisions: { bindings: [], definitions: [] }
     }
     // No config at all.
     reg.upsert({ integrationId: 'bad', agentId: A1, platform: 'slack', core } as IntegrationSpec)
@@ -79,5 +87,25 @@ describe('CpIntegrationRegistry (memory-only)', () => {
     } as IntegrationSpec)
     expect(reg.forAgent(A1)).toEqual([])
     expect(warn).toHaveBeenCalledTimes(4)
+  })
+
+  it('reports every applied or dropped Decision bundle before onChange', () => {
+    const applied = vi.fn()
+    const onChange = vi.fn(() => expect(applied).toHaveBeenCalled())
+    const reg = new CpIntegrationRegistry(
+      mkdtempSync(join(tmpdir(), 'ac-cpintreg-')),
+      { onDecisionConfigApplied: applied },
+      onChange
+    )
+    const first = integration('i1')
+    const second = integration('i1', A1, 'xoxb-two')
+    reg.upsert(first)
+    expect(applied).toHaveBeenLastCalledWith('i1', undefined, first.core.decisions)
+    reg.converge([second, integration('i2')])
+    expect(applied).toHaveBeenCalledWith('i1', first.core.decisions, second.core.decisions)
+    reg.remove('i1')
+    expect(applied).toHaveBeenLastCalledWith('i1', second.core.decisions, undefined)
+    reg.retainForAgent(A1, new Set())
+    expect(applied).toHaveBeenLastCalledWith('i2', expect.anything(), undefined)
   })
 })

@@ -176,6 +176,8 @@ export interface CpClientSeamHost {
   /** The console keep-alive leases over this daemon's sandboxes (`k8s/sandbox-hold.ts`). */
   sandboxHolds(): SandboxHolds
   withWorkspaceFileWrite<T>(agentId: string, write: () => Promise<T>): Promise<T>
+  /** The file-write coordination for a pull of the agent's own checkout, which stops only the hosts that can read it. */
+  withWorkspacePull<T>(agentId: string, pull: () => Promise<T>): Promise<T>
   withWorkspaceIndexWrite<T>(agentId: string, write: () => Promise<T>): Promise<T>
   runCommitMessagePass: CommitMessagePass
 }
@@ -382,7 +384,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       // diff/log are read-only, so they skip the runtime-quiescence coordinator the pull needs.
       diff: (req) => workspaceGit.diff(req),
       log: (req) => workspaceGit.log(req),
-      pull: (id, repo) => host.withWorkspaceFileWrite(id, () => workspaceGit.pull(id, repo)),
+      pull: (id, repo) => host.withWorkspacePull(id, () => workspaceGit.pull(id, repo)),
       // The four console git writes serialize against agent turns without evicting the warm host
       // — they touch `.git`, never the working tree (see withWorkspaceIndexWrite).
       stage: (req) => host.withWorkspaceIndexWrite(req.agentId, () => workspaceGit.stage(req)),

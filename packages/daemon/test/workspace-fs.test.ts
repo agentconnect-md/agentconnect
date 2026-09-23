@@ -1,4 +1,5 @@
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
+import { execFileSync, spawn } from 'node:child_process'
 import {
   lstatSync,
   mkdirSync,
@@ -15,6 +16,20 @@ import { LocalWorkspaceFs, type WorkspaceFs } from '../src/workspace/workspace-f
 import { ShimWorkspaceFs } from '../src/shim/workspace-fs-channel.js'
 import { ShimChannelLostError } from '../src/shim/channels.js'
 import { pathExecutor, shimRequester } from './fixtures/memory-fs-pod.js'
+
+// One-shot hooks run right after `lstatSync` answers for their path: the window a runtime races.
+const afterLstat = vi.hoisted(() => new Map<string, () => void>())
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  const lstatSync = ((...args: Parameters<typeof actual.lstatSync>) => {
+    const stats = actual.lstatSync(...args)
+    const hook = afterLstat.get(String(args[0]))
+    afterLstat.delete(String(args[0]))
+    hook?.()
+    return stats
+  }) as typeof actual.lstatSync
+  return { ...actual, lstatSync }
+})
 
 /**
  * The two halves of the workspace-fs seam, held to ONE contract.
@@ -181,4 +196,31 @@ describe.skipIf(process.platform === 'win32')('ShimWorkspaceFs (the pod side)', 
     // The mode is honoured here, where a second principal on the host could otherwise read it.
     expect(lstatSync(join(local, 'worktrees')).mode & 0o777).toBe(0o700)
   })
+})
+
+// FIFOs and symlinks both need POSIX.
+describe.skipIf(process.platform === 'win32')('LocalWorkspaceFs (the daemon disk)', () => {
+  it.each(['fifo', 'symlink'] as const)(
+    'reads bytes from the descriptor it opened, refusing a %s swapped in after the lstat',
+    async (kind) => {
+      const dir = tempRoot()
+      const file = join(dir, 'marker.json')
+      const outside = join(tempRoot(), 'outside')
+      writeFileSync(file, '{}')
+      writeFileSync(outside, 'followed')
+      // A writer turns a blocking open into a wrong answer rather than a hung worker.
+      let writer: ReturnType<typeof spawn> | undefined
+      afterLstat.set(file, () => {
+        rmSync(file)
+        if (kind === 'symlink') return symlinkSync(outside, file)
+        execFileSync('mkfifo', [file])
+        writer = spawn(process.execPath, ['-e', 'require("fs").writeFileSync(process.argv[1], "piped")', file])
+      })
+      try {
+        expect(await new LocalWorkspaceFs().readFileBytes(file, 1024)).toBeUndefined()
+      } finally {
+        writer?.kill()
+      }
+    }
+  )
 })

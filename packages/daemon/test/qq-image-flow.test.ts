@@ -50,6 +50,7 @@ describe('QQ images through the daemon', () => {
           bindRules: [{ match: { kind: 'dm' as const } }, { match: { kind: 'mention' as const } }],
           mutedChannels: [],
           sessionModes: [],
+          decisions: { bindings: [], definitions: [] },
           gated: false
         },
         config: { appId: String(100 + index), appSecret: 'test-secret' }

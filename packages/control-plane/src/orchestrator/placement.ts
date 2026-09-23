@@ -58,6 +58,7 @@ import type {
   IntegrationChannelRecord
 } from '../persistence/ports.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
+import { decisionBundleOf, decisionGateState, enabledDecisionGates, heldDecisionChannels } from './decisionBundle.js'
 import { servedAgents, type ServedAgents } from './servedAgents.js'
 import {
   mcpDefsForAgents,
@@ -66,6 +67,7 @@ import {
   type MemoryDefinitionDeps
 } from './agentDefinitions.js'
 import { daemonSupportsAgent, encodeSpecWorkspaceForPeer, requiredDaemonFeatures } from '../domain/daemon-features.js'
+import { encodeIntegrationSpecForPeer } from '../domain/decision-trigger-features.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
 import { AgentId as toAgentId, DaemonId as toDaemonId, IntegrationId as toIntegrationId } from '../domain/ids.js'
 import { sessionKeyStr, type SessionKey } from '../domain/sessionKey.js'
@@ -234,6 +236,11 @@ function gatedBindRules(channels: IntegrationChannelRecord[]): IntegrationBindRu
   const out: IntegrationBindRule[] = []
   for (const c of channels) {
     if (c.trigger === 'off') continue
+    // Before the fallthrough below, which would otherwise make By decision a mention rule.
+    if (c.trigger === 'decision') {
+      if (decisionGateState(c)?.enabled) out.push({ channel: c.channelId, match: { kind: 'decision' } })
+      continue
+    }
     if (c.kind === 'im') out.push({ channel: c.channelId, match: { kind: 'dm' } })
     else if (c.trigger === 'any') out.push({ channel: c.channelId, match: { kind: 'auto' } })
     else out.push({ channel: c.channelId, match: { kind: 'mention' } })
@@ -300,11 +307,15 @@ export async function integrationToSpec(
 ): Promise<IntegrationSpec | null> {
   // A 1:1 DM's On state is already covered by the unscoped dm default. A group DM
   // set to Any needs its own auto rule; Mention is covered by the default mention rule.
-  const channelRules: IntegrationBindRule[] = channels
-    .filter((c) => c.trigger === 'any' && c.kind !== 'im')
-    .map((c) => ({ channel: c.channelId, match: { kind: 'auto' as const } }))
+  const channelRules: IntegrationBindRule[] = [
+    ...channels
+      .filter((c) => c.trigger === 'any' && c.kind !== 'im')
+      .map((c) => ({ channel: c.channelId, match: { kind: 'auto' as const } })),
+    ...enabledDecisionGates(channels).map((g) => ({ channel: g.channel, match: { kind: 'decision' as const } }))
+  ]
   const bindRules = gated ? gatedBindRules(channels) : [...DEFAULT_BIND_RULES, ...channelRules]
-  const mutedChannels = mutedChannelIds(channels, gated)
+  // A held By decision conversation is muted so the unscoped mention default can never answer it as Any.
+  const mutedChannels = [...mutedChannelIds(channels, gated), ...(gated ? [] : heldDecisionChannels(channels))]
   // §6.4 final shape: envelope + opaque config. The daemon takes the routing
   // knobs from `core` (its platform module validates `config` against its own
   // schema); the config payload never duplicates them.
@@ -314,7 +325,14 @@ export async function integrationToSpec(
   // the Feishu WSClient). The 'shared' envelope is assembled by
   // {@link httpIntegrationToSpec}; the two differ ONLY in this envelope, which is
   // why the fork stays core and the payload behind it does not.
-  const core = { mode: 'direct' as const, bindRules, mutedChannels, gated, sessionModes: sessionModeEntries(channels) }
+  const core = {
+    mode: 'direct' as const,
+    bindRules,
+    mutedChannels,
+    gated,
+    sessionModes: sessionModeEntries(channels),
+    decisions: decisionBundleOf(channels)
+  }
   return projectSpec(platforms, i, bot, core, secret)
 }
 
@@ -350,10 +368,12 @@ export async function httpIntegrationToSpec(
   // disagreeing about which of its fields to forward).
   const httpCore = {
     mode: 'shared' as const,
+    // Non-gated ships no bind rules by design: the relay route is the candidate and the daemon holds by the bundle.
     bindRules: gated ? gatedBindRules(channels) : [],
-    mutedChannels: mutedChannelIds(channels, gated),
+    mutedChannels: [...mutedChannelIds(channels, gated), ...(gated ? [] : heldDecisionChannels(channels))],
     gated,
-    sessionModes: sessionModeEntries(channels)
+    sessionModes: sessionModeEntries(channels),
+    decisions: decisionBundleOf(channels)
   }
   return projectSpec(platforms, i, bot, httpCore, secret)
 }
@@ -698,7 +718,8 @@ export class Placement implements ReconcileService {
       // Workspace dual-encoded per the registering daemon's advertised features (§8).
       agents: desiredAgents.map((spec) => encodeSpecWorkspaceForPeer(spec, req.capabilities.features)),
       crons: desiredCrons,
-      integrations: desiredIntegrations, // daemon-scoped platform integrations (token-bearing)
+      // Daemon-scoped platform integrations (token-bearing), decision-encoded for this peer.
+      integrations: desiredIntegrations.map((spec) => encodeIntegrationSpecForPeer(spec, req.capabilities.features)),
       // Both definition kinds are scoped by the SAME roster union as the agents
       // above — an AgentSpec only names its MCP servers and its memory
       // connection, so a duty-held replica whose definitions were resolved by

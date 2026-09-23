@@ -3,6 +3,8 @@ import {
   MEMORY_ENTRIES_V1_FEATURE,
   PROVIDER_CREDENTIALS_V1_FEATURE,
   DECISION_PREVIEW_V1_FEATURE,
+  DECISION_TRIGGER_V1_FEATURE,
+  type DecisionBundle,
   DECISION_TOOLS_V1_FEATURE,
   MEMORY_ENTRIES_SEARCH_V1_FEATURE,
   MEMORY_ENTRIES_HISTORY_V1_FEATURE,
@@ -485,7 +487,7 @@ import { WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createWorkspaceScope } from './cp/workspace-scope.js'
 import { createWorkspaceFileLinkResolver, type WorkspaceFileLinkResolver } from './messages/workspace-file-links.js'
 import { canonicalWorkspacePath, containedWorkspacePath, WorkspaceViolationError } from './workspace/workspace-files.js'
-import { localWorkspaceFs } from './workspace/workspace-fs.js'
+import { localWorkspaceFs, type WorkspaceFs } from './workspace/workspace-fs.js'
 import type { SaveAttachmentResult } from './mcp/ops/platform-reads.js'
 import { saveAttachmentTo, type SaveAttachmentTarget } from './mcp/ops/save-attachment.js'
 import type { ShareReadResult, ShareTargetResult } from './mcp/ops/share-file.js'
@@ -2940,7 +2942,10 @@ export class Daemon {
     // CP integrations are memory-only and overlaid onto the effective agent set.
     this.cpIntegrations = new CpIntegrationRegistry(
       this.agentsDir,
-      { warn: (m) => this.log.warn(m) },
+      {
+        warn: (m) => this.log.warn(m),
+        onDecisionConfigApplied: (id, previous, next) => this.onDecisionConfigApplied(id, previous, next)
+      },
       () =>
         void this.reconcile().catch((err) =>
           this.log.error(`cp: integration reconcile failed: ${(err as Error).stack ?? err}`)
@@ -3221,9 +3226,8 @@ export class Daemon {
           runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
         })
         // The session by its logical key; the scope answers by the outward id the row carries.
-        const row = await this.store
-          .getSession(sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope))
-          .catch(() => undefined)
+        const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+        const row = await this.store.getSession(key).catch(() => undefined)
         const acpSessionId = row?.sessionId ?? row?.acpSessionId ?? undefined
         // Session-worktree first (an isolated session's files live there), then the agent
         // root: `location(id, sessionId)` answers ONLY for git-repo agents on isolated
@@ -3252,26 +3256,20 @@ export class Daemon {
           return { ok: true, bytes, name: `${stem}.${ext}`, mimeType: sniffed, sha256 }
         }
 
-        // Pod arm (design §6): the workspace lives on the sandbox volume, reached over the
-        // fd-anchored workspace-fs channel. The daemon contributes the LEXICAL fence (which
-        // carries the `.git` rule the pod-side check lacks); the symlink guarantee is the
-        // pod's own fd-anchored descent — there is nothing daemon-side to realpath.
-        if (this.k8sPlane?.workspaceRootFor(ctx.agentId) !== undefined) {
-          const placement = this.k8sPlane.workspaceFsFor(ctx.agentId)
-          if (!placement) return { ok: false, reason: 'sandboxed' }
+        // Pod arm (design §6): the daemon adds the lexical fence (with the `.git` rule); the pod's fd-anchored descent is the symlink guarantee.
+        const podFs = this.poolToolWorkspaceFs(ctx.agentId, key)
+        if (podFs !== undefined) {
+          if (podFs === 'unbound') return { ok: false, reason: 'sandboxed' }
           let resolved: string
           try {
             resolved = containedWorkspacePath(location.root, rel)
           } catch (err) {
             return { ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'not-found' }
           }
-          // A transport failure must NOT read as absence: "the channel dropped" mid-read is
-          // not evidence the file is missing, and the agent would act on it (regenerate, or
-          // give up). ShimWorkspaceFs already folds true refusals into undefined, so anything
-          // it THROWS is the channel — answer "sandbox unreachable", which invites a retry.
-          let read: Awaited<ReturnType<typeof placement.fs.readFileBytes>> | 'channel-lost'
+          // Refusals come back undefined, so anything THROWN is the channel: "sandbox unreachable" invites a retry where "missing" would not.
+          let read: Awaited<ReturnType<typeof podFs.readFileBytes>> | 'channel-lost'
           try {
-            read = await placement.fs.readFileBytes(resolved, cap)
+            read = await podFs.readFileBytes(resolved, cap)
           } catch {
             read = 'channel-lost'
           }
@@ -3313,31 +3311,26 @@ export class Daemon {
           sessionOf: (id, sessionId) => this.store.getSessionByOutwardId(sessionId, id),
           runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
         })
-        const row = await this.store
-          .getSession(sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope))
-          .catch(() => undefined)
+        const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+        const row = await this.store.getSession(key).catch(() => undefined)
         const acpSessionId = row?.sessionId ?? row?.acpSessionId ?? undefined
         const location =
           (await scope.location(ctx.agentId, acpSessionId).catch(() => undefined)) ??
           (await scope.location(ctx.agentId).catch(() => undefined))
         if (!location) return { ok: false, reason: 'no-workspace' }
 
-        // Pod arm: the sandbox volume over the fd-anchored channel, whose descent is the
-        // containment. Local arm: the daemon's disk, with realpath re-verification of `uploads/`
-        // (the pod-side guarantee the daemon has to supply itself). Anything the seam THROWS
-        // past the helper is the channel (pod) or the disk (local).
-        const pod = this.k8sPlane?.workspaceRootFor(ctx.agentId) !== undefined
-        const placement = pod ? this.k8sPlane?.workspaceFsFor(ctx.agentId) : undefined
-        if (pod && !placement) return { ok: false, reason: 'sandboxed' }
-        const target: SaveAttachmentTarget = placement
-          ? { kind: 'workspace-fs', fs: placement.fs, root: location.root }
+        // Pod arm: the channel's descent is the containment; local arm: realpath re-verifies `uploads/`. Anything thrown past the helper is the channel or the disk.
+        const podFs = this.poolToolWorkspaceFs(ctx.agentId, key)
+        if (podFs === 'unbound') return { ok: false, reason: 'sandboxed' }
+        const target: SaveAttachmentTarget = podFs
+          ? { kind: 'workspace-fs', fs: podFs, root: location.root }
           : process.platform === 'linux'
             ? { kind: 'pinned', root: location.root }
             : { kind: 'workspace-fs', fs: localWorkspaceFs, root: location.root, canonicalDir: canonicalWorkspacePath }
         try {
           return await saveAttachmentTo(target, name, bytes)
         } catch (err) {
-          if (pod) return { ok: false, reason: 'sandboxed' }
+          if (podFs) return { ok: false, reason: 'sandboxed' }
           return { ok: false, reason: 'write-failed', detail: err instanceof Error ? err.message : String(err) }
         }
       },
@@ -4615,6 +4608,12 @@ export class Daemon {
     return sessionKey === undefined ? undefined : this.executorPlane?.placementOf(sessionKey)
   }
 
+  /** A pool session's tool workspace on the pod that owns each path, 'unbound' while no pod of the agent is, undefined off the pool — judged by the session's own scope, as its location was, never by whether the agent pod ever reported a mount here. */
+  private poolToolWorkspaceFs(agentId: string, sessionKey: string): WorkspaceFs | 'unbound' | undefined {
+    if (!this.k8sPlane || !this.workspaces.offDisk({ agentId, sessionKey })) return undefined
+    return this.k8sPlane.workspaceFsFor(agentId)?.fs ?? 'unbound'
+  }
+
   private workspaceFilesFor(agentId: string) {
     const cluster = this.k8sPlane?.workspaceFilesFor(agentId)
     if (cluster) return cluster
@@ -4975,7 +4974,7 @@ export class Daemon {
       // none of the local work below runs — its mkdir, `existsSync(.git)` and skills installation
       // all land on this daemon's disk, describing a filesystem the runtime never reads.
       const agentPod = agentSandboxSubject(agent.id)
-      // §11: an isolated session prepares on ITS pod (its clones, its skills); the agent pod is held beside it for the secondary-root attestation and the reads that follow.
+      // §11: an isolated session prepares on ITS pod (its clones, its skills, its cwd record); the agent pod is held beside it for the secondary-root attestation and a cwd record an older daemon left beside the agent's subtree.
       const pod =
         request && this.confinedSession(agent, request.sessionKey)
           ? sandboxSubjectFor(sessionHostKey(agent.id, request.sessionKey))
@@ -5390,6 +5389,32 @@ export class Daemon {
         agent,
         () => this.runAgentWorkspacePreparation(agent, request),
         expectedWarmHost,
+        allowAgentDrain
+      )
+    )
+  }
+
+  /** Whether this session's host runs in the session's own pool pod (§11), whose start needs nothing of the agent's checkout. */
+  private runsInSessionPod(agent: Agent, sessionKey: string | undefined): sessionKey is string {
+    return this.k8sPlane !== undefined && this.confinedSession(agent, sessionKey)
+  }
+
+  /** The cold gate of a host in its session's own pod whose workspace another step prepares: re-verify that pod's skills and answer the session's cwd there, never touching the agent's checkout. */
+  private prepareSessionPodLaunch(agent: Agent, sessionKey: string, allowAgentDrain = false): Promise<string> {
+    const plane = this.k8sPlane!
+    const pod = sandboxSubjectFor(sessionHostKey(agent.id, sessionKey))
+    return withStartupPhase('workspace', () =>
+      this.enqueueAgentWorkspacePreparation(
+        agent,
+        () =>
+          this.withSandboxVolume(pod, async () => {
+            await this.reconcileClusterSkills(agent, pod)
+            return this.workspaces.clusterWorkspaceCwd(agent, plane.workspaceRootFor(pod), {
+              sessionKey,
+              isolation: 'session'
+            })
+          }),
+        undefined,
         allowAgentDrain
       )
     )
@@ -5951,6 +5976,7 @@ export class Daemon {
     return [
       PROVIDER_CREDENTIALS_V1_FEATURE,
       DECISION_PREVIEW_V1_FEATURE,
+      DECISION_TRIGGER_V1_FEATURE,
       DECISION_TOOLS_V1_FEATURE,
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
       'workspace-file-edit-v1',
@@ -6066,7 +6092,10 @@ export class Daemon {
     const attempts = Math.max(1, this.cfg.limits.agentStartAttempts)
     let lastError: unknown
     for (let attempt = 1; attempt <= attempts; attempt++) {
-      const cwd = await this.prepareAgentWorkspace(agent, undefined, undefined)
+      // A session in its own pod prepares its workspace when it opens, after this launch; the gate re-verifies that pod alone.
+      const cwd = this.runsInSessionPod(agent, entry.sessionKey)
+        ? await this.prepareSessionPodLaunch(agent, entry.sessionKey)
+        : await this.prepareAgentWorkspace(agent, undefined, undefined)
       const hostKey = sessionHostKey(agent.id, entry.sessionKey)
       const { host, configFileState } = this.buildAcpHost(agent, this.cfg, {
         hostKey,
@@ -7942,6 +7971,8 @@ export class Daemon {
       )
       return { kind: 'rejected', reason: 'unrouted' }
     }
+    if (this.decisionCandidate(result.integrationId, msg) === 'held')
+      return dispatchedPeer ?? { kind: 'rejected', reason: 'gated' }
     const targetMsg = { ...msg }
     if (result.via === 'mention') targetMsg.trigger = 'mention'
     else delete targetMsg.trigger
@@ -8091,6 +8122,10 @@ export class Daemon {
         continue
       }
 
+      if (this.decisionCandidate(rule.integrationId, msg) === 'held') {
+        outcomes.push({ kind: 'rejected', reason: 'gated' })
+        continue
+      }
       const via: 'mention' | 'implicit' = explicitlyMentioned.has(agentId) ? 'mention' : 'implicit'
       const targetMsg = { ...msg }
       if (via === 'mention') targetMsg.trigger = 'mention'
@@ -8558,6 +8593,9 @@ export class Daemon {
       await this.commands.handleCommand(command, normalized, target)
       return { msgId: msg.msgId, accepted: true }
     }
+    // Consumed, not retried: the candidate is recorded (step 1) and held until the gate runs.
+    if (this.decisionCandidate(msg.integrationId, normalized, msg.decisionId) === 'held')
+      return { msgId: msg.msgId, accepted: true }
     // HTTP-bot ingress bypasses onInbound(), so repeat its `!stop` thread-mute gate:
     // while muted, implicit routing (thread affinity / keyword / auto / dm) never
     // dispatches — only an explicit @mention does, and it clears the mute. Muted traffic is
@@ -12316,17 +12354,36 @@ export class Daemon {
     }
   }
 
-  private withWorkspaceFileWrite<T>(agentId: string, write: () => Promise<T>): Promise<T> {
-    // Admission into the shared mutation tail is synchronous: a preparation or
-    // second publication accepted in the next call stack can only run after this
-    // complete stop+write operation, and vice versa.
+  private withWorkspaceFileWrite<T>(
+    agentId: string,
+    write: () => Promise<T>,
+    stopHosts: () => Promise<void> = () => this.stopHost(agentId)
+  ): Promise<T> {
+    // Admission is synchronous: a preparation or publication accepted in the next call stack runs only after this whole stop+write, and vice versa.
     return this.withWorkspaceAdmissionFence(agentId, async () => {
       if (this.workspaceMutationBusy(agentId)) {
         throw new WorkspaceConflictError('the agent is working in this workspace; retry when it is idle')
       }
-      await this.stopHost(agentId)
+      await stopHosts()
       return await write()
     })
+  }
+
+  /** {@link withWorkspaceFileWrite} for a console pull, which rewrites only the agent's own checkout: a confined session's host keeps running. */
+  private withWorkspacePull<T>(agentId: string, pull: () => Promise<T>): Promise<T> {
+    return this.withWorkspaceFileWrite(agentId, pull, () => this.stopCheckoutHosts(agentId))
+  }
+
+  /** Stop the hosts that can read the agent's checkouts — every one but a confined session's, whose every root is a clone of its own. */
+  private async stopCheckoutHosts(agentId: string): Promise<void> {
+    const agent = this.agents.get(agentId)
+    const keys = this.hostKeysForAgent(agentId)
+    const reading = keys.filter((key) => !agent || !this.confinedSession(agent, hostKeySessionKey(key)))
+    // Nothing spared is every host, which keeps stopHost's agent-wide sweep of session state.
+    if (reading.length === keys.length) return await this.stopHost(agentId)
+    const results = await Promise.allSettled(reading.map((key) => this.stopHostByKey(key)))
+    const failed = results.find((result) => result.status === 'rejected')
+    if (failed) throw failed.reason
   }
 
   /**
@@ -13106,15 +13163,15 @@ export class Daemon {
       })
       const roots: Array<{ path: string; repo?: string }> = []
       for (const repo of [undefined, ...this.workspaces.secondaryRoots(agent).map((root) => root.repoFullName)]) {
-        const location = await scope.location(agent.id, scopeSessionId, repo)
-        if (!location) continue
         try {
+          const location = await scope.location(agent.id, scopeSessionId, repo)
+          if (!location) continue
           const path = this.workspaces.offDisk({ agentId: agent.id, path: location.root })
             ? location.root
             : this.workspaces.canonicalWorkspacePath(agent.id, location.root)
           roots.push({ path, ...(repo === undefined ? {} : { repo }) })
         } catch {
-          // An absent or retired checkout cannot supply a working file link.
+          // A root that cannot be resolved, or an absent or retired checkout, loses only its own links.
         }
       }
       if (!roots.length) return undefined
@@ -16695,20 +16752,20 @@ export class Daemon {
       if (this.hostStartGeneration.get(key) !== generation) {
         throw new Error(`host start superseded for ${label}`)
       }
-      // This is the cold-host gate for every daemon caller and every fresh spawn
-      // attempt. A failed ACP child had workspace write authority; re-verify the
-      // immutable skill receipts after it is fully reaped and before constructing
-      // its replacement, rather than trusting the first attempt's gate.
-      const prepared = await this.prepareAgentWorkspace(
-        agent,
-        undefined,
-        bound && bound.cwd === undefined ? bound.workspace : undefined,
-        allowAgentDrain
-      )
+      const boundKey = bound && hostKeySessionKey(key)
+      // The cold gate, before every fresh spawn: a failed child had write authority, so its replacement re-verifies the skill receipts; a review in its own pod needs only that, its cwd already prepared.
+      const prepared =
+        bound?.cwd !== undefined && this.runsInSessionPod(agent, boundKey)
+          ? await this.prepareSessionPodLaunch(agent, boundKey, allowAgentDrain)
+          : await this.prepareAgentWorkspace(
+              agent,
+              undefined,
+              bound && bound.cwd === undefined ? bound.workspace : undefined,
+              allowAgentDrain
+            )
       if (!this.usesMicrosandbox(agent))
         await withStartupPhase('runtime', () => this.ensureRuntimeInstalled(agent.runtime, true))
       // Clones off this disk are listed where they are, since the launch cannot read them itself; no answer grants nothing.
-      const boundKey = bound && hostKeySessionKey(key)
       const listing = boundKey ? this.workspaces.offDiskSessionGitDirs(agent, boundKey) : undefined
       const sessionGitDirs = listing
         ? await listing.catch((err: unknown) => {
@@ -17343,6 +17400,52 @@ export class Daemon {
 
   private mergedRulesForSource(srcIntegrationIds?: readonly string[]): RoutingRule[] {
     return this.mergedRules().filter((rule) => this.integrationBelongsToSource(rule.integrationId, srcIntegrationIds))
+  }
+
+  // Stage 3a holds every human By decision candidate; Stage 3b replaces this with message-intake §5 step 5.
+  private decisionCandidate(
+    integrationId: string,
+    msg: NormalizedMessage,
+    relayDecisionId?: string
+  ): 'not_bound' | 'held' {
+    const int = this.integrationConfigById(integrationId)
+    const routing = int ? integrationRouting(int) : undefined
+    if (!routing?.decisionBound(msg.channel)) {
+      if (relayDecisionId === undefined) return 'not_bound'
+      this.decisionHoldLog(
+        integrationId,
+        msg.channel,
+        `relay decision ${relayDecisionId} has no local binding (pending sync)`
+      )
+      return 'held'
+    }
+    const local = routing.decisionBindingFor(msg.channel)?.binding.decisionId
+    if (local === undefined && relayDecisionId === undefined)
+      this.decisionHoldLog(integrationId, msg.channel, 'decision rule has no enabled binding')
+    else if (relayDecisionId !== undefined && relayDecisionId !== local)
+      this.decisionHoldLog(integrationId, msg.channel, `relay decision ${relayDecisionId} is stale (pending sync)`)
+    else this.decisionHoldLog(integrationId, msg.channel, 'gate not implemented yet')
+    return 'held'
+  }
+
+  // At most one info line per (integration, channel) every 10 minutes.
+  private readonly decisionHoldLogged = new Map<string, number>()
+  private decisionHoldLog(integrationId: string, channel: string, why: string): void {
+    const key = `${integrationId}\u0000${channel}`
+    const now = Date.now()
+    const last = this.decisionHoldLogged.get(key)
+    if (last !== undefined && now - last < 10 * 60_000) return
+    if (this.decisionHoldLogged.size > 10_000) this.decisionHoldLogged.clear()
+    this.decisionHoldLogged.set(key, now)
+    this.log.info(`decision: ${why} — holding message in ch=${channel}`)
+  }
+
+  private onDecisionConfigApplied(
+    _integrationId: string,
+    _previous: DecisionBundle | undefined,
+    _next: DecisionBundle | undefined
+  ): void {
+    // Stage 3b cancels pending decision verdicts whose binding or definition changed here.
   }
 
   /** Last-hop admission for a pre-addressed (relay) message. The relay arbitrated it,
@@ -18569,6 +18672,8 @@ export class Daemon {
           this.log.warn(`retention: image collection failed (${formatErr(err)})`)
         }
       }
+      // After the VMs: a directory one of them still mounts waits for the pass after it is retired.
+      await this.retireOrphanSessionDirs()
       // Decision 12's removal step rides the same sweep, but not the retention window: a retired
       // root is not an expired session, and an install that keeps sessions forever still retires.
       await this.sweepRetiredWorkspaceRoots()
@@ -18695,8 +18800,8 @@ export class Daemon {
     for (const [agentId, ids] of byAgent) {
       if (this.draining) break
       try {
-        const kept = await this.keptSessionVms(agentId)
-        const orphans = ids.filter((id) => !kept.has(id))
+        const kept = await this.keptSessionLeaves(agentId)
+        const orphans = ids.filter((id) => !kept.has(id.slice(agentId.length + 1)))
         if (orphans.length === 0 || (await this.agentWorkspaceActive(agentId))) continue
         await this.withWorkspaceAdmissionFence(agentId, async () => {
           const agent = this.agents.get(agentId)
@@ -18704,12 +18809,13 @@ export class Daemon {
           for (const id of orphans) {
             if (this.draining) return
             // Re-judged inside the fence, which holds turn admission: a session reopened under the same key keeps its VM.
-            if (manager.environment(id) || (await this.keptSessionVms(agentId)).has(id)) continue
+            const leaf = id.slice(agentId.length + 1)
+            if (manager.environment(id) || (await this.keptSessionLeaves(agentId)).has(leaf)) continue
             try {
               await manager.discard(id)
               retired += 1
               this.log.info(`retention: retired session VM ${id}, whose session row is gone`)
-              await rm(join(agent.dir, 'runtime-homes', id.slice(agentId.length + 1)), { recursive: true, force: true })
+              await rm(join(agent.dir, 'runtime-homes', leaf), { recursive: true, force: true })
             } catch (err) {
               this.log.warn(`retention: could not retire session VM ${id} (${formatErr(err)})`)
             }
@@ -18722,15 +18828,61 @@ export class Daemon {
     return retired
   }
 
-  /** The session VMs of an agent that something may still use: one per stored row, per dream and per host held here. */
-  private async keptSessionVms(agentId: string): Promise<Set<string>> {
+  /** The session leaves of an agent that something may still use: one per stored row, per dream and per host held here. */
+  private async keptSessionLeaves(agentId: string): Promise<Set<string>> {
     const keys = [
       ...(await this.store.sessionKeysForAgent(agentId)).map((key) => sessionHostKey(agentId, key)),
       // A dream's host starts before its execution row exists, and a dream that fails first never writes one.
       ...(await this.store.dreamIdsForAgent(agentId)).map((dreamId) => this.dreamOwnerKey(agentId, dreamId)),
       ...this.hostKeysForAgent(agentId)
     ]
-    return new Set(keys.map((key) => `${agentId}/${hostKeyDirName(key)}`))
+    return new Set(keys.map((key) => hostKeyDirName(key)))
+  }
+
+  /** Remove session directories no row names, as a purge that could not judge them leaves them (#2283); dirty or unpushed work keeps one. */
+  private async retireOrphanSessionDirs(): Promise<void> {
+    // A pool session's directory is on its own pod, which the pool's orphan reconcile collects.
+    if (this.k8sPlane || this.draining) return
+    const retained: string[] = []
+    for (const agent of [...this.agents.values()]) {
+      if (this.draining) break
+      try {
+        if ((await this.orphanSessionLeaves(agent)).length === 0 || (await this.agentWorkspaceActive(agent.id)))
+          continue
+        await this.withWorkspaceAdmissionFence(agent.id, async () => {
+          const current = this.agents.get(agent.id)
+          if (!current || (await this.agentWorkspaceActive(agent.id))) return
+          // Re-judged inside the fence, which holds turn admission: a session reopened under the same key keeps its directory.
+          for (const leaf of await this.orphanSessionLeaves(current)) {
+            if (this.draining) return
+            const res = await this.workspaces.removeOrphanSessionDir(current, leaf)
+            if (res.outcome === 'removed')
+              this.log.info(
+                `retention: removed session directory ${leaf} of agent ${agent.id}, whose session row is gone`
+              )
+            else if (res.outcome === 'retained') retained.push(`${agent.id}/${leaf} (${res.reason})`)
+            else if (res.outcome === 'failed')
+              this.log.warn(`retention: could not remove session directory ${leaf} of agent ${agent.id} (${res.error})`)
+          }
+        })
+      } catch (err) {
+        this.log.warn(`retention: could not judge the session directories of agent ${agent.id} (${formatErr(err)})`)
+      }
+    }
+    if (retained.length > 0)
+      this.log.info(
+        `retention: keeping ${retained.length} session director${retained.length === 1 ? 'y' : 'ies'} whose row is gone — ${retained.join(', ')} (delete or push the work to release them)`
+      )
+  }
+
+  /** The agent's session directories on this disk that nothing maps to — no row, dream or host, nor a VM, which its own sweep retires first. */
+  private async orphanSessionLeaves(agent: LoadedAgent): Promise<string[]> {
+    const leaves = this.workspaces.sessionDirLeaves(agent)
+    // With the manager down its VMs cannot be listed, so no directory is known to be free of one.
+    if (leaves.length === 0 || (this.usesMicrosandbox(agent) && !this.microsandbox)) return []
+    const kept = await this.keptSessionLeaves(agent.id)
+    const vms = new Set(this.microsandbox ? await this.microsandbox.environmentIds() : [])
+    return leaves.filter((leaf) => !kept.has(leaf) && !vms.has(`${agent.id}/${leaf}`))
   }
 
   /** Whether an agent still holds live work of ANY kind — the per-agent form of the retention
@@ -18762,8 +18914,11 @@ export class Daemon {
     for (const agent of [...this.agents.values()]) {
       if (this.draining) break
       if (!this.servesAgent(agent.id)) continue
-      // Off this disk the subtrees are on the pod's volume, so an agent whose sandbox is not already bound is skipped: retiring a root is never worth waking a suspended pod, and the next pass that finds one bound sweeps it.
-      if (this.workspaces.offDisk({ agentId: agent.id }) && this.workspaces.sandboxMountFor(agent.id) === undefined) {
+      // Off this disk the subtrees are on the AGENT pod's volume, so skip unless that pod itself is bound (a bound session pod is not it): retiring a root is never worth a wake, and a later pass that finds it bound sweeps it.
+      if (
+        this.workspaces.offDisk({ agentId: agent.id }) &&
+        !this.k8sPlane?.sandboxBound(agentSandboxSubject(agent.id))
+      ) {
         continue
       }
       // Retiring old roots must not create or wake an idle VM merely to inspect its workspace.
@@ -20383,6 +20538,8 @@ export class Daemon {
       sandboxHolds: () => this.sandboxHolds,
       withWorkspaceFileWrite: <T>(agentId: string, write: () => Promise<T>): Promise<T> =>
         this.withWorkspaceFileWrite(agentId, write),
+      withWorkspacePull: <T>(agentId: string, pull: () => Promise<T>): Promise<T> =>
+        this.withWorkspacePull(agentId, pull),
       withWorkspaceIndexWrite: <T>(agentId: string, write: () => Promise<T>): Promise<T> =>
         this.withWorkspaceIndexWrite(agentId, write),
       runCommitMessagePass: (agentId, systemPrompt, prompt, signal) =>

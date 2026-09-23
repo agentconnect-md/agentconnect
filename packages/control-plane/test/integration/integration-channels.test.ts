@@ -331,6 +331,8 @@ describe('integration/channels EVT → integration_channel convergence', () => {
         kind: 'channel',
         sessionMode: 'createNew',
         trigger: 'mention',
+        decisionBinding: null,
+        decision: null,
         agentId: null
       },
       {
@@ -346,6 +348,8 @@ describe('integration/channels EVT → integration_channel convergence', () => {
         kind: 'channel',
         sessionMode: 'createNew',
         trigger: 'mention',
+        decisionBinding: null,
+        decision: null,
         agentId: null
       }
     ])
@@ -827,7 +831,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     expect((await triggersOf(id)).get('D_BOB')).toBe('any')
 
     // The editor reconsiders and closes Bob's DM.
-    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'D_BOB', 'off')
+    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'D_BOB', { trigger: 'off' })
 
     // Carol is added later. Only Carol's DM opens; Bob's stays where the editor put it.
     const integration = await prisma.integration.findUniqueOrThrow({ where: { id } })
@@ -891,7 +895,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
 
     // The seed is a DEFAULT, not a standing rule: once a row exists, its trigger is
     // the operator's, and a re-report must not reassert the open state.
-    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'D_ALICE', 'off')
+    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'D_ALICE', { trigger: 'off' })
     await report(DAEMON, id, [dm], undefined, undefined, undefined, undefined, links)
     expect((await triggersOf(id)).get('D_ALICE')).toBe('off')
   })
@@ -944,7 +948,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     const integration = await prisma.integration.findUniqueOrThrow({ where: { id } })
 
     await report(DAEMON, id, [{ id: 'D1', name: '@alice' }], undefined, undefined, false)
-    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'D1', 'off')
+    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'D1', { trigger: 'off' })
     // The daemon now knows it is a DM and re-reports it as one.
     await report(DAEMON, id, [{ id: 'D1', name: '@alice', kind: 'im' }], undefined, undefined, false)
 
@@ -974,7 +978,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     const id = await install(running)
 
     await report(DAEMON, id, [{ id: 'G1', name: 'mpim-alice--bob-1' }], undefined, undefined, false)
-    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'G1', 'any')
+    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'G1', { trigger: 'any' })
     await report(DAEMON, id, [{ id: 'G1', name: 'mpim-alice--bob-1', kind: 'mpim' }], undefined, undefined, false)
 
     const channelsOf = async () => {
@@ -985,7 +989,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     expect((await channelsOf()).get('G1')).toMatchObject({ kind: 'mpim', trigger: 'mention' })
 
     // An operator enables it; a later authoritative channel snapshot leaves it alone.
-    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'G1', 'any')
+    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'G1', { trigger: 'any' })
     await report(DAEMON, id, [{ id: 'C1', name: 'general' }])
     expect((await channelsOf()).get('G1')).toMatchObject({ kind: 'mpim', trigger: 'any' })
 
@@ -1009,7 +1013,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     const id = await install(running)
 
     await report(DAEMON, id, [{ id: 'D1', name: '@alice', kind: 'im' }], undefined, undefined, false)
-    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'D1', 'any')
+    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'D1', { trigger: 'any' })
     await report(DAEMON, id, [{ id: 'D1', name: '@alice', kind: 'channel' }], undefined, undefined, false)
 
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
@@ -1150,7 +1154,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
       { id: 'C1', name: 'deploys' },
       { id: 'C2', name: 'releases' }
     ])
-    await channels.setTrigger(IntegrationId(id), 'C2', 'any')
+    await channels.setTrigger(IntegrationId(id), 'C2', { trigger: 'any' })
 
     // Bot renamed #deploys → #ship, left #releases… but C2's trigger must survive
     // while it is still a member; here it left, so the row (and its trigger) go.
@@ -1759,6 +1763,8 @@ describe('PATCH /integrations/:id/channels/:channelId', () => {
       kind: 'channel',
       sessionMode: 'createNew',
       trigger: 'any',
+      decisionBinding: null,
+      decision: null,
       agentId: null
     })
 

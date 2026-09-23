@@ -16,7 +16,9 @@ export const BindMatchSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('mention') }),
   z.object({ kind: z.literal('dm') }),
   z.object({ kind: z.literal('keyword'), value: z.string() }),
-  z.object({ kind: z.literal('auto') })
+  z.object({ kind: z.literal('auto') }),
+  // By decision: held unless `core.decisions` carries an enabled gate for the channel.
+  z.object({ kind: z.literal('decision') })
 ])
 export type BindMatch = z.infer<typeof BindMatchSchema>
 
@@ -82,7 +84,8 @@ export const IntegrationSchema = z.object({
     bindRules: [],
     mutedChannels: [],
     gated: false,
-    sessionModes: []
+    sessionModes: [],
+    decisions: { bindings: [], definitions: [] }
   }),
   config: z.unknown().optional()
 })

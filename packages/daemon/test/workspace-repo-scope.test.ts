@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll, beforeAll } from 'vitest'
+import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -437,6 +437,32 @@ describe.skipIf(process.platform === 'win32')('a cluster daemon addresses a seco
       await expect(podScope.target(AGENT, AUTHORIZED)).resolves.toMatchObject({ branch: 'pod-trunk', githubApp: true })
       // The primary still resolves to the sandbox checkout, untouched by the repo scope.
       await expect(podScope.location(AGENT)).resolves.toBeDefined()
+    } finally {
+      workspaces.setPlaneResolver(undefined)
+    }
+  })
+
+  it('locates a root without reading the volume, so only a push or pull needs the pod that holds its marker', async () => {
+    // The agent pod asleep beside a bound session pod: every read of `repos/**` fails, as a routed read of an unbound pod does.
+    const pod = new PodWorkspaceFs(POD_ROOT)
+    const read = vi.spyOn(pod, 'readFileBytes').mockRejectedValue(new Error(`sandbox ${AGENT} has no bound channel`))
+    wireTestPlane(workspaces, { workspacesOffDisk: true, workspaceFsFor: () => ({ fs: pod, mount: POD_ROOT }) })
+    const podScope = createWorkspaceScope({
+      workspaces,
+      agentOf: (id) => (id === AGENT ? agent : undefined),
+      sessionOf: async () => ({ key: 'iso-key', workspaceIsolation: 'session' }),
+      runtimeRootOf: () => POD_ROOT
+    })
+    try {
+      await expect(podScope.location(AGENT, undefined, AUTHORIZED)).resolves.toMatchObject({
+        root: `${POD_SECONDARY}/checkout`
+      })
+      await expect(podScope.location(AGENT, 'acp-iso', AUTHORIZED)).resolves.toMatchObject({
+        root: `${POD_ROOT}/sessions/${hostKeyDirName(sessionHostKey(AGENT, 'iso-key'))}/repos/${AUTHORIZED}`
+      })
+      expect(read).not.toHaveBeenCalled()
+      await expect(podScope.target(AGENT, AUTHORIZED)).rejects.toThrow('no bound channel')
+      expect(read).toHaveBeenCalledExactlyOnceWith(`${POD_SECONDARY}/.materialization.json`, expect.any(Number))
     } finally {
       workspaces.setPlaneResolver(undefined)
     }

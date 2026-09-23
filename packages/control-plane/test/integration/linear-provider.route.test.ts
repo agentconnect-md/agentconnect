@@ -37,7 +37,8 @@ const CORE: IntegrationCoreEnvelope = {
   bindRules: [],
   mutedChannels: [],
   gated: false,
-  sessionModes: []
+  sessionModes: [],
+  decisions: { bindings: [], definitions: [] }
 }
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`

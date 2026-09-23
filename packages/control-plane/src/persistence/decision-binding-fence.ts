@@ -10,11 +10,7 @@ export class DecisionBindingDenied extends Error {
   }
 }
 
-export class DecisionInUse extends Error {
-  constructor() {
-    super('remove this Decision from agents before deleting it')
-  }
-}
+export { DecisionInUse } from './errors.js'
 
 // Lock membership and submitted Decisions before the agent row; retained bindings keep their original authorization.
 export async function enterDecisionBindingFence(

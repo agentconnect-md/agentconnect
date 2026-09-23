@@ -31,7 +31,14 @@ const tools = toolsForIntegrations([
   {
     id: 'int-1',
     platform: 'slack',
-    core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false, sessionModes: [] },
+    core: {
+      mode: 'direct',
+      bindRules: [],
+      mutedChannels: [],
+      gated: false,
+      sessionModes: [],
+      decisions: { bindings: [], definitions: [] }
+    },
     config: { botToken: 'x', appToken: 'y' }
   }
 ])
