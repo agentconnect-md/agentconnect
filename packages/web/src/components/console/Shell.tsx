@@ -31,7 +31,7 @@ import { GlobalSearch } from './GlobalSearch'
 import { TooltipLayer } from './Tooltip'
 import { SearchOpenContext } from './search-open'
 import { LoadingState, LogoMark, OrgIconView } from '@/components/marks'
-import LanguageSwitcher from '@/components/LanguageSwitcher'
+import LanguageSwitcher, { LanguageSubmenu } from '@/components/LanguageSwitcher'
 import { Avatar, Icon } from '@/components/ui'
 import { getUser, isAuthConfigured, logout } from '@/lib/auth'
 import { useProfile } from '@/lib/profile'
@@ -308,9 +308,7 @@ function RailAccount({
               <Icon name="settings" size={15} color="var(--text-tertiary)" />
               {t('navigation.organizationSettings')}
             </Link>
-            <div className="px-3 py-2">
-              <LanguageSwitcher className="w-full justify-between" />
-            </div>
+            <LanguageSubmenu onPicked={() => setOpen(false)} />
             <div className="dmsep" />
             <button className="dmi" onClick={onToggleTheme}>
               <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={15} color="var(--text-tertiary)" />
@@ -832,13 +830,8 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                           <Icon name="book-open" size={15} color="var(--text-tertiary)" />
                           {t('help.documentation')}
                         </a>
-                        {/* No identity means no account menu, so a no-auth console keeps
-                            its language control here — the one menu both modes share. */}
-                        {!authOn && (
-                          <div className="px-3 py-2">
-                            <LanguageSwitcher className="w-full justify-between" />
-                          </div>
-                        )}
+                        {/* No-auth has no account menu, so its language control lives here. */}
+                        {!authOn && <LanguageSubmenu onPicked={() => setHelpMenu(false)} />}
                         <div className="dmsep" />
                         <button
                           className="dmi"
