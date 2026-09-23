@@ -2031,7 +2031,6 @@
       "fastMode": "Fast mode",
       "on": "On",
       "off": "Off",
-      "permissionMode": "Permission mode",
       "sessionIsolation": "Session isolation",
       "worktree": "Worktree",
       "githubRepository": "GitHub repository",
@@ -2043,7 +2042,6 @@
       "cancel": "Cancel",
       "creating": "Creating…",
       "create": "Create",
-      "unavailableSuffix": "{label} (unavailable)",
       "workspace": {
         "codeHostHint": "The repository is cloned onto the machine; the agent runs from the directory you pick.",
         "gitUrlHint": "Cloned with the daemon host's own git credentials; the agent runs from the directory you pick.",
@@ -2321,7 +2319,6 @@
       },
       "runtimeModel": {
         "title": "Provider and model",
-        "runSettings": "Run settings · {model}",
         "effort": "Effort",
         "approval": "Approval",
         "provider": "Provider",
@@ -2333,6 +2330,7 @@
         "agentSetting": "Agent setting",
         "decisionHelp": "{name} picks the runtime and model when the session starts",
         "fastMode": "Fast mode",
+        "fast": "Fast",
         "lowerLatency": "Lower latency",
         "imageBinaryMissing": "Binary not installed in image",
         "readOnly": "Runtime changes are disabled for this chat."

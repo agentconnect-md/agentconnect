@@ -19,8 +19,6 @@ import {
   agentSlugFinalize,
   agentSlugSanitize,
   effortChoicesFor,
-  effortField,
-  effortLabel,
   fastModeAvailableFor,
   modelCapability,
   displayedEffort,
@@ -33,7 +31,6 @@ import {
   supportsModes
 } from '@/lib/data'
 import { sessionIsolationLabel } from '@/lib/session-isolation'
-import { permissionModeLabelKey } from '@/lib/permission-mode-i18n'
 import { addAgentDaemonChoice } from './add-agent-daemon-choice'
 import { addAgentDraftSeed } from './add-agent-draft'
 import type { AgentSetupDraft } from '@agentconnect.md/protocol/mcp-app'
@@ -148,7 +145,6 @@ export default function AddAgentModal({
   onFailed?: (message: string) => void
 }) {
   const t = useTranslations('Agents.dialog')
-  const permissionT = useTranslations('Common.permissionModes')
   const { createAgent, daemons, agents, memberSets } = useConsoleData()
   // Read once: a draft is the form's starting point, and re-seeding on a later render would undo
   // whatever the reader had already typed over it.
@@ -408,31 +404,13 @@ export default function AddAgentModal({
   // own observed default level (and new agents then store the lit value
   // explicitly, mirroring the model treatment).
   const selectedEffort = showEffort ? displayedEffort(effort, effortChoices, capability?.defaultEffort) : ''
-  // A selection the arriving vocabulary no longer offers stays visible as
-  // unavailable — never auto-cleared (the user changes it, we don't).
-  const effortOptions =
-    capability?.efforts && selectedEffort && !effortChoices.some((o) => o.value === selectedEffort)
-      ? [
-          ...effortChoices,
-          {
-            value: selectedEffort,
-            label: t('unavailableSuffix', { label: effortLabel(effectiveRuntime, selectedEffort) })
-          }
-        ]
-      : effortChoices
   const fastModeAvailable = fastModeAvailableFor(effectiveRuntime, capability)
   const permissionChoices = permissionModeChoicesFor(effectiveRuntime, modelCatalog)
-  // Visibility follows the resolved vocabulary, which is empty for a runtime without permission modes.
-  const showPermission = permissionChoices.length > 0
   // A statically-guessed initial mode the dynamic vocabulary doesn't offer is a
   // phantom, not user data — resolve it to the runtime's own default (probe
   // currentValue), else the first offered mode. No "(unavailable)" here: unlike
   // Edit, nothing in this modal is stored yet.
   const selectedPermissionMode = resolvedPermissionMode(permissionMode, permissionChoices, modelCatalog)
-  const permissionOptions = permissionChoices.map((option) => {
-    const key = permissionModeLabelKey(option.v)
-    return key ? { ...option, l: permissionT(key) } : option
-  })
 
   // A daemon selection defines the product default: optional means off; required
   // means on and immutable. Capability refreshes converge the same way.
@@ -1053,8 +1031,6 @@ export default function AddAgentModal({
               runtimes={runtimeIds}
               enabled={featureFlagEnabled('decisions')}
               runInSandbox={effectiveRunInSandbox}
-              fastMode={fastMode}
-              onFastModeChange={setFastMode}
               onFallbackChange={(target) => {
                 if (target.runtime !== effectiveRuntime) setPermissionMode(permissionModeDefault(target.runtime))
                 setRuntime(target.runtime)
@@ -1073,56 +1049,6 @@ export default function AddAgentModal({
               }}
             />
             <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
-              {!modelSelection && (showEffort || showPermission) && (
-                <div className="fld desktop:col-span-2">
-                  <div className="grid grid-cols-1 gap-x-7 gap-y-[14px] desktop:grid-cols-[minmax(0,1fr)_auto]">
-                    {showEffort && (
-                      <div className="flex min-w-0 flex-col gap-[6px]">
-                        <span className="fldlbl">{effortField(effectiveRuntime).label}</span>
-                        <div className="pillbar self-start">
-                          {effortOptions.map((o) => (
-                            <button
-                              key={o.value}
-                              type="button"
-                              title={o.description}
-                              className={
-                                selectedEffort === o.value
-                                  ? 'pill on px-[10px] py-1 text-[12px]'
-                                  : 'pill px-[10px] py-1 text-[12px]'
-                              }
-                              onClick={() => setEffort(o.value)}
-                            >
-                              {o.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {showPermission && (
-                      <div className="flex min-w-0 flex-col gap-[6px] desktop:col-span-2">
-                        <span className="fldlbl">{t('permissionMode')}</span>
-                        <div className="pillbar max-w-full overflow-x-auto self-start">
-                          {permissionOptions.map((o) => (
-                            <button
-                              key={o.v}
-                              type="button"
-                              title={o.description}
-                              className={
-                                selectedPermissionMode === o.v
-                                  ? 'pill on whitespace-nowrap px-[10px] py-1 text-[12px]'
-                                  : 'pill whitespace-nowrap px-[10px] py-1 text-[12px]'
-                              }
-                              onClick={() => setPermissionMode(o.v)}
-                            >
-                              {o.l}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
               <RuntimeChatField checked={allowRuntimeChangesInChat} onChange={setAllowRuntimeChangesInChat} />
               <SandboxField
                 checked={effectiveRunInSandbox}

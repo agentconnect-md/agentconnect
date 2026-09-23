@@ -941,9 +941,10 @@ Questions resolved during design review:
 9. **Primary is invisible** — no "default" marker anywhere; during assembly
    every chip is removable and the primary is re-derived as the first agent
    of the final list (section 9.1).
-10. **No runtime controls in multi-agent conversations** — the Model / Effort /
-    Permission pills and per-agent overrides disappear when the roster has two
-    or more agents; each participant runs its configured runtime defaults, and
+10. **No runtime controls in multi-agent conversations** — the model picker (with
+    its Effort, Approval and Fast settings) and per-agent overrides disappear
+    when the roster has two or more agents; each participant runs its
+    configured runtime defaults, and
     the `set_*` ops stay single-agent-only (sections 9.1, 9.3).
 11. **Committed agent posts continue the conversation (post-#549 parity,
     issue #904)** — an agent's committed reply post activates the rest of the
