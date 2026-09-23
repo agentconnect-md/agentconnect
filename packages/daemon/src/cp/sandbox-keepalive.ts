@@ -37,8 +37,7 @@ export function createSandboxKeepAlive(
       [agentPod, []],
       [pod, []]
     ])
-    // One pod's read, under a hold taken ACROSS it rather than a check made before it: a sweep landing
-    // in between would otherwise leave the routed runner waking the pod to answer. Reports bound-ness.
+    // One pod's read, under a hold taken ACROSS it rather than a check made before it, so a sweep cannot suspend the pod under the read; reports bound-ness.
     const onPod = async (subject: string, read: () => Promise<void>): Promise<boolean> => {
       const release = deps.holdIfBound(subject)
       if (!release) {
