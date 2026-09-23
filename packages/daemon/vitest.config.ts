@@ -58,6 +58,7 @@ export const WINDOWS_EXCLUDED = [
   'test/shim-dial-in.test.ts',
   'test/shim-handshake.test.ts',
   'test/k8s-runtime-plane.test.ts',
+  'test/k8s-isolated-session-one-pod.test.ts',
   'test/cp/gh-shim.test.ts',
   'test/gitlab-self-managed-git.test.ts',
   // Every case stands up a second daemon on one root, which EADDRINUSEs on Windows: `start()` clears
