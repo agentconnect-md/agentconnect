@@ -858,6 +858,19 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       expect(internals.router.conversationParticipants(BOT_ID, 'C123/1720000000.000100', 'C123')).toEqual([])
     })
 
+    it('a !queue takes the command path, never the evaluation host', async () => {
+      const { sent, getDaemon } = fleet()
+      const manager = new RelayIngressManager(deps({ getDaemon }))
+      const internals = internalsOf(manager)
+      internals.router.upsert(routed())
+      await internals.forward(BOT_ID, followUp({ msgId: 'slack:C123:q1', text: '!queue hello' }))
+      await internals.forward(BOT_ID, followUp({ msgId: 'slack:C123:q2', text: '!queue' }))
+      expect(sent.map((s) => [s.daemonId, s.msg.agentId, s.msg.trustedRouting])).toEqual([
+        [DAEMON_ID, AGENT_ID, undefined],
+        [DAEMON_ID, AGENT_ID, undefined]
+      ])
+    })
+
     it('a thread reply unknown here looks up the CP: down drops, a miss forwards unconstrained', async () => {
       const { sent, getDaemon } = fleet()
       const lookupThread = vi.fn(async (): Promise<RcThreadLookupOk> => {

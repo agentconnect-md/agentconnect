@@ -18530,7 +18530,7 @@ export class Daemon {
     await this.discoverConversations(normalized, [msg.integrationId])
     if (!this.gatedAdmission(msg.integrationId, normalized)) return { msgId: msg.msgId, accepted: true }
     const command = parseCommand(normalized.text)
-    if (command && command.kind !== 'queue') return { msgId: msg.msgId, accepted: false, reason: 'rejected' }
+    if (command) return { msgId: msg.msgId, accepted: false, reason: 'rejected' }
     const int = this.integrationConfigById(msg.integrationId)
     const routed = int ? integrationRouting(int).routingFor(normalized.channel) : undefined
     // A daemon that is not the projected host holds the message in its record and never evaluates.

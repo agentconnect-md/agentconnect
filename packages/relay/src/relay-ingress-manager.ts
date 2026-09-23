@@ -1130,7 +1130,8 @@ export class RelayIngressManager {
     const routed = this.router.routedConversationFor(botId, msg)
     if (routed) {
       const command = parseCommand(msg.text)
-      if (!command || command.kind === 'queue') return await this.forwardRoutedToHost(botId, msg, sidecar, routed)
+      // Commands, !queue included, are never judged (message-intake §5 step 2); they take the command path.
+      if (!command) return await this.forwardRoutedToHost(botId, msg, sidecar, routed)
       return await this.forwardRoutedCommand(botId, msg, sidecar, routed.decisionId, namesThisBot)
     }
     const prior = this.router.peekAffinity(botId, sessionKey)
