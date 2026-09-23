@@ -65,6 +65,16 @@ export function initiatorLabel(
   return sender?.name ?? sender?.id ?? initiator
 }
 
+/** A session's `initiatedBy`: its opener (`triggeredBy`, first-wins on its row), else this turn's trigger — one rule for every preparation that may draw its branch. */
+export async function sessionInitiatedBy(
+  displayNames: (ids: string[]) => Promise<Map<string, string>>,
+  triggeredBy: string | null | undefined,
+  msg: { sessionTriggerId?: string; sender: { id: string; name?: string } }
+): Promise<string> {
+  const initiator = triggeredBy ?? msg.sessionTriggerId ?? msg.sender.id
+  return initiatorLabel(initiator, (await displayNames([initiator])).get(initiator), msg.sender)
+}
+
 const WORDS = { adjective: new Set(adjectives), animal: new Set(animals) }
 const NAMESPACES = new Set([SESSION_BRANCH_PREFIX, LEGACY_SESSION_BRANCH_PREFIX])
 

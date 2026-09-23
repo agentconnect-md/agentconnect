@@ -7,7 +7,7 @@ import { LocalStore, sessionKey, transcriptChannelKey, type TranscriptEntry } fr
 import { isSyntheticA2aChannel } from '../cp/cp-collab-routes.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { effectiveSessionIsolation, WorkspaceManager } from '../workspace/workspace-manager.js'
-import { initiatorLabel } from '../workspace/session-branch.js'
+import { sessionInitiatedBy } from '../workspace/session-branch.js'
 import { memoryKindOf, type MemoryProvider, type MemoryScope } from '../memory/provider.js'
 import { MemoryHomeUnavailableError } from '../memory/fs.js'
 import { agentChildEnv } from '../agents/agent-env.js'
@@ -518,15 +518,8 @@ export class SessionManager {
         (originSessionId !== undefined &&
           rec?.originSessionId !== undefined &&
           originSessionId !== rec.originSessionId))
-    // Names a session worktree's branch: the user who OPENED the session (`triggeredBy`,
-    // first-wins in the store), not whoever's turn this is — a shared thread must not
-    // change branch owner when someone else replies.
-    const initiator = rec?.triggeredBy ?? msg.sessionTriggerId ?? msg.sender.id
-    const initiatedBy = initiatorLabel(
-      initiator,
-      await (await this.deps.store.getDisplayNames([initiator])).get(initiator),
-      msg.sender
-    )
+    // Names a session's branch by whoever opened it, so a shared thread keeps its owner when someone else replies.
+    const initiatedBy = await sessionInitiatedBy((ids) => this.deps.store.getDisplayNames(ids), rec?.triggeredBy, msg)
     const workspaceRequest = { sessionKey: key, isolation: workspaceIsolation, initiatedBy }
     // Production hostFor owns the single cold-host preparation gate before spawn.
     // After it resolves, consume that already-prepared cwd through the pure resolver.
