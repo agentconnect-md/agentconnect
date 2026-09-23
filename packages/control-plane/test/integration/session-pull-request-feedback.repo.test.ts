@@ -36,11 +36,12 @@ function link(repo: PgSessionPullRequestFeedbackRepo, sessionId: string, pullNum
   })
 }
 
-function seedEligibleSession(sessionId: string): Promise<string> {
+function seedEligibleSession(sessionId: string, lastActivityAt?: Date): Promise<string> {
   return seedSessionMeta(prisma, sessionId, AGENT_ID, {
     daemonId: DAEMON_ID,
     phase: 'end',
-    workspaceIsolation: 'session'
+    workspaceIsolation: 'session',
+    ...(lastActivityAt ? { lastActivityAt } : {})
   })
 }
 
@@ -100,6 +101,23 @@ describe('PgSessionPullRequestFeedbackRepo', () => {
     expect(retried).toEqual({ sessionId })
     await expect(link(repo, sessionId, 80)).resolves.toBe(true)
     await expect(prisma.sessionPullRequestCapture.findUnique({ where: { sessionId } })).resolves.toBeNull()
+  })
+
+  it('claims the most recently active session’s capture ahead of one that has been failing longer', async () => {
+    const repo = new PgSessionPullRequestFeedbackRepo(prisma)
+    const staleSessionId = randomUUID()
+    const freshSessionId = randomUUID()
+    await seedEligibleSession(staleSessionId, new Date(NOW.getTime() - 60 * 60_000))
+    await seedEligibleSession(freshSessionId, NOW)
+    // The stale row has been due the longest, which is what used to put it first.
+    await repo.enqueueCapture(SessionId(staleSessionId), new Date(NOW.getTime() - 60_000))
+    await repo.enqueueCapture(SessionId(freshSessionId), NOW)
+
+    const owner = randomUUID()
+    const until = new Date(NOW.getTime() + 60_000)
+    await expect(repo.claimNextCapture(owner, NOW, until)).resolves.toEqual({ sessionId: freshSessionId })
+    await expect(repo.claimNextCapture(owner, NOW, until)).resolves.toEqual({ sessionId: staleSessionId })
+    await expect(repo.claimNextCapture(owner, NOW, until)).resolves.toBeNull()
   })
 
   it('coalesces each PR and preserves a concurrent newer wake', async () => {

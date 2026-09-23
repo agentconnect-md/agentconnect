@@ -58,7 +58,8 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
   async claimNextCapture(owner: string, now: Date, until: Date): Promise<PullRequestCaptureRecord | null> {
     const candidates = await this.db.sessionPullRequestCapture.findMany({
       where: { nextAttemptAt: { lte: now }, OR: [{ claimUntil: null }, { claimUntil: { lt: now } }] },
-      orderBy: [{ nextAttemptAt: 'asc' }, { sessionId: 'asc' }],
+      // Latest turn first: that workspace is the likeliest still awake, and rows failing for hours must not delay it.
+      orderBy: [{ session: { lastActivityAt: 'desc' } }, { sessionId: 'asc' }],
       take: 20
     })
     for (const candidate of candidates) {

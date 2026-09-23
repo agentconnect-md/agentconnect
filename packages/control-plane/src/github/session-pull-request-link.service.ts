@@ -15,6 +15,7 @@ import type { GithubService } from './service.js'
 import type { InstallationTokenService } from './installation-token.service.js'
 import type { AgentRecord, SessionMetaRecord } from '../persistence/ports.js'
 import type { Clock } from '../domain/clock.js'
+import { ProtocolError } from '../domain/errors.js'
 
 // One daemon git read plus one REST list per resolution, so the TTL exists to absorb the panel's own
 // mounts and its 404 retry ladder. Shorter for a miss: a PR the agent just opened must not stay
@@ -228,6 +229,8 @@ export class SessionPullRequestLinkService {
 
   private failed(err: unknown, sessionId: string): SessionPullRequestCaptureResult {
     this.deps.log?.warn?.({ err, sessionId }, 'session-pr-link: head-branch lookup failed')
+    // A removed session sandbox took its worktree with it and no wake restores it, so there is no branch to read.
+    if (err instanceof ProtocolError && err.details?.reason === 'sandbox-removed') return { status: 'absent' }
     return err instanceof GithubApiError && !err.retryable ? { status: 'absent' } : { status: 'retry' }
   }
 }

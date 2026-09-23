@@ -15,6 +15,7 @@ import type { InstallationTokenService } from './installation-token.service.js'
 import type { FetchLike } from './api.js'
 import type { AgentRecord, SessionMetaRecord } from '../persistence/ports.js'
 import { AgentId, OrgId, SessionId } from '../domain/ids.js'
+import { ProtocolError } from '../domain/errors.js'
 
 const AGENT = { id: AgentId('agent-1'), orgId: OrgId('org_a') } as unknown as AgentRecord
 
@@ -214,6 +215,22 @@ describe('SessionPullRequestLinkService', () => {
       vi.useRealTimers()
     }
     expect(fetch).toHaveBeenCalledTimes(7)
+  })
+
+  it('reads a removed session sandbox as a definitive absence, and a sleeping one as a retry', async () => {
+    const refusal = (reason: string): ProtocolError =>
+      new ProtocolError('BAD_PAYLOAD', 'workspace/gitstatus failed: refused', { details: { reason } })
+    const removed = harness({})
+    removed.readBranch.mockRejectedValueOnce(refusal('sandbox-removed'))
+
+    expect(await removed.service.capture(AGENT, SESSION)).toEqual({ status: 'absent' })
+    expect(removed.resolveRepo).not.toHaveBeenCalled()
+    expect(removed.fetch).not.toHaveBeenCalled()
+
+    const asleep = harness({})
+    asleep.readBranch.mockRejectedValueOnce(refusal('sandbox-unavailable'))
+
+    expect(await asleep.service.capture(AGENT, SESSION)).toEqual({ status: 'retry' })
   })
 
   it('classifies an empty head lookup as a definitive capture absence', async () => {

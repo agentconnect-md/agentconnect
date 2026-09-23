@@ -412,10 +412,15 @@ terminal lifecycle snapshot emitted for that exact session may establish the
 owner: the CP resolves the session's isolated worktree and persists the
 branch-to-PR result. Before acknowledging a durable session snapshot, the CP
 persists one `SessionPullRequestCapture` obligation keyed only by that
-`sessionId`. The worker leases that exact row: transient daemon or GitHub
-failures defer it, while a definitive missing branch, repository, or PR
-completes it. Shared workspaces and console PR-panel reads cannot establish
-wake eligibility.
+`sessionId`. The worker leases that exact row, most recently active session
+first, so rows that keep failing cannot hold back a workspace that is still
+awake. Transient daemon or GitHub failures defer it, while a definitive missing
+branch, repository, or PR, or a session sandbox the daemon reports removed,
+completes it. The obligation lasts only while the session's last activity is
+under a day old: a workspace still unreadable after that is asleep, removed, or
+unserved, so the row is dropped without another read, and the session's next
+turn queues a fresh one. Shared workspaces and console PR-panel reads cannot
+establish wake eligibility.
 If feedback arrives before capture, it creates an unowned row that stays
 dormant until the same session establishes the forward binding. The worker
 never searches session history to infer an owner.

@@ -10,6 +10,7 @@ import type {
   SessionMetaRecord
 } from '../persistence/ports.js'
 import {
+  CAPTURE_MAX_IDLE_MS,
   SessionPullRequestFeedbackService,
   type SessionPullRequestFeedbackServiceDeps
 } from './session-pull-request-feedback.service.js'
@@ -39,7 +40,10 @@ const SESSION = {
   contentPurgedAt: null,
   phase: 'end',
   platform: 'hook',
-  workspaceIsolation: 'session'
+  workspaceIsolation: 'session',
+  startedAt: new Date(NOW),
+  endedAt: new Date(NOW),
+  lastActivityAt: new Date(NOW)
 } as unknown as SessionMetaRecord
 
 const INSTALLATION = {
@@ -222,5 +226,75 @@ describe('SessionPullRequestFeedbackService', () => {
     expect(h.deps.sessions.getUnscoped).toHaveBeenCalledWith(SESSION_ID)
     expect(h.feedbackRepo.deferCapture).toHaveBeenCalledWith(CAPTURE, expect.any(String), new Date(NOW + 60_000))
     expect(h.feedbackRepo.linkSession).not.toHaveBeenCalled()
+  })
+
+  it('removes a capture the link service answers absent, such as a removed session sandbox', async () => {
+    const h = harness()
+    h.feedbackRepo.claimNextCapture.mockResolvedValueOnce(CAPTURE).mockResolvedValueOnce(null)
+    h.links.capture.mockResolvedValueOnce({ status: 'absent' })
+
+    await runOnce(h)
+
+    expect(h.feedbackRepo.completeCapture).toHaveBeenCalledWith(CAPTURE, expect.any(String))
+    expect(h.feedbackRepo.deferCapture).not.toHaveBeenCalled()
+  })
+
+  it('retries an unreadable workspace inside the idle window, then drops it unread', async () => {
+    const h = harness()
+    h.links.capture.mockResolvedValue({ status: 'retry' })
+    h.feedbackRepo.claimNextCapture.mockResolvedValueOnce(CAPTURE).mockResolvedValueOnce(null)
+    h.clock.advance(CAPTURE_MAX_IDLE_MS - 1)
+
+    await runOnce(h)
+
+    expect(h.links.capture).toHaveBeenCalledOnce()
+    expect(h.feedbackRepo.deferCapture).toHaveBeenCalledWith(
+      CAPTURE,
+      expect.any(String),
+      new Date(NOW + CAPTURE_MAX_IDLE_MS - 1 + 60_000)
+    )
+
+    h.feedbackRepo.claimNextCapture.mockResolvedValueOnce(CAPTURE).mockResolvedValueOnce(null)
+    h.clock.advance(1)
+    await runOnce(h)
+
+    expect(h.links.capture).toHaveBeenCalledOnce()
+    expect(h.feedbackRepo.completeCapture).toHaveBeenCalledWith(CAPTURE, expect.any(String))
+    expect(h.feedbackRepo.deferCapture).toHaveBeenCalledOnce()
+  })
+
+  it('queues nothing for a session idle past the window, but captures it again once a new turn ends', async () => {
+    const h = harness()
+    const longAgo = new Date(NOW - 3 * CAPTURE_MAX_IDLE_MS)
+    const idle = { ...SESSION, startedAt: longAgo, endedAt: longAgo, lastActivityAt: longAgo }
+    // A later turn moves only the activity: `phase` stays `end` and a turn that fails re-stamps no `endedAt`.
+    const reopened = { ...idle, lastActivityAt: new Date(NOW - 60_000) }
+
+    await h.service.trackSession(idle)
+    expect(h.feedbackRepo.enqueueCapture).not.toHaveBeenCalled()
+
+    await h.service.trackSession(reopened)
+    expect(h.feedbackRepo.enqueueCapture).toHaveBeenCalledWith(SESSION_ID, new Date(NOW))
+
+    vi.mocked(h.deps.sessions.getUnscoped).mockResolvedValue(reopened)
+    h.feedbackRepo.claimNextCapture.mockResolvedValueOnce(CAPTURE).mockResolvedValueOnce(null)
+    h.links.capture.mockResolvedValueOnce({
+      status: 'resolved',
+      link: {
+        repoId: REPO_ID,
+        repoFullName: 'acme/infra',
+        installationId: INSTALLATION_ID,
+        pullNumber: Number(REPO_ID),
+        branch: 'fix/manual-pr',
+        scope: 'session',
+        ambiguous: false
+      }
+    })
+
+    await runOnce(h)
+
+    expect(h.links.capture).toHaveBeenCalledWith(AGENT, reopened)
+    expect(h.feedbackRepo.linkSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: SESSION_ID }))
+    expect(h.feedbackRepo.completeCapture).toHaveBeenCalledWith(CAPTURE, expect.any(String))
   })
 })
