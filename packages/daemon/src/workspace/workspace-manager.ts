@@ -237,6 +237,8 @@ const MAX_GITMODULES_BYTES = 256 * 1024
 const CONVERSION_FILE = 'workspace-conversion.json'
 /** A session's cwd record is one short JSON object; anything larger is not one the daemon wrote. */
 const MAX_SESSION_CWD_RECORD_BYTES = 4096
+/** A secondary root's attestation is one short JSON object too. */
+const MAX_SECONDARY_MATERIALIZATION_BYTES = 4096
 /** Word-pair branch names to try before falling back to a random suffix. */
 const SESSION_BRANCH_DRAWS = 5
 const GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/i
@@ -548,9 +550,7 @@ export class WorkspaceManager {
   async consoleSecondaryRoot(agent: Agent, repoFullName: string): Promise<SecondaryWorkspaceRoot | undefined> {
     const root = this.consoleRootNamed(agent, repoFullName)
     if (!root) return undefined
-    const recorded = parseSecondaryMaterialization(
-      await this.fsFor(agent.id).readFile(join(dirname(root.path), SECONDARY_MATERIALIZATION_FILE))
-    )
+    const recorded = await readSecondaryMaterialization(this.fsFor(agent.id), dirname(root.path))
     // Identity is the numeric repo id, exactly as materialization checks it: a subtree left by a
     // DIFFERENT repository that once held this slug attests nothing about this root's branch.
     return recorded !== undefined && attestsRoot(recorded, root) ? { ...root, branch: recorded.branch } : root
@@ -824,11 +824,10 @@ export class WorkspaceManager {
 
   /** The github.com repositories a root carries as submodules; empty when it declares none. */
   async submoduleReposOf(agentId: string, rootPath: string): Promise<Set<string>> {
-    // The seam answers what a path IS, not how big it is, so the bound is applied to the text it
-    // returned — a `.gitmodules` past it is not a declaration anyone wrote, whichever disk holds it.
-    const text = await this.fsFor(agentId).readFile(join(rootPath, '.gitmodules'))
-    if (text === undefined || text.length > MAX_GITMODULES_BYTES) return new Set()
-    return gitmoduleRepos(text)
+    // The runtime can write this checkout, so a link, a pipe or an oversized file reads as no declaration rather than stalling the daemon.
+    const read = await this.fsFor(agentId).readFileBytes(join(rootPath, '.gitmodules'), MAX_GITMODULES_BYTES)
+    if (read === undefined || 'tooLarge' in read) return new Set()
+    return gitmoduleRepos(read.bytes.toString('utf8'))
   }
 
   /** One secondary root's clone-or-converge, single-flighted per root like the primary's clone. */
@@ -881,7 +880,7 @@ export class WorkspaceManager {
         return { ...root, path: this.canonicalWorkspacePath(agent.id, root.path), branch }
       }
       // Only the numeric repository id attests identity; refuse reused slugs without touching their old checkout.
-      const recorded = parseSecondaryMaterialization(await fs.readFile(marker))
+      const recorded = await readSecondaryMaterialization(fs, subtree)
       if (recorded === undefined || !attestsRoot(recorded, root)) {
         workspaceLog.warn(
           `workspace: the checkout at ${subtree} does not attest ${root.provider} repository id ${root.repoId} ` +
@@ -1588,9 +1587,7 @@ export class WorkspaceManager {
     const authorized = new Map(this.secondaryRootsFor(agent).map((root) => [repoIdentity(root), root.subtreeName]))
     const retired: RetiredWorkspaceRoot[] = []
     for (const entry of await this.secondarySubtreesFor(agent)) {
-      const recorded = parseSecondaryMaterialization(
-        await fs.readFile(join(entry.subtree, SECONDARY_MATERIALIZATION_FILE))
-      )
+      const recorded = await readSecondaryMaterialization(fs, entry.subtree)
       // No attestation ⇒ not ours to judge, let alone remove: materialization already refuses to
       // adopt such a subtree, and removing one would be exactly the deletion decision 12 forbids.
       if (recorded === undefined) continue
@@ -3094,9 +3091,20 @@ export function parseSymrefDefaultBranch(out: string): string | undefined {
   return undefined
 }
 
-/** A secondary root's attestation as the seam read it; undefined for absent, unreadable or partial. */
-function parseSecondaryMaterialization(text: string | undefined): SecondaryMaterialization | undefined {
-  if (text === undefined) return undefined
+/** A secondary root's attestation; `repos/` is runtime-writable, so a link, a pipe or an oversized file reads as none. */
+async function readSecondaryMaterialization(
+  fs: WorkspaceFs,
+  subtree: string
+): Promise<SecondaryMaterialization | undefined> {
+  const read = await fs.readFileBytes(
+    join(subtree, SECONDARY_MATERIALIZATION_FILE),
+    MAX_SECONDARY_MATERIALIZATION_BYTES
+  )
+  return read !== undefined && 'bytes' in read ? parseSecondaryMaterialization(read.bytes.toString('utf8')) : undefined
+}
+
+/** A secondary root's attestation as the seam read it; undefined for unparseable or partial. */
+function parseSecondaryMaterialization(text: string): SecondaryMaterialization | undefined {
   try {
     const value = JSON.parse(text) as Partial<SecondaryMaterialization>
     if (typeof value.repoId !== 'string' || !value.repoId) return undefined

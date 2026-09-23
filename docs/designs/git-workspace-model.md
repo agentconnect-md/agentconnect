@@ -327,8 +327,10 @@ Session preparation runs at most two independent repository roots concurrently,
 including the working-directory root. Confined discovery starts with the cwd root,
 then the primary reference and sorted remaining secondary roots. Fresh clones read
 `.gitmodules` from their chosen Git tree before checkout, reviews use the verified
-revision, and ordinary resumes read the retained working directory. Shared working
-trees never decide these exclusions. Discovery overlaps checkout with the next
+revision, and ordinary resumes read the retained working directory. The session's
+runtime can write that directory, so its `.gitmodules` counts only as a bounded
+regular file; a link, a pipe, or an oversized file declares no submodules. Shared
+working trees never decide these exclusions. Discovery overlaps checkout with the next
 root's preparation; a
 submodule match waits for its parent to succeed before omitting the standalone
 root. A failed parent cannot hide another authorized repository, and a reviewed
