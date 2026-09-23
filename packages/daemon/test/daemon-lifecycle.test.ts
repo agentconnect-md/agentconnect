@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MAX_TASK_LIST_TASKS, type SessionPurged } from '@agentconnect.md/protocol'
@@ -111,6 +111,28 @@ function coldBlockingHost() {
     stop: vi.fn(async () => {})
   }
   return { host, releaseSession: () => releaseSession() }
+}
+
+/** A host serving the daemon's own distillation pass, whose prompt runs until released or until the host stops under it. */
+function passHost() {
+  let settle!: (error?: Error) => void
+  const running = new Promise<void>((resolve, reject) => (settle = (error) => (error ? reject(error) : resolve())))
+  const host = {
+    start: vi.fn(async () => {}),
+    newSession: vi.fn(async () => 'distill-1'),
+    hasSession: vi.fn(() => true),
+    usesMetaSystemPrompt: vi.fn(() => true),
+    permissionModeOptions: vi.fn(() => ({ modes: ['read-only'] })),
+    setSessionPermissionMode: vi.fn(async () => true),
+    discardSession: vi.fn(() => {}),
+    prompt: vi.fn(async () => {
+      await running
+      return { stopReason: 'end_turn' }
+    }),
+    cancel: vi.fn(async () => {}),
+    stop: vi.fn(async () => settle(new Error('connection closed')))
+  }
+  return { host, release: () => settle() }
 }
 
 function writePause(root: string, pause: boolean): void {
@@ -1705,6 +1727,70 @@ describe('Daemon idle sweep (#111/#118)', () => {
     expect(host.stop).toHaveBeenCalled()
 
     await daemon.stop()
+  })
+
+  // A distillation pass stamps no session row, so only its own hold keeps the agent's host under it (k8s-daemon-pool §4).
+  it('never reaps the shared host under a distillation pass, and lets it go one window after the pass settles', async () => {
+    const clock = new FakeClock()
+    clock.advance(1_700_000_000_000)
+    const { host, release } = passHost()
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold({ agentIdleTimeoutMs: 1000, idleSweepMs: 10_000_000 }),
+      hostFactory: () => host as any,
+      clock
+    })
+    await daemon.start()
+    const inner = daemon as any
+    const pass = inner.runMemoryExtraction('bot-a', 'distill this turn', { agentId: 'bot-a' })
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalled(), WAIT)
+
+    // Five windows past the host's start with the pass still running, and no session activity at all.
+    clock.advance(5000)
+    await inner.sweepIdle()
+    expect(host.stop).not.toHaveBeenCalled()
+    expect(inner.hosts.get(agentHostKey('bot-a'))).toBe(host)
+
+    release()
+    await expect(pass).resolves.toBe('')
+    // The settled pass restarts the host's clock: it keeps a full window from there, then goes.
+    await inner.sweepIdle()
+    expect(host.stop).not.toHaveBeenCalled()
+    clock.advance(1001)
+    await inner.sweepIdle()
+    await vi.waitFor(() => expect(host.stop).toHaveBeenCalled(), WAIT)
+    expect(inner.hosts.has(agentHostKey('bot-a'))).toBe(false)
+
+    await daemon.stop()
+    for (const dir of inner.memoryExtractionDirs.values()) rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('stops holding the shared host for a pass older than the lifetime ceiling, so a wedged one cannot pin it', async () => {
+    const clock = new FakeClock()
+    clock.advance(1_700_000_000_000)
+    const { host } = passHost()
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold({ agentIdleTimeoutMs: 1000, idleSweepMs: 10_000_000, agentMaxLifetimeMs: 10_000 }),
+      hostFactory: () => host as any,
+      clock
+    })
+    await daemon.start()
+    const inner = daemon as any
+    const pass = inner.runMemoryExtraction('bot-a', 'distill this turn', { agentId: 'bot-a' })
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalled(), WAIT)
+
+    clock.advance(5000)
+    await inner.sweepIdle()
+    expect(host.stop).not.toHaveBeenCalled()
+    // Past the ceiling the pass is taken as wedged, and stopping the host is what ends it.
+    clock.advance(6000)
+    await inner.sweepIdle()
+    await vi.waitFor(() => expect(host.stop).toHaveBeenCalled(), WAIT)
+    await expect(pass).rejects.toThrow('connection closed')
+
+    await daemon.stop()
+    for (const dir of inner.memoryExtractionDirs.values()) rmSync(dir, { recursive: true, force: true })
   })
 })
 

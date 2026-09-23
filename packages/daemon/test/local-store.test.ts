@@ -1752,6 +1752,23 @@ describe('LocalStore session lifecycle (§7.3/#111/#118)', () => {
     await s.close()
   })
 
+  it('agentSessionActivity lists the agent’s open sessions, most recently active first', async () => {
+    const s = await store()
+    await seed(s, 'k1', 'bot-a', 'idle', 100)
+    await seed(s, 'k2', 'bot-a', 'idle', 900)
+    await seed(s, 'k3', 'bot-a', 'idle', 500)
+    await seed(s, 'k4', 'bot-b', 'idle', 999)
+    expect(await s.agentSessionActivity('bot-a')).toEqual([
+      { key: 'k2', updatedAt: 900 },
+      { key: 'k3', updatedAt: 500 },
+      { key: 'k1', updatedAt: 100 }
+    ])
+    await s.setSessionState('k2', 'closed', 900)
+    expect((await s.agentSessionActivity('bot-a')).map((row) => row.key)).toEqual(['k3', 'k1'])
+    expect(await s.agentSessionActivity('nobody')).toEqual([])
+    await s.close()
+  })
+
   it('setSessionMuted persists a cold !stop tombstone across reopen and later session creation', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-mute-')), 'local.sqlite')
     let s = await reopen(path)

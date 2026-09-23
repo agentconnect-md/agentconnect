@@ -679,6 +679,7 @@ import type {
   McpAppOutcome
 } from '@agentconnect.md/protocol'
 import { boundedDiagnostic, formatErr, startFailureDetail } from './daemon/text.js'
+import { HostPasses } from './daemon/host-passes.js'
 import { isBuiltinSystemToolCall, type ApprovalRequestParts } from './daemon/tool-classification.js'
 import { buildTurnPlan, type TurnPlan } from './daemon/turn-plan.js'
 import { turnEvaluationReporter, type TurnEvaluationReporter } from './daemon/turn-evaluation.js'
@@ -1029,6 +1030,8 @@ export class Daemon {
   private hostLaunch = new Map<HostKey, { agentDir: string; cwd: string }>()
   // host → when it was (re)built (clock ms), so the idle reaper gives a host with no recorded activity yet a full window.
   private hostStartedAt = new Map<HostKey, number>()
+  // The daemon's own passes on its hosts, which hold one against the idle reaper and restart its clock; no session row records them.
+  private readonly hostPasses = new HostPasses()
   // agentId → config-file secret state (shim/config-file-env.ts); the files are shared by the agent's hosts and go with its last one.
   // Recorded at spawn because the reconcile remove path drops the roster entry BEFORE
   // stopping the host — the agent dir can't be re-resolved there. `childEnv` is the
@@ -4966,6 +4969,15 @@ export class Daemon {
     return !agent || !this.confinedSession(agent, sessionKey)
   }
 
+  /** The last activity of the sessions the agent's shared host serves — those {@link hostKeyFor} routes to it — never one with a host of its own. */
+  private async sharedHostLastActivityTs(agentId: string): Promise<number | null> {
+    const shared = agentHostKey(agentId)
+    for (const { key, updatedAt } of await this.store.agentSessionActivity(agentId)) {
+      if (this.hostKeyFor(agentId, key) === shared) return updatedAt
+    }
+    return null
+  }
+
   /** Whether anything of the agent runs in its own pod right now: a host, a model-session host, an admitted dispatch or a pending turn. */
   private agentPodInUse(agentId: string): boolean {
     for (const map of [this.hosts, this.hostStarts]) {
@@ -6523,10 +6535,24 @@ export class Daemon {
     return `${agentId}\u0000${scope?.channelKey ?? ''}`
   }
 
+  /** Run one of the daemon's own passes, holding the agent's shared host against the idle reaper from before the pass fetches it until it settles. */
+  private async onAgentHost<T>(agentId: string, pass: () => Promise<T>): Promise<T> {
+    // With a key server the pass runs on a model-session host of its own, which it releases itself.
+    if (this.modelSessions.enabled) return await pass()
+    const settle = this.hostPasses.begin(agentHostKey(agentId), this.clock.now())
+    try {
+      return await pass()
+    } finally {
+      settle(this.clock.now())
+    }
+  }
+
   private async runMemoryExtraction(agentId: string, prompt: string, scope?: MemoryScope): Promise<string> {
     const key = this.memoryExtractionKey(agentId, scope)
     const prior = this.memoryExtractionChains.get(key) ?? Promise.resolve('')
-    const next = prior.catch(() => '').then(() => this.runMemoryExtractionPass(agentId, prompt, scope))
+    const next = prior
+      .catch(() => '')
+      .then(() => this.onAgentHost(agentId, () => this.runMemoryExtractionPass(agentId, prompt, scope)))
     this.memoryExtractionChains.set(key, next)
     try {
       return await next
@@ -20130,35 +20156,30 @@ export class Daemon {
         `config-files: removed idle secret files for agent "${agentId}" (quiet ${Math.round((now - last) / 1000)}s)`
       )
     }
-    // §7.2 ready→provisioned: reclaim a host whose agent has no recent session
-    // activity AND no in-flight turn (a long turn stamps no activity, so the
-    // in-flight guard is load-bearing).
+    // §7.2 ready→provisioned: reclaim a host with no recent activity of its own and no work in flight (a long turn stamps no activity, so the in-flight guards are load-bearing).
     for (const [key] of [...this.hosts]) {
       const agentId = hostKeyAgentId(key)
       const sessionKey = hostKeySessionKey(key)
       const label = hostKeyLabel(key)
       if (this.drainingAgents.has(agentId)) continue
-      // `pending` begins only after session/new|load. A warm dispatch can still
-      // be assembling memory/context or preparing its workspace before that;
-      // reclaiming its host here would detach a live initialization generation.
+      // Any dispatch of the agent holds all its hosts: it prepares before `pending` exists, and a review's preparation is fenced on the shared host staying ready.
       if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
-      // A session-bound host is quiet when ITS session is; the shared host, when every session of the agent is.
+      // A session-bound host is held by its own session's turn in flight; the shared host, as above, by any of the agent's.
       const inFlight = (p: Pending): boolean =>
         p.plan.agentId === agentId && (sessionKey === undefined || p.plan.sessionKey === sessionKey)
       if ([...this.pending.values()].some(inFlight)) continue
-      // A just-started host that hasn't served a turn yet has no recorded activity
-      // (`agentLastActivityTs` unset ⇒ 0 ⇒ idle≈now), so without this it would be
-      // reclaimed on the very next sweep — including WHILE it is still mid-startup
-      // (the host object is in `this.hosts` before `start()` resolves), tearing it
-      // down underneath its own first dispatch (ACP "connection closed" → "already
-      // started" → "Session not found"). Fall back to when the host came up so it
-      // gets a full idle window from start, not an instant reclaim.
+      // The shared host's clock counts only the sessions routed to it and its own passes, never a session with a host of its own; a host gets a full window from its start, or it would go mid-startup.
       const activity =
         sessionKey === undefined
-          ? await this.store.agentLastActivityTs(agentId)
+          ? await this.sharedHostLastActivityTs(agentId)
           : await this.store.sessionLastActivityTs(sessionKey)
-      const last = Math.max(activity ?? 0, this.hostStartedAt.get(key) ?? 0)
+      const last = Math.max(activity ?? 0, this.hostStartedAt.get(key) ?? 0, this.hostPasses.settledAt(key) ?? 0)
       if (now - last <= ttl) continue
+      // A pass of the daemon's own holds its host until it settles, read after the store round trip in the tick that stops it; one past the lifetime ceiling is taken as wedged.
+      if (this.hostPasses.holds(key, now, maxLifetime)) {
+        this.log.info(`idle: host "${label}" has an internal pass in flight — deferring reclaim`)
+        continue
+      }
       // Background-task lease: don't reap a host that still has live background work
       // (a running SDK cycle / followup turn or unsettled background tasks) — reaping
       // SIGTERMs the adapter, and `claude` reaps its own background jobs on graceful
@@ -21414,7 +21435,7 @@ export class Daemon {
       withWorkspaceIndexWrite: <T>(agentId: string, write: () => Promise<T>): Promise<T> =>
         this.withWorkspaceIndexWrite(agentId, write),
       runCommitMessagePass: (agentId, systemPrompt, prompt, signal) =>
-        this.runCommitMessagePass(agentId, systemPrompt, prompt, signal)
+        this.onAgentHost(agentId, () => this.runCommitMessagePass(agentId, systemPrompt, prompt, signal))
     }
   }
 
