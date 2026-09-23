@@ -257,6 +257,17 @@ describe('where a session runs, in its Details', () => {
     expect(text()).toContain('edge-1 · spreading off')
   })
 
+  it('shows only the holder when daemon-local memory kept the session there', async () => {
+    wire.detail = detail({ stayedHomeReason: 'memory_daemon_homed' })
+    await render()
+
+    const runsOnRow = [...(container?.querySelectorAll('div') ?? [])].find(
+      (row) => row.children[1]?.textContent === 'Runs on'
+    )
+    expect(runsOnRow?.lastElementChild?.textContent).toBe('edge-1')
+    expect(text()).not.toContain('memory kept here')
+  })
+
   it('stays silent for a session whose Control Plane recorded no verdict at all', async () => {
     await render()
 

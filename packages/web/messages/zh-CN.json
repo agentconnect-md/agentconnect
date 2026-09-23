@@ -561,7 +561,6 @@
         "notOnGroup": "未加入组",
         "groupSwitchOff": "未开启分散",
         "sharedSession": "共享工作区",
-        "memoryDaemonHomed": "记忆留在本机",
         "noCandidate": "没有成员能运行",
         "candidatesFull": "成员均已满",
         "controlPlaneUnreachable": "控制面不可达",
