@@ -70,9 +70,12 @@ export class DecisionEvaluator {
       reason: Extract<DecisionEvaluation, { status: 'unavailable' }>['reason']
     ): DecisionEvaluation => ({ status: 'unavailable', reason })
     const now = this.deps.now?.() ?? Date.now()
-    const timeoutMs = Math.min(
-      this.deps.timeoutMs ?? 5_000,
-      input.deadlineAt === undefined ? Number.POSITIVE_INFINITY : input.deadlineAt - now
+    // AbortSignal.timeout rejects a fractional delay, and the production clock is sub-millisecond.
+    const timeoutMs = Math.floor(
+      Math.min(
+        this.deps.timeoutMs ?? 5_000,
+        input.deadlineAt === undefined ? Number.POSITIVE_INFINITY : input.deadlineAt - now
+      )
     )
     this.shutdown.signal.throwIfAborted()
     cancellation?.throwIfAborted()

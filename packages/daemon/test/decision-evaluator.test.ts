@@ -23,7 +23,7 @@ const answer = (value: unknown) =>
   Response.json({ model: 'jev-example', answers: { decision: value }, usage: { input_tokens: 10, output_tokens: 2 } })
 const booleanAnswer = () => answer({ type: 'noul', noul: 0.75 })
 
-function setup(over: { configured?: boolean; timeoutMs?: number } = {}) {
+function setup(over: { configured?: boolean; timeoutMs?: number; now?: () => number } = {}) {
   const credentials = vi.fn(async (): Promise<ProviderCredentialsReply> => ({
     credentials: over.configured === false ? null : byok
   }))
@@ -40,7 +40,8 @@ function setup(over: { configured?: boolean; timeoutMs?: number } = {}) {
     keyServer: () => issuer,
     cloudBaseUrl: 'https://cloud.example.test/typesafe',
     fetch: providerFetch,
-    timeoutMs: over.timeoutMs
+    timeoutMs: over.timeoutMs,
+    now: over.now
   })
   return { evaluator, credentials, providerFetch, issuerFetch }
 }
@@ -225,5 +226,13 @@ describe('daemon Decision evaluator', () => {
       reason: 'timeout'
     })
     expect(Date.now() - started).toBeLessThan(2_000)
+  })
+
+  it('evaluates against a sub-millisecond clock whose remaining deadline is fractional', async () => {
+    const { evaluator, providerFetch } = setup({ now: () => performance.timeOrigin + performance.now() })
+    expect(await evaluator.evaluate({ ...input, deadlineAt: Date.now() + 4_000.5 })).toMatchObject({
+      status: 'answered'
+    })
+    expect(providerFetch).toHaveBeenCalledOnce()
   })
 })
