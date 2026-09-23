@@ -3,7 +3,7 @@ import { AGENT_WIDE_HOLDER, type SandboxHolds } from '../k8s/sandbox-hold.js'
 
 // The keep-alive decision (k8s-daemon-pool §4): the daemon reads an open page's facts itself — a dirty worktree, an armed watcher the sweep also holds for on its own — and leases each pod a fact is ABOUT, per session holder, never waking one.
 export interface SandboxKeepAliveDepsInternal {
-  /** The pod this page's worktree lives on, by the SAME routing the status read uses, so the lease, the judgement and the read can never name different pods. */
+  /** The pod this page's session lives on, off its own directory as its wake and reads route it — never the agent's for an isolated session, whatever its primary is; the agent's with no session. */
   podFor: (agentId: string, sessionId?: string) => Promise<string>
   /** The agent's own pod — where an armed merge watcher runs, whatever worktree this page is watching. */
   agentPod: (agentId: string) => string

@@ -4866,6 +4866,36 @@ export class Daemon {
     return false
   }
 
+  /** Whether a session's work runs in its agent's own pod: everything but a confined session's (§11); an agent not loaded here answers yes, which keeps its pod. */
+  private runsInAgentPod(agentId: string, sessionKey?: string): boolean {
+    const agent = this.agents.get(agentId)
+    return !agent || !this.confinedSession(agent, sessionKey)
+  }
+
+  /** Whether anything of the agent runs in its own pod right now: a host, a model-session host, an admitted dispatch or a pending turn. */
+  private agentPodInUse(agentId: string): boolean {
+    for (const map of [this.hosts, this.hostStarts]) {
+      for (const key of map.keys()) {
+        if (hostKeyAgentId(key) === agentId && this.runsInAgentPod(agentId, hostKeySessionKey(key))) return true
+      }
+    }
+    if (this.modelSessions.hasStartedHostForAgent(agentId, (key) => this.runsInAgentPod(agentId, key))) return true
+    const active = this.activeDispatchesByAgent.get(agentId)
+    if (active?.size) {
+      // A dispatch whose key this map no longer names counts as the agent pod's: it cannot be told apart.
+      let named = 0
+      for (const [key, done] of this.activeDispatchDoneByKey) {
+        if (!active.has(done)) continue
+        named++
+        if (this.runsInAgentPod(agentId, key)) return true
+      }
+      if (named < active.size) return true
+    }
+    return [...this.pending.values()].some(
+      (p) => p.plan.agentId === agentId && this.runsInAgentPod(agentId, p.plan.sessionKey)
+    )
+  }
+
   /** The agent's key for `host` — scoped to the agent, since a test factory may hand one object to several agents. */
   private hostKeyOfHost(agentId: string, host: AcpHost): HostKey | undefined {
     for (const [key, candidate] of this.hosts) if (candidate === host && hostKeyAgentId(key) === agentId) return key
@@ -19500,16 +19530,7 @@ export class Daemon {
     await this.sweepIdleSandboxes(now, ttl)
   }
 
-  /**
-   * Cluster only: suspend the pod of an agent whose host is already gone, keeping its Sandbox and
-   * workspace volume. An idle pod is cost with nothing running in it, and the next message resumes
-   * onto the same checkout instead of paying a fresh clone.
-   *
-   * Driven off the driver's launches rather than off host reclaim, for two reasons: a launch
-   * outlives the host it was made for (a bind for workspace preparation makes one before any
-   * runtime exists), and a rule that reads state each tick cannot be stranded by a teardown that
-   * failed. The cost is at most one sweep interval of delay after the host goes.
-   */
+  /** Cluster only: suspend each quiet pod this member launched, keeping its Sandbox and volume; read off the driver's launches, which outlive their hosts, so a failed teardown cannot strand one. */
   private async sweepIdleSandboxes(now: number, ttl: number): Promise<void> {
     await this.microsandbox?.suspendIdle(now - ttl)
     // A spread session's environment is judged by the same rule: closing its pipe drops the launch with it, so the next turn prepares again (§7).
@@ -19519,29 +19540,31 @@ export class Daemon {
     for (const { subject, agentId, since } of plane.launched()) {
       // Suspend is the holder's decision (k8s-daemon-pool §4); an ex-holder must not touch its successor's pod.
       if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(agentId)) continue
-      // A live host owns the decision above; suspending under it would pull the pod out from
-      // beneath a runtime that is merely between turns. A session pod answers to ITS host alone (§11);
-      // the agent pod, to every host of the agent — a session runtime holds it as its companion.
+      // Work in a pod owns the decision above, or a runtime merely between turns loses its pod: the agent pod answers only to the work that runs IN it, a session pod to its own host (§11).
       const leaf = sandboxSubjectSessionLeaf(subject)
-      const hostKey =
-        leaf === undefined ? undefined : this.hostKeysForAgent(agentId).find((key) => hostKeyDirName(key) === leaf)
-      if (leaf === undefined && (this.hasHostForAgent(agentId) || this.modelSessions.hasStartedHostForAgent(agentId)))
-        continue
-      if (hostKey !== undefined && (this.hosts.has(hostKey) || this.hostStarts.has(hostKey))) continue
-      if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
-      // A session pod taken over without its host is judged by the agent's activity — the wider window.
-      const sessionKey = hostKey === undefined ? undefined : hostKeySessionKey(hostKey)
-      if (
-        [...this.pending.values()].some(
-          (p) => p.plan.agentId === agentId && (sessionKey === undefined || p.plan.sessionKey === sessionKey)
+      let activity: number | null
+      if (leaf === undefined) {
+        if (this.agentPodInUse(agentId)) continue
+        // Its own sessions' activity, never an isolated session's, whose traffic this pod does not serve.
+        activity = await this.store.agentSharedLastActivityTs(agentId)
+      } else {
+        const hostKey = this.hostKeysForAgent(agentId).find((key) => hostKeyDirName(key) === leaf)
+        if (hostKey !== undefined && (this.hosts.has(hostKey) || this.hostStarts.has(hostKey))) continue
+        if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
+        // A session pod taken over without its host is judged by the agent's activity — the wider window.
+        const sessionKey = hostKey === undefined ? undefined : hostKeySessionKey(hostKey)
+        if (
+          [...this.pending.values()].some(
+            (p) => p.plan.agentId === agentId && (sessionKey === undefined || p.plan.sessionKey === sessionKey)
+          )
         )
-      )
-        continue
+          continue
+        activity =
+          sessionKey === undefined
+            ? await this.store.agentLastActivityTs(agentId)
+            : await this.store.sessionLastActivityTs(sessionKey)
+      }
       // Shared-store activity, floored at when this member took the launch: a full window, not epoch-idle.
-      const activity =
-        sessionKey === undefined
-          ? await this.store.agentLastActivityTs(agentId)
-          : await this.store.sessionLastActivityTs(sessionKey)
       const last = Math.max(activity ?? 0, since)
       const quiet = now - last > ttl
       // A lease on THIS pod defers the suspend: an open page's dirty volume or armed watcher, or this daemon's own on a watcher it saw armed; each lapses within one TTL (§11).

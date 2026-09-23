@@ -1737,6 +1737,22 @@ describe('LocalStore session lifecycle (§7.3/#111/#118)', () => {
     await s.close()
   })
 
+  it('agentSharedLastActivityTs leaves out isolated sessions, whose traffic runs in pods of their own', async () => {
+    const s = await store()
+    await seed(s, 'k1', 'bot-a', 'idle', 100)
+    await s.upsertSession({ ...(await s.getSession('k1'))!, workspaceIsolation: 'shared' })
+    await seed(s, 'k2', 'bot-a', 'idle', 200)
+    await seed(s, 'k3', 'bot-a', 'idle', 900)
+    await s.upsertSession({ ...(await s.getSession('k3'))!, workspaceIsolation: 'session' })
+    // A row no turn has decided yet counts as shared, as the agent-wide clock always did.
+    expect(await s.agentSharedLastActivityTs('bot-a')).toBe(200)
+    expect(await s.agentLastActivityTs('bot-a')).toBe(900)
+    await s.setSessionState('k2', 'closed', 200)
+    expect(await s.agentSharedLastActivityTs('bot-a')).toBe(100)
+    expect(await s.agentSharedLastActivityTs('nobody')).toBeNull()
+    await s.close()
+  })
+
   it('setSessionMuted persists a cold !stop tombstone across reopen and later session creation', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-mute-')), 'local.sqlite')
     let s = await reopen(path)

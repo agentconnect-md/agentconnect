@@ -448,10 +448,11 @@ The same layout in the session pod's coordinates:
 `<mount>/sessions/<leaf>/{workspace,repos,home}` on the volume of a pod claimed
 for the session alone (`agent-<id>-<16 hex of the leaf>`, labelled by agent and
 session; [k8s-daemon-pool.md](k8s-daemon-pool.md) §4). The agent pod stays —
-primary checkout, secondary roots, managed memory, the console's workspace views,
-`pullOnNewSession` for shared sessions — and a session runtime holds it beside its
-own pod for the runtime's life, so managed memory and merge-when-ready keep the
-reachability they have today. Console and Git reads route each path to the pod
+primary checkout, secondary roots, the console's workspace views,
+`pullOnNewSession` for shared sessions — but a session runtime binds and holds its
+own pod alone, and the agent pod sleeps on its own work: managed memory is in the
+Control Plane, and the merge-when-ready watcher still runs in the agent pod until
+it moves into the session's. Console and Git reads route each path to the pod
 that owns it. The claim lives as long as the session's row: idle suspension keeps
 the volume, retention judges the dirty and unique-commit rules in the clone on its
 own pod before the row goes, and the claim — volume and all — goes with the row,
