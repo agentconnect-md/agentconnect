@@ -285,12 +285,12 @@ Three properties make that safe to hand a browser:
   that is down and answers `asleep`. Resurrecting a sandbox from a keep-alive
   poll would invert the rule the sweep exists to serve. The pod judged for the
   tree is THIS page's — the one that owns the worktree it is watching — because
-  "any pod of the agent is up" would let a bound agent pod carry the poll into a
-  status read that the routed runner then serves by waking a suspended session
-  pod. And it is HELD across that read rather than only checked before it: the
-  idle gate reads its holds synchronously, so the hold excludes the sweep instead
-  of racing it. The facts are judged **independently**, one pod each, so a page
-  whose session pod went to sleep still holds the agent's pod for a watcher armed
+  "any pod of the agent is up" says nothing about whether that worktree can be
+  read, and a read never wakes the pod it names. And it is HELD across that
+  read rather than only checked before it: the idle gate reads its holds
+  synchronously, so the hold excludes the sweep instead of racing it. The facts
+  are judged **independently**, one pod each, so a page whose session pod went to
+  sleep still holds the agent's pod for a watcher armed
   in it — otherwise a visible page would silently disarm its own box — and every
   other bound pod of the agent is asked for its own watchers, since the pull
   request a page shows may have been armed from another session.
@@ -348,16 +348,20 @@ secondary roots (managed memory is in the CP database, §11). A session runtime
 binds and holds its own pod alone, so a running runtime says nothing about the
 agent pod, which is claimed only for work that runs in it (below). Every workspace path is routed to the pod that owns it,
 read off the **path** rather than off the live-launch registry, so a suspended
-session pod stays addressable; a read that names one RESUMES it only beside a
-bound agent pod, the session's own page resumes it alone with the session-scoped
-wake (below), and either way only onto the claim whose uid the router just
-observed. The resume creates nothing: the observation and the wake are two round
-trips, and the uid is re-judged against the object after that gap, so a
-retirement landing in between refuses instead of claiming a fresh empty volume for
-a session that no longer has one — a read can lose a race with a retirement, never
-win one. A session pod with no claim at all is not asleep but removed, so a read
-or a wake of it refuses as `sandbox-removed`, which no press can undo; the
-session's next message creates a new one.
+session pod stays addressable. A read that names one never resumes it, whatever
+the agent pod's state: it refuses as `sandbox-unavailable`, and only the
+session-scoped wake (below) resumes it, onto the claim whose uid the waker just
+observed. Reads used to resume it beside a bound agent pod, while the console's
+only wake was agent-scoped, so once that pod was up any read woke it — a hidden
+panel's poll or the Control Plane's pull-request capture included. The resume
+creates nothing: the observation and the wake are two round trips, and the uid is
+re-judged against the object after that gap, so a retirement landing in between
+refuses instead of claiming a fresh empty volume for a session that no longer has
+one — a wake can lose a race with a retirement, never win one. A session pod with
+no claim at all is not asleep but removed, so a file read or a wake of it refuses
+as `sandbox-removed`, which no press can undo; the session's next message creates
+a new one. Git tells the two apart only beside a bound agent pod, where its runner
+asks when first used; otherwise it refuses as asleep without asking the cluster.
 Sleep is per pod, each judged by its own work. A quiet session pod suspends on its
 own session's activity while its siblings and the agent pod stay. The agent pod is
 kept while a host, a dispatch or a turn runs IN it — its shared host, a shared
@@ -434,7 +438,11 @@ session rows remain, and offering Start there would loop until it gave up. The
 console's file views press the session wake in session scope and show that state
 in one line with no Start; the agent's checkout, skills tab and dream keep the
 agent-scoped wake. A member without the feature is sent the agent wake, which is
-what the console pressed before.
+what the console pressed before. The dock's Git tab and pull-request panel press
+no wake of their own: while the pod sleeps the Git tab reads it as asleep, and a
+pull request found only through the worktree's head branch is not found; both
+catch up on their next read once the Files view's wake or the session's next
+message has brought the pod back.
 
 **What stays with the agent pod.** The conversion itself (it must stay atomic
 with its fail-closed marker, and it is rare), console views of the agent's
@@ -494,7 +502,7 @@ opening the session's files wakes its pod.
    in it, and judges its idleness by its own use, not by isolated sessions' traffic.
 9. Merge-when-ready into the session pod (done).
 10. A session-scoped wake, so the console can resume a sleeping session pod
-    without the agent pod.
+    without the agent pod (done); with it, a read no longer resumes one.
 
 **Decisions.**
 

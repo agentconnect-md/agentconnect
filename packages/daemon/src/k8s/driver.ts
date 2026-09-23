@@ -336,7 +336,7 @@ export class K8sDriver implements SpawnDriver {
     return (await readIfPresent(() => this.deps.api.getClaim(this.claimName(subject))))?.metadata?.uid
   }
 
-  // Bind the channel of a pod the caller ALREADY observed a claim for, creating nothing: a read that wakes a sleeping session pod may never claim one, since retention, a conversion or an agent removal can delete the claim between the observation and the wake and `ensureClaim` would then make a fresh empty one — a live agent's orphan.
+  // Bind the channel of a pod the caller ALREADY observed a claim for, creating nothing: a session wake may never claim one, since retention, a conversion or an agent removal can delete the claim between the observation and the wake and `ensureClaim` would then make a fresh empty one — a live agent's orphan.
   async resumeBoundChannel(subject: SandboxSubject, claimUid: string): Promise<ShimConnection> {
     const launch = await this.resumeSandbox(subject, claimUid)
     return await this.binder.bindChannel(subject, launch, undefined, this.grantsFor(subject))

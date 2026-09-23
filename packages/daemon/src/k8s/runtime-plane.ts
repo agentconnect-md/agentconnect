@@ -158,7 +158,7 @@ export interface K8sRuntimePlane extends ExecutionPlane {
    *  probe reuse this pod instead of claiming a second one. A caller that arrives while a probe is
    *  already in flight awaits ITS table and its own sweep is skipped — the pod is gone by then. */
   probeRuntimes: (sweep?: ProbeSandboxSweep) => Promise<K8sRuntimeTable>
-  /** A git runner on the pod that owns the path (a sleeping session pod is woken beside a bound agent pod), or undefined with no channel to it, which callers refuse. */
+  /** A git runner on the pod that owns the path, or undefined with no channel to it, which callers refuse; a sleeping session pod is never woken by one. */
   gitRunnerFor: (agentId: string, cwd?: string, abort?: AbortSignal) => GitRunner | undefined
   /** The console's file operations, each root on the pod that owns it and refused per call while that pod is unbound; separate from git because `read` and `exec` are separate capabilities. */
   workspaceFilesFor: (agentId: string) => WorkspaceFiles | undefined
@@ -301,7 +301,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
   // The one condition that means "this agent's work happens in a pod" — ANY of its pods. Defined once
   // because two callers must agree on it: the git runner, and the credential pointers that git will read.
   const runsInSandbox = (agentId: string): boolean => boundSubjectsOf(agentId).length > 0
-  // A session pod's claim uid, the fence a resume travels with; none refuses as `sandbox-removed`, since that claim IS the session's volume and a read or wake never creates one.
+  // A session pod's claim uid; none refuses as `sandbox-removed`, since that claim IS the session's volume and a read never creates one.
   const sessionClaimOf = async (subject: SandboxSubject): Promise<string> => {
     const claimUid = await driver.claimUidFor(subject)
     if (claimUid === undefined) {
@@ -312,16 +312,11 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     }
     return claimUid
   }
-  /** The session that owns `path`: a removed session pod refuses as such, a sleeping one resumes beside a bound agent pod (its own press is the waker's), and otherwise the typed `sandbox-unavailable` refusal the console can wake on. */
+  /** The bound session that owns `path`; a read never wakes a pod, so an unbound one refuses as `sandbox-removed` when its session claim is gone and otherwise as the `sandbox-unavailable` the console's session wake answers. */
   const sessionForPath = async (agentId: string, path: string): Promise<ShimSession> => {
     const subject = subjectForPath(agentId, path)
-    let session = boundSession(subject)
-    if (!session && sandboxSubjectSessionLeaf(subject) !== undefined) {
-      // Resume-only, fenced on the claim just observed: the two reads are not atomic, so a retirement landing between them refuses rather than creating a fresh claim and an empty volume.
-      const claimUid = await sessionClaimOf(subject)
-      if (boundSession(agentSandboxSubject(agentId))) await driver.resumeBoundChannel(subject, claimUid)
-      session = boundSession(subject)
-    }
+    const session = boundSession(subject)
+    if (!session && sandboxSubjectSessionLeaf(subject) !== undefined) await sessionClaimOf(subject)
     // Path-free: the message rides the wire to the Control Plane, and the subject already names the pod.
     if (!session) {
       throw new WorkspaceViolationError(
@@ -452,7 +447,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       const subject = subjectForPath(agentId, cwd)
       const session = boundSession(subject)
       if (session) return new ShimGitRunner(session, cwd, undefined, abort)
-      // A session directory whose pod is asleep, beside a bound agent pod: the runner brings it up on first use.
+      // A session directory whose pod is asleep, beside a bound agent pod: the runner is routed on first use as the path's read is, so a removed claim refuses as such, and it wakes nothing.
       if (
         cwd === undefined ||
         sandboxSubjectSessionLeaf(subject) === undefined ||

@@ -17,6 +17,7 @@ import { wireWorkspacePlane, type PlaneLaunch } from '../src/execution/plane.js'
 import type { ControlWire } from '../src/cp/control/context.js'
 import { workspaceError } from '../src/cp/control/workspace.js'
 import { createWorkspaceReader } from '../src/cp/workspace-reader.js'
+import { createWorkspaceGit } from '../src/cp/workspace-git.js'
 import { createAgentWaker, sessionPodOf } from '../src/cp/agent-wake.js'
 import { createWorkspaceScope } from '../src/cp/workspace-scope.js'
 import { AgentSchema } from '../src/agents/agent-schema.js'
@@ -596,23 +597,20 @@ describe('one pod per session on the plane (git-workspace-model §11)', () => {
     }
   })
 
-  it('routes a read of a suspended session directory to that session pod, waking it, not to the agent pod', async () => {
-    // `suspendIfIdle` forgets the launch while the claim and its volume survive on purpose, so the
-    // live-launch registry cannot be what tells a path its pod. The console's `agent/wake` binds the
-    // AGENT subject; a session workspace routed off that registry would be read on the agent pod,
-    // where the directory does not exist — and reported as an empty workspace rather than a refusal.
+  it('refuses a read and a git status of a sleeping session pod beside a bound agent pod, waking nothing', async () => {
+    // A bound agent pod once carried every read into a sleeping session pod, so the Control Plane's pull-request capture woke old sessions one by one; only the session wake resumes one now.
     const cluster = fakeCluster()
-    // Short, because what this asserts about the woken pod is that the read waited for IT: the one
-    // listener the harness has is the agent's, so the session pod's channel never arrives.
+    // Short, so a read that did try to resume would fail fast: the one listener the harness has is the agent pod's.
     const plane = await planeUnderTest(cluster as never, 250)
     const port = shimPort(plane)
     const T1 = sessionHostKey('agent-a', 'slack:C1:T1:agent-a')
     const leaf = hostKeyDirName(T1)
     const session = sandboxSubjectFor(T1)
+    const sessionClaim = plane.driver.claimName(session)
     const sessionPath = `/agent/sessions/${leaf}/workspace`
     const served: string[] = []
 
-    // The agent's own pod is up — the console's wake is agent-scoped, so this is the press a read has.
+    // The agent's own pod is up, as a console wake, a shared session or a conversion leaves it.
     const agentBinding = plane.driver.ensureBoundChannel('agent-a')
     shimAgainst(port, {
       workspaceRoot: '/agent',
@@ -628,69 +626,47 @@ describe('one pod per session on the plane (git-workspace-model §11)', () => {
     // The session pod was claimed and then swept as idle: its claim stands, its launch is forgotten.
     await plane.driver.ensureSandbox(session)
     expect(await plane.suspendIdle(session)).toBe('suspended')
-    expect(plane.launched().map((launch) => launch.subject)).toEqual(['agent-a'])
-    expect(cluster.claims.has(plane.driver.claimName(session))).toBe(true)
+    const resume = vi.spyOn(plane.driver, 'resumeBoundChannel')
     served.length = 0
+    const refusal = { name: 'WorkspaceViolationError', reason: 'sandbox-unavailable' }
 
-    // The session read must time out without falling back to the agent pod.
+    // Routed off the path, not the launch the sweep forgot, both file ports refuse as asleep and never fall back onto the agent pod, where that directory does not exist.
+    await expect(
+      plane.workspaceFilesFor('agent-a')!.list(sessionPath, { agentId: 'agent-a', path: '', limit: 50 })
+    ).rejects.toMatchObject(refusal)
     const placement = plane.workspaceFsFor('agent-a')!
-    // Clock rounding can surface either the binder's timeout or the dialer's underlying timeout.
-    await expect(placement.fs.stat(sessionPath)).rejects.toThrow(
-      new RegExp(
-        `^(?:no shim channel bound for ${session} in time|could not connect to sandbox shim: binding timed out after 250ms)$`
-      )
+    await expect(placement.fs.stat(sessionPath)).rejects.toMatchObject(refusal)
+    // The git status the capture sends refuses the same way, under the reason it rides the wire with.
+    const workspaces = new WorkspaceManager()
+    wireWorkspacePlane(workspaces, plane)
+    const status = await createWorkspaceGit(workspaces, async () => sessionPath)
+      .status('agent-a', 'outward-1')
+      .catch((err: unknown) => err)
+    expect(status).toMatchObject(refusal)
+    const sendError = vi.fn()
+    workspaceError(
+      { sendError, log: { warn: vi.fn() } } as unknown as ControlWire,
+      'req-1',
+      'workspace/gitstatus',
+      status
     )
+    expect(sendError).toHaveBeenCalledWith('req-1', 'BAD_PAYLOAD', expect.any(String), false, {
+      reason: 'sandbox-unavailable'
+    })
+
+    // Nothing was resumed, claimed or bound behind the refusals, and the agent pod was not asked in its place.
+    expect(resume).not.toHaveBeenCalled()
+    expect(plane.sandboxBound(session)).toBe(false)
+    expect(plane.launched().map((launch) => launch.subject)).toEqual(['agent-a'])
+    expect([...cluster.claims.keys()].sort()).toEqual(['agent-agent-a', sessionClaim].sort())
     expect(served).toEqual([])
-    // Waking it is a resume of the claim the cluster already holds, never a new one.
-    expect([...cluster.claims.keys()].sort()).toEqual(['agent-agent-a', plane.driver.claimName(session)].sort())
     // The agent pod still answers for its own paths, on the same routed port.
     expect(await placement.fs.stat('/agent/checkout')).toBe('dir')
     expect(served).toEqual(['checkout'])
-    // And the git runner for a sleeping session directory is deferred rather than withheld, so the
-    // caller does not silently fall back to a local runner for a path that lives on a pod.
-    expect(plane.gitRunnerFor('agent-a', sessionPath)).toBeDefined()
-    expect(plane.gitRunnerFor('agent-a', '/agent/checkout')).toBeDefined()
-  })
-
-  it('refuses a read whose session claim was retired between the observation and the wake', async () => {
-    // `hasClaim` and the wake are two round trips, and retention, a workspace conversion or an agent
-    // removal can land between them. Going on to `ensureSandbox` there would create a fresh empty
-    // claim and PVC — a console read resurrecting a session sandbox whose row and volume are gone,
-    // as a live agent's orphan. The wake is therefore a RESUME fenced on the uid just observed.
-    const cluster = fakeCluster()
-    const plane = await planeUnderTest(cluster as never)
-    const port = shimPort(plane)
-    const T1 = sessionHostKey('agent-a', 'slack:C1:T1:agent-a')
-    const leaf = hostKeyDirName(T1)
-    const session = sandboxSubjectFor(T1)
-    const sessionPath = `/agent/sessions/${leaf}/workspace`
-
-    const agentBinding = plane.driver.ensureBoundChannel('agent-a')
-    shimAgainst(port, { workspaceRoot: '/agent', token: 'pod-agent', handle: async () => ({ ok: true, value: 'dir' }) })
-    await agentBinding
-    await plane.driver.ensureSandbox(session)
-    expect(await plane.suspendIdle(session)).toBe('suspended')
-
-    // Retention deletes the claim after the router read its uid and before the resume re-reads it.
-    const sessionClaim = plane.driver.claimName(session)
-    const read = cluster.api.getClaim
-    let observed = 0
-    cluster.api.getClaim = async (name: string) => {
-      const claim = await read(name)
-      if (name === sessionClaim && ++observed === 1) cluster.claims.delete(name)
-      return claim
-    }
-
-    const placement = plane.workspaceFsFor('agent-a')!
-    await expect(placement.fs.stat(sessionPath)).rejects.toThrow(/no longer holds claim/)
-    // Nothing was created behind the refusal, and the agent's own pod is untouched by it.
-    expect([...cluster.claims.keys()]).toEqual(['agent-agent-a'])
-    expect(plane.launched().map((launch) => launch.subject)).toEqual(['agent-a'])
-    expect(await placement.fs.stat('/agent/checkout')).toBe('dir')
   })
 
   it('refuses a suspended session path rather than waking its pod with the agent pod down', async () => {
-    // A read resumes a session pod only beside a bound agent pod; with nothing bound it refuses, and the session's own press is the waker's.
+    // A read never resumes a session pod, whether or not the agent pod is bound; the session's own press is the waker's.
     const cluster = fakeCluster()
     const plane = await planeUnderTest(cluster as never)
     const port = shimPort(plane)
@@ -750,11 +726,16 @@ describe('one pod per session on the plane (git-workspace-model §11)', () => {
     }
     const refusal = await list()
     expect(refusal).toMatchObject(removed)
-    // Beside a bound agent pod too, where a read used to resume: there is no claim to resume onto.
+    // Beside a bound agent pod too, and git as well, whose runner asks when first used there.
     const agentBinding = plane.driver.ensureBoundChannel('agent-a')
     shimAgainst(port, { workspaceRoot: '/agent', token: 'pod-agent', handle: async () => ({ ok: true, value: 'dir' }) })
     await agentBinding
     expect(await list()).toMatchObject(removed)
+    const workspaces = new WorkspaceManager()
+    wireWorkspacePlane(workspaces, plane)
+    await expect(
+      createWorkspaceGit(workspaces, async () => sessionPath).status('agent-a', 'outward-1')
+    ).rejects.toMatchObject(removed)
 
     // It rides the wire under its own reason, never the asleep one the console would offer Start for.
     const sendError = vi.fn()
@@ -800,6 +781,8 @@ describe('one pod per session on the plane (git-workspace-model §11)', () => {
 
     // The resumed pod answers the member's next dial.
     shimAgainst(port, { workspaceRoot: '/agent', token: 'pod-session-resumed', handle })
+    const claimUid = cluster.claims.get(plane.driver.claimName(session))!.metadata!.uid
+    const resume = vi.spyOn(plane.driver, 'resumeBoundChannel')
     const waker = sessionWaker(plane, session)
     await expect(waker.wake({ agentId: 'agent-a', sessionId: 'outward-1' })).resolves.toEqual({
       agentId: 'agent-a',
@@ -811,9 +794,12 @@ describe('one pod per session on the plane (git-workspace-model §11)', () => {
       state: 'running'
     })
 
-    // One pod: the agent's was neither claimed nor bound, and the session's is the claim it already had.
+    // One pod: the agent's was neither claimed nor bound, and the session's is resumed onto the claim it observed.
+    expect(resume).toHaveBeenCalledTimes(1)
+    expect(resume).toHaveBeenCalledWith(session, claimUid)
     expect(plane.sandboxBound('agent-a')).toBe(false)
     expect([...cluster.claims.keys()]).toEqual([plane.driver.claimName(session)])
+    expect(cluster.claims.get(plane.driver.claimName(session))!.metadata!.uid).toBe(claimUid)
     expect(plane.launched().map((launch) => launch.subject)).toEqual([session])
     // And the page's read is now served from it.
     expect(await plane.workspaceFsFor('agent-a')!.fs.stat(sessionPath)).toBe('dir')

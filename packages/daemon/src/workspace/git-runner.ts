@@ -53,7 +53,7 @@ export interface GitRunner {
   readBounded(args: string[], maxBytes: number): Promise<{ out: Buffer; overflow: boolean }>
 }
 
-/** A runner whose backing runner is opened on first use — for a pod that is brought up by the read that names it. */
+/** A runner whose backing runner is opened on first use — for a pod judged reachable then rather than at resolution. */
 export function deferredGitRunner(open: () => Promise<GitRunner>, env?: Record<string, string>): GitRunner {
   let opened: Promise<GitRunner> | undefined
   const runner = (): Promise<GitRunner> => {
