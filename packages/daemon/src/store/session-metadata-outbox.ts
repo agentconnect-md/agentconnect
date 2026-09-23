@@ -175,10 +175,7 @@ export class SessionMetadataOutbox {
     if (row?.channelName !== undefined) event.channelName = row.channelName
     if (row?.triggeredByName !== undefined) event.triggeredByName = row.triggeredByName
     if (row?.threadUrl !== undefined) event.threadUrl = row.threadUrl
-    // Effective execution config: the session's sticky overrides (console/⚙-modal
-    // in-session switches) win over the agent's configured values; absent ⇒ the
-    // runtime's own default. Snapshotted here so the CP records what this session
-    // actually ran with — the agent's config can change later without rewriting history.
+    // Authorized session overrides win over pinned Decision settings, then the Agent defaults.
     const agent = this.host.agents().get(input.agentId)
     const selected = pinnedDecisionTarget(slot?.decisionModel)
     const allowRuntimeChangesInChat = agent?.allowRuntimeChangesInChat === true
@@ -202,13 +199,17 @@ export class SessionMetadataOutbox {
     }
     const effort =
       (allowRuntimeChangesInChat && storeKey ? await store.getEffortOverride(storeKey) : undefined) ??
+      selected?.effort ??
       agent?.reasoningEffort
     if (effort !== undefined) event.effort = effort
     const fastMode =
-      (allowRuntimeChangesInChat && storeKey ? await store.getFastModeOverride(storeKey) : undefined) ?? agent?.fastMode
+      (allowRuntimeChangesInChat && storeKey ? await store.getFastModeOverride(storeKey) : undefined) ??
+      selected?.fastMode ??
+      agent?.fastMode
     if (fastMode !== undefined) event.fastMode = fastMode
     const permissionMode =
       (allowRuntimeChangesInChat && storeKey ? await store.getPermissionModeOverride(storeKey) : undefined) ??
+      selected?.permissionMode ??
       agent?.permissionMode
     if (input.permissionMode !== undefined) event.permissionMode = input.permissionMode
     else if (permissionMode !== undefined) event.permissionMode = permissionMode

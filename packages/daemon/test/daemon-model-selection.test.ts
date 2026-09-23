@@ -315,10 +315,12 @@ describe('session-pinned Decision model', () => {
       await first.turn('first')
       expect(first.prompted).toEqual([fallback ? 'model-standard' : 'model-capable'])
       expect(first.promptSettings).toEqual([expected])
+      expect(first.internal.cpClient.emitEventSession).toHaveBeenLastCalledWith(expect.objectContaining(expected))
       Object.assign(configured, { reasoningEffort: 'medium', permissionMode: 'default', fastMode: false })
       configured.modelSelection = undefined
       await first.turn('first', 'A follow-up')
       expect(first.promptSettings.at(-1)).toEqual(expected)
+      expect(first.internal.cpClient.emitEventSession).toHaveBeenLastCalledWith(expect.objectContaining(expected))
       await first.daemon.stop()
       daemons.splice(daemons.indexOf(first.daemon), 1)
       const second = await start(root)
@@ -327,19 +329,25 @@ describe('session-pinned Decision model', () => {
       expect(second.prompted).toEqual([fallback ? 'model-standard' : 'model-capable'])
       expect(second.executionRuntimes).toEqual([fallback ? 'test' : 'alternative'])
       expect(second.promptSettings).toEqual([expected])
+      expect(second.internal.cpClient.emitEventSession).toHaveBeenLastCalledWith(expect.objectContaining(expected))
       const row = (await second.internal.store.listSessions(agentId))[0]
       await second.internal.store.setEffortOverride(row.key, 'medium')
       await second.internal.store.setPermissionModeOverride(row.key, 'ask')
       await second.internal.store.setFastModeOverride(row.key, !expected.fastMode)
       await second.turn('first', 'Manual settings')
-      expect(second.promptSettings.at(-1)).toEqual({
+      const manualSettings = {
         effort: 'medium',
         permissionMode: 'ask',
         fastMode: !expected.fastMode
-      })
+      }
+      expect(second.promptSettings.at(-1)).toEqual(manualSettings)
+      expect(second.internal.cpClient.emitEventSession).toHaveBeenLastCalledWith(
+        expect.objectContaining(manualSettings)
+      )
       second.internal.agents.get(agentId).allowRuntimeChangesInChat = false
       await second.turn('first', 'Configured settings')
       expect(second.promptSettings.at(-1)).toEqual(expected)
+      expect(second.internal.cpClient.emitEventSession).toHaveBeenLastCalledWith(expect.objectContaining(expected))
     }
   )
 })
