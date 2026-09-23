@@ -534,15 +534,7 @@ export class WorkspaceManager {
     return roots.sort((a, b) => (a.repoFullName < b.repoFullName ? -1 : a.repoFullName > b.repoFullName ? 1 : 0))
   }
 
-  /**
-   * One authorized secondary root as the CONSOLE addresses it, named case-insensitively.
-   *
-   * The branch comes off the root's own `.materialization.json` — the CP never projects it, so the
-   * checkout beside that attestation is the only thing that knows which branch a pull may reach.
-   * A root the disk does not attest yet is still returned: its checkout simply does not exist, and
-   * that reads as an empty workspace rather than an error (the browser's `exists:false`).
-   */
-  /** The secondary root the console browses, in the coordinates that hold it (a pod mount under --k8s). */
+  /** {@link consoleRootNamed} with the branch its `.materialization.json` attests (the CP never projects it) — a read of the root's volume that only a push or pull needs. */
   async consoleSecondaryRoot(agent: Agent, repoFullName: string): Promise<SecondaryWorkspaceRoot | undefined> {
     const root = this.consoleRootNamed(agent, repoFullName)
     if (!root) return undefined
@@ -554,10 +546,8 @@ export class WorkspaceManager {
     return recorded !== undefined && attestsRoot(recorded, root) ? { ...root, branch: recorded.branch } : root
   }
 
-  /** The root a console selector names. The selector carries no provider and the browser has already
-   *  matched it case-insensitively, so a name both hosts hold is refused outright rather than routed
-   *  to either — a read or a push must never land on the other host's repository. */
-  private consoleRootNamed(agent: Agent, repoFullName: string): SecondaryWorkspaceRoot | undefined {
+  /** The secondary root a console selector names case-insensitively, in the coordinates that hold it, from the spec alone (no I/O, branch unresolved); a name both hosts hold is refused, never routed to either. */
+  consoleRootNamed(agent: Agent, repoFullName: string): SecondaryWorkspaceRoot | undefined {
     const wanted = repoKey(repoFullName)
     const matches = this.secondaryRootsFor(agent).filter((entry) => repoKey(entry.repoFullName) === wanted)
     return matches.length === 1 ? matches[0] : undefined

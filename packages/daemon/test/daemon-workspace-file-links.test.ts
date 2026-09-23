@@ -13,15 +13,22 @@ function context(isolation: 'shared' | 'session', offDisk = false) {
     if (offDisk) throw new Error(`ENOENT: ${path}`)
     return path
   })
+  const consoleWorkspaceRoot = vi.fn(
+    (_agent: unknown, path: string, _mount?: string, _scope?: unknown, _repo?: string) => path
+  )
   const daemon = Object.assign(Object.create(Daemon.prototype), {
     agents: new Map([[agent.id, agent]]),
     store: { getSession: async () => session, getSessionByOutwardId: sessionOf },
     workspaces: {
       secondaryRoots: () => [{ repoFullName: 'org/docs' }],
       sessionWorktreePath: () => '/isolated/primary',
-      consoleSecondaryRoot: () => ({ path: '/shared/docs' }),
+      consoleRootNamed: () => ({ path: '/shared/docs' }),
+      // The branch-bearing read is the root's marker on its volume (the agent pod's, on a pool): a link needs only the path.
+      consoleSecondaryRoot: () => {
+        throw new Error('sandbox agent-a that owns /agent/repos/org/docs has no bound channel')
+      },
       sessionRootDirectory: () => '/isolated/docs',
-      consoleWorkspaceRoot: (_agent: unknown, path: string) => path,
+      consoleWorkspaceRoot,
       offDisk: asked,
       canonicalWorkspacePath
     },
@@ -44,7 +51,7 @@ function context(isolation: 'shared' | 'session', offDisk = false) {
     },
     plan: { platform: 'slack' }
   } as unknown as TurnRun
-  return { daemon, run, sessionOf, asked, canonicalWorkspacePath }
+  return { daemon, run, sessionOf, asked, canonicalWorkspacePath, consoleWorkspaceRoot }
 }
 
 describe('daemon workspace file link context', () => {
@@ -76,6 +83,17 @@ describe('daemon workspace file link context', () => {
     const resolve = await daemon.turnWorkspaceFileLinkResolver(run, 'acp-a', 'outward-a')
     expect(new URL(resolve!('../report.md')!).searchParams.get('file')).toBe('packages/report.md')
     expect(canonicalWorkspacePath).not.toHaveBeenCalled()
+  })
+
+  it('keeps the primary’s links when one additional root cannot be resolved', async () => {
+    const { daemon, run, consoleWorkspaceRoot } = context('session')
+    consoleWorkspaceRoot.mockImplementation((_agent, path, _mount, _scope, repo) => {
+      if (repo !== undefined) throw new Error(`cannot resolve ${repo}`)
+      return path
+    })
+    const resolve = await daemon.turnWorkspaceFileLinkResolver(run, 'acp-a', 'outward-a')
+    expect(new URL(resolve!('../report.md')!).searchParams.get('file')).toBe('packages/report.md')
+    expect(resolve!('/isolated/docs/digest.md')).toBeUndefined()
   })
 
   it('does not fall back to shared roots when the isolated session no longer resolves', async () => {
