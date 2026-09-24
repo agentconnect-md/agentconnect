@@ -441,6 +441,66 @@ it.skipIf(process.platform === 'win32')(
 )
 
 it.skipIf(process.platform === 'win32')(
+  'leaves a placed curated runtime only its executor has to that machine’s admission, and keeps the gate for one installed here',
+  async () => {
+    const root = scaffold({ workspace: { mode: 'from-scratch', path: 'workspace' }, execution: 'microsandbox' })
+    const curated = (command: string) => {
+      const runtime = { command, args: ['acp'], env: [] }
+      return {
+        entries: { claude: { runtime, source: 'curated' as const, name: 'claude', version: '', skillsAgentId: null } },
+        runtimes: { claude: runtime }
+      }
+    }
+    const daemon = new Daemon({
+      root,
+      sandboxMechanism: 'bwrap',
+      microsandboxHost: () => 'no KVM on this holder',
+      probeRuntimes: async () => [],
+      resolveCatalog: async () => curated('/nonexistent/curated-adapter-only-on-the-executor')
+    })
+    try {
+      await daemon.start()
+      const agent = (daemon as any).agents.get('bot-a')
+      const placedKey = KEY('placed-curated')
+      const installed = { command: '/opt/agentconnect/runtime/bin/curated', args: ['acp'] }
+      ;(daemon as any).executorPlane = {
+        placementOf: (key: string) =>
+          key === placedKey
+            ? {
+                agentId: agent.id,
+                sessionKey: placedKey,
+                leaf: 'leaf',
+                subject: 'bot-a/leaf',
+                executorDaemonId: 'executor-a',
+                strategy: 'microsandbox'
+              }
+            : undefined,
+        homeFor: () => '/srv/executor/sessions/leaf/home',
+        rootsFor: () => ({ runtimeRoot: '/run/agentconnect', missingHelpers: [] }),
+        runtimeDefFor: (_key: string, runtime: Record<string, unknown>) => ({ ...runtime, ...installed }),
+        spawnFor: () => ({ driver: {} }),
+        stop: async () => {}
+      }
+      const build = () =>
+        (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
+          hostKey: sessionHostKey(agent.id, placedKey),
+          strategy: 'microsandbox',
+          cwd: agent.workspace.path
+        }).host
+      // Never probed here, and never installable here: the executor's image admitted it, and its install starts.
+      expect((daemon as any).localRuntimeCatalog.entries.claude).toBeUndefined()
+      expect(build().runtime).toMatchObject(installed)
+      // One this holder installed is its own to admit, placed or not: without a successful probe it stays refused.
+      ;(daemon as any).localRuntimeCatalog = curated(process.execPath)
+      expect(build).toThrow('curated runtime "claude" cannot launch because its ACP probe has not succeeded')
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+)
+
+it.skipIf(process.platform === 'win32')(
   "reopens a placed Codex session's clones' `.git` where they run, through the whole launch assembly",
   async () => {
     const root = scaffold({ runtime: 'codex-acp', workspace: { mode: 'from-scratch', path: 'workspace' } })
