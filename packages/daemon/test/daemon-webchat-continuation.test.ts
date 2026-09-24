@@ -100,8 +100,9 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
       0, 1, 2, 3, 4, 5
     ])
 
-    // Exact wake accounting for the players: P1 = kickoff + wakes on 2/4/6 (the last
-    // declines), P2 = wakes on 1/3/5. The author is never woken by its own post.
+    // Exact wake accounting: P1 = kickoff + wakes on 2/4/6 (the last declines), P2 = wakes on 1/3/5; the wake on 6 commits no post, so it is awaited, not assumed.
+    await vi.waitFor(() => expect(prompts.get(P1)).toHaveLength(4), WAIT)
+    await settle()
     expect(prompts.get(P1)).toHaveLength(4)
     expect(prompts.get(P2)).toHaveLength(3)
     for (const p of posts) {
