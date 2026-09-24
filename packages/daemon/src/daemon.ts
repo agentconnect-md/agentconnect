@@ -813,7 +813,6 @@ import {
   awaitStartup,
   type StartupPhase
 } from './session/startup-progress.js'
-import { StartupNotice, type StartupNoticeConnection } from './platforms/startup-notice.js'
 import type {
   DaemonEvaluationOptions,
   DaemonEvaluationTurnInput,
@@ -13264,13 +13263,13 @@ export class Daemon {
     return typeof likely === 'function' && likely.call(conn)
   }
 
-  // Startup chrome belongs to this turn, including work shared with another turn or aborted before Pending exists.
+  // Startup chrome is webchat-only (Slack keeps its lifecycle status); it belongs to this turn, even when aborted before Pending exists.
   private async observeSessionStartup<T>(
     run: TurnRun,
     webchat: Pending['webchat'],
     work: () => Promise<T>
   ): Promise<T> {
-    const { plan, entry, replyConn } = run
+    const { entry } = run
     const labels: Record<StartupPhase, string> = {
       sandbox: '⏳ Starting sandbox…',
       workspace: '⏳ Preparing workspace…',
@@ -13278,20 +13277,12 @@ export class Daemon {
       runtime: '⏳ Starting agent…',
       restart: '⏳ Waiting for the agent to restart…'
     }
-    const turnBar = turnChromeFor(plan.platform).statusSurface === 'turn-bar'
-    if (!webchat && (!replyConn || turnBar || originKindOf(plan.platform) !== 'chat')) return await work()
-    const notice =
-      replyConn && !turnBar && originKindOf(plan.platform) === 'chat'
-        ? new StartupNotice(replyConn as StartupNoticeConnection, plan.channel, plan.thread, (error) =>
-            this.log.warn(`session: startup notice failed (${formatErr(error)})`)
-          )
-        : undefined
+    if (!webchat) return await work()
     let closed = false
     let last: StartupPhase | undefined
-    const releaseNotice = notice ? this.holdReplyConnection(replyConn) : () => {}
     const emit = (text: string): void => {
       try {
-        if (webchat && !webchat.doneSent)
+        if (!webchat.doneSent)
           webchat.sink.output({
             conversationId: webchat.conversationId,
             turnId: webchat.turnId,
@@ -13302,14 +13293,9 @@ export class Daemon {
         this.log.warn(`session: startup notice failed (${formatErr(error)})`)
       }
     }
-    const close = (): void => {
-      if (closed) return
-      closed = true
-      if (notice) void notice.close().finally(releaseNotice)
-    }
     const abort = (): void => {
       if (closed) return
-      close()
+      closed = true
       if (last) emit('')
     }
     entry.closeStartup = abort
@@ -13326,16 +13312,14 @@ export class Daemon {
         )
           return
         last = phase
-        const text = labels[phase]
-        emit(text)
-        notice?.update(text)
+        emit(labels[phase])
       }, work)
       if (last && !closed && !entry.cancelledReason && !entry.displacedByNewerTurn) {
         emit('')
       }
       return result
     } finally {
-      close()
+      closed = true
       delete entry.closeStartup
       entry.initAbort.signal.removeEventListener('abort', abort)
     }

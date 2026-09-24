@@ -8,7 +8,7 @@ import { LocalMemoryFs } from '../src/memory/fs.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 
-// Startup phases update the existing notice without adding messages to Slack.
+// Startup phases never post chat messages: Slack keeps its status, other chat platforms their typing chrome.
 
 function scaffold(): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-sandbox-notice-'))
@@ -127,24 +127,22 @@ describe('session startup notices', () => {
     await daemon.stop()
   })
 
-  it('posts the notice as its own message on an on-demand chat platform', async () => {
+  it('posts no startup message on an on-demand chat platform', async () => {
     const daemon = bootDaemon(scaffold())
     await daemon.start()
     coldSandbox(daemon)
-    // Telegram is on-demand, not turn-bar, so the wait cannot ride a pushed status bar.
+    // Telegram's typing action is its only turn chrome; a phase message would stay in the chat.
     const conn = {
       sendChatAction: vi.fn(async () => {}),
       postMessage: vi.fn(async () => 'm1'),
-      updateMessage: vi.fn(async () => {}),
-      deleteMessage: vi.fn(async () => true)
+      updateMessage: vi.fn(async () => {})
     }
     vi.spyOn(daemon as never as { replyConnFor: () => unknown }, 'replyConnFor').mockReturnValue(conn)
 
     await (daemon as never as Dispatchable).dispatch('bot-a', chatMsg('telegram', '1'))
 
-    expect(conn.postMessage).toHaveBeenCalledTimes(1)
-    expect(conn.updateMessage).toHaveBeenCalledWith('C1', 'm1', '⏳ Starting agent…', { threadTs: 'T1' })
-    expect(conn.deleteMessage).not.toHaveBeenCalled()
+    expect(conn.postMessage).not.toHaveBeenCalledWith('C1', expect.stringMatching(/^⏳/), expect.anything())
+    expect(conn.updateMessage).not.toHaveBeenCalled()
     await daemon.stop()
   })
 })
