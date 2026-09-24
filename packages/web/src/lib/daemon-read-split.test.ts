@@ -63,7 +63,8 @@ const capability: DaemonCapabilityDto = {
         observedAt: '2026-08-30T00:00:00.000Z'
       },
       authRequired: true,
-      unavailableReason: 'image-binary-missing'
+      unavailableReason: 'image-binary-missing',
+      strategies: { host: { available: true, models: ['opus'] }, microsandbox: { available: false } }
     }
   ],
   mcpServers: [{ name: 'github', transport: 'stdio' }]
@@ -120,6 +121,8 @@ describe('daemon read split', () => {
     expect(row.runtimeModels[0]!.hostVersion).toBe('0.75.0')
     expect(row.runtimeModels[0]!.hostAvailable).toBe(true)
     expect(row.runtimeModels[0]!.credentialsConfigured).toBe(false)
+    // Each strategy's entry rides along, since the daemon page lists runtimes per strategy.
+    expect(row.runtimeModels[0]!.strategies).toEqual(capability.runtimeProfiles[0]!.strategies)
     // The runtime-level answers survive, so the read-only model/permission labels resolve
     // for every agent; the per-model matrix is empty until `useDaemonDetail` reads one daemon.
     expect(row.runtimeModels[0]!.modelCatalog!.defaultModel).toBe('sonnet')

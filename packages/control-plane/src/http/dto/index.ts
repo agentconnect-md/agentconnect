@@ -35,6 +35,7 @@ import {
   SessionImageAttachment,
   SessionStayedHomeReason,
   ExecutorStrategyName,
+  RuntimeStrategyEntries,
   MAX_WORKSPACE_COMMIT_MESSAGE,
   MAX_WORKSPACE_EDIT_BYTES,
   MAX_WORKSPACE_LOG_COMMITS,
@@ -190,6 +191,8 @@ export const RuntimeProfileDto = z.object({
   // console's per-runtime "Login required" warning.
   authRequired: z.boolean(),
   unavailableReason: z.enum(['image-binary-missing', 'host-binary-missing']).nullable().optional(),
+  // The runtime under each strategy the daemon offers (session-executors.md §5); null ⇒ an older daemon.
+  strategies: RuntimeStrategyEntries.nullable().optional(),
   // ISO-8601 — when the daemon last reported this profile.
   observedAt: z.string().nullable()
 })

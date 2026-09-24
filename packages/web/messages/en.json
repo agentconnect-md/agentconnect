@@ -19,14 +19,19 @@
     },
     "executionStrategy": {
       "label": "Execution strategy",
-      "option": "{strategy} · {boundary}",
-      "boundary": {
-        "none": "no boundary",
-        "process": "process",
-        "vm": "VM",
-        "container": "container"
+      "name": {
+        "host": "Host",
+        "sandbox": "Sandbox",
+        "srt": "SRT",
+        "microsandbox": "VM",
+        "docker": "Docker"
       },
-      "sandbox": "Sandbox",
+      "detail": {
+        "host": "No isolation boundary: sessions run directly on the machine.",
+        "srt": "SRT: process isolation with bubblewrap, on Linux.",
+        "microsandbox": "microsandbox: one microVM per session. Needs KVM.",
+        "docker": "Docker: container isolation."
+      },
       "unavailable": "unavailable",
       "noneAvailable": "No strategy available",
       "refusal": {
@@ -3494,16 +3499,14 @@
         "search": "Search daemons"
       },
       "runtimeEmpty": {
-        "sandboxReason": "Sandbox is unavailable on this daemon. {reason}",
-        "sandboxUnavailable": "Sandbox is unavailable on this daemon.",
-        "expandSandbox": "Expand below to see runtimes installed only in the sandbox.",
+        "strategyReason": "{strategy} is unavailable on this daemon. {reason}",
+        "strategyUnavailable": "{strategy} is unavailable on this daemon.",
+        "expandHostMissing": "Expand below to see runtimes not installed on host.",
         "noRuntimes": "No runtimes reported by this daemon.",
         "hide": "Hide",
         "show": "Show",
-        "sandboxOnly": "runtimes in sandbox but not on host ({count})"
+        "hostMissing": "runtimes not on host ({count})"
       },
-      "sandbox": "Sandbox",
-      "host": "Host",
       "runtimeEnvironment": "Runtime environment",
       "neverConnected": "never connected",
       "lastSeenAgo": "last seen {value} ago",

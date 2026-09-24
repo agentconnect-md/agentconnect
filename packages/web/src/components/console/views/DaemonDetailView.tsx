@@ -48,9 +48,18 @@ import { Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
+import {
+  agentStrategyValue,
+  HOST_STRATEGY,
+  LEGACY_SANDBOX,
+  sortStrategies,
+  strategyRuntimeModels
+} from '@/lib/execution-strategy'
+import { useStrategyNames } from '@/components/console/ExecutionStrategyField'
 
 export default function DaemonDetailView() {
   const t = useTranslations('Daemons.detail')
+  const strategyNames = useStrategyNames()
   const acpRegistry = useAcpRegistry()
   const { orgPath } = useOrgs()
   const { me } = useProfile()
@@ -69,8 +78,8 @@ export default function DaemonDetailView() {
   // Mobile: tap a runtime row to expand its model list (design: `rtOpen` map —
   // independent toggles, so more than one can be open at once).
   const [expandedRuntimes, setExpandedRuntimes] = useState<Set<string>>(new Set())
-  const [runtimeMode, setRuntimeMode] = useState<'host' | 'sandbox'>('host')
-  const [showSandboxOnly, setShowSandboxOnly] = useState(false)
+  const [runtimeTab, setRuntimeTab] = useState<string>(HOST_STRATEGY)
+  const [showHostMissing, setShowHostMissing] = useState(false)
   const toggleRuntime = (rid: string) =>
     setExpandedRuntimes((prev) => {
       const next = new Set(prev)
@@ -125,78 +134,87 @@ export default function DaemonDetailView() {
   const canUpgrade = canRestart && daemon.availableVersions.some((v) => v !== daemon.version)
 
   const hosted = agents.filter((a) => a.daemon === daemon.daemonId)
+  // One tab per strategy in the daemon's own table; one that predates the table keeps Host / Sandbox, and the pool its image alone.
+  const table = daemon.pool ? undefined : daemon.caps.strategies
   const sandboxRequired = daemon.pool || daemon.caps.features.includes('sandbox-required')
   const sandboxSupported = daemon.pool || daemon.caps.features.includes('sandbox')
-  const runtimeEnvironment = sandboxRequired ? 'sandbox' : runtimeMode
-  const runtimeAgents = hosted.filter(
-    (a) => (sandboxRequired || (sandboxSupported && a.runInSandbox)) === (runtimeEnvironment === 'sandbox')
+  const runtimeTabs = table
+    ? sortStrategies(Object.keys(table))
+    : sandboxRequired
+      ? [LEGACY_SANDBOX]
+      : [HOST_STRATEGY, LEGACY_SANDBOX]
+  const runtimeStrategy = runtimeTabs.includes(runtimeTab) ? runtimeTab : (runtimeTabs[0] ?? HOST_STRATEGY)
+  const runtimeAgents = hosted.filter((a) =>
+    table
+      ? agentStrategyValue(a) === runtimeStrategy
+      : (sandboxRequired || (sandboxSupported && a.runInSandbox)) === (runtimeStrategy === LEGACY_SANDBOX)
   )
-  const runtimeModels = daemon.runtimeModels.flatMap((rt) => {
-    const binaryMissing = runtimeEnvironment === 'host' ? rt.hostAvailable === false : !!rt.unavailableReason
-    if (binaryMissing && rt.credentialsConfigured === false) return []
-    return [
-      {
-        ...rt,
-        version: binaryMissing ? '' : runtimeEnvironment === 'host' ? (rt.hostVersion ?? rt.version) : rt.version,
-        unavailableReason: binaryMissing
-          ? runtimeEnvironment === 'host'
-            ? ('host-binary-missing' as const)
-            : rt.unavailableReason
-          : null
-      }
-    ]
-  })
-  // A daemon whose configured sandbox is down reports the capability AND the reason: both mean no sandbox runtimes.
-  const sandboxDownReason = daemon.caps.sandboxUnavailable
-  const sandboxUnavailable = runtimeEnvironment === 'sandbox' && (!sandboxSupported || !!sandboxDownReason)
-  const sandboxOnlyIds = new Set(
-    runtimeEnvironment === 'sandbox' && !daemon.pool && !sandboxUnavailable
+  const runtimeModels = strategyRuntimeModels(daemon.runtimeModels, runtimeStrategy)
+  // A strategy the daemon cannot run lists no runtimes; a legacy daemon whose sandbox is down reports the capability AND the reason.
+  const tableEntry = table?.[runtimeStrategy]
+  const strategyDownReason = table
+    ? tableEntry && !tableEntry.available
+      ? tableEntry.reason
+      : undefined
+    : runtimeStrategy === LEGACY_SANDBOX
+      ? daemon.caps.sandboxUnavailable
+      : undefined
+  const strategyDown = !!strategyDownReason || (!table && runtimeStrategy === LEGACY_SANDBOX && !sandboxSupported)
+  const hostMissingIds = new Set(
+    runtimeStrategy !== HOST_STRATEGY && !daemon.pool && !strategyDown
       ? runtimeModels
           .filter((rt) => rt.hostAvailable === false && !rt.unavailableReason)
           .map((rt) => rt.aliasOf ?? rt.runtime)
       : []
   )
-  const runtimes: FleetRuntime[] = sandboxUnavailable
+  const runtimes: FleetRuntime[] = strategyDown
     ? []
-    : unionRuntimes([{ ...daemon, runtimeModels }]).filter((rt) => showSandboxOnly || !sandboxOnlyIds.has(rt.runtime))
-  const runtimeEmpty = sandboxDownReason
-    ? t('runtimeEmpty.sandboxReason', { reason: sandboxDownReason })
-    : sandboxUnavailable
-      ? t('runtimeEmpty.sandboxUnavailable')
-      : sandboxOnlyIds.size > 0
-        ? t('runtimeEmpty.expandSandbox')
+    : unionRuntimes([{ ...daemon, runtimeModels }]).filter((rt) => showHostMissing || !hostMissingIds.has(rt.runtime))
+  const runtimeEmpty = strategyDownReason
+    ? t('runtimeEmpty.strategyReason', { strategy: strategyNames.name(runtimeStrategy), reason: strategyDownReason })
+    : strategyDown
+      ? t('runtimeEmpty.strategyUnavailable', { strategy: strategyNames.name(runtimeStrategy) })
+      : hostMissingIds.size > 0
+        ? t('runtimeEmpty.expandHostMissing')
         : t('runtimeEmpty.noRuntimes')
-  const sandboxOnlyControl = sandboxOnlyIds.size > 0 && (
+  const hostMissingControl = hostMissingIds.size > 0 && (
     <button
       type="button"
-      aria-expanded={showSandboxOnly}
-      onClick={() => setShowSandboxOnly((shown) => !shown)}
+      aria-expanded={showHostMissing}
+      onClick={() => setShowHostMissing((shown) => !shown)}
       className="flex w-full cursor-pointer items-center gap-2 border-0 border-t border-(--border-subtle) bg-transparent px-4 py-3 text-left font-sans text-[12px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover)"
     >
-      <Icon name={showSandboxOnly ? 'chevron-up' : 'chevron-down'} size={14} className="flex-none" />
-      {showSandboxOnly ? t('runtimeEmpty.hide') : t('runtimeEmpty.show')}{' '}
-      {t('runtimeEmpty.sandboxOnly', { count: sandboxOnlyIds.size })}
+      <Icon name={showHostMissing ? 'chevron-up' : 'chevron-down'} size={14} className="flex-none" />
+      {showHostMissing ? t('runtimeEmpty.hide') : t('runtimeEmpty.show')}{' '}
+      {t('runtimeEmpty.hostMissing', { count: hostMissingIds.size })}
     </button>
   )
-  const runtimeModeControl = sandboxRequired ? (
-    <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">{t('sandbox')}</span>
-  ) : (
-    <div className="pillbar" role="group" aria-label={t('runtimeEnvironment')}>
-      {(['host', 'sandbox'] as const).map((mode) => (
-        <button
-          key={mode}
-          type="button"
-          className={
-            runtimeEnvironment === mode ? 'pill on px-[10px] py-1 text-[12px]' : 'pill px-[10px] py-1 text-[12px]'
-          }
-          aria-pressed={runtimeEnvironment === mode}
-          onClick={() => setRuntimeMode(mode)}
-        >
-          {mode === 'host' ? t('host') : t('sandbox')}
-        </button>
-      ))}
-    </div>
-  )
+  const runtimeModeControl =
+    runtimeTabs.length === 1 ? (
+      <span
+        className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)"
+        title={strategyNames.detail(runtimeStrategy)}
+      >
+        {strategyNames.name(runtimeStrategy)}
+      </span>
+    ) : (
+      <div className="pillbar" role="group" aria-label={t('runtimeEnvironment')}>
+        {runtimeTabs.map((slug) => (
+          <button
+            key={slug}
+            type="button"
+            className={
+              runtimeStrategy === slug ? 'pill on px-[10px] py-1 text-[12px]' : 'pill px-[10px] py-1 text-[12px]'
+            }
+            aria-pressed={runtimeStrategy === slug}
+            title={strategyNames.detail(slug)}
+            onClick={() => setRuntimeTab(slug)}
+          >
+            {strategyNames.name(slug)}
+          </button>
+        ))}
+      </div>
+    )
   const seen = daemon.uptime === '—' ? t('neverConnected') : t('lastSeenAgo', { value: daemon.uptime })
   // `conns` is the daemon's agent ceiling; <= 0 is its UNBOUNDED sentinel, not a ceiling of zero.
   // Its numerator is the daemon's OWN heartbeat count, never `hosted`: a group duty this member
@@ -465,7 +483,7 @@ export default function DaemonDetailView() {
               {runtimeEmpty}
             </div>
           )}
-          {sandboxOnlyControl}
+          {hostMissingControl}
         </div>
 
         {/* agents on this daemon — stacked rows, tap through to the agent page */}
@@ -817,7 +835,7 @@ export default function DaemonDetailView() {
         agents={runtimeAgents}
         empty={runtimeEmpty}
         headerActions={runtimeModeControl}
-        footer={sandboxOnlyControl}
+        footer={hostMissingControl}
         daemonName={daemon.name}
       />
 

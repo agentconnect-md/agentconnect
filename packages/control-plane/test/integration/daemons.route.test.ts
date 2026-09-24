@@ -150,6 +150,7 @@ type DaemonDto = {
     modelsSource: string | null
     authRequired: boolean
     unavailableReason?: 'image-binary-missing' | null
+    strategies?: Record<string, { available: boolean; unavailableReason?: string; models?: string[] }> | null
     observedAt: string | null
   }[]
   mcpServers: {
@@ -351,6 +352,26 @@ describe('GET /daemons — live-status overlay', () => {
       authRequired: true,
       unavailableReason: 'image-binary-missing'
     })
+  })
+
+  it('serves each runtime’s per-strategy entries in capability and detail reads', async () => {
+    await seedDaemon()
+    const strategies = {
+      host: { available: true, models: ['m-host'], modelsSource: 'probed' as const },
+      srt: { available: true, models: ['m-host'], modelsSource: 'probed' as const },
+      microsandbox: { available: false, unavailableReason: 'the image does not provide this runtime' }
+    }
+    await new PgRuntimeProfileRepo(prisma).record(
+      DaemonId(DAEMON),
+      { runtime: 'claude', version: '1.4.0', models: ['m-host'], acpSupport: 'full', toolCalling: true, strategies },
+      new Date()
+    )
+    running = buildHttpApp(prisma)
+    expect((await listCapabilities()).find((r) => r.daemonId === DAEMON)!.runtimeProfiles[0]!.strategies).toEqual(
+      strategies
+    )
+    const response = await running.app.inject({ method: 'GET', url: `${ORG}/daemons/${DAEMON}` })
+    expect((response.json() as DaemonDto).runtimeProfiles[0]!.strategies).toEqual(strategies)
   })
 
   it('serves the reported modelCatalog, modelsSource and observedAt per runtime profile', async () => {
