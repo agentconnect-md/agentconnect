@@ -561,7 +561,6 @@
         "notOnGroup": "not on a group",
         "groupSwitchOff": "spreading off",
         "sharedSession": "shared workspace",
-        "memoryDaemonHomed": "memory kept here",
         "noCandidate": "no member could run it",
         "candidatesFull": "every member full",
         "controlPlaneUnreachable": "control plane unreachable",

@@ -6,14 +6,16 @@ import { stayedHomeReasonKey } from './session-executor'
 const phrases = english.Sessions.detail.stayedHome as Record<string, string>
 
 describe('stayedHomeReasonKey', () => {
-  // The wire enum is closed and every value is a verdict an operator may be looking at, so a
-  // missing phrase is a blank answer to "why is everything still running on one machine".
-  it('has a phrase for every reason the wire can carry', () => {
-    for (const reason of SessionStayedHomeReason.options) {
+  it('has a phrase for each visible stay-home reason', () => {
+    for (const reason of SessionStayedHomeReason.options.filter((reason) => reason !== 'memory_daemon_homed')) {
       const key = stayedHomeReasonKey(reason)
       expect(key, reason).toBeDefined()
       expect(phrases[key!], reason).toBeTruthy()
     }
+  })
+
+  it('omits the daemon-memory suffix', () => {
+    expect(stayedHomeReasonKey('memory_daemon_homed')).toBeUndefined()
   })
 
   it('says nothing for a session with no verdict, and for a reason it has no phrase for', () => {
