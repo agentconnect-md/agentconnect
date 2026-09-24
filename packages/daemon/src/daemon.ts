@@ -7463,10 +7463,9 @@ export class Daemon {
     if (!rec) return
     const message: Partial<Record<DreamLifecycleEvent['type'], string>> = {
       'memory.dream.completed': 'Dream completed. The staged memory is ready for review.',
-      'memory.dream.failed':
-        dream.error?.message
-          ? `Dream failed during proposal validation or staging: ${dream.error.message}`
-          : 'Dream failed during proposal validation or staging.',
+      'memory.dream.failed': dream.error?.message
+        ? `Dream failed during proposal validation or staging: ${dream.error.message}`
+        : 'Dream failed during proposal validation or staging.',
       'memory.dream.adopted': 'The staged memory was adopted.',
       'memory.dream.skill_accepted': 'A recommended skill was accepted.',
       'memory.dream.skill_dismissed': 'A recommended skill was dismissed.'
