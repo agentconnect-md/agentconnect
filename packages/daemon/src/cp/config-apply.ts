@@ -145,12 +145,6 @@ export function mergeConfigPush(cfg: Config, keys: Record<string, unknown>): { a
           ok = true
         }
         break
-      case 'limits.maxConcurrentSessions':
-        if (typeof value === 'number' && Number.isInteger(value)) {
-          cfg.limits.maxConcurrentSessions = value
-          ok = true
-        }
-        break
       case 'limits.agentIdleTimeoutMs':
         if (typeof value === 'number' && Number.isInteger(value)) {
           cfg.limits.agentIdleTimeoutMs = value

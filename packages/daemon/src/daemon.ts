@@ -3951,6 +3951,7 @@ export class Daemon {
     const placement = placeSession({
       ask,
       holderHostedSessions: await this.hostedSessionCount(sessionKey),
+      holderCapacity: this.cfg.limits.maxConcurrentSessions,
       ...(answer ? { answer } : {})
     })
     if ('stayedHome' in placement) return await this.recordSessionExecutor(sessionKey, placement.stayedHome)
@@ -4018,11 +4019,13 @@ export class Daemon {
     const placement = placeSession({
       ask: this.placementAsk(agent, placed.sessionKey),
       holderHostedSessions: await this.hostedSessionCount(placed.sessionKey),
+      holderCapacity: this.cfg.limits.maxConcurrentSessions,
+      replacing: placed.executorDaemonId,
       ...(answer ? { answer } : {})
     })
     // Nowhere else to put it: the session stays where it is and the turn fails, which is what a machine that comes back needs.
     if ('stayedHome' in placement) return undefined
-    const next = placement.spread.find((choice) => choice.daemonId !== placed.executorDaemonId)
+    const next = placement.spread[0]
     if (!next) return undefined
     await this.recordSessionExecutor(placed.sessionKey, { executorDaemonId: next.daemonId })
     this.noteEnvironmentLost(placed)

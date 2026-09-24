@@ -641,10 +641,10 @@ REQ commands such as `agent/upsert`, `agent/stop`, `cron/upsert`, `cron/remove`,
 
 `config/push` has only `{ keys }` as an EVT with **no reply**. It merges
 allowlisted nonsensitive keys (`logging.level`, `limits.maxAgents`,
-`limits.maxConcurrentSessions`, and `limits.agentIdleTimeoutMs`; see
-`mergeConfigPush`) into the live in-memory configuration and applies them
-immediately, rebuilding the logger for level changes. It does not persist or
-ACK; nonallowlisted keys are ignored and logged. Desired agent and integration
+`limits.agentIdleTimeoutMs`, and `sessions.retention`; see `mergeConfigPush`;
+`limits.maxConcurrentSessions` is a machine's capacity and stays local) into
+the live in-memory configuration and applies them immediately, rebuilding the
+logger for level changes. It does not persist or ACK; nonallowlisted keys are ignored and logged. Desired agent and integration
 state is delivered through the dedicated upsert frames and the authoritative
 `register/ok` roster.
 
@@ -1526,7 +1526,7 @@ control channel.
 
 | Type                                        | Payload highlights                                                                                                                              | Daemon action                                                                                                                                              |
 | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `config/push` EVT                           | `{ keys }` only                                                                                                                                 | Merge allowlisted `logging.level`, `limits.*` into memory immediately; no disk/reply; ignore+log others.                                                   |
+| `config/push` EVT                           | `{ keys }` only                                                                                                                                 | Merge allowlisted `logging.level`, `limits.*` except capacity, `sessions.retention` into memory; no disk/reply; ignore+log others.                         |
 | `webchat/mcp-grant/issued`                  | `{ grantId, authorityGeneration, descriptorInstanceId, grantRevision, token, expiresAt }`                                                       | CAS-stage only a newer persisted `(authorityGeneration, grantRevision)` fence; revision never resets across generations and raw token remains memory-only. |
 | `webchat/mcp-grant/activate`                | Same exact grant/revision tuple as the accepted request                                                                                         | CAS-install only the activated full fence into the exact runtime session descriptor.                                                                       |
 | `agent/upsert` / `agent/remove`             | `{ agentId, spec }` / `{ agentId }`                                                                                                             | Update the in-memory CP registry; delete only a same-id `agent.json`; hot reconcile.                                                                       |

@@ -45,44 +45,63 @@ function load(candidate: ExecutorCandidate): number {
   return candidate.hostedSessions ?? 0
 }
 
+/** A machine's hosted count against its `limits.maxConcurrentSessions`; one that reports none weighs like the holder. */
+interface Fill {
+  hosted: number
+  capacity: number
+}
+
+/** Whether `a` would be less full than `b` with this session on it: `(hosted + 1) / capacity`, cross-multiplied so no ratio is rounded (§6). */
+function compareFill(a: Fill, b: Fill): number {
+  return (a.hosted + 1) * b.capacity - (b.hosted + 1) * a.capacity
+}
+
 /** Why an answer nothing could be placed from was empty; the CP's own reason where it has one. */
 function emptyReason(answer: ExecutorCandidatesResult): SessionStayedHomeReason {
   if (answer.reason === 'group_switch_off' || answer.reason === 'not_on_group') return answer.reason
   return 'no_candidate'
 }
 
-/**
- * Decide where one session is born.
- *
- * The holder is always its own candidate — it is never in the CP's list — so the rule compares the
- * list against this machine's own load and a tie stays home, which costs no link.
- */
+/** Decide where one session is born: the holder is its own candidate, never in the CP's list, and a tie stays home, which costs no link. */
 export function placeSession(input: {
   ask: PlacementAsk
   /** What this machine hosts, counted as a candidate's `hostedSessions` is: its own isolated sessions included (§6). */
   holderHostedSessions: number
+  /** This machine's own `limits.maxConcurrentSessions`, the denominator its load is read against. */
+  holderCapacity: number
   /** The CP's answer; undefined ⇒ it could not be asked, and the session stays home. */
   answer?: ExecutorCandidatesResult
+  /** A lost executor being replaced (§7): it is no candidate, and the holder cannot take a placed session back, so only the rest are ordered. */
+  replacing?: string
 }): Placement {
-  const { ask, answer } = input
+  const { ask, answer, replacing } = input
   if (ask.isolation !== 'session') return { stayedHome: 'shared_session' }
   if (ask.memoryDaemonHomed) return { stayedHome: 'memory_daemon_homed' }
   if (!answer) return { stayedHome: 'control_plane_unreachable' }
-  const eligible: Array<{ candidate: ExecutorCandidate; choice: PlacementChoice }> = []
+  const holder: Fill = { hosted: input.holderHostedSessions, capacity: Math.max(0, input.holderCapacity) }
+  const eligible: Array<{ fill: Fill; choice: PlacementChoice }> = []
   for (const candidate of answer.candidates) {
+    if (candidate.daemonId === replacing) continue
     const strategy = strategyFor(ask, candidate)
     // No endpoint means nothing to dial, whatever the table says.
     if (!strategy || !candidate.endpoint || !authenticates(candidate, ask.runtime)) continue
-    eligible.push({ candidate, choice: { daemonId: candidate.daemonId, strategy } })
+    eligible.push({
+      fill: { hosted: load(candidate), capacity: candidate.capacity ?? holder.capacity },
+      choice: { daemonId: candidate.daemonId, strategy }
+    })
   }
   if (eligible.length === 0) return { stayedHome: emptyReason(answer) }
-  const ordered = [...eligible].sort(
-    (a, b) => load(a.candidate) - load(b.candidate) || (a.choice.daemonId < b.choice.daemonId ? -1 : 1)
-  )
+  const hint = replacing === undefined ? answer.currentExecutorDaemonId : undefined
+  // A member already at capacity would answer `full`; the hinted one may still hold this session's environment, so it decides.
+  const open = eligible.filter(({ fill, choice }) => choice.daemonId === hint || fill.hosted < fill.capacity)
+  if (open.length === 0) return { stayedHome: 'candidates_full' }
+  const ordered = open.sort((a, b) => compareFill(a.fill, b.fill) || (a.choice.daemonId < b.choice.daemonId ? -1 : 1))
   // The hint wins over the rule: a successor attaches to the environment its predecessor left rather than re-placing the work in it (§7).
-  const hinted = ordered.findIndex(({ choice }) => choice.daemonId === answer.currentExecutorDaemonId)
+  const hinted = ordered.findIndex(({ choice }) => choice.daemonId === hint)
   if (hinted >= 0) ordered.unshift(...ordered.splice(hinted, 1))
-  else if (input.holderHostedSessions <= load(ordered[0]!.candidate)) return { stayedHome: 'holder_least_loaded' }
+  else if (replacing === undefined && compareFill(holder, ordered[0]!.fill) <= 0) {
+    return { stayedHome: 'holder_least_loaded' }
+  }
   return { spread: ordered.map(({ choice }) => choice) }
 }
 

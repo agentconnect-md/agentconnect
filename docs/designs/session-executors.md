@@ -28,7 +28,7 @@ pool's shape with the Kubernetes-specific parts removed.
 | #   | Decision                | Outcome                                                                                                                                                                                                                                                                                                        |
 | --- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | D1  | Unit of ownership       | Unchanged: the whole agent, held by one daemon through the duty ledger. No session-level duty.                                                                                                                                                                                                                 |
-| D2  | Where a session runs    | On the holder itself, or on the **executor facet** of another daemon in the agent's group; the holder chooses, and the candidate hosting the fewest sessions wins. Only `session`-isolated sessions spread; `shared` ones stay with the primary checkout.                                                      |
+| D2  | Where a session runs    | On the holder itself, or on the **executor facet** of another daemon in the agent's group; the holder chooses, and the candidate least full for its capacity wins. Only `session`-isolated sessions spread; `shared` ones stay with the primary checkout.                                                      |
 | D3  | What the user sees      | One concept: the daemon. The executor facet is a seam inside it, switched by one key, `sandbox.share`, default off. No separate executor component, install or role.                                                                                                                                           |
 | D4  | The contract            | The shim protocol, exactly as the pool uses it against a session pod. ACP, exec, fs, skills and the credential and MCP tunnels all ride it. The backend behind the shim is private.                                                                                                                            |
 | D5  | Direction               | The executor facet listens; the holder dials. Same rule as the pool: the shim never dials.                                                                                                                                                                                                                     |
@@ -559,10 +559,16 @@ not chosen; it buys NAT traversal, which v1 does not need.
    and can authenticate the session's runtime. Memory is not part of it: a group's
    agents keep managed memory in the Control Plane by the placement rule.
 3. **One rule selects.** The holder is itself a candidate, and the session goes to
-   the candidate hosting the fewest sessions; a tie goes to the holder, which costs
-   no link. There is no placement policy key. An earlier draft had a `spread` and a
-   `local-first` policy; one rule has no configuration to get wrong, and the rule
-   already keeps the first session of an idle group at home.
+   the candidate that would be least full with it: the lowest
+   `(hostedSessions + 1) / capacity`, where capacity is the machine's own
+   `limits.maxConcurrentSessions`. A candidate already at its capacity is skipped,
+   and a tie goes to the holder, which costs no link. With equal capacities the
+   ratio orders exactly as the raw count does, so a group nobody sized behaves as
+   "fewest sessions wins" and still keeps the first session of an idle group at
+   home; sized unequally — say 8, 2 and 1 for a large workstation and two small
+   machines — the larger machine takes the larger share. There is no placement
+   policy key and no separate weight. An earlier draft had a `spread` and a
+   `local-first` policy; one rule has no configuration to get wrong.
 
 `hostedSessions` counts a machine's own isolated sessions as well as the ones it
 hosts for others, so the number means the same thing for every candidate, the
@@ -966,7 +972,9 @@ default). A machine whose table is empty and whose `share` is true starts with t
 facet dark and says why. Executor addresses and keys are not configured anywhere:
 registration publishes the endpoint, and each session's key is minted at `prepare`.
 There is no `role` key and no `placement` key (§3, §6), and capacity is the existing
-`limits.maxConcurrentSessions`.
+`limits.maxConcurrentSessions`. Like `share`, it is the machine owner's: how much of
+the machine its group may use, set in its local config file for a group of unequal
+machines, and not among the keys `config/push` may set.
 
 **Two consents, two owners.** Spreading needs both, and they are not redundant,
 because they belong to different people. `sandbox.share` is the **machine owner's**:
