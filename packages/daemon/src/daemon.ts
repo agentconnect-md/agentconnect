@@ -4153,15 +4153,7 @@ export class Daemon {
     // A verdict this daemon reached for a turn that never recorded it: the row exists by now.
     await this.flushSessionExecutorVerdict(sessionKey)
     if (plane.placementOf(sessionKey)) return
-    // null: no verdict on the row; undefined: the store could not be read, which keeps what is cached.
-    const recorded = await this.store.getSessionExecutor(sessionKey).then(
-      (verdict) => verdict ?? null,
-      () => undefined
-    )
-    if (recorded) this.sessionStrategies.set(sessionKey, await this.recordedBirthStrategy(agent, sessionKey, recorded))
-    // A key whose row was purged is born again, in the agent's strategy now rather than one cached from its earlier life (§5).
-    else if (recorded === null && !this.sessionExecutorVerdicts.has(sessionKey))
-      this.sessionStrategies.delete(sessionKey)
+    const recorded = await this.loadBirthStrategy(agent, sessionKey)
     if (recorded && 'stayedHomeReason' in recorded) return
     const ask = this.placementAsk(agent, sessionKey)
     if (recorded) {
@@ -4206,6 +4198,22 @@ export class Daemon {
       `executor: session ${landed.placed.leaf} of agent ${agent.id} runs on daemon ${landed.placed.executorDaemonId}`
     )
     await this.recordSessionExecutor(sessionKey, { executorDaemonId: landed.placed.executorDaemonId }, ask.strategy)
+  }
+
+  /** Read the session's verdict and cache the strategy it names; null when the row has none, undefined when the store could not be read, which keeps what is cached (§5). */
+  private async loadBirthStrategy(
+    agent: LoadedAgent,
+    sessionKey: string
+  ): Promise<SessionExecutorVerdict | null | undefined> {
+    const recorded = await this.store.getSessionExecutor(sessionKey).then(
+      (verdict) => verdict ?? null,
+      () => undefined
+    )
+    if (recorded) this.sessionStrategies.set(sessionKey, await this.recordedBirthStrategy(agent, sessionKey, recorded))
+    // A key whose row was purged is born again, in the agent's strategy now rather than one cached from its earlier life.
+    else if (recorded === null && !this.sessionExecutorVerdicts.has(sessionKey))
+      this.sessionStrategies.delete(sessionKey)
+    return recorded
   }
 
   /** The strategy a recorded verdict names; one recorded before strategies were is filled once with the agent's migrated `execution` (§5). */
@@ -13695,6 +13703,8 @@ export class Daemon {
     // …and WHERE it runs, which the host key below reads: decided once at birth, recorded, and kept for the session's life (session-executors.md §7).
     let remoteMcpServer: import('@agentclientprotocol/sdk').McpServer | undefined
     try {
+      // A recorded strategy is loaded first: model selection judges its targets in that strategy's catalog (session-executors.md §5).
+      if (this.executorPlane) await this.loadBirthStrategy(agent, key)
       // One `executor/candidates` per birth: model selection judges its targets by it, and placement reuses it (session-executors.md §5).
       const candidates = this.birthCandidates(agentId, key)
       await this.selectSessionModel(run, persisted, candidates)
