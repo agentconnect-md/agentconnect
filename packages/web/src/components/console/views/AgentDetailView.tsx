@@ -889,7 +889,7 @@ export default function AgentDetailView() {
       size={14}
       name={selectedDecision?.name ?? t('modelByDecision')}
       rules={ruleSummaries(da.modelSelection, selectedDecision?.question)}
-      fallback={selectedModelId(capabilitySource, da.runtime, da.model) || da.runtime}
+      fallback={selectedModelId(capabilitySource, da.runtime, da.model) || da.model || da.runtime}
     />
   ) : null
   const ds = status(effectiveAgentStatus(da, owningDaemon))
