@@ -5893,7 +5893,7 @@ export default function SessionDetailView() {
                                 decision={
                                   beforeFirstTurn && owner?.modelSelection
                                     ? {
-                                        name: runtimeDecision?.name ?? 'Decision',
+                                        name: runtimeDecision?.name ?? runtimeModelT('byDecision'),
                                         selected: byDecision,
                                         rules: ruleSummaries(owner.modelSelection, runtimeDecision?.question),
                                         fallback: pgModel || agentRuntime,
