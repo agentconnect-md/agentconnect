@@ -364,7 +364,10 @@ describe('POST /bots/:id/decision-routing/preview', () => {
       expect(res.json().evaluation).toBeNull()
       return res.json().consumer.notAppliedReason
     }
-    expect(await reasonOf(body(config, { channelId: 'C3', channelIds: ['C1', 'C2', 'C3'] }))).toBe('off')
+    expect(await reasonOf(body(config, { channelId: 'C3' }))).toBe('off')
+    // Saving the draft turns an in-scope Off channel to By decision, so it evaluates.
+    const offInScope = await preview(app, botId, body(config, { channelId: 'C3', channelIds: ['C1', 'C2', 'C3'] }))
+    expect(offInScope.json().consumer.notAppliedReason, offInScope.body).toBeUndefined()
     expect(await reasonOf(body(config, { channelIds: ['C2'] }))).toBe('outside_scope')
     expect(await reasonOf(body({ ...config, enabled: false }))).toBe('paused')
     await prisma.botDecisionRouting.update({ where: { botId }, data: { needsReview: true } })
@@ -377,7 +380,7 @@ describe('POST /bots/:id/decision-routing/preview', () => {
     expect(await reasonOf(body(config), oldRelay.app)).toBe('unsupported')
     const oldHost = appWith({ conn: ROUTING })
     expect(await reasonOf(body(config), oldHost.app)).toBe('unsupported')
-    expect(spy.previews).toHaveLength(1)
+    expect(spy.previews).toHaveLength(2)
     expect(oldRelay.spy.previews).toHaveLength(0)
     expect(oldHost.spy.previews).toHaveLength(0)
   })

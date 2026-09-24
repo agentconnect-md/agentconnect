@@ -126,7 +126,6 @@ export class PgBotDecisionRoutingRepo implements BotDecisionRoutingRepo {
         const conversation = rows.filter((row) => row.channelId === channelId)
         if (conversation.length === 0) throw new RoutingChannelInvalid(channelId, 'missing')
         if (conversation.some((row) => row.kind === 'im')) throw new RoutingChannelInvalid(channelId, 'direct')
-        if (conversation.some((row) => row.trigger === 'off')) throw new RoutingChannelInvalid(channelId, 'off')
       }
       const config = {
         enabled: input.config.enabled,

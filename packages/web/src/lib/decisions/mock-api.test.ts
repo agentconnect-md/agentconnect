@@ -104,7 +104,7 @@ describe('Decision mock API', () => {
     await expect(
       api.saveRouting('support-bot', {
         config,
-        channelIds: ['new-channel', 'off-channel'],
+        channelIds: ['new-channel', 'moderation-channel'],
         removals: [{ channelId: 'help-channel', settings: { trigger: 'mention' } }]
       })
     ).rejects.toMatchObject({ status: 409 })
@@ -119,6 +119,16 @@ describe('Decision mock API', () => {
       removals: [{ channelId: 'help-channel', settings: { trigger: 'mention' } }]
     })
     expect(saved.channelIds).toEqual(['new-channel'])
+    // An Off channel joins as is, turned to By decision like any other addition.
+    const withOff = await api.saveRouting('support-bot', {
+      config,
+      channelIds: ['new-channel', 'off-channel'],
+      removals: []
+    })
+    expect(withOff.channelIds).toEqual(['new-channel', 'off-channel'])
+    expect((await api.listChannels()).find((channel) => channel.id === 'off-channel')!.settings.trigger).toBe(
+      'decision'
+    )
     expect((await api.listChannels()).find((channel) => channel.id === 'help-channel')!.settings).toEqual({
       trigger: 'mention'
     })
@@ -445,9 +455,14 @@ describe('Decision mock routing preview and evaluations', () => {
   it('returns Not applied in the live order and keeps constrained recipients', async () => {
     const api = createDecisionMockApi()
     expect(
+      (await api.previewRouting('support-bot', input({ channelId: 'off-channel', channelIds: [] }))).consumer
+        .notAppliedReason
+    ).toBe('off')
+    // Saving the draft turns an in-scope Off channel to By decision, so it previews as routed.
+    expect(
       (await api.previewRouting('support-bot', input({ channelId: 'off-channel', channelIds: ['off-channel'] })))
         .consumer.notAppliedReason
-    ).toBe('off')
+    ).toBeUndefined()
     expect((await api.previewRouting('support-bot', input({ channelIds: [] }))).consumer.notAppliedReason).toBe(
       'outside_scope'
     )

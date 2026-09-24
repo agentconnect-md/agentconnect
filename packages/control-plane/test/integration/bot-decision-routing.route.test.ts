@@ -339,18 +339,34 @@ describe('PUT /bots/:id/decision-routing', () => {
     expect(detail.evaluationHost).toMatchObject({ daemonId: DAEMON, status: 'unsupported' })
   })
 
-  it('refuses Off, direct, unknown and duplicate channels, a non-shared bot, and an owner-as-default platform', async () => {
+  it('adds an Off channel as is, turning every sibling row to By decision', async () => {
+    const { botId, a, b } = await seedBot()
+    const { app, relay } = appWith()
+    const decisionId = await createDecision(app)
+    const res = await put(app, botId, {
+      config: routingConfig(decisionId, a.agentId, b.agentId),
+      channelIds: ['C3'],
+      removals: []
+    })
+    expect(res.statusCode, res.body).toBe(200)
+    expect(res.json().channelIds).toEqual(['C3'])
+    const rows = await rowsOf('C3')
+    expect(rows).toHaveLength(2)
+    for (const row of rows)
+      expect(row).toMatchObject({ trigger: 'decision', decisionBinding: { type: 'shared_bot_routing' } })
+    const routes = lastRoutes(relay!)
+    expect(routes.routedConversations).toEqual([{ channel: 'C3', decisionId, evaluationDaemonId: DAEMON }])
+    expect(routes.mutedChannels ?? []).not.toContain('C3')
+  })
+
+  it('refuses direct, unknown and duplicate channels, a non-shared bot, and an owner-as-default platform', async () => {
     const { botId, a, b } = await seedBot()
     const { app } = appWith()
     const decisionId = await createDecision(app)
     const config = routingConfig(decisionId, a.agentId, b.agentId)
-    const off = await put(app, botId, { config, channelIds: ['C3'], removals: [] })
-    expect(off.statusCode, off.body).toBe(400)
-    expect(off.json().message).toBe('Enable the channel before adding it to routing.')
     expect((await put(app, botId, { config, channelIds: ['D1'], removals: [] })).statusCode).toBe(400)
     expect((await put(app, botId, { config, channelIds: ['C9'], removals: [] })).statusCode).toBe(404)
     expect((await put(app, botId, { config, channelIds: ['C1', 'C1'], removals: [] })).statusCode).toBe(400)
-    for (const row of await rowsOf('C3')) expect(row.trigger).toBe('off')
 
     const classic = await seedBot({ shareable: false })
     const notShared = await put(app, classic.botId, {
