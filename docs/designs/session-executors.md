@@ -1217,21 +1217,44 @@ differs locally goes, in four steps that each land alone:
 2. **The credential preparers move into the launcher**, out of the local launch
    composition (`microsandbox/launch.ts`), so a hosted VM gets placeholder
    substitution for its executor's own credentials (§8) and a local one keeps it.
-3. **An in-process executor entry.** `ExecutorPlane` gains a local provider that calls
-   the launcher directly, and the daemon's local microsandbox wiring — environment
-   keying, the manager-driven launch, the Git runner selection — collapses into it.
-4. **Agent-scoped environments.** A local `shared` or retained legacy session runs in
-   `agent/agent` or a host-key environment rather than a per-session one. The executor
-   path gains that environment kind, taken from the local placement rule rather than
-   invented, and existing VMs are carried over by mapping their environment ids once
-   at upgrade, so the old wiring does not live on until they retire.
+3. **The launcher takes an environment, not a leaf.** A `StrategyLauncher` today
+   derives everything from `(daemonRoot, sessionLeaf)`: `hostedEnvironment` names the
+   VM `executor/<leaf>` and mounts `<daemonRoot>/sessions/<leaf>`. It takes an
+   environment descriptor instead — its id, workspace root, mounts, placeholder
+   secrets and HOME seed — the shape `MicrosandboxEnvironment` already has. The facet
+   builds the hosted descriptor from the leaf exactly as today; the local path passes
+   the one its placement rule already builds (`microsandboxPlacement`,
+   `microsandboxContext`): `agent/session-…` for a session-isolated session, and
+   `agent/agent` or `agent/<host key>` for a `shared` or retained legacy one, with the
+   agent's own mounts. Identities do not change, so every existing VM, disk and binding
+   is adopted as it is and **nothing is migrated**. The remote contract does not change
+   either: a relayed `prepare` names only a session leaf, so an agent-scoped
+   environment is unreachable from another machine by construction, and the two id
+   spaces already cannot collide (`HOSTED_PREFIX`).
+4. **An in-process executor entry.** `ExecutorPlane` gains a local provider that calls
+   the launcher with the local descriptor, and `RemoteShimDriver` binds the shim as it
+   binds any executor's, with this daemon's own generation allocator. The manager's two
+   shim modes become one: a local VM starts its shim exposed, as a hosted one does
+   (`startGuestShim`), and the bound mode (`startMicrosandboxShim` binding in place)
+   retires with the rest of the local wiring — the manager-driven launch and the local
+   Git runner selection. Every caller of the manager's `withShim` moves with it, not
+   only Git: the workspace-file requester, the skill reads and the skill reconcile in
+   `daemon.ts` need a bound channel when no runtime is running, and take it from the
+   plane's `withEnvironment` (`ensureChannel` binds the shim without starting a
+   runtime and holds the environment against the idle sweep), as a placed session's
+   workspace already does. Lifecycle stays with the environment's owner: a local
+   environment keeps the manager's session idle policy and the workspace model's
+   retirement, and a hosted one keeps the facet's linger, `release` and backstop, which
+   never look at `agent/` ids.
 
 **`srt` second**, on §5's launcher from its first version, local and remote at once.
 The local direct SRT launch retires with it — the provider around each runtime, the
 per-host settings and temp directories, the host-socket injection for MCP and
 credentials, the local Git runner for confined sessions — and one `srt` policy
-remains. It needs step 4 first, or a `shared` confined agent has nowhere to run, and
-it costs a shim per session (§5).
+remains. It needs steps 3 and 4 first: a `shared` confined agent runs in an
+agent-scoped descriptor through the in-process entry, one SRT-wrapped shim per host
+key as today's local path runs one ACP host per host key. It costs a shim per
+environment (§5).
 
 **The unconfined direct path stays.** Local `host` is a child process with no
 boundary to share. Routing it through a shim would add a process and a socket to the
@@ -1293,8 +1316,8 @@ have not started. Each lands alone; S1–S3 are one feature, and M1–M4 precede
 | S3  | Console: the strategy picker per placement, boundary labels and unavailable reasons; the pool shows none.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | M1  | Local microsandbox Git and workspace files over the shim's channels (§11 step 1).                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | M2  | The credential preparers in the microsandbox launcher (§11 step 2, §8).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| M3  | The in-process executor entry; local microsandbox launches through it (§11 step 3).                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| M4  | Agent-scoped environments on the executor path and the one-time environment-id mapping (§11 step 4).                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| M3  | The launcher takes an environment descriptor instead of a session leaf: hosted and local descriptors, identities unchanged, nothing migrated (§11 step 3).                                                                                                                                                                                                                                                                                                                                                                                               |
+| M4  | The in-process executor entry: local microsandbox launches through it, a local VM's shim starts exposed and `RemoteShimDriver` binds it, every `withShim` caller (Git, workspace files, skills) moves to the plane's `withEnvironment`, and the bound shim mode retires (§11 step 4).                                                                                                                                                                                                                                                                    |
 | R1  | The `srt` strategy (§5): the launcher, the three changes the probe found, the executor's policy; local `srt` launches through it and the direct SRT launch retires.                                                                                                                                                                                                                                                                                                                                                                                      |
 
 ## 13. Open questions
