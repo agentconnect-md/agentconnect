@@ -1295,13 +1295,16 @@ describe('mid-turn steering', () => {
     }
   }
 
-  async function openSteerableStream(participants?: Array<{ agentId: string; name: string; primary?: boolean }>) {
+  async function openSteerableStream(
+    participants?: Array<{ agentId: string; name: string; primary?: boolean }>,
+    text = 'hello'
+  ) {
     SteerSocket.instances = []
     Reflect.set(globalThis, 'WebSocket', SteerSocket)
     const api = await import('@/lib/api')
     vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
     await act(async () => {
-      pgSend('s1', 'agent-1', 'hello', 'c1', participants)
+      pgSend('s1', 'agent-1', text, 'c1', participants)
     })
     const socket = SteerSocket.instances[0]!
     await act(async () => {
@@ -1381,6 +1384,70 @@ describe('mid-turn steering', () => {
     act(() => {
       feed(socket, { type: 'done', done: { turnId, agentId: 'agent-2', lastIndex: 0 } })
       reconcileLiveSteps('s1', [], 'agent-1')
+    })
+    expect(getLiveSteps('s1').filter((step) => step.turnId === turnId)).toEqual([])
+  })
+
+  it('waits for relay-verified participants whose ack arrives after the first done', async () => {
+    const { socket, turnId } = await openSteerableStream()
+    act(() => {
+      feed(socket, {
+        type: 'ready',
+        conversationId: 'c1',
+        participants: [{ agentId: 'agent-1', primary: true }, { agentId: 'agent-2' }]
+      })
+      feed(socket, {
+        type: 'output',
+        output: {
+          turnId,
+          agentId: 'agent-1',
+          index: 1,
+          event: { kind: 'tool_call', toolCallId: 'tc-1', title: 'Read file', status: 'completed' }
+        }
+      })
+      feed(socket, { type: 'done', done: { turnId, agentId: 'agent-1', lastIndex: 1 } })
+      reconcileLiveSteps(
+        's1',
+        [{ seq: 1, ts: String(Date.now()), sender: 'user', kind: 'text', text: 'hello' }],
+        'agent-1'
+      )
+    })
+    expect(
+      getLiveSteps('s1')
+        .filter((step) => step.turnId === turnId)
+        .map((step) => step.kind)
+    ).toEqual(['tool'])
+
+    act(() => {
+      feed(socket, { type: 'ack', ack: { accepted: true, turnId, agentId: 'agent-2' } })
+      feed(socket, { type: 'done', done: { turnId, agentId: 'agent-2', lastIndex: -1 } })
+      reconcileLiveSteps('s1', [], 'agent-1')
+    })
+    expect(getLiveSteps('s1').filter((step) => step.turnId === turnId)).toEqual([])
+
+    await act(async () => pgSend('s1', 'agent-1', 'next', 'c1'))
+    expect(frames(socket).find((frame) => frame.text === 'next')?.targets).toEqual(['agent-1', 'agent-2'])
+  })
+
+  it('does not wait for unmentioned participants after a targeted send', async () => {
+    const roster = [
+      { agentId: 'agent-1', name: 'one', primary: true },
+      { agentId: 'agent-2', name: 'two' }
+    ]
+    const { socket, turnId } = await openSteerableStream(roster, '@one hello')
+    expect(frames(socket).find((frame) => frame.text === '@one hello')?.targets).toEqual(['agent-1'])
+    act(() => {
+      feed(socket, {
+        type: 'ready',
+        conversationId: 'c1',
+        participants: [{ agentId: 'agent-1', primary: true }, { agentId: 'agent-2' }]
+      })
+      feed(socket, { type: 'done', done: { turnId, agentId: 'agent-1', lastIndex: 0 } })
+      reconcileLiveSteps(
+        's1',
+        [{ seq: 1, ts: String(Date.now()), sender: 'user', kind: 'text', text: '@one hello' }],
+        'agent-1'
+      )
     })
     expect(getLiveSteps('s1').filter((step) => step.turnId === turnId)).toEqual([])
   })

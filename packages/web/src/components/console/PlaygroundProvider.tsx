@@ -421,8 +421,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // CP session ids opened as session-targeted continuations — their sockets mint
   // through the session-target token route instead of the playground mints.
   const sessionTargets = useRef<Set<string>>(new Set())
-  // Creation-time roster per session id (primary first) — drives the
-  // conversation-scoped token mint for a multi-agent create.
+  // Creation-time or relay-verified roster per session id (primary first).
   const rosterAgentIds = useRef<Map<string, string[]>>(new Map())
   // The in-flight send's requested turnId — lets an accepted ack from a
   // participant the client did NOT explicitly lane (a resumed conversation
@@ -438,7 +437,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const steerableRef = useRef<Record<string, boolean>>({})
   // The in-flight turn's wire frame per session id: a socket that drops between `send` and the ack leaves it in limbo (it may never have reached a daemon), so the reconnect re-sends it once — same turnId, an already-admitted copy is refused `busy` and we attach to its stream — instead of only resuming a stream that may not exist.
   const pendingTurnFrames = useRef<
-    Map<string, { turnId: string; frame: string; resentOn?: WebSocket; attaching?: Set<string> }>
+    Map<string, { turnId: string; frame: string; relayTargets: boolean; resentOn?: WebSocket; attaching?: Set<string> }>
   >(new Map())
   // Lanes that already COMPLETED for the in-flight turn (done applied, cursor
   // removed), per session id. With done-before-ack ordering the trailing ack
@@ -1527,6 +1526,30 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 return
               }
               if (m.type === 'ready') {
+                if (m.participants?.length) {
+                  rosterAgentIds.current.set(
+                    id,
+                    m.participants.map((p) => p.agentId)
+                  )
+                  const pending = pendingTurnFrames.current.get(id)
+                  if (
+                    pending?.relayTargets &&
+                    pending.turnId === pendingTurnIds.current.get(id) &&
+                    busyRef.current[id]
+                  ) {
+                    let added = false
+                    for (const participant of m.participants) {
+                      const key = laneKey(id, participant.agentId)
+                      if (streamCursors.current.has(key) || finishedFor(id, pending.turnId)?.has(participant.agentId))
+                        continue
+                      streamCursors.current.set(key, createWebchatCursor<WebchatOutput, WebchatDone>(pending.turnId))
+                      added = true
+                    }
+                    if (added) syncBusyLanes(id)
+                  }
+                  // A roster-less send may have reached several agents, so never resend it as a single-target copy.
+                  if (pending?.relayTargets && m.participants.length > 1) pendingTurnFrames.current.delete(id)
+                }
                 if (typeof m.conversationId === 'string') {
                   conn.conversationId = m.conversationId
                   conversationIds.current.set(id, m.conversationId)
@@ -1894,7 +1917,12 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           ? [commandPick.agentId]
           : []
       const mentions = [...typed, ...commandTarget]
-      const targets = roster.length > 1 ? (mentions.length ? mentions : roster.map((p) => p.agentId)) : [agentForId]
+      const targets =
+        roster.length > 1
+          ? mentions.length
+            ? mentions
+            : roster.map((p) => p.agentId)
+          : (rosterAgentIds.current.get(id) ?? [agentForId])
       // Membership is a standing mention — a bare multi-agent send materializes it as
       // the whole roster in structured `mentions` (see wireMentions), the same wire
       // shape an explicit @-everyone message produces. Delivery is unchanged: targets
@@ -1923,8 +1951,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           ...(roster.length <= 1 && stagedRuntime.current.get(id) ? { runtime: stagedRuntime.current.get(id) } : {}),
           ...(roster.length <= 1 && stagedWorktree.current.has(id) ? { worktree: stagedWorktree.current.get(id) } : {})
         })
-        // Kept until the agent acks: a reconnect that finds it unacked re-sends it. Single-agent only — the relay mints the canonical post identity per received frame, so a re-sent multi-agent turn partially admitted the first time would land under a second postId on the rest of the roster (duplicate user messages in the merged transcript).
-        if (roster.length <= 1) pendingTurnFrames.current.set(id, { turnId: requestedTurnId, frame })
+        // Re-send only one-target turns; retrying several targets could duplicate the relay's canonical post.
+        if (targets.length <= 1)
+          pendingTurnFrames.current.set(id, { turnId: requestedTurnId, frame, relayTargets: roster.length <= 1 })
         else pendingTurnFrames.current.delete(id)
         ws.send(frame)
         if (isNewConversation) setTimeout(refreshSessions, 2500)
