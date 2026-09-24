@@ -254,13 +254,13 @@ describe('AgentDetailView, code-host repository blocks', () => {
     // The menu is body-portaled, so read it off the document after opening.
     await act(async () => scope.querySelector<HTMLElement>('[aria-label="Trigger for acme/api Issues"]')!.click())
     expect(menuItem('labeled')).toBeUndefined()
-    expect(menuItem('create')).toBeTruthy()
-    expect(menuItem('update')).toBeTruthy()
+    expect(menuItem('Opened')).toBeTruthy()
+    expect(menuItem('Any update')).toBeTruthy()
     await act(async () => menuItem('@-mention')!.click())
 
     await act(async () => scope.querySelector<HTMLElement>('[aria-label="Trigger for acme/api PRs"]')!.click())
     expect(menuItem('labeled')).toBeUndefined()
-    expect(menuItem('update')).toBeTruthy()
+    expect(menuItem('Any update')).toBeTruthy()
   })
 
   it('explains the hovered cadence under a Run on heading instead of in a tooltip', async () => {
@@ -268,10 +268,10 @@ describe('AgentDetailView, code-host repository blocks', () => {
     await act(async () => scope.querySelector<HTMLElement>('[aria-label="Trigger for acme/api PRs"]')!.click())
     const menu = () => document.querySelector<HTMLElement>('[role="menu"]')!
     expect(menu().textContent).toContain('Run on')
-    expect(menu().textContent).toContain('update — Runs on every push and comment.')
-    expect(menuItem('create')!.title).toBe('')
-    await act(async () => menuItem('create')!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
-    expect(menu().textContent).toContain('create — Runs when a PR is opened or marked ready for review.')
+    expect(menu().textContent).toContain('Any update — Runs on every push and comment.')
+    expect(menuItem('Opened')!.title).toBe('')
+    await act(async () => menuItem('Opened')!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
+    expect(menu().textContent).toContain('Opened — Runs when a PR is opened or marked ready for review.')
   })
 
   it('shows a row’s label filter at rest and settles it in the settings dialog of any thread row', async () => {

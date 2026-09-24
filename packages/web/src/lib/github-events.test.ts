@@ -55,14 +55,14 @@ describe('githubTriggerModes', () => {
 })
 
 describe('GH_TRIGGER_PILL', () => {
-  it('keeps mention as the last segment, worded like the IM bar', () => {
+  it('keeps mention as the last segment', () => {
     expect(GH_TRIGGER_MODES[GH_TRIGGER_MODES.length - 1]).toBe('mention')
     expect(GH_TRIGGER_PILL.mention).toBe('@-mention')
   })
 
-  it('keeps the short forms the IM trigger bar shares', () => {
-    expect(GH_TRIGGER_PILL.first).toBe('create')
-    expect(GH_TRIGGER_PILL.every).toBe('update')
+  it('reads the design’s cadence names', () => {
+    expect(GH_TRIGGER_PILL.first).toBe('Opened')
+    expect(GH_TRIGGER_PILL.every).toBe('Any update')
   })
 
   it('names the agent in the per-segment hover copy', () => {

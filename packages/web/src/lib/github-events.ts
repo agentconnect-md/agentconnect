@@ -74,11 +74,10 @@ export const GH_TRIGGER_LABEL: Record<GhTriggerMode, string> = {
   every: 'any update',
   mention: '@-mention'
 }
-/** The agent-detail trigger bar's segment vocabulary — deliberately shorter than
- *  the labels above and shared with the IM bar, so the two bars read alike. */
+/** The agent-detail trigger menu's vocabulary, as the console design words it. */
 export const GH_TRIGGER_PILL: Record<GhTriggerMode, string> = {
-  first: 'create',
-  every: 'update',
+  first: 'Opened',
+  every: 'Any update',
   mention: '@-mention'
 }
 
