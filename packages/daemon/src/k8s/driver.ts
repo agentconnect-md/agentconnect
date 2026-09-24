@@ -6,7 +6,13 @@ import type { ShimCapability } from '../shim/protocol.js'
 import type { ShimConnection } from '../shim/connection.js'
 import type { ShimSession } from '../shim/session.js'
 import type { SpawnRecord } from '../shim/binding.js'
-import { isSandboxReady, type OperatingMode, type SandboxClaim, type SandboxApi } from './sandbox-api.js'
+import {
+  isSandboxReady,
+  SandboxFenceRejectedError,
+  type OperatingMode,
+  type SandboxClaim,
+  type SandboxApi
+} from './sandbox-api.js'
 import { SandboxLease } from './sandbox-lease.js'
 import { LaunchRegistry, type LaunchGenerations } from '../remote/launch-registry.js'
 import { ChannelBinder } from '../remote/channel-binder.js'
@@ -445,9 +451,15 @@ export class K8sDriver implements SpawnDriver {
           this.forgetLaunch(subject)
         }
       })
-      .catch((err: unknown) => {
+      .catch(async (err: unknown) => {
         if (err instanceof K8sApiError && err.isNotFound) {
           this.forgetMissingLaunch(subject, launch)
+          return 'absent' as const
+        }
+        if (err instanceof SandboxFenceRejectedError && this.disconnected.get(subject) === launch) {
+          // An acquisition may have lost its fencing reply; re-derive, then let the next sweep recheck activity and holds.
+          const acquired = await this.adopt(launch.subject)
+          if (!acquired && this.ownedLaunch(subject) === launch) this.forgetLaunch(subject)
           return 'absent' as const
         }
         throw err
@@ -469,8 +481,7 @@ export class K8sDriver implements SpawnDriver {
     )
   }
 
-  /** Suspend the subject's pod if it is still not up a full pod-up bound after its launch, with no channel ever bound to it here; `absent` when it is no such pod. */
-  // The idle sweep judges such a pod apart from the agent's activity: it serves nothing and holds its node's resources while it waits.
+  // Reclaim an unbound pod still starting past its launch deadline, independently of the agent's activity.
   async suspendIfStalled(subject: string): Promise<'suspended' | 'busy' | 'absent'> {
     const launch = this.ownedLaunch(subject)
     const unbound = (): boolean => this.ownedLaunch(subject) === launch && !this.binder.sessionFor(subject)

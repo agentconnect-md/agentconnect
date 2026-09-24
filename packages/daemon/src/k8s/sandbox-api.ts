@@ -12,13 +12,20 @@ export interface SandboxFence {
   generation: number
 }
 
+export class SandboxFenceRejectedError extends Error {
+  constructor(sandbox: Sandbox, fence: SandboxFence) {
+    super(`sandbox ${sandbox.metadata?.name} no longer belongs to launch ${fence.generation}`)
+    this.name = 'SandboxFenceRejectedError'
+  }
+}
+
 // The same durable generation fences the shim binding and Kubernetes mode writes.
 export function assertSandboxFence(sandbox: Sandbox, fence: SandboxFence): void {
   if (
     sandbox.metadata?.uid !== fence.sandboxUid ||
     sandbox.metadata?.annotations?.[SANDBOX_LAUNCH_GENERATION] !== String(fence.generation)
   ) {
-    throw new Error(`sandbox ${sandbox.metadata?.name} no longer belongs to launch ${fence.generation}`)
+    throw new SandboxFenceRejectedError(sandbox, fence)
   }
 }
 

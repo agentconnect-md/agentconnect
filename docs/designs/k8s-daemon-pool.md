@@ -272,6 +272,9 @@ with the original activity floor and ownership fence. A later acquisition or
 watcher query binds at a fresh generation; a failed acquisition leaves the old
 reclamation record intact. Suspension, confirmed deletion, or duty departure drops
 that record. Disconnected session pods participate in the same agent-wide release.
+If a failed acquisition stamped a newer generation before losing its reply, a
+rejected reclamation re-derives the Running launch. Suspension waits for the next
+sweep to recheck activity and holds against that launch.
 
 A cached launch is checked against Kubernetes before an unheld acquisition reuses
 it. If its Sandbox is gone, the driver drops that exact launch and its channel,

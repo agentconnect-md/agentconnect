@@ -25,6 +25,7 @@ async function cluster() {
   const state = {
     claim: undefined as Record<string, unknown> | undefined,
     mode: 'Running' as 'Running' | 'Suspended',
+    ready: true,
     modeWrites: [] as string[],
     resourceVersion: 1,
     annotations: {} as Record<string, string>
@@ -40,7 +41,7 @@ async function cluster() {
       operatingMode: state.mode,
       podTemplate: { spec: { containers: [{ name: 'runtime', image: 'runtime:1' }] } }
     },
-    status: { conditions: [{ type: 'Ready', status: 'True' }], podIPs: ['10.0.0.8'] }
+    status: { conditions: [{ type: 'Ready', status: state.ready ? 'True' : 'False' }], podIPs: ['10.0.0.8'] }
   })
   const { config } = await fakeApiServer(({ method, url, body, headers }) => {
     const path = url.pathname
@@ -140,25 +141,33 @@ async function sharedStore(): Promise<LocalStore> {
 }
 
 describe('sandbox launches follow the duty', () => {
-  it('keeps a disconnected pod reclaimable when acquiring a fresh binding fails', async () => {
-    const { api, state } = await cluster()
-    const store = await sharedStore()
-    const { driver } = member(api, store, new FakeClock())
-    await driver.ensureBoundChannel(AGENT)
-    const candidates = driver.launched()
-    driver.onChannelLost(AGENT, 'reconnect window elapsed')
-    expect(driver.currentLaunch(AGENT)).toBeUndefined()
-    expect(driver.sessionFor(AGENT)).toBeUndefined()
-    expect(driver.launched()).toEqual(candidates)
-    vi.spyOn(api, 'fenceSandbox').mockRejectedValueOnce(new Error('API unavailable'))
-    await expect(driver.ensureSandbox(AGENT)).rejects.toThrow('API unavailable')
-    expect(driver.launched()).toEqual(candidates)
-    expect(await driver.suspendIfIdle(AGENT)).toBe('suspended')
-    expect(state.mode).toBe('Suspended')
-    expect(state.claim).toBeDefined()
-    expect(driver.launched()).toEqual([])
-    await store.close()
-  })
+  it.each(['before', 'after'] as const)(
+    'keeps a disconnected pod reclaimable when acquisition fails %s fencing',
+    async (failure) => {
+      const { api, state } = await cluster()
+      const store = await sharedStore()
+      const { driver } = member(api, store, new FakeClock())
+      await driver.ensureBoundChannel(AGENT)
+      const candidates = driver.launched()
+      driver.onChannelLost(AGENT, 'reconnect window elapsed')
+      expect(driver.currentLaunch(AGENT)).toBeUndefined()
+      expect(driver.sessionFor(AGENT)).toBeUndefined()
+      expect(driver.launched()).toEqual(candidates)
+      const fence = api.fenceSandbox.bind(api)
+      vi.spyOn(api, 'fenceSandbox').mockImplementationOnce(async (...args) => {
+        if (failure === 'after') await fence(...args)
+        throw new Error('API unavailable')
+      })
+      await expect(driver.ensureSandbox(AGENT)).rejects.toThrow('API unavailable')
+      expect(driver.launched()).toEqual(candidates)
+      if (failure === 'after') expect(await driver.suspendIfIdle(AGENT)).toBe('absent')
+      expect(await driver.suspendIfIdle(AGENT)).toBe('suspended')
+      expect(state.mode).toBe('Suspended')
+      expect(state.claim).toBeDefined()
+      expect(driver.launched()).toEqual([])
+      await store.close()
+    }
+  )
 
   it('rebinds a disconnected pod at a fresh generation before querying its watchers', async () => {
     const { api, state } = await cluster()
@@ -173,6 +182,31 @@ describe('sandbox launches follow the duty', () => {
     expect(driver.launched()).toHaveLength(1)
     expect(state.modeWrites).toEqual([])
     expect(state.mode).toBe('Running')
+    await store.close()
+  })
+
+  it('reclaims an unready disconnected pod after losing a successful fencing reply', async () => {
+    const { api, state } = await cluster()
+    const store = await sharedStore()
+    const clock = new FakeClock()
+    const { driver, dialed } = member(api, store, clock)
+    await driver.ensureBoundChannel(AGENT)
+    driver.onChannelLost(AGENT, 'reconnect window elapsed')
+    state.ready = false
+    const fence = api.fenceSandbox.bind(api)
+    vi.spyOn(api, 'fenceSandbox').mockImplementationOnce(async (...args) => {
+      await fence(...args)
+      throw new Error('API unavailable')
+    })
+    await expect(driver.ensureSandbox(AGENT)).rejects.toThrow('API unavailable')
+    clock.advance(driver.podUpTimeoutMs)
+    expect(await driver.suspendIfStalled(AGENT)).toBe('absent')
+    clock.advance(driver.podUpTimeoutMs)
+    expect(await driver.suspendIfStalled(AGENT)).toBe('suspended')
+    expect(state.mode).toBe('Suspended')
+    expect(state.claim).toBeDefined()
+    expect(driver.launched()).toEqual([])
+    expect(dialed).toHaveLength(1)
     await store.close()
   })
 
