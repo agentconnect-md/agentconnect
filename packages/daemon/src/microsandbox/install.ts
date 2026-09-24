@@ -8,7 +8,7 @@ import { MicrosandboxConfigSchema, type Config } from '../config/config-schema.j
 import type { Logger } from '../log.js'
 import { resolveMicrosandboxImage } from '../release-image.js'
 
-export const MICROSANDBOX_VERSION = '0.6.17'
+export const MICROSANDBOX_VERSION = '0.7.2'
 
 export async function installMicrosandbox(opts: {
   root: string
