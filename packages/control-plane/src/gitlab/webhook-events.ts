@@ -19,13 +19,15 @@ export function unionGitlabWebhookEvents(
     push_events: false,
     issues_events: false,
     merge_requests_events: false,
-    note_events: false
+    note_events: false,
+    releases_events: false
   }
   for (const hook of relevant) {
     for (const pattern of hook.events) {
       if (pattern.startsWith('issues:')) events.issues_events = true
       else if (pattern.startsWith('merge_request:')) events.merge_requests_events = true
       else if (pattern.startsWith('push:')) events.push_events = true
+      else if (pattern.startsWith('release:')) events.releases_events = true
     }
     if (events.issues_events || events.merge_requests_events || hook.commentFamilies.length > 0) {
       events.note_events = true

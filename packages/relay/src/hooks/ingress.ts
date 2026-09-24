@@ -34,6 +34,7 @@ import {
   hookSubjectSessionKey,
   pickCodeHostHookMembers,
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
+  RD_CODEHOST_RELEASE_V1,
   RD_HOOK_NOTICE_V1,
   type CodeHostHookMetadata,
   type CodeHostHookRule,
@@ -88,12 +89,13 @@ const REQUIRED_DAEMON_FEATURES: {
     requiresGithubThreadWorktreeCleanup(event, host.metadata) ? [RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2] : [],
   gitlab: (host) => [
     GITLAB_COM_V1_FEATURE,
-    ...(isSelfManagedGitlabHost(host.metadata.host) ? [GITLAB_INSTANCE_V1_FEATURE] : [])
+    ...(isSelfManagedGitlabHost(host.metadata.host) ? [GITLAB_INSTANCE_V1_FEATURE] : []),
+    ...(host.metadata.target.kind === 'release' ? [RD_CODEHOST_RELEASE_V1] : [])
   ],
   // gitea-integration.md §11: one string covers gitea.com and a self-hosted address alike, so any
   // gitea-shaped delivery needs the whole slice and there is no separate instance bit. A daemon
   // without it never receives one — it would decode the member and normalize nothing.
-  gitea: () => [GITEA_V1_FEATURE]
+  gitea: (host) => [GITEA_V1_FEATURE, ...(host.metadata.target.kind === 'release' ? [RD_CODEHOST_RELEASE_V1] : [])]
 }
 
 /** The one generic hop over the provider key: the union-keyed index cannot narrow the pair itself. */

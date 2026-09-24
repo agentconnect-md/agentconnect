@@ -36,10 +36,10 @@ export interface GiteaTurnFinalHost {
 const REVIEW_LOOKUP_TIMEOUT_MS = 10_000
 
 /** §10.1 rides the same pipe as GitHub: `repo` is the numeric repository id (the lease scope), `repoPath` the
- *  current owner/repo the REST paths address, and `number` the subject index; pushes have no thread and stay silent. */
+ *  current owner/repo the REST paths address, and `number` the subject index; pushes and releases have no thread and stay silent. */
 function replyTarget(msg: CodeHostReplySource): CodeHostReplyTarget | undefined {
   const gitea = msg.gitea
-  if (!gitea || gitea.target.kind === 'push') return undefined
+  if (!gitea || gitea.target.kind === 'push' || gitea.target.kind === 'release') return undefined
   return {
     hookId: msg.hookId,
     provider: 'gitea',

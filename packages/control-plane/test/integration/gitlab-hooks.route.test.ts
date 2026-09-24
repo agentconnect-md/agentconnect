@@ -676,6 +676,25 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
       },
       { timeout: 20_000 }
     )
+
+    // A release row subscribes the Release Hook on the same managed webhook, and takes no note family.
+    const releaseRow = glBody(h.agentId, {
+      name: 'gl-release',
+      family: 'release',
+      events: ['release:published'],
+      commentFamilies: []
+    })
+    const releases = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: releaseRow })
+    expect(releases.statusCode).toBe(200)
+    await vi.waitFor(() => expect([...h.fake.webhooks.values()][0]!.events['releases_events']).toBe(true), {
+      timeout: 20_000
+    })
+    const stray = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks`,
+      payload: { ...releaseRow, name: 'gl-stray', events: ['release:*', 'push:*'] }
+    })
+    expect(stray.statusCode).toBe(400)
   })
 })
 

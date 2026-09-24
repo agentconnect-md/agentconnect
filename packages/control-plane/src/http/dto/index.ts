@@ -2814,7 +2814,7 @@ export const CreateWebhookHookBody = HookBodyBase.extend({
  *  family carries its own cadence and its own mention gate, so a repository the
  *  agent watches for both PRs and issues is TWO rows. Immutable after create. */
 export const GithubHookFamily = z.enum(['pull_request', 'issues', 'push', 'deployment', 'release'])
-export const GitlabHookFamily = z.enum(['merge_request', 'issues', 'push'])
+export const GitlabHookFamily = z.enum(['merge_request', 'issues', 'push', 'release'])
 
 /** Label names the subject's CURRENT labels must intersect (case-insensitively, at the relay); empty = any label. */
 export const HookLabelFilter = z.array(z.string().trim().min(1).max(100)).max(20)
@@ -2845,8 +2845,8 @@ export const CreateGithubHookBody = HookBodyBase.extend({
   gateMode: HookGateModeEnum.default('informational')
 })
 
-/** GitLab family:action patterns (§12): the three subscribed families only. */
-export const GitlabHookEventPattern = /^(issues|merge_request|push):([a-z_]+|\*)$/
+/** GitLab and Gitea family:action patterns (§12): the subscribed families only; a release normalizes to `published` / `edited`. */
+export const GitlabHookEventPattern = /^(issues|merge_request|push|release):([a-z_]+|\*)$/
 export const GitlabCommentFamily = z.enum(['issues', 'merge_request'])
 
 export const CreateGitlabHookBody = HookBodyBase.extend({

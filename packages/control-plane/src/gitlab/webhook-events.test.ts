@@ -30,7 +30,18 @@ describe('unionGitlabWebhookEvents', () => {
       push_events: true,
       issues_events: true,
       merge_requests_events: true,
-      note_events: true
+      note_events: true,
+      releases_events: false
+    })
+  })
+
+  it('subscribes a release hook to release events alone — nobody comments on a release', () => {
+    expect(unionGitlabWebhookEvents([hook({ events: ['release:published'] })], PROJECT)).toEqual({
+      push_events: false,
+      issues_events: false,
+      merge_requests_events: false,
+      note_events: false,
+      releases_events: true
     })
   })
 

@@ -12,7 +12,8 @@
  *   opened   → `family:opened` for a thread family and NO comment family; the
  *              relay additionally accepts a later explicit @mention in an
  *              `:opened`-cadence thread family. A push subscription is
- *              inherently per-push, so `push:*` rides along.
+ *              inherently per-push, so `push:*` rides along; a release opens on
+ *              `release:published`, and its any-update form is `release:*`.
  *   any update → `family:*` plus the row's own thread family as its comment
  *              family, so replies and submitted reviews fire too. Close, reopen
  *              and merge stay inert; supported updates and replies run.
@@ -46,6 +47,7 @@ export interface GtFamilyTile {
 const GT_ALL_FAMILIES: GtFamilyTile[] = [
   { fam: 'issues', pill: 'Issues', icon: 'circle-dot', label: 'Issues' },
   { fam: 'merge_request', pill: 'PRs', icon: 'git-pull-request', label: 'Pull requests' },
+  { fam: 'release', pill: 'Releases', icon: 'tag', label: 'Releases' },
   { fam: 'push', pill: 'Pushes', icon: 'git-commit-horizontal', label: 'Pushes' }
 ]
 
@@ -79,8 +81,21 @@ export const GT_TRIGGER_PILL: Record<GtTriggerMode, string> = {
   mention: '@-mention'
 }
 
+/** A release's opening: its publish, prereleases included. */
+export const GITEA_RELEASE_PUBLISHED_EVENT = 'release:published'
+
+/** The cadences one family offers, in display order — nobody @-mentions in a release. */
+export function giteaTriggerModes(fam: GtFamily): readonly GtTriggerMode[] {
+  return fam === 'release' ? ['first', 'every'] : GT_TRIGGER_MODES
+}
+
 /** Per-segment hover copy for the trigger bar. */
-export function giteaTriggerTooltip(mode: GtTriggerMode, agentName: string): string {
+export function giteaTriggerTooltip(mode: GtTriggerMode, agentName: string, fam?: GtFamily): string {
+  if (fam === 'release') {
+    return mode === 'first'
+      ? 'Runs when a release or prerelease is published.'
+      : 'Runs when a release is published or edited.'
+  }
   switch (mode) {
     case 'first':
       return `Runs when an issue or pull request opens, plus later @${agentName} mentions.`
@@ -125,7 +140,7 @@ export function commentFamiliesForGiteaFamilies(
   if (mode === 'first') return []
   const picked = new Set(families)
   return GT_ALL_FAMILIES.map((entry) => entry.fam).filter(
-    (family): family is GiteaCommentFamily => family !== 'push' && picked.has(family)
+    (family): family is GiteaCommentFamily => (family === 'issues' || family === 'merge_request') && picked.has(family)
   )
 }
 
@@ -134,7 +149,11 @@ export function commentFamiliesForGiteaFamilies(
 export function eventsForGiteaFamilies(families: Iterable<GtFamily>, mode: GtTriggerMode): string[] {
   const picked = new Set(families)
   return GT_ALL_FAMILIES.filter((entry) => picked.has(entry.fam)).map((entry) =>
-    mode === 'first' && entry.fam !== 'push' ? `${entry.fam}:opened` : `${entry.fam}:*`
+    mode === 'first' && entry.fam === 'release'
+      ? GITEA_RELEASE_PUBLISHED_EVENT
+      : mode === 'first' && entry.fam !== 'push'
+        ? `${entry.fam}:opened`
+        : `${entry.fam}:*`
   )
 }
 
@@ -143,10 +162,12 @@ export function giteaFamCovered(events: readonly string[], family: GtFamily): bo
   return events.some((event) => event.startsWith(`${family}:`))
 }
 
-/** Recover the trigger mode: the mentionOnly flag wins, `:opened` ⇒ created. */
+/** Recover the trigger mode: the mentionOnly flag wins, `:opened` (or a release's publish) ⇒ created. */
 export function giteaTriggerModeOf(hook: { events: readonly string[]; mentionOnly: boolean }): GtTriggerMode {
   if (hook.mentionOnly) return 'mention'
-  return hook.events.some((event) => event.endsWith(':opened')) ? 'first' : 'every'
+  return hook.events.some((event) => event.endsWith(':opened') || event === GITEA_RELEASE_PUBLISHED_EVENT)
+    ? 'first'
+    : 'every'
 }
 
 function sameMembers(actual: readonly string[], expected: readonly string[]): boolean {
@@ -199,10 +220,12 @@ export interface GiteaFamilySubscription {
 
 /** Compile one row's family+mode into the fields its create/update body carries. */
 export function giteaFamilySubscription(fam: GtFamily, mode: GtTriggerMode): GiteaFamilySubscription {
+  // A cadence a family cannot carry narrows to its opening, never widens.
+  const own = giteaTriggerModes(fam).includes(mode) ? mode : 'first'
   return {
-    events: eventsForGiteaFamilies([fam], mode),
-    commentFamilies: commentFamiliesForGiteaFamilies([fam], mode),
-    mentionOnly: mode === 'mention'
+    events: eventsForGiteaFamilies([fam], own),
+    commentFamilies: commentFamiliesForGiteaFamilies([fam], own),
+    mentionOnly: own === 'mention'
   }
 }
 

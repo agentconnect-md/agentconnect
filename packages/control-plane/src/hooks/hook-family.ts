@@ -15,7 +15,7 @@ export type HookFamily = 'issues' | 'pull_request' | 'merge_request' | 'push' | 
 
 /** The families a row of each kind may declare. */
 export const GITHUB_FAMILIES = ['pull_request', 'issues', 'push', 'deployment', 'release'] as const
-export const GITLAB_FAMILIES = ['merge_request', 'issues', 'push'] as const
+export const GITLAB_FAMILIES = ['merge_request', 'issues', 'push', 'release'] as const
 
 /** Reviews and run reporting exist only on a change-proposal subject. */
 const REVIEW_FAMILIES = new Set<HookFamily>(['pull_request', 'merge_request'])

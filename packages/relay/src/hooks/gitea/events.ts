@@ -23,6 +23,7 @@ export const GITEA_EVENT_PULL_REQUEST_COMMENT = 'pull_request_comment'
 export const GITEA_EVENT_PULL_REQUEST_SYNC = 'pull_request_sync'
 export const GITEA_EVENT_PULL_REQUEST_REVIEW_REQUEST = 'pull_request_review_request'
 export const GITEA_EVENT_PUSH = 'push'
+export const GITEA_EVENT_RELEASE = 'release'
 
 /** Review event types (§16), verdict in the type; a Map so a header key never reaches Object.prototype. */
 const GITEA_REVIEW_EVENT_ACTIONS = new Map<string, string>([
@@ -79,13 +80,23 @@ export interface GiteaPayload {
   // push
   ref?: string
   commits?: Array<{ message?: string | null }>
+  // release
+  release?: {
+    tag_name?: string
+    target_commitish?: string
+    name?: string | null
+    body?: string | null
+    html_url?: string
+    draft?: boolean
+    prerelease?: boolean
+  }
 }
 
 /** One delivery's normalized facts (extracted once; pure filter input). */
 export interface GiteaMatchCtx {
   /** Normalized `family:action` (or bare `push`) — the stored-pattern universe. */
   eventAction: string
-  family: 'issues' | 'merge_request' | 'push' | 'note' | 'review'
+  family: 'issues' | 'merge_request' | 'push' | 'note' | 'review' | 'release'
   /** Comment and review deliveries: the subject family the text hangs off. */
   commentSubjectFamily?: 'issues' | 'pull_request'
   actorId?: string
@@ -104,6 +115,8 @@ export interface GiteaMatchCtx {
   /** Positive issue/pull index — one index space, so the subject kind discriminates. */
   index?: number
   ref?: string
+  /** A release's tag — its identity on the header; every release shares one session. */
+  tag?: string
 }
 
 /** Map the comment-subject value (`pull_request`) onto the event family it subscribes to (`merge_request`). */
@@ -194,6 +207,22 @@ function normalizeGiteaSubject(eventType: string, payload: GiteaPayload): GiteaM
           .filter(Boolean)
           .join('\n') || undefined,
       ref: payload.ref
+    }
+  }
+  if (eventType === GITEA_EVENT_RELEASE) {
+    // `published` is the publish, `updated` an edit; a deletion is never new work.
+    const release = payload.release
+    const eventAction =
+      payload.action === 'published' ? 'release:published' : payload.action === 'updated' ? 'release:edited' : undefined
+    if (!release?.tag_name || eventAction === undefined) return undefined
+    return {
+      eventAction,
+      family: 'release',
+      ...(userId(payload.sender) !== undefined ? { actorId: userId(payload.sender) } : {}),
+      ...(payload.sender?.login ? { actorLogin: payload.sender.login } : {}),
+      labels: [],
+      mentionText: release.body ?? undefined,
+      tag: release.tag_name
     }
   }
   if (eventType === GITEA_EVENT_ISSUES || eventType === GITEA_EVENT_ISSUE_LABEL) {
@@ -365,15 +394,16 @@ export function giteaRuleVerdict(rule: RcHookAssign, ctx: GiteaMatchCtx): GiteaR
   if (action === ':labeled' && !gitea.labelFilter?.length) return 'no-match'
   if (gitea.mentionOnly && !summoned) return 'no-match'
   if (!labelFilterAdmits(gitea.labelFilter, ctx.labels)) return 'no-match'
-  // §8: pushes and the bot's own same-repository revisions are relay-trusted; everything else resolves live membership.
-  if (ctx.family === 'push') return 'trusted'
+  // §8: pushes, releases (publishing takes write access) and the bot's own same-repository revisions are relay-trusted; everything else resolves live membership.
+  if (ctx.family === 'push' || ctx.family === 'release') return 'trusted'
   if (internalRevision) return 'trusted'
   return 'needs-authz'
 }
 
-/** The §8 rename-stable session key: subject kind plus positive index, or the canonical ref for a push. */
+/** The §8 rename-stable session key: subject kind plus positive index, the canonical ref for a push, or the repository's one releases session. */
 export function giteaSessionKey(rule: RcHookAssign, target: GiteaHookTarget): string {
   const prefix = rule.gitea!.sessionKeyPrefix
+  if (target.kind === 'release') return `${prefix}:releases`
   return target.kind === 'push' ? `${prefix}:push:${target.ref}` : `${prefix}:${target.kind}:${target.index}`
 }
 
@@ -391,6 +421,9 @@ export function buildTrustedGiteaMetadata(
   if (ctx.family === 'push') {
     if (!ctx.ref) return undefined
     target = { kind: 'push', ref: ctx.ref }
+  } else if (ctx.family === 'release') {
+    if (!ctx.tag) return undefined
+    target = { kind: 'release', tag: ctx.tag }
   } else if (ctx.family === 'issues' || ctx.commentSubjectFamily === 'issues') {
     if (ctx.index === undefined || ctx.index <= 0) return undefined
     target = { kind: 'issue', index: ctx.index }
@@ -420,13 +453,21 @@ export function buildTrustedGiteaMetadata(
   }
 }
 
+/** One capped line for the daemon's trusted header. */
+function flattenLine(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  return flat.length > 200 ? `${flat.slice(0, 199)}…` : flat
+}
+
 /** The trimmed model-visible envelope shared by the delivery's fan-out. */
 export function buildGiteaContext(payload: GiteaPayload, ctx: GiteaMatchCtx): HookContext {
   const subject = payload.pull_request ?? payload.issue
+  const release = ctx.family === 'release' ? payload.release : undefined
   const bodySource = payload.comment?.body ?? ctx.mentionText ?? ''
   const excerpt = truncateUtf8(bodySource, GITHUB_BODY_EXCERPT_MAX)
-  const flatTitle = subject?.title ? subject.title.replace(/\s+/g, ' ').trim() : undefined
-  const htmlUrl = payload.comment?.html_url ?? subject?.html_url
+  const title = subject?.title ?? (release ? release.name || release.tag_name : undefined)
+  const flatTitle = title ? title.replace(/\s+/g, ' ').trim() : undefined
+  const htmlUrl = payload.comment?.html_url ?? subject?.html_url ?? release?.html_url
   return {
     source: 'gitea',
     event: ctx.family,
@@ -440,6 +481,17 @@ export function buildGiteaContext(payload: GiteaPayload, ctx: GiteaMatchCtx): Ho
     ...(htmlUrl ? { htmlUrl } : {}),
     ...(excerpt.text ? { bodyExcerpt: excerpt.text } : {}),
     ...(giteaSubject(subject, ctx) ?? {}),
+    // The flags let the agent tell a prerelease or draft apart, as on GitHub.
+    ...(release?.tag_name
+      ? {
+          release: {
+            tag: flattenLine(release.tag_name),
+            ...(release.target_commitish ? { target: flattenLine(release.target_commitish) } : {}),
+            ...(typeof release.prerelease === 'boolean' ? { prerelease: release.prerelease } : {}),
+            ...(typeof release.draft === 'boolean' ? { draft: release.draft } : {})
+          }
+        }
+      : {}),
     truncated: excerpt.truncated
   }
 }

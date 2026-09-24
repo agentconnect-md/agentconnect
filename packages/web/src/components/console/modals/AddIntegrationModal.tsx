@@ -224,7 +224,9 @@ const GL_TRIGGER_TILES: Partial<Record<GlFamily, TriggerTile<GlTriggerMode>[]>> 
     { mode: 'first', label: GL_TRIGGER_LABEL.first, desc: 'A new issue is filed' },
     { mode: 'every', label: GL_TRIGGER_LABEL.every, desc: 'Every update or comment' },
     { mode: 'mention', label: GL_TRIGGER_LABEL.mention, desc: 'Only when the agent is @-mentioned' }
-  ]
+  ],
+  // GitLab names no actor on a release, so its publish is the one cadence the console offers.
+  release: [{ mode: 'first', label: 'published', desc: 'A release is published' }]
 }
 
 /** Gitea's cadences — the same three, worded for a pull request. */
@@ -239,6 +241,10 @@ const GT_TRIGGER_TILES: Partial<Record<GtFamily, TriggerTile<GtTriggerMode>[]>> 
     { mode: 'first', label: GT_TRIGGER_LABEL.first, desc: 'A new issue is filed' },
     { mode: 'every', label: GT_TRIGGER_LABEL.every, desc: 'Every update or comment' },
     { mode: 'mention', label: GT_TRIGGER_LABEL.mention, desc: 'Only when the agent is @-mentioned' }
+  ],
+  release: [
+    { mode: 'first', label: 'published', desc: 'A release or prerelease is published' },
+    { mode: 'every', label: GT_TRIGGER_LABEL.every, desc: 'Every publish or edit' }
   ]
 }
 
@@ -333,9 +339,13 @@ function FamilyCards<F extends string, M extends string>({
                   <div>
                     <div className="fldlbl mb-2">{t('triggerWhen')}</div>
                     <div
-                      // One column per tile: a two-cadence subject must not leave a hole in a 3-up grid.
+                      // One column per tile: a one- or two-cadence subject must not leave a hole in a 3-up grid.
                       className={`grid grid-cols-1 gap-2 ${
-                        tilesOf(row.fam).length === 2 ? 'desktop:grid-cols-2' : 'desktop:grid-cols-3'
+                        tilesOf(row.fam).length === 1
+                          ? ''
+                          : tilesOf(row.fam).length === 2
+                            ? 'desktop:grid-cols-2'
+                            : 'desktop:grid-cols-3'
                       }`}
                       role="group"
                       aria-label={t('triggerFor', { subject: row.pill })}
@@ -2107,10 +2117,10 @@ export default function AddIntegrationModal({
                   onPick={(fam, mode) => setGtModes((current) => ({ ...current, [fam]: mode }))}
                   familyAttr="data-gitea-family"
                   triggerAttr="data-gitea-trigger"
-                  titleOf={(mode) =>
+                  titleOf={(mode, fam) =>
                     mode === 'mention'
                       ? giteaMentionUsage(agent.name, gtTeamOwner)
-                      : giteaTriggerTooltip(mode, agent.name)
+                      : giteaTriggerTooltip(mode, agent.name, fam)
                   }
                   bodyExtra={(fam) => (
                     <div className="flex flex-col gap-3">
@@ -2210,8 +2220,8 @@ export default function AddIntegrationModal({
                   onPick={(fam, mode) => setGlModes((prev) => ({ ...prev, [fam]: mode }))}
                   familyAttr="data-gitlab-family"
                   triggerAttr="data-gitlab-trigger"
-                  titleOf={(mode) =>
-                    mode === 'mention' ? gitlabMentionUsage(agent.name) : gitlabTriggerTooltip(mode, agent.name)
+                  titleOf={(mode, fam) =>
+                    mode === 'mention' ? gitlabMentionUsage(agent.name) : gitlabTriggerTooltip(mode, agent.name, fam)
                   }
                   // Reviews and the run note ride the merge-request subject only; the label filter, every thread subject.
                   bodyExtra={(fam) => (

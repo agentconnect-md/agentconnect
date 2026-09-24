@@ -104,6 +104,12 @@ interface GitlabPayload {
     draft?: boolean
     work_in_progress?: boolean
   }
+  // Release Hook: its action and facts sit at the top level, and it names no actor.
+  action?: string
+  tag?: string
+  name?: string | null
+  description?: string | null
+  url?: string
   // Push Hook
   ref?: string
   checkout_sha?: string | null
@@ -116,7 +122,7 @@ interface GitlabPayload {
 export interface GitlabMatchCtx {
   /** Normalized `family:action` (or bare `push`) — the stored-pattern universe. */
   eventAction: string
-  family: 'issues' | 'merge_request' | 'push' | 'note'
+  family: 'issues' | 'merge_request' | 'push' | 'note' | 'release'
   /** Comment deliveries: the subject family the note hangs off. */
   commentSubjectFamily?: 'issues' | 'merge_request'
   actorId?: string
@@ -133,6 +139,8 @@ export interface GitlabMatchCtx {
   hasDiffPosition?: boolean
   iid?: number
   ref?: string
+  /** A release's tag — its identity on the header; every release shares one session. */
+  tag?: string
 }
 
 /** Deliveries that close a thread's workspace (§12): merged MRs and closed issues; an unmerged closed MR may reopen. */
@@ -161,6 +169,19 @@ export function normalizeGitlabEvent(payload: GitlabPayload): GitlabMatchCtx | u
           .filter(Boolean)
           .join('\n') || undefined,
       ref: payload.ref
+    }
+  }
+  if (kind === 'release') {
+    // `create` is the publish, `update` an edit of the notes; a deletion is never new work.
+    const action = payload.action ?? attrs?.action
+    const eventAction = action === 'create' ? 'release:published' : action === 'update' ? 'release:edited' : undefined
+    if (!payload.tag || eventAction === undefined) return undefined
+    return {
+      eventAction,
+      family: 'release',
+      labels: [],
+      mentionText: payload.description ?? undefined,
+      tag: payload.tag
     }
   }
   if (kind === 'issue') {
@@ -327,15 +348,16 @@ export function gitlabRuleVerdict(rule: RcHookAssign, ctx: GitlabMatchCtx): Gitl
   if (!eventMatched) return 'no-match'
   if (rule.gitlab.mentionOnly && !summoned) return 'no-match'
   if (!labelFilterAdmits(rule.gitlab.labelFilter, ctx.labels)) return 'no-match'
-  // §12.2: pushes and the SA's own same-project revisions are relay-trusted; everything else resolves live membership.
-  if (ctx.family === 'push') return 'trusted'
+  // §12.2: pushes, releases (no actor to resolve) and the SA's own same-project revisions are relay-trusted; everything else resolves live membership.
+  if (ctx.family === 'push' || ctx.family === 'release') return 'trusted'
   if (internalRevision) return 'trusted'
   return 'needs-authz'
 }
 
-/** The §12.3 rename-stable session key: subject kind plus positive IID, or the canonical ref for a push. */
+/** The §12.3 rename-stable session key: subject kind plus positive IID, the canonical ref for a push, or the repository's one releases session. */
 export function gitlabSessionKey(rule: RcHookAssign, target: GitlabHookTarget): string {
   const prefix = rule.gitlab!.sessionKeyPrefix
+  if (target.kind === 'release') return `${prefix}:releases`
   return target.kind === 'push' ? `${prefix}:push:${target.ref}` : `${prefix}:${target.kind}:${target.iid}`
 }
 
@@ -353,6 +375,9 @@ export function buildTrustedGitlabMetadata(
   if (ctx.family === 'push') {
     if (!ctx.ref) return undefined
     target = { kind: 'push', ref: ctx.ref }
+  } else if (ctx.family === 'release') {
+    if (!ctx.tag) return undefined
+    target = { kind: 'release', tag: ctx.tag }
   } else if (ctx.family === 'issues' || ctx.commentSubjectFamily === 'issues') {
     if (ctx.iid === undefined || ctx.iid <= 0) return undefined
     target = { kind: 'issue', iid: ctx.iid }
@@ -384,36 +409,45 @@ export function buildTrustedGitlabMetadata(
   }
 }
 
+/** One capped line for the daemon's trusted header. */
+function flattenTitle(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  return flat.length > 200 ? `${flat.slice(0, 199)}…` : flat
+}
+
 /** The trimmed model-visible envelope shared by the delivery's fan-out. */
 export function buildGitlabContext(payload: GitlabPayload, ctx: GitlabMatchCtx): HookContext {
   const attrs = payload.object_attributes
   const subject = payload.issue ?? payload.merge_request
-  const title = attrs?.title ?? subject?.title
+  const title = ctx.family === 'release' ? payload.name || ctx.tag : (attrs?.title ?? subject?.title)
+  const htmlUrl = ctx.family === 'release' ? payload.url : attrs?.url
   const bodySource = attrs?.note ?? attrs?.description ?? ctx.mentionText ?? ''
   const excerpt = truncateUtf8(bodySource, GITHUB_BODY_EXCERPT_MAX)
-  const flatTitle = title ? title.replace(/\s+/g, ' ').trim() : undefined
+  const flatTitle = title ? flattenTitle(title) : undefined
   return {
     source: 'gitlab',
     event: ctx.family === 'note' ? 'note' : ctx.family,
     ...(ctx.eventAction.includes(':') ? { action: ctx.eventAction.slice(ctx.eventAction.indexOf(':') + 1) } : {}),
     ...(payload.project?.path_with_namespace ? { repo: payload.project.path_with_namespace } : {}),
     ...(ctx.iid !== undefined ? { number: ctx.iid } : {}),
-    ...(flatTitle ? { title: flatTitle.length > 200 ? `${flatTitle.slice(0, 199)}…` : flatTitle } : {}),
+    ...(flatTitle ? { title: flatTitle } : {}),
     ...((payload.user?.username ?? payload.user_username)
       ? { senderLogin: payload.user?.username ?? payload.user_username }
       : {}),
     ...(payload.user?.avatar_url ? { senderAvatarUrl: payload.user.avatar_url } : {}),
     ...(ctx.labels.length > 0 ? { labels: ctx.labels } : {}),
-    ...(attrs?.url ? { htmlUrl: attrs.url } : {}),
+    ...(htmlUrl ? { htmlUrl } : {}),
     ...(excerpt.text ? { bodyExcerpt: excerpt.text } : {}),
     ...(subjectOf(payload, ctx) ?? {}),
+    // GitLab has no prerelease or draft release, so the tag is the whole fact.
+    ...(ctx.tag ? { release: { tag: flattenTitle(ctx.tag) } } : {}),
     truncated: excerpt.truncated
   }
 }
 
 /** The issue or MR itself, for a Decision to judge a note against (code-host-decisions.md §4). */
 function subjectOf(payload: GitlabPayload, ctx: GitlabMatchCtx): Pick<HookContext, 'subject'> | undefined {
-  if (ctx.family === 'push') return undefined
+  if (ctx.family === 'push' || ctx.family === 'release') return undefined
   const attrs = payload.object_attributes
   const subject = ctx.family === 'note' ? (payload.issue ?? payload.merge_request) : attrs
   if (!subject) return undefined

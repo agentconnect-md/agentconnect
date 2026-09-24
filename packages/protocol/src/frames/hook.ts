@@ -134,7 +134,9 @@ export const GitlabHookTarget = z.discriminatedUnion('kind', [
     // authored text stays off the CP wire, exactly like explicitReviewRequest above.
     explicitReviewRequest: z.boolean().optional()
   }),
-  z.object({ kind: z.literal('push'), ref: z.string().min(1) })
+  z.object({ kind: z.literal('push'), ref: z.string().min(1) }),
+  // Every release of the repository continues one session; an older daemon cannot decode this member (RD_CODEHOST_RELEASE_V1).
+  z.object({ kind: z.literal('release'), tag: z.string().min(1) })
 ])
 export type GitlabHookTarget = z.infer<typeof GitlabHookTarget>
 
@@ -169,7 +171,9 @@ export const GiteaHookTarget = z.discriminatedUnion('kind', [
     // Relay-derived trusted routing fact (reviewer request / authorized mention); authored text stays off the CP wire.
     explicitReviewRequest: z.boolean().optional()
   }),
-  z.object({ kind: z.literal('push'), ref: z.string().min(1) })
+  z.object({ kind: z.literal('push'), ref: z.string().min(1) }),
+  // Every release of the repository continues one session; an older daemon cannot decode this member (RD_CODEHOST_RELEASE_V1).
+  z.object({ kind: z.literal('release'), tag: z.string().min(1) })
 ])
 export type GiteaHookTarget = z.infer<typeof GiteaHookTarget>
 
@@ -363,7 +367,7 @@ export const HookContext = z.object({
   environment: z.string().optional(), // 'production'
   ref: z.string().optional(), // the deployed ref, as GitHub names it
   sha: z.string().optional(), // the deployed commit
-  // ── github release (no thread: every release of the repository continues one session) ──
+  // ── code-host release (no thread: every release of the repository continues one session) ──
   release: z
     .object({
       tag: z.string(), // 'v1.2.0'

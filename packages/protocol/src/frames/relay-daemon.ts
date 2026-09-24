@@ -117,6 +117,9 @@ export const RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2 = 'github-thread-worktree-clea
  */
 export const RD_HOOK_NOTICE_V1 = 'hook-notice-v1'
 
+/** `codehost-release-v1`: this daemon decodes a GitLab/Gitea `release` target; an older one rejects the member, so a relay never sends it one. */
+export const RD_CODEHOST_RELEASE_V1 = 'codehost-release-v1'
+
 /** The fixed-text posts a relay can ask for; each is a daemon-authored constant, never wire text. */
 export const RdHookNotice = z.enum(['actor_not_trusted'])
 export type RdHookNotice = z.infer<typeof RdHookNotice>

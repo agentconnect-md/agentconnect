@@ -14,8 +14,8 @@ import { GL_FAMILIES, gitlabHookFamily, type GlFamily } from './gitlab-events'
 
 // Sibling order for one repo: the change-proposal subject (it carries reviews), issues, deployments, then the held-back push.
 const GH_ROW_ORDER: readonly GhFamily[] = ['pull_request', 'issues', 'deployment', 'release', 'push']
-const GL_ROW_ORDER: readonly GlFamily[] = ['merge_request', 'issues', 'push']
-const GT_ROW_ORDER: readonly GtFamily[] = ['merge_request', 'issues', 'push']
+const GL_ROW_ORDER: readonly GlFamily[] = ['merge_request', 'issues', 'release', 'push']
+const GT_ROW_ORDER: readonly GtFamily[] = ['merge_request', 'issues', 'release', 'push']
 
 /** One listed subscription: its row, the family it covers (null on a legacy-inert row), and its place in the block. */
 export interface CodeHostHookRow<F extends string> {

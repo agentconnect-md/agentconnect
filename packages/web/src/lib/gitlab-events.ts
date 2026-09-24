@@ -11,7 +11,10 @@
  *   opened   → `family:opened` for a thread family and NO note family; the
  *              relay additionally accepts a later explicit @mention in an
  *              `:opened`-cadence thread family. Pushes have no "first" — a push
- *              subscription is inherently per-push, so `push:*` rides along.
+ *              subscription is inherently per-push, so `push:*` rides along. A
+ *              release's opening is `release:published`, its only console cadence:
+ *              GitLab names no actor on a release, so an edit cannot be told
+ *              apart from the service account's own and `release:*` stays API-only.
  *   any update → `family:*` plus the row's own thread family as its note family,
  *              so replies fire too. Close, reopen, merge and draft toggles stay
  *              inert; supported updates and replies run.
@@ -48,6 +51,7 @@ export interface GlFamilyTile {
 const GL_ALL_FAMILIES: GlFamilyTile[] = [
   { fam: 'issues', pill: 'Issues', icon: 'circle-dot', label: 'Issues' },
   { fam: 'merge_request', pill: 'MRs', icon: 'git-pull-request', label: 'Merge requests' },
+  { fam: 'release', pill: 'Releases', icon: 'tag', label: 'Releases' },
   { fam: 'push', pill: 'Pushes', icon: 'git-commit-horizontal', label: 'Pushes' }
 ]
 
@@ -81,8 +85,17 @@ export const GL_TRIGGER_PILL: Record<GlTriggerMode, string> = {
   mention: '@-mention'
 }
 
+/** A release's publish is the one delivery the console can tell was not the service account's own edit. */
+export const GITLAB_RELEASE_PUBLISHED_EVENT = 'release:published'
+
+/** The cadences one family offers, in display order — a release only its publish. */
+export function gitlabTriggerModes(fam: GlFamily): readonly GlTriggerMode[] {
+  return fam === 'release' ? ['first'] : GL_TRIGGER_MODES
+}
+
 /** Per-segment hover copy for the trigger bar. */
-export function gitlabTriggerTooltip(mode: GlTriggerMode, agentName: string): string {
+export function gitlabTriggerTooltip(mode: GlTriggerMode, agentName: string, fam?: GlFamily): string {
+  if (fam === 'release') return 'Runs when a release is published.'
   switch (mode) {
     case 'first':
       return `Runs when an issue or merge request opens, plus later @${agentName} mentions.`
@@ -122,7 +135,7 @@ export function commentFamiliesForGitlabFamilies(
   if (mode === 'first') return []
   const picked = new Set(families)
   return GL_ALL_FAMILIES.map((entry) => entry.fam).filter(
-    (family): family is GitlabCommentFamily => family !== 'push' && picked.has(family)
+    (family): family is GitlabCommentFamily => (family === 'issues' || family === 'merge_request') && picked.has(family)
   )
 }
 
@@ -132,7 +145,11 @@ export function commentFamiliesForGitlabFamilies(
 export function eventsForGitlabFamilies(families: Iterable<GlFamily>, mode: GlTriggerMode): string[] {
   const picked = new Set(families)
   return GL_ALL_FAMILIES.filter((entry) => picked.has(entry.fam)).map((entry) =>
-    mode === 'first' && entry.fam !== 'push' ? `${entry.fam}:opened` : `${entry.fam}:*`
+    entry.fam === 'release'
+      ? GITLAB_RELEASE_PUBLISHED_EVENT
+      : mode === 'first' && entry.fam !== 'push'
+        ? `${entry.fam}:opened`
+        : `${entry.fam}:*`
   )
 }
 
@@ -141,10 +158,12 @@ export function gitlabFamCovered(events: readonly string[], family: GlFamily): b
   return events.some((event) => event.startsWith(`${family}:`))
 }
 
-/** Recover the trigger mode: the mentionOnly flag wins, `:opened` ⇒ created. */
+/** Recover the trigger mode: the mentionOnly flag wins, `:opened` (or a release's publish) ⇒ created. */
 export function gitlabTriggerModeOf(hook: { events: readonly string[]; mentionOnly: boolean }): GlTriggerMode {
   if (hook.mentionOnly) return 'mention'
-  return hook.events.some((event) => event.endsWith(':opened')) ? 'first' : 'every'
+  return hook.events.some((event) => event.endsWith(':opened') || event === GITLAB_RELEASE_PUBLISHED_EVENT)
+    ? 'first'
+    : 'every'
 }
 
 function sameMembers(actual: readonly string[], expected: readonly string[]): boolean {
@@ -198,10 +217,12 @@ export interface GitlabFamilySubscription {
 
 /** Compile one row's family+mode into the fields its create/update body carries. */
 export function gitlabFamilySubscription(fam: GlFamily, mode: GlTriggerMode): GitlabFamilySubscription {
+  // A cadence a family cannot carry narrows to its opening, never widens.
+  const own = gitlabTriggerModes(fam).includes(mode) ? mode : 'first'
   return {
-    events: eventsForGitlabFamilies([fam], mode),
-    commentFamilies: commentFamiliesForGitlabFamilies([fam], mode),
-    mentionOnly: mode === 'mention'
+    events: eventsForGitlabFamilies([fam], own),
+    commentFamilies: commentFamiliesForGitlabFamilies([fam], own),
+    mentionOnly: own === 'mention'
   }
 }
 

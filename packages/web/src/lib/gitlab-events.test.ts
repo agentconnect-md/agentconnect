@@ -14,6 +14,7 @@ import {
   gitlabHookFamily,
   gitlabHookNeedsNormalization,
   gitlabTriggerModeOf,
+  gitlabTriggerModes,
   gitlabTriggerTooltip
 } from './gitlab-events'
 
@@ -58,9 +59,24 @@ describe('GL_TRIGGER_PILL', () => {
 })
 
 describe('GL_FAMILIES', () => {
-  it('offers the same two subjects GitHub does — pushes stay held back', () => {
-    expect(GL_FAMILIES.map(({ fam }) => fam)).toEqual(['issues', 'merge_request'])
-    expect(GL_FAMILIES.map(({ label }) => label)).toEqual(['Issues', 'Merge requests'])
+  it('offers issues, merge requests and releases — pushes stay held back', () => {
+    expect(GL_FAMILIES.map(({ fam }) => fam)).toEqual(['issues', 'merge_request', 'release'])
+    expect(GL_FAMILIES.map(({ label }) => label)).toEqual(['Issues', 'Merge requests', 'Releases'])
+  })
+})
+
+describe('the release family', () => {
+  it('offers only its publish, because GitLab names no actor to veto the service account’s own edit', () => {
+    expect(gitlabTriggerModes('release')).toEqual(['first'])
+    expect(gitlabTriggerModes('issues')).toEqual(GL_TRIGGER_MODES)
+    expect(gitlabTriggerTooltip('first', 'reviewer', 'release')).toBe('Runs when a release is published.')
+    const published = { events: ['release:published'], commentFamilies: [], mentionOnly: false }
+    // Every cadence narrows to the publish, and none subscribes a note family or the mention gate.
+    for (const mode of GL_TRIGGER_MODES) expect(gitlabFamilySubscription('release', mode)).toEqual(published)
+    expect(gitlabTriggerModeOf(published)).toBe('first')
+    expect(gitlabHookNeedsNormalization(published)).toBe(false)
+    // An API-written wildcard stays as stored until an explicit pick normalizes it.
+    expect(gitlabHookNeedsNormalization({ events: ['release:*'], commentFamilies: [], mentionOnly: false })).toBe(true)
   })
 })
 

@@ -106,6 +106,7 @@ import {
   giteaHookFamily,
   giteaHookNeedsNormalization,
   giteaTriggerModeOf,
+  giteaTriggerModes,
   giteaTriggerTooltip,
   type GtFamily,
   type GtTriggerMode
@@ -123,6 +124,7 @@ import {
   gitlabHookFamily,
   gitlabHookNeedsNormalization,
   gitlabTriggerModeOf,
+  gitlabTriggerModes,
   gitlabTriggerTooltip,
   type GlFamily,
   type GlTriggerMode
@@ -794,6 +796,15 @@ export default function AgentDetailView() {
   const ghRowTriggerModes = (h: HookDto): readonly GhTriggerMode[] => {
     const fam = githubHookFamily(h)
     return fam ? githubTriggerModes(fam) : GH_TRIGGER_MODES
+  }
+  // A release row offers only the cadences its host can express.
+  const glRowTriggerModes = (h: HookDto): readonly GlTriggerMode[] => {
+    const fam = gitlabHookFamily(h)
+    return fam ? gitlabTriggerModes(fam) : GL_TRIGGER_MODES
+  }
+  const gtRowTriggerModes = (h: HookDto): readonly GtTriggerMode[] => {
+    const fam = giteaHookFamily(h)
+    return fam ? giteaTriggerModes(fam) : GT_TRIGGER_MODES
   }
   const glRowPill = (h: HookDto) => {
     const fam = gitlabHookFamily(h)
@@ -2350,10 +2361,10 @@ export default function AgentDetailView() {
                                   className="w-[126px] flex-none"
                                   {...routing.trigger(
                                     {
-                                      options: GL_TRIGGER_MODES.map((mode) => ({
+                                      options: glRowTriggerModes(h).map((mode) => ({
                                         value: mode,
                                         label: GL_TRIGGER_PILL[mode],
-                                        hint: gitlabTriggerTooltip(mode, da.name)
+                                        hint: gitlabTriggerTooltip(mode, da.name, gitlabHookFamily(h) ?? undefined)
                                       })),
                                       value: gitlabTriggerModeOf(h),
                                       onChange: (mode) => void setGitlabHookCadence(h, mode)
@@ -2502,10 +2513,10 @@ export default function AgentDetailView() {
                                   className="w-[126px] flex-none"
                                   {...routing.trigger(
                                     {
-                                      options: GT_TRIGGER_MODES.map((mode) => ({
+                                      options: gtRowTriggerModes(h).map((mode) => ({
                                         value: mode,
                                         label: GT_TRIGGER_PILL[mode],
-                                        hint: giteaTriggerTooltip(mode, da.name)
+                                        hint: giteaTriggerTooltip(mode, da.name, giteaHookFamily(h) ?? undefined)
                                       })),
                                       value: giteaTriggerModeOf(h),
                                       onChange: (mode) => void setGiteaHookCadence(h, mode)
