@@ -635,7 +635,7 @@ openConnector:
   # Optional immutable digest pin (sha256:…); wins over `tag` when set.
   digest: ''
   # Upstream release tag — the default pin, moved deliberately by chart releases; empty ⇒ mutable `latest` (manual installs only).
-  tag: 'v1.4.0'
+  tag: 'v1.6.5'
   # Fixed at 1 (single sqlite writer, Recreate strategy) — the template does not read a
   # replicas value.
   port: 3000

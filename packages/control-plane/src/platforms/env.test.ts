@@ -131,6 +131,7 @@ describe('composed AppConfigSchema', () => {
         'gitea',
         'linear',
         'slack',
+        'slackbot',
         'telegram',
         'discord',
         'discordbot',
