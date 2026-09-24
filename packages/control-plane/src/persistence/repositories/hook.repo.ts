@@ -2622,8 +2622,9 @@ export class PgHookRepo implements HookRepo {
         if (!currentRun || currentRun.projectionId !== projectionId || currentRun.projectionGeneration !== generation)
           return false
         const authoritative = authoritativeHookProjectionState(toRunRecord(currentRun))
-        if (authoritative === null) return false
-        effectiveDesiredState = authoritative
+        if (authoritative !== null) effectiveDesiredState = authoritative
+        else if (currentRun.redeliveryAttempts > 0 && currentRun.redeliveryLastRequestedAt !== null) return false
+        else effectiveDesiredState = submittedReviewProjectionState(currentRun) ?? desiredState
       }
       const terminal = isTerminalProjectionState(effectiveDesiredState)
       const changed = await tx.hookReviewProjection.updateMany({
