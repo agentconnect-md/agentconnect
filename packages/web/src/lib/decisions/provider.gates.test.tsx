@@ -14,7 +14,6 @@ import type { DecisionQuestion } from '@agentconnect.md/protocol/decision'
 const mocks = vi.hoisted(() => ({ orgId: 'org-a' }))
 
 vi.mock('@/lib/data', async (original) => ({ ...(await original<object>()), MOCK_MODE: true }))
-vi.mock('@/lib/feature-flags', () => ({ featureFlagEnabled: () => true }))
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: mocks.orgId }, myRole: 'owner', orgPath: (path: string) => path })
 }))

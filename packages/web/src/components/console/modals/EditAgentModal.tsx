@@ -817,7 +817,6 @@ export default function EditAgentModal({
                 fallback={{ runtime, model: selectedModel, effort, permissionMode, fastMode }}
                 source={daemon}
                 runtimes={runtimeOptions}
-                enabled={featureFlagEnabled('decisions')}
                 runInSandbox={effectiveRunInSandbox}
                 onFallbackChange={(target) => {
                   if (target.runtime !== runtime) onRuntimeChange(target.runtime)

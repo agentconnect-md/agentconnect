@@ -42,7 +42,6 @@ import DeleteBotModal from '@/components/console/modals/DeleteBotModal'
 import GithubCard from '@/components/console/GithubCard'
 import GiteaCard from '@/components/console/GiteaCard'
 import GitlabCard from '@/components/console/GitlabCard'
-import { featureFlagEnabled } from '@/lib/feature-flags'
 import { botRoutingPath } from '@/lib/decisions/usage-links'
 
 // The free-bot sub-line shows where the bot came from without repeating
@@ -587,7 +586,6 @@ function BotsCard({
                   {RowSettings && <RowSettings bot={b} canWrite={canWrite} />}
                   {b.shareable &&
                     b.transport === 'http' &&
-                    featureFlagEnabled('decisions') &&
                     (!channelListSemantics(b.platform).triggers ||
                       channelListSemantics(b.platform).triggers!.includes('decision')) && (
                       <BotRoutingEntry bot={b} integrations={integrations} />

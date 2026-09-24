@@ -13,7 +13,6 @@ command = [
   '--set', 'image.tag=v1.41.0-rc.90',
   '--set', 'daemonPool.runtime.tag=v1.41.0-rc.88',
   '--set', 'daemonPool.enabled=true',
-  '--set', 'features.decisions=true',
   '--set', 'daemonPool.tag=v1.41.0-rc.89',
   '--set', 'daemonPool.sandboxNamespace=agentconnect-example-agents',
   '--set', 'daemonPool.dataPlane.existingSecret=example-data-plane',
@@ -41,10 +40,6 @@ find = lambda do |kind, name|
   documents.find { |doc| doc['kind'] == kind && doc.dig('metadata', 'name') == name } ||
     abort("missing #{kind}/#{name}")
 end
-
-web_env = find.call('Deployment', 'example-agentconnect-web').dig('spec', 'template', 'spec', 'containers').first.fetch('env')
-web_flags = web_env.find { |item| item['name'] == 'FEATURE_FLAGS' }.fetch('value').split(',')
-abort('enabling Decisions must expose its console flag') unless web_flags.include?('decisions')
 
 deployment = find.call('Deployment', 'example-agentconnect-daemon-pool')
 spec = deployment.fetch('spec')
@@ -459,9 +454,6 @@ defaults_find = lambda do |kind, name|
     abort("defaults must render #{kind}/#{name}")
 end
 default_pool = defaults_find.call('Deployment', 'example-agentconnect-daemon-pool')
-default_web_env = defaults_find.call('Deployment', 'example-agentconnect-web').dig('spec', 'template', 'spec', 'containers').first.fetch('env')
-default_web_flags = default_web_env.find { |item| item['name'] == 'FEATURE_FLAGS' }.fetch('value').split(',')
-abort('Decisions must remain opt-in until the final Jev release') if default_web_flags.include?('decisions')
 default_oc = defaults_find.call('Deployment', 'example-agentconnect-open-connector')
 default_warm = defaults_find.call('SandboxWarmPool', 'example-agentconnect-runtime-pool')
 abort('defaults must hold three warm spares') unless default_warm.dig('spec', 'replicas') == 3

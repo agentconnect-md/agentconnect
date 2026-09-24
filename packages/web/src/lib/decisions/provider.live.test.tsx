@@ -7,7 +7,6 @@ import { DecisionsPrototypeProvider, useDecisionsPrototype } from './provider'
 import { createDecisionApi, setApiOrgId } from '@/lib/api'
 
 vi.mock('@/lib/data', async (original) => ({ ...(await original<object>()), MOCK_MODE: false }))
-vi.mock('@/lib/feature-flags', () => ({ featureFlagEnabled: () => true }))
 const org = vi.hoisted(() => ({ id: 'example-org' as string | null }))
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: org.id ? { id: org.id } : null }) }))
 const auth = vi.hoisted(() => ({ getToken: async () => undefined, getIdTokenRaw: async () => undefined }))

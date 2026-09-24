@@ -14,7 +14,6 @@ import {
 } from '@agentconnect.md/protocol/decision'
 import type { DecisionApi, DecisionProviderOption, DecisionSummary } from '@agentconnect.md/protocol/decision-api'
 import { useOrgs } from '@/lib/org-context'
-import { featureFlagEnabled } from '@/lib/feature-flags'
 import { createDecisionMockApi } from './mock-api'
 import { createDecisionApi } from '@/lib/api'
 import { MOCK_MODE } from '@/lib/data'
@@ -118,10 +117,9 @@ export function DecisionsPrototypeProvider({ children }: { children: ReactNode }
   const [bindingDrafts, setBindingDrafts] = useState<Record<string, DecisionBindingDraft>>({})
   const [routingDrafts, setRoutingDrafts] = useState<Record<string, RoutingEditorState>>({})
   const [pendingCreate, setPendingCreate] = useState<InlineCreateTarget | null>(null)
-  // Disabled features and an unresolved organization must not make API requests.
-  const { data, error, isLoading, mutate } = useSWR(
-    orgId && featureFlagEnabled('decisions') ? ['decisions', api.mode, orgId] : null,
-    () => api.listDecisions()
+  // An unresolved organization must not make API requests.
+  const { data, error, isLoading, mutate } = useSWR(orgId ? ['decisions', api.mode, orgId] : null, () =>
+    api.listDecisions()
   )
   const reload = useCallback(async () => mutate(), [mutate])
   const gateKeyFor = useCallback(
@@ -271,11 +269,9 @@ export function useDecisionProviders(): {
   error: string | null
 } {
   const { api, orgId } = useDecisionsPrototype()
-  const { data, error } = useSWR(
-    orgId && featureFlagEnabled('decisions') ? ['decision-providers', api.mode, orgId] : null,
-    () => api.listProviders(),
-    { refreshInterval: 30000 }
-  )
+  const { data, error } = useSWR(orgId ? ['decision-providers', api.mode, orgId] : null, () => api.listProviders(), {
+    refreshInterval: 30000
+  })
   return {
     providers: data ?? [],
     daemonId: data?.[0]?.daemonId ?? null,

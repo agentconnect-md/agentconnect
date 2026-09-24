@@ -4363,10 +4363,6 @@
       "titleUsages": "请检查使用此决策的位置",
       "gateBody": "条件不再匹配新答案的对话会被标记为需要复核，并在修复前保持停用：{names}"
     },
-    "notOffered": {
-      "title": "决策功能未启用",
-      "body": "该控制台尚未开启决策功能。管理员可以通过 decisions 功能开关启用。"
-    },
     "providerModel": "提供方 · 模型",
     "gateTry": {
       "senderLabel": "历史消息 {index} 的发送者",

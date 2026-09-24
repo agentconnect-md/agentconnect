@@ -10,7 +10,7 @@ import * as decisionMock from '@/lib/decisions/mock-api'
 import { DecisionsPrototypeProvider } from '@/lib/decisions/provider'
 import type { DecisionApi } from '@agentconnect.md/protocol/decision-api'
 
-const env = vi.hoisted(() => ({ botId: 'support-bot', flag: true, role: 'owner' as 'owner' | 'viewer' }))
+const env = vi.hoisted(() => ({ botId: 'support-bot', role: 'owner' as 'owner' | 'viewer' }))
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   useParams: () => ({ botId: env.botId }),
@@ -18,7 +18,6 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams()
 }))
 vi.mock('@/lib/data', async (original) => ({ ...(await original<object>()), MOCK_MODE: true }))
-vi.mock('@/lib/feature-flags', () => ({ featureFlagEnabled: () => env.flag }))
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'org-test' }, myRole: env.role, orgPath: (path: string) => `/o/acme${path}` })
 }))
@@ -42,7 +41,7 @@ afterEach(async () => {
   container?.remove()
   root = undefined
   container = undefined
-  Object.assign(env, { botId: 'support-bot', flag: true, role: 'owner' })
+  Object.assign(env, { botId: 'support-bot', role: 'owner' })
   vi.restoreAllMocks()
 })
 
@@ -122,7 +121,7 @@ describe('BotRoutingView', () => {
     )
   })
 
-  it('explains an unshared or unknown bot and a disabled feature instead of offering the editor', async () => {
+  it('explains an unshared or unknown bot instead of offering the editor', async () => {
     env.botId = 'moderator-bot'
     const unshared = await render()
     expect(unshared.textContent).toContain('only for a shared bot')
@@ -132,11 +131,6 @@ describe('BotRoutingView', () => {
     env.botId = 'missing-bot'
     const missing = await render()
     expect(missing.textContent).toContain('This bot does not exist')
-    if (root) await act(async () => root?.unmount())
-    container?.remove()
-    env.flag = false
-    const off = await render()
-    expect(off.querySelector('[data-testid="routing-editor"]')).toBeNull()
   })
 
   it('reads as a new, unsaved draft for a bot without routing', async () => {

@@ -14,7 +14,6 @@ import { groupPlacementValue, poolLabel, POOL_PLACEMENT } from '@/lib/data'
 import { useDecisionProviders, useDecisionsPrototype } from '@/lib/decisions/provider'
 import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
-import { DecisionsNotOffered } from '@/components/console/decisions/DecisionsNotOffered'
 import { DecisionModelSelect } from '@/components/console/decisions/DecisionModelSelect'
 import { DecisionUsageList } from '@/components/console/decisions/DecisionUsageList'
 import { decisionInUse } from '@/lib/decisions/binding'
@@ -293,8 +292,6 @@ function DecisionEditor() {
   const usages = usageState.usages
   const usageNames = [...usages.map((usage) => usage.label), ...gated.map((usage) => usage.channelName)].join(', ')
   const hrefFor = (usage: DecisionUsage) => decisionUsageHref(usage, orgPath, integrations)
-
-  if (!featureFlagEnabled('decisions')) return <DecisionsNotOffered />
 
   if (!draft) {
     return (

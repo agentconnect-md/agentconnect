@@ -29,7 +29,7 @@ export const NAV_GROUPS: NavItem[][] = [
     { href: '/agents', label: 'Agents', icon: 'bot' },
     { href: '/sessions', label: 'Sessions', icon: 'messages-square' },
     // The judgement a channel consults, so it sits with the work rather than with Infra.
-    { href: '/decisions', label: 'Decisions', icon: 'split', requires: 'decisions' },
+    { href: '/decisions', label: 'Decisions', icon: 'split' },
     { href: '/crons', label: 'Schedules', icon: 'calendar-clock' },
     { href: '/tools', label: 'Tools & Skills', icon: 'blocks' },
     { href: '/integrations', label: 'Integrations', icon: 'plug' },
@@ -59,7 +59,7 @@ export const MOBILE_NAV: NavItem[] = [
 export const MORE_ROWS: NavItem[] = [
   { href: '/tools', label: 'Tools & Skills', icon: 'blocks' },
   { href: '/integrations', label: 'Integrations', icon: 'plug' },
-  { href: '/decisions', label: 'Decisions', icon: 'split', requires: 'decisions' },
+  { href: '/decisions', label: 'Decisions', icon: 'split' },
   { href: '/knowledge', label: 'Knowledge', icon: 'book-open' },
   { href: '/daemons', label: 'Infra', icon: 'server' },
   { href: '/usage', label: 'Analytics', icon: 'circle-gauge' },

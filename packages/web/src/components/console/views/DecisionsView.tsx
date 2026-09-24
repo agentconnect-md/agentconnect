@@ -10,8 +10,6 @@ import { LoadingState } from '@/components/marks'
 import { formatDateTime } from '@/i18n/format'
 import { useOrgs } from '@/lib/org-context'
 import { useDecisionProviders, useDecisionsPrototype } from '@/lib/decisions/provider'
-import { DecisionsNotOffered } from '@/components/console/decisions/DecisionsNotOffered'
-import { featureFlagEnabled } from '@/lib/feature-flags'
 import type { DecisionSummary } from '@agentconnect.md/protocol/decision-api'
 
 // Name and question lead at every width.
@@ -38,8 +36,6 @@ function DecisionsList() {
   const { providers } = useDecisionProviders()
   const providerName = (providerId: string) => providers.find((entry) => entry.id === providerId)?.name ?? providerId
   const usageCount = (entry: DecisionSummary) => entry.usageCount + gateUsages(entry.id).length
-
-  if (!featureFlagEnabled('decisions')) return <DecisionsNotOffered />
 
   return (
     <div className="wrap max-desktop:p-4">

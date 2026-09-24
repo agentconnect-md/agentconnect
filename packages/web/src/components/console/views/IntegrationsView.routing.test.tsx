@@ -9,7 +9,6 @@ import type { BotDto } from '@/lib/api'
 const mocks = vi.hoisted(() => ({ bots: [] as BotDto[], integrations: [] as unknown[] }))
 
 vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams() }))
-vi.mock('@/lib/feature-flags', () => ({ featureFlagEnabled: (flag: string) => flag === 'decisions' }))
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ me: null }) }))
 vi.mock('@/components/console/ModalProvider', () => ({ useModal: () => ({ openModal: vi.fn() }) }))
 vi.mock('@/lib/org-context', () => {
