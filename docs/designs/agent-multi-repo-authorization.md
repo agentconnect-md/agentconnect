@@ -7,8 +7,8 @@
 >
 > **Installation grants** (decision 10): the control-plane half is implemented —
 > the table, the owner-only routes, the projected `additionalInstallations`, the
-> mint and hook gates, and the refusal that names the grant. The daemon's use of
-> the projection and the console are pending.
+> mint and hook gates, and the refusal that names the grant. The daemon offers a
+> grant's repositories on demand; the console is pending.
 >
 > Scratch workspaces use the same explicit repository allowlist and have no
 > implicit repository. Converting a scratch workspace to GitHub makes the target

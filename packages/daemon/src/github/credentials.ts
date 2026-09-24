@@ -13,6 +13,7 @@ const GITHUB_SCOPE: ManagedCredentialScope = { host: GITHUB_MANAGED_HOST }
 
 export const githubCredentials: CodeHostCredentialModule = {
   provider: 'github',
+  displayName: 'GitHub',
   specGitCredential: 'github-app',
   hostFromSpec: false,
   managedHost: (): ManagedCredentialHost => GITHUB_MANAGED_HOST,

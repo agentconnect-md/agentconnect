@@ -171,15 +171,29 @@ function materializedRow(row: { materialize?: RepoMaterialization }): boolean {
   return (row.materialize ?? 'always') === 'always'
 }
 
-/** Whether any authorized row is left for the agent to clone, from the spec alone — so an agent whose rows are all `always` places, reads and makes nothing for it. */
-function hasOnDemandRows(agent: Agent): boolean {
+/** Whether the agent has anything for a session to clone, from the spec alone: a row not checked out, or any installation grant (on demand, `decision` included, until the selector exists). */
+function hasOnDemandAuthorizations(agent: Agent): boolean {
+  if ((agent.workspace.additionalInstallations ?? []).length > 0) return true
   return (agent.workspace.additionalRepos ?? []).some((row) => !materializedRow(row))
+}
+
+/** The repository name an installation grant's clone example stands in for. */
+const ON_DEMAND_REPO_PLACEHOLDER = '<repo>'
+
+/** One installation grant as a session is told of it: its host's name, its account, and a clone example for a placeholder repository. */
+export interface OnDemandInstallation {
+  hostName: string
+  accountLogin: string
+  repoFullName: string
+  cloneUrl: string
 }
 
 /** Where one session clones the authorized repositories it was not handed, and which those are, sorted by name (decision 20). */
 export interface OnDemandClones {
   path: string
   repositories: readonly { repoFullName: string; cloneUrl: string }[]
+  /** The installation grants, sorted by account; absent when there are none. */
+  installations?: readonly OnDemandInstallation[]
 }
 
 /** A prepared secondary root, as sessions and the standing context see it. */
@@ -725,16 +739,48 @@ export class WorkspaceManager {
 
   /** The directory this session clones on-demand repositories into, with what it may clone (decision 20) — the one answer the additional directories and the standing context both read; undefined when it was handed every repository. */
   async sessionOnDemandClones(agent: Agent, request?: SessionRootScope): Promise<OnDemandClones | undefined> {
-    if (request?.sessionKey === undefined || !hasOnDemandRows(agent)) return undefined
+    if (request?.sessionKey === undefined || !hasOnDemandAuthorizations(agent)) return undefined
     const roots = this.onDemandRootsOf(agent, await this.sessionCwdSubtreeName(agent, request))
-    if (roots.length === 0) return undefined
+    const installations = this.onDemandInstallationsOf(agent)
+    if (roots.length === 0 && installations.length === 0) return undefined
     const { dir, fs } = this.onDemandCloneDir(agent, { ...request, sessionKey: request.sessionKey })
     // Only the directory preparation made, asked of the filesystem that holds it: never a link left in its place.
     if ((await fs.stat(dir)) !== 'dir') return undefined
     return {
       path: this.canonicalWorkspacePath(agent.id, dir),
-      repositories: roots.map((root) => ({ repoFullName: root.repoFullName, cloneUrl: root.cloneUrl }))
+      repositories: roots.map((root) => ({ repoFullName: root.repoFullName, cloneUrl: root.cloneUrl })),
+      ...(installations.length > 0 ? { installations } : {})
     }
+  }
+
+  /** Whether a session standing in `cwdSubtreeName` (a reviewed root, else the primary) has anything to clone on demand. */
+  private hasOnDemandFor(agent: Agent, cwdSubtreeName?: string): boolean {
+    if (!hasOnDemandAuthorizations(agent)) return false
+    return this.onDemandInstallationsOf(agent).length > 0 || this.onDemandRootsOf(agent, cwdSubtreeName).length > 0
+  }
+
+  /** The agent's installation grants with a clone example each, sorted by account; a grant its host cannot address is skipped, as a row is. */
+  private onDemandInstallationsOf(agent: Agent): OnDemandInstallation[] {
+    const installations: OnDemandInstallation[] = []
+    for (const grant of agent.workspace.additionalInstallations ?? []) {
+      const host = codeHostCredentials(grant.provider)
+      const repoFullName = `${grant.accountLogin}/${ON_DEMAND_REPO_PLACEHOLDER}`
+      try {
+        if (host === undefined || !isRepoSegment(grant.accountLogin)) throw new Error('not a placeable account')
+        // The host's own clone URL for the placeholder, which a URL parser percent-encodes.
+        const cloneUrl = host
+          .secondaryCloneUrl(repoFullName, this.specHostsOf(agent))
+          .replace(encodeURIComponent(ON_DEMAND_REPO_PLACEHOLDER), ON_DEMAND_REPO_PLACEHOLDER)
+        installations.push({ hostName: host.displayName, accountLogin: grant.accountLogin, repoFullName, cloneUrl })
+      } catch (err) {
+        workspaceLog.warn(
+          `workspace: agent "${agent.id}" installation grant "${grant.accountLogin}" (${grant.provider}) is skipped (${formatErr(err)})`
+        )
+      }
+    }
+    return installations.sort((a, b) =>
+      a.accountLogin < b.accountLogin ? -1 : a.accountLogin > b.accountLogin ? 1 : 0
+    )
   }
 
   /** The authorized repositories a session is not handed, sorted: every row preparation does not check out, less the reviewed root the session stands in. */
@@ -767,7 +813,7 @@ export class WorkspaceManager {
     cwdSubtreeName?: string,
     confinedDir?: string
   ): Promise<void> {
-    if (!hasOnDemandRows(agent) || this.onDemandRootsOf(agent, cwdSubtreeName).length === 0) return
+    if (!this.hasOnDemandFor(agent, cwdSubtreeName)) return
     const [dir, fs] =
       confinedDir === undefined
         ? [this.agentOnDemandCloneDir(agent, sessionKey), this.fsFor(agent.id)]
@@ -1617,9 +1663,9 @@ export class WorkspaceManager {
     )
   }
 
-  /** Whether one session may own an on-demand clone directory beside the agent's roots (decision 20), even a shared one: the rows say so, or this disk holds one; a pod's volume is asked only once bound. */
+  /** Whether one session may own an on-demand clone directory beside the agent's roots (decision 20), even a shared one: the spec says so, or this disk holds one; a pod's volume is asked only once bound. */
   mayOwnOnDemandClones(agent: Agent, sessionKey: string): boolean {
-    if (hasOnDemandRows(agent)) return true
+    if (hasOnDemandAuthorizations(agent)) return true
     if (this.offDisk({ agentId: agent.id })) return false
     return isRealDir(join(onDemandClonesDirIn(this.agentRootFor(agent)), this.sessionWorktreeId(sessionKey)))
   }
@@ -2917,8 +2963,8 @@ export class WorkspaceManager {
     // Recorded last, in the session's own directory, which goes where the session runs; the primary too, so only a session prepared before this has none and asks the agent's subtree.
     const sessionDir = this.sessionDir(agent, request.sessionKey)
     const fs = this.fsFor(agent.id, { sessionKey: request.sessionKey })
-    // A session that cloned nothing (a scratch primary, every row on demand) still owns the directory its on-demand clones land in.
-    if (!cwdRoot && hasOnDemandRows(agent) && this.onDemandRootsOf(agent).length > 0) {
+    // A session that cloned nothing (a scratch primary, everything on demand) still owns the directory its on-demand clones land in.
+    if (!cwdRoot && this.hasOnDemandFor(agent)) {
       if ((await fs.stat(sessionDir)) === 'missing') {
         await fs.mkdir(sessionDir, 0o700).catch((err: unknown) => {
           workspaceLog.warn(

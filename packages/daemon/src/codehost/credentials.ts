@@ -54,6 +54,8 @@ export interface SecondaryRootPlacement {
 /** One code host's credential and placement behavior behind the seam. */
 export interface CodeHostCredentialModule {
   readonly provider: CodeHostProvider
+  /** The host's name as prose names it, e.g. in the standing context. */
+  readonly displayName: string
   /** The spec's `gitCredential` value that names this host's managed credential. */
   readonly specGitCredential: string
   /** True when the instance comes off the spec rather than being this host's one fixed address (§24.4). */

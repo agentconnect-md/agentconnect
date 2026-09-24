@@ -3099,6 +3099,43 @@ describe('SessionManager — records that a runtime was handed an on-demand clon
   })
 })
 
+describe('SessionManager — an installation grant alone hands out the clone directory', () => {
+  it('marks the row and names the account in the prompt, for a grant-only agent', async () => {
+    const store = await newStore()
+    const workspaces = new WorkspaceManager()
+    const granted = {
+      ...agent,
+      dir: mkdtempSync(join(tmpdir(), 'ac-sm-grant-')),
+      workspace: {
+        ...agent.workspace,
+        additionalInstallations: [
+          { provider: 'github', accountLogin: 'example-co', access: 'read', materialize: 'on-demand' }
+        ]
+      }
+    } as typeof agent
+    const host = { newSession: vi.fn(async () => 'acp-1') } as any
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      agentById: () => granted,
+      memory,
+      workspaces,
+      prepareWorkspace: (a, _warm, request) => workspaces.prepareSessionWorkspace(a, request!)
+    })
+
+    const turn = await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+
+    const key = sessionKey('slack', 'C1', '100.1', 'bot-a')
+    const clones = realpathSync(join(workspaces.agentRootFor(granted), 'clones', workspaces.sessionWorktreeId(key)))
+    expect(host.newSession.mock.calls[0][4]).toEqual([clones])
+    expect((await store.getSession(key))?.onDemandClones).toBe(1)
+    const prompted = turn.blocks.map((b) => ('text' in b ? (b.text ?? '') : '')).join('\n')
+    expect(prompted).toContain('Any repository of the GitHub account example-co is authorized.')
+    expect(prompted).toContain(`git clone https://github.com/example-co/<repo> ${join(clones, 'example-co', '<repo>')}`)
+    await store.close()
+  })
+})
+
 describe('SessionManager — standing context composed only where a prompt reads it', () => {
   const rootPath = '/srv/agents/bot-a/repos/acme/infra/checkout'
   const roots = [{ path: rootPath, repoFullName: 'acme/infra', branch: 'trunk' }]

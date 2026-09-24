@@ -11,6 +11,7 @@ import type { ManagedCredentialScope } from '../workspace/git-injection.js'
 
 export const gitlabCredentials: CodeHostCredentialModule = {
   provider: 'gitlab',
+  displayName: 'GitLab',
   specGitCredential: 'gitlab',
   hostFromSpec: true,
   managedHost: (spec) => gitlabManagedHost(spec.gitlabHost),

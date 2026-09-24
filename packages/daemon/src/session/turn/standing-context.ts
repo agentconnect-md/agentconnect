@@ -48,9 +48,11 @@ export type StandingContextFileSecret = { sourceVar: string; pointerVar: string 
 export type OnDemandCloneContext = {
   path: string
   repositories: readonly { repoFullName: string; cloneUrl: string }[]
+  /** Installation grants sorted by account, each with a clone example for a placeholder repository of it. */
+  installations?: readonly { hostName: string; accountLogin: string; repoFullName: string; cloneUrl: string }[]
 }
 
-/** The most not-checked-out repositories the standing context names; the rest are counted. */
+/** The most not-checked-out repositories (or grant accounts) the standing context names; the rest are counted. */
 export const MAX_ON_DEMAND_NAMES = 100
 
 /** Everything the standing context is derived from. Every field is already resolved by
@@ -220,23 +222,43 @@ export function buildWorkspaceRootsAppend(
         ...roots.map((root) => `- ${root.path} — ${root.repoFullName} (${root.branch})`)
       ]
     : []
-  const clonable = onDemand?.repositories.length ? onDemandLines(onDemand) : []
+  const clonable = onDemand ? onDemandLines(onDemand) : []
   if (!listed.length && !clonable.length) return ''
   return ['# Additional repositories', ...listed, ...(listed.length && clonable.length ? [''] : []), ...clonable].join(
     '\n'
   )
 }
 
-function onDemandLines({ path, repositories }: OnDemandCloneContext): string[] {
-  const [first] = repositories
-  const names = repositories.slice(0, MAX_ON_DEMAND_NAMES).map((repo) => repo.repoFullName)
-  const more = repositories.length - names.length
+function onDemandLines({ path, repositories, installations = [] }: OnDemandCloneContext): string[] {
+  // The clone example is the first listed row's, else the first grant's placeholder repository.
+  const first = repositories[0] ?? installations[0]
+  if (first === undefined) return []
   return [
-    `Authorized but not checked out: ${names.join(', ')}${more > 0 ? ` and ${more} more` : ''}.`,
+    ...(repositories.length
+      ? [`Authorized but not checked out: ${namesWithMore(repositories.map((repo) => repo.repoFullName))}.`]
+      : []),
+    ...installationLines(installations, repositories.length > 0),
     `When you need one, clone it into ${path} as <owner>/<repo>, e.g. ` +
-      `\`git clone ${first!.cloneUrl} ${onDemandCloneTarget(path, first!.repoFullName)}\`.`,
+      `\`git clone ${first.cloneUrl} ${onDemandCloneTarget(path, first.repoFullName)}\`.`,
     'Credentials for these repositories are automatic.'
   ]
+}
+
+/** One line per host naming the accounts whose every repository an installation grant authorizes. */
+function installationLines(installations: NonNullable<OnDemandCloneContext['installations']>, also: boolean): string[] {
+  const authorized = also ? 'also authorized' : 'authorized'
+  return [...new Set(installations.map((grant) => grant.hostName))].map((host) => {
+    const accounts = installations.filter((grant) => grant.hostName === host).map((grant) => grant.accountLogin)
+    return accounts.length === 1
+      ? `Any repository of the ${host} account ${accounts[0]} is ${authorized}.`
+      : `Any repository of these ${host} accounts is ${authorized}: ${namesWithMore(accounts)}.`
+  })
+}
+
+/** At most {@link MAX_ON_DEMAND_NAMES} names, the rest counted. */
+function namesWithMore(names: readonly string[]): string {
+  const more = names.length - MAX_ON_DEMAND_NAMES
+  return `${names.slice(0, MAX_ON_DEMAND_NAMES).join(', ')}${more > 0 ? ` and ${more} more` : ''}`
 }
 
 /** `<dir>/<owner>/<repo>`, the depth retirement judges a clone at; a nested GitLab path keeps its top group and its own name. */

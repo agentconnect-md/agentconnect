@@ -106,6 +106,72 @@ describe('buildWorkspaceRootsAppend with on-demand repositories (decision 20)', 
   })
 })
 
+describe('buildWorkspaceRootsAppend with installation grants (agent-multi-repo-authorization.md decision 10)', () => {
+  const dir = join('/srv', 'agents', 'bot-multi', 'clones', 'a1b2c3')
+  const grant = (
+    accountLogin: string,
+    hostName = 'GitHub',
+    cloneUrl = `https://github.com/${accountLogin}/<repo>`
+  ) => ({
+    hostName,
+    accountLogin,
+    repoFullName: `${accountLogin}/<repo>`,
+    cloneUrl
+  })
+
+  it('names the accounts and clones the first one’s placeholder repository when no row is listed', () => {
+    expect(
+      buildWorkspaceRootsAppend([], {
+        path: dir,
+        repositories: [],
+        installations: [grant('acme'), grant('example-co')]
+      })
+    ).toBe(
+      [
+        '# Additional repositories',
+        'Any repository of these GitHub accounts is authorized: acme, example-co.',
+        `When you need one, clone it into ${dir} as <owner>/<repo>, e.g. ` +
+          `\`git clone https://github.com/acme/<repo> ${join(dir, 'acme', '<repo>')}\`.`,
+        'Credentials for these repositories are automatic.'
+      ].join('\n')
+    )
+  })
+
+  it('follows the listed rows, whose first row stays the example, one line per host', () => {
+    const block = buildWorkspaceRootsAppend(ROOTS, {
+      path: dir,
+      repositories: [{ repoFullName: 'example-co/api', cloneUrl: 'https://github.com/example-co/api' }],
+      installations: [
+        grant('acme'),
+        grant('example-group', 'GitLab', 'https://git.example.test/example-group/<repo>.git')
+      ]
+    })
+
+    expect(block.split('\n').slice(-5)).toEqual([
+      'Authorized but not checked out: example-co/api.',
+      'Any repository of the GitHub account acme is also authorized.',
+      'Any repository of the GitLab account example-group is also authorized.',
+      `When you need one, clone it into ${dir} as <owner>/<repo>, e.g. ` +
+        `\`git clone https://github.com/example-co/api ${join(dir, 'example-co', 'api')}\`.`,
+      'Credentials for these repositories are automatic.'
+    ])
+  })
+
+  it('names at most 100 accounts, in the order given, and counts the rest', () => {
+    const installations = Array.from({ length: 102 }, (_, index) =>
+      grant(`example-org-${String(index).padStart(3, '0')}`)
+    )
+
+    const line = buildWorkspaceRootsAppend(undefined, { path: dir, repositories: [], installations })
+      .split('\n')
+      .find((entry) => entry.startsWith('Any repository of these GitHub accounts'))!
+
+    expect(line).toMatch(/: example-org-000, example-org-001, /)
+    expect(line).toContain('example-org-099 and 2 more.')
+    expect(line).not.toContain('example-org-100')
+  })
+})
+
 describe('buildStandingContext with workspace roots', () => {
   it('re-asserts the roots on resume, right after the agent meta block', () => {
     const context = buildStandingContext({ ...BASE, workspaceRoots: ROOTS })
