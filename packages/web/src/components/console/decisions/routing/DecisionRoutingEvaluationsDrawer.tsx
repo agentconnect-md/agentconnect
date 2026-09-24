@@ -11,12 +11,11 @@ import { errorParts } from '@/lib/decisions/binding'
 import { answerText, latencyText } from '@/lib/decisions/evaluations'
 import { matchedRuleNumbers, targetsText } from '@/lib/decisions/routing-evaluations'
 import type { DecisionRoutingEvaluationRecord } from '@agentconnect.md/protocol/decision'
-import { formatEvaluationTime } from '../DecisionEvaluationSheet'
-import { DecisionRoutingEvaluationSheet, RoutingOutcomeBadge } from './DecisionRoutingEvaluationSheet'
+import { EvaluationsDrawer, formatEvaluationTime } from '../EvaluationParts'
+import { DecisionRoutingEvaluationDetail, RoutingOutcomeBadge } from './DecisionRoutingEvaluationDetail'
 
 const PAGE = 20
-const COLUMNS =
-  'desktop:grid desktop:grid-cols-[120px_minmax(0,0.9fr)_minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,1.2fr)_minmax(0,1fr)_64px] desktop:items-center desktop:gap-3'
+const COLUMNS = 'desktop:grid desktop:grid-cols-[96px_minmax(0,1fr)_auto_60px] desktop:items-center desktop:gap-3'
 
 function unavailableKind(cause: unknown): 'offline' | 'unsupported' | null {
   const parts = errorParts(cause)
@@ -24,24 +23,32 @@ function unavailableKind(cause: unknown): 'offline' | 'unsupported' | null {
   return parts.code === 'DAEMON_UPGRADE_REQUIRED' ? 'unsupported' : 'offline'
 }
 
-export function DecisionRoutingEvaluationsPanel({
+export function DecisionRoutingEvaluationsDrawer({
   botId,
+  botName,
   channels,
   agentNames,
-  ruleNumbers
+  ruleNumbers,
+  onClose
 }: {
   botId: string
+  botName?: string
   /** The routed channels the filter offers, with their names. */
   channels: Array<{ channelId: string; name: string }>
   agentNames: ReadonlyMap<string, string>
   /** Each saved rule's editor number, so a matched rule reads as the row the editor shows. */
   ruleNumbers: ReadonlyMap<string, number>
+  onClose: () => void
 }) {
   const t = useTranslations('Decisions.routing')
   const tDecisions = useTranslations('Decisions')
   const locale = useLocale()
-  const { api, orgId } = useDecisionsPrototype()
+  const { api, orgId, decisions } = useDecisionsPrototype()
   const words = { yes: tDecisions('condition.yes'), no: tDecisions('condition.no') }
+  const decisionName = useCallback(
+    (id: string) => decisions.find((entry) => entry.id === id)?.name ?? tDecisions('binding.hiddenDecision'),
+    [decisions, tDecisions]
+  )
   const [channelId, setChannelId] = useState<string>('')
   const { data, error, isLoading, mutate } = useSWR(
     ['decision-routing-evaluations', api.mode, orgId, botId, channelId],
@@ -55,13 +62,17 @@ export function DecisionRoutingEvaluationsPanel({
   const [loadingMore, setLoadingMore] = useState(false)
   const [moreError, setMoreError] = useState<string | null>(null)
   const [open, setOpen] = useState<{ seq: number; channel: string } | null>(null)
-  const opener = useRef<HTMLElement | null>(null)
+  const opener = useRef<string | null>(null)
+  const listRef = useRef<HTMLUListElement>(null)
   useEffect(() => {
-    if (open !== null || !opener.current) return
-    opener.current.focus()
+    if (open !== null || opener.current === null) return
+    const key = opener.current
+    ;[...(listRef.current?.querySelectorAll<HTMLElement>('[data-row]') ?? [])]
+      .find((row) => row.dataset.row === key)
+      ?.focus()
     opener.current = null
   }, [open])
-  const closeSheet = useCallback(() => setOpen(null), [])
+  const back = useCallback(() => setOpen(null), [])
   const more = appended && appended.base === data ? appended : null
   const items = [...(data?.items ?? []), ...(more?.items ?? [])]
   const nextCursor = more ? more.nextCursor : (data?.nextCursor ?? null)
@@ -93,7 +104,7 @@ export function DecisionRoutingEvaluationsPanel({
   const note = (icon: string, text: string, action?: { label: string; run: () => void }) => (
     <div
       role="status"
-      className="flex flex-wrap items-start gap-2 font-sans text-[12px] font-normal leading-[1.55] text-(--text-tertiary)"
+      className="flex flex-wrap items-start gap-2 px-[18px] py-4 font-sans text-[12px] font-normal leading-[1.55] text-(--text-tertiary)"
     >
       <Icon name={icon} size={13} className="mt-[2px] flex-none" />
       <span className="min-w-0 flex-1">{text}</span>
@@ -121,19 +132,16 @@ export function DecisionRoutingEvaluationsPanel({
   } else if (items.length === 0) body = note('info', t('evaluations.empty'))
   else
     body = (
-      <div className="overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card)">
+      <>
         <div
-          className={`hidden border-b border-(--border-subtle) px-[12px] py-[7px] font-sans text-[11px] font-medium leading-normal text-(--text-tertiary) ${COLUMNS}`}
+          className={`hidden border-b border-(--border-subtle) bg-(--surface-sunken) px-[18px] py-[7px] font-sans text-[11px] font-medium leading-normal text-(--text-tertiary) ${COLUMNS}`}
         >
           <span>{t('evaluations.columns.time')}</span>
-          <span>{t('evaluations.columns.channel')}</span>
-          <span>{t('evaluations.columns.answer')}</span>
-          <span>{t('evaluations.columns.matched')}</span>
-          <span>{t('evaluations.columns.targets')}</span>
+          <span>{t('evaluations.columns.channelAnswer')}</span>
           <span>{t('evaluations.columns.outcome')}</span>
           <span className="text-right">{t('evaluations.columns.latency')}</span>
         </div>
-        <ul className="m-0 list-none p-0">
+        <ul ref={listRef} className="m-0 list-none p-0">
           {items.map((record) => {
             const answer =
               answerText(record.answer, words) ??
@@ -149,50 +157,38 @@ export function DecisionRoutingEvaluationsPanel({
               : numbers.length
                 ? `${t('evaluations.rules', { numbers: numbers.join(', ') })}${keys}`
                 : record.matchedKeys.join(', ') || '—'
+            const rowKey = `${record.channel}:${record.seq}`
             return (
-              <li key={`${record.channel}:${record.seq}`} className="border-b border-(--border-subtle) last:border-b-0">
+              <li key={rowKey} className="border-b border-(--border-subtle)">
                 <button
                   type="button"
-                  onClick={(event) => {
-                    opener.current = event.currentTarget
+                  data-row={rowKey}
+                  onClick={() => {
+                    opener.current = rowKey
                     setOpen({ seq: record.seq, channel: record.channel })
                   }}
-                  className={`flex w-full cursor-pointer flex-col gap-[5px] border-0 bg-transparent px-[12px] py-[9px] text-left hover:bg-(--surface-hover) ${COLUMNS}`}
+                  className={`flex w-full cursor-pointer flex-col gap-[5px] border-0 bg-transparent px-[18px] py-[10px] text-left hover:bg-(--surface-hover) ${COLUMNS}`}
                 >
                   <span className="flex items-center justify-between gap-2 desktop:contents">
-                    <span className="mono text-[11.5px] text-(--text-secondary)">
+                    <span className="mono text-[11px] text-(--text-tertiary)">
                       {formatEvaluationTime(record.at, locale)}
                     </span>
                     <span className="desktop:hidden">
                       <RoutingOutcomeBadge record={record} />
                     </span>
                   </span>
-                  <span className="mono min-w-0 truncate text-[11.5px] text-(--text-secondary)">
-                    <span className="font-sans text-(--text-tertiary) desktop:hidden">
-                      {t('evaluations.columns.channel')}:{' '}
+                  <span className="flex min-w-0 flex-col gap-[3px]">
+                    <span className="truncate font-sans text-[12.5px] font-normal leading-[1.4] text-(--text-primary)">
+                      <span className="mono text-(--text-secondary)">{channelName(record.channel)}</span> · {answer}
                     </span>
-                    {channelName(record.channel)}
-                  </span>
-                  <span className="min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-primary)">
-                    <span className="text-(--text-tertiary) desktop:hidden">{t('evaluations.columns.answer')}: </span>
-                    {answer}
-                  </span>
-                  <span className="mono min-w-0 truncate text-[11.5px] text-(--text-secondary)">
-                    <span className="font-sans text-(--text-tertiary) desktop:hidden">
-                      {t('evaluations.columns.matched')}:{' '}
+                    <span className="mono truncate text-[11px] text-(--text-tertiary)">
+                      {matched} · {targetsText(record, agentNames) ?? '—'}
                     </span>
-                    {matched}
-                  </span>
-                  <span className="mono min-w-0 truncate text-[11.5px] text-(--text-secondary)">
-                    <span className="font-sans text-(--text-tertiary) desktop:hidden">
-                      {t('evaluations.columns.targets')}:{' '}
-                    </span>
-                    {targetsText(record, agentNames) ?? '—'}
                   </span>
                   <span className="hidden min-w-0 desktop:flex">
                     <RoutingOutcomeBadge record={record} />
                   </span>
-                  <span className="mono text-[11.5px] text-(--text-tertiary) desktop:text-right">
+                  <span className="mono text-[11px] text-(--text-tertiary) desktop:text-right">
                     <span className="font-sans desktop:hidden">{t('evaluations.columns.latency')}: </span>
                     {latencyText(record.latencyMs) ?? '—'}
                   </span>
@@ -201,46 +197,66 @@ export function DecisionRoutingEvaluationsPanel({
             )
           })}
         </ul>
-      </div>
+        {nextCursor !== null && (
+          <div className="flex flex-wrap items-center gap-[9px] px-[18px] py-3">
+            <Button variant="secondary" size="sm" disabled={loadingMore} onClick={() => void loadMore()}>
+              {loadingMore ? tDecisions('loading') : t('evaluations.loadMore')}
+            </Button>
+            {moreError && (
+              <span className="font-sans text-[12px] font-normal leading-normal text-(--status-error)">
+                {t('evaluations.error', { message: moreError })}
+              </span>
+            )}
+          </div>
+        )}
+        <div className="px-[18px] py-3">
+          <span className="font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
+            {tDecisions('evaluations.retention')}
+          </span>
+        </div>
+      </>
     )
 
   return (
-    <div className="flex flex-col gap-2" data-testid="routing-evaluations">
-      <label className="flex flex-wrap items-center gap-2 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
-        {t('evaluations.channelFilter')}
-        <select className="inp h-8 min-h-0" value={channelId} onChange={(event) => setChannelId(event.target.value)}>
-          <option value="">{t('evaluations.allChannels')}</option>
-          {channels.map((channel) => (
-            <option key={channel.channelId} value={channel.channelId}>
-              {channel.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      {body}
-      {data && nextCursor !== null && (
-        <div className="flex flex-wrap items-center gap-[9px]">
-          <Button variant="secondary" size="sm" disabled={loadingMore} onClick={() => void loadMore()}>
-            {loadingMore ? tDecisions('loading') : t('evaluations.loadMore')}
-          </Button>
-          {moreError && (
-            <span className="font-sans text-[12px] font-normal leading-normal text-(--status-error)">
-              {t('evaluations.error', { message: moreError })}
-            </span>
-          )}
-        </div>
-      )}
-      {open !== null && (
-        <DecisionRoutingEvaluationSheet
+    <EvaluationsDrawer
+      title={t('evaluations.title')}
+      subtitle={[botName, t('evaluations.subtitle')].filter(Boolean).join(' · ')}
+      closeLabel={tDecisions('evaluations.drawer.close')}
+      onClose={onClose}
+      onBack={open !== null ? back : null}
+      testId="routing-evaluations"
+    >
+      {open !== null ? (
+        <DecisionRoutingEvaluationDetail
           botId={botId}
           channelId={open.channel}
           channelName={channelName(open.channel)}
           seq={open.seq}
           summary={items.find((record) => record.seq === open.seq && record.channel === open.channel) ?? null}
           agentNames={agentNames}
-          onClose={closeSheet}
+          decisionName={decisionName}
+          onBack={back}
         />
+      ) : (
+        <>
+          <label className="flex flex-wrap items-center gap-2 border-b border-(--border-subtle) px-[18px] py-[10px] font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
+            {t('evaluations.channelFilter')}
+            <select
+              className="inp h-8 min-h-0"
+              value={channelId}
+              onChange={(event) => setChannelId(event.target.value)}
+            >
+              <option value="">{t('evaluations.allChannels')}</option>
+              {channels.map((channel) => (
+                <option key={channel.channelId} value={channel.channelId}>
+                  {channel.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {body}
+        </>
       )}
-    </div>
+    </EvaluationsDrawer>
   )
 }

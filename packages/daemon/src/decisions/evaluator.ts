@@ -1,4 +1,5 @@
 import {
+  DECISION_RAW_JSON_MAX_CHARS,
   DecisionQuestion,
   DECISION_PROVIDER_PROFILES,
   supportsDecision,
@@ -20,6 +21,10 @@ export interface DecisionEvaluationInput {
   state: Record<string, unknown>
   /** Epoch ms the whole decision stage must finish by; it shortens the evaluator's own timeout. */
   deadlineAt?: number
+  /** Receives the exact request body just before it is sent; never called when no request goes out. */
+  onRawRequest?: (text: string) => void
+  /** Receives the provider's response body text, kept off DecisionEvaluation so it never reaches a frame. */
+  onRawResponse?: (text: string) => void
 }
 
 /** The exact request body sent to the provider; state building measures its byte budget against it. */
@@ -33,6 +38,18 @@ export function decisionRequestBody(input: {
     state: input.state,
     questions: { decision: { ...question, type: question.type === 'boolean' ? 'noul' : question.type } }
   })
+}
+
+/** The raw fields a verdict's answerJson keeps: the sent request verbatim (already capped at 32 KiB) and the capped response. */
+export function rawAnswerFields(
+  raw: string | undefined,
+  request?: string
+): { request?: string; raw?: string; rawTruncated?: true } {
+  const sent = request === undefined ? {} : { request }
+  if (raw === undefined) return sent
+  return raw.length > DECISION_RAW_JSON_MAX_CHARS
+    ? { ...sent, raw: raw.slice(0, DECISION_RAW_JSON_MAX_CHARS), rawTruncated: true }
+    : { ...sent, raw }
 }
 
 /** The provider's serialized input cap (decisions.md §7.3). */
@@ -132,7 +149,8 @@ export class DecisionEvaluator {
         credentials = { apiKey: grant.key, endpoint: endpoint.data, headers: {} }
       }
       if (this.deps.orgForAgent(agentId) !== orgId) return unavailable('credentials')
-      return await evaluateTypesafe(question, body, credentials, signal, this.deps.fetch)
+      input.onRawRequest?.(body)
+      return await evaluateTypesafe(question, body, credentials, signal, this.deps.fetch, input.onRawResponse)
     } catch (error) {
       // Consumer cancellation must never become a fail-open provider outcome.
       this.shutdown.signal.throwIfAborted()

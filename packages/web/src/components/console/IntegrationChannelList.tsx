@@ -834,6 +834,7 @@ export function IntegrationChannelList({
         canWrite={!!integrationId && !shareable}
         // The same owner the row's dispatch picker shows — for a shared bot, a sibling install's.
         agentName={(defaultAgent(c) ?? (agentId ? member(agentId) : undefined))?.label ?? ''}
+        channelName={rowLabel(c)}
         padX={padX}
         saved={saved}
         savedName={mode === 'live' ? (c.decision?.name ?? null) : undefined}

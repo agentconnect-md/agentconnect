@@ -4395,7 +4395,8 @@
         "answer": "Answer",
         "matched": "Matched",
         "outcome": "Outcome",
-        "latency": "Latency"
+        "latency": "Latency",
+        "result": "Decision / result"
       },
       "outcomes": {
         "triggered": "Triggered",
@@ -4438,7 +4439,7 @@
         "notFound": "This evaluation is no longer available.",
         "error": "Couldn't load this evaluation. {message}",
         "detailsExpired": "Details expired",
-        "detailsExpiredBody": "Retention removed this evaluation's input and answer. The summary is kept, and it is never rebuilt from the current decision or history.",
+        "detailsExpiredBody": "Retention removed this evaluation's input, answer and raw JSON after 24 hours or 20 newer evaluations. The summary is kept, and it is never rebuilt from the current decision or history.",
         "summary": "Summary",
         "requested": "Requested model",
         "actual": "Actual model",
@@ -4455,6 +4456,44 @@
         "evidence": "Evidence",
         "snapshotRow": "Snapshot row",
         "background": "Background messages supplied"
+      },
+      "retention": "Details are kept for 24 hours, or for the 20 most recent evaluations in this conversation; the summary stays after that.",
+      "drawer": {
+        "close": "Close recent evaluations",
+        "back": "All evaluations"
+      },
+      "detail": {
+        "decision": "Decision",
+        "result": "Result",
+        "outcome": "Outcome",
+        "triggerWhen": "Trigger when (at the time)",
+        "model": "Model",
+        "instructions": "Instructions used",
+        "context": "Context used",
+        "asConfigured": "Shown as configured when this evaluation ran, not as the decision reads today."
+      },
+      "model": {
+        "title": "Model result",
+        "triggers": "✓ triggers",
+        "inRange": "in range",
+        "threshold": "≥ {value}",
+        "answer": "Answer",
+        "tokens": "{input} in · {output} out tokens",
+        "expired": "Retention removed the full distribution; only the summary answer remains.",
+        "status": {
+          "answered": "The model's distribution was not kept for this evaluation.",
+          "unavailable": "Evaluation unavailable: the provider returned no usable answer. This is not a No and not a skip.",
+          "canceled": "Canceled before the model answered.",
+          "pending": "The model has not answered yet.",
+          "not_evaluated": "Not evaluated: no model call was made for this message."
+        },
+        "rawRequest": "Raw request",
+        "rawResponse": "Raw response",
+        "rawSize": "{count, plural, one {# char} other {# chars}}",
+        "rawTruncated": "Truncated to the first {count} characters.",
+        "rawMissing": "Not recorded",
+        "copy": "Copy",
+        "copied": "Copied"
       }
     },
     "routing": {
@@ -4674,7 +4713,8 @@
           "matched": "Matched",
           "targets": "Targets",
           "outcome": "Outcome",
-          "latency": "Latency"
+          "latency": "Latency",
+          "channelAnswer": "Channel / answer"
         },
         "outcomes": {
           "routed": "Routed",
@@ -4705,15 +4745,17 @@
           "notFound": "This evaluation is no longer available.",
           "error": "Could not load this evaluation. {message}",
           "detailsExpired": "Details expired",
-          "detailsExpiredBody": "Retention removed this evaluation's input and answer. The summary is kept and is not rebuilt from current definitions or history.",
+          "detailsExpiredBody": "Retention removed this evaluation's input, answer and raw JSON after 24 hours or 20 newer evaluations. The summary is kept and is not rebuilt from current definitions or history.",
           "snapshot": "Decision at evaluation",
           "routing": "Routing at evaluation",
           "constraint": "Target constraint",
           "constraintNone": "None: a new, unaddressed conversation",
           "input": "Evaluated message",
           "model": "Model",
-          "usage": "Usage"
-        }
+          "usage": "Usage",
+          "asConfigured": "Shown as the decision and routing read when this evaluation ran."
+        },
+        "subtitle": "shared bot routing"
       }
     }
   },

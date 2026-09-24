@@ -16,7 +16,7 @@ import {
   type ResolvedDecisionBundle,
   type ResolvedDecisionGate
 } from './bundle.js'
-import type { DecisionEvaluationInput } from './evaluator.js'
+import { rawAnswerFields, type DecisionEvaluationInput } from './evaluator.js'
 import type { DecisionEvidence, DecisionUnavailableReason } from './evidence.js'
 import { DecisionLaneRuntime, laneId, verdictKey, type Lane } from './lanes.js'
 import { defaultDecisionGateMetrics, type DecisionGateMetrics } from './metrics.js'
@@ -453,30 +453,44 @@ export class DecisionGate {
         return
       }
       if (!(await store.beginDecisionEvaluation(row.seq, row.subject, fence, JSON.stringify(built.state)))) return
+      let raw: string | undefined
+      let request: string | undefined
       const evaluation = await this.host.evaluate(
         {
           agentId: c.agentId,
           evaluationId: `${row.seq}:${c.agentId}`,
           decision: { providerId: config.providerId, model: config.model, question: config.question },
           state: built.state,
-          deadlineAt: row.deadlineAt
+          deadlineAt: row.deadlineAt,
+          onRawRequest: (text) => {
+            request = text
+          },
+          onRawResponse: (text) => {
+            raw = text
+          }
         },
         signal
       )
       signal.throwIfAborted()
+      const rawOnly =
+        raw === undefined && request === undefined ? {} : { answerJson: JSON.stringify(rawAnswerFields(raw, request)) }
       if (evaluation.status === 'unavailable') {
-        await settle('unavailable', { reason: evaluation.reason })
+        await settle('unavailable', { reason: evaluation.reason, ...rawOnly })
         return
       }
       let match: { matched: boolean; matchedKeys: string[] }
       try {
         match = matchDecisionCondition(config.question, config.condition, evaluation.answer)
       } catch {
-        await settle('unavailable', { reason: 'invalid_response' })
+        await settle('unavailable', { reason: 'invalid_response', ...rawOnly })
         return
       }
       await settle(match.matched ? 'match' : 'skip', {
-        answerJson: JSON.stringify({ answer: evaluation.answer, matchedKeys: match.matchedKeys }),
+        answerJson: JSON.stringify({
+          answer: evaluation.answer,
+          matchedKeys: match.matchedKeys,
+          ...rawAnswerFields(raw, request)
+        }),
         model: evaluation.model,
         usage: evaluation.usage
       })

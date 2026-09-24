@@ -27,7 +27,7 @@ import {
   type ResolvedDecisionBundle,
   type ResolvedRoutedChannel
 } from './bundle.js'
-import type { DecisionEvaluationInput } from './evaluator.js'
+import { rawAnswerFields, type DecisionEvaluationInput } from './evaluator.js'
 import type { DecisionEvidence, DecisionUnavailableReason } from './evidence.js'
 import { DEFAULT_DECISION_GATE_LIMITS } from './gate.js'
 import { DecisionLaneRuntime, laneId, verdictKey, type Lane } from './lanes.js'
@@ -202,6 +202,9 @@ interface RouterAnswer {
   evaluated?: false
   recovered?: boolean
   fallback?: string
+  request?: string
+  raw?: string
+  rawTruncated?: true
 }
 
 const TERMINAL_UNAVAILABLE = new Set(['not_member', 'unsupported', 'off', 'routing_disabled', 'no_agent'])
@@ -631,24 +634,38 @@ export class DecisionRouter {
       const frozen = JSON.stringify({ ...delivery, frozenConstraint: constraint } satisfies RouterDelivery)
       if (!(await store.beginDecisionEvaluation(row.seq, row.subject, fence, JSON.stringify(built.state), frozen)))
         return
+      let raw: string | undefined
+      let request: string | undefined
       const evaluation = await this.host.evaluate(
         {
           agentId: row.agentId,
           evaluationId: `${row.seq}:${row.subject}`,
           decision: { providerId: config.providerId, model: config.model, question: config.question },
           state: built.state,
-          deadlineAt: row.deadlineAt
+          deadlineAt: row.deadlineAt,
+          onRawRequest: (text) => {
+            request = text
+          },
+          onRawResponse: (text) => {
+            raw = text
+          }
         },
         signal
       )
       signal.throwIfAborted()
       if (evaluation.status === 'unavailable') {
-        await this.settle(key, row, config, delivery, constraint, 'unavailable', { reason: evaluation.reason })
+        await this.settle(key, row, config, delivery, constraint, 'unavailable', {
+          reason: evaluation.reason,
+          raw,
+          request
+        })
         return
       }
       await this.settle(key, row, config, delivery, constraint, evaluation.answer, {
         model: evaluation.model,
-        usage: evaluation.usage
+        usage: evaluation.usage,
+        raw,
+        request
       })
     } catch (err) {
       const reason = task.cancelReason
@@ -737,6 +754,10 @@ export class DecisionRouter {
       usage?: { inputTokens: number; outputTokens: number }
       answerJson?: RouterAnswer
       recovered?: boolean
+      /** The provider's response body text, kept with the answer until retention strips it. */
+      raw?: string
+      /** The exact request body sent, kept verbatim alongside the response. */
+      request?: string
     }
   ): Promise<boolean> {
     let resolved: ReturnType<typeof resolveRoutingTargets>
@@ -790,7 +811,8 @@ export class DecisionRouter {
       matchedKeys: match?.matchedKeys ?? [],
       usedOtherwise: match?.usedOtherwise ?? false,
       ...(resolved.fallback ? { fallback: resolved.fallback } : {}),
-      ...(extra.recovered ? { recovered: true } : {})
+      ...(extra.recovered ? { recovered: true } : {}),
+      ...rawAnswerFields(extra.raw, extra.request)
     }
     const settledAt = this.host.now()
     const latencyMs = Math.max(0, settledAt - row.createdAt)

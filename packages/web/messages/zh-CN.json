@@ -4395,7 +4395,8 @@
         "answer": "回答",
         "matched": "匹配",
         "outcome": "结果",
-        "latency": "延迟"
+        "latency": "延迟",
+        "result": "决策 / 结果"
       },
       "outcomes": {
         "triggered": "已触发",
@@ -4438,7 +4439,7 @@
         "notFound": "此评估已不可用。",
         "error": "无法加载此评估。{message}",
         "detailsExpired": "详情已过期",
-        "detailsExpiredBody": "保留策略已移除此评估的输入和回答。摘要会保留，且不会根据当前的决策或历史重新构建。",
+        "detailsExpiredBody": "24 小时后或有 20 条更新的评估后，保留策略会移除此评估的输入、回答和原始 JSON。摘要会保留，且不会根据当前的决策或历史重新构建。",
         "summary": "摘要",
         "requested": "请求的模型",
         "actual": "实际模型",
@@ -4455,6 +4456,44 @@
         "evidence": "证据",
         "snapshotRow": "快照行",
         "background": "提供的背景消息数"
+      },
+      "retention": "详情保留 24 小时，或保留此会话最近 20 条评估；之后只保留摘要。",
+      "drawer": {
+        "close": "关闭最近评估",
+        "back": "全部评估"
+      },
+      "detail": {
+        "decision": "决策",
+        "result": "结果",
+        "outcome": "处理结果",
+        "triggerWhen": "触发条件（评估时）",
+        "model": "模型",
+        "instructions": "使用的指令",
+        "context": "使用的上下文",
+        "asConfigured": "按评估运行时的配置显示，而不是决策当前的内容。"
+      },
+      "model": {
+        "title": "模型结果",
+        "triggers": "✓ 触发",
+        "inRange": "在区间内",
+        "threshold": "≥ {value}",
+        "answer": "回答",
+        "tokens": "输入 {input} · 输出 {output} tokens",
+        "expired": "保留策略已移除完整分布，只剩摘要回答。",
+        "status": {
+          "answered": "此评估未保留模型的完整分布。",
+          "unavailable": "评估不可用：提供方没有返回可用的回答。这不是「否」，也不是跳过。",
+          "canceled": "在模型回答前已取消。",
+          "pending": "模型尚未回答。",
+          "not_evaluated": "未评估：此消息没有调用模型。"
+        },
+        "rawRequest": "原始请求",
+        "rawResponse": "原始响应",
+        "rawSize": "{count, plural, other {# 字符}}",
+        "rawTruncated": "已截断为前 {count} 个字符。",
+        "rawMissing": "未记录",
+        "copy": "复制",
+        "copied": "已复制"
       }
     },
     "routing": {
@@ -4674,7 +4713,8 @@
           "matched": "匹配",
           "targets": "目标",
           "outcome": "结果",
-          "latency": "延迟"
+          "latency": "延迟",
+          "channelAnswer": "频道 / 回答"
         },
         "outcomes": {
           "routed": "已路由",
@@ -4705,15 +4745,17 @@
           "notFound": "此评估已不可用。",
           "error": "无法加载此评估。{message}",
           "detailsExpired": "详情已过期",
-          "detailsExpiredBody": "保留策略已移除此评估的输入和回答。摘要会保留，且不会根据当前的定义或历史重新构建。",
+          "detailsExpiredBody": "24 小时后或有 20 条更新的评估后，保留策略会移除此评估的输入、回答和原始 JSON。摘要会保留，不会根据当前的定义或历史重新构建。",
           "snapshot": "评估时的决策",
           "routing": "评估时的路由",
           "constraint": "目标约束",
           "constraintNone": "无：新的、未指定的对话",
           "input": "被评估的消息",
           "model": "模型",
-          "usage": "用量"
-        }
+          "usage": "用量",
+          "asConfigured": "按评估运行时的决策和路由显示。"
+        },
+        "subtitle": "共享机器人路由"
       }
     }
   },

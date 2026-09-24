@@ -1,4 +1,5 @@
 import {
+  DECISION_EVALUATION_RAW_V1_FEATURE,
   DECISION_EVALUATIONS_V1_FEATURE,
   DECISION_PREVIEW_V1_FEATURE,
   DecisionCatalogReply,
@@ -916,7 +917,8 @@ export class ControlSender {
     return DecisionEvaluationReply.parse(
       await c.conn.request(
         'decision/evaluation',
-        req,
+        // Raw provider JSON is asked for only from a daemon that parses includeRaw; an older strict one would reject it.
+        c.capabilities.features.includes(DECISION_EVALUATION_RAW_V1_FEATURE) ? { ...req, includeRaw: true } : req,
         { epoch: c.sessionEpoch, agentId: req.agentId },
         { ackTimeoutMs: 5000, maxTries: 1 },
         orgId
@@ -956,7 +958,8 @@ export class ControlSender {
     return DecisionRoutingEvaluationReply.parse(
       await c.conn.request(
         'decision/routing-evaluation',
-        req,
+        // Raw provider JSON is asked for only from a daemon that parses includeRaw; an older strict one would reject it.
+        c.capabilities.features.includes(DECISION_EVALUATION_RAW_V1_FEATURE) ? { ...req, includeRaw: true } : req,
         { epoch: c.sessionEpoch, agentId: req.agentId },
         { ackTimeoutMs: 5000, maxTries: 1 },
         orgId

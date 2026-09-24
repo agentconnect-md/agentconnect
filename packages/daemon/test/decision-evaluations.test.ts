@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   DECISION_EVALUATION_DETAIL_MAX_BYTES,
+  DECISION_RAW_JSON_MAX_CHARS,
   DecisionEvaluationReply,
   DecisionEvaluationsReply,
   DecisionRoutingEvaluationReply,
@@ -96,13 +97,14 @@ async function settle(
   disposition: 'match' | 'skip' | 'unavailable',
   answer?: unknown,
   matchedKeys: string[] = [],
-  inputJson = state()
+  inputJson = state(),
+  raw?: Record<string, unknown>
 ): Promise<void> {
   await s.beginDecisionEvaluation(seq, AGENT, FENCE, inputJson)
   await s.settleDecisionVerdict(seq, AGENT, FENCE, {
     disposition,
     ...(disposition === 'unavailable' ? { unavailableReason: 'timeout' } : {}),
-    ...(answer ? { answerJson: JSON.stringify({ answer, matchedKeys }) } : {}),
+    ...(answer || raw ? { answerJson: JSON.stringify({ ...(answer ? { answer, matchedKeys } : {}), ...raw }) } : {}),
     ...(answer ? { actualModel: 'jev-1.13.0', inputTokens: 10, outputTokens: 1 } : {}),
     latencyMs: 42,
     settledAt: AT + 100
@@ -239,6 +241,78 @@ describe('DecisionEvaluationReader', () => {
     })
     expect((await reader.list(ORG, { ...lane, limit: 5 })).items[0]).toMatchObject({ detailsExpired: true })
     expect(await reader.get(ORG, { ...lane, seq: seq + 999 })).toEqual({ evaluation: null, conversation: SCOPE })
+    await s.close()
+  })
+
+  it('returns the stored raw request verbatim and the raw response only when asked, and neither after expiry', async () => {
+    const s = await openTestStore()
+    const { seq } = await reserve(s, 1)
+    const input = state([{ id: 'h1', text: 'Earlier' }])
+    // Key order differs from what the builder would emit today, so a rebuild would not match.
+    const sent = JSON.stringify({
+      questions: { decision: { type: 'noul' } },
+      model: 'jev-latest',
+      state: JSON.parse(input)
+    })
+    await settle(s, seq, 'match', yes, [], input, { request: sent, raw: '{"model":"jev-1.13.0"}' })
+    await s.finishDecisionVerdict(seq, AGENT, FENCE, 'admitted', null, AT + 200)
+    const reader = readerFor(s)
+    const plain = (await reader.get(ORG, { ...lane, seq })).evaluation!
+    expect(plain).not.toHaveProperty('rawRequest')
+    expect(plain).not.toHaveProperty('rawResponse')
+    const reply = await reader.get(ORG, { ...lane, seq, includeRaw: true })
+    expect(DecisionEvaluationReply.parse(reply)).toEqual(reply)
+    expect(reply.evaluation).toMatchObject({
+      rawRequest: { text: sent, truncated: false },
+      rawResponse: { text: '{"model":"jev-1.13.0"}', truncated: false }
+    })
+    await s.stripDecisionVerdictBodies(AT + 10 * 24 * 3_600_000)
+    expect((await reader.get(ORG, { ...lane, seq, includeRaw: true })).evaluation).toMatchObject({
+      detailsExpired: true,
+      rawRequest: null,
+      rawResponse: null
+    })
+    await s.close()
+  })
+
+  it('never rebuilds a request a verdict did not store', async () => {
+    const s = await openTestStore()
+    const { seq } = await reserve(s, 1)
+    await settle(s, seq, 'match', yes, [], state(), { raw: '{}' })
+    const detail = (await readerFor(s).get(ORG, { ...lane, seq, includeRaw: true })).evaluation!
+    expect(detail.input).not.toBeNull()
+    expect(detail.rawRequest).toBeNull()
+    expect(detail.rawResponse).toEqual({ text: '{}', truncated: false })
+    await s.close()
+  })
+
+  it('keeps an unavailable raw response, and marks a response cut at settle as truncated', async () => {
+    const s = await openTestStore()
+    const { seq } = await reserve(s, 1)
+    await settle(s, seq, 'unavailable', undefined, [], state(), { raw: 'y'.repeat(100), rawTruncated: true })
+    const detail = (await readerFor(s).get(ORG, { ...lane, seq, includeRaw: true })).evaluation!
+    expect(detail.outcome).toBe('pending')
+    expect(detail.answer).toBeNull()
+    expect(detail.rawResponse).toEqual({ text: 'y'.repeat(100), truncated: true })
+    await s.close()
+  })
+
+  it('shortens the raw request before trimming history to fit 64 KiB', async () => {
+    const s = await openTestStore()
+    const { seq } = await reserve(s, 1)
+    const history = Array.from({ length: 3 }, (_, i) => ({ id: `h${i}`, text: 'z'.repeat(12 * 1024) }))
+    await settle(s, seq, 'skip', no, [], state(history), {
+      request: 'q'.repeat(30 * 1024),
+      raw: 'r'.repeat(DECISION_RAW_JSON_MAX_CHARS)
+    })
+    const reply = await readerFor(s).get(ORG, { ...lane, seq, includeRaw: true })
+    const detail = reply.evaluation!
+    expect(Buffer.byteLength(JSON.stringify(reply))).toBeLessThanOrEqual(DECISION_EVALUATION_DETAIL_MAX_BYTES)
+    expect(DecisionEvaluationReply.safeParse(reply).success).toBe(true)
+    expect(detail.input!.historyOmitted).toBe(0)
+    expect(detail.rawResponse?.text).toHaveLength(DECISION_RAW_JSON_MAX_CHARS)
+    expect(detail.rawRequest?.truncated).toBe(true)
+    expect(detail.rawRequest!.text.length).toBeLessThan(DECISION_RAW_JSON_MAX_CHARS)
     await s.close()
   })
 

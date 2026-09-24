@@ -22,6 +22,8 @@ export const DECISION_MODEL_SELECTION_V1_FEATURE = 'decision-model-selection-v1'
 export const DECISION_EVALUATIONS_V1_FEATURE = 'decision-evaluations-v1'
 // The peer answers decision/routing-evaluations and decision/routing-evaluation from its router verdicts.
 export const DECISION_ROUTING_EVALUATIONS_V1_FEATURE = 'decision-routing-evaluations-v1'
+// The peer returns rawRequest/rawResponse on evaluation details when a request sets includeRaw.
+export const DECISION_EVALUATION_RAW_V1_FEATURE = 'decision-evaluation-raw-v1'
 export const DECISION_LIST_MAX_BYTES = 32 * 1024
 export const DECISION_EVALUATION_DETAIL_MAX_BYTES = 64 * 1024
 
@@ -124,7 +126,12 @@ export const DecisionEvaluationsReply = DecisionEvaluationRecordPage.extend({
 })
 export type DecisionEvaluationsReply = z.infer<typeof DecisionEvaluationsReply>
 
-export const DecisionEvaluationRequest = z.strictObject({ ...EvaluationLane, seq: z.number().int().nonnegative() })
+// includeRaw is sent only to a peer advertising decision-evaluation-raw-v1, so an older strict peer never sees it.
+export const DecisionEvaluationRequest = z.strictObject({
+  ...EvaluationLane,
+  seq: z.number().int().nonnegative(),
+  includeRaw: z.literal(true).optional()
+})
 export type DecisionEvaluationRequest = z.infer<typeof DecisionEvaluationRequest>
 export const DecisionEvaluationReply = z
   .strictObject({
@@ -160,7 +167,8 @@ export type DecisionRoutingEvaluationsReply = z.infer<typeof DecisionRoutingEval
 export const DecisionRoutingEvaluationRequest = z.strictObject({
   ...RoutingLane,
   channel: z.string().min(1).max(512),
-  seq: z.number().int().nonnegative()
+  seq: z.number().int().nonnegative(),
+  includeRaw: z.literal(true).optional()
 })
 export type DecisionRoutingEvaluationRequest = z.infer<typeof DecisionRoutingEvaluationRequest>
 export const DecisionRoutingEvaluationReply = z

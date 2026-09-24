@@ -63,6 +63,7 @@ function MockStrip({
       conversation={{ integrationId: 'int-mock', channelId: 'help-channel' }}
       canWrite={canWrite}
       agentName={agentName}
+      channelName="#help"
       padX={18}
       saved={gate ? { decisionId: gate.decisionId, when: gate.when } : null}
       status={gate ? (gate.needsReview ? 'needs_review' : 'ready') : null}
@@ -242,7 +243,9 @@ describe('DecisionBindingStrip', () => {
     expect(findByText(view, 'Edit')).toBeUndefined()
     await clickText(view, 'Recent evaluations')
     await act(async () => {})
-    expect(view.querySelectorAll('li button').length).toBeGreaterThan(0)
+    const drawer = document.body.querySelector('[data-testid="decision-evaluations"]')!
+    expect(drawer.textContent).toContain('#help')
+    expect(drawer.querySelectorAll('li button').length).toBeGreaterThan(0)
   })
 
   // Inline Create returns to this draft with the new Decision selected.

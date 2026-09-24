@@ -181,6 +181,38 @@ describe('daemon Decision evaluator', () => {
     }
   })
 
+  it('hands the exact response body to onRawResponse for answers, malformed bodies, and error statuses', async () => {
+    const { evaluator, providerFetch } = setup()
+    const seen: string[] = []
+    const capture = { ...input, onRawResponse: (text: string) => seen.push(text) }
+    const body = JSON.stringify({
+      model: 'jev-example',
+      answers: { decision: { type: 'noul', noul: 0.75 } },
+      usage: { input_tokens: 10, output_tokens: 2 }
+    })
+    providerFetch.mockResolvedValueOnce(new Response(body))
+    expect(await evaluator.evaluate(capture)).toMatchObject({ status: 'answered' })
+    providerFetch.mockResolvedValueOnce(new Response('{"model": "jev-example", "answers": '))
+    expect(await evaluator.evaluate(capture)).toEqual({ status: 'unavailable', reason: 'invalid_response' })
+    providerFetch.mockResolvedValueOnce(new Response('{"error":"bad state"}', { status: 422 }))
+    expect(await evaluator.evaluate(capture)).toEqual({ status: 'unavailable', reason: 'unsupported_input' })
+    expect(seen).toEqual([body, '{"model": "jev-example", "answers": ', '{"error":"bad state"}'])
+    // The protocol result never carries the raw body, so preview frames stay strict-parseable.
+    providerFetch.mockResolvedValueOnce(new Response(body))
+    expect(Object.keys(await evaluator.evaluate(capture))).toEqual(['status', 'answer', 'model', 'usage'])
+  })
+
+  it('hands onRawRequest the exact body sent, and nothing when no request goes out', async () => {
+    const { evaluator, credentials, providerFetch } = setup()
+    const sent: string[] = []
+    const capture = { ...input, onRawRequest: (text: string) => sent.push(text) }
+    await evaluator.evaluate(capture)
+    expect(sent).toEqual([providerFetch.mock.calls[0]![1]!.body])
+    credentials.mockRejectedValueOnce(new Error('no key'))
+    expect(await evaluator.evaluate(capture)).toEqual({ status: 'unavailable', reason: 'credentials' })
+    expect(sent).toHaveLength(1)
+  })
+
   it('bounds input and active evaluations and treats cancellation differently from a timeout', async () => {
     const { evaluator, providerFetch } = setup({ timeoutMs: 30 })
     expect(await evaluator.evaluate({ ...input, state: { text: 'x'.repeat(33 * 1024) } })).toEqual({
