@@ -19,11 +19,11 @@ export interface SandboxEndpointProviderDeps {
 /** The Kubernetes endpoint: resume the Sandbox, wait for its pod, and expect that pod's identity at its IP. */
 export function sandboxEndpointProvider(deps: SandboxEndpointProviderDeps): ShimEndpointProvider<SandboxLaunch> {
   return {
-    retain: (launch) => deps.lease.retain(launch.sandboxName),
-    release: (launch) => deps.lease.release(launch.sandboxName),
+    retain: (launch) => deps.lease.retain(launch),
+    release: (launch) => deps.lease.release(launch),
     async resolve(launch, timer) {
       // Resume before waiting because suspension deleted the pod and readiness cannot arrive first.
-      const modeBeforeWake = await deps.lease.queueMode(launch.sandboxName, 'Running').catch(async (err: unknown) => {
+      const modeBeforeWake = await deps.lease.queueMode(launch, 'Running').catch(async (err: unknown) => {
         if (err instanceof K8sApiError && err.isNotFound) await deps.onNotFound(launch)
         throw err
       })

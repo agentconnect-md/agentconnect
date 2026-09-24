@@ -16,6 +16,8 @@ import {
 import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { fakeGenerations } from './fake-generations.js'
+import { fenceFakeSandbox } from './fake-sandbox-fence.js'
+import type { SandboxFence } from '../src/k8s/sandbox-api.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
 import type { ShimConnection } from '../src/shim/connection.js'
 
@@ -47,6 +49,8 @@ function cluster() {
   let minted = 0
   let versions = 0
   const api = {
+    generations: fakeGenerations(),
+    fenceSandbox: async (name: string, fence: SandboxFence) => fenceFakeSandbox(sandboxes.get(name)!, fence),
     ensureClaim: vi.fn(async (claim: SandboxClaim & { metadata: { name: string } }) => {
       const existing = claims.get(claim.metadata.name)
       if (existing) {
@@ -165,7 +169,7 @@ function member(
 ) {
   const records: SpawnRecord[] = []
   const warnings: string[] = []
-  const generations = fakeGenerations()
+  const generations = api.generations
   const clock = new FakeClock()
   const driver = new K8sDriver({
     api: api as never,

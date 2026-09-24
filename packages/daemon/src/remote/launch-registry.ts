@@ -36,6 +36,7 @@ export interface LaunchRegistryDeps {
  */
 export class LaunchRegistry<L extends Launch = Launch> {
   private readonly launches = new Map<string, L>()
+  private readonly publishing = new Map<string, { releasedAt: number; sandboxUid: string; run: Promise<L> }>()
   /** Takeover re-derivations in flight, per subject; a concurrent acquisition waits for the answer. */
   private readonly adopting = new Map<string, { releasedAt: number; run: Promise<L | undefined> }>()
   /** Bumped by `bumpRelease`; an acquisition in flight across a bump records nothing. */
@@ -45,10 +46,34 @@ export class LaunchRegistry<L extends Launch = Launch> {
 
   constructor(private readonly deps: LaunchRegistryDeps) {}
 
-  // The allocation is a durable round trip, so a concurrent launch can resolve out of order — an
-  // older generation never overwrites a newer one, keeping the recorded launch the highest.
-  async recordLaunch(subject: SandboxSubject, sandboxUid: string, extension: Omit<L, keyof Launch>): Promise<L> {
+  // Concurrent acquisitions of one incarnation share its generation and work holds.
+  async recordLaunch(
+    subject: SandboxSubject,
+    sandboxUid: string,
+    extension: Omit<L, keyof Launch>,
+    beforePublish?: (launch: L) => Promise<void>
+  ): Promise<L> {
     const releasedAt = this.releaseFence(subject)
+    const existing = this.launches.get(subject)
+    if (existing?.sandboxUid === sandboxUid) return existing
+    const publishing = this.publishing.get(subject)
+    if (publishing?.sandboxUid === sandboxUid && this.stillServed(subject, publishing.releasedAt)) {
+      return publishing.run
+    }
+    const run = this.publishLaunch(subject, sandboxUid, extension, releasedAt, beforePublish).finally(() => {
+      if (this.publishing.get(subject)?.run === run) this.publishing.delete(subject)
+    })
+    this.publishing.set(subject, { releasedAt, sandboxUid, run })
+    return run
+  }
+
+  private async publishLaunch(
+    subject: SandboxSubject,
+    sandboxUid: string,
+    extension: Omit<L, keyof Launch>,
+    releasedAt: number,
+    beforePublish?: (launch: L) => Promise<void>
+  ): Promise<L> {
     // Durable allocation can outlive this member's ownership, so recheck before publishing.
     const generation = await this.deps.generations.nextSandboxGeneration(subject)
     this.assertStillServed(subject, releasedAt)
@@ -62,6 +87,12 @@ export class LaunchRegistry<L extends Launch = Launch> {
       generation,
       since: this.deps.clock.now()
     } as L
+    if (beforePublish) {
+      await beforePublish(launch)
+      this.assertStillServed(subject, releasedAt)
+      const current = this.launches.get(subject)
+      if (current && current.generation > generation) return current
+    }
     this.launches.set(subject, launch)
     return launch
   }

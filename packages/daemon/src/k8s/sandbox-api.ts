@@ -6,6 +6,29 @@ export const SANDBOX_EXTENSIONS_GROUP = 'extensions.agents.x-k8s.io/v1beta1'
 
 export type OperatingMode = 'Running' | 'Suspended'
 
+export const SANDBOX_LAUNCH_GENERATION = 'agentconnect.md/launch-generation'
+export interface SandboxFence {
+  sandboxUid: string
+  generation: number
+}
+
+// The same durable generation fences the shim binding and Kubernetes mode writes.
+export function assertSandboxFence(sandbox: Sandbox, fence: SandboxFence): void {
+  if (
+    sandbox.metadata?.uid !== fence.sandboxUid ||
+    sandbox.metadata?.annotations?.[SANDBOX_LAUNCH_GENERATION] !== String(fence.generation)
+  ) {
+    throw new Error(`sandbox ${sandbox.metadata?.name} no longer belongs to launch ${fence.generation}`)
+  }
+}
+
+function sandboxFenceTests(fence: SandboxFence): Array<{ op: 'test'; path: string; value: string }> {
+  return [
+    { op: 'test', path: '/metadata/uid', value: fence.sandboxUid },
+    { op: 'test', path: '/metadata/annotations/agentconnect.md~1launch-generation', value: String(fence.generation) }
+  ]
+}
+
 interface SandboxContainer {
   name?: string
   image?: string
@@ -272,12 +295,43 @@ export class SandboxApi {
     return this.http.json<SandboxTemplate>({ method: 'GET', path: `${this.sandboxTemplates()}/${name}` })
   }
 
+  // Publish ownership before exposing a launch; an older allocation never overwrites a successor.
+  async fenceSandbox(name: string, fence: SandboxFence): Promise<void> {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const sandbox = await this.getSandbox(name)
+      if (sandbox.metadata?.uid !== fence.sandboxUid) throw new Error(`sandbox ${name} was replaced`)
+      const observed = sandbox.metadata.annotations?.[SANDBOX_LAUNCH_GENERATION]
+      if (observed === String(fence.generation)) return
+      if (observed !== undefined && (!Number.isSafeInteger(Number(observed)) || Number(observed) >= fence.generation)) {
+        throw new Error(`sandbox ${name} no longer accepts launch ${fence.generation}`)
+      }
+      const resourceVersion = sandbox.metadata.resourceVersion
+      if (!resourceVersion) throw new Error(`sandbox ${name} has no resourceVersion to fence its launch`)
+      try {
+        await this.http.json<Sandbox>({
+          method: 'PATCH',
+          path: `${this.sandboxes()}/${name}`,
+          contentType: 'application/merge-patch+json',
+          body: {
+            metadata: { resourceVersion, annotations: { [SANDBOX_LAUNCH_GENERATION]: String(fence.generation) } }
+          }
+        })
+        return
+      } catch (err) {
+        if (!(err instanceof K8sApiError) || err.status !== 409) throw err
+      }
+    }
+    throw new Error(`sandbox ${name} changed during all 5 launch fencing attempts`)
+  }
+
   async resumeWithRuntimeImage(
     name: string,
-    image: { containerIndex: number; observedName: string; observedImage: string; targetImage: string }
+    image: { containerIndex: number; observedName: string; observedImage: string; targetImage: string },
+    fence: SandboxFence
   ): Promise<Sandbox> {
     const containerPath = `/spec/podTemplate/spec/containers/${image.containerIndex}`
     const body: Array<{ op: 'test' | 'replace'; path: string; value: string }> = [
+      ...sandboxFenceTests(fence),
       { op: 'test', path: '/spec/operatingMode', value: 'Suspended' },
       { op: 'test', path: `${containerPath}/name`, value: image.observedName },
       { op: 'test', path: `${containerPath}/image`, value: image.observedImage }
@@ -299,37 +353,26 @@ export class SandboxApi {
     }
   }
 
-  /** Set a bound Sandbox's operating mode — the sleep/wake path.
-   *  `observed` is mandatory: between reading a Sandbox and writing it, a message can
-   *  wake an instance we decided to suspend (or the reverse), so every write tests the
-   *  value we saw rather than clobbering a newer decision. v1beta1 defaults the field to
-   *  `Running`, so an observed value always exists.
-   *  A rejected write raises {@link OperatingModeRejectedError} — re-read and re-decide.
-   *
-   *  Measured against a real API server (k3s v1.31.2), so the next reader need not re-derive
-   *  it: a failed JSON Patch `test` returns 422 Invalid, never 409, and a merge patch
-   *  carrying a stale `metadata.resourceVersion` returns 409 Conflict. The field-scoped
-   *  `test` is kept deliberately — a resourceVersion precondition would guard the WHOLE
-   *  object, so any unrelated status write by the vendor controller would conflict, while
-   *  this only conflicts when the mode itself moved. The error means "re-read and
-   *  re-decide" either way, which is the only correct caller action. */
-  async setOperatingMode(name: string, mode: OperatingMode, observed: OperatingMode): Promise<Sandbox> {
+  // Guard ownership and mode without conflicting with unrelated controller status writes.
+  async setOperatingMode(
+    name: string,
+    mode: OperatingMode,
+    observed: OperatingMode,
+    fence: SandboxFence
+  ): Promise<Sandbox> {
     try {
       return await this.http.json<Sandbox>({
         method: 'PATCH',
         path: `${this.sandboxes()}/${name}`,
         contentType: 'application/json-patch+json',
         body: [
+          ...sandboxFenceTests(fence),
           { op: 'test', path: '/spec/operatingMode', value: observed },
           { op: 'replace', path: '/spec/operatingMode', value: mode }
         ]
       })
     } catch (err) {
-      // The API server answers every rejected JSON Patch — a failed `test` included —
-      // with 422 Invalid, and the text comes from the patch library, so it varies by
-      // version. Nothing here can prove why the write was rejected: a later read is a
-      // fresh snapshot, not evidence, and the mode can change away and back between the
-      // two. So report the rejection as itself and let the caller re-decide.
+      // Kubernetes returns 422 for rejected JSON patches; re-read before deciding whether to retry.
       if (err instanceof K8sApiError && err.isUnprocessable) {
         throw new OperatingModeRejectedError(name, observed, mode, err)
       }

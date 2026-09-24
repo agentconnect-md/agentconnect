@@ -8,6 +8,8 @@ import { AC_LABEL_AGENT, AC_LABEL_ORG, sessionSandboxSubject } from '../src/k8s/
 import { observeStartup } from '../src/session/startup-progress.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { fakeGenerations } from './fake-generations.js'
+import { fenceFakeSandbox } from './fake-sandbox-fence.js'
+import type { SandboxFence } from '../src/k8s/sandbox-api.js'
 import { GuardedResumeRejectedError, OperatingModeRejectedError } from '../src/k8s/sandbox-api.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import type { Sandbox, SandboxClaim, SandboxWarmPool } from '../src/k8s/sandbox-api.js'
@@ -50,6 +52,7 @@ function fakeApi(options: { ready?: boolean; mode?: 'Running' | 'Suspended'; tem
     deleted: [] as string[]
   }
   const api = {
+    fenceSandbox: async (_name: string, fence: SandboxFence) => fenceFakeSandbox(state.sandbox, fence),
     ensureClaim: vi.fn(async (claim: SandboxClaim & { metadata: { name: string } }) => {
       state.created.push(claim)
       state.claims.set(claim.metadata.name, { ...claim, status: { sandbox: { name: 'sb-1' } } })
@@ -237,12 +240,12 @@ describe('cluster spawn driver', () => {
 
   it('names the ADOPTED warm-pool pod, not the Sandbox, when one was adopted', async () => {
     // An adopted pod's pool-generated name is the identity TokenReview must return.
-    const { api } = fakeApi()
-    api.getSandbox = vi.fn(async (): Promise<Sandbox> => ({
+    const { api, state } = fakeApi()
+    state.sandbox = {
       metadata: { name: 'sb-1', uid: 'sandbox-uid-1', annotations: { 'agents.x-k8s.io/pod-name': 'pool-xyz-7' } },
       spec: { operatingMode: 'Running' },
       status: { conditions: [{ type: 'Ready', status: 'True' }], podIPs: ['10.0.0.9'] }
-    }))
+    }
     const { instance, records } = driver(api)
     await instance.launch(launchRequest)
     expect(records.at(-1)?.podName).toBe('pool-xyz-7')
@@ -832,7 +835,8 @@ describe('cluster launch generations', () => {
     expect((await instance.ensureSandbox('agent-a')).generation).toBe(1)
     instance.forgetLaunch('agent-a')
     expect((await instance.ensureSandbox('agent-a')).generation).toBe(2)
-    expect((await instance.ensureSandbox('agent-b')).generation).toBe(1)
+    const other = driver(fakeApi().api, { generations: store })
+    expect((await other.instance.ensureSandbox('agent-b')).generation).toBe(1)
     await store.close()
   })
 

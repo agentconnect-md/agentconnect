@@ -84,6 +84,7 @@ export class K8sDriver implements SpawnDriver {
     this.lease = new SandboxLease({
       api: deps.api,
       warmPoolName: deps.warmPoolName,
+      isCurrent: (launch) => this.registry.currentLaunch(launch.subject) === launch,
       log: deps.log,
       metrics: this.metrics
     })
@@ -104,7 +105,7 @@ export class K8sDriver implements SpawnDriver {
       ...(deps.onChannelReady ? { onChannelReady: deps.onChannelReady } : {}),
       // Deferred to the LAST release: the launch or workspace preparation around the bind may still hold the pod.
       onBindFailed: (subject, launch) =>
-        this.lease.whenReleased(launch.sandboxName, () => this.putBackAfterFailedBind(subject, launch))
+        this.lease.whenReleased(launch, () => this.putBackAfterFailedBind(subject, launch))
     })
     this.shim = new RemoteShimDriver({
       ensureLaunch: (subject, timer) => this.ensureSandbox(subject, timer),
@@ -151,7 +152,7 @@ export class K8sDriver implements SpawnDriver {
     const existing = this.registry.currentLaunch(subject)
     if (existing) {
       // A held operation must fail on its original pod rather than switch behind its lease.
-      if (this.lease.isHeld(existing.sandboxName)) return existing
+      if (this.lease.isHeld(existing)) return existing
       await this.checkMissingLaunch(existing)
       this.registry.assertStillServed(subject, releasedAt)
       const suspending = this.lease.suspensionOf(subject)
@@ -200,7 +201,18 @@ export class K8sDriver implements SpawnDriver {
     if (!sandboxUid) throw new Error(`sandbox ${sandboxName} has no metadata.uid to bind against`)
     const claimUid = ensured.claim.metadata?.uid ?? sandboxUid
     this.registry.assertStillServed(subject, releasedAt)
-    return this.registry.recordLaunch(subject, sandboxUid, { sandboxName, claimUid })
+    return this.recordLaunch(subject, sandboxUid, sandboxName, claimUid)
+  }
+
+  private recordLaunch(
+    subject: SandboxSubject,
+    sandboxUid: string,
+    sandboxName: string,
+    claimUid: string
+  ): Promise<SandboxLaunch> {
+    return this.registry.recordLaunch(subject, sandboxUid, { sandboxName, claimUid }, (launch) =>
+      this.deps.api.fenceSandbox(sandboxName, launch)
+    )
   }
 
   /**
@@ -291,7 +303,7 @@ export class K8sDriver implements SpawnDriver {
       if (!(await this.fenceLaunch(subject))) throw new Error(`could not fence claim ${this.claimName(subject)}`)
       this.registry.assertStillServed(subject, releasedAt)
       this.deps.log.info(`cluster: sandbox ${subject} taken over with sandbox ${sandboxName} running`)
-      return this.registry.recordLaunch(subject, sandboxUid, { sandboxName, claimUid: claimUid ?? sandboxUid })
+      return this.recordLaunch(subject, sandboxUid, sandboxName, claimUid ?? sandboxUid)
     })
   }
 
@@ -391,7 +403,7 @@ export class K8sDriver implements SpawnDriver {
       throw new Error(`sandbox ${subject} claim ${name} could not be marked in use — not resuming onto it`)
     }
     this.registry.assertStillServed(subject, releasedAt)
-    return await this.registry.recordLaunch(subject, sandboxUid, { sandboxName, claimUid })
+    return await this.recordLaunch(subject, sandboxUid, sandboxName, claimUid)
   }
 
   // Whether the pod that should hold this subject's channel is up — what tells an unbound channel apart
@@ -428,7 +440,7 @@ export class K8sDriver implements SpawnDriver {
   // Opens the lease's gate synchronously, so a caller that judged `launch` in the same tick decides against exactly that launch; the re-read guards one replaced during the write.
   private async suspendLaunch(subject: string, launch: SandboxLaunch): Promise<'suspended' | 'busy' | 'absent'> {
     return await this.lease
-      .suspendIfIdle(subject, launch.sandboxName, () => {
+      .suspendIfIdle(launch, () => {
         if (this.registry.currentLaunch(subject) === launch) {
           this.binder.dropSession(subject)
           this.forgetLaunch(subject)
@@ -483,7 +495,7 @@ export class K8sDriver implements SpawnDriver {
   private setMode(subject: string, desired: OperatingMode): Promise<OperatingMode | undefined> {
     const launch = this.registry.currentLaunch(subject)
     if (!launch) return Promise.reject(new Error(`no sandbox launch recorded for ${subject}`))
-    return this.lease.queueMode(launch.sandboxName, desired).catch(async (err: unknown) => {
+    return this.lease.queueMode(launch, desired).catch(async (err: unknown) => {
       if (err instanceof K8sApiError && err.isNotFound) await this.checkMissingLaunch(launch)
       throw err
     })
@@ -500,7 +512,7 @@ export class K8sDriver implements SpawnDriver {
     this.binder.loseChannel(subject, 'sandbox no longer exists')
     this.binder.forget(subject)
     this.registry.forgetLaunch(subject)
-    this.lease.forgetSandbox(launch.sandboxName)
+    this.lease.forgetSandbox(launch)
     this.deps.revokeChannel?.(subject)
     this.deps.log.warn(`cluster: sandbox ${launch.sandboxName} is gone — forgetting the launch of ${subject}`)
   }
@@ -510,23 +522,23 @@ export class K8sDriver implements SpawnDriver {
     const launch = this.registry.currentLaunch(subject)
     // A pod whose suspension is already in flight is going: holding it would serve work its write is about to take away.
     if (!launch || this.lease.suspensionOf(subject)) return undefined
-    this.lease.retain(launch.sandboxName)
+    this.lease.retain(launch)
     let released = false
     return () => {
       if (released) return
       released = true
-      this.lease.release(launch.sandboxName)
+      this.lease.release(launch)
     }
   }
 
   /** Hold the subject's Sandbox for `work`, including workspace preparation before launch. */
   async withSandbox<T>(subject: SandboxSubject, work: () => Promise<T>): Promise<T> {
     const launch = await this.ensureSandbox(subject)
-    this.lease.retain(launch.sandboxName)
+    this.lease.retain(launch)
     try {
       return await work()
     } finally {
-      this.lease.release(launch.sandboxName)
+      this.lease.release(launch)
     }
   }
 
@@ -567,7 +579,7 @@ export class K8sDriver implements SpawnDriver {
   release(subject: string): void {
     this.registry.bumpRelease(subject)
     const launch = this.registry.forgetLaunch(subject)
-    if (launch) this.lease.forgetSandbox(launch.sandboxName)
+    if (launch) this.lease.forgetSandbox(launch)
     // Otherwise `runsInSandbox` keeps answering true for a pod that is not this member's to use.
     this.binder.forget(subject)
     this.deps.revokeChannel?.(subject)

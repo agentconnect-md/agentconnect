@@ -8,7 +8,7 @@ import { K8sHttp } from '@agentconnect.md/k8s-client'
 import { closeFakeApiServers, fakeApiServer } from '@agentconnect.md/k8s-client/testing'
 import { AcpHost } from '../src/acp/acp-host.js'
 import { Daemon } from '../src/daemon.js'
-import { SandboxApi } from '../src/k8s/sandbox-api.js'
+import { SANDBOX_LAUNCH_GENERATION, SandboxApi } from '../src/k8s/sandbox-api.js'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from '../src/k8s/runtime-plane.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimServer } from '../src/shim/server.js'
@@ -64,9 +64,17 @@ function gate(): { closed: () => void; open: () => void; wait: () => Promise<voi
 }
 
 /** The Sandbox as the API server reports it; `ready` is the pod being up. */
-function sandboxObject(ready: boolean): unknown {
+function sandboxObject(ready: boolean, resourceVersion: number, generation?: string): unknown {
   return {
-    metadata: { name: 'sb-1', uid: 'sandbox-uid-1', annotations: { 'agents.x-k8s.io/pod-name': POD_NAME } },
+    metadata: {
+      name: 'sb-1',
+      uid: 'sandbox-uid-1',
+      resourceVersion: String(resourceVersion),
+      annotations: {
+        'agents.x-k8s.io/pod-name': POD_NAME,
+        ...(generation ? { [SANDBOX_LAUNCH_GENERATION]: generation } : {})
+      }
+    },
     spec: { operatingMode: 'Running' },
     status: { conditions: [{ type: 'Ready', status: ready ? 'True' : 'False' }], podIPs: ['127.0.0.1'] }
   }
@@ -93,7 +101,9 @@ async function clusterUnderTest(options: {
   servers.push(server)
   const state = { ready: true, hang: false }
   let claim: unknown
-  const { config } = await fakeApiServer(({ method, url }) => {
+  let resourceVersion = 1
+  let generation: string | undefined
+  const { config } = await fakeApiServer(({ method, url, body, headers }) => {
     const path = url.pathname
     if (path.endsWith('/tokenreviews')) {
       return {
@@ -115,7 +125,15 @@ async function clusterUnderTest(options: {
       // `hang` is an API server that accepts the read and never answers it — headers withheld,
       // response never ended — which is what a request with no deadline waits on forever.
       if (state.hang) return { lines: [], hold: true }
-      return { json: sandboxObject(state.ready) }
+      if (method === 'PATCH' && headers['content-type'] === 'application/merge-patch+json') {
+        const patch = JSON.parse(body)
+        if (patch.metadata.resourceVersion !== String(resourceVersion)) {
+          return { status: 409, json: { kind: 'Status', reason: 'Conflict' } }
+        }
+        generation = patch.metadata.annotations[SANDBOX_LAUNCH_GENERATION]
+        resourceVersion++
+      }
+      return { json: sandboxObject(state.ready, resourceVersion, generation) }
     }
     if (path.endsWith('/sandboxclaims')) {
       if (method !== 'POST') return { json: { items: [] } }

@@ -258,6 +258,15 @@ not yet recorded locally. Takeover deduplication is scoped to the current owners
 fence: regaining an agent starts a new attempt without reusing the departed ownership's
 promise.
 
+Before publishing a launch, the member stamps its durable binding generation onto
+the Sandbox's `agentconnect.md/launch-generation` annotation. A resourceVersion CAS
+prevents an older allocation from overwriting a successor. Every suspend or resume
+tests that generation and the Sandbox UID as well as the observed mode. Local
+departure invalidates queued mode decisions; the Kubernetes guard also rejects
+old requests already in flight when the successor takes over. Work holds belong
+to the immutable launch, so an old operation's release cannot drop a successor's
+hold on the same Sandbox. Failure to stamp ownership prevents launch publication.
+
 A cached launch is checked against Kubernetes before an unheld acquisition reuses
 it. If its Sandbox is gone, the driver drops that exact launch and its channel,
 then reads the claim again before taking a lease. A workspace operation already

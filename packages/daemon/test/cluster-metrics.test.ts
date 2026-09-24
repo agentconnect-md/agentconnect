@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { FakeClock } from '@agentconnect.md/connection'
 import { K8sDriver, type K8sDriverDeps } from '../src/k8s/driver.js'
+import { SANDBOX_LAUNCH_GENERATION, type SandboxFence } from '../src/k8s/sandbox-api.js'
 import { LaunchTimer, type ClusterMetrics, type LaunchPath, type LaunchStage } from '../src/metrics/cluster-metrics.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import { GuardedResumeRejectedError, type Sandbox, type SandboxClaim } from '../src/k8s/sandbox-api.js'
@@ -54,6 +55,7 @@ function recorder(): {
 /** A cluster whose claim either already exists (resume/warm) or is created (cold). */
 function fakeApi(options: { claimExists: boolean; mode: 'Running' | 'Suspended' }) {
   const state = {
+    generation: 0,
     mode: options.mode,
     claim: options.claimExists
       ? ({ metadata: { name: 'agent-a' }, status: { sandbox: { name: 'sb-1' } } } as SandboxClaim)
@@ -62,6 +64,9 @@ function fakeApi(options: { claimExists: boolean; mode: 'Running' | 'Suspended' 
   return {
     state,
     api: {
+      fenceSandbox: async (_name: string, fence: SandboxFence) => {
+        state.generation = fence.generation
+      },
       ensureClaim: async (claim: SandboxClaim & { metadata: { name: string } }) => {
         const created = state.claim === undefined
         state.claim = { ...claim, status: { sandbox: { name: 'sb-1' } } }
@@ -74,7 +79,11 @@ function fakeApi(options: { claimExists: boolean; mode: 'Running' | 'Suspended' 
       deleteClaim: async () => undefined,
       getSandbox: async () =>
         ({
-          metadata: { name: 'sb-1', uid: 'sandbox-uid-1' },
+          metadata: {
+            name: 'sb-1',
+            uid: 'sandbox-uid-1',
+            annotations: { [SANDBOX_LAUNCH_GENERATION]: String(state.generation) }
+          },
           spec: {
             operatingMode: state.mode,
             podTemplate: { spec: { containers: [{ name: 'runtime', image: 'runtime:1' }] } }
@@ -314,9 +323,10 @@ describe('cluster launch metrics', () => {
 
     const podStuck = recorder()
     const notReady = fakeApi({ claimExists: true, mode: 'Suspended' })
+    const getSandbox = notReady.api.getSandbox
     notReady.api.getSandbox = async () =>
       ({
-        metadata: { name: 'sb-1', uid: 'sandbox-uid-1' },
+        metadata: (await getSandbox()).metadata,
         spec: {
           operatingMode: notReady.state.mode,
           podTemplate: { spec: { containers: [{ name: 'runtime', image: 'runtime:1' }] } }
