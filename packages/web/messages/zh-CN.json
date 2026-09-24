@@ -1933,6 +1933,7 @@
       "workspacePath": "工作区路径",
       "workspaceBrowseError": "无法浏览工作区，所属 daemon 可能已离线。文件只存在于那台机器上，需要实时读取；daemon 断开时无法访问。",
       "repositoryNotCheckedOut": "尚未检出，此仓库会在 Agent 的下一次会话中生成。",
+      "repositoryOnDemand": "未检出，会话需要时由 Agent 克隆此仓库。",
       "workspaceNotCreated": "工作区还没有文件，Agent 会在工作过程中创建。",
       "workspaceEmpty": "此工作区为空。",
       "noFiles": "暂无文件。",

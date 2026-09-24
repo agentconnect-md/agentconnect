@@ -1933,6 +1933,7 @@
       "workspacePath": "Workspace path",
       "workspaceBrowseError": "Couldn’t browse the workspace — the owning daemon may be offline. Files live only on that machine and are read live from it, so they’re unavailable while it is disconnected.",
       "repositoryNotCheckedOut": "Not checked out yet — this repository is materialized on the agent’s next session.",
+      "repositoryOnDemand": "Not checked out — the agent clones this repository when a session needs it.",
       "workspaceNotCreated": "The workspace has no files yet — the agent creates them as it works.",
       "workspaceEmpty": "This workspace is empty.",
       "noFiles": "No files yet.",
