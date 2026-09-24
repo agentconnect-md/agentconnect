@@ -119,6 +119,8 @@ function useMicrosandbox(daemon: Daemon, environments: string[] = []) {
     collectImages: vi.fn(async () => {})
   }
   ;(daemon as any).cfg.sandbox.backend = 'microsandbox'
+  // A probed, prepared microsandbox, whatever this test host could run itself.
+  ;(daemon as any).microsandboxFailure = undefined
   ;(daemon as any).microsandbox = manager
   ;(daemon as any).microsandboxCatalog = (daemon as any).runtimeCatalog
   ;(daemon as any).microsandboxTable = { mcpBridge: { command: 'node', args: ['/image/mcp-bridge.js'] } }
@@ -160,7 +162,7 @@ describe.each(['srt', 'microsandbox'])('sandbox.env (%s)', (backend) => {
         const build = (runInSandbox: boolean) =>
           (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
             hostKey: sessionHostKey(agent.id, KEY('env')),
-            runInSandbox,
+            strategy: runInSandbox ? backend : 'host',
             cwd: agent.workspace.path
           }).host.opts
         const launch = build(true)
@@ -202,7 +204,7 @@ it.skipIf(process.platform === 'win32')(
       for (const excludeAgentToolCredentials of [false, true]) {
         const host = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
           hostKey: sessionHostKey(agent.id, KEY(String(excludeAgentToolCredentials))),
-          runInSandbox: true,
+          strategy: 'microsandbox',
           cwd: agent.workspace.path,
           excludeAgentToolCredentials
         }).host
@@ -234,8 +236,11 @@ it.skipIf(process.platform === 'win32')(
       const agent = (daemon as any).agents.get('bot-a')
       const hostKey = sessionHostKey(agent.id, KEY('plane'))
       const build = (runInSandbox: boolean) =>
-        (daemon as any).buildAcpHost(agent, (daemon as any).cfg, { hostKey, runInSandbox, cwd: agent.workspace.path })
-          .host.opts
+        (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
+          hostKey,
+          strategy: runInSandbox ? 'microsandbox' : 'host',
+          cwd: agent.workspace.path
+        }).host.opts
 
       // Prepared for a VM: the manager's driver for this host's own environment, and its key rides along.
       const vm = build(true)
@@ -286,7 +291,7 @@ it.skipIf(process.platform === 'win32')(
       const build = () =>
         (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
           hostKey,
-          runInSandbox: false,
+          strategy: 'host',
           cwd: agent.workspace.path
         })
       const expectCarried = (built: any, dir: string) => {
@@ -342,7 +347,7 @@ it.skipIf(process.platform === 'win32')(
       const build = (key: string) =>
         (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
           hostKey: sessionHostKey(agent.id, key),
-          runInSandbox: false,
+          strategy: 'host',
           cwd: agent.workspace.path
         }).host
       const placed = {
@@ -411,7 +416,7 @@ it.skipIf(process.platform === 'win32')(
       const gitDir = '/srv/executor/sessions/leaf/workspace/.git'
       const { host } = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
         hostKey,
-        runInSandbox: false,
+        strategy: 'host',
         cwd: '/srv/executor/sessions/leaf/workspace',
         sessionGitDirs: [gitDir]
       })
@@ -840,13 +845,14 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     await daemon.stop()
   })
 
-  it('keeps one host per agent when the sandbox is requested but this host has no mechanism', async () => {
-    const { daemon, hosts, factory } = await startDaemon(scaffold(), { sandboxMechanism: null })
-    await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
-    await (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
-    expect(factory).toHaveBeenCalledTimes(1)
-    expect([...(daemon as any).hosts.keys()]).toEqual([agentHostKey('bot-a')])
-    expect(hosts[0]!.newSession).toHaveBeenCalledTimes(2)
+  it('keeps a sandboxed agent sandboxed on a host with no mechanism: its sessions are refused, never folded onto an unconfined host', async () => {
+    const { daemon } = await startDaemon(scaffold(), { sandboxMechanism: null })
+    const agent = (daemon as any).agents.get('bot-a')
+    // No downgrade (session-executors.md §5): the agent still asks for srt, and the launch refuses it with the probe's reason.
+    expect((daemon as any).agentStrategy(agent)).toBe('srt')
+    expect((daemon as any).agentRunsInSandbox(agent)).toBe(true)
+    expect((daemon as any).strategyRefusal('srt')).toBe('this host has no supported SRT mechanism')
+    expect(() => (daemon as any).assertStrategyRunnable(agent)).toThrow('which this daemon cannot run')
     await daemon.stop()
   })
 
@@ -1385,7 +1391,7 @@ describe('one ACP host per session for a runtime whose session MCP servers are p
           mkdirSync(cwd, { recursive: true })
           const host = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
             hostKey,
-            runInSandbox: true,
+            strategy: 'microsandbox',
             cwd
           }).host
           expect(host.opts.hostKey).toBe(hostKey)

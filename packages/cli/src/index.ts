@@ -111,7 +111,7 @@ async function main(): Promise<void> {
     .option('--log-level <level>', 'trace|debug|info|warn|error')
     .option('--agents-dir <dir>', 'override agents directory')
     .option('--max-agents <n>', 'max agents this daemon advertises / enforces')
-    .option('--require-sandbox', 'require an OS sandbox for every agent or refuse daemon startup')
+    .option('--require-sandbox', 'refuse unsandboxed sessions (sandbox.host: false)')
     .option('--dry-run', 'load + validate config and print the reconcile plan, then exit')
     .option('--agent <name>', 'select a single agent by id (run/chat)')
     .option('--service-user <name>', 'Linux: the account the installed system unit runs the daemon as')

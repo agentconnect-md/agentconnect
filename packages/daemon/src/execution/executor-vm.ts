@@ -27,7 +27,11 @@ export function hostedEnvironment(
 }
 
 /** The launcher the facet picks for a `microsandbox` prepare; the manager is this machine's one, so VM starts stay serialized with its own. */
-export function microsandboxLauncher(deps: { manager: () => MicrosandboxManager | undefined }): StrategyLauncher {
+export function microsandboxLauncher(deps: {
+  manager: () => MicrosandboxManager | undefined
+  /** Prepares the image on its first use, since the startup probe pulls none (session-executors.md §5). */
+  ready?: () => Promise<void>
+}): StrategyLauncher {
   const required = (): MicrosandboxManager => {
     const manager = deps.manager()
     if (!manager) throw new Error('this machine runs no microsandbox backend')
@@ -35,6 +39,8 @@ export function microsandboxLauncher(deps: { manager: () => MicrosandboxManager 
   }
   return {
     start: async ({ daemonRoot, sessionLeaf, seed }) => {
+      // The first hosted VM may be this machine's first: it installs msb and prepares the image before any environment starts.
+      await deps.ready?.()
       const manager = required()
       const environment = hostedEnvironment(daemonRoot, sessionLeaf, seed)
       // The mount source must exist before the VM starts; the facet seeds this machine's sign-in into `home` first.

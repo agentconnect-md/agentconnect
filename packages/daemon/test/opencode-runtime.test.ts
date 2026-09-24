@@ -122,7 +122,7 @@ describe('dream host launch (daemon)', () => {
       const agent = inner.agents.get('bot-a')
       return inner.buildAcpHost(agent, inner.cfg, {
         hostKey: agentHostKey(agent.id),
-        runInSandbox: false,
+        strategy: 'host',
         cwd: join(root, 'in'),
         excludeAgentToolCredentials
       }).host.opts.env

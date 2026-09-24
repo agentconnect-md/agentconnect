@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { existsSync, mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -87,29 +87,21 @@ function quietHost(): AcpHost {
 }
 
 describe('runChat', () => {
-  it('rejects microsandbox before selecting, probing, or launching a runtime', async () => {
+  it.each([
+    ['names it', { execution: 'microsandbox' }, {}],
+    ['has not been migrated off a microsandbox backend', { runInSandbox: true }, { backend: 'microsandbox' }]
+  ])('rejects an agent that %s before probing or launching a runtime', async (_case, agent, sandbox) => {
     const files = scaffold()
-    writeFileSync(
-      files.configPath,
-      JSON.stringify({
-        version: 1,
-        sandbox: { backend: 'microsandbox', microsandbox: { image: 'runtime:test' } }
-      })
-    )
+    writeFileSync(files.configPath, JSON.stringify({ version: 1, sandbox }))
+    const agentFile = join(files.agentsDir, 'agent.json')
+    writeFileSync(agentFile, JSON.stringify({ ...JSON.parse(readFileSync(agentFile, 'utf8')), ...agent }))
     const resolveCatalog = vi.fn()
     const probeRuntimes = vi.fn()
     const hostFactory = vi.fn()
 
-    await expect(
-      runChat({
-        ...files,
-        agentsDir: join(files.root, 'missing-agents'),
-        message: 'hi',
-        resolveCatalog,
-        probeRuntimes,
-        hostFactory
-      })
-    ).rejects.toThrow('chat does not support microsandbox yet')
+    await expect(runChat({ ...files, message: 'hi', resolveCatalog, probeRuntimes, hostFactory })).rejects.toThrow(
+      'chat does not support microsandbox yet'
+    )
     expect(resolveCatalog).not.toHaveBeenCalled()
     expect(probeRuntimes).not.toHaveBeenCalled()
     expect(hostFactory).not.toHaveBeenCalled()
@@ -311,6 +303,9 @@ describe('runChat', () => {
         sandbox: { mounts: [{ source, target: source, mode }] }
       })
     )
+    // Only an srt launch reads the mounts, so the agent runs in it.
+    const agentFile = join(files.agentsDir, 'agent.json')
+    writeFileSync(agentFile, JSON.stringify({ ...JSON.parse(readFileSync(agentFile, 'utf8')), execution: 'srt' }))
     const hostFactory = vi.fn()
 
     await expect(runChat({ ...files, message: 'hi', out: capture().stream, hostFactory })).rejects.toThrow(

@@ -31,7 +31,7 @@ export const RuntimeDefSchema = z.object({
   // lives in a machine-local external service the OS sandbox cannot contain,
   // and netns isolation would sever the bridge's loopback dial — so the bridge
   // launches like any unsandboxed runtime (admission probes still use a
-  // disposable isolated HOME). `security.requireSandbox` refuses it outright.
+  // disposable isolated HOME). A sandboxing strategy refuses it outright.
   externalExecution: z.boolean().optional(),
   // Scope of session/new|load mcpServers: 'per-session' (default), 'per-process' (the last session's serve them all, so each session gets its own host), or 'unsupported' (rejected: sessions run without MCP tools, as on OpenClaw).
   sessionMcpServers: z.enum(['per-session', 'per-process', 'unsupported']).optional()
@@ -156,6 +156,16 @@ export const MicrosandboxConfigSchema = z
       .default(10)
   })
   .strict()
+export type MicrosandboxConfig = z.infer<typeof MicrosandboxConfigSchema>
+
+// A strategy with no parameters (session-executors.md §5): `false` withdraws it, `true` or `{}` offers it.
+const StrategyOffer = z.union([z.boolean(), z.object({}).strict()]).transform((value) => value !== false)
+// `true` takes the defaults, an object sets them, `false` withdraws the strategy.
+const MicrosandboxOffer = z
+  .union([z.boolean(), MicrosandboxConfigSchema])
+  .transform((value): MicrosandboxConfig | false =>
+    value === true ? MicrosandboxConfigSchema.parse({}) : value === false ? false : value
+  )
 
 export const ConfigSchema = z.object({
   version: z.literal(1),
@@ -198,27 +208,29 @@ export const ConfigSchema = z.object({
   // Agent/tenant configuration can reference a key but can never supply a
   // command, path, args, or secret environment target.
   memoryPlugins: z.record(MemoryPluginCommandRef, StdioMemoryPluginDefSchema).optional(),
+  // The strategy table (session-executors.md §5): every strategy is offered by default, and its startup probe decides whether it is available.
   sandbox: z
     .object({
-      backend: SandboxBackendSchema.default('srt'),
+      host: StrategyOffer.default(true),
+      srt: StrategyOffer.default(true),
+      microsandbox: MicrosandboxOffer.prefault(true),
+      // Retiring: read once at startup with a warning, and kept only as the backend the CP migrates `runInSandbox` from.
+      backend: SandboxBackendSchema.optional(),
       env: z.record(EnvironmentName, ProcessValue).default({}),
       mounts: z.array(SandboxMountSchema).default([]),
       // The executor facet switch (session-executors.md §10): this machine hosts isolated sessions of its group's other members, under ITS runtime sign-in. The owner's consent, so `config/push` never sets it.
-      share: z.boolean().default(false),
-      microsandbox: MicrosandboxConfigSchema.optional()
+      share: z.boolean().default(false)
     })
     .strict()
-    .default({ backend: 'srt', env: {}, mounts: [], share: false }),
+    .prefault({}),
   security: z
     .object({
       // Prevent ACP runtimes from implicitly inheriting apps/connectors attached
       // to the signed-in cloud account. Explicit local and daemon-injected MCP
       // servers remain available. Set false only to opt this daemon out.
       isolateAccountApps: z.boolean().default(true),
-      // Daemon-wide sandbox policy (issue #312). When true, startup fails unless
-      // Linux SRT/bwrap is available and every agent runs sandboxed; the
-      // console locks the per-agent option on. false leaves it agent-selectable.
-      requireSandbox: z.boolean().default(false),
+      // Retiring (session-executors.md §5): read once at startup with a warning, `true` as `sandbox.host: false`.
+      requireSandbox: z.boolean().optional(),
       // Operator-owned remote-origin policy for daemon-managed workspace clone/pull. Default
       // ['*'] admits any https/ssh origin; exact scheme+host+port entries tighten it, and []
       // disables remote Git workspaces entirely.
@@ -227,7 +239,6 @@ export const ConfigSchema = z.object({
     .strict()
     .default({
       isolateAccountApps: true,
-      requireSandbox: false,
       workspaceGitAllowedOrigins: [...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS]
     }),
   // Relay roster the CP last published (shared-bot-relay.md §5). Persisted whole so

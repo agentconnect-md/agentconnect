@@ -144,6 +144,13 @@ export interface LockHolder {
 }
 
 const SpecImageSchema = z.object({ config: z.object({ image: z.string().min(1) }) })
+// The runtime table an image's first preparation read, so a restart on the same image boots no probe VM.
+const ImageRuntimesRecordSchema = z.object({
+  version: z.literal(1),
+  image: z.string().min(1),
+  identity: z.string().min(1),
+  table: K8sRuntimeTableSchema
+})
 const FlatRefSchema = z.object({ manifest_digest: z.string(), artifact_digest: z.string() })
 
 /** Owns VM lifecycle while exposing the existing ACP process-stream contract. */
@@ -154,15 +161,51 @@ export class MicrosandboxManager {
   // The same, for a hosted environment: started and left for the executor facet's pipe, with nothing bound here.
   private readonly guests = new Map<string, GuestShim>()
   private preparation?: Promise<K8sRuntimeTable>
+  private recovery?: Promise<void>
   private closed = false
   private startGate: Promise<void> = Promise.resolve()
   private readonly imageIdentities = new Map<string, Promise<string | undefined>>()
-  private prepared = false
 
   constructor(private readonly options: MicrosandboxManagerOptions) {}
 
+  /** The image and its runtime table, prepared once by the first use; a failure is retried by the next (session-executors.md §5). */
   prepare(): Promise<K8sRuntimeTable> {
-    return (this.preparation ??= this.probe())
+    if (!this.preparation) {
+      const preparation = this.probe()
+      this.preparation = preparation
+      preparation.catch(() => {
+        if (this.preparation === preparation) this.preparation = undefined
+      })
+    }
+    return this.preparation
+  }
+
+  /** The table an earlier preparation recorded for the configured image, when the cache still holds that image; it pulls and boots nothing. */
+  async cachedTable(): Promise<K8sRuntimeTable | undefined> {
+    const record = ImageRuntimesRecordSchema.safeParse(
+      parseJson(await readFile(this.imageRuntimesPath(), 'utf8').catch(() => ''))
+    )
+    if (!record.success || record.data.image !== this.options.config.image) return undefined
+    const identity = await this.imageIdentity(this.options.config.image)
+    if (!identity || identity !== record.data.identity) return undefined
+    this.preparation ??= Promise.resolve(record.data.table)
+    return record.data.table
+  }
+
+  /** Fence what an earlier daemon left: stop its running VMs and reclaim the preparation VM; it pulls no image (§5). */
+  recover(): Promise<void> {
+    if (!this.recovery) {
+      const recovery = this.recoverState()
+      this.recovery = recovery
+      recovery.catch(() => {
+        if (this.recovery === recovery) this.recovery = undefined
+      })
+    }
+    return this.recovery
+  }
+
+  private imageRuntimesPath(): string {
+    return join(this.options.root, 'microsandbox', 'image-runtimes.json')
   }
 
   async prepareImage(): Promise<void> {
@@ -171,7 +214,7 @@ export class MicrosandboxManager {
 
   /** Collect what a retention pass unpinned; skips the round while another live process holds the image cache. */
   async collectImages(): Promise<void> {
-    if (!this.prepared || this.closed) return
+    if (!this.recovery || this.closed) return
     const collected = await this.withImageCache(false, async () => {
       const keep = await this.boundImages()
       // The last pull may be an upgrade's pre-pull of the next release, which runs while this daemon still does.
@@ -474,9 +517,7 @@ export class MicrosandboxManager {
     return builder
   }
 
-  private async probe(): Promise<K8sRuntimeTable> {
-    // Without this, an unreachable /dev/kvm surfaces only as the guest's SIGABRT, minutes after an image pull.
-    ;(this.options.kvmPreflight ?? assertKvmAvailable)()
+  private async recoverState(): Promise<void> {
     const bindings = join(this.options.root, 'microsandbox', 'bindings')
     await mkdir(bindings, { recursive: true, mode: 0o700 })
     for (const id of await this.persistedIds()) {
@@ -500,14 +541,19 @@ export class MicrosandboxManager {
         this.options.log?.warn(`microsandbox: environment ${id} is unavailable — ${formatErr(error)}`)
       }
     }
+    await this.reclaimPreparation(this.name('probe'))
+  }
+
+  private async probe(): Promise<K8sRuntimeTable> {
+    // Without this, an unreachable /dev/kvm surfaces only as the guest's SIGABRT, minutes after an image pull.
+    ;(this.options.kvmPreflight ?? assertKvmAvailable)()
+    await this.recover()
     const name = this.name('probe')
-    await this.reclaimPreparation(name)
     await this.withImageCache(true, async () => {
       // Free the retired releases before the pull, so a tight disk is not asked to hold both.
       const keep = await this.boundImages()
       await this.collect((image) => keep.has(image.reference))
       await this.pullImage()
-      this.prepared = true
     })
     this.imageIdentities.delete(this.options.config.image)
     let sandbox = await this.serializeStart(() => this.createReclaiming(name, () => this.builder(name, [])))
@@ -526,12 +572,25 @@ export class MicrosandboxManager {
       sandbox = await this.startVm(name, async () => (await this.options.sdk.Sandbox.get(name)).startDetached())
       await sandbox.ping()
       this.options.log?.info('microsandbox: image, Node, Python, runtime table and disk resume verified')
+      await this.recordTable(table)
       return table
     } finally {
       await (await this.options.sdk.Sandbox.get(name)).destroy({ timeoutMs: STOP_TIMEOUT_MS })
       await sandbox.detach()
       await this.removeVolume(`${name}-docker`)
     }
+  }
+
+  /** Best effort: a record that cannot be written costs the next restart one probe VM, never a session. */
+  private async recordTable(table: K8sRuntimeTable): Promise<void> {
+    const identity = await this.imageIdentity(this.options.config.image)
+    if (!identity) return
+    await writeFileAtomic(
+      this.imageRuntimesPath(),
+      JSON.stringify({ version: 1, image: this.options.config.image, identity, table })
+    ).catch((error: unknown) =>
+      this.options.log?.warn(`microsandbox: could not record the image's runtime table — ${formatErr(error)}`)
+    )
   }
 
   /** A daemon killed mid-preparation leaves this VM behind, and with it a pin on the image it booted. */

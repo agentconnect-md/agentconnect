@@ -77,7 +77,14 @@ describe('loadConfig', () => {
     expect(cfg.runtimes!.claude!.command).toBe('npx')
     expect(cfg.security.isolateAccountApps).toBe(true)
     expect(cfg.security.workspaceGitAllowedOrigins).toEqual(['*'])
-    expect(cfg.sandbox).toEqual({ backend: 'srt', env: {}, mounts: [], share: false })
+    expect(cfg.sandbox).toEqual({
+      host: true,
+      srt: true,
+      microsandbox: { cpus: 2, memoryMiB: 2048, diskGiB: 10 },
+      env: {},
+      mounts: [],
+      share: false
+    })
     expect(cfg.features.turnFinalContextRefresh).toBe(true)
     expect(cfg.limits.maxAgents).toBe(32)
     expect(cfg.agentsDir).toContain('agents')
@@ -90,7 +97,9 @@ describe('loadConfig', () => {
       sandbox: { mounts: [{ source: '/opt/toolchain', target: '/opt/toolchain' }] }
     })
     expect(cfg.sandbox).toEqual({
-      backend: 'srt',
+      host: true,
+      srt: true,
+      microsandbox: { cpus: 2, memoryMiB: 2048, diskGiB: 10 },
       env: {},
       mounts: [{ source: '/opt/toolchain', target: '/opt/toolchain', mode: 'readonly' }],
       share: false
@@ -121,6 +130,52 @@ describe('loadConfig', () => {
 
   it('rejects an unimplemented sandbox backend', () => {
     expect(() => ConfigSchema.parse({ version: 1, sandbox: { backend: 'docker' } })).toThrow()
+    expect(() => ConfigSchema.parse({ version: 1, sandbox: { docker: true } })).toThrow()
+  })
+
+  it('offers every strategy by default and takes false, true or parameters for each (session-executors.md §5)', () => {
+    const table = (sandbox: Record<string, unknown>) => {
+      const parsed = ConfigSchema.parse({ version: 1, sandbox }).sandbox
+      return { host: parsed.host, srt: parsed.srt, microsandbox: parsed.microsandbox }
+    }
+    expect(table({})).toEqual({ host: true, srt: true, microsandbox: { cpus: 2, memoryMiB: 2048, diskGiB: 10 } })
+    expect(table({ host: false, srt: {}, microsandbox: false })).toEqual({
+      host: false,
+      srt: true,
+      microsandbox: false
+    })
+    expect(table({ microsandbox: true }).microsandbox).toEqual({ cpus: 2, memoryMiB: 2048, diskGiB: 10 })
+    expect(table({ microsandbox: { cpus: 4 } }).microsandbox).toEqual({ cpus: 4, memoryMiB: 2048, diskGiB: 10 })
+    expect(() => table({ host: 'yes' })).toThrow()
+    expect(() => table({ srt: { profile: 'strict' } })).toThrow()
+  })
+
+  it('maps the retiring keys once, with a warning each, onto the default table', () => {
+    const warnings: string[] = []
+    const cfg = loadConfig({
+      root: tmpRoot({
+        version: 1,
+        sandbox: { backend: 'microsandbox', microsandbox: { cpus: 4 } },
+        security: { requireSandbox: true }
+      }),
+      warn: (message) => warnings.push(message)
+    })
+    expect({ host: cfg.sandbox.host, srt: cfg.sandbox.srt }).toEqual({ host: false, srt: true })
+    expect(cfg.sandbox.microsandbox).toEqual({ cpus: 4, memoryMiB: 2048, diskGiB: 10 })
+    // Kept only as what the Control Plane migrates `runInSandbox` from; nothing launches on it.
+    expect(cfg.sandbox.backend).toBe('microsandbox')
+    expect(cfg.security.requireSandbox).toBeUndefined()
+    expect(warnings).toEqual([
+      expect.stringContaining('sandbox.backend is retired'),
+      expect.stringContaining('security.requireSandbox is retired and read as sandbox.host: false')
+    ])
+    const quiet: string[] = []
+    const defaults = loadConfig({
+      root: tmpRoot({ version: 1, security: { requireSandbox: false } }),
+      warn: (m) => quiet.push(m)
+    })
+    expect(defaults.sandbox.host).toBe(true)
+    expect(quiet).toEqual([expect.stringContaining('read as sandbox.host: true')])
   })
 
   it('loads sandbox environment values literally, including empty values', () => {
@@ -136,40 +191,17 @@ describe('loadConfig', () => {
   )
 
   it('allows the release image default without adding Docker lifecycle configuration', () => {
-    expect(ConfigSchema.parse({ version: 1, sandbox: { backend: 'microsandbox' } }).sandbox).toEqual({
-      backend: 'microsandbox',
-      env: {},
-      mounts: [],
-      share: false
+    const microsandbox = (value: unknown) =>
+      ConfigSchema.parse({ version: 1, sandbox: { microsandbox: value } }).sandbox.microsandbox
+    expect(microsandbox({})).toEqual({ cpus: 2, memoryMiB: 2048, diskGiB: 10 })
+    for (const image of ['', '  ']) expect(() => microsandbox({ image })).toThrow()
+    expect(microsandbox({ image: 'registry.example.test/runtime:test' })).toEqual({
+      image: 'registry.example.test/runtime:test',
+      cpus: 2,
+      memoryMiB: 2048,
+      diskGiB: 10
     })
-    expect(
-      ConfigSchema.parse({ version: 1, sandbox: { backend: 'microsandbox', microsandbox: {} } }).sandbox.microsandbox
-    ).toEqual({ cpus: 2, memoryMiB: 2048, diskGiB: 10 })
-    for (const image of ['', '  ']) {
-      expect(() =>
-        ConfigSchema.parse({ version: 1, sandbox: { backend: 'microsandbox', microsandbox: { image } } })
-      ).toThrow()
-    }
-    expect(
-      ConfigSchema.parse({
-        version: 1,
-        sandbox: { backend: 'microsandbox', microsandbox: { image: 'registry.example.test/runtime:test' } }
-      }).sandbox
-    ).toEqual({
-      backend: 'microsandbox',
-      env: {},
-      mounts: [],
-      share: false,
-      microsandbox: {
-        image: 'registry.example.test/runtime:test',
-        cpus: 2,
-        memoryMiB: 2048,
-        diskGiB: 10
-      }
-    })
-    expect(() =>
-      ConfigSchema.parse({ version: 1, sandbox: { backend: 'microsandbox', microsandbox: { docker: true } } })
-    ).toThrow('docker')
+    expect(() => microsandbox({ docker: true })).toThrow('docker')
   })
 
   it.each([
@@ -313,7 +345,8 @@ describe('loadConfig', () => {
     })
     expect(cfg.controlPlane?.url).toBe('wss://override.example/daemon')
     expect(cfg.logging.level).toBe('debug')
-    expect(cfg.security.requireSandbox).toBe(true)
+    // `--require-sandbox` withdraws host from the table.
+    expect(cfg.sandbox.host).toBe(false)
   })
 
   it('allows the daemon to opt out of account-app isolation explicitly', () => {

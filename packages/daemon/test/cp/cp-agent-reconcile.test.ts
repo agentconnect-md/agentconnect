@@ -158,6 +158,8 @@ describe('Daemon CP agent → memory + reconcile', () => {
       stopAll: vi.fn(async () => {}),
       suspendIdle: vi.fn(async () => {})
     }
+    // The image this run already read: a retained VM is compared with it only then.
+    ;(daemon as any).microsandboxCatalog = { entries: {}, runtimes: {} }
     vi.spyOn(daemon as any, 'usesMicrosandbox').mockReturnValue(true)
     vi.spyOn(daemon as any, 'microsandboxContext').mockReturnValue({ environment: { id: 'bot-a/agent' } })
     const agent = (daemon as any).agents.get('bot-a')

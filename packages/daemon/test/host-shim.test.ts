@@ -15,12 +15,19 @@ import {
   sweepStaleHostShims,
   type HostShim
 } from '../src/execution/host-shim.js'
-import { effectiveStrategies, ownStrategies } from '../src/execution/strategies.js'
+import {
+  agentStrategyOf,
+  assertSomeStrategyAvailable,
+  effectiveStrategies,
+  machineStrategies
+} from '../src/execution/strategies.js'
 import { ShimDialer } from '../src/shim/dialer.js'
 import { ShimSession } from '../src/shim/session.js'
 import { WAIT } from './wait-support.js'
 
 const silent = { info: () => {}, warn: () => {} }
+const OFFERED = { host: true, srt: true, microsandbox: true }
+const AVAILABLE = machineStrategies({ offered: OFFERED, unavailable: {} })
 const linuxOnly = process.platform !== 'linux'
 // The source entry under tsx, by absolute URL: the shim's cwd is the session's, where a bare `tsx` does not resolve.
 const entry = {
@@ -299,38 +306,71 @@ describe('host strategy shim launcher', () => {
   })
 })
 
-describe('effective strategy table', () => {
-  it('offers host on Linux and microsandbox when its probe is clean', () => {
-    expect(effectiveStrategies({ platform: 'linux', microsandbox: { configured: true } })).toEqual({
+describe('the machine’s own strategy table', () => {
+  it('offers every configured strategy, each available unless its probe says why not', () => {
+    expect(AVAILABLE).toEqual({
+      host: { available: true },
+      srt: { available: true },
+      microsandbox: { available: true }
+    })
+    const table = machineStrategies({
+      offered: OFFERED,
+      unavailable: { srt: 'bwrap is not on PATH', microsandbox: 'no KVM' }
+    })
+    expect(table.srt).toEqual({ available: false, reason: 'bwrap is not on PATH' })
+    expect(table.microsandbox).toEqual({ available: false, reason: 'no KVM' })
+    // The machine's own `host` is the direct child: no probe, every platform.
+    expect(table.host).toEqual({ available: true })
+  })
+
+  it('names a withdrawn strategy by its key before any probe reason', () => {
+    const table = machineStrategies({
+      offered: { host: false, srt: true, microsandbox: false },
+      unavailable: { microsandbox: 'no KVM' }
+    })
+    expect(table.host).toEqual({ available: false, reason: 'sandbox.host is off on this daemon' })
+    expect(table.microsandbox).toEqual({ available: false, reason: 'sandbox.microsandbox is off on this daemon' })
+    expect(table.srt).toEqual({ available: true })
+  })
+
+  it('refuses a start with nothing available, naming every reason, and allows any one entry', () => {
+    const none = machineStrategies({
+      offered: { host: false, srt: true, microsandbox: true },
+      unavailable: { srt: 'bwrap is not on PATH', microsandbox: 'no KVM' }
+    })
+    expect(() => assertSomeStrategyAvailable(none)).toThrow(
+      'no execution strategy can run on this machine (host: sandbox.host is off on this daemon; srt: bwrap is not on PATH; microsandbox: no KVM)'
+    )
+    expect(() =>
+      assertSomeStrategyAvailable(
+        machineStrategies({ offered: { host: false, srt: true, microsandbox: true }, unavailable: { srt: 'x' } })
+      )
+    ).not.toThrow()
+  })
+})
+
+describe('the table an executor reports to its group', () => {
+  it('keeps host Linux-only and passes the rest through', () => {
+    expect(effectiveStrategies({ platform: 'linux', table: AVAILABLE })).toEqual({
       host: { available: true },
       microsandbox: { available: true }
     })
-  })
-
-  it('reports each unavailable strategy with its reason', () => {
-    const table = effectiveStrategies({ platform: 'darwin', microsandbox: { configured: true, unavailable: 'no KVM' } })
-    expect(table.host).toEqual({ available: false, reason: expect.stringContaining('needs Linux') })
-    expect(table.microsandbox).toEqual({ available: false, reason: 'no KVM' })
-    expect(effectiveStrategies({ platform: 'linux', microsandbox: { configured: false } }).microsandbox).toEqual({
-      available: false,
-      reason: 'microsandbox is not the configured sandbox backend'
+    const darwin = effectiveStrategies({ platform: 'darwin', table: AVAILABLE })
+    expect(darwin.host).toEqual({ available: false, reason: expect.stringContaining('needs Linux') })
+    // A withdrawn host keeps its own reason rather than the platform's.
+    const off = machineStrategies({ offered: { ...OFFERED, host: false }, unavailable: { microsandbox: 'no KVM' } })
+    expect(effectiveStrategies({ platform: 'darwin', table: off })).toEqual({
+      host: { available: false, reason: 'sandbox.host is off on this daemon' },
+      microsandbox: { available: false, reason: 'no KVM' }
     })
   })
 })
 
-describe('the machine’s own strategy table', () => {
-  it('offers host and the configured backend, and says why the other one is not offered', () => {
-    expect(ownStrategies({ backend: 'srt', requireSandbox: false })).toEqual({
-      host: { available: true },
-      srt: { available: true },
-      microsandbox: { available: false, reason: 'microsandbox is not the configured sandbox backend' }
-    })
-  })
-
-  it('withdraws host when a sandbox is required, and carries the backend’s probe failure', () => {
-    const table = ownStrategies({ backend: 'microsandbox', requireSandbox: true, unavailable: 'no KVM' })
-    expect(table.host).toEqual({ available: false, reason: 'security.requireSandbox is set on this daemon' })
-    expect(table.microsandbox).toEqual({ available: false, reason: 'no KVM' })
-    expect(table.srt).toEqual({ available: false, reason: 'srt is not the configured sandbox backend' })
+describe('the strategy an agent names', () => {
+  it('is its execution, or its runInSandbox read the way the Control Plane migrates it', () => {
+    expect(agentStrategyOf({ execution: 'microsandbox', runInSandbox: false }, undefined)).toBe('microsandbox')
+    expect(agentStrategyOf({ runInSandbox: false }, 'microsandbox')).toBe('host')
+    expect(agentStrategyOf({ runInSandbox: true }, undefined)).toBe('srt')
+    expect(agentStrategyOf({ runInSandbox: true }, 'microsandbox')).toBe('microsandbox')
   })
 })

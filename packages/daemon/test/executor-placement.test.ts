@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import type { ExecutorCandidate, ExecutorCandidatesResult } from '@agentconnect.md/protocol'
-import { executorLost, placeSession, strategyFor, type PlacementAsk } from '../src/execution/executor-placement.js'
+import {
+  executorLost,
+  placeSession,
+  strategyFor,
+  strategySpreads,
+  type PlacementAsk
+} from '../src/execution/executor-placement.js'
 
 // The birth predicate, the one rule that selects, and the lazy loss rule (session-executors.md §6, §7).
 
-const ASK: PlacementAsk = { isolation: 'session', runInSandbox: false, runtime: 'claude' }
+const ASK: PlacementAsk = { isolation: 'session', strategy: 'host', runtime: 'claude' }
 
 function candidate(daemonId: string, over: Partial<ExecutorCandidate> = {}): ExecutorCandidate {
   return {
@@ -99,14 +105,34 @@ describe('the birth predicate', () => {
     })
   })
 
-  it('asks a sandboxing strategy for an agent that asked for a sandbox, and `host` otherwise', () => {
+  it('asks a candidate for exactly the agent’s strategy, never a stronger or a weaker one', () => {
     const sandboxing = candidate('b', {
       strategies: { host: { available: true }, microsandbox: { available: true } }
     })
     expect(strategyFor(ASK, sandboxing)).toBe('host')
-    expect(strategyFor({ ...ASK, runInSandbox: true }, sandboxing)).toBe('microsandbox')
-    // The only sandboxing strategy of v1 is unavailable here, and `host` is not one.
-    expect(strategyFor({ ...ASK, runInSandbox: true }, candidate('c'))).toBeUndefined()
+    expect(strategyFor({ ...ASK, strategy: 'microsandbox' }, sandboxing)).toBe('microsandbox')
+    // Its microsandbox is unavailable, and `host` is no substitute for it.
+    expect(strategyFor({ ...ASK, strategy: 'microsandbox' }, candidate('c'))).toBeUndefined()
+    // A VM does not stand in for a host session either.
+    expect(strategyFor(ASK, candidate('d', { strategies: { microsandbox: { available: true } } }))).toBeUndefined()
+  })
+
+  it('keeps an srt session on its holder, as no candidate before R1 can run it', () => {
+    const offersSrt = candidate('b', { strategies: { srt: { available: true } } })
+    const answer: ExecutorCandidatesResult = { candidates: [offersSrt] }
+    for (const reachable of [answer, undefined]) {
+      expect(
+        placeSession({
+          ask: { ...ASK, strategy: 'srt' },
+          holderHostedSessions: 9,
+          holderCapacity: 32,
+          holderAuthenticates: true,
+          ...(reachable ? { answer: reachable } : {})
+        })
+      ).toEqual({ stayedHome: 'no_candidate' })
+    }
+    expect(strategySpreads('srt')).toBe(false)
+    expect(strategySpreads('host') && strategySpreads('microsandbox')).toBe(true)
   })
 })
 
