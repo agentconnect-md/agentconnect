@@ -3134,8 +3134,15 @@ function HookRunsPanel({ hookId, sessionHref }: { hookId: string; sessionHref: (
             className="flex items-center gap-[10px] border-b border-(--border-subtle) px-[14px] py-[9px] last:border-b-0"
           >
             <span className={`h-[7px] w-[7px] flex-none rounded-full ${HOOK_RUN_DOT[r.status]}`} />
-            <span className="mono min-w-0 flex-1 truncate text-[12px] text-(--text-secondary)" title={r.deliveryKey}>
-              {r.deliveryKey}
+            <span className="flex min-w-0 flex-1 items-center gap-2">
+              <span className="mono min-w-0 truncate text-[12px] text-(--text-secondary)" title={r.deliveryKey}>
+                {r.deliveryKey}
+              </span>
+              {r.sessionId && (
+                <Link href={sessionHref(r.sessionId)} className="lnk flex-none whitespace-nowrap text-[11.5px]">
+                  {t('integrations.openSession')}
+                </Link>
+              )}
             </span>
             {r.status === 'failed' && r.reason && (
               <span className="flex-none font-sans text-[11.5px] font-normal leading-normal text-(--status-error)">
@@ -3150,11 +3157,6 @@ function HookRunsPanel({ hookId, sessionHref }: { hookId: string; sessionHref: (
             <span className="flex-none font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
               {fmtHookAgo(r.startedAt)}
             </span>
-            {r.sessionId && (
-              <Link href={sessionHref(r.sessionId)} className="lnk flex-none text-[11.5px]">
-                {t('integrations.openSession')}
-              </Link>
-            )}
           </div>
         ))
       )}
