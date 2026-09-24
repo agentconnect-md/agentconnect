@@ -208,7 +208,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
     routing.getRouting.mockResolvedValue(detail())
     await render([row()])
     await click(document.body.querySelector('button[aria-label="Default dispatch — deploy-bot"]'))
-    await click(all('button').find((node) => node.textContent?.trim() === 'Decision'))
+    await click(document.body.querySelector('button[aria-label="Add decision"]'))
     await click(all('button[aria-haspopup="menu"]').find((node) => node.textContent?.includes('Select a decision…')))
     await click(all('[role="menuitemradio"]').find((node) => node.textContent?.startsWith('Support category')))
     await click(document.body.querySelector('button[aria-label="Continue with a Decision"]'))
