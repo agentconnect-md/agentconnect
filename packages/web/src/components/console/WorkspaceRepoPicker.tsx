@@ -16,8 +16,8 @@ import { GithubMark } from '@/components/marks'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
-import { REPOSITORY_ACCESS_BADGE } from '@/components/console/WorkspaceFormFields'
-import type { AgentRepoAuthDto } from '@/lib/api'
+import { REPOSITORY_ACCESS_BADGE, RepositoryMaterializeBadge } from '@/components/console/WorkspaceFormFields'
+import { repoAuthMaterialize, type AgentRepoAuthDto } from '@/lib/api'
 
 /**
  * The repository the URL names, resolved against the agent's grants.
@@ -160,6 +160,7 @@ export function WorkspaceRepoPicker({
                     </span>
                     <span className="mono min-w-0 flex-1 truncate text-[11.5px]">{repo.repoFullName}</span>
                     <span className={REPOSITORY_ACCESS_BADGE[repo.access]}>{repo.access}</span>
+                    <RepositoryMaterializeBadge value={repoAuthMaterialize(repo)} />
                   </button>
                 )
               })}

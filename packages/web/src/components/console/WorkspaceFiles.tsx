@@ -12,6 +12,7 @@ import {
   deleteWorkspaceFile,
   fetchWorkspaceFile,
   fetchWorkspaceFileFull,
+  repoAuthMaterialize,
   writeWorkspaceFile,
   workspaceGitPull,
   type AgentRepoAuthDto,
@@ -367,6 +368,12 @@ export function WorkspaceFiles({
   // The breadcrumb's root has always NAMED the root being browsed; with more than one to browse it
   // becomes the control that chooses it. With nothing to choose it stays the plain label it was.
   const repoChoices = repoOptions ?? []
+  // An on-demand grant is never checked out by the daemon, so its absent root must not promise the next session will.
+  const repoOnDemand =
+    repo !== undefined &&
+    repoChoices.some(
+      (grant) => grant.repoFullName.toLowerCase() === repo.toLowerCase() && repoAuthMaterialize(grant) !== 'always'
+    )
   const repoPicker =
     repoChoices.length > 0 && onRepoChange ? (
       <WorkspaceRepoPicker
@@ -718,7 +725,7 @@ export function WorkspaceFiles({
               sessionId
                 ? sessionWorktreeAbsentNotice(repo)
                 : repo
-                  ? t('repositoryNotCheckedOut')
+                  ? t(repoOnDemand ? 'repositoryOnDemand' : 'repositoryNotCheckedOut')
                   : t('workspaceNotCreated')
             }
           />

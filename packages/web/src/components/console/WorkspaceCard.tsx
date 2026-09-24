@@ -33,13 +33,17 @@ import { CodeHostMark } from '@/components/console/CodeHostMark'
 import { Icon } from '@/components/ui'
 import { CODE_HOST_PROJECTION } from '@/lib/code-hosts'
 import { isPoolPlacementKind, workspaceSourceOf, type Agent, type WorkspaceStatusInfo } from '@/lib/data'
-import { creatorLabel, fetchAgentRepos, repoAuthProvider } from '@/lib/api'
+import { creatorLabel, fetchAgentRepos, repoAuthMaterialize, repoAuthProvider } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
 import { consoleKeys } from '@/lib/swr-keys'
 import { useConsoleData } from '@/lib/data-context'
 import EditWorkspaceModal from '@/components/console/modals/EditWorkspaceModal'
-import { REPOSITORY_ACCESS_BADGE, type WorkspaceMode } from '@/components/console/WorkspaceFormFields'
+import {
+  REPOSITORY_ACCESS_BADGE,
+  RepositoryMaterializeBadge,
+  type WorkspaceMode
+} from '@/components/console/WorkspaceFormFields'
 
 /**
  * The live half of the Source row. The card itself only knows the agent's
@@ -223,8 +227,7 @@ export function WorkspaceCard({
         )}
       </div>
 
-      {/* Authorized repos — chips, since a workspace rarely has more than a
-          handful; the tier lives in each chip's tooltip. */}
+      {/* Authorized repos — chips, each badged with its tier and checkout; editing lives in Edit workspace. */}
       <div className="flex flex-wrap items-center gap-2 border-t border-(--border-subtle) px-4 py-[9px]">
         <span className="eyebrow flex-none text-[10.5px]">{t('authorizedRepos')}</span>
 
@@ -256,13 +259,14 @@ export function WorkspaceCard({
               <span
                 key={r.id}
                 className="inline-flex h-6 flex-none items-center gap-[6px] rounded-[5px] border border-(--border-subtle) bg-(--surface-card) py-0 pr-1 pl-2"
-                title={`${r.repoFullName} — ${r.access} access${poolPlaced ? '' : ', checked out alongside the workspace'}; added by ${creatorLabel(r.createdBy, me)}`}
+                title={`${r.repoFullName} — ${r.access} access${poolPlaced || repoAuthMaterialize(r) !== 'always' ? '' : ', checked out alongside the workspace'}; added by ${creatorLabel(r.createdBy, me)}`}
               >
                 <span className="imark h-[14px] w-[14px] border-0 bg-transparent">
                   <CodeHostMark provider={repoAuthProvider(r)} />
                 </span>
                 <span className="mono text-[11.5px] text-(--text-primary)">{r.repoFullName}</span>
                 <span className={REPOSITORY_ACCESS_BADGE[r.access]}>{r.access}</span>
+                <RepositoryMaterializeBadge value={repoAuthMaterialize(r)} />
               </span>
             ))}
             {repos.length === 0 && !isGithubApp && (

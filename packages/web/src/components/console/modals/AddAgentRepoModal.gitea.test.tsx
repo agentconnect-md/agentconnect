@@ -173,9 +173,33 @@ describe('AddAgentRepoModal, Gitea repositories', () => {
     expect(mocks.createAgentRepo).toHaveBeenCalledWith('agent-a', {
       provider: 'gitea',
       repoId: '7711',
-      access: 'read'
+      access: 'read',
+      materialize: 'always'
     })
     expect(created).toHaveLength(1)
+  })
+
+  it('authorizes the repository on demand when that checkout is chosen', async () => {
+    mocks.fetchGiteaRepositories.mockResolvedValue([binding({ repoId: '7711' })])
+    connected()
+    mocks.createAgentRepo.mockResolvedValue(grant({ materialize: 'on-demand' }))
+    await render()
+    await act(async () => buttonsNamed('Gitea')[0]?.click())
+    await act(async () => document.querySelector<HTMLDivElement>('.inp')?.click())
+    const option = Array.from(document.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('example-org/example-repo')
+    )
+    await act(async () => option?.click())
+    expect(buttonsNamed('Always')[0]?.getAttribute('aria-pressed')).toBe('true')
+    await act(async () => buttonsNamed('On demand')[0]?.click())
+    await act(async () => buttonsNamed('Add')[0]?.click())
+
+    expect(mocks.createAgentRepo).toHaveBeenCalledWith('agent-a', {
+      provider: 'gitea',
+      repoId: '7711',
+      access: 'read',
+      materialize: 'on-demand'
+    })
   })
 
   it('offers a repository that is not added yet and authorizes it — the grant binds it', async () => {
@@ -206,7 +230,8 @@ describe('AddAgentRepoModal, Gitea repositories', () => {
     expect(mocks.createAgentRepo).toHaveBeenCalledWith('agent-a', {
       provider: 'gitea',
       repoId: '7712',
-      access: 'read'
+      access: 'read',
+      materialize: 'always'
     })
     expect(mocks.createGiteaRepository).not.toHaveBeenCalled()
   })

@@ -10,7 +10,7 @@ import { CODE_HOST_PROJECTION, PICKABLE_CODE_HOST_PROVIDERS } from '@/lib/code-h
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { GITEA_REPOSITORY_STATE, giteaChoiceSelectable, type GiteaRepositoryChoice } from '@/lib/gitea-repositories'
 import { GITLAB_PROJECT_STATE, gitlabChoiceSelectable, type GitlabProjectChoice } from '@/lib/gitlab-projects'
-import type { RepoAccess } from '@/lib/api'
+import type { RepoAccess, RepoMaterialize } from '@/lib/api'
 
 // The TILE the user types through, not what is stored (git-workspace-model.md §7):
 // every repo tile produces the same `{ mode: 'git', gitRepo }` payload, and the
@@ -26,6 +26,90 @@ export const REPOSITORY_ACCESS_BADGE: Record<RepoAccess, string> = {
   read: 'badge flex-none bg-(--surface-active) text-(--text-tertiary)',
   comment: 'badge flex-none bg-(--brand-soft) text-(--brand-soft-text)',
   write: 'badge flex-none bg-(--status-paused-soft) text-(--amber-500)'
+}
+
+// The checkout choices a console user may pick; the per-session selector adds `decision` here.
+export const REPOSITORY_MATERIALIZE_OPTIONS = ['always', 'on-demand'] as const satisfies readonly RepoMaterialize[]
+
+const MATERIALIZE_COPY = {
+  always: { label: 'materializeAlways', title: 'materializeAlwaysTitle' },
+  decision: { label: 'materializeByDecision', title: 'materializeByDecisionTitle' },
+  'on-demand': { label: 'materializeOnDemand', title: 'materializeOnDemandTitle' }
+} as const satisfies Record<RepoMaterialize, { label: string; title: string }>
+
+/** Read-only checkout badge in the access badge's neutral style, shown only for a grant that is not checked out always. */
+export function RepositoryMaterializeBadge({ value }: { value: RepoMaterialize }) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
+  if (value === 'always') return null
+  return (
+    <span
+      className="badge flex-none bg-(--surface-active) text-(--text-tertiary)"
+      title={t(MATERIALIZE_COPY[value].title)}
+    >
+      {t(MATERIALIZE_COPY[value].label)}
+    </span>
+  )
+}
+
+const MATERIALIZE_PILL = {
+  sm: {
+    bar: 'pillbar flex-none p-[2px]',
+    on: 'pill on px-2 py-[2px] text-[11.5px] leading-normal',
+    off: 'pill px-2 py-[2px] text-[11.5px] leading-normal disabled:cursor-default disabled:opacity-50'
+  },
+  md: { bar: 'pillbar self-start', on: 'pill on', off: 'pill disabled:cursor-default disabled:opacity-50' }
+} as const
+
+/** Segment that switches a grant's checkout between the selectable options; `sm` fits a list row. */
+export function RepositoryMaterializeSwitch({
+  value,
+  size = 'md',
+  disabled = false,
+  onChange
+}: {
+  value: RepoMaterialize
+  size?: keyof typeof MATERIALIZE_PILL
+  disabled?: boolean
+  onChange: (value: RepoMaterialize) => void
+}) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
+  const pill = MATERIALIZE_PILL[size]
+  return (
+    <span className={pill.bar} role="group" aria-label={t('checkout')}>
+      {REPOSITORY_MATERIALIZE_OPTIONS.map((option) => (
+        <button
+          key={option}
+          type="button"
+          className={value === option ? pill.on : pill.off}
+          aria-pressed={value === option}
+          title={t(MATERIALIZE_COPY[option].title)}
+          disabled={disabled}
+          onClick={() => {
+            if (value !== option) onChange(option)
+          }}
+        >
+          {t(MATERIALIZE_COPY[option].label)}
+        </button>
+      ))}
+    </span>
+  )
+}
+
+/** The add flow's labelled checkout choice, beside the access tiers. */
+export function RepositoryMaterializeField({
+  value,
+  onChange
+}: {
+  value: RepoMaterialize
+  onChange: (value: RepoMaterialize) => void
+}) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
+  return (
+    <div className="fld mb-4">
+      <span className="fldlbl">{t('checkout')}</span>
+      <RepositoryMaterializeSwitch value={value} onChange={onChange} />
+    </div>
+  )
 }
 
 // GitHub and GitLab ship as full-bleed marks, so they fill an 18px box next to the 16px lucide glyph.

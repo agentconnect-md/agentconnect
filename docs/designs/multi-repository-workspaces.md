@@ -258,10 +258,10 @@ no root for a secondary repository on a cluster agent.
 ## Materialization modes and on-demand repositories
 
 > **Status:** in progress. Decisions 13–20 extend the design above. Change-map
-> step 1 has landed but for the console: the `materialize` column, its REST
-> surface and its projection (`always` and `on-demand` only), and the daemon
-> checking out only `always` rows with decision 20's clone directory.
-> Decisions 14–19 have not.
+> step 1 has landed: the `materialize` column, its REST surface and its
+> projection (`always` and `on-demand` only), the daemon checking out only
+> `always` rows with decision 20's clone directory, and **Always** or **On
+> demand** on each row in the console. Decisions 14–19 have not.
 
 Decision 1 scales with the number of rows. An organization with a few hundred
 repositories that authorizes them all — or that holds an installation grant
@@ -345,12 +345,14 @@ turn's path, in the same class as `gitcred/request` and the model-selection
    boundary. _Landed:_ the protocol and control-plane half — the column
    (default `always`), `materialize` on `POST`/`PATCH` repository grants and on
    each projected entry, a config-revision bump on change, and `decision`
-   refused with 400 until step 3; and the daemon half — only `always` rows are
+   refused with 400 until step 3; the daemon half — only `always` rows are
    prepared on every tier (`decision` is on demand until step 3), a review
    still checks its subject out as `cwd`, a session with anything on demand is
    handed its clone directory and told of it, and retention judges that
-   directory with the session, a shared one included. _Pending:_ the console
-   surface.
+   directory with the session, a shared one included; and the console surface
+   — **Always** or **On demand** beside each additional repository in Edit
+   workspace and in the add flow, badged read-only on the Workspace card and
+   the root picker.
 2. **Installation grants** — [agent-multi-repo-authorization.md](agent-multi-repo-authorization.md)
    decision 10, independently mergeable; `on-demand` only until step 3.
 3. **`decision`** — the evaluator pair on the agent, the roster request and

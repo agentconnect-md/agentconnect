@@ -1533,7 +1533,14 @@
         "workingSubdirectory": "Working subdirectory (optional)",
         "workingSubdirectoryPlaceholder": "services/api",
         "workingSubdirectoryAriaLabel": "Working subdirectory",
-        "repoRoot": "repo root"
+        "repoRoot": "repo root",
+        "checkout": "Checkout",
+        "materializeAlways": "Always",
+        "materializeOnDemand": "On demand",
+        "materializeByDecision": "By decision",
+        "materializeAlwaysTitle": "Checked out beside the workspace in every session",
+        "materializeOnDemandTitle": "Cloned by the agent when a session needs it",
+        "materializeByDecisionTitle": "Checked out when a session is about it"
       },
       "listenFor": "Listen for",
       "alreadyWatched": "already watched",
@@ -1931,6 +1938,7 @@
       "workspacePath": "Workspace path",
       "workspaceBrowseError": "Couldn’t browse the workspace — the owning daemon may be offline. Files live only on that machine and are read live from it, so they’re unavailable while it is disconnected.",
       "repositoryNotCheckedOut": "Not checked out yet — this repository is materialized on the agent’s next session.",
+      "repositoryOnDemand": "Not checked out — the agent clones this repository when a session needs it.",
       "workspaceNotCreated": "The workspace has no files yet — the agent creates them as it works.",
       "workspaceEmpty": "This workspace is empty.",
       "noFiles": "No files yet.",

@@ -30,13 +30,16 @@ import {
   fetchGithubRepoRoster,
   fetchGithubRepoAccess,
   invalidateGithubRepoRosterCache,
+  repoAuthMaterialize,
   repoAuthProvider,
   syncGithubInstallations,
+  updateAgentRepo,
   type AgentRepoAuthDto,
   type GithubInstallationDto,
   type GithubRepoAccess,
   type GithubRepoDto,
-  type RepoAccess
+  type RepoAccess,
+  type RepoMaterialize
 } from '@/lib/api'
 import { fetchPublicGithubBranches } from '@/lib/github-public-repos'
 import { useGithubRepoPicker, type InstalledRepo } from '@/lib/use-github-repo-picker'
@@ -56,6 +59,7 @@ import {
   GitUrlTileFields,
   PublicGitlabProjectOption,
   RepositoryAccessField,
+  RepositoryMaterializeSwitch,
   REPOSITORY_ACCESS_BADGE,
   WorktreeField,
   WorkingSubdirectoryField,
@@ -181,6 +185,7 @@ export default function EditWorkspaceModal({
       : null
   )
   const [removingAuthorization, setRemovingAuthorization] = useState<string | null>(null)
+  const [updatingAuthorization, setUpdatingAuthorization] = useState<string | null>(null)
   const [repositoryError, setRepositoryError] = useState<string | null>(null)
   // Per-user authz preflight for the picked repo. null = unknown/loading —
   // never blocks; the server re-checks when the edit is submitted.
@@ -590,7 +595,7 @@ export default function EditWorkspaceModal({
   }
 
   const removeAuthorization = async (row: AgentRepoAuthDto) => {
-    if (removingAuthorization) return
+    if (removingAuthorization || updatingAuthorization) return
     setRemovingAuthorization(row.id)
     setRepositoryError(null)
     try {
@@ -602,6 +607,22 @@ export default function EditWorkspaceModal({
       setRepositoryError(error instanceof Error ? error.message : String(error))
     } finally {
       setRemovingAuthorization(null)
+    }
+  }
+
+  const changeMaterialize = async (row: AgentRepoAuthDto, materialize: RepoMaterialize) => {
+    if (updatingAuthorization || removingAuthorization) return
+    setUpdatingAuthorization(row.id)
+    setRepositoryError(null)
+    try {
+      const updated = await updateAgentRepo(agent.id, row.id, { materialize })
+      const next = authorizations.map((authorization) => (authorization.id === row.id ? updated : authorization))
+      setAuthorizations(next)
+      onAuthorizedChange?.(next)
+    } catch (error) {
+      setRepositoryError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setUpdatingAuthorization(null)
     }
   }
 
@@ -1119,13 +1140,19 @@ export default function EditWorkspaceModal({
                       {authorization.repoFullName}
                     </span>
                     <span className={REPOSITORY_ACCESS_BADGE[authorization.access]}>{authorization.access}</span>
+                    <RepositoryMaterializeSwitch
+                      size="sm"
+                      value={repoAuthMaterialize(authorization)}
+                      disabled={updatingAuthorization !== null || removingAuthorization !== null}
+                      onChange={(value) => void changeMaterialize(authorization, value)}
+                    />
                     <button
                       type="button"
                       className={`iconbtn h-6 w-6 flex-none ${
                         removingAuthorization === authorization.id ? 'pointer-events-none opacity-50' : ''
                       }`}
                       title={t('revokeRepositoryAccess')}
-                      disabled={removingAuthorization !== null}
+                      disabled={removingAuthorization !== null || updatingAuthorization !== null}
                       onClick={() => void removeAuthorization(authorization)}
                     >
                       <Icon name={removingAuthorization === authorization.id ? 'loader' : 'trash'} size={13} />

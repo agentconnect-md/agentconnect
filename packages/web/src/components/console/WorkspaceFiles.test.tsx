@@ -50,6 +50,7 @@ vi.mock('@/lib/api', () => ({
     })
   ),
   fetchWorkspaceGitStatus: vi.fn(() => Promise.resolve({ isRepo: false })),
+  repoAuthMaterialize: (row: { materialize?: string }) => row.materialize ?? 'always',
   wakeAgent: vi.fn(() => Promise.resolve({ state: 'starting' })),
   writeWorkspaceFile: vi.fn(),
   workspaceGitPull: vi.fn()
@@ -446,6 +447,19 @@ it('explains an authorized repository the agent has not checked out yet', async 
   expect(container?.textContent).toContain('Not checked out yet')
   expect(container?.textContent).toContain('materialized on the agent’s next session')
   expect(container?.textContent).not.toContain('The workspace has no files yet')
+})
+
+it('says an on-demand repository is the agent’s to clone, not the next session’s', async () => {
+  workspace.exists = false
+  await renderRepoScoped({
+    repo: 'acme/infra',
+    repoOptions: REPO_GRANTS.map((grant) =>
+      grant.repoFullName === 'acme/infra' ? { ...grant, materialize: 'on-demand' } : grant
+    )
+  })
+
+  expect(container?.textContent).toContain('the agent clones this repository when a session needs it')
+  expect(container?.textContent).not.toContain('materialized on the agent’s next session')
 })
 
 it('scopes file and git reads to the selected session worktree', async () => {

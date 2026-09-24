@@ -1533,7 +1533,14 @@
         "workingSubdirectory": "工作子目录（可选）",
         "workingSubdirectoryPlaceholder": "services/api",
         "workingSubdirectoryAriaLabel": "工作子目录",
-        "repoRoot": "仓库根目录"
+        "repoRoot": "仓库根目录",
+        "checkout": "检出",
+        "materializeAlways": "始终",
+        "materializeOnDemand": "按需",
+        "materializeByDecision": "由 Decision 选择",
+        "materializeAlwaysTitle": "每个会话都在工作区旁检出",
+        "materializeOnDemandTitle": "会话需要时由 Agent 克隆",
+        "materializeByDecisionTitle": "会话与之相关时检出"
       },
       "listenFor": "监听对象",
       "alreadyWatched": "已监听",
@@ -1931,6 +1938,7 @@
       "workspacePath": "工作区路径",
       "workspaceBrowseError": "无法浏览工作区，所属 daemon 可能已离线。文件只存在于那台机器上，需要实时读取；daemon 断开时无法访问。",
       "repositoryNotCheckedOut": "尚未检出，此仓库会在 Agent 的下一次会话中生成。",
+      "repositoryOnDemand": "未检出，会话需要时由 Agent 克隆此仓库。",
       "workspaceNotCreated": "工作区还没有文件，Agent 会在工作过程中创建。",
       "workspaceEmpty": "此工作区为空。",
       "noFiles": "暂无文件。",

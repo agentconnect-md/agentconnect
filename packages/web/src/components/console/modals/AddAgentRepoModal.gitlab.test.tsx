@@ -169,9 +169,33 @@ describe('AddAgentRepoModal, GitLab projects', () => {
     expect(mocks.createAgentRepo).toHaveBeenCalledWith('agent-a', {
       provider: 'gitlab',
       projectId: '4455667',
-      access: 'read'
+      access: 'read',
+      materialize: 'always'
     })
     expect(created).toHaveLength(1)
+  })
+
+  it('authorizes the project on demand when that checkout is chosen', async () => {
+    mocks.fetchGitlabProjects.mockResolvedValue([binding({ projectId: '4455667' })])
+    connected()
+    mocks.createAgentRepo.mockResolvedValue(grant({ materialize: 'on-demand' }))
+    await render()
+    await act(async () => buttonsNamed('GitLab')[0]?.click())
+    await settleSearch()
+    await act(async () => document.querySelector<HTMLDivElement>('.inp')?.click())
+    const option = Array.from(document.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('example-group/example-project')
+    )
+    await act(async () => option?.click())
+    await act(async () => buttonsNamed('On demand')[0]?.click())
+    await act(async () => buttonsNamed('Add')[0]?.click())
+
+    expect(mocks.createAgentRepo).toHaveBeenCalledWith('agent-a', {
+      provider: 'gitlab',
+      projectId: '4455667',
+      access: 'read',
+      materialize: 'on-demand'
+    })
   })
 
   it('sets a project up before the selection lands, then authorizes it', async () => {
@@ -199,7 +223,8 @@ describe('AddAgentRepoModal, GitLab projects', () => {
     expect(mocks.createAgentRepo).toHaveBeenCalledWith('agent-a', {
       provider: 'gitlab',
       projectId: '4455668',
-      access: 'read'
+      access: 'read',
+      materialize: 'always'
     })
   })
 
