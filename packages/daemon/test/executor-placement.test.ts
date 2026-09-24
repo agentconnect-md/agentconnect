@@ -31,6 +31,7 @@ describe('the birth predicate', () => {
       ask: { ...ASK, isolation: 'shared' },
       holderHostedSessions: 9,
       holderCapacity: 32,
+      holderAuthenticates: true,
       answer: answer([candidate('b')])
     })
     expect(placement).toEqual({ stayedHome: 'shared_session' })
@@ -41,13 +42,14 @@ describe('the birth predicate', () => {
       ask: { ...ASK, memoryDaemonHomed: true },
       holderHostedSessions: 9,
       holderCapacity: 32,
+      holderAuthenticates: true,
       answer: answer([candidate('b')])
     })
     expect(placement).toEqual({ stayedHome: 'memory_daemon_homed' })
   })
 
   it('keeps the session home when the control plane could not be asked at all', () => {
-    expect(placeSession({ ask: ASK, holderHostedSessions: 9, holderCapacity: 32 })).toEqual({
+    expect(placeSession({ ask: ASK, holderHostedSessions: 9, holderCapacity: 32, holderAuthenticates: true })).toEqual({
       stayedHome: 'control_plane_unreachable'
     })
   })
@@ -55,7 +57,13 @@ describe('the birth predicate', () => {
   it('records the reason the control plane gave for an empty answer', () => {
     for (const reason of ['group_switch_off', 'not_on_group'] as const) {
       expect(
-        placeSession({ ask: ASK, holderHostedSessions: 9, holderCapacity: 32, answer: answer([], { reason }) })
+        placeSession({
+          ask: ASK,
+          holderHostedSessions: 9,
+          holderCapacity: 32,
+          holderAuthenticates: true,
+          answer: answer([], { reason })
+        })
       ).toEqual({
         stayedHome: reason
       })
@@ -65,6 +73,7 @@ describe('the birth predicate', () => {
         ask: ASK,
         holderHostedSessions: 9,
         holderCapacity: 32,
+        holderAuthenticates: true,
         answer: answer([], { reason: 'no_member_shares' })
       })
     ).toEqual({ stayedHome: 'no_candidate' })
@@ -77,7 +86,15 @@ describe('the birth predicate', () => {
       candidate('d', { runtimes: [{ runtime: 'codex', authRequired: false }] }),
       candidate('e', { endpoint: undefined })
     ]
-    expect(placeSession({ ask: ASK, holderHostedSessions: 9, holderCapacity: 32, answer: answer(unmatched) })).toEqual({
+    expect(
+      placeSession({
+        ask: ASK,
+        holderHostedSessions: 9,
+        holderCapacity: 32,
+        holderAuthenticates: true,
+        answer: answer(unmatched)
+      })
+    ).toEqual({
       stayedHome: 'no_candidate'
     })
   })
@@ -99,6 +116,7 @@ describe('the one rule that selects', () => {
       ask: ASK,
       holderHostedSessions: 4,
       holderCapacity: 32,
+      holderAuthenticates: true,
       answer: answer([candidate('b', { hostedSessions: 3 }), candidate('c', { hostedSessions: 1 })])
     })
     expect(placement).toEqual({
@@ -114,6 +132,7 @@ describe('the one rule that selects', () => {
       ask: ASK,
       holderHostedSessions: 2,
       holderCapacity: 32,
+      holderAuthenticates: true,
       answer: answer([candidate('b', { hostedSessions: 2 })])
     })
     expect(placement).toEqual({ stayedHome: 'holder_least_loaded' })
@@ -124,6 +143,7 @@ describe('the one rule that selects', () => {
       ask: ASK,
       holderHostedSessions: 1,
       holderCapacity: 32,
+      holderAuthenticates: true,
       answer: answer([candidate('b', { hostedSessions: undefined })])
     })
     expect(placement).toEqual({ spread: [{ daemonId: 'b', strategy: 'host' }] })
@@ -134,6 +154,7 @@ describe('the one rule that selects', () => {
       ask: ASK,
       holderHostedSessions: 0,
       holderCapacity: 32,
+      holderAuthenticates: true,
       answer: answer([candidate('b', { hostedSessions: 5 }), candidate('c', { hostedSessions: 0 })], {
         currentExecutorDaemonId: 'b'
       })
@@ -152,6 +173,7 @@ describe('the one rule that selects', () => {
       ask: ASK,
       holderHostedSessions: 0,
       holderCapacity: 32,
+      holderAuthenticates: true,
       answer: answer([candidate('c')], { currentExecutorDaemonId: 'gone' })
     })
     expect(placement).toEqual({ stayedHome: 'holder_least_loaded' })
@@ -165,6 +187,7 @@ describe('capacity', () => {
       ask: ASK,
       holderHostedSessions: 0,
       holderCapacity: 1,
+      holderAuthenticates: true,
       answer: answer([candidate('b', { capacity: 2 }), candidate('c', { capacity: 8 })])
     })
     expect(placement).toEqual({
@@ -180,6 +203,7 @@ describe('capacity', () => {
       ask: ASK,
       holderHostedSessions: 3,
       holderCapacity: 8,
+      holderAuthenticates: true,
       answer: answer([candidate('b', { capacity: 2, hostedSessions: 1 })])
     })
     expect(placement).toEqual({ stayedHome: 'holder_least_loaded' })
@@ -190,6 +214,7 @@ describe('capacity', () => {
       ask: ASK,
       holderHostedSessions: 1,
       holderCapacity: 2,
+      holderAuthenticates: true,
       answer: answer([candidate('b', { capacity: 4, hostedSessions: 3 })])
     })
     expect(placement).toEqual({ stayedHome: 'holder_least_loaded' })
@@ -200,6 +225,7 @@ describe('capacity', () => {
       ask: ASK,
       holderHostedSessions: 5,
       holderCapacity: 4,
+      holderAuthenticates: true,
       answer: answer([
         candidate('b', { capacity: 2, hostedSessions: 2 }),
         candidate('c', { capacity: 4, hostedSessions: 3 })
@@ -213,6 +239,7 @@ describe('capacity', () => {
       ask: ASK,
       holderHostedSessions: 9,
       holderCapacity: 4,
+      holderAuthenticates: true,
       answer: answer([candidate('b', { capacity: 1, hostedSessions: 1 }), candidate('c', { capacity: 0 })])
     })
     expect(placement).toEqual({ stayedHome: 'candidates_full' })
@@ -223,6 +250,7 @@ describe('capacity', () => {
       ask: ASK,
       holderHostedSessions: 0,
       holderCapacity: 4,
+      holderAuthenticates: true,
       answer: answer([candidate('b', { capacity: 1, hostedSessions: 1 })], { currentExecutorDaemonId: 'b' })
     })
     expect(placement).toEqual({ spread: [{ daemonId: 'b', strategy: 'host' }] })
@@ -234,6 +262,7 @@ describe('capacity', () => {
       ask: ASK,
       holderHostedSessions: 2,
       holderCapacity: 8,
+      holderAuthenticates: true,
       replacing: 'lost',
       answer: answer([candidate('b', { capacity: 2 })], { currentExecutorDaemonId: 'lost' })
     })
@@ -245,6 +274,7 @@ describe('capacity', () => {
       ask: ASK,
       holderHostedSessions: 0,
       holderCapacity: 4,
+      holderAuthenticates: true,
       replacing: 'lost',
       answer: answer([candidate('lost'), candidate('b', { capacity: 1, hostedSessions: 1 })], {
         currentExecutorDaemonId: 'lost'
@@ -258,9 +288,54 @@ describe('capacity', () => {
       ask: ASK,
       holderHostedSessions: 2,
       holderCapacity: 4,
+      holderAuthenticates: true,
       answer: answer([candidate('b', { capacity: undefined, hostedSessions: 1 })])
     })
     expect(placement).toEqual({ spread: [{ daemonId: 'b', strategy: 'host' }] })
+  })
+})
+
+describe('the holder as a candidate', () => {
+  const codex: PlacementAsk = { ...ASK, runtime: 'codex' }
+  const signedIn = (daemonId: string, over: Partial<ExecutorCandidate> = {}) =>
+    candidate(daemonId, { runtimes: [{ runtime: 'codex', authRequired: false }], ...over })
+
+  it('sends the session to a member that authenticates the runtime when the holder does not, whatever the loads say', () => {
+    const placement = placeSession({
+      ask: codex,
+      holderHostedSessions: 0,
+      holderCapacity: 32,
+      holderAuthenticates: false,
+      answer: answer([signedIn('b', { hostedSessions: 7 }), signedIn('c', { hostedSessions: 9 })])
+    })
+    expect(placement).toEqual({
+      spread: [
+        { daemonId: 'b', strategy: 'host' },
+        { daemonId: 'c', strategy: 'host' }
+      ]
+    })
+  })
+
+  it('keeps the session home as before when no member authenticates the runtime either', () => {
+    const placement = placeSession({
+      ask: codex,
+      holderHostedSessions: 0,
+      holderCapacity: 32,
+      holderAuthenticates: false,
+      answer: answer([signedIn('b', { runtimes: [{ runtime: 'codex', authRequired: true }] }), candidate('c')])
+    })
+    expect(placement).toEqual({ stayedHome: 'no_candidate' })
+  })
+
+  it('keeps a tie home when the holder authenticates the runtime', () => {
+    const placement = placeSession({
+      ask: codex,
+      holderHostedSessions: 2,
+      holderCapacity: 32,
+      holderAuthenticates: true,
+      answer: answer([signedIn('b', { hostedSessions: 2 })])
+    })
+    expect(placement).toEqual({ stayedHome: 'holder_least_loaded' })
   })
 })
 

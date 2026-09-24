@@ -69,6 +69,8 @@ export function placeSession(input: {
   holderHostedSessions: number
   /** This machine's own `limits.maxConcurrentSessions`, the denominator its load is read against. */
   holderCapacity: number
+  /** Whether this machine authenticates `ask.runtime`, by the rule the candidates are read with (§8); false ⇒ a home only when nothing else is. */
+  holderAuthenticates: boolean
   /** The CP's answer; undefined ⇒ it could not be asked, and the session stays home. */
   answer?: ExecutorCandidatesResult
   /** A lost executor being replaced (§7): it is no candidate, and the holder cannot take a placed session back, so only the rest are ordered. */
@@ -99,7 +101,8 @@ export function placeSession(input: {
   // The hint wins over the rule: a successor attaches to the environment its predecessor left rather than re-placing the work in it (§7).
   const hinted = ordered.findIndex(({ choice }) => choice.daemonId === hint)
   if (hinted >= 0) ordered.unshift(...ordered.splice(hinted, 1))
-  else if (replacing === undefined && compareFill(holder, ordered[0]!.fill) <= 0) {
+  // Credentials never travel: a holder that cannot authenticate the runtime is no candidate, so its lighter load keeps nothing (§8).
+  else if (replacing === undefined && input.holderAuthenticates && compareFill(holder, ordered[0]!.fill) <= 0) {
     return { stayedHome: 'holder_least_loaded' }
   }
   return { spread: ordered.map(({ choice }) => choice) }
