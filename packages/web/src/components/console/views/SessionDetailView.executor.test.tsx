@@ -243,6 +243,14 @@ describe('where a session runs, in its Details', () => {
     expect(text()).toContain('edge-2')
   })
 
+  it('does not repeat the holder when it is also the executor', async () => {
+    wire.detail = detail({ executorDaemonId: 'daemon-1' })
+    await render()
+
+    expect(text()).toContain('edge-1')
+    expect(text()).not.toContain('Runs on')
+  })
+
   it('names the holder and why it stayed, wording the ordinary case as a result rather than a fault', async () => {
     wire.detail = detail({ stayedHomeReason: 'holder_least_loaded' })
     await render()
@@ -257,14 +265,12 @@ describe('where a session runs, in its Details', () => {
     expect(text()).toContain('edge-1 · spreading off')
   })
 
-  it('shows only the holder when daemon-local memory kept the session there', async () => {
+  it('does not repeat the holder when daemon-local memory kept the session there', async () => {
     wire.detail = detail({ stayedHomeReason: 'memory_daemon_homed' })
     await render()
 
-    const runsOnRow = [...(container?.querySelectorAll('div') ?? [])].find(
-      (row) => row.children[1]?.textContent === 'Runs on'
-    )
-    expect(runsOnRow?.lastElementChild?.textContent).toBe('edge-1')
+    expect(text()).toContain('edge-1')
+    expect(text()).not.toContain('Runs on')
     expect(text()).not.toContain('memory kept here')
   })
 
