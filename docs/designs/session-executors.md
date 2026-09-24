@@ -226,6 +226,19 @@ operator's own machines changes nothing about that trust. And the shim is an
 ordinary Node process, so "shim as a host process" is not a new mode, only a new
 place to start it.
 
+**The boundary follows what a session reads, not only who started it.** `host` and
+`srt` are for trusted work. `srt` contains a runtime's mistakes, not a determined
+adversary: it shares the host's kernel and user, and the daemon's own Git reads the
+trees the runtime writes from outside the boundary
+([git-workspace-model.md](git-workspace-model.md) §11). A session that acts on input
+its operator does not control — a pull request or issue from outside the
+organization, a public webhook, an external channel — is untrusted because of that
+input, however its trigger was authorized, since a model acts on what it reads. Such
+a session runs in `microsandbox`, or in a pool's pod, where the daemon's Git for it
+runs inside the same boundary. The configuration audit that precedes the daemon's
+host-side Git is defense in depth for `srt`, not its boundary. GitHub draws the same
+line when it advises against self-hosted runners for public repositories.
+
 **`host` ships first**, though since #2161 it is no longer the smaller half on the
 executor. A VM is the pool's layout by construction — fixed in-guest paths, a shim
 `microsandbox/shim.ts` already stages and starts, no per-session root — so its
