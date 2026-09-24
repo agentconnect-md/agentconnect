@@ -940,6 +940,28 @@ describe('seedSessionHome', () => {
     }
   })
 
+  // session-executors.md §8: the holder strips these, and a local launch on this machine would inherit them.
+  it("fills in this machine's own provider keys for the runtimes it admits, and nothing else of its environment", async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-xf-seed-'))
+    try {
+      const seed = seedSessionHome(
+        join(root, 'sessions', LEAF, 'home'),
+        { 'dsh-acp': { command: 'dsh-acp', args: [], env: [] } },
+        { warn: () => {} },
+        {
+          HOME: join(root, 'machine'),
+          DEEPSEEK_API_KEY: 'fixture-executor-key',
+          // Codex is not admitted here, and an unrelated variable is not a runtime credential.
+          OPENAI_API_KEY: 'fixture-unadmitted-key',
+          EXAMPLE_SERVICE_TOKEN: 'fixture-other'
+        }
+      )
+      expect(seed.env).toEqual({ DEEPSEEK_API_KEY: 'fixture-executor-key' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('answers where the Claude sign-in it leaves out of the HOME lives on this machine', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ac-xf-seed-'))
     try {

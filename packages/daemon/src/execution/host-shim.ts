@@ -13,6 +13,7 @@ import {
   SHIM_PARENT_FD_ENV,
   SHIM_RUNTIME_MARK_ENV,
   SHIM_RUNTIME_ROOT_ENV,
+  SHIM_SEED_ENV,
   SHIM_WORKSPACE_ROOT_ENV
 } from '../shim/protocol.js'
 import { shimPaths, type ShimPaths } from '../shim/sandbox-paths.js'
@@ -89,8 +90,8 @@ export function hostShimEnv(input: {
     const value = input.machineEnv[name]
     if (value) env[name] = value
   }
-  // Before the shim's own variables, so a seed can name no socket, root or HOME.
-  Object.assign(env, input.seedEnv)
+  // One variable the runner fills in beneath the holder's env, as a hosted VM's is, so a seed can name no socket, root or HOME.
+  if (input.seedEnv && Object.keys(input.seedEnv).length) env[SHIM_SEED_ENV] = JSON.stringify(input.seedEnv)
   env.HOME = input.home
   env[SHIM_LISTEN_SOCKET_ENV] = input.socketPath
   env[SHIM_RUNTIME_ROOT_ENV] = input.runtimeRoot

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import type { RuntimeDef } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
 import type { MicrosandboxEnvironment, MicrosandboxManager } from '../microsandbox/driver.js'
-import { microsandboxCredentialStep, type MicrosandboxSecret } from '../microsandbox/secrets.js'
+import { microsandboxCredentialStep, ownCredentialEnv, type MicrosandboxSecret } from '../microsandbox/secrets.js'
 import { canonicalPath, contains } from '../runtimes/read-roots.js'
 import { DEFAULT_SHIM_RUNTIME_ROOT } from '../shim/sandbox-paths.js'
 import { SESSIONS_DIR } from '../workspace/session-layout.js'
@@ -30,7 +30,7 @@ export function seedHostedHome(
   // Every preparer before any seed, so no runtime's plain seed copies a file another one projects.
   const steps = Object.entries(runtimes).flatMap(([runtimeId, runtime]) => {
     try {
-      return [{ runtimeId, step: microsandboxCredentialStep(runtimeId, runtime, hostEnv) }]
+      return [{ runtimeId, runtime, step: microsandboxCredentialStep(runtimeId, runtime, hostEnv) }]
     } catch (error) {
       // Refused, never downgraded to a plain seed: that runtime's sign-in stays off the guest and it answers authRequired.
       log.warn(`executor: a hosted VM gets no ${runtimeId} sign-in (${message(error)})`)
@@ -46,7 +46,7 @@ export function seedHostedHome(
   const secrets = new Map<string, MicrosandboxSecret>()
   const seeded: typeof steps = []
   for (const entry of steps) {
-    const { runtimeId, step } = entry
+    const { runtimeId, runtime, step } = entry
     try {
       const own = step.protectedCredentials?.secrets ?? []
       // One preparer per binding name, reading this one machine, so a name never carries two values.
@@ -58,6 +58,8 @@ export function seedHostedHome(
       if (shared.some((path) => protectedSources.some((source) => contains(canonicalPath(path, hostEnv), source))))
         throw new Error('its shared sign-in would expose a protected credential file')
       Object.assign(env, step.credentials?.env)
+      // The keys a holder strips, from this machine's environment as a local VM here inherits them; `protectEnv` below swaps protected ones for placeholders.
+      Object.assign(env, ownCredentialEnv(runtimeId, runtime, hostEnv))
       paths.push(...shared)
       for (const secret of own) if (!secrets.has(secret.env)) secrets.set(secret.env, secret)
       seeded.push(entry)

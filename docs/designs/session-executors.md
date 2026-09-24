@@ -1085,7 +1085,11 @@ see the segment. TLS-PSK covers every byte above the handshake.
   `host` still exposes the executor's credentials to its process tree. What a holder
   strips is each preparer's own list: the runtime's variable for the key it protects
   (`ANTHROPIC_API_KEY` for Claude, `OPENAI_API_KEY` for Codex, `DEEPSEEK_API_KEY` for
-  DeepSeek) and the variables it binds a key to.
+  DeepSeek) and the variables it binds a key to. The executor fills the same variables
+  in from its own environment, as a local launch on it inherits them, through the
+  shim's seed beneath the holder's environment: `host` as values, and a VM behind the
+  placeholders its preparers set, or as values where they set none, as a local VM
+  receives an environment-only Claude or Codex key.
 - _Everything else_ configured on the agent — its environment and its secrets
   (`runtimeOverrides.secrets`) — travels with the launch and enters the runtime's
   environment as a plain value on every backend today, with output masking as its

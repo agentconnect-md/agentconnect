@@ -115,6 +115,21 @@ describe('the microsandbox strategy launcher', () => {
     for (const text of filesUnder(join(root, 'sessions', LEAF))) expect(text).not.toContain(KEY)
   })
 
+  it("fills in the executor's own environment key a preparer does not protect, as a local VM on it inherits one", async () => {
+    root = await mkdtemp(join(tmpdir(), 'ac-xv-'))
+    const { manager, prepared } = stubManager()
+    const launcher = microsandboxLauncher({
+      manager: () => manager,
+      runtimes: () => ({ 'claude-acp': { command: 'claude-agent-acp', args: [], env: [] } }),
+      hostEnv: { HOME: join(root, 'machine'), ANTHROPIC_API_KEY: 'fixture-executor-env-key' }
+    })
+    await launcher.start({ daemonRoot: root, sessionLeaf: LEAF, log: quiet })
+
+    // Claude's placeholder covers its saved login; an environment-only key reaches a local VM as its value, and so a hosted one.
+    expect(prepared[0]!.secrets).toBeUndefined()
+    expect(prepared[0]!.hosted!.env).toEqual({ ANTHROPIC_API_KEY: 'fixture-executor-env-key' })
+  })
+
   it.skipIf(process.platform !== 'linux')(
     'projects a sign-in file into the hosted HOME with the placeholder, and mounts none of the host copy',
     async () => {

@@ -1124,16 +1124,19 @@ seeds the session's `home` from it with the local confined tier's own preparers
 (`prepareRuntimeHome`, `prepareSharedRuntimeCredentials`), for every runtime the
 machine admits, because a `prepare` names no runtime: a shared login is linked to
 the machine's own file, other runtimes' small config and credential files are
-copied once, and files already in the session's `home` always win. A `host`
-runtime reads the one variable that seed answers with, the Claude secure-storage
-directory, through the shim's base environment. A `microsandbox` environment seeds
+copied once, and files already in the session's `home` always win. The seed also
+carries this machine's own values of the provider-key variables a holder strips, for
+the runtimes it admits, as a local launch here inherits them; the shim fills the seed
+in beneath the holder's environment. A `microsandbox` environment seeds
 its own `home` instead, through the local VM's credential step
 ([API key protection](#api-key-protection)): the VM starts with this machine's
 recognized keys as placeholder secrets, `home` holds the projected files with
-placeholders, the raw files are neither copied nor mounted, and the shim fills the
-placeholders and the proxy's CA in beneath the holder's environment. A runtime whose
-credentials that step refuses, such as for a custom trust bundle or an unsupported
-endpoint, gets no sign-in in the VM rather than a plain copy. Runtime credentials —
+placeholders, the raw files are neither copied nor mounted, and the shim fills in the
+placeholders and the proxy's CA beneath the holder's environment. An environment key
+no preparer protects, such as an environment-only Claude or Codex key, arrives as its
+value, as it does in a local VM. A runtime whose credentials that step refuses, such
+as for a custom trust bundle or an unsupported endpoint, gets no sign-in in the VM,
+its environment key included, rather than a plain copy. Runtime credentials —
 sign-in and recognized provider keys — are this machine's only: the holder strips
 them from the launch, including one configured as an agent secret, and a runtime this
 machine cannot authenticate answers `authRequired` (session-executors.md §8). The

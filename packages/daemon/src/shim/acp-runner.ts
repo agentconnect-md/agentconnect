@@ -43,7 +43,7 @@ function podBaseEnv(podEnv: Record<string, string | undefined>): Record<string, 
   return env
 }
 
-/** A hosted VM's seed (`SHIM_SEED_ENV`): its executor's placeholders and proxy trust, string entries only; unreadable ⇒ none. */
+/** A hosted session's seed (`SHIM_SEED_ENV`): its executor's own sign-in pointers and keys, or a VM's placeholders and proxy trust; string entries only, unreadable ⇒ none. */
 function seedEnv(podEnv: Record<string, string | undefined>): Record<string, string> {
   try {
     const parsed: unknown = JSON.parse(podEnv[SHIM_SEED_ENV] ?? '{}')
