@@ -263,6 +263,17 @@ describe('AgentDetailView, code-host repository blocks', () => {
     expect(menuItem('update')).toBeTruthy()
   })
 
+  it('explains the hovered cadence under a Run on heading instead of in a tooltip', async () => {
+    const scope = await render()
+    await act(async () => scope.querySelector<HTMLElement>('[aria-label="Trigger for acme/api PRs"]')!.click())
+    const menu = () => document.querySelector<HTMLElement>('[role="menu"]')!
+    expect(menu().textContent).toContain('Run on')
+    expect(menu().textContent).toContain('update — Runs on every push and comment.')
+    expect(menuItem('create')!.title).toBe('')
+    await act(async () => menuItem('create')!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
+    expect(menu().textContent).toContain('create — Runs when a PR is opened or marked ready for review.')
+  })
+
   it('shows a row’s label filter at rest and settles it in the settings dialog of any thread row', async () => {
     const scope = await render()
     // Two labels and the overflow count at rest; the full list on hover.

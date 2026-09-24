@@ -2544,6 +2544,7 @@
         "addRepository": "Add repository",
         "addProject": "Add project",
         "customRuleHint": "The stored subscription matches no trigger exactly — the nearest one is shown. Picking a trigger replaces it.",
+        "runOn": "Run on",
         "customRule": "custom rule",
         "loadError": "Couldn’t load webhooks.",
         "noneTitle": "No integration yet",

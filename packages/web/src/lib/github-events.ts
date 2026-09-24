@@ -111,6 +111,20 @@ export function githubTriggerTooltip(mode: GhTriggerMode, agentName: string, fam
   }
 }
 
+/** The trigger menu's footer copy; PR and issue rows read the design's wording, other families their tooltip. */
+export function githubTriggerDescription(mode: GhTriggerMode, agentName: string, fam?: GhFamily): string {
+  if (fam !== 'pull_request' && fam !== 'issues') return githubTriggerTooltip(mode, agentName, fam)
+  const issue = fam === 'issues'
+  switch (mode) {
+    case 'first':
+      return issue ? 'Runs when a new issue is filed.' : 'Runs when a PR is opened or marked ready for review.'
+    case 'every':
+      return issue ? 'Runs on every edit and comment.' : 'Runs on every push and comment.'
+    case 'mention':
+      return `Runs only when the agent is @-mentioned on the ${issue ? 'issue' : 'PR'}.`
+  }
+}
+
 /** Concrete hover copy for the agent-targeted GitHub mention form. `teamOwner`
  *  is the ORGANIZATION that owns the repository: a team named after the agent
  *  makes the same handle autocomplete in GitHub's comment composer. A personal

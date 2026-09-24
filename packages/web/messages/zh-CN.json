@@ -2544,6 +2544,7 @@
         "addRepository": "添加仓库",
         "addProject": "添加项目",
         "customRuleHint": "已存订阅与任何触发器都不完全匹配，当前显示最接近的选项。选择触发器后会替换它。",
+        "runOn": "触发时机",
         "customRule": "自定义规则",
         "loadError": "无法加载 Webhook。",
         "noneTitle": "还没有集成",
