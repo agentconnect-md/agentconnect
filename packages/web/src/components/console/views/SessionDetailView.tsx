@@ -4460,16 +4460,17 @@ export default function SessionDetailView() {
   // Match the glyph to what the name says: a resolved machine is a server, an unresolved
   // placement takes its target's own icon (pool / group / daemon).
   const focusedDaemonIcon = !focusedDaemon && focusedAgent ? agentPlacementIcon(focusedAgent, memberSets) : 'server'
-  // Show the executor, or the holder with a short reason when the session stayed there.
+  // Show a different executor, or the holder only when its stay has a useful reason.
   const executorDaemonId = focusedSessionDetail?.executorDaemonId
   const stayedHomeKey = stayedHomeReasonKey(focusedSessionDetail?.stayedHomeReason)
   const stayedHomePhrase = stayedHomeKey ? t(`stayedHome.${stayedHomeKey}`) : ''
-  const runsOn = executorDaemonId
-    ? // Same rule as the Daemon row above: a name, never a raw id or a hostname.
-      (daemons.find((d) => d.daemonId === executorDaemonId)?.name ?? executorDaemonId.slice(0, 8))
-    : focusedSessionDetail?.stayedHomeReason && focusedDaemonName
-      ? `${focusedDaemonName}${stayedHomePhrase ? ` · ${stayedHomePhrase}` : ''}`
-      : stayedHomePhrase
+  const runsOn =
+    executorDaemonId && executorDaemonId !== focusedDaemonId
+      ? // Same rule as the Daemon row above: a name, never a raw id or a hostname.
+        (daemons.find((d) => d.daemonId === executorDaemonId)?.name ?? executorDaemonId.slice(0, 8))
+      : stayedHomePhrase && focusedDaemonName
+        ? `${focusedDaemonName} · ${stayedHomePhrase}`
+        : stayedHomePhrase
   // A cron-triggered session carries `user === "cron:<scheduleId>"`. When that's the
   // shown participant, render the chip as a link back to the owning schedule
   // (name-first once the crons list resolves it; the raw `cron:<id>` still links if
