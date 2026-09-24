@@ -198,7 +198,8 @@ state resets on an organization switch so a draft or deletion dialog cannot carr
   existing credential/token attribution contract, but does not execute that agent.
 - Group conversation rows on single-owner bots offer **By decision** where the platform's
   channel-list `triggers` allow it (Linear omits it, matching the CP's `ownerAsDefault`
-  refusal). A row without a gate offers **+ Decision**; a saved gate reads as a pill naming
+  refusal). A row without a gate offers **+ Decision**, its only way in, so Respond to never
+  lists By decision as a pick; a saved gate reads as a pill naming
   the Decision (its condition in the title), and its × returns the row to the platform's
   first plain trigger with the ordinary trigger PATCH, which clears the gate. While a gate or
   a shared bot's routing owns the trigger, the row's settings popover keeps Respond to listed

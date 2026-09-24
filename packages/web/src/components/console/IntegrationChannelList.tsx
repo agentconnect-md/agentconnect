@@ -62,7 +62,6 @@ function RowSettings({
   platform,
   disabled,
   trigger,
-  allowDecision,
   gateOwnsTrigger = false,
   onTrigger,
   onSessionMode
@@ -76,8 +75,6 @@ function RowSettings({
   disabled: boolean
   /** The row's effective choice, which is the memory trigger unless a gate overrides it. */
   trigger: RowTrigger
-  /** Whether `by decision` is offered here at all — the flag and a non-shared bot; the platform may still withhold it. */
-  allowDecision: boolean
   onTrigger: (trigger: RowTrigger) => void | Promise<void>
   onSessionMode: (mode: SessionMode) => Promise<void>
 }) {
@@ -109,9 +106,9 @@ function RowSettings({
           ] satisfies ChannelSettingsOption<RowTrigger>[]
         ).filter((o) =>
           // The room's vocabulary is the platform's: nothing matches "All messages" where no unaddressed traffic exists.
+          // + Decision is the row's way into a gate, so By decision is listed only to name a stored one.
           o.value === 'decision'
-            ? channel.trigger === 'decision' ||
-              (allowDecision && (!semantics.triggers || semantics.triggers.includes('decision')))
+            ? channel.trigger === 'decision'
             : !semantics.triggers || semantics.triggers.includes(o.value)
         )
   // A direct conversation is one continuous exchange already, so only a channel row chooses its session.
@@ -911,8 +908,6 @@ export function IntegrationChannelList({
               platform={platform}
               disabled={!integrationId || gates.busy(botId, c)}
               trigger={trigger}
-              // A shared bot routes by its own rules (§3.2) from the dispatch menu, so it gets no per-channel gate.
-              allowDecision={decisionsOffered && !shareable}
               gateOwnsTrigger={
                 trigger === 'decision' && ((!!decisions && !shareable) || (shareable && managedByRouting(c)))
               }
