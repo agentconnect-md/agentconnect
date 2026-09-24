@@ -15,7 +15,16 @@ import {
 } from '@/lib/decisions/routing-draft'
 import type { RosterAgent } from '@/lib/decisions/routing-roster'
 import type { DecisionCondition, DecisionQuestion } from '@agentconnect.md/protocol/decision'
+import { IntervalSlider } from '../DecisionConditionFields'
 import { AgentMark16, FieldIssue, Note, RuleRow, issueText } from './RoutingFields'
+
+// The design's compact table: a 34px header, 8px rows, and 30px controls.
+const HEAD =
+  'hidden min-h-[34px] items-center gap-[10px] rounded-t-lg border-b border-(--border-subtle) bg-(--surface-app) px-3 font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary) desktop:grid'
+const ROW = 'grid grid-cols-1 items-center gap-2 border-b border-(--border-subtle) px-3 py-2 desktop:gap-[10px]'
+const PICKER = 'inp h-[30px] min-h-0 w-full justify-between gap-2 px-[9px] py-0 text-left'
+const NUMBER_INPUT = 'inp mn h-[30px] min-h-0 w-full px-[6px] py-0 text-center text-[12px]'
+const SCORE_COLS = 'desktop:grid-cols-[20px_60px_60px_minmax(60px,1fr)_14px_minmax(0,1.3fr)_24px]'
 
 /** One answer a Choice or Boolean question can give, and the single-answer condition its row saves. */
 interface Answer {
@@ -71,6 +80,7 @@ function TargetPicker({
   label,
   disabled,
   allowOtherwise,
+  placeholder,
   onChange
 }: {
   agents: RosterAgent[]
@@ -78,6 +88,8 @@ function TargetPicker({
   label: string
   disabled: boolean
   allowOtherwise: boolean
+  /** What an unset target reads when Otherwise is not an option. */
+  placeholder?: string
   onChange: (target: Target) => void
 }) {
   const t = useTranslations('Decisions.routing.modal')
@@ -87,7 +99,7 @@ function TargetPicker({
       ? (selected?.name ?? t('hiddenAgent'))
       : value.type === 'skip'
         ? t('doNotTrigger')
-        : t('useOtherwise')
+        : (placeholder ?? t('useOtherwise'))
   const option = (key: string, on: boolean, content: ReactNode, pick: Target, close: (focus?: boolean) => void) => (
     <button
       key={key}
@@ -120,10 +132,10 @@ function TargetPicker({
           aria-expanded={open}
           aria-controls={open ? menuId : undefined}
           onClick={toggle}
-          className={`inp h-8 min-h-0 w-full justify-between gap-2 px-[10px] py-0 text-left ${disabled ? 'cursor-default opacity-60' : 'cursor-pointer'}`}
+          className={`${PICKER} ${disabled ? 'cursor-default opacity-60' : 'cursor-pointer'}`}
         >
           <span
-            className={`flex min-w-0 items-center gap-2 font-mono text-[12px] leading-normal ${value.type === 'agent' ? 'text-(--text-primary)' : 'text-(--text-secondary)'}`}
+            className={`flex min-w-0 items-center gap-[7px] font-mono text-[12px] leading-normal ${value.type === 'agent' ? 'text-(--text-primary)' : 'text-(--text-secondary)'}`}
           >
             {selected && <AgentMark16 agent={selected} />}
             <span className="truncate">{text}</span>
@@ -211,15 +223,77 @@ export function RoutingRulesTable({
   const order = displayOrder(question, rules)
   const choice = question.type === 'choice'
   const tableCols = choice
-    ? 'desktop:grid-cols-[minmax(0,1.3fr)_112px_16px_minmax(0,1fr)]'
-    : 'desktop:grid-cols-[minmax(0,1.3fr)_16px_minmax(0,1fr)]'
+    ? 'desktop:grid-cols-[minmax(0,1.3fr)_96px_14px_minmax(0,1fr)]'
+    : 'desktop:grid-cols-[minmax(0,1.3fr)_14px_minmax(0,1fr)]'
+  const addRule = canWrite && (
+    <button
+      type="button"
+      className="inline-flex h-[22px] flex-none items-center gap-1 rounded-[5px] border border-(--border-default) bg-(--surface-card) px-[7px] font-sans text-[11.5px] font-medium normal-case leading-normal tracking-normal text-(--text-secondary) hover:border-(--border-strong) hover:text-(--text-primary)"
+      aria-label={t('rules.add')}
+      disabled={disabled}
+      onClick={() => onRules((all) => [...all, newRule(question, all)])}
+    >
+      <Icon name="plus" size={12} />
+      {tm('add')}
+    </button>
+  )
   return (
-    <div className="overflow-hidden rounded-lg border border-(--border-default)">
-      {tabular && answers ? (
+    <div className="rounded-lg border border-(--border-default) bg-(--surface-card)">
+      {question.type === 'score' ? (
         <>
-          <div
-            className={`hidden items-center gap-3 border-b border-(--border-subtle) bg-(--surface-app) px-4 py-2 font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[0.06em] text-(--text-tertiary) desktop:grid ${tableCols}`}
-          >
+          <div className={`${HEAD} ${SCORE_COLS}`}>
+            <span>#</span>
+            <span>{tm('from')}</span>
+            <span>{tm('to')}</span>
+            <span className="flex items-center gap-[5px]">
+              {tm('range')}
+              <span title={t('rules.scoreHint')} aria-label={t('rules.scoreHint')} className="inline-flex cursor-help">
+                <Icon name="info" size={13} />
+              </span>
+            </span>
+            <span />
+            <span className="col-span-2 flex min-w-0 items-center justify-between gap-2">
+              {tm('triggers')}
+              {addRule}
+            </span>
+          </div>
+          {rules.length === 0 && (
+            <div className="px-3 py-2">
+              <Note icon="list">{t('rules.empty')}</Note>
+            </div>
+          )}
+          {order.map((index, position) => {
+            const rule = rules[index]!
+            return (
+              <ScoreRuleRow
+                key={rule.id}
+                number={position + 1}
+                rule={rule}
+                levels={question.criteria.length}
+                issues={ruleIssues(issues, index)}
+                agents={agents}
+                disabled={disabled}
+                onChange={(next) => onRules((rules) => rules.map((entry) => (entry.id === next.id ? next : entry)))}
+                onRemove={() => onRules((all) => all.filter((entry) => entry.id !== rule.id))}
+                onRefresh={onRefresh}
+              />
+            )
+          })}
+          {canWrite && (
+            <button
+              type="button"
+              className="lnk m-3 gap-[6px] text-[12.5px] font-medium desktop:hidden"
+              disabled={disabled}
+              onClick={() => onRules((all) => [...all, newRule(question, all)])}
+            >
+              <Icon name="plus" size={14} />
+              {t('rules.add')}
+            </button>
+          )}
+        </>
+      ) : tabular && answers ? (
+        <>
+          <div className={`${HEAD} ${tableCols}`}>
             <span>{tm('answer')}</span>
             {choice && <span>{tm('minProbability')}</span>}
             <span />
@@ -245,19 +319,15 @@ export function RoutingRulesTable({
             const rowIssues = index >= 0 ? ruleIssues(issues, index) : []
             const threshold = rule?.when?.type === 'choice' ? (rule.when.thresholds[answer.key] ?? 0.5) : null
             return (
-              <div
-                key={answer.key}
-                data-testid="routing-answer"
-                className={`grid grid-cols-1 items-center gap-2 border-b border-(--border-subtle) px-4 py-3 desktop:gap-3 ${tableCols}`}
-              >
-                <span className="flex min-w-0 flex-col gap-[2px]">
+              <div key={answer.key} data-testid="routing-answer" className={`${ROW} ${tableCols}`}>
+                <span className="flex min-w-0 flex-col gap-[2px]" title={answer.description}>
                   <span className="mono truncate text-[12.5px] text-(--text-primary)">{answer.label}</span>
-                  <span className="font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
+                  <span className="truncate font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
                     {answer.description}
                   </span>
                 </span>
                 {choice && (
-                  <span className="flex items-center gap-[6px]">
+                  <span className="flex items-center gap-[5px]">
                     <input
                       type="number"
                       min={0}
@@ -280,7 +350,7 @@ export function RoutingRulesTable({
                           )
                         )
                       }}
-                      className="inp mn h-8 min-h-0 w-[64px] text-center"
+                      className={`${NUMBER_INPUT} w-[56px]!`}
                     />
                     <span className="font-mono text-[11.5px] leading-normal text-(--text-tertiary)">%</span>
                   </span>
@@ -304,8 +374,7 @@ export function RoutingRulesTable({
           })}
         </>
       ) : (
-        <div className="flex flex-col gap-2 px-4 py-2">
-          {question.type === 'score' && <Note icon="info">{t('rules.scoreHint')}</Note>}
+        <div className="flex flex-col gap-2 px-3 py-2">
           {rules.length === 0 ? (
             <Note icon="list">{t('rules.empty')}</Note>
           ) : (
@@ -343,21 +412,146 @@ export function RoutingRulesTable({
           )}
         </div>
       )}
-      <div
-        className={`grid grid-cols-1 items-center gap-2 bg-(--surface-sunken) px-4 py-3 desktop:gap-3 ${tabular ? tableCols : 'desktop:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]'}`}
-      >
-        <span className="flex min-w-0 flex-col gap-[2px] desktop:col-span-1">
-          <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+      <div className="flex items-center gap-3 rounded-b-lg bg-(--surface-sunken) px-3 py-[9px]">
+        <span className="flex min-w-0 flex-1 flex-col gap-px">
+          <span className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
             {t('otherwise.label')}
           </span>
-          <span className="font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
+          <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
             {tm('otherwiseHint')}
           </span>
         </span>
-        {tabular && choice && <span className="hidden desktop:block" />}
-        {tabular && <span className="hidden desktop:block" />}
-        <OtherwisePicker labels={otherwiseLabels} value={otherwise} disabled={disabled} onChange={onOtherwise} />
+        <div className="w-[220px] max-w-[50%] flex-none">
+          <OtherwisePicker labels={otherwiseLabels} value={otherwise} disabled={disabled} onChange={onOtherwise} />
+        </div>
       </div>
+    </div>
+  )
+}
+
+/** A score rule as one table row: its interval as numbers and a track, then the agent it triggers. */
+function ScoreRuleRow({
+  number,
+  rule,
+  levels,
+  issues,
+  agents,
+  disabled,
+  onChange,
+  onRemove,
+  onRefresh
+}: {
+  number: number
+  rule: RoutingDraftRule
+  levels: number
+  issues: RoutingIssue[]
+  agents: RosterAgent[]
+  disabled: boolean
+  onChange: (rule: RoutingDraftRule) => void
+  onRemove: () => void
+  onRefresh: () => void
+}) {
+  const t = useTranslations('Decisions.routing')
+  const tm = useTranslations('Decisions.routing.modal')
+  const when = rule.when?.type === 'score' ? rule.when : null
+  const setWhen = (next: Extract<DecisionCondition, { type: 'score' }>) => onChange({ ...rule, when: next })
+  const bound = (raw: string, current: number) => {
+    const parsed = Number(raw)
+    return raw === '' || !Number.isFinite(parsed) ? current : parsed
+  }
+  const target: Target =
+    rule.action.type === 'skip'
+      ? { type: 'skip' }
+      : rule.action.agentId
+        ? { type: 'agent', agentId: rule.action.agentId }
+        : { type: 'otherwise' }
+  const agent = target.type === 'agent' ? agents.find((entry) => entry.id === target.agentId) : undefined
+  const messages = issues.map((issue) => (issue.code ? issueText(t, issue) : (issue.message ?? ''))).filter(Boolean)
+  return (
+    <div
+      data-testid="routing-rule"
+      aria-label={t('rules.number', { number })}
+      className={`border-b border-(--border-subtle) py-2 pl-3 pr-2 ${issues.length ? 'bg-(--status-error-soft)' : ''}`}
+    >
+      <div className={`grid grid-cols-[20px_minmax(0,1fr)_minmax(0,1fr)_24px] items-center gap-2 ${SCORE_COLS}`}>
+        <span className="font-mono text-[11px] font-semibold leading-normal text-(--text-tertiary)">{number}</span>
+        {when ? (
+          <>
+            <input
+              className={NUMBER_INPUT}
+              type="number"
+              step={0.1}
+              disabled={disabled}
+              aria-label={tm('fromFor', { number })}
+              value={when.min}
+              onChange={(event) => setWhen({ ...when, min: bound(event.target.value, when.min) })}
+            />
+            <input
+              className={NUMBER_INPUT}
+              type="number"
+              step={0.1}
+              disabled={disabled}
+              aria-label={tm('toFor', { number })}
+              value={when.max}
+              onChange={(event) => setWhen({ ...when, max: bound(event.target.value, when.max) })}
+            />
+            <IntervalSlider
+              value={when}
+              maximum={levels - 1}
+              onChange={setWhen}
+              className="col-span-full desktop:col-span-1"
+            />
+          </>
+        ) : (
+          <span className="col-span-2 desktop:col-span-3">
+            <FieldIssue>{t('decision.typeChanged')}</FieldIssue>
+          </span>
+        )}
+        <Icon name="arrow-right" size={14} className="hidden text-(--text-tertiary) desktop:block" />
+        <span className="col-span-3 min-w-0 desktop:col-span-1">
+          <TargetPicker
+            agents={agents}
+            value={target}
+            label={t('action.agent', { number })}
+            disabled={disabled}
+            allowOtherwise={false}
+            placeholder={t('action.selectAgent')}
+            onChange={(next) =>
+              onChange({
+                ...rule,
+                action: next.type === 'agent' ? { type: 'agent', agentId: next.agentId } : { type: 'skip' }
+              })
+            }
+          />
+        </span>
+        <button
+          type="button"
+          className="flex h-6 w-6 items-center justify-center rounded-[5px] text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
+          title={t('rules.remove', { number })}
+          aria-label={t('rules.remove', { number })}
+          disabled={disabled}
+          onClick={onRemove}
+        >
+          <Icon name="x" size={13} />
+        </button>
+      </div>
+      {(messages.length > 0 || (agent && !agent.available)) && (
+        <div className="mt-[6px] flex flex-col gap-1 desktop:ml-7">
+          {messages.map((message, at) => (
+            <FieldIssue key={at}>{message}</FieldIssue>
+          ))}
+          {agent && !agent.available && (
+            <span className="flex flex-wrap items-center gap-[6px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--amber-500)">
+              <Icon name="wifi-off" size={12} />
+              <b className="font-semibold">{t('action.targetUnavailable')}</b>
+              <span className="text-(--text-tertiary)">{t('action.targetUnavailableHint')}</span>
+              <button type="button" className="lnk" onClick={onRefresh}>
+                {t('action.refresh')}
+              </button>
+            </span>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -395,7 +589,7 @@ function OtherwisePicker({
           aria-expanded={open}
           aria-controls={open ? menuId : undefined}
           onClick={toggle}
-          className={`inp h-8 min-h-0 w-full justify-between gap-2 px-[10px] py-0 text-left ${disabled ? 'cursor-default opacity-60' : 'cursor-pointer'}`}
+          className={`${PICKER} ${disabled ? 'cursor-default opacity-60' : 'cursor-pointer'}`}
         >
           <span className="truncate font-mono text-[12px] leading-normal">{label(value)}</span>
           <Icon name="chevron-down" size={14} color="var(--text-tertiary)" className="flex-none" />

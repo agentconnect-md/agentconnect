@@ -179,8 +179,6 @@ export function DecisionConditionFields({
   if (question.type === 'score' && value.type === 'score') {
     const levels = question.criteria.length
     const maximum = levels - 1
-    const fromPercent = `${(value.min / maximum) * 100}%`
-    const spanPercent = `${((value.max - value.min) / maximum) * 100}%`
     const bound = (raw: string, fallback: number) => {
       const parsed = Number(raw)
       return raw === '' || !Number.isFinite(parsed) ? fallback : parsed
@@ -214,37 +212,7 @@ export function DecisionConditionFields({
               className="inp mn h-7 w-[66px] min-h-0 text-center"
             />
           </label>
-          <div className="relative h-[26px] min-w-[150px] flex-1">
-            <div className="absolute inset-x-0 top-[11px] h-1 rounded-[3px] bg-(--gray-200)" />
-            <div
-              className="absolute top-[11px] h-1 rounded-[3px] bg-(--brand)"
-              style={{ left: fromPercent, width: spanPercent }}
-            />
-            <input
-              type="range"
-              min={0}
-              max={maximum}
-              step={0.1}
-              value={value.min}
-              aria-label={t('intervalStart')}
-              onChange={(event) =>
-                onChange({ type: 'score', min: Math.min(Number(event.target.value), value.max - 0.1), max: value.max })
-              }
-              className="pointer-events-none absolute inset-0 h-[26px] w-full appearance-none bg-transparent [&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-(--surface-card) [&::-moz-range-thumb]:bg-(--brand) [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-(--surface-card) [&::-webkit-slider-thumb]:bg-(--brand)"
-            />
-            <input
-              type="range"
-              min={0}
-              max={maximum}
-              step={0.1}
-              value={value.max}
-              aria-label={t('intervalEnd')}
-              onChange={(event) =>
-                onChange({ type: 'score', min: value.min, max: Math.max(Number(event.target.value), value.min + 0.1) })
-              }
-              className="pointer-events-none absolute inset-0 h-[26px] w-full appearance-none bg-transparent [&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-(--surface-card) [&::-moz-range-thumb]:bg-(--brand) [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-(--surface-card) [&::-webkit-slider-thumb]:bg-(--brand)"
-            />
-          </div>
+          <IntervalSlider value={value} maximum={maximum} onChange={onChange} className="min-w-[150px] flex-1" />
           <span className="flex-none font-mono text-[11.5px] leading-normal text-(--text-secondary)">
             {intervalText(value, levels)}
           </span>
@@ -255,6 +223,57 @@ export function DecisionConditionFields({
   }
 
   return null
+}
+
+const THUMB =
+  'pointer-events-none absolute inset-0 h-[26px] w-full appearance-none bg-transparent [&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-(--surface-card) [&::-moz-range-thumb]:bg-(--brand) [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-(--surface-card) [&::-webkit-slider-thumb]:bg-(--brand)'
+
+/** A score interval as a two-thumb track over the rubric, shared by the condition editor and the rule tables. */
+export function IntervalSlider({
+  value,
+  maximum,
+  onChange,
+  className = ''
+}: {
+  value: Extract<DecisionCondition, { type: 'score' }>
+  maximum: number
+  onChange: (next: Extract<DecisionCondition, { type: 'score' }>) => void
+  className?: string
+}) {
+  const t = useTranslations('Decisions.condition')
+  return (
+    <div className={`relative h-[26px] min-w-0 ${className}`}>
+      <div className="absolute inset-x-0 top-[11px] h-1 rounded-[3px] bg-(--gray-200)" />
+      <div
+        className="absolute top-[11px] h-1 rounded-[3px] bg-(--brand)"
+        style={{ left: `${(value.min / maximum) * 100}%`, width: `${((value.max - value.min) / maximum) * 100}%` }}
+      />
+      <input
+        type="range"
+        min={0}
+        max={maximum}
+        step={0.1}
+        value={value.min}
+        aria-label={t('intervalStart')}
+        onChange={(event) =>
+          onChange({ type: 'score', min: Math.min(Number(event.target.value), value.max - 0.1), max: value.max })
+        }
+        className={THUMB}
+      />
+      <input
+        type="range"
+        min={0}
+        max={maximum}
+        step={0.1}
+        value={value.max}
+        aria-label={t('intervalEnd')}
+        onChange={(event) =>
+          onChange({ type: 'score', min: value.min, max: Math.max(Number(event.target.value), value.min + 0.1) })
+        }
+        className={THUMB}
+      />
+    </div>
+  )
 }
 
 function ConditionIssue({ issue }: { issue: DecisionValidationIssue }) {

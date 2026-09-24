@@ -203,11 +203,11 @@ export function RuntimeModelSelect({
       }
     : settings
   const showSettings = !decision?.selected && !!(controls?.effort || controls?.approval || controls?.fast)
-  // The composer pill reads "model · effort · approval"; a form names the effort alone, and not the default.
+  // The composer pill and a rule table's row read "effort · approval"; a form names a non-default effort alone.
   const effortText = choiceLabel(controls?.effort)
   const summary = decision?.selected
     ? ''
-    : compact
+    : compact || dense
       ? [effortText, choiceLabel(controls?.approval)].filter(Boolean).join(' · ')
       : controls?.effort && controls.effort.value !== 'default'
         ? effortText
@@ -311,15 +311,26 @@ export function RuntimeModelSelect({
                 <AgentMark model={value.runtime} fillPct={100} />
               </MarkSlot>
             )}
-            <span className="min-w-0 flex-1 truncate text-left">
-              {decision?.selected ? t('byDecision') : modelName || label(value.runtime) || t('choose')}
-              {summary &&
-                (compact ? (
+            {compact ? (
+              <span className="min-w-0 flex-1 truncate text-left">
+                {decision?.selected ? t('byDecision') : modelName || label(value.runtime) || t('choose')}
+                {summary && (
                   <span className="font-mono text-[11px] font-normal text-(--text-tertiary)"> · {summary}</span>
-                ) : (
-                  <span className="font-normal text-(--text-tertiary)"> ({summary})</span>
-                ))}
-            </span>
+                )}
+              </span>
+            ) : (
+              // The name keeps most of the width; the run settings shrink first.
+              <span className="flex min-w-0 flex-1 items-center gap-[7px] text-left">
+                <span className={`truncate ${summary ? 'max-w-[62%] flex-none' : 'min-w-0'}`}>
+                  {decision?.selected ? t('byDecision') : modelName || label(value.runtime) || t('choose')}
+                </span>
+                {summary && (
+                  <span className="min-w-0 truncate font-mono text-[10.5px] font-normal text-(--text-tertiary)">
+                    {summary}
+                  </span>
+                )}
+              </span>
+            )}
             {!decision?.selected && selectedWarning && (
               <span className="flex flex-none" title={warningLabel(selectedWarning)}>
                 <Icon name="triangle-alert" size={13} color="var(--status-paused)" />
