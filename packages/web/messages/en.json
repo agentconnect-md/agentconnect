@@ -120,6 +120,8 @@
       "modelsCount": "{count, plural, one {# model} other {# models}}",
       "showLoginCommand": "Show the command to sign in on the daemon host.",
       "loginRequired": "Login required",
+      "loginRequiredOn": "Login required on {names}",
+      "loginRequiredOnMore": "Login required on {names} +{count}",
       "showCommand": "Show command",
       "models": "Models"
     },
@@ -3452,6 +3454,7 @@
     "runtimeLogin": {
       "title": "Log in to {label}",
       "warning": "<runtime>{runtime}</runtime> needs a sign-in on <host>{host}</host>'s host — run this there.",
+      "warningMany": "<runtime>{runtime}</runtime> needs a sign-in on the hosts of <host>{host}</host> — run this on each of them.",
       "daemonHost": "the daemon",
       "terminal": "{daemon} · terminal",
       "daemonTerminal": "daemon host · terminal",

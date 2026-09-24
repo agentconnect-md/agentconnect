@@ -11,6 +11,8 @@ export interface RuntimeLoginTarget {
   runtimeLabel?: string
   /** The daemon whose probe reported it — absent on the fleet/group card, which aggregates hosts. */
   daemonName?: string
+  /** The members that reported it when a set's card found more than one. */
+  daemonNames?: string[]
 }
 
 /** The login command for one runtime, run on the daemon's own host. `auth` is not CLI-owned, so
@@ -32,6 +34,8 @@ export default function RuntimeLoginModal({ target, onClose }: { target: Runtime
   const [copied, setCopied] = useState(false)
   const label = target.runtimeLabel || target.runtimeId
   const command = runtimeLoginCommand(target.runtimeId)
+  const hosts = target.daemonNames && target.daemonNames.length > 1 ? target.daemonNames : undefined
+  const hostName = target.daemonName ?? hosts?.join(', ')
 
   const copy = async () => {
     try {
@@ -58,9 +62,9 @@ export default function RuntimeLoginModal({ target, onClose }: { target: Runtime
         <div className="mb-[14px] flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[11px]">
           <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
           <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-            {t.rich('warning', {
+            {t.rich(hosts ? 'warningMany' : 'warning', {
               runtime: () => <span className="mono text-(--text-primary)">{target.runtimeId}</span>,
-              host: () => <span className="mono text-(--text-primary)">{target.daemonName ?? t('daemonHost')}</span>
+              host: () => <span className="mono text-(--text-primary)">{hostName ?? t('daemonHost')}</span>
             })}
           </span>
         </div>
@@ -68,7 +72,7 @@ export default function RuntimeLoginModal({ target, onClose }: { target: Runtime
           <div className="flex items-center gap-2 border-b border-(--gray-800) px-[13px] py-[9px]">
             <Icon name="terminal" size={13} color="var(--text-inverse-dim)" />
             <span className="font-mono text-[11px] font-medium leading-normal text-(--text-inverse-dim)">
-              {target.daemonName ? t('terminal', { daemon: target.daemonName }) : t('daemonTerminal')}
+              {hostName ? t('terminal', { daemon: hostName }) : t('daemonTerminal')}
             </span>
             <button
               type="button"

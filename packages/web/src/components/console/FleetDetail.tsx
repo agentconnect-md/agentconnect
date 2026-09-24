@@ -56,6 +56,8 @@ export interface FleetRuntime {
    *  a set whose members resolve one alias differently has no single answer to quote. */
   modelInfo?: Record<string, { name?: string; description?: string }>
   authRequired: boolean
+  /** Names of the members whose probe wants a login, in member order — empty when none does. */
+  authRequiredOn: string[]
   unavailableReason?: DaemonRow['runtimeModels'][number]['unavailableReason']
 }
 
@@ -119,6 +121,7 @@ export function unionRuntimes(members: readonly DaemonRow[]): FleetRuntime[] {
           version: rt.version,
           models: [...rt.models],
           authRequired: rt.authRequired === true,
+          authRequiredOn: rt.authRequired === true ? [m.name] : [],
           unavailableReason: rt.unavailableReason
         })
         continue
@@ -126,6 +129,7 @@ export function unionRuntimes(members: readonly DaemonRow[]): FleetRuntime[] {
       if (!prev.version) prev.version = rt.version
       for (const model of rt.models) if (!prev.models.includes(model)) prev.models.push(model)
       prev.authRequired ||= rt.authRequired === true
+      if (rt.authRequired === true && !prev.authRequiredOn.includes(m.name)) prev.authRequiredOn.push(m.name)
       prev.unavailableReason ??= rt.unavailableReason
     }
   }
@@ -174,10 +178,11 @@ export function intersectRuntimes(members: readonly DaemonRow[]): FleetRuntime[]
       models: rt.models.filter((model) => all.every((peer) => peer.models.includes(model))),
       // Same rule as the union — and it bites here: a group's members really do differ.
       modelInfo: consensusModelInfo(all.map(modelInfoOf)),
-      // Sticky, as in the union: one member needing a login qualifies the set's promise, so the
-      // row is MARKED. Not withdrawn — placement is deliberately independent of login readiness
-      // (preset-agents.md §3.2), which is why this does not exclude the runtime.
+      // Sticky, as in the union: one member needing a login MARKS the row; it is not withdrawn,
+      // because placement is independent of login readiness (preset-agents.md §3.2).
       authRequired: all.some((peer) => peer.authRequired === true),
+      // Named, so the operator knows which host to run the login command on.
+      authRequiredOn: members.filter((m, i) => all[i]?.authRequired === true).map((m) => m.name),
       unavailableReason: all.find((peer) => peer.unavailableReason)?.unavailableReason
     })
   }
@@ -461,6 +466,20 @@ export function FleetRuntimesCard({
             const hasModels = rt.models.length > 0
             const shown = open.has(rt.runtime) && hasModels
             const warning = runtimeWarning(rt)
+            // A set's card names the members that need the login; a single daemon's already is one.
+            const loginOn = daemonName ? [] : rt.authRequiredOn
+            const loginText =
+              loginOn.length === 0
+                ? t('loginRequired')
+                : loginOn.length <= 2
+                  ? t('loginRequiredOn', { names: loginOn.join(', ') })
+                  : t('loginRequiredOnMore', { names: loginOn.slice(0, 2).join(', '), count: loginOn.length - 2 })
+            const loginTarget = {
+              runtimeId: rt.runtime,
+              runtimeLabel: label,
+              ...(daemonName ? { daemonName } : loginOn.length === 1 ? { daemonName: loginOn[0] } : {}),
+              ...(loginOn.length > 1 ? { daemonNames: loginOn } : {})
+            }
             return (
               <div key={rt.runtime} className="overflow-hidden rounded-[9px] border border-(--border-subtle)">
                 <button
@@ -499,17 +518,11 @@ export function FleetRuntimesCard({
                   <button
                     type="button"
                     title={t('showLoginCommand')}
-                    onClick={() =>
-                      openModal('runtimeLogin', {
-                        runtimeId: rt.runtime,
-                        runtimeLabel: label,
-                        ...(daemonName ? { daemonName } : {})
-                      })
-                    }
+                    onClick={() => openModal('runtimeLogin', loginTarget)}
                     className="flex w-full cursor-pointer items-center gap-[6px] border-0 bg-(--status-paused-soft) px-[13px] py-[6px] text-left font-sans text-[11.5px] font-medium leading-normal text-(--amber-500) transition-opacity hover:opacity-80"
                   >
                     <Icon name="triangle-alert" size={12} className="flex-none" />
-                    <span className="min-w-0 truncate">{t('loginRequired')}</span>
+                    <span className="min-w-0 truncate">{loginText}</span>
                     <span className="ml-auto flex flex-none items-center gap-[3px] underline underline-offset-2">
                       {t('showCommand')}
                       <Icon name="chevron-right" size={12} className="flex-none" />
