@@ -4,6 +4,7 @@ import { generateKeyPairSync, randomUUID } from 'node:crypto'
 import {
   DECISION_EVALUATIONS_V1_FEATURE,
   HOOK_DECISION_ROUTING_V1_FEATURE,
+  HOOK_DECISION_ROUTING_V2_FEATURE,
   type DecisionDraft,
   type DecisionEvaluationRecordDetail,
   type DecisionEvaluationRecordPage,
@@ -23,6 +24,7 @@ import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
 import { systemClock } from '../../src/domain/clock.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
+import { OrgId } from '../../src/domain/ids.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const EARLY_DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
@@ -149,11 +151,18 @@ afterEach(async () => {
   running = []
 })
 
-function appWith(opts: { features?: string[] | null; userId?: string } = {}) {
+function appWith(
+  opts: { features?: string[] | null; userId?: string; featuresByDaemon?: Record<string, string[]> } = {}
+) {
   const spy = new SpyControl()
   const features =
     opts.features === undefined ? [DECISION_EVALUATIONS_V1_FEATURE, HOOK_DECISION_ROUTING_V1_FEATURE] : opts.features
-  const liveness = { get: () => (features ? { state: 'READY', capabilities: { features } } : undefined) }
+  const liveness = {
+    get: (daemonId: string) => {
+      const advertised = opts.featuresByDaemon?.[daemonId] ?? features
+      return advertised ? { state: 'READY', capabilities: { features: advertised } } : undefined
+    }
+  }
   const app = buildHttpApp(
     prisma,
     { PUBLIC_RELAY_URL: 'https://relay.example.test', ...(opts.userId ? { DEFAULT_OWNER_ID: opts.userId } : {}) },
@@ -264,6 +273,7 @@ describe('repository Decision routing — configuration', () => {
     const res = await app.app.inject({ method: 'GET', url: SCOPE })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({
+      provider: 'github',
       repoId: String(REPO_ID),
       repoFullName: 'example-org/example-repo',
       family: 'issues',
@@ -414,6 +424,7 @@ describe('repository Decision routing — configuration', () => {
       kind: 'code_host_routing',
       id: routingId,
       label: 'example-org/example-repo · issues',
+      provider: 'github',
       repoId: String(REPO_ID),
       family: 'issues'
     })
@@ -504,5 +515,212 @@ describe('repository Decision routing — Recent evaluations', () => {
     expect(upgrade.statusCode).toBe(503)
     expect(upgrade.json()).toMatchObject({ code: 'DAEMON_UPGRADE_REQUIRED' })
     expect(older.spy.gets).toEqual([])
+  })
+})
+
+const PROJECT_ID = 4455667n
+const GITEA_REPO_ID = 556677n
+const V2 = [DECISION_EVALUATIONS_V1_FEATURE, HOOK_DECISION_ROUTING_V1_FEATURE, HOOK_DECISION_ROUTING_V2_FEATURE]
+
+/** A managed GitLab project and a Gitea repository, each watched by both agents on their change-request family. */
+async function seedManagedWorld() {
+  const world = await seedWorld()
+  await prisma.gitlabProjectBinding.create({
+    data: { orgId: DEFAULT_ORG_ID, projectId: PROJECT_ID, projectPath: 'example-group/example-project', state: 'ready' }
+  })
+  const connection = await prisma.giteaConnection.create({
+    data: { orgId: DEFAULT_ORG_ID, botUserId: 9042n, botUsername: 'example-bot', state: 'connected' }
+  })
+  await prisma.giteaRepositoryBinding.create({
+    data: {
+      orgId: DEFAULT_ORG_ID,
+      connectionId: connection.id,
+      repoId: GITEA_REPO_ID,
+      repoPath: 'example-org/example-gitea-repo',
+      state: 'ready'
+    }
+  })
+  const hookRow = (agentId: string, kind: 'gitlab' | 'gitea', repoId: bigint, repoFullName: string) =>
+    prisma.hookDef.create({
+      data: {
+        orgId: DEFAULT_ORG_ID,
+        agentId,
+        kind,
+        name: repoFullName,
+        sessionMode: 'perThread',
+        repoId,
+        // A stale path: the binding's is the one the compile and the routing read.
+        repoFullName: `${repoFullName}-old`,
+        family: 'merge_request',
+        events: ['merge_request:opened'],
+        mentionOnly: true
+      }
+    })
+  const gitlabEarly = await hookRow(world.early, 'gitlab', PROJECT_ID, 'example-group/example-project')
+  const gitlabLate = await hookRow(world.late, 'gitlab', PROJECT_ID, 'example-group/example-project')
+  const giteaEarly = await hookRow(world.early, 'gitea', GITEA_REPO_ID, 'example-org/example-gitea-repo')
+  return { ...world, gitlabEarly: gitlabEarly.id, gitlabLate: gitlabLate.id, giteaEarly: giteaEarly.id }
+}
+
+const GITLAB_SCOPE = `${ORG}/decision-routing/gitlab/${PROJECT_ID}/merge_request`
+const GITEA_SCOPE = `${ORG}/decision-routing/gitea/${GITEA_REPO_ID}/merge_request`
+
+describe('repository Decision routing — GitLab and Gitea', () => {
+  it('lists a GitLab scope under its binding path, and 400s a family its provider does not route', async () => {
+    const w = await seedManagedWorld()
+    const { app } = appWith({ features: V2 })
+    const res = await app.app.inject({ method: 'GET', url: GITLAB_SCOPE })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({
+      provider: 'gitlab',
+      repoId: String(PROJECT_ID),
+      repoFullName: 'example-group/example-project',
+      family: 'merge_request',
+      config: null,
+      members: expect.arrayContaining([
+        expect.objectContaining({ agentId: w.early, hookId: w.gitlabEarly }),
+        expect.objectContaining({ agentId: w.late, hookId: w.gitlabLate })
+      ])
+    })
+    // The provider's hooks only: the Gitea row with another id is not a member, and a GitHub scope on the id is empty.
+    expect((res.json() as { members: unknown[] }).members).toHaveLength(2)
+    expect(
+      (await app.app.inject({ method: 'GET', url: `${ORG}/decision-routing/github/${PROJECT_ID}/issues` })).statusCode
+    ).toBe(404)
+    for (const url of [
+      `${ORG}/decision-routing/github/${PROJECT_ID}/merge_request`,
+      `${ORG}/decision-routing/gitlab/${PROJECT_ID}/pull_request`,
+      `${ORG}/decision-routing/gitea/${GITEA_REPO_ID}/pull_request`,
+      `${ORG}/decision-routing/bitbucket/${PROJECT_ID}/issues`
+    ])
+      expect((await app.app.inject({ method: 'GET', url })).statusCode).toBe(400)
+  })
+
+  it('hosts a GitLab scope only on a v2 daemon, projects it there, and labels its usage', async () => {
+    const w = await seedManagedWorld()
+    // The earlier daemon reads v1 only, so the later one hosts despite being created after it.
+    const { app, spy } = appWith({
+      featuresByDaemon: { [EARLY_DAEMON]: [DECISION_EVALUATIONS_V1_FEATURE, HOOK_DECISION_ROUTING_V1_FEATURE] },
+      features: V2
+    })
+    app.relayReg.add(new FakeRelay('relay-v2', [HOOK_DECISION_ROUTING_V1_FEATURE, HOOK_DECISION_ROUTING_V2_FEATURE]))
+    const decisionId = await createDecision(app)
+    const config = {
+      enabled: true,
+      decisionId,
+      rules: [{ id: 'r1', when: { type: 'boolean', values: [true] }, action: { type: 'agent', agentId: w.early } }],
+      otherwise: { type: 'default_agent' }
+    }
+    const saved = await app.app.inject({ method: 'PUT', url: GITLAB_SCOPE, payload: { config } })
+    expect(saved.statusCode).toBe(200)
+    expect(saved.json()).toMatchObject({ provider: 'gitlab', status: 'enabled', evaluationAgentId: w.late })
+    const stored = await prisma.codeHostDecisionRouting.findFirstOrThrow()
+    expect(stored).toMatchObject({ provider: 'gitlab', repoFullName: 'example-group/example-project' })
+    await vi.waitFor(() =>
+      expect(spy.lastSpec(w.late)?.hookRoutings).toEqual([
+        expect.objectContaining({
+          routingId: stored.id,
+          provider: 'gitlab',
+          repoId: String(PROJECT_ID),
+          repoFullName: 'example-group/example-project',
+          family: 'merge_request',
+          members: expect.arrayContaining([
+            { agentId: w.early, hookId: w.gitlabEarly },
+            { agentId: w.late, hookId: w.gitlabLate }
+          ])
+        })
+      ])
+    )
+
+    const usage = await app.app.inject({ method: 'GET', url: `${ORG}/decisions/${decisionId}` })
+    expect((usage.json() as { usages: unknown[] }).usages).toContainEqual({
+      kind: 'code_host_routing',
+      id: stored.id,
+      label: 'example-group/example-project · merge requests',
+      provider: 'gitlab',
+      repoId: String(PROJECT_ID),
+      family: 'merge_request'
+    })
+
+    // A project rename moves the routing's path and re-projects its host.
+    const revision = (await prisma.agent.findUniqueOrThrow({ where: { id: w.late } })).configRevision
+    const touched = await app.deps.repos.agent.refreshCodeHostRepositoryPath(
+      OrgId(DEFAULT_ORG_ID),
+      'gitlab',
+      PROJECT_ID,
+      'example-group/renamed-project'
+    )
+    expect(touched).toContain(w.late)
+    expect((await prisma.codeHostDecisionRouting.findFirstOrThrow()).repoFullName).toBe('example-group/renamed-project')
+    expect((await prisma.agent.findUniqueOrThrow({ where: { id: w.late } })).configRevision).toBeGreaterThan(revision)
+  })
+
+  it('stores only a (provider, family) pair its provider routes', async () => {
+    const { app } = appWith()
+    const decisionId = await createDecision(app)
+    const row = (provider: string, family: string) =>
+      prisma.codeHostDecisionRouting.create({
+        data: {
+          orgId: DEFAULT_ORG_ID,
+          provider,
+          repoId: PROJECT_ID,
+          repoFullName: 'example-group/example-project',
+          family,
+          decisionId,
+          rules: [],
+          otherwise: { type: 'skip' }
+        }
+      })
+    await expect(row('github', 'merge_request')).rejects.toThrow()
+    await expect(row('gitlab', 'pull_request')).rejects.toThrow()
+    await expect(row('bitbucket', 'issues')).rejects.toThrow()
+    await row('gitlab', 'merge_request')
+    await row('gitea', 'issues')
+    expect(await prisma.codeHostDecisionRouting.count()).toBe(2)
+  })
+
+  it('refuses enabling a GitLab scope behind a relay without v2, while a GitHub scope needs only v1', async () => {
+    const w = await seedManagedWorld()
+    const { app } = appWith({ features: V2 })
+    app.relayReg.add(new FakeRelay('relay-v1', [HOOK_DECISION_ROUTING_V1_FEATURE]))
+    const decisionId = await createDecision(app)
+    const config = { enabled: true, decisionId, rules: [], otherwise: { type: 'default_agent' } }
+    const held = await app.app.inject({ method: 'PUT', url: GITLAB_SCOPE, payload: { config } })
+    expect(held.statusCode).toBe(409)
+    expect(held.json()).toMatchObject({ code: 'DECISION_UNSUPPORTED_CONSUMER' })
+    await createHook(app, w.early)
+    expect((await app.app.inject({ method: 'PUT', url: SCOPE, payload: { config } })).statusCode).toBe(200)
+    expect(await prisma.codeHostDecisionRouting.findMany({ select: { provider: true } })).toEqual([
+      { provider: 'github' }
+    ])
+  })
+
+  it('saves a Gitea scope under its binding path and reads its lane only from a v2 host', async () => {
+    const w = await seedManagedWorld()
+    const { app, spy } = appWith({ features: V2 })
+    app.relayReg.add(new FakeRelay('relay-v2', [HOOK_DECISION_ROUTING_V1_FEATURE, HOOK_DECISION_ROUTING_V2_FEATURE]))
+    const decisionId = await createDecision(app)
+    const config = { enabled: true, decisionId, rules: [], otherwise: { type: 'default_agent' } }
+    const saved = await app.app.inject({ method: 'PUT', url: GITEA_SCOPE, payload: { config } })
+    expect(saved.statusCode).toBe(200)
+    expect(saved.json()).toMatchObject({
+      provider: 'gitea',
+      repoFullName: 'example-org/example-gitea-repo',
+      evaluationAgentId: w.early,
+      members: [expect.objectContaining({ agentId: w.early, hookId: w.giteaEarly })]
+    })
+    await vi.waitFor(() => expect(spy.lastSpec(w.early)?.hookRoutings?.[0]?.provider).toBe('gitea'))
+    const usage = await app.app.inject({ method: 'GET', url: `${ORG}/decisions/${decisionId}` })
+    expect((usage.json() as { usages: Array<{ label: string }> }).usages[0]?.label).toBe(
+      'example-org/example-gitea-repo · pull requests'
+    )
+    expect((await app.app.inject({ method: 'GET', url: `${GITEA_SCOPE}/evaluations` })).statusCode).toBe(200)
+    expect(spy.lists).toHaveLength(1)
+    const older = appWith({ features: [DECISION_EVALUATIONS_V1_FEATURE, HOOK_DECISION_ROUTING_V1_FEATURE] })
+    const upgrade = await older.app.app.inject({ method: 'GET', url: `${GITEA_SCOPE}/evaluations` })
+    expect(upgrade.statusCode).toBe(503)
+    expect(upgrade.json()).toMatchObject({ code: 'DAEMON_UPGRADE_REQUIRED' })
+    expect((await app.app.inject({ method: 'DELETE', url: GITEA_SCOPE })).statusCode).toBe(204)
+    expect(await prisma.codeHostDecisionRouting.count()).toBe(0)
   })
 })

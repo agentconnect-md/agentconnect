@@ -24,9 +24,17 @@ import { advertises } from '../domain/daemon-features.js'
 import { codeHostProviders } from '../codehost/registry.js'
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 
-/** Whether a relay may hold this rule: a routed rule only where the relay routes (code-host-decisions.md §3.3). */
-export function hookRuleSupported(rule: Pick<RcHookAssign, 'routing'>, features: readonly string[] | undefined) {
-  return rule.routing === undefined || advertises(features, [HOOK_DECISION_ROUTING_V1_FEATURE])
+/** Whether a relay may hold this rule: a routed rule only where the relay routes its provider (code-host-decisions.md §3.3). */
+export function hookRuleSupported(
+  rule: Pick<RcHookAssign, 'routing' | 'kind' | 'github' | 'gitlab' | 'gitea'>,
+  features: readonly string[] | undefined
+) {
+  if (rule.routing === undefined) return true
+  const host = codeHostHookRuleOf(rule)
+  return advertises(
+    features,
+    host ? codeHostProviders[host.provider].routing.requiredFeatures : [HOOK_DECISION_ROUTING_V1_FEATURE]
+  )
 }
 
 export class RelayControlSender {

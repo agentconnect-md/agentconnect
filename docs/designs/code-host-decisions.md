@@ -1,8 +1,8 @@
 # Code-host and Linear Decisions
 
-> Status: Implemented for GitHub hooks and Linear team conversations.
-> Scope: Decision routing across the agents that watch a GitHub repository, and By decision on
-> Linear. Builds on [decisions.md](decisions.md) (the reusable judgment, conditions, Jev adapter),
+> Status: Implemented for GitHub, GitLab and Gitea hooks, and Linear team conversations.
+> Scope: Decision routing across the agents that watch a code-host repository (GitHub, GitLab,
+> Gitea), and By decision on Linear. Builds on [decisions.md](decisions.md) (the reusable judgment, conditions, Jev adapter),
 > [message-intake.md](message-intake.md) (record first, judge second, admit last; §6's evaluation
 > host), and [webhook-triggers-and-github-events.md](webhook-triggers-and-github-events.md) (hook
 > matching, authorization, delivery — unchanged here).
@@ -16,8 +16,9 @@ issue or pull request is triggered. **Decision routing** lets the organization p
 take each new issue or PR from a typed judgment, the way a shared bot routes a new conversation
 (decisions.md §3.2):
 
-- One routing exists per organization, repository, and subject family (`issues`,
-  `pull_request`). It names a Decision, answer-to-agent rules, and **Otherwise** (every agent that
+- One routing exists per organization, provider, repository, and subject family — `issues` and
+  `pull_request` on GitHub, `issues` and `merge_request` on GitLab and Gitea, the names their hook
+  rows store (`CODE_HOST_ROUTING_PROVIDER_FAMILIES`). It names a Decision, answer-to-agent rules, and **Otherwise** (every agent that
   would fire, or nobody).
 - An event is judged **once**, on one **evaluation host**, never once per agent. The host records
   it in its channel record, evaluates, and returns the selected hooks to the relay, which fires them
@@ -49,24 +50,27 @@ Linear gains By decision on its team conversations through the existing chat gat
 
 ### 3.1 The routing
 
-The CP stores a `code_host_decision_routing` row per `(orgId, provider = github, repoId, family)`.
+The CP stores a `code_host_decision_routing` row per `(orgId, provider, repoId, family)`; `repoId`
+is the provider's numeric repository or project id, as its hook rows store it.
 Its config has the shared-bot routing shape (`SharedBotDecisionRouting`): `enabled`, `decisionId`,
 `rules[{ id, when, action: agent | skip }]`, and `otherwise: default_agent | skip`. For code-host
 routing `default_agent` means **every candidate**.
 
 ```text
-GET    /api/v1/decision-routing/github/:repoId/:family
-PUT    /api/v1/decision-routing/github/:repoId/:family      { config }
-DELETE /api/v1/decision-routing/github/:repoId/:family
+GET    /api/v1/decision-routing/:provider/:repoId/:family
+PUT    /api/v1/decision-routing/:provider/:repoId/:family      { config }
+DELETE /api/v1/decision-routing/:provider/:repoId/:family
 ```
 
 The response carries the config (or `null`), its `status` (`enabled`, `needs_review`,
-`access_revoked`), and the **members**: the agents with an enabled GitHub hook on that repository
-and family, which are the only valid rule targets. Validation mirrors shared-bot routing: a visible,
+`access_revoked`), and the **members**: the agents with an enabled hook of that provider on that
+repository and family, which are the only valid rule targets. Validation mirrors shared-bot routing: a visible,
 supported Decision; `decisionRoutingIssues` for the rules; targets must be members. A Decision edit
 that makes the rules incompatible marks the routing `needs_review`, as it flags a shared bot's
 routing; while it needs review, the routing holds its scope's events rather than firing them
-unrouted. A Decision used by a routing appears in **Used by** and cannot be deleted.
+unrouted. A Decision used by a routing appears in **Used by**, named by the repository path and its
+provider's family label (`example-group/example-project · merge requests`), and cannot be deleted.
+A pair a provider does not route (`github` with `merge_request`) is a 400.
 
 ### 3.2 The evaluation host
 
@@ -79,25 +83,34 @@ the members' `(agentId, hookId)`. The relay receives only ids; question text doe
 
 ### 3.3 Compatibility
 
-Routing needs `hook-decision-routing-v1` on the relay and on the host daemon.
+Routing needs `hook-decision-routing-v1` on the relay and on the host daemon; a GitLab or Gitea
+scope also needs `hook-decision-routing-v2`, because an older peer would fire its routed rules
+unrouted or reject a non-GitHub projection.
 
-- The CP sends a routed rule only to relays advertising the feature; an older relay drops the
-  scope's rules instead of firing them unrouted.
-- The CP strips `hookRoutings` from an older daemon's spec and does not choose it as host.
+- The CP sends a routed rule only to relays advertising the scope's feature; an older relay drops
+  the scope's rules instead of firing them unrouted.
+- The CP strips from an older daemon's spec the projections it cannot read, and does not choose it
+  as host for those scopes.
 - A relay whose host is offline, too old, or does not answer within its timeout fires every
   candidate, with `unavailable` evidence — the provider-failure fallback.
 
 ## 4. Relay: candidates and the host copy
 
-The CP compiles every rule of an enabled routing scope with the scope's **Any update** cadence —
-events `<family>:*` and `issue_comment:created`, comment family `<family>`, `mentionOnly: false` —
-whatever trigger mode the hook row stores; the stored mode is kept and applies again when routing
+The CP compiles every rule of an enabled routing scope with its provider's **Any update** cadence —
+on GitHub events `<family>:*` and `issue_comment:created`, on GitLab and Gitea `<family>:*`; comment
+family `<family>`; `mentionOnly: false` — whatever trigger mode the hook row stores. Each provider's
+cadence is a member of its CP code-host module (`codeHostProviders`), not a branch in core; the stored mode is kept and applies again when routing
 is paused or removed. Label filters, the lifecycle-noise and bot vetoes, the installation gate, and
 the maintainer check apply unchanged. A native App reviewer request is a candidate like any other.
 
-For a GitHub event on a repository, the relay runs every rule's verdict and live maintainer check.
-Rules without `routing` fire as today, including mention narrowing. For each routing scope the
-event belongs to (its family: issues, or pull requests including their comments and reviews):
+The routing step is shared relay code (`hooks/code-host-routing.ts`): grouping candidates by scope,
+the host copy, fan-out of the host's choice, the unavailable fallback, and record-only copies. Each
+provider's ingress supplies only what differs: the event's thread family, the families a rule
+covers, the host rule's repository fence, and whether an unmatched event may be recorded. For an
+event, the ingress runs every rule's verdict and live maintainer check, and settles every
+authorization before the scopes are routed. Rules without `routing` fire as today, including mention
+narrowing. For each routing scope the event belongs to (its family: issues, or change requests
+including their comments and reviews):
 
 1. The **candidates** are the scope's rules that would fire. A targeted `@agent` mention does not
    narrow them: the mentioned agent's rule and every other routed rule stay candidates.
@@ -115,8 +128,9 @@ every message in its conversation. Bot-authored events are recorded too; they ca
 relay does not wait for a record-only ack and reports nothing for it. Thread cleanup, relay
 notices, and check/workflow re-requests bypass routing.
 
-`HookContext` gains `subject`: the issue/PR author login, type and association, its state, draft
-flag, and body excerpt (≤ 4 KiB).
+`HookContext` gains `subject`, filled by every provider: the issue or change request's author login
+and type (and GitHub's association), its state, draft flag, and body excerpt (≤ 4 KiB). GitLab and
+Gitea drop noise events in their normalizers, so only normalized events can be recorded.
 
 ## 5. The host: record, choose, reply
 
@@ -150,15 +164,17 @@ gets them through gap replay, and every agent can read the thread from GitHub.
 ### 5.1 The state Jev sees
 
 The code-host state keeps the chat field names, so a question written against `currentMessage` and
-`history` reads the same:
+`history` reads the same. One shared builder (`daemon/src/codehost/decision-state.ts`) assembles it
+for every provider; each provider's hook normalizer supplies only the subject's kind, number, draft
+flag and repository path from its trusted metadata:
 
 ```jsonc
 {
-  "source": "github",
+  "source": "github", // github | gitlab | gitea
   "event": { "name": "issue_comment", "action": "created" },
   "repository": { "fullName": "example-org/example-repo" },
   "subject": {
-    "kind": "issue", // issue | pull_request
+    "kind": "issue", // issue | pull_request | merge_request
     "number": 42,
     "title": "…",
     "url": "https://github.com/example-org/example-repo/issues/42",
@@ -181,7 +197,8 @@ cuts the current message. `context.reasons` names each trim (`history_limit`, `b
 `subject_body_trimmed`).
 
 History begins when routing was enabled and has gaps while the host was offline; a new host on a
-separate SQLite store starts with partial history. Comments older than the routing are not fetched from the GitHub API.
+separate SQLite store starts with partial history. GitLab and Gitea record a thread under the host
+agent's hook, so a host change also starts that scope's history afresh. Comments older than the routing are not fetched from the GitHub API.
 
 ## 6. Linear
 
@@ -212,7 +229,7 @@ conversations; shared-bot routing stays refused.
 ## 7. Operational visibility
 
 - **Recent evaluations** for a routing read the host's verdict rows through
-  `GET /api/v1/decision-routing/github/:repoId/:family/evaluations[/:seq]`. The CP forwards
+  `GET /api/v1/decision-routing/:provider/:repoId/:family/evaluations[/:seq]`. The CP forwards
   `decision/evaluations` and `decision/evaluation` to the host daemon with `source: 'hook_routing'`
   and `integrationId = channel = routingId`.
 - The console's issue and pull-request rows carry the routing entry: a Decision chip (empty, or
@@ -224,8 +241,6 @@ conversations; shared-bot routing stays refused.
 
 ## 8. Not in this version
 
-- GitLab and Gitea hooks. The relay candidate step and the daemon state builder are per-provider;
-  they will be extracted into the code-host seam when a second provider implements them.
 - Fetching thread history from the provider API.
 - Cross-daemon forwarding from the host: the relay fans out the host's choice, so hook delivery keeps
   its existing in-memory durability.

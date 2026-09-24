@@ -800,8 +800,53 @@ function anchorEventLine(event: string, subject: string, c: HookContext): string
   return `${event} — ${subject}${c.title ? ` — ${c.title.split('\n', 1)[0]!.trim()}` : ''}`
 }
 
+/** The subject identity a routing Decision judges (code-host-decisions.md §5.1), read from the trusted member first. */
+export interface HookDecisionSubject {
+  kind?: 'issue' | 'pull_request' | 'merge_request'
+  number?: number
+  draft?: boolean
+  repoPath?: string
+}
+
+/** GitHub keeps the envelope's number and draft first, the order its state has always read them in. */
+function githubDecisionSubject(
+  c: HookContext | undefined,
+  github: GithubHookMetadata | undefined
+): HookDecisionSubject {
+  const number = c?.number ?? github?.pullNumber
+  const draft = c?.subject?.draft ?? github?.isDraft
+  const repoPath = github?.repoFullName ?? c?.repo
+  return {
+    ...(github?.subjectKind ? { kind: github.subjectKind } : {}),
+    ...(number !== undefined ? { number } : {}),
+    ...(draft !== undefined ? { draft } : {}),
+    ...(repoPath ? { repoPath } : {})
+  }
+}
+
+/** A GitLab or Gitea subject from its trusted target; a push has no subject kind. */
+function targetDecisionSubject(
+  c: HookContext | undefined,
+  kind: HookDecisionSubject['kind'],
+  number: number | undefined,
+  isDraft: boolean | undefined,
+  path: string | undefined
+): HookDecisionSubject {
+  const n = number ?? c?.number
+  const draft = isDraft ?? c?.subject?.draft
+  const repoPath = path ?? c?.repo
+  return {
+    ...(kind ? { kind } : {}),
+    ...(n !== undefined ? { number: n } : {}),
+    ...(draft !== undefined ? { draft } : {}),
+    ...(repoPath ? { repoPath } : {})
+  }
+}
+
 /** One host's normalization of a delivery (§6.5); a member that needs the absent trusted metadata answers undefined and the generic shaping runs. */
 interface HookNormalizer<P extends CodeHostProvider> {
+  /** The subject's kind, number, draft flag and repository path for the routing state (code-host-decisions.md §5.1). */
+  decisionSubject(c: HookContext | undefined, metadata: CodeHostHookMetadataOf<P> | undefined): HookDecisionSubject
   /** The rename-stable thread recomputed from the trusted member (§12.3); undefined ⇒ the relay key grammar. */
   sessionThread(metadata: CodeHostHookMetadataOf<P> | undefined): string | undefined
   sessionTitle(c: HookContext, metadata: CodeHostHookMetadataOf<P> | undefined): string | undefined
@@ -837,6 +882,7 @@ interface HookNormalizer<P extends CodeHostProvider> {
 /** Adding a code host is adding one entry; the record over the provider union is what makes a missing one a compile error. */
 const HOOK_NORMALIZERS: { readonly [P in CodeHostProvider]: HookNormalizer<P> } = {
   github: {
+    decisionSubject: githubDecisionSubject,
     sessionThread: () => undefined,
     sessionTitle: githubSessionTitle,
     standingContext: (c, github) =>
@@ -849,6 +895,12 @@ const HOOK_NORMALIZERS: { readonly [P in CodeHostProvider]: HookNormalizer<P> } 
     threadUrl: githubSourceThreadUrl
   },
   gitlab: {
+    decisionSubject: (c, gitlab) => {
+      const t = gitlab?.target
+      if (!t || t.kind === 'push') return targetDecisionSubject(c, undefined, undefined, undefined, gitlab?.projectPath)
+      const draft = t.kind === 'merge_request' ? t.isDraft : undefined
+      return targetDecisionSubject(c, t.kind, t.iid, draft, gitlab.projectPath)
+    },
     sessionThread: (gitlab) => (gitlab ? gitlabSessionThread(gitlab) : undefined),
     sessionTitle: gitlabSessionTitle,
     standingContext: (_c, gitlab) => (gitlab && gitlab.target.kind !== 'push' ? gitlabStandingContext() : undefined),
@@ -863,6 +915,12 @@ const HOOK_NORMALIZERS: { readonly [P in CodeHostProvider]: HookNormalizer<P> } 
     threadUrl: (c) => c?.htmlUrl
   },
   gitea: {
+    decisionSubject: (c, gitea) => {
+      const t = gitea?.target
+      if (!t || t.kind === 'push') return targetDecisionSubject(c, undefined, undefined, undefined, gitea?.repoPath)
+      if (t.kind === 'issue') return targetDecisionSubject(c, 'issue', t.index, undefined, gitea.repoPath)
+      return targetDecisionSubject(c, 'pull_request', t.index, t.isDraft, gitea.repoPath)
+    },
     sessionThread: (gitea) => (gitea ? giteaSessionThread(gitea) : undefined),
     sessionTitle: giteaSessionTitle,
     standingContext: (_c, gitea) => (gitea && gitea.target.kind !== 'push' ? giteaStandingContext() : undefined),
@@ -909,6 +967,20 @@ function normalize<P extends CodeHostProvider, R>(
 function envelopeOf(msg: RdMsgHook, host: HookProviderCase | undefined): HookContext | undefined {
   const c = msg.context
   return c && host && c.source === host.provider ? c : undefined
+}
+
+/** The host a routed delivery resolved to, its agreeing envelope, and the subject identity its normalizer reads. */
+export function hookDecisionFacts(
+  msg: RdMsgHook
+): { provider: CodeHostProvider; context: HookContext | undefined; subject: HookDecisionSubject } | undefined {
+  const host = hookProviderOf(msg)
+  if (!host) return undefined
+  const context = envelopeOf(msg, host)
+  return {
+    provider: host.provider,
+    context,
+    subject: normalize(host, (n, metadata) => n.decisionSubject(context, metadata))
+  }
 }
 
 /** The session-stable rules of answering a code-host delivery (`NormalizedMessage.standingContext`), opened only by a delivery the daemon will answer; generic webhooks get none. */

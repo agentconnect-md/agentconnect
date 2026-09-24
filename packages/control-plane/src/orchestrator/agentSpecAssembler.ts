@@ -132,7 +132,10 @@ export class AgentSpecAssembler {
     if (this.routingSources === undefined) return undefined
     const hosted = await this.routingSources.routings.listForHost(AgentId(a.id))
     if (hosted.length === 0) return []
-    const hooks = await this.routingSources.hooks.listForOrgKind(a.orgId, 'github')
+    const providers = [...new Set(hosted.map((record) => record.provider))]
+    const hooks = (
+      await Promise.all(providers.map((provider) => this.routingSources!.hooks.listForOrgKind(a.orgId, provider)))
+    ).flat()
     return hosted.flatMap((record) => hookRoutingProjection(record, routingMembers(hooks, record)) ?? [])
   }
 

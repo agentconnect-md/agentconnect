@@ -207,22 +207,45 @@ export type DecisionBundle = z.infer<typeof DecisionBundle>
 
 export const EMPTY_DECISION_BUNDLE: DecisionBundle = { bindings: [], definitions: [] }
 
-// Code-host routing (code-host-decisions.md §3): one per organization, repository and subject family.
-export const CODE_HOST_ROUTING_FAMILIES = ['issues', 'pull_request'] as const
+// Code-host routing (code-host-decisions.md §3): one per organization, provider, repository and subject family.
+export const CODE_HOST_ROUTING_FAMILIES = ['issues', 'pull_request', 'merge_request'] as const
 export const CodeHostRoutingFamily = z.enum(CODE_HOST_ROUTING_FAMILIES)
 export type CodeHostRoutingFamily = z.infer<typeof CodeHostRoutingFamily>
 
+// Kept equal to CODE_HOST_PROVIDERS by a test: this leaf module may not import code-host.ts.
+export const CODE_HOST_ROUTING_PROVIDERS = ['github', 'gitlab', 'gitea'] as const
+export const CodeHostRoutingProvider = z.enum(CODE_HOST_ROUTING_PROVIDERS)
+export type CodeHostRoutingProvider = z.infer<typeof CodeHostRoutingProvider>
+
+// Each provider's routable families, in the names its hook rows store.
+export const CODE_HOST_ROUTING_PROVIDER_FAMILIES: Record<CodeHostRoutingProvider, readonly CodeHostRoutingFamily[]> = {
+  github: ['issues', 'pull_request'],
+  gitlab: ['issues', 'merge_request'],
+  gitea: ['issues', 'merge_request']
+}
+
+export function isCodeHostRoutingScope(provider: string, family: string | null | undefined): boolean {
+  const families = CODE_HOST_ROUTING_PROVIDER_FAMILIES[provider as CodeHostRoutingProvider] as
+    readonly string[] | undefined
+  return families !== undefined && families.includes(family ?? '')
+}
+
 // What the evaluation host needs: the config, its Decision, and every watching hook a rule may name.
-export const HookRoutingProjection = z.object({
-  routingId: Id,
-  provider: z.literal('github'),
-  repoId: z.string().min(1).max(64),
-  repoFullName: z.string().min(1).max(256),
-  family: CodeHostRoutingFamily,
-  config: SharedBotDecisionRouting,
-  definition: DecisionBundleDefinition,
-  members: z.array(z.object({ agentId: z.string().uuid(), hookId: z.string().uuid() })).max(64)
-})
+export const HookRoutingProjection = z
+  .object({
+    routingId: Id,
+    provider: CodeHostRoutingProvider,
+    repoId: z.string().min(1).max(64),
+    repoFullName: z.string().min(1).max(256),
+    family: CodeHostRoutingFamily,
+    config: SharedBotDecisionRouting,
+    definition: DecisionBundleDefinition,
+    members: z.array(z.object({ agentId: z.string().uuid(), hookId: z.string().uuid() })).max(64)
+  })
+  .refine((projection) => isCodeHostRoutingScope(projection.provider, projection.family), {
+    path: ['family'],
+    message: 'The family is not routable for this provider.'
+  })
 export type HookRoutingProjection = z.infer<typeof HookRoutingProjection>
 
 export const DecisionAnswer = z.discriminatedUnion('type', [

@@ -6,6 +6,8 @@ import {
   GITLAB_COM_V1_FEATURE,
   GITLAB_DEFAULT_BASE_URL,
   GITLAB_INSTANCE_V1_FEATURE,
+  HOOK_DECISION_ROUTING_V1_FEATURE,
+  HOOK_DECISION_ROUTING_V2_FEATURE,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   type RcCodeHostMembershipAuthz,
   type RcHookAssign,
@@ -16,12 +18,28 @@ import {
 } from '@agentconnect.md/protocol'
 import { HookTable } from './hook-table.js'
 import { HookRateLimiter } from './rate-limit.js'
-import { registerGitlabIngress, gitlabRuleVerdict, normalizeGitlabEvent } from './gitlab-ingress.js'
+import {
+  registerGitlabIngress,
+  gitlabRuleFamilies,
+  gitlabRuleVerdict,
+  normalizeGitlabEvent,
+  GITLAB_ROUTING,
+  type GitlabMatchCtx
+} from './gitlab-ingress.js'
+import { codeHostRecordOnlyEligible, HOOK_ROUTING_ACK_TIMEOUT_MS } from './code-host-routing.js'
 
 const HOOK = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const HOOK_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const AGENT = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 const DAEMON = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+const HOOK_C = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+const AGENT_B = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+const AGENT_C = '99999999-9999-4999-8999-999999999999'
+const DAEMON_B = '88888888-8888-4888-8888-888888888888'
+const DAEMON_C = '77777777-7777-4777-8777-777777777777'
+const ROUTING = '66666666-6666-4666-8666-666666666666'
+const ROUTING_MR = '55555555-5555-4555-8555-555555555555'
+const DECISION = '44444444-4444-4444-8444-444444444444'
 const PROJECT = 4455667
 const SA_USER = 9042
 const SIBLING_SA_USER = 9043
@@ -124,6 +142,7 @@ interface Harness {
   table: HookTable
   clock: FakeClock
   sent: RdMsg[]
+  dispatches: Array<{ daemonId: string; msg: RdMsg; opts?: unknown }>
   reports: RcRunReport[]
   authzRequests: RcCodeHostMembershipAuthz[]
   authzResult: boolean | ((request: RcCodeHostMembershipAuthz) => boolean | Promise<boolean>)
@@ -131,35 +150,58 @@ interface Harness {
   offline: boolean
   gitlabSupported: boolean
   gitlabInstanceSupported: boolean
+  /** The routing host's answer to a host copy; the default selects every candidate as Otherwise. */
+  routeAck: (msg: RdMsgHook) => RdAck | Promise<RdAck>
+  routingSupported: boolean
+  routingV2Supported: boolean
+  /** When set, only these daemons are online. */
+  onlineDaemons?: Set<string>
 }
 
 function makeHarness(): Harness {
   const clock = new FakeClock()
-  const h: Partial<Harness> & Pick<Harness, 'sent' | 'reports' | 'authzRequests'> = {
+  const h: Partial<Harness> & Pick<Harness, 'sent' | 'dispatches' | 'reports' | 'authzRequests'> = {
     sent: [],
+    dispatches: [],
     reports: [],
     authzRequests: [],
     authzResult: true,
     ack: { msgId: 'x', accepted: true },
     offline: false,
     gitlabSupported: true,
-    gitlabInstanceSupported: true
+    gitlabInstanceSupported: true,
+    routingSupported: true,
+    routingV2Supported: true,
+    routeAck: (msg) => ({
+      msgId: msg.msgId,
+      accepted: true,
+      hookRoute: {
+        targets: (msg.routing?.candidates ?? []).map((c) => ({
+          hookId: c.hookId,
+          selection: { routingId: msg.routing!.routingId, decisionId: msg.routing!.decisionId, reason: 'otherwise' }
+        }))
+      }
+    })
   }
   const app = Fastify()
   const table = new HookTable()
   const deps = {
     table,
     daemons: () => ({
-      get: () => {
-        if (h.offline) return undefined
+      get: (daemonId: string) => {
+        if (h.offline || (h.onlineDaemons && !h.onlineDaemons.has(daemonId))) return undefined
         return {
           supports: (capability: string) => {
             if (capability === GITLAB_COM_V1_FEATURE) return h.gitlabSupported === true
             if (capability === GITLAB_INSTANCE_V1_FEATURE) return h.gitlabInstanceSupported === true
+            if (capability === HOOK_DECISION_ROUTING_V1_FEATURE) return h.routingSupported === true
+            if (capability === HOOK_DECISION_ROUTING_V2_FEATURE) return h.routingV2Supported === true
             return true
           },
-          sendMsg: async (msg: RdMsg) => {
+          sendMsg: async (msg: RdMsg, opts?: unknown) => {
             h.sent.push(msg)
+            h.dispatches.push({ daemonId, msg, ...(opts ? { opts } : {}) })
+            if (msg.source === 'hook' && msg.routing) return h.routeAck!(msg)
             return h.ack!
           }
         } as never
@@ -584,5 +626,419 @@ describe('gitlab ingress', () => {
     )!
     expect(gitlabRuleVerdict(rule(), ownIssue)).toBe('no-match')
     expect(gitlabRuleVerdict(rule({}, vetoSet), ownIssue)).toBe('no-match')
+  })
+
+  describe('Decision routing (code-host-decisions.md §4)', () => {
+    const routingFor = (routingId = ROUTING, host = { agentId: AGENT, daemonId: DAEMON }) => ({
+      routingId,
+      decisionId: DECISION,
+      evaluationAgentId: host.agentId,
+      evaluationDaemonId: host.daemonId
+    })
+    // The CP compiles a routed scope with its Any update cadence.
+    const anyIssues = { events: ['issues:*'], commentFamilies: ['issues' as const] }
+    const anyMrs = { events: ['merge_request:*'], commentFamilies: ['merge_request' as const] }
+    const routed = (
+      overrides: Partial<RcHookAssign> = {},
+      gitlab: Partial<NonNullable<RcHookAssign['gitlab']>> = anyIssues,
+      routing = routingFor()
+    ) => rule({ routing, ...overrides }, gitlab)
+    const peer = { hookId: HOOK_B, agentId: AGENT_B, daemonId: DAEMON_B, dispatchDaemonId: DAEMON_B }
+    const hookMsgs = () => h.sent as RdMsgHook[]
+    const hostCopies = () => hookMsgs().filter((m) => m.routing !== undefined)
+    const fires = () => hookMsgs().filter((m) => m.routing === undefined)
+    const unavailable = {
+      routingId: ROUTING,
+      decisionId: DECISION,
+      reason: 'unavailable',
+      unavailableReason: 'host_unavailable'
+    }
+    const settle = async () => {
+      for (let i = 0; i < 3; i++) await flush()
+    }
+
+    beforeEach(() => {
+      h.onlineDaemons = new Set([DAEMON, DAEMON_B])
+    })
+
+    it('sends one host copy with every candidate, then fires exactly the selected hook', async () => {
+      h.table.upsert(routed())
+      h.table.upsert(routed(peer))
+      const selection = { routingId: ROUTING, decisionId: DECISION, reason: 'decision' as const, verdictSeq: 3 }
+      h.routeAck = (msg) => ({
+        msgId: msg.msgId,
+        accepted: true,
+        hookRoute: { targets: [{ hookId: HOOK_B, selection }] }
+      })
+      expect((await post(h, issuePayload())).statusCode).toBe(202)
+      await settle()
+
+      // One membership decision fences both candidates before the scope is routed.
+      expect(h.authzRequests).toHaveLength(1)
+      expect(hostCopies()).toHaveLength(1)
+      expect(hostCopies()[0]).toMatchObject({
+        hookId: HOOK,
+        agentId: AGENT,
+        msgId: `${HOOK}:msg_delivery_1:route`,
+        deliveryKey: 'msg_delivery_1',
+        sessionKey: `gitlab:${PROJECT}:issue:42`,
+        event: 'issues:opened',
+        gitlab: { projectId: String(PROJECT), target: { kind: 'issue', iid: 42 } },
+        context: expect.objectContaining({
+          subject: { authorLogin: 'alice', body: 'the primary is unreachable' }
+        }),
+        routing: {
+          routingId: ROUTING,
+          decisionId: DECISION,
+          candidates: [
+            { hookId: HOOK, agentId: AGENT },
+            { hookId: HOOK_B, agentId: AGENT_B }
+          ]
+        }
+      })
+      expect(h.dispatches.find((d) => (d.msg as RdMsgHook).routing)).toMatchObject({
+        daemonId: DAEMON,
+        opts: { ackTimeoutMs: HOOK_ROUTING_ACK_TIMEOUT_MS, maxTries: 1 }
+      })
+      expect(fires()).toEqual([
+        expect.objectContaining({ hookId: HOOK_B, msgId: `${HOOK_B}:msg_delivery_1`, routeSelection: selection })
+      ])
+      expect(h.dispatches.find((d) => d.msg.msgId === `${HOOK_B}:msg_delivery_1`)?.daemonId).toBe(DAEMON_B)
+      expect(h.reports).toEqual([expect.objectContaining({ hookId: HOOK_B, status: 'accepted' })])
+    })
+
+    it('keeps every routed rule a candidate when a targeted @agent mention names one of them', async () => {
+      h.table.upsert(routed({}, { ...anyIssues, agentName: 'review-alpha' }))
+      h.table.upsert(routed(peer, { ...anyIssues, agentName: 'review-beta' }))
+      await post(h, notePayload({ object_attributes: { note: '@review-beta take this' } }))
+      await settle()
+      // The summoned and unsummoned authorizations both settle before the one host copy.
+      expect(h.authzRequests).toHaveLength(2)
+      expect(hostCopies()).toHaveLength(1)
+      expect(hostCopies()[0]?.routing?.candidates).toEqual(
+        expect.arrayContaining([
+          { hookId: HOOK, agentId: AGENT },
+          { hookId: HOOK_B, agentId: AGENT_B }
+        ])
+      )
+      expect(hostCopies()[0]?.routing?.candidates).toHaveLength(2)
+    })
+
+    it('fires nothing when the host holds the event', async () => {
+      h.table.upsert(routed())
+      h.table.upsert(routed(peer))
+      h.routeAck = (msg) => ({ msgId: msg.msgId, accepted: false, reason: 'pending_sync' })
+      await post(h, issuePayload())
+      await settle()
+      expect(hostCopies()).toHaveLength(1)
+      expect(fires()).toHaveLength(0)
+      expect(h.reports).toHaveLength(0)
+    })
+
+    it.each<[string, (h: Harness) => ReturnType<typeof routingFor>]>([
+      ['the host daemon is offline', () => routingFor(ROUTING, { agentId: AGENT, daemonId: DAEMON_C })],
+      [
+        'the host daemon predates code-host routing',
+        (harness) => {
+          harness.routingSupported = false
+          return routingFor()
+        }
+      ],
+      [
+        'the host daemon routes only GitHub (no v2)',
+        (harness) => {
+          harness.routingV2Supported = false
+          return routingFor()
+        }
+      ],
+      [
+        'the host does not answer in time',
+        (harness) => {
+          harness.routeAck = async () => {
+            throw new Error('no ack after 1 tries')
+          }
+          return routingFor()
+        }
+      ],
+      ['the host agent has no rule in the scope', () => routingFor(ROUTING, { agentId: AGENT_C, daemonId: DAEMON })]
+    ])('fires every candidate as unavailable when %s', async (_name, setup) => {
+      const routing = setup(h)
+      h.table.upsert(routed({}, anyIssues, routing))
+      h.table.upsert(routed(peer, anyIssues, routing))
+      await post(h, issuePayload())
+      await settle()
+      expect(fires().map((m) => [m.hookId, m.routeSelection])).toEqual([
+        [HOOK, unavailable],
+        [HOOK_B, unavailable]
+      ])
+      expect(h.reports.map((r) => r.status)).toEqual(['accepted', 'accepted'])
+    })
+
+    it('skips a selected rule that changed while the host decided', async () => {
+      h.table.upsert(routed())
+      h.table.upsert(routed(peer))
+      h.routeAck = (msg) => {
+        h.table.upsert(routed({ ...peer, configRevision: '4' }))
+        return {
+          msgId: msg.msgId,
+          accepted: true,
+          hookRoute: {
+            targets: [{ hookId: HOOK_B, selection: { routingId: ROUTING, decisionId: DECISION, reason: 'otherwise' } }]
+          }
+        }
+      }
+      await post(h, issuePayload())
+      await settle()
+      expect(fires()).toHaveLength(0)
+      expect(h.reports).toHaveLength(0)
+    })
+
+    it('fires no hook the host names outside the candidates', async () => {
+      h.table.upsert(routed())
+      h.table.upsert(routed(peer, { events: ['merge_request:*'] }))
+      h.routeAck = (msg) => ({
+        msgId: msg.msgId,
+        accepted: true,
+        hookRoute: {
+          targets: [{ hookId: HOOK_B, selection: { routingId: ROUTING, decisionId: DECISION, reason: 'otherwise' } }]
+        }
+      })
+      await post(h, issuePayload())
+      await settle()
+      expect(hostCopies()[0]?.routing?.candidates).toEqual([{ hookId: HOOK, agentId: AGENT }])
+      expect(fires()).toHaveLength(0)
+    })
+
+    it('fires an unrouted rule directly beside a routed scope, with no routing fields', async () => {
+      h.table.upsert(routed())
+      h.table.upsert(rule({ hookId: HOOK_C, agentId: AGENT_C }))
+      h.routeAck = () => new Promise<RdAck>(() => {})
+      await post(h, issuePayload())
+      await settle()
+      expect(hostCopies()).toEqual([
+        expect.objectContaining({
+          routing: expect.objectContaining({ candidates: [{ hookId: HOOK, agentId: AGENT }] })
+        })
+      ])
+      expect(fires()).toEqual([expect.objectContaining({ hookId: HOOK_C, msgId: `${HOOK_C}:msg_delivery_1` })])
+      expect(fires()[0]).not.toHaveProperty('routeSelection')
+    })
+
+    it('routes an issues scope and a merge-request scope independently', async () => {
+      const mrRouting = routingFor(ROUTING_MR, { agentId: AGENT_B, daemonId: DAEMON_B })
+      h.table.upsert(routed())
+      h.table.upsert(routed(peer, anyMrs, mrRouting))
+      h.table.upsert(routed({ hookId: HOOK_C, agentId: AGENT_C }, anyMrs, mrRouting))
+      await post(h, issuePayload())
+      await post(h, mrPayload(), { 'webhook-id': 'msg_delivery_2' })
+      await settle()
+      expect(
+        h.dispatches
+          .filter((d) => (d.msg as RdMsgHook).routing)
+          .map((d) => [d.daemonId, (d.msg as RdMsgHook).routing!.routingId, (d.msg as RdMsgHook).routing!.candidates])
+      ).toEqual([
+        [DAEMON, ROUTING, [{ hookId: HOOK, agentId: AGENT }]],
+        [
+          DAEMON_B,
+          ROUTING_MR,
+          [
+            { hookId: HOOK_B, agentId: AGENT_B },
+            { hookId: HOOK_C, agentId: AGENT_C }
+          ]
+        ]
+      ])
+      expect(fires().map((m) => [m.hookId, m.routeSelection?.routingId])).toEqual([
+        [HOOK, ROUTING],
+        [HOOK_B, ROUTING_MR],
+        [HOOK_C, ROUTING_MR]
+      ])
+    })
+
+    it('sends a record-only copy for a thread event nothing fires on, without waiting or reporting', async () => {
+      h.table.upsert(routed({}, { events: ['issues:opened'] }))
+      h.routeAck = () => new Promise<RdAck>(() => {})
+      await post(h, notePayload({ object_attributes: { id: 8801 } }))
+      await settle()
+      expect(hookMsgs()).toHaveLength(1)
+      expect(hostCopies()[0]).toMatchObject({
+        hookId: HOOK,
+        msgId: `${HOOK}:msg_delivery_1:route`,
+        sessionKey: `gitlab:${PROJECT}:issue:42`,
+        event: 'note:created',
+        routing: { routingId: ROUTING, decisionId: DECISION, candidates: [] },
+        gitlab: expect.objectContaining({ noteId: '8801', target: { kind: 'issue', iid: 42 } }),
+        context: expect.objectContaining({ event: 'note', number: 42, bodyExcerpt: 'what is the rollout plan?' })
+      })
+      expect(hostCopies()[0]).not.toHaveProperty('routeSelection')
+      expect(h.reports).toHaveLength(0)
+    })
+
+    it('records nothing for an unrouted rule', async () => {
+      h.table.upsert(rule({}, { events: ['issues:opened'] }))
+      await post(h, notePayload())
+      await settle()
+      expect(h.sent).toHaveLength(0)
+    })
+
+    it('records a service-account-authored note, which the veto keeps from firing', async () => {
+      h.table.upsert(routed())
+      await post(h, notePayload({ user: { id: SA_USER, username: `agentconnect-p${PROJECT}` } }))
+      await settle()
+      expect(hookMsgs()).toEqual([expect.objectContaining({ routing: expect.objectContaining({ candidates: [] }) })])
+      expect(h.authzRequests).toHaveLength(0)
+    })
+
+    it('records an event the membership gate refused', async () => {
+      h.table.upsert(routed())
+      h.authzResult = false
+      await post(h, notePayload())
+      await settle()
+      expect(h.authzRequests).toHaveLength(1)
+      expect(hookMsgs()).toEqual([expect.objectContaining({ routing: expect.objectContaining({ candidates: [] }) })])
+      expect(h.reports).toHaveLength(0)
+    })
+
+    it("records nothing when the host's hook moves to another project during authz", async () => {
+      h.table.upsert(routed())
+      h.authzResult = async () => {
+        h.table.upsert(routed({}, { ...anyIssues, projectId: '1', projectPath: 'example-group/other' }))
+        return false
+      }
+      await post(h, notePayload())
+      await settle()
+      expect(h.authzRequests).toHaveLength(1)
+      expect(h.sent).toHaveLength(0)
+    })
+
+    it('records a denied external MR revision beside its review-request-required row', async () => {
+      h.table.upsert(routed({}, anyMrs))
+      h.authzResult = false
+      await post(
+        h,
+        mrPayload({
+          object_attributes: { author_id: 7999, source_project_id: 12345 },
+          user: { id: 7999, username: 'mallory' }
+        })
+      )
+      await settle()
+      expect(hookMsgs()).toEqual([
+        expect.objectContaining({ event: 'merge_request:opened', routing: expect.objectContaining({ candidates: [] }) })
+      ])
+      expect(h.reports).toEqual([
+        expect.objectContaining({ status: 'failed', reason: HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED })
+      ])
+    })
+
+    it('lets a mention narrow only unrouted rules, while the routed scope still judges the event', async () => {
+      h.table.upsert(routed({}, { ...anyIssues, agentName: 'review-alpha' }))
+      h.table.upsert(rule({ hookId: HOOK_C, agentId: AGENT_C }, { ...anyIssues, agentName: 'review-gamma' }))
+      await post(h, notePayload({ object_attributes: { note: '@review-gamma take this' } }))
+      await settle()
+      expect(hostCopies()).toEqual([
+        expect.objectContaining({
+          routing: expect.objectContaining({ candidates: [{ hookId: HOOK, agentId: AGENT }] })
+        })
+      ])
+      expect(fires().filter((m) => m.hookId === HOOK_C)).toEqual([
+        expect.not.objectContaining({ routeSelection: expect.anything() })
+      ])
+    })
+
+    it('records nothing when the host cannot take a GitLab copy', async () => {
+      h.table.upsert(routed({}, { events: ['issues:opened'] }))
+      h.routingV2Supported = false
+      await post(h, notePayload())
+      await settle()
+      expect(h.sent).toHaveLength(0)
+      expect(h.reports).toHaveLength(0)
+    })
+
+    it('keeps record-only copies off the fire budget', async () => {
+      h.table.upsert(routed({}, { events: ['issues:*'] }))
+      // The harness budget is 5: a sixth record-only copy is dropped, yet the next fire still goes out.
+      for (let i = 0; i < 6; i++) await post(h, notePayload(), { 'webhook-id': `msg_rec_${i}` })
+      await post(h, issuePayload(), { 'webhook-id': 'msg_fire' })
+      await settle()
+      expect(hostCopies().filter((m) => m.routing!.candidates.length === 0)).toHaveLength(5)
+      expect(fires().map((m) => m.deliveryKey)).toEqual(['msg_fire'])
+    })
+
+    it('fires a push directly: no scope covers it', async () => {
+      h.table.upsert(routed({}, { events: ['push:*'] }))
+      await post(h, { object_kind: 'push', project: { id: PROJECT }, ref: 'refs/heads/main', user_id: 7001 })
+      await settle()
+      expect(hookMsgs()).toEqual([expect.objectContaining({ event: 'push' })])
+      expect(hookMsgs()[0]).not.toHaveProperty('routing')
+      expect(hookMsgs()[0]).not.toHaveProperty('routeSelection')
+    })
+
+    it('sends thread cleanup unrouted, as maintenance', async () => {
+      h.table.upsert(routed({}, anyMrs))
+      await post(h, mrPayload({ object_attributes: { action: 'merge', state: 'merged' } }))
+      await settle()
+      expect(hookMsgs()).toEqual([expect.objectContaining({ event: 'merge_request:merged' })])
+      expect(hookMsgs()[0]).not.toHaveProperty('routing')
+      expect(hookMsgs()[0]).not.toHaveProperty('routeSelection')
+    })
+
+    it('fills the subject from the note payload: state, draft and the MR description', async () => {
+      h.table.upsert(rule({}, { commentFamilies: ['merge_request'] }))
+      await post(
+        h,
+        notePayload({
+          issue: undefined,
+          merge_request: {
+            iid: 77,
+            title: 't',
+            description: 'x'.repeat(5000),
+            state: 'opened',
+            draft: true,
+            author_id: 7002
+          }
+        })
+      )
+      await settle()
+      const subject = hookMsgs()[0]?.context?.subject
+      expect(subject).toMatchObject({ state: 'opened', draft: true })
+      expect(subject?.authorLogin).toBeUndefined()
+      expect(Buffer.byteLength(subject?.body ?? '')).toBeLessThanOrEqual(4 * 1024)
+    })
+  })
+
+  describe('routing callbacks', () => {
+    const routing = { routingId: ROUTING, decisionId: DECISION, evaluationAgentId: AGENT, evaluationDaemonId: DAEMON }
+    const note = normalizeGitlabEvent(notePayload() as never)!
+    const mrNote = normalizeGitlabEvent(
+      notePayload({ issue: undefined, merge_request: { iid: 77, author_id: 7002 } }) as never
+    )!
+    const push = normalizeGitlabEvent({ object_kind: 'push', ref: 'refs/heads/main' } as never)!
+    const eligible = (hostRule: RcHookAssign, ctx: GitlabMatchCtx, projectId = String(PROJECT)) =>
+      codeHostRecordOnlyEligible(GITLAB_ROUTING, hostRule, { ctx, projectId })
+
+    it.each<[string, RcHookAssign, GitlabMatchCtx, string, boolean]>([
+      ['routed issues rule, issue note', rule({ routing }), note, String(PROJECT), true],
+      ['unrouted rule', rule(), note, String(PROJECT), false],
+      ['foreign kind', rule({ routing, kind: 'gitea' }), note, String(PROJECT), false],
+      ['another project', rule({ routing }), note, '1', false],
+      ['MR note on an issues rule', rule({ routing }), mrNote, String(PROJECT), false],
+      [
+        'MR note on an MR comment scope',
+        rule({ routing }, { commentFamilies: ['merge_request'] }),
+        mrNote,
+        String(PROJECT),
+        true
+      ],
+      ['push', rule({ routing }, { events: ['push:*'] }), push, String(PROJECT), false]
+    ])('record-only eligibility: %s', (_name, hostRule, ctx, projectId, expected) => {
+      expect(eligible(hostRule, ctx, projectId)).toBe(expected)
+    })
+
+    it('reads families from event patterns and the note scope', () => {
+      expect(
+        [...gitlabRuleFamilies(rule({}, { events: ['merge_request:*', 'push:*'], commentFamilies: ['issues'] }))].sort()
+      ).toEqual(['issues', 'merge_request'])
+      expect(gitlabRuleFamilies(rule({ kind: 'github' })).size).toBe(0)
+      expect(GITLAB_ROUTING.hostFeatures).toEqual([HOOK_DECISION_ROUTING_V1_FEATURE, HOOK_DECISION_ROUTING_V2_FEATURE])
+    })
   })
 })

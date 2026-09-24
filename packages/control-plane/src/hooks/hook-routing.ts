@@ -1,43 +1,54 @@
 import {
-  CODE_HOST_ROUTING_FAMILIES,
   HOOK_DECISION_ROUTING_V1_FEATURE,
   decisionRoutingIssues,
+  isCodeHostRoutingScope,
   supportsDecision,
   type CodeHostRoutingFamily,
+  type CodeHostRoutingProvider,
   type DecisionValidationIssue,
   type HookRoutingProjection
 } from '@agentconnect.md/protocol'
-import type { CodeHostDecisionRoutingRecord, HookRecord } from '../persistence/ports.js'
+import type { OrgId } from '../domain/ids.js'
+import type { CodeHostDecisionRoutingRecord, CodeHostRoutingScope, HookRecord } from '../persistence/ports.js'
 
 /** The projection's member bound (HookRoutingProjection.members). */
 export const HOOK_ROUTING_MAX_MEMBERS = 64
 
 export type HookRoutingStatus = 'enabled' | 'needs_review' | 'access_revoked'
 
-export function isRoutingFamily(family: string | null | undefined): family is CodeHostRoutingFamily {
-  return (CODE_HOST_ROUTING_FAMILIES as readonly string[]).includes(family ?? '')
+/** Whether (provider, family) names a routable scope, narrowing both. */
+export function isRoutingScope(provider: string, family: string | null | undefined): family is CodeHostRoutingFamily {
+  return isCodeHostRoutingScope(provider, family)
 }
 
-/** A routed scope fires on every update (code-host-decisions.md §4); the hook's own cadence and mention-only mode are set aside. */
-export function routedCadence(family: CodeHostRoutingFamily): {
-  events: string[]
-  commentFamilies: CodeHostRoutingFamily[]
-  mentionOnly: false
-} {
-  return { events: [`${family}:*`, 'issue_comment:created'], commentFamilies: [family], mentionOnly: false }
+/** The routing scope a hook row belongs to; null for a generic webhook or a family its provider does not route. */
+export function routingScopeOf(
+  hook: Pick<HookRecord, 'orgId' | 'kind' | 'repoId' | 'family'>
+): CodeHostRoutingScope | null {
+  if (hook.repoId === null || !isRoutingScope(hook.kind, hook.family)) return null
+  return {
+    orgId: hook.orgId as OrgId,
+    provider: hook.kind as CodeHostRoutingProvider,
+    repoId: hook.repoId,
+    family: hook.family
+  }
 }
 
 type MemberHook = Pick<HookRecord, 'id' | 'agentId' | 'kind' | 'enabled' | 'repoId' | 'family'>
 
-/** A scope's members: every enabled GitHub hook on the repository whose one subject family is the scope's. */
+/** A scope's members: every enabled hook of the scope's provider on the repository whose one subject family is the scope's. */
 export function routingMembers<H extends MemberHook>(
   hooks: readonly H[],
-  scope: { repoId: bigint; family: CodeHostRoutingFamily }
+  scope: { provider: CodeHostRoutingProvider; repoId: bigint; family: CodeHostRoutingFamily }
 ): Array<H & { agentId: NonNullable<H['agentId']> }> {
   return hooks
     .filter(
       (h): h is H & { agentId: NonNullable<H['agentId']> } =>
-        h.kind === 'github' && h.enabled && h.agentId !== null && h.repoId === scope.repoId && h.family === scope.family
+        h.kind === scope.provider &&
+        h.enabled &&
+        h.agentId !== null &&
+        h.repoId === scope.repoId &&
+        h.family === scope.family
     )
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
 }
@@ -82,7 +93,7 @@ export function hookRoutingProjection(
   if (status === 'access_revoked') return null
   return {
     routingId: record.id,
-    provider: 'github',
+    provider: record.provider,
     repoId: record.repoId.toString(),
     repoFullName: record.repoFullName,
     family: record.family,
@@ -102,8 +113,6 @@ export interface HostCandidate {
   features?: readonly string[] | undefined
 }
 
-const supports = (c: HostCandidate) => c.features?.includes(HOOK_DECISION_ROUTING_V1_FEATURE) === true
-
 function earliest(candidates: readonly HostCandidate[]): HostCandidate | undefined {
   return [...candidates].sort(
     (a, b) =>
@@ -114,7 +123,12 @@ function earliest(candidates: readonly HostCandidate[]): HostCandidate | undefin
 }
 
 /** The host (§3.2): a live supporting incumbent, else the earliest supporting member, else an offline incumbent, else the earliest placed. */
-export function chooseEvaluationAgent(current: string | null, candidates: readonly HostCandidate[]): string | null {
+export function chooseEvaluationAgent(
+  current: string | null,
+  candidates: readonly HostCandidate[],
+  required: readonly string[] = [HOOK_DECISION_ROUTING_V1_FEATURE]
+): string | null {
+  const supports = (c: HostCandidate) => c.features !== undefined && required.every((f) => c.features!.includes(f))
   const placed = candidates.filter((c) => c.daemonId !== null)
   const incumbent = current ? placed.find((c) => c.agentId === current) : undefined
   if (incumbent && supports(incumbent)) return incumbent.agentId

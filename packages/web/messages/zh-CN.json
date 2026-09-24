@@ -4415,7 +4415,7 @@
       "offline": "没有已连接的守护进程服务此会话，暂时无法读取最近评估。",
       "unsupported": "请升级服务此会话的守护进程以查看最近评估。",
       "codeHost": {
-        "empty": "暂无评估。此仓库中被判断的新 Issue 和 Pull request 会显示在这里。",
+        "empty": "暂无评估。此仓库中被判断的新 Issue 和变更请求会显示在这里。",
         "offline": "负责评估此仓库路由的守护进程未连接，暂时无法读取最近评估。",
         "unsupported": "请升级负责评估此仓库路由的守护进程以查看最近评估。"
       },
@@ -4747,20 +4747,20 @@
         "subtitle": "共享机器人路由"
       },
       "codeHost": {
-        "subtitle": "{family, select, pull_request {Pull request · 在 <name>{agents}</name> 中选择 reviewer} other {Issue · 在 <name>{agents}</name> 中选择 Agent}}",
+        "subtitle": "{subject, select, pull_request {Pull request · 在 <name>{agents}</name> 中选择 reviewer} merge_request {Merge request · 在 <name>{agents}</name> 中选择 reviewer} other {Issue · 在 <name>{agents}</name> 中选择 Agent}}",
         "everyAgent": "所有 Agent",
-        "evaluatedOnce": "{family, select, pull_request {PR} other {issue}} 的每次更新都会评估，每个事件交给 decision 选中的 agent。",
+        "evaluatedOnce": "{subject, select, pull_request {PR} merge_request {MR} other {issue}} 的每次更新都会评估，每个事件交给 decision 选中的 agent。",
         "mentionsSkip": "@ 提及不会直接指定 agent：被 @ 的事件同样经过评估，以 decision 的选择为准。",
-        "otherwiseEveryAgent": "{family, select, pull_request {没有规则匹配时，和未使用决策时一样，由所有 Agent 审阅该 PR。} other {没有规则匹配时，和未使用决策时一样，由所有 Agent 处理该 Issue。}}",
+        "otherwiseEveryAgent": "{subject, select, pull_request {没有规则匹配时，和未使用决策时一样，由所有 Agent 审阅该 PR。} merge_request {没有规则匹配时，和未使用决策时一样，由所有 Agent 审阅该 MR。} other {没有规则匹配时，和未使用决策时一样，由所有 Agent 处理该 Issue。}}",
         "add": "添加决策",
-        "addTitle": "{family, select, pull_request {每个 PR 都会交给所有 agent。添加 decision 后，每次更新都由它挑选 reviewer，各行改为任意更新时触发。} other {每个 issue 都会交给所有 agent。添加 decision 后，每次更新都由它挑选 agent，各行改为任意更新时触发。}}",
-        "pillTitle": "By decision · {name}。{family, select, pull_request {PR} other {issue}} 的每次更新都会评估，由 decision 选择处理的 agent。点击编辑规则。",
+        "addTitle": "{subject, select, pull_request {每个 PR 都会交给所有 agent。添加 decision 后，每次更新都由它挑选 reviewer，各行改为任意更新时触发。} merge_request {每个 MR 都会交给所有 agent。添加 decision 后，每次更新都由它挑选 reviewer，各行改为任意更新时触发。} other {每个 issue 都会交给所有 agent。添加 decision 后，每次更新都由它挑选 agent，各行改为任意更新时触发。}}",
+        "pillTitle": "By decision · {name}。{subject, select, pull_request {PR} merge_request {MR} other {issue}} 的每次更新都会评估，由 decision 选择处理的 agent。点击编辑规则。",
         "pillStatusTitle": "按决策 · {name} · {status}。点击查看规则。",
         "statusBody": {
-          "needs_review": "{decision} 已更改，这些规则不再匹配它的答案。在你重新保存规则之前，此仓库的新 {family, select, pull_request {Pull request} other {Issue}} 会被暂缓。",
-          "access_revoked": "已保存的决策不再可用，因此新的 {family, select, pull_request {Pull request} other {Issue}} 会被暂缓。请选择其他决策，或停止使用决策。"
+          "needs_review": "{decision} 已更改，这些规则不再匹配它的答案。在你重新保存规则之前，此仓库的新 {subject, select, pull_request {Pull request} merge_request {Merge request} other {Issue}} 会被暂缓。",
+          "access_revoked": "已保存的决策不再可用，因此新的 {subject, select, pull_request {Pull request} merge_request {Merge request} other {Issue}} 会被暂缓。请选择其他决策，或停止使用决策。"
         },
-        "stop": "停止使用按决策——每个 {family, select, pull_request {PR} other {Issue}} 都会发给所有 Agent",
+        "stop": "停止使用按决策——每个 {subject, select, pull_request {PR} merge_request {MR} other {Issue}} 都会发给所有 Agent",
         "stopMenu": "停止使用决策",
         "stopError": "无法停止使用决策。{message}",
         "hidden": "你无法查看的决策",

@@ -26,6 +26,8 @@ export const DECISION_ROUTING_EVALUATIONS_V1_FEATURE = 'decision-routing-evaluat
 export const DECISION_EVALUATION_RAW_V1_FEATURE = 'decision-evaluation-raw-v1'
 // The peer hosts code-host hook routing (rd/msg hook `routing`, AgentSpec.hookRoutings) and reads its lanes, or the relay forwards to one.
 export const HOOK_DECISION_ROUTING_V1_FEATURE = 'hook-decision-routing-v1'
+// The peer also routes GitLab and Gitea hooks: their routed rules and hookRoutings projections go only to such a peer.
+export const HOOK_DECISION_ROUTING_V2_FEATURE = 'hook-decision-routing-v2'
 // The relay seats an ownerAsDefault assignment's decision route as the channel default, below keyword and continuity.
 export const OWNER_DEFAULT_DECISION_V1_FEATURE = 'owner-default-decision-v1'
 export const DECISION_LIST_MAX_BYTES = 32 * 1024

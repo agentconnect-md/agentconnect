@@ -1,24 +1,17 @@
-/**
- * GitLab ingress — `POST /webhooks/gitlab`, the relay's project-webhook
- * endpoint (gitlab-com-integration.md §11.2, §12). Verification is per-rule:
- * the compiled rule carries the project's `whsec_` signing token inline, so the
- * bounded first parse only extracts the numeric project id, the Standard
- * Webhooks signature is checked against the matching rules' token, and only
- * then is the payload trusted as filter input. Uniform 404 for invalid
- * signatures, stale timestamps, unknown projects, and malformed bodies — no
- * connected-project oracle. Verified unmatched deliveries answer 202.
- *
- * The payload is NEVER logged; rules carry secret material.
- */
+/** GitLab ingress (`POST /webhooks/gitlab`, gitlab-com-integration.md §11.2, §12): per-rule Standard Webhooks verification before any matching, uniform 404, 202 when unmatched; the payload is never logged. */
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import type { Clock } from '@agentconnect.md/connection'
 import {
+  HOOK_DECISION_ROUTING_V1_FEATURE,
+  HOOK_DECISION_ROUTING_V2_FEATURE,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   type GitlabHookMetadata,
   type GitlabHookTarget,
   type HookContext,
+  type CodeHostRoutingFamily,
   type RcCodeHostMembershipAuthz,
   type RcHookAssign,
+  type RcHookRouting,
   type RcRunReport,
   type RdHookNotice,
   type RdMsgHook
@@ -30,6 +23,7 @@ import { dispatchHookFire, noticeDelivery } from './ingress.js'
 import { hookSnapshotForDelivery } from './hook-snapshot.js'
 import { mentionsGithubHandle, truncateUtf8, GITHUB_BODY_EXCERPT_MAX } from './github-ingress.js'
 import { labelFilterAdmits } from './label-filter.js'
+import { createCodeHostRouter, type CodeHostRoutingProvider } from './code-host-routing.js'
 import { verifyStandardWebhook } from './standard-webhooks.js'
 import type { Logger } from '../log.js'
 
@@ -51,9 +45,7 @@ export interface GitlabIngressDeps {
   log: Logger
 }
 
-/** The slice of a GitLab webhook payload the matcher/envelope reads. Everything
- *  here is UNTRUSTED except as filter input; authorization is the signature
- *  plus the CP's live membership resolution (§12.2). */
+/** The payload slice the matcher reads: untrusted filter input; authorization is the signature plus the CP's live membership check (§12.2). */
 interface GitlabPayload {
   object_kind?: string
   event_type?: string
@@ -91,10 +83,19 @@ interface GitlabPayload {
     draft?: { previous?: boolean; current?: boolean }
     work_in_progress?: { previous?: boolean; current?: boolean }
   }
-  issue?: { iid?: number; title?: string; labels?: Array<{ title?: string }>; author_id?: number }
+  issue?: {
+    iid?: number
+    title?: string
+    description?: string | null
+    state?: string
+    labels?: Array<{ title?: string }>
+    author_id?: number
+  }
   merge_request?: {
     iid?: number
     title?: string
+    description?: string | null
+    state?: string
     labels?: Array<{ title?: string }>
     author_id?: number
     source_project_id?: number
@@ -134,8 +135,7 @@ export interface GitlabMatchCtx {
   ref?: string
 }
 
-/** Lifecycle deliveries that close a GitLab thread's daemon-owned workspace
- *  (§12): merged MRs and closed issues; an unmerged closed MR may reopen. */
+/** Deliveries that close a thread's workspace (§12): merged MRs and closed issues; an unmerged closed MR may reopen. */
 function gitlabThreadWorktreeCleanupEvent(payload: GitlabPayload): string | undefined {
   const attrs = payload.object_attributes
   if (!attrs) return undefined
@@ -144,9 +144,7 @@ function gitlabThreadWorktreeCleanupEvent(payload: GitlabPayload): string | unde
   return undefined
 }
 
-/** Normalize one verified payload to the stored-pattern event universe, or
- *  undefined when the delivery is lifecycle noise (§12 vetoes). Exported for
- *  unit tests. */
+/** Normalize a verified payload to the stored-pattern universe, or undefined for lifecycle noise (§12 vetoes). */
 export function normalizeGitlabEvent(payload: GitlabPayload): GitlabMatchCtx | undefined {
   const attrs = payload.object_attributes
   const kind = payload.object_kind
@@ -177,8 +175,7 @@ export function normalizeGitlabEvent(payload: GitlabPayload): GitlabMatchCtx | u
       iid: attrs.iid
     }
     if (attrs.action === 'open') return { ...base, eventAction: 'issues:opened' }
-    // Label changes are the one substantive `update`; edit/close/reopen are
-    // lifecycle noise (close fires separately as maintenance cleanup).
+    // Label changes are the one substantive `update`; edit/close/reopen are noise (close fires as cleanup).
     if (attrs.action === 'update' && payload.changes?.labels) return { ...base, eventAction: 'issues:labeled' }
     return undefined
   }
@@ -208,10 +205,7 @@ export function normalizeGitlabEvent(payload: GitlabPayload): GitlabMatchCtx | u
         return {
           ...base,
           eventAction: 'merge_request:review_requested',
-          // A request is a NEWLY ADDED reviewer, or a native re-request — which
-          // keeps the reviewer in both arrays and flags the current entry with
-          // `re_requested: true`. Ordinary submitted-review state changes carry
-          // neither and stay inert.
+          // A request is a newly added reviewer or a native re-request (`re_requested: true`); plain review state changes stay inert.
           serviceAccountReviewerRequested: (serviceAccountUserId) =>
             currentReviewers.some(
               (reviewer) =>
@@ -223,15 +217,12 @@ export function normalizeGitlabEvent(payload: GitlabPayload): GitlabMatchCtx | u
       }
       return undefined
     }
-    // close (unmerged), reopen, approve/unapprove, merge → not new turns here
-    // (merge fires separately as maintenance cleanup).
+    // Unmerged close, reopen, approve/unapprove and merge are not new turns (merge fires as cleanup).
     return undefined
   }
   if (kind === 'note') {
     if (!attrs || attrs.system === true) return undefined
-    // §12 edit veto: GitLab Note Hooks also fire on comment EDITS with
-    // action 'update' and a fresh webhook-id — never a new turn. Absent action
-    // (legacy payloads) keeps meaning creation.
+    // §12 edit veto: a note edit (`update`) is never a new turn; an absent action (legacy) means creation.
     if (attrs.action !== undefined && attrs.action !== 'create') return undefined
     const subject = payload.issue ?? payload.merge_request
     const family = payload.issue ? ('issues' as const) : payload.merge_request ? ('merge_request' as const) : undefined
@@ -265,8 +256,7 @@ function gitlabRuleIsSummoned(rule: RcHookAssign, ctx: GitlabMatchCtx): boolean 
   )
 }
 
-/** Explicit agent handles narrow a project fan-out; the service-account handle
- *  is the broadcast form (the GitLab analog of the App slug). */
+/** Explicit agent handles narrow a project fan-out; the service-account handle is the broadcast form. */
 export function gitlabMentionCandidates(rules: RcHookAssign[], body: string | undefined): RcHookAssign[] {
   if (rules.some((rule) => mentionsGithubHandle(body, rule.gitlab?.serviceAccountUsername))) return rules
   const targeted = new Set(
@@ -295,23 +285,16 @@ function isInternalServiceAccountRevision(rule: RcHookAssign, ctx: GitlabMatchCt
   )
 }
 
-/**
- * One rule's verdict for one verified delivery (pure; exported for unit tests).
- * Order: loop-prevention veto → reviewer-request path → cadence/additive summon
- * match → comment scope → mention-only gate → labels → live-authz classification.
- */
+/** One rule's pure verdict: loop veto → reviewer request → cadence/summon → comment scope → mention-only → labels → authz. */
 export function gitlabRuleVerdict(rule: RcHookAssign, ctx: GitlabMatchCtx): GitlabRuleVerdict {
   if (rule.kind !== 'gitlab' || !rule.gitlab) return 'no-match'
-  // §12.1: any bound account's events never re-trigger, except this rule's own same-project MR revisions.
-  // A note a bound account authors is always rejected (the note author IS the actor).
+  // §12.1: bound accounts never re-trigger, except this rule's own same-project MR revision; their notes never do.
   const actorIsBoundAccount = gitlabVetoedAuthor(rule, ctx.actorId)
   const internalRevision =
     ctx.actorId === rule.gitlab.serviceAccountUserId && isInternalServiceAccountRevision(rule, ctx)
   if (actorIsBoundAccount && !internalRevision) return 'no-match'
   if (ctx.family === 'note' && actorIsBoundAccount) return 'no-match'
-  // §12.2 explicit start path: assigning the SA as reviewer bypasses cadence,
-  // label, and mention filters — but only for this rule's SA, and only after
-  // the live membership gate authorizes the assigning actor.
+  // §12.2 start path: assigning this rule's SA as reviewer bypasses cadence, label and mention filters, still behind live authz.
   if (ctx.eventAction === 'merge_request:review_requested') {
     const supportsMr =
       rule.gitlab.events.some((event) => event.startsWith('merge_request:')) ||
@@ -326,8 +309,7 @@ export function gitlabRuleVerdict(rule: RcHookAssign, ctx: GitlabMatchCtx): Gitl
   const summoned = gitlabRuleIsSummoned(rule, ctx)
   let eventMatched: boolean
   if (ctx.family === 'note') {
-    // Comments are scoped by the console-selected families; a summon in a
-    // created-cadence thread family fires additively (§12).
+    // Notes are scoped by the selected comment families; a summon in a created-cadence family fires additively (§12).
     const families = rule.gitlab.commentFamilies ?? []
     const familySelected = ctx.commentSubjectFamily !== undefined && families.includes(ctx.commentSubjectFamily)
     const createdCadenceSummon =
@@ -345,22 +327,19 @@ export function gitlabRuleVerdict(rule: RcHookAssign, ctx: GitlabMatchCtx): Gitl
   if (!eventMatched) return 'no-match'
   if (rule.gitlab.mentionOnly && !summoned) return 'no-match'
   if (!labelFilterAdmits(rule.gitlab.labelFilter, ctx.labels)) return 'no-match'
-  // §12.2: pushes and the SA's own same-project revisions stay relay-trusted;
-  // every issue/MR lifecycle event and comment resolves live membership.
+  // §12.2: pushes and the SA's own same-project revisions are relay-trusted; everything else resolves live membership.
   if (ctx.family === 'push') return 'trusted'
   if (internalRevision) return 'trusted'
   return 'needs-authz'
 }
 
-/** The §12.3 rename-stable session key: exact subject discriminator, positive
- *  IID (or the payload's canonical ref) — never a display path or delivery id. */
+/** The §12.3 rename-stable session key: subject kind plus positive IID, or the canonical ref for a push. */
 export function gitlabSessionKey(rule: RcHookAssign, target: GitlabHookTarget): string {
   const prefix = rule.gitlab!.sessionKeyPrefix
   return target.kind === 'push' ? `${prefix}:push:${target.ref}` : `${prefix}:${target.kind}:${target.iid}`
 }
 
-/** The signed-payload subject → the trusted `RdMsgHook.gitlab` discriminator.
- *  Undefined identity is rejected before any dispatch — never substituted. */
+/** The signed subject → trusted `RdMsgHook.gitlab`; incomplete identity is rejected, never substituted. */
 export function buildTrustedGitlabMetadata(
   payload: GitlabPayload,
   ctx: GitlabMatchCtx,
@@ -396,8 +375,7 @@ export function buildTrustedGitlabMetadata(
     typeof rawNoteId === 'number' && Number.isSafeInteger(rawNoteId) && rawNoteId > 0 ? rawNoteId : undefined
   return {
     projectId: gitlab.projectId,
-    // §24.4: opaque pass-through. The relay never dials GitLab and never parses this — the
-    // daemon fences the turn on it against the session's spec-carried host.
+    // §24.4: opaque pass-through the daemon fences the turn on; the relay never parses it.
     ...(gitlab.host !== undefined ? { host: gitlab.host } : {}),
     projectPath: payload.project?.path_with_namespace ?? gitlab.projectPath,
     target,
@@ -428,8 +406,87 @@ export function buildGitlabContext(payload: GitlabPayload, ctx: GitlabMatchCtx):
     ...(ctx.labels.length > 0 ? { labels: ctx.labels } : {}),
     ...(attrs?.url ? { htmlUrl: attrs.url } : {}),
     ...(excerpt.text ? { bodyExcerpt: excerpt.text } : {}),
+    ...(subjectOf(payload, ctx) ?? {}),
     truncated: excerpt.truncated
   }
+}
+
+/** The issue or MR itself, for a Decision to judge a note against (code-host-decisions.md §4). */
+function subjectOf(payload: GitlabPayload, ctx: GitlabMatchCtx): Pick<HookContext, 'subject'> | undefined {
+  if (ctx.family === 'push') return undefined
+  const attrs = payload.object_attributes
+  const subject = ctx.family === 'note' ? (payload.issue ?? payload.merge_request) : attrs
+  if (!subject) return undefined
+  // GitLab names only the author's id; the actor's username is the author's when they are the same user.
+  const authorLogin =
+    ctx.subjectAuthorId !== undefined && ctx.subjectAuthorId === ctx.actorId ? payload.user?.username : undefined
+  const mr = ctx.family === 'note' ? payload.merge_request : ctx.family === 'merge_request' ? attrs : undefined
+  const draft = mr?.draft ?? mr?.work_in_progress
+  const body = subject.description ? truncateUtf8(subject.description, GITHUB_BODY_EXCERPT_MAX).text : ''
+  return {
+    subject: {
+      ...(authorLogin ? { authorLogin } : {}),
+      ...(subject.state ? { state: subject.state } : {}),
+      ...(typeof draft === 'boolean' ? { draft } : {}),
+      ...(body ? { body } : {})
+    }
+  }
+}
+
+/** One GitLab event as the routing step reads it: the normalized facts and the signed project id. */
+export interface GitlabRouteEvent {
+  ctx: GitlabMatchCtx
+  projectId: string
+}
+
+type GitlabThreadFamily = Extract<CodeHostRoutingFamily, 'issues' | 'merge_request'>
+
+function gitlabEventFamily({ ctx }: GitlabRouteEvent): GitlabThreadFamily | undefined {
+  if (ctx.family === 'issues' || ctx.family === 'merge_request') return ctx.family
+  return ctx.family === 'note' ? ctx.commentSubjectFamily : undefined
+}
+
+/** The thread families a GitLab rule's event patterns and note scope cover. */
+export function gitlabRuleFamilies(rule: RcHookAssign): ReadonlySet<GitlabThreadFamily> {
+  const families = new Set<GitlabThreadFamily>()
+  if (rule.kind !== 'gitlab' || !rule.gitlab) return families
+  for (const pattern of rule.gitlab.events) {
+    const prefix = pattern.split(':', 1)[0]
+    if (prefix === 'issues' || prefix === 'merge_request') families.add(prefix)
+  }
+  for (const family of rule.gitlab.commentFamilies ?? []) families.add(family)
+  return families
+}
+
+function gitlabRoutingHostRule(
+  scopeRules: readonly RcHookAssign[],
+  routing: RcHookRouting,
+  event: GitlabRouteEvent
+): RcHookAssign | undefined {
+  return scopeRules.find(
+    (rule) =>
+      rule.routing?.routingId === routing.routingId &&
+      rule.agentId === routing.evaluationAgentId &&
+      rule.kind === 'gitlab' &&
+      rule.gitlab?.projectId === event.projectId
+  )
+}
+
+/** The normalizer already dropped noise and edits; what is left is a numbered thread event of one project. */
+function gitlabRecordOnlyFence(hostRule: RcHookAssign, { ctx, projectId }: GitlabRouteEvent): boolean {
+  if (hostRule.kind !== 'gitlab' || hostRule.gitlab?.projectId !== projectId) return false
+  if (ctx.iid === undefined || ctx.iid <= 0) return false
+  return !ctx.eventAction.endsWith(':deleted')
+}
+
+/** GitLab's callbacks for the shared routing step; its routed copies need a v2 host. */
+export const GITLAB_ROUTING: CodeHostRoutingProvider<GitlabRouteEvent> = {
+  provider: 'gitlab',
+  hostFeatures: [HOOK_DECISION_ROUTING_V1_FEATURE, HOOK_DECISION_ROUTING_V2_FEATURE],
+  eventFamily: gitlabEventFamily,
+  ruleFamilies: gitlabRuleFamilies,
+  hostRule: gitlabRoutingHostRule,
+  recordOnlyEligible: gitlabRecordOnlyFence
 }
 
 function headerString(value: string | string[] | undefined): string | undefined {
@@ -441,8 +498,7 @@ function notFound(reply: FastifyReply): FastifyReply {
 }
 
 export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressDeps): void {
-  // Own plugin scope: the buffer content parser (raw bytes for the signature)
-  // must not leak onto the relay's other JSON surfaces.
+  // Own plugin scope, so the raw-body parser the signature needs does not leak onto other JSON routes.
   void app.register(async (scope) => {
     scope.addContentTypeParser(
       'application/json',
@@ -452,8 +508,7 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
 
     scope.post('/webhooks/gitlab', { bodyLimit: GITLAB_BODY_LIMIT }, async (req, reply) => {
       const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
-      // §11.2 order: bounded parse for the project id FIRST, then the rules'
-      // signing token verifies the delivery, and only then is anything matched.
+      // §11.2 order: parse the project id, verify with the rules' token, only then match.
       let payload: GitlabPayload
       try {
         payload = JSON.parse(raw.toString('utf8')) as GitlabPayload
@@ -469,8 +524,7 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
       const webhookTimestamp = headerString(req.headers['webhook-timestamp'])
       const signature = headerString(req.headers['webhook-signature'])
       if (!webhookId || !webhookTimestamp || !signature) return notFound(reply)
-      // Every rule on one project carries the binding's key; accept any match
-      // so a mid-rotation mixed table cannot drop deliveries.
+      // Accept any rule's key, so a mid-rotation mixed table cannot drop deliveries.
       const nowMs = deps.clock.now()
       const verified = rules.some(
         (rule) =>
@@ -485,8 +539,7 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
       const cleanupEvent = gitlabThreadWorktreeCleanupEvent(payload)
       const cleanupIid = payload.object_attributes?.iid
       if (cleanupEvent && cleanupIid !== undefined && cleanupIid > 0) {
-        // Maintenance cleanup (§12): relay-authored, never a model turn, and it
-        // bypasses the actor gate — a low-role closer must not leak a worktree.
+        // Maintenance cleanup (§12): relay-authored, never a turn, and past the actor gate so no worktree leaks.
         const kind = cleanupEvent.startsWith('issues') ? ('issue' as const) : ('merge_request' as const)
         for (const rule of rules) {
           if (rule.kind !== 'gitlab' || !rule.gitlab) continue
@@ -529,17 +582,17 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
       if (!ctx) return reply.code(202).send({ deliveryKey })
       const context = buildGitlabContext(payload, ctx)
 
-      const dispatchRule = (rule: RcHookAssign, notice?: RdHookNotice): void => {
-        if (!deps.limiter.allow(rule.hookId)) {
-          deps.log.info(`gitlab ingress: rate-limited ${rule.hookId}:${deliveryKey} (${ctx.eventAction})`)
-          return
-        }
+      const dispatchDeps = {
+        table: deps.table,
+        daemons: deps.daemons,
+        report: deps.report,
+        clock: deps.clock,
+        log: deps.log
+      }
+      const ruleMessage = (rule: RcHookAssign): RdMsgHook | undefined => {
         const gitlab = buildTrustedGitlabMetadata(payload, ctx, rule)
-        if (!gitlab) {
-          deps.log.info(`gitlab ingress: rejected incomplete identity ${rule.hookId}:${deliveryKey}`)
-          return
-        }
-        const msg: RdMsgHook = {
+        if (!gitlab) return undefined
+        return {
           source: 'hook',
           agentId: rule.agentId,
           sessionKey: gitlabSessionKey(rule, gitlab.target),
@@ -553,14 +606,40 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
           context,
           ...(rule.target ? { target: rule.target } : {})
         }
-        void dispatchHookFire(
-          { table: deps.table, daemons: deps.daemons, report: deps.report, clock: deps.clock, log: deps.log },
-          rule,
-          notice ? noticeDelivery(msg, notice) : msg
-        )
+      }
+      const fireRule = (rule: RcHookAssign, msg: RdMsgHook, label = ''): void => {
+        void dispatchHookFire(dispatchDeps, rule, msg)
         deps.log.info(
-          `gitlab ingress: queued ${notice ?? ''}${notice ? ' ' : ''}${rule.hookId}:${deliveryKey} (${ctx.eventAction} ${msg.sessionKey})`
+          `gitlab ingress: queued ${label}${label ? ' ' : ''}${rule.hookId}:${deliveryKey} (${ctx.eventAction} ${msg.sessionKey})`
         )
+      }
+      // Routing (code-host-decisions.md §4): a routed rule that would fire becomes a candidate of its scope instead.
+      const router = createCodeHostRouter(deps, GITLAB_ROUTING, {
+        event: { ctx, projectId: String(projectId) },
+        repoId: String(projectId),
+        deliveryKey,
+        eventAction: ctx.eventAction,
+        messageFor: ruleMessage,
+        fire: fireRule
+      })
+
+      const dispatchRule = (rule: RcHookAssign, notice?: RdHookNotice): void => {
+        // A notice is a fixed post, never routed; a routed rule spends the budget only when selected.
+        const routed = notice === undefined && router.routed(rule)
+        if (!routed && !deps.limiter.allow(rule.hookId)) {
+          deps.log.info(`gitlab ingress: rate-limited ${rule.hookId}:${deliveryKey} (${ctx.eventAction})`)
+          return
+        }
+        const msg = ruleMessage(rule)
+        if (!msg) {
+          deps.log.info(`gitlab ingress: rejected incomplete identity ${rule.hookId}:${deliveryKey}`)
+          return
+        }
+        if (routed) {
+          router.collect(rule)
+          return
+        }
+        fireRule(rule, notice ? noticeDelivery(msg, notice) : msg, notice)
       }
 
       const reportReviewRequestRequired = (rule: RcHookAssign): void => {
@@ -579,31 +658,34 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
         })
       }
 
-      const candidates =
-        ctx.eventAction === 'merge_request:review_requested' ? rules : gitlabMentionCandidates(rules, ctx.mentionText)
+      // A routed rule is never narrowed by a mention: its scope's Decision chooses, a mentioned agent included.
+      const unrouted = rules.filter((rule) => !router.routed(rule))
+      const narrowed = new Set(
+        ctx.eventAction === 'merge_request:review_requested'
+          ? unrouted
+          : gitlabMentionCandidates(unrouted, ctx.mentionText)
+      )
+      const candidates = rules.filter((rule) => router.routed(rule) || narrowed.has(rule))
       const matched = candidates
         .map((rule) => ({ rule, verdict: gitlabRuleVerdict(rule, ctx) }))
         .filter((candidate) => candidate.verdict !== 'no-match')
       for (const { rule, verdict } of matched) if (verdict === 'trusted') dispatchRule(rule)
       const needsAuthz = matched.filter((candidate) => candidate.verdict === 'needs-authz').map(({ rule }) => rule)
-      if (needsAuthz.length === 0) return reply.code(202).send({ deliveryKey })
+      if (needsAuthz.length === 0) {
+        router.routeScopes()
+        return reply.code(202).send({ deliveryKey })
+      }
 
-      // §12.2: one live membership decision fences the complete fan-out. An MR
-      // from an untrusted author does not start automatically — a denied
-      // revision event leaves a durable, actionable run row instead.
+      // §12.2: one live membership decision fences the whole fan-out; a denied MR revision leaves an actionable run row.
       const isLifecycle = ctx.family === 'issues' || ctx.family === 'merge_request'
-      // Lifecycle events authorize the subject author; comments authorize the
-      // commenter. A reviewer request/re-request instead authorizes the
-      // ASSIGNING actor — the MR author is deliberately untrusted on the
-      // explicit external start path (§12.2).
+      // Lifecycle authorizes the subject author, notes the commenter, a reviewer request the assigning actor (§12.2).
       const actorId =
         ctx.eventAction === 'merge_request:review_requested'
           ? ctx.actorId
           : isLifecycle
             ? (ctx.subjectAuthorId ?? ctx.actorId)
             : ctx.actorId
-      // Only a denied MR REVISION leaves the durable actionable row (§12.2) —
-      // the same two events GitHub treats as first-review material.
+      // Only a denied MR revision leaves the durable actionable row (§12.2).
       const onDenied: 'skip' | 'request-review' =
         ctx.eventAction === 'merge_request:opened' || ctx.eventAction === 'merge_request:synchronize'
           ? 'request-review'
@@ -648,32 +730,26 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
             : {})
         }
         let allowed = false
-        // Only the CP's own `false` is a verdict on the actor; an operational failure leaves
-        // `allowed` false too and earns nobody a notice.
+        // Only the CP's own `false` refuses the actor; an operational failure earns no notice.
         let refused = false
         try {
           allowed = await deps.authorizeMembership(request)
           refused = !allowed
         } catch (err) {
-          // Rolling upgrade against an older CP (UNKNOWN_FRAME), timeout, and
-          // transient failures all fail closed (§12.2).
+          // An older CP (UNKNOWN_FRAME), a timeout or a transient failure all fail closed (§12.2).
           deps.log.warn(`gitlab ingress: authz failed ${representative.hookId}:${deliveryKey}: ${String(err)}`)
         }
         if (!allowed) {
           deps.log.info(
             `gitlab ingress: authz denied ${representative.hookId}:${deliveryKey} (${ctx.eventAction} actor ${actorId})`
           )
-          // An explicit @-mention by an actor the CP did not admit gets one fixed-text reply on its
-          // thread — the daemon tells a thread once — so the silence is explained. Anything less
-          // deliberate than a mention stays silent, and the reply carries nothing the actor wrote.
+          // A refused explicit @-mention gets one fixed-text notice on its thread; anything less deliberate stays silent.
           if (refused && fanout.some((rule) => gitlabRuleIsSummoned(rule, ctx)))
             dispatchRule(representative, 'actor_not_trusted')
           if (onDenied === 'request-review') for (const rule of fanout) reportReviewRequestRequired(rule)
           return
         }
-        // The membership wait crossed a remote boundary: re-read every rule and
-        // re-run the verdict so a remove/reconfigure/retarget in that window
-        // cannot dispatch a stale capture.
+        // Authz crossed a remote boundary: re-read and re-judge every rule so a stale capture never dispatches.
         for (const rule of fanout) {
           const current = deps.table.getByHookId(rule.hookId)
           if (
@@ -693,25 +769,28 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
         }
       }
 
-      // Comments on an unmentioned thread continuation also require the subject
-      // author's membership (§12.2); a summoning comment authorizes only the
-      // commenter.
-      if (ctx.family === 'note') {
-        const summonedRules = needsAuthz.filter((rule) => gitlabRuleIsSummoned(rule, ctx))
-        const unsummoned = needsAuthz.filter((rule) => !gitlabRuleIsSummoned(rule, ctx))
-        if (summonedRules.length > 0)
-          void authorizeAndDispatch(summonedRules, false).catch((err) => {
+      // An unmentioned note also fences the subject author (§12.2); the router waits on every lookup before routing.
+      const queueAuthorized = (fanout: RcHookAssign[], requireSubjectAuthor: boolean): void => {
+        if (fanout.length === 0) return
+        router.track(
+          authorizeAndDispatch(fanout, requireSubjectAuthor).catch((err) => {
             deps.log.warn(`gitlab ingress: authz task failed ${deliveryKey}: ${String(err)}`)
           })
-        if (unsummoned.length > 0)
-          void authorizeAndDispatch(unsummoned, true).catch((err) => {
-            deps.log.warn(`gitlab ingress: authz task failed ${deliveryKey}: ${String(err)}`)
-          })
-      } else {
-        void authorizeAndDispatch(needsAuthz, false).catch((err) => {
-          deps.log.warn(`gitlab ingress: authz task failed ${deliveryKey}: ${String(err)}`)
-        })
+        )
       }
+      if (ctx.family === 'note') {
+        queueAuthorized(
+          needsAuthz.filter((rule) => gitlabRuleIsSummoned(rule, ctx)),
+          false
+        )
+        queueAuthorized(
+          needsAuthz.filter((rule) => !gitlabRuleIsSummoned(rule, ctx)),
+          true
+        )
+      } else {
+        queueAuthorized(needsAuthz, false)
+      }
+      router.routeScopes()
       return reply.code(202).send({ deliveryKey })
     })
   })

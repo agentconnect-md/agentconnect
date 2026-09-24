@@ -1,20 +1,17 @@
-/**
- * Gitea delivery normalization (gitea-integration.md §8) — the pure half of the
- * ingress: the payload slice the matcher reads, the event-type table, the §12
- * vetoes, the loop-prevention exception, the session key, and the trusted
- * metadata and model-visible envelope a verified delivery produces.
- *
- * Every decision keys on `X-Gitea-Event-Type`, never `X-Gitea-Event`: the latter
- * collapses `pull_request_sync` and `pull_request_review_request` into
- * `pull_request`, and names an inline review comment `pull_request_comment`,
- * which is also the exact type of an ordinary pull-request comment (§7, §16).
- *
- * Nothing here is trusted beyond filter input: authorization is the signature
- * plus the Control Plane's live membership resolution.
- */
-import type { GiteaHookMetadata, GiteaHookTarget, HookContext, RcHookAssign } from '@agentconnect.md/protocol'
+/** Gitea delivery normalization (gitea-integration.md §8), the pure half of the ingress; keyed on `X-Gitea-Event-Type` only, and untrusted beyond filter input. */
+import {
+  HOOK_DECISION_ROUTING_V1_FEATURE,
+  HOOK_DECISION_ROUTING_V2_FEATURE,
+  type CodeHostRoutingFamily,
+  type GiteaHookMetadata,
+  type GiteaHookTarget,
+  type HookContext,
+  type RcHookAssign,
+  type RcHookRouting
+} from '@agentconnect.md/protocol'
 import { mentionsGithubHandle, mentionsGithubTeam, truncateUtf8, GITHUB_BODY_EXCERPT_MAX } from '../github-ingress.js'
 import { labelFilterAdmits } from '../label-filter.js'
+import type { CodeHostRoutingProvider } from '../code-host-routing.js'
 
 /** The Gitea webhook event types this ingress maps; every other type is silently unmapped. */
 export const GITEA_EVENT_ISSUES = 'issues'
@@ -27,8 +24,7 @@ export const GITEA_EVENT_PULL_REQUEST_SYNC = 'pull_request_sync'
 export const GITEA_EVENT_PULL_REQUEST_REVIEW_REQUEST = 'pull_request_review_request'
 export const GITEA_EVENT_PUSH = 'push'
 
-/** The three review event types (§16): one delivery per review submission, verdict in the type. A
- *  Map, not an object: the key is a request header, which must never reach Object.prototype. */
+/** Review event types (§16), verdict in the type; a Map so a header key never reaches Object.prototype. */
 const GITEA_REVIEW_EVENT_ACTIONS = new Map<string, string>([
   ['pull_request_review_comment', 'review:commented'],
   ['pull_request_review_approved', 'review:approved'],
@@ -53,6 +49,7 @@ interface GiteaIssueRef {
   number?: number
   title?: string
   body?: string | null
+  state?: string
   html_url?: string
   user?: GiteaUserRef
   labels?: Array<{ name?: string }>
@@ -109,8 +106,7 @@ export interface GiteaMatchCtx {
   ref?: string
 }
 
-/** Gitea's issue and pull-request event patterns share GitLab's product families, so the
- *  comment-family value (`pull_request`) needs mapping onto the event family it subscribes to. */
+/** Map the comment-subject value (`pull_request`) onto the event family it subscribes to (`merge_request`). */
 function eventFamilyOfCommentSubject(subject: 'issues' | 'pull_request'): 'issues' | 'merge_request' {
   return subject === 'issues' ? 'issues' : 'merge_request'
 }
@@ -123,10 +119,7 @@ function labelNames(subject: GiteaIssueRef | undefined): string[] {
   return (subject?.labels ?? []).map((label) => label.name ?? '').filter(Boolean)
 }
 
-/** The owner login a Gitea team mention names. Gitea's `api.Repository.owner` is an `api.User`
- *  with no organization kind in 1.27 (`modules/structs/user.go`), so nothing in the signed payload
- *  gates the form: it is pure text against the owner login on any repository, and a personal one
- *  simply has no team to suggest it. */
+/** The owner login a team mention names; the payload has no organization kind, so it is pure text on any repository. */
 function giteaTeamOwner(repository: GiteaPayload['repository']): string | undefined {
   return repository?.owner?.login || repository?.owner?.username || repository?.full_name?.split('/')[0] || undefined
 }
@@ -135,8 +128,7 @@ function positiveIndex(value: number | undefined): number | undefined {
   return value !== undefined && Number.isSafeInteger(value) && value > 0 ? value : undefined
 }
 
-/** Lifecycle deliveries that close a Gitea thread's daemon-owned workspace (§8):
- *  merged pull requests and closed issues; an unmerged closed pull request may reopen. */
+/** Deliveries that close a thread's workspace (§8): merged pulls and closed issues; an unmerged close may reopen. */
 export interface GiteaCleanupDelivery {
   event: string
   kind: 'issue' | 'pull'
@@ -171,18 +163,7 @@ function pullRequestCtxBase(payload: GiteaPayload, pull: GiteaPullRequestRef, in
   }
 }
 
-/**
- * Normalize one verified delivery to the stored-pattern event universe, or
- * undefined when the delivery is lifecycle noise (§8 vetoes) or an event type
- * this ingress does not map. Exported for unit tests.
- *
- * Assignment and milestone churn arrive under their own event types
- * (`issue_assign`, `issue_milestone`, and the pull-request equivalents), which
- * the table below never names — the Gitea form of GitLab's assignment veto. A
- * label change (`issue_label` / `pull_request_label`) normalizes to `:labeled`,
- * and the verdict admits it only for a row that filters on labels. Draft toggles
- * and target-branch edits ride `pull_request` `edited`, which is inert here.
- */
+/** Normalize to the stored-pattern universe, or undefined for noise (§8) or unmapped types; assign/milestone types are never named. */
 export function normalizeGiteaEvent(eventType: string, payload: GiteaPayload): GiteaMatchCtx | undefined {
   const ctx = normalizeGiteaSubject(eventType, payload)
   if (!ctx) return undefined
@@ -249,8 +230,7 @@ function normalizeGiteaSubject(eventType: string, payload: GiteaPayload): GiteaM
     if (eventType === GITEA_EVENT_PULL_REQUEST_LABEL) {
       return payload.action === 'label_updated' ? { ...base, eventAction: 'merge_request:labeled' } : undefined
     }
-    // `closed` with `merged` fires separately as maintenance cleanup; an unmerged close, a
-    // reopen, and `edited` (which carries draft toggles and target-branch changes) are noise.
+    // A merged close fires as cleanup; an unmerged close, reopen and `edited` (draft, target branch) are noise.
     return payload.action === 'opened' ? { ...base, eventAction: 'merge_request:opened' } : undefined
   }
   if (eventType === GITEA_EVENT_PULL_REQUEST_REVIEW_REQUEST) {
@@ -276,8 +256,7 @@ function normalizeGiteaSubject(eventType: string, payload: GiteaPayload): GiteaM
       eventAction: reviewAction,
       family: 'review',
       commentSubjectFamily: 'pull_request',
-      // The summary body is all a review delivery carries; the daemon lists the reviews and
-      // correlates by author, state, and body to read the inline comments (§8).
+      // A review carries only its summary; the daemon lists reviews to read the inline comments (§8).
       mentionText: payload.review?.content ?? undefined
     }
   }
@@ -309,9 +288,7 @@ function normalizeGiteaSubject(eventType: string, payload: GiteaPayload): GiteaM
   return undefined
 }
 
-/** The targeted agent handle in either accepted form: the bare name, or the `@<owner>/<agent-name>`
- *  team an organization creates so Gitea's comment composer suggests the handle to that team's
- *  members; membership shapes only the suggestion, never this match. */
+/** The agent handle as `@name` or the `@<owner>/<name>` team; team membership only shapes composer suggestions. */
 function giteaMentionsAgent(body: string | undefined, rule: RcHookAssign, owner: string | undefined): boolean {
   return mentionsGithubHandle(body, rule.gitea?.agentName) || mentionsGithubTeam(body, owner, rule.gitea?.agentName)
 }
@@ -347,21 +324,15 @@ function isInternalBotRevision(rule: RcHookAssign, ctx: GiteaMatchCtx): boolean 
   )
 }
 
-/**
- * One rule's verdict for one verified delivery (pure; exported for unit tests).
- * Order: loop-prevention veto → reviewer-request path → cadence/additive summon
- * match → comment scope → mention-only gate → labels → live-authz classification.
- */
+/** One rule's pure verdict: loop veto → reviewer request → cadence/summon → comment scope → mention-only → labels → authz. */
 export function giteaRuleVerdict(rule: RcHookAssign, ctx: GiteaMatchCtx): GiteaRuleVerdict {
   const gitea = rule.gitea
   if (rule.kind !== 'gitea' || !gitea) return 'no-match'
-  // §8 loop prevention: the connection's single bot user never re-triggers, except its own
-  // same-repository pull-request revisions. A comment it authors is always rejected.
+  // §8 loop prevention: the bot never re-triggers, except its own same-repository pull revision.
   const botAuthored = ctx.actorId !== undefined && ctx.actorId === gitea.botUserId
   const internalRevision = botAuthored && isInternalBotRevision(rule, ctx)
   if (botAuthored && !internalRevision) return 'no-match'
-  // §8 explicit start path: requesting the bot as reviewer bypasses cadence and mention filters,
-  // but only for THIS rule's bot and only after the live membership gate authorizes the requester.
+  // §8 start path: requesting this rule's bot as reviewer bypasses cadence and mention filters, still behind live authz.
   if (ctx.eventAction === 'merge_request:review_requested') {
     const supportsPulls =
       gitea.events.some((event) => event.startsWith('merge_request:')) ||
@@ -374,8 +345,7 @@ export function giteaRuleVerdict(rule: RcHookAssign, ctx: GiteaMatchCtx): GiteaR
   const summoned = giteaRuleIsSummoned(rule, ctx)
   let eventMatched: boolean
   if (ctx.family === 'note' || ctx.family === 'review') {
-    // Comments and review submissions are both scoped by the console-selected comment families;
-    // a summon in a created-cadence thread family fires additively (§8).
+    // Comments and reviews are scoped by the selected comment families; a created-cadence summon fires additively (§8).
     const families = gitea.commentFamilies ?? []
     const familySelected = ctx.commentSubjectFamily !== undefined && families.includes(ctx.commentSubjectFamily)
     const createdCadenceSummon =
@@ -395,22 +365,19 @@ export function giteaRuleVerdict(rule: RcHookAssign, ctx: GiteaMatchCtx): GiteaR
   if (action === ':labeled' && !gitea.labelFilter?.length) return 'no-match'
   if (gitea.mentionOnly && !summoned) return 'no-match'
   if (!labelFilterAdmits(gitea.labelFilter, ctx.labels)) return 'no-match'
-  // §8: pushes and the bot's own same-repository revisions stay relay-trusted; every issue and
-  // pull-request lifecycle event, comment, and review submission resolves live membership.
+  // §8: pushes and the bot's own same-repository revisions are relay-trusted; everything else resolves live membership.
   if (ctx.family === 'push') return 'trusted'
   if (internalRevision) return 'trusted'
   return 'needs-authz'
 }
 
-/** The §8 rename-stable session key: exact subject discriminator, positive index
- *  (or the payload's canonical ref) — never a display path or delivery id. */
+/** The §8 rename-stable session key: subject kind plus positive index, or the canonical ref for a push. */
 export function giteaSessionKey(rule: RcHookAssign, target: GiteaHookTarget): string {
   const prefix = rule.gitea!.sessionKeyPrefix
   return target.kind === 'push' ? `${prefix}:push:${target.ref}` : `${prefix}:${target.kind}:${target.index}`
 }
 
-/** The signed-payload subject → the trusted `RdMsgHook.gitea` discriminator.
- *  Undefined identity is rejected before any dispatch — never substituted. */
+/** The signed subject → trusted `RdMsgHook.gitea`; incomplete identity is rejected, never substituted. */
 export function buildTrustedGiteaMetadata(
   payload: GiteaPayload,
   ctx: GiteaMatchCtx,
@@ -444,13 +411,11 @@ export function buildTrustedGiteaMetadata(
   const commentId = ctx.family === 'note' ? positiveIndex(payload.comment?.id) : undefined
   return {
     repoId: gitea.repoId,
-    // §3: opaque pass-through. The relay never dials Gitea and never parses this — the daemon
-    // fences the turn on it against the session's spec-carried host.
+    // §3: opaque pass-through the daemon fences the turn on; the relay never parses it.
     ...(gitea.host !== undefined ? { host: gitea.host } : {}),
     repoPath: payload.repository?.full_name ?? gitea.repoPath,
     target,
-    // The comment that fired this delivery — the acknowledgement reaction's exact target. A review
-    // submission carries no comment id at all (§16), so it never gets one.
+    // The comment that fired this delivery, the reaction target; a review has no comment id (§16).
     ...(commentId !== undefined ? { commentId: String(commentId) } : {})
   }
 }
@@ -474,6 +439,84 @@ export function buildGiteaContext(payload: GiteaPayload, ctx: GiteaMatchCtx): Ho
     ...(ctx.labels.length > 0 ? { labels: ctx.labels } : {}),
     ...(htmlUrl ? { htmlUrl } : {}),
     ...(excerpt.text ? { bodyExcerpt: excerpt.text } : {}),
+    ...(giteaSubject(subject, ctx) ?? {}),
     truncated: excerpt.truncated
   }
+}
+
+/** The issue or pull request itself, for a Decision to judge a comment or review against (code-host-decisions.md §4). */
+function giteaSubject(
+  subject: GiteaPullRequestRef | undefined,
+  ctx: GiteaMatchCtx
+): Pick<HookContext, 'subject'> | undefined {
+  if (!subject || ctx.family === 'push') return undefined
+  const body = subject.body ? truncateUtf8(subject.body, GITHUB_BODY_EXCERPT_MAX).text : ''
+  return {
+    subject: {
+      ...(subject.user?.login ? { authorLogin: subject.user.login } : {}),
+      ...(subject.state ? { state: subject.state } : {}),
+      ...(typeof subject.draft === 'boolean' ? { draft: subject.draft } : {}),
+      ...(body ? { body } : {})
+    }
+  }
+}
+
+/** One Gitea event as the routing step reads it: the normalized facts and the signed repository id. */
+export interface GiteaRouteEvent {
+  ctx: GiteaMatchCtx
+  repoId: string
+}
+
+type GiteaThreadFamily = Extract<CodeHostRoutingFamily, 'issues' | 'merge_request'>
+
+/** Routing scopes use the event-family names the hook rows store; a comment or review takes its subject's. */
+function giteaEventFamily({ ctx }: GiteaRouteEvent): GiteaThreadFamily | undefined {
+  if (ctx.family === 'issues' || ctx.family === 'merge_request') return ctx.family
+  if (ctx.family === 'note' || ctx.family === 'review') {
+    return ctx.commentSubjectFamily === undefined ? undefined : eventFamilyOfCommentSubject(ctx.commentSubjectFamily)
+  }
+  return undefined
+}
+
+/** The thread families a Gitea rule's event patterns and comment scope cover. */
+export function giteaRuleFamilies(rule: RcHookAssign): ReadonlySet<GiteaThreadFamily> {
+  const families = new Set<GiteaThreadFamily>()
+  if (rule.kind !== 'gitea' || !rule.gitea) return families
+  for (const pattern of rule.gitea.events) {
+    const prefix = pattern.split(':', 1)[0]
+    if (prefix === 'issues' || prefix === 'merge_request') families.add(prefix)
+  }
+  for (const family of rule.gitea.commentFamilies ?? []) families.add(eventFamilyOfCommentSubject(family))
+  return families
+}
+
+function giteaRoutingHostRule(
+  scopeRules: readonly RcHookAssign[],
+  routing: RcHookRouting,
+  event: GiteaRouteEvent
+): RcHookAssign | undefined {
+  return scopeRules.find(
+    (rule) =>
+      rule.routing?.routingId === routing.routingId &&
+      rule.agentId === routing.evaluationAgentId &&
+      rule.kind === 'gitea' &&
+      rule.gitea?.repoId === event.repoId
+  )
+}
+
+/** The normalizer already dropped noise and edits; what is left is a numbered thread event of one repository. */
+function giteaRecordOnlyFence(hostRule: RcHookAssign, { ctx, repoId }: GiteaRouteEvent): boolean {
+  if (hostRule.kind !== 'gitea' || hostRule.gitea?.repoId !== repoId) return false
+  if (ctx.index === undefined || ctx.index <= 0) return false
+  return !ctx.eventAction.endsWith(':deleted')
+}
+
+/** Gitea's callbacks for the shared routing step; its routed copies need a v2 host. */
+export const GITEA_ROUTING: CodeHostRoutingProvider<GiteaRouteEvent> = {
+  provider: 'gitea',
+  hostFeatures: [HOOK_DECISION_ROUTING_V1_FEATURE, HOOK_DECISION_ROUTING_V2_FEATURE],
+  eventFamily: giteaEventFamily,
+  ruleFamilies: giteaRuleFamilies,
+  hostRule: giteaRoutingHostRule,
+  recordOnlyEligible: giteaRecordOnlyFence
 }

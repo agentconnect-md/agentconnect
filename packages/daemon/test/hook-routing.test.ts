@@ -9,8 +9,8 @@ import {
 import { DecisionEvaluationReader, DecisionEvaluationScopeError } from '../src/decisions/evaluations.js'
 import type { DecisionEvaluationInput } from '../src/decisions/evaluator.js'
 import { hookRouteEvidenceText } from '../src/decisions/evidence.js'
-import { buildGithubHookState } from '../src/github/decision-state.js'
-import { HookRouter, hookRouterSubject } from '../src/github/hook-routing.js'
+import { buildCodeHostHookState } from '../src/codehost/decision-state.js'
+import { HookRouter, hookRouterSubject } from '../src/codehost/hook-routing.js'
 import type { ChannelTextRow, LocalStore } from '../src/store/local-store.js'
 import { openTestStore } from './store-support.js'
 
@@ -287,7 +287,7 @@ describe('hook route evidence', () => {
 
 describe('code-host decision state', () => {
   const build = (msg: RdMsgHook, history: ChannelTextRow[], full = false) =>
-    buildGithubHookState({ msg, current: row('Still broken?'), history, full, question, model: 'jev-1.13.0' })
+    buildCodeHostHookState({ msg, current: row('Still broken?'), history, full, question, model: 'jev-1.13.0' })
 
   it('keeps the chat field names beside the subject, history oldest first', () => {
     const older = row('first comment', '42', 'alice')
@@ -331,7 +331,7 @@ describe('code-host decision state', () => {
     expect(body.length).toBeLessThan(40_000)
     expect(halved.reasons).toContain('subject_body_trimmed')
     expect((halved.state.currentMessage as { text: string }).text).toBe('Still broken?')
-    const hugeCurrent = buildGithubHookState({
+    const hugeCurrent = buildCodeHostHookState({
       msg: fire(),
       current: row('c'.repeat(40_000)),
       history: [],
@@ -340,6 +340,145 @@ describe('code-host decision state', () => {
       model: 'jev-1.13.0'
     })
     expect(hugeCurrent).toEqual({ unsupported: true })
+  })
+})
+
+// §5.1: one builder for every provider; each normalizer supplies the subject's kind, number, draft flag and repository path.
+const gitlabFire = (target: NonNullable<RdMsgHook['gitlab']>['target']): RdMsgHook =>
+  fire({
+    sessionKey: `gitlab:4455667:${target.kind}:${'iid' in target ? target.iid : 0}`,
+    event: 'note:created',
+    github: undefined,
+    gitlab: { projectId: '4455667', projectPath: 'example-group/example-project', target },
+    context: {
+      source: 'gitlab',
+      event: 'note',
+      action: 'created',
+      repo: 'example-group/stale-path',
+      title: 'Fix the primary',
+      labels: [],
+      subject: { authorLogin: 'reporter', state: 'opened', body: 'Fixes it.' }
+    }
+  })
+const giteaFire = (target: NonNullable<RdMsgHook['gitea']>['target']): RdMsgHook =>
+  fire({
+    sessionKey: `gitea:556677:${target.kind}:${'index' in target ? target.index : 0}`,
+    event: 'note:created',
+    github: undefined,
+    gitea: { repoId: '556677', repoPath: 'example-org/example-repo', target },
+    context: {
+      source: 'gitea',
+      event: 'note',
+      action: 'created',
+      repo: 'example-org/example-repo',
+      title: 'Crash on start',
+      labels: ['bug'],
+      subject: { authorLogin: 'reporter', state: 'open', body: 'It crashes.' }
+    }
+  })
+
+describe('code-host decision state across providers', () => {
+  const build = (msg: RdMsgHook) =>
+    buildCodeHostHookState({
+      msg,
+      current: row('Still broken?'),
+      history: [],
+      full: false,
+      question,
+      model: 'jev-1.13.0'
+    })
+  const stateOf = (msg: RdMsgHook) => {
+    const built = build(msg)
+    if (built.unsupported) throw new Error('unsupported')
+    return built.state as { source: string; repository: unknown; subject: Record<string, unknown> }
+  }
+
+  it('reads a GitLab merge request and issue from the trusted target, not the envelope path', () => {
+    const mr = stateOf(gitlabFire({ kind: 'merge_request', iid: 77, isDraft: true }))
+    expect(mr.source).toBe('gitlab')
+    expect(mr.repository).toEqual({ fullName: 'example-group/example-project' })
+    expect(mr.subject).toMatchObject({ kind: 'merge_request', number: 77, draft: true, title: 'Fix the primary' })
+    const issue = stateOf(gitlabFire({ kind: 'issue', iid: 5 }))
+    expect(issue.subject).toMatchObject({ kind: 'issue', number: 5 })
+    expect(issue.subject).not.toHaveProperty('draft')
+  })
+
+  it('reads a Gitea pull request and issue from the trusted target', () => {
+    const pull = stateOf(giteaFire({ kind: 'pull', index: 12, isDraft: false }))
+    expect(pull.source).toBe('gitea')
+    expect(pull.repository).toEqual({ fullName: 'example-org/example-repo' })
+    expect(pull.subject).toMatchObject({ kind: 'pull_request', number: 12, draft: false, labels: ['bug'] })
+    expect(stateOf(giteaFire({ kind: 'issue', index: 3 })).subject).toMatchObject({ kind: 'issue', number: 3 })
+  })
+
+  it('keeps the GitHub subject: the envelope number and draft first, the trusted repository first', () => {
+    const pr = fire({
+      github: {
+        repoId: '123',
+        repoFullName: 'example-org/example-repo',
+        sourceInstallationId: '456',
+        subjectKind: 'pull_request',
+        pullNumber: 42,
+        isDraft: true
+      },
+      context: { ...fire().context!, repo: 'example-org/renamed', subject: { draft: false } }
+    })
+    const state = stateOf(pr)
+    expect(state.source).toBe('github')
+    expect(state.repository).toEqual({ fullName: 'example-org/example-repo' })
+    expect(state.subject).toMatchObject({ kind: 'pull_request', number: 42, draft: false })
+  })
+
+  it('refuses a delivery of no code host', () => {
+    expect(build(fire({ github: undefined, context: { source: 'webhook', body: '{}' } }))).toEqual({
+      unsupported: true
+    })
+  })
+})
+
+describe('hook router for GitLab and Gitea routings', () => {
+  it.each([
+    {
+      provider: 'gitlab' as const,
+      family: 'merge_request' as const,
+      msg: () => gitlabFire({ kind: 'merge_request', iid: 7 })
+    },
+    { provider: 'gitea' as const, family: 'issues' as const, msg: () => giteaFire({ kind: 'issue', index: 7 }) }
+  ])('chooses for a $provider routing and records the host verdict', async ({ provider, family, msg }) => {
+    const store = await openTestStore()
+    const evaluate = vi.fn<(input: DecisionEvaluationInput) => Promise<DecisionEvaluation>>(async () => MATCH_BOTH)
+    const p = { ...projection(), provider, family }
+    const router = new HookRouter({
+      store: () => store,
+      evaluate: (input) => evaluate(input),
+      now: () => Date.now(),
+      ownerFence: () => 'local:test',
+      currentProjection: () => p,
+      log: { warn: () => {} }
+    })
+    const channel = HOOK
+    const thread = `${provider}:x:7`
+    await store.appendTranscript({
+      channel,
+      thread,
+      ts: '1|a',
+      sender: 'reporter',
+      kind: 'text',
+      text: 'Fix',
+      orgAgentId: AGENT
+    })
+    const record = (await store.channelRecordRef(channel, '1|a', AGENT))!
+    const outcome = await router.choose(
+      { ...msg(), routing: { routingId: ROUTING, decisionId: DECISION, candidates: ALL } },
+      record,
+      p
+    )
+    expect(outcome.accepted && outcome.targets.map((t) => t.hookId)).toEqual([HOOK_B, HOOK_C])
+    expect(evaluate.mock.calls[0]![0].state).toMatchObject({ source: provider, currentMessage: { text: 'Fix' } })
+    const verdict = await store.getDecisionVerdict(record.seq, hookRouterSubject(ROUTING))
+    expect(verdict).toMatchObject({ state: 'admitted', integrationId: ROUTING, channel })
+    expect(JSON.parse(verdict!.configJson)).toMatchObject({ family })
+    await store.close()
   })
 })
 

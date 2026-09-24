@@ -48,7 +48,6 @@ import {
   updateGiteaHook,
   updateGitlabHook,
   uploadAgentIcon,
-  type CodeHostRoutingDto,
   type GithubInstallationDto,
   type HookDto,
   type HookRunDto
@@ -64,17 +63,7 @@ import { AgentSecretsCard } from '@/components/console/AgentSecretsCard'
 import { AgentToolsCard } from '@/components/console/AgentToolsCard'
 import { AgentSkillsCard } from '@/components/console/AgentSkillsCard'
 import { AgentDecisionsCard } from '@/components/console/AgentDecisionsCard'
-import { CodeHostDecisionEntry } from '@/components/console/decisions/routing/CodeHostDecisionEntry'
-import { DecisionEvaluationsDrawer } from '@/components/console/decisions/DecisionEvaluationsDrawer'
-import {
-  codeHostRouted,
-  codeHostScopeId,
-  routingTargets,
-  useCodeHostRoutingActions,
-  useCodeHostRoutings,
-  type CodeHostRoutingScope
-} from '@/lib/decisions/code-host-routing'
-import { codeHostRoutingEvaluations } from '@/lib/decisions/evaluation-source'
+import { useCodeHostRowRouting } from '@/components/console/decisions/routing/useCodeHostRowRouting'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { IntegrationChannelList, roomGlyph, rowLabel } from '@/components/console/IntegrationChannelList'
@@ -275,7 +264,6 @@ function rowSettingsTitle(hook: HookDto): string {
 
 export default function AgentDetailView() {
   const t = useTranslations('Agents.detail')
-  const tRouting = useTranslations('Decisions.routing')
   const decisionsPrototype = useOptionalDecisionsPrototype()
   const decisions = useMemo(() => decisionsPrototype?.decisions ?? [], [decisionsPrototype])
   const permissionT = useTranslations('Common.permissionModes')
@@ -348,11 +336,6 @@ export default function AgentDetailView() {
       : undefined)
   // Which webhook row has its recent-deliveries panel expanded (one at a time).
   const [hookRunsFor, setHookRunsFor] = useState<string | null>(null)
-  // The routed github scope whose Recent evaluations drawer is open, with its row's subtitle.
-  const [routingEvaluationsFor, setRoutingEvaluationsFor] = useState<{
-    routing: CodeHostRoutingDto
-    subtitle: string
-  } | null>(null)
   // Hooks are agent-scoped (no org-wide list). Keep a stable resource key so a
   // create/delete revalidation retains the last good rows while it refetches.
   const hooksKey = consoleKeys.agentHooks(activeOrg?.id, id)
@@ -375,42 +358,18 @@ export default function AgentDetailView() {
   const gitlabHooks = codeHostHooks.gitlab
   // One flat row per subscription still — the grouping is only the ORDER (a repo's rows adjacent) plus its add offer.
   const githubRows = orderedGithubHookRows(githubHooks)
-  // Issues and pull-request rows carry their repository scope's decision routing (code-host-decisions.md §7).
-  const routingScopeOf = (h: HookDto): CodeHostRoutingScope | null => {
-    const family = githubHookFamily(h)
-    if (!h.repoId || (family !== 'issues' && family !== 'pull_request')) return null
-    return { repoId: h.repoId, family, repoFullName: h.repoFullName ?? h.name }
-  }
-  const routingScopes = githubHooks.flatMap((h) => routingScopeOf(h) ?? [])
-  // Mock mode has no CP membership, so its routings offer every visible agent.
-  const { routings } = useCodeHostRoutings(
-    routingScopes,
-    agents.map((agent) => ({ agentId: agent.id, hookId: `mock-${agent.id}`, name: agentLabel(agent) }))
-  )
-  const { remove: removeRouting } = useCodeHostRoutingActions()
-  const [routingError, setRoutingError] = useState<{ hookId: string; message: string } | null>(null)
-  const routingOf = (h: HookDto) => {
-    const scope = routingScopeOf(h)
-    return scope ? (routings[codeHostScopeId(scope)] ?? null) : null
-  }
-  const routedByDecision = (h: HookDto) => codeHostRouted(routingOf(h))
-  const openRoutingEvaluations = (h: HookDto) => {
-    const routing = routingOf(h)
-    if (routing) setRoutingEvaluationsFor({ routing, subtitle: `${routing.repoFullName} · ${ghRowPill(h)}` })
-  }
-  const stopRouting = async (h: HookDto) => {
-    const routing = routingOf(h)
-    if (!routing) return
-    setRoutingError(null)
-    try {
-      await removeRouting(routing)
-    } catch (error) {
-      setRoutingError({
-        hookId: h.id,
-        message: tRouting('codeHost.stopError', { message: error instanceof Error ? error.message : String(error) })
-      })
-    }
-  }
+  // Each code-host row's subject family in its own host's stored vocabulary.
+  const codeHostRowFamily = (h: HookDto) =>
+    h.kind === 'github' ? githubHookFamily(h) : h.kind === 'gitlab' ? gitlabHookFamily(h) : giteaHookFamily(h)
+  // Issues and change-request rows of every host carry their scope's decision routing (code-host-decisions.md §7).
+  const { rowOf: routingRowOf, drawer: routingEvaluationsDrawer } = useCodeHostRowRouting({
+    hooks: Object.values(codeHostHooks).flat(),
+    familyOf: codeHostRowFamily,
+    pillOf: (h) => codeHostRowPill(h),
+    agentOf: getAgent,
+    firstAgentId: id,
+    mockMembers: agents.map((agent) => ({ agentId: agent.id, hookId: `mock-${agent.id}`, name: agentLabel(agent) }))
+  })
   const gitlabRows = orderedGitlabHookRows(gitlabHooks)
   const giteaHooks = codeHostHooks.gitea
   const giteaRows = orderedGiteaHookRows(giteaHooks)
@@ -849,12 +808,13 @@ export default function AgentDetailView() {
     const fam = giteaHookFamily(h)
     return !!fam && giteaFamilyCarriesReviews(fam)
   }
+  const codeHostRowPill = (h: HookDto) =>
+    h.kind === 'github' ? ghRowPill(h) : h.kind === 'gitlab' ? glRowPill(h) : gtRowPill(h)
   const rowCarriesReviews = (h: HookDto) =>
     h.kind === 'github' ? ghRowCarriesReviews(h) : h.kind === 'gitlab' ? glRowCarriesReviews(h) : gtRowCarriesReviews(h)
   // Labels are a thread's: a deployment or push row carries none, so such a row has no settings to open.
   const rowCarriesLabels = (h: HookDto) => {
-    const fam =
-      h.kind === 'github' ? githubHookFamily(h) : h.kind === 'gitlab' ? gitlabHookFamily(h) : giteaHookFamily(h)
+    const fam = codeHostRowFamily(h)
     return fam === 'pull_request' || fam === 'merge_request' || fam === 'issues'
   }
   const rowHasSettings = (h: HookDto) => rowCarriesReviews(h) || rowCarriesLabels(h)
@@ -2180,152 +2140,120 @@ export default function AgentDetailView() {
                         </button>
                       </div>
                       <div className="border-t border-(--border-subtle) bg-(--surface-app)">
-                        {githubRows.map(({ hook: h, repoKey, first, last, addFamilies }) => (
-                          <div key={h.id} className={last ? 'border-b border-(--border-subtle)' : undefined}>
-                            {/* One repo = one attached block: its first row names it, its
+                        {githubRows.map(({ hook: h, repoKey, first, last, addFamilies }) => {
+                          const routing = routingRowOf(h)
+                          return (
+                            <div key={h.id} className={last ? 'border-b border-(--border-subtle)' : undefined}>
+                              {/* One repo = one attached block: its first row names it, its
                                   siblings indent to that name and only state their family. */}
-                            <div className={codeHostRowCls(first, last)}>
-                              {first ? (
-                                <>
-                                  <Icon
-                                    name="folder-git-2"
-                                    size={14}
-                                    color="var(--text-tertiary)"
-                                    className="flex-none"
+                              <div className={codeHostRowCls(first, last)}>
+                                {first ? (
+                                  <>
+                                    <Icon
+                                      name="folder-git-2"
+                                      size={14}
+                                      color="var(--text-tertiary)"
+                                      className="flex-none"
+                                    />
+                                    <span className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)">
+                                      {h.repoFullName ?? h.name}
+                                    </span>
+                                  </>
+                                ) : null}
+                                {/* The repo's first row offers what it does not watch yet — a + menu, so new subjects just add items. */}
+                                {addFamilies.length > 0 && (
+                                  <RowMoreMenu
+                                    ariaLabel={`Watch more on ${h.repoFullName ?? h.name}`}
+                                    icon="plus"
+                                    title={t('integrations.watchAnotherSubject')}
+                                    triggerClassName={ADD_SUBJECT_BTN}
+                                    align="start"
+                                    items={addFamilies.map((fam) => ({
+                                      icon: (githubFamilyTile(fam)?.icon ?? 'plus') as Parameters<
+                                        typeof Icon
+                                      >[0]['name'],
+                                      label: `Add ${githubFamilyTile(fam)?.label ?? fam}`,
+                                      onClick: () => void addGithubFamily(h, repoKey, fam)
+                                    }))}
                                   />
-                                  <span className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)">
-                                    {h.repoFullName ?? h.name}
-                                  </span>
-                                </>
-                              ) : null}
-                              {/* The repo's first row offers what it does not watch yet — a + menu, so new subjects just add items. */}
-                              {addFamilies.length > 0 && (
-                                <RowMoreMenu
-                                  ariaLabel={`Watch more on ${h.repoFullName ?? h.name}`}
-                                  icon="plus"
-                                  title={t('integrations.watchAnotherSubject')}
-                                  triggerClassName={ADD_SUBJECT_BTN}
-                                  align="start"
-                                  items={addFamilies.map((fam) => ({
-                                    icon: (githubFamilyTile(fam)?.icon ?? 'plus') as Parameters<typeof Icon>[0]['name'],
-                                    label: `Add ${githubFamilyTile(fam)?.label ?? fam}`,
-                                    onClick: () => void addGithubFamily(h, repoKey, fam)
-                                  }))}
-                                />
-                              )}
-                              {/* Authorization is repo-scoped, so the badge shows once per group. */}
-                              {first && watchUnauthorized(h) && <UnauthorizedWatchBadge />}
-                              <LabelFilterHint labels={h.labelFilter} onClick={() => openReviewSettings(h)} />
-                              {/* What this row subscribes to, stated at the head of its control cluster — a label, not a control. Fixed width so the trigger column aligns across rows. */}
-                              <span className="ml-auto w-[56px] flex-none whitespace-nowrap text-right font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
-                                {ghRowPill(h)}
-                              </span>
-                              {routingOf(h) && (
-                                <CodeHostDecisionEntry
-                                  routing={routingOf(h)}
-                                  agents={routingTargets(
-                                    routingOf(h)!.members,
-                                    getAgent,
-                                    id,
-                                    tRouting('codeHost.hiddenAgent')
-                                  )}
-                                  onOpenEvaluations={() => openRoutingEvaluations(h)}
-                                />
-                              )}
-                              {/* Trigger — the same ⚡ dropdown the IM channel rows carry, mention last. */}
-                              <TriggerSelect
-                                className="w-[126px] flex-none"
-                                // Per family: the label cadence exists on issues alone, and a deployment reads its own copy.
-                                // A routed scope runs on every update and its Decision picks the agents, so the row's own cadence is locked.
-                                options={ghRowTriggerModes(h).map((mode) => {
-                                  const off = routedByDecision(h)
-                                  return {
-                                    value: mode,
-                                    label: GH_TRIGGER_PILL[mode],
-                                    hint: off
-                                      ? tRouting('codeHost.triggerLocked')
-                                      : githubTriggerTooltip(mode, da.name, githubHookFamily(h) ?? undefined),
-                                    description: off
-                                      ? tRouting('codeHost.triggerLocked')
-                                      : githubTriggerDescription(mode, da.name, githubHookFamily(h) ?? undefined),
-                                    disabled: off
-                                  }
-                                })}
-                                heading={t('integrations.runOn')}
-                                value={routedByDecision(h) ? 'every' : triggerModeOf(h)}
-                                onChange={(mode) => {
-                                  if (!routedByDecision(h)) void setHookCadence(h, mode)
-                                }}
-                                ariaLabel={`Trigger for ${h.repoFullName ?? h.name} ${ghRowPill(h)}`}
-                                hint="Trigger — when this agent runs"
-                                busy={hookBusy === h.id}
-                              />
-                              <span className="inline-flex flex-none gap-[2px]">
-                                {/* Settings: the label filter on every row, reviews and Checks on the pull-request row. */}
-                                <RowMoreMenu
-                                  ariaLabel={`More for ${h.repoFullName ?? h.name} ${ghRowPill(h)}`}
-                                  items={[
-                                    ...(rowHasSettings(h)
-                                      ? [
-                                          {
-                                            icon: 'settings-2' as const,
-                                            label: 'Settings…',
-                                            onClick: () => openReviewSettings(h)
-                                          }
-                                        ]
-                                      : []),
+                                )}
+                                {/* Authorization is repo-scoped, so the badge shows once per group. */}
+                                {first && watchUnauthorized(h) && <UnauthorizedWatchBadge />}
+                                <LabelFilterHint labels={h.labelFilter} onClick={() => openReviewSettings(h)} />
+                                {/* What this row subscribes to, stated at the head of its control cluster — a label, not a control. Fixed width so the trigger column aligns across rows. */}
+                                <span className="ml-auto w-[56px] flex-none whitespace-nowrap text-right font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
+                                  {ghRowPill(h)}
+                                </span>
+                                {routing.entry}
+                                {/* Trigger — the same ⚡ dropdown the IM channel rows carry, mention last. */}
+                                <TriggerSelect
+                                  className="w-[126px] flex-none"
+                                  // Per family: the label cadence exists on issues alone, and a deployment reads its own copy.
+                                  {...routing.trigger(
                                     {
-                                      icon: 'rotate-ccw-clock' as const,
-                                      label: hookRunsFor === h.id ? 'Hide recent deliveries' : 'Recent deliveries',
-                                      onClick: () => setHookRunsFor(hookRunsFor === h.id ? null : h.id)
+                                      options: ghRowTriggerModes(h).map((mode) => ({
+                                        value: mode,
+                                        label: GH_TRIGGER_PILL[mode],
+                                        hint: githubTriggerTooltip(mode, da.name, githubHookFamily(h) ?? undefined),
+                                        description: githubTriggerDescription(
+                                          mode,
+                                          da.name,
+                                          githubHookFamily(h) ?? undefined
+                                        )
+                                      })),
+                                      value: triggerModeOf(h),
+                                      onChange: (mode) => void setHookCadence(h, mode)
                                     },
-                                    ...(routingOf(h)?.config && decisionsPrototype
-                                      ? [
-                                          {
-                                            icon: 'list-checks' as const,
-                                            label: tRouting('recentEvaluations'),
-                                            onClick: () => openRoutingEvaluations(h)
-                                          },
-                                          ...(myRole !== 'viewer'
-                                            ? [
-                                                {
-                                                  icon: 'split' as const,
-                                                  label: tRouting('codeHost.stopMenu'),
-                                                  onClick: () => void stopRouting(h)
-                                                }
-                                              ]
-                                            : [])
-                                        ]
-                                      : [])
-                                  ]}
+                                    'every'
+                                  )}
+                                  heading={t('integrations.runOn')}
+                                  ariaLabel={`Trigger for ${h.repoFullName ?? h.name} ${ghRowPill(h)}`}
+                                  hint="Trigger — when this agent runs"
+                                  busy={hookBusy === h.id}
                                 />
-                                <button
-                                  className="iconbtn h-[26px] w-[26px] flex-none"
-                                  title={`Stop watching ${ghRowPill(h)}`}
-                                  onClick={() => openModal('deleteHook', h)}
-                                >
-                                  <Icon name="x" size={13} />
-                                </button>
-                              </span>
+                                <span className="inline-flex flex-none gap-[2px]">
+                                  {/* Settings: the label filter on every row, reviews and Checks on the pull-request row. */}
+                                  <RowMoreMenu
+                                    ariaLabel={`More for ${h.repoFullName ?? h.name} ${ghRowPill(h)}`}
+                                    items={[
+                                      ...(rowHasSettings(h)
+                                        ? [
+                                            {
+                                              icon: 'settings-2' as const,
+                                              label: 'Settings…',
+                                              onClick: () => openReviewSettings(h)
+                                            }
+                                          ]
+                                        : []),
+                                      {
+                                        icon: 'rotate-ccw-clock' as const,
+                                        label: hookRunsFor === h.id ? 'Hide recent deliveries' : 'Recent deliveries',
+                                        onClick: () => setHookRunsFor(hookRunsFor === h.id ? null : h.id)
+                                      },
+                                      ...routing.menuItems
+                                    ]}
+                                  />
+                                  <button
+                                    className="iconbtn h-[26px] w-[26px] flex-none"
+                                    title={`Stop watching ${ghRowPill(h)}`}
+                                    onClick={() => openModal('deleteHook', h)}
+                                  >
+                                    <Icon name="x" size={13} />
+                                  </button>
+                                </span>
+                              </div>
+                              {routing.error}
+                              {addFamilyError?.key === repoKey && addFamilies.length > 0 && (
+                                <div className="px-[14px] pb-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
+                                  {addFamilyError.message}
+                                </div>
+                              )}
+                              {hookRunsFor === h.id && (
+                                <HookRunsPanel hookId={h.id} sessionHref={(sid) => orgPath(`/sessions/${sid}`)} />
+                              )}
                             </div>
-                            {routingError?.hookId === h.id && (
-                              <div
-                                role="alert"
-                                className="px-[14px] pb-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)"
-                              >
-                                {routingError.message}
-                              </div>
-                            )}
-                            {addFamilyError?.key === repoKey && addFamilies.length > 0 && (
-                              <div className="px-[14px] pb-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
-                                {addFamilyError.message}
-                              </div>
-                            )}
-                            {hookRunsFor === h.id && (
-                              <HookRunsPanel hookId={h.id} sessionHref={(sid) => orgPath(`/sessions/${sid}`)} />
-                            )}
-                          </div>
-                        ))}
+                          )
+                        })}
                         <div className="px-[14px] py-2">
                           {/* Straight to the GitHub pane — this button adds a repo, not a bot. */}
                           <button
@@ -2366,106 +2294,119 @@ export default function AgentDetailView() {
                         </div>
                       </div>
                       <div className="border-t border-(--border-subtle) bg-(--surface-app)">
-                        {gitlabRows.map(({ hook: h, repoKey, first, last, addFamilies }) => (
-                          <div key={h.id} className={last ? 'border-b border-(--border-subtle)' : undefined}>
-                            {/* One project = one attached block: its first row names it, its
+                        {gitlabRows.map(({ hook: h, repoKey, first, last, addFamilies }) => {
+                          const routing = routingRowOf(h)
+                          return (
+                            <div key={h.id} className={last ? 'border-b border-(--border-subtle)' : undefined}>
+                              {/* One project = one attached block: its first row names it, its
                                   siblings indent to that name and only state their family. */}
-                            <div className={codeHostRowCls(first, last)}>
-                              {first ? (
-                                <>
-                                  <Icon
-                                    name="folder-git-2"
-                                    size={14}
-                                    color="var(--text-tertiary)"
-                                    className="flex-none"
+                              <div className={codeHostRowCls(first, last)}>
+                                {first ? (
+                                  <>
+                                    <Icon
+                                      name="folder-git-2"
+                                      size={14}
+                                      color="var(--text-tertiary)"
+                                      className="flex-none"
+                                    />
+                                    <span className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)">
+                                      {h.repoFullName ?? h.name}
+                                    </span>
+                                  </>
+                                ) : null}
+                                {/* The project's first row offers what it does not watch yet — a + menu, so new subjects just add items. */}
+                                {addFamilies.length > 0 && (
+                                  <RowMoreMenu
+                                    ariaLabel={`Watch more on ${h.repoFullName ?? h.name}`}
+                                    icon="plus"
+                                    title={t('integrations.watchAnotherSubject')}
+                                    triggerClassName={ADD_SUBJECT_BTN}
+                                    align="start"
+                                    items={addFamilies.map((fam) => ({
+                                      icon: (gitlabFamilyTile(fam)?.icon ?? 'plus') as Parameters<
+                                        typeof Icon
+                                      >[0]['name'],
+                                      label: `Add ${gitlabFamilyTile(fam)?.label ?? fam}`,
+                                      onClick: () => void addGitlabFamily(h, repoKey, fam)
+                                    }))}
                                   />
-                                  <span className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)">
-                                    {h.repoFullName ?? h.name}
+                                )}
+                                {gitlabHookNeedsNormalization(h) && (
+                                  <span
+                                    className="badge flex-none bg-(--surface-active) text-(--text-tertiary)"
+                                    title={t('integrations.customRuleHint')}
+                                  >
+                                    {t('integrations.customRule')}
                                   </span>
-                                </>
-                              ) : null}
-                              {/* The project's first row offers what it does not watch yet — a + menu, so new subjects just add items. */}
-                              {addFamilies.length > 0 && (
-                                <RowMoreMenu
-                                  ariaLabel={`Watch more on ${h.repoFullName ?? h.name}`}
-                                  icon="plus"
-                                  title={t('integrations.watchAnotherSubject')}
-                                  triggerClassName={ADD_SUBJECT_BTN}
-                                  align="start"
-                                  items={addFamilies.map((fam) => ({
-                                    icon: (gitlabFamilyTile(fam)?.icon ?? 'plus') as Parameters<typeof Icon>[0]['name'],
-                                    label: `Add ${gitlabFamilyTile(fam)?.label ?? fam}`,
-                                    onClick: () => void addGitlabFamily(h, repoKey, fam)
-                                  }))}
-                                />
-                              )}
-                              {gitlabHookNeedsNormalization(h) && (
-                                <span
-                                  className="badge flex-none bg-(--surface-active) text-(--text-tertiary)"
-                                  title={t('integrations.customRuleHint')}
-                                >
-                                  {t('integrations.customRule')}
+                                )}
+                                <LabelFilterHint labels={h.labelFilter} onClick={() => openReviewSettings(h)} />
+                                {/* What this row subscribes to, stated at the head of its control cluster — a label, not a control. Fixed width so the trigger column aligns across rows. */}
+                                <span className="ml-auto w-[56px] flex-none whitespace-nowrap text-right font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
+                                  {glRowPill(h)}
                                 </span>
-                              )}
-                              <LabelFilterHint labels={h.labelFilter} onClick={() => openReviewSettings(h)} />
-                              {/* What this row subscribes to, stated at the head of its control cluster — a label, not a control. Fixed width so the trigger column aligns across rows. */}
-                              <span className="ml-auto w-[56px] flex-none whitespace-nowrap text-right font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
-                                {glRowPill(h)}
-                              </span>
-                              {/* Trigger — the same ⚡ dropdown the GitHub rows carry. */}
-                              <TriggerSelect
-                                className="w-[126px] flex-none"
-                                options={GL_TRIGGER_MODES.map((mode) => ({
-                                  value: mode,
-                                  label: GL_TRIGGER_PILL[mode],
-                                  hint: gitlabTriggerTooltip(mode, da.name)
-                                }))}
-                                value={gitlabTriggerModeOf(h)}
-                                onChange={(mode) => void setGitlabHookCadence(h, mode)}
-                                ariaLabel={`Trigger for ${h.repoFullName ?? h.name} ${glRowPill(h)}`}
-                                hint="Trigger — when this agent runs"
-                                busy={hookBusy === h.id}
-                              />
-                              <span className="inline-flex flex-none gap-[2px]">
-                                {/* Settings: the label filter on every row, reviews and the run note on the merge-request row. */}
-                                <RowMoreMenu
-                                  ariaLabel={`More for ${h.repoFullName ?? h.name} ${glRowPill(h)}`}
-                                  items={[
-                                    ...(rowHasSettings(h)
-                                      ? [
-                                          {
-                                            icon: 'settings-2' as const,
-                                            label: 'Settings…',
-                                            onClick: () => openReviewSettings(h)
-                                          }
-                                        ]
-                                      : []),
+                                {routing.entry}
+                                {/* Trigger — the same ⚡ dropdown the GitHub rows carry. */}
+                                <TriggerSelect
+                                  className="w-[126px] flex-none"
+                                  {...routing.trigger(
                                     {
-                                      icon: 'rotate-ccw-clock' as const,
-                                      label: hookRunsFor === h.id ? 'Hide recent deliveries' : 'Recent deliveries',
-                                      onClick: () => setHookRunsFor(hookRunsFor === h.id ? null : h.id)
-                                    }
-                                  ]}
+                                      options: GL_TRIGGER_MODES.map((mode) => ({
+                                        value: mode,
+                                        label: GL_TRIGGER_PILL[mode],
+                                        hint: gitlabTriggerTooltip(mode, da.name)
+                                      })),
+                                      value: gitlabTriggerModeOf(h),
+                                      onChange: (mode) => void setGitlabHookCadence(h, mode)
+                                    },
+                                    'every'
+                                  )}
+                                  ariaLabel={`Trigger for ${h.repoFullName ?? h.name} ${glRowPill(h)}`}
+                                  hint="Trigger — when this agent runs"
+                                  busy={hookBusy === h.id}
                                 />
-                                <button
-                                  className="iconbtn h-[26px] w-[26px] flex-none"
-                                  title={`Stop watching ${glRowPill(h)}`}
-                                  onClick={() => openModal('deleteHook', h)}
-                                >
-                                  <Icon name="x" size={13} />
-                                </button>
-                              </span>
-                            </div>
-                            {addFamilyError?.key === repoKey && addFamilies.length > 0 && (
-                              <div className="px-[14px] pb-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
-                                {addFamilyError.message}
+                                <span className="inline-flex flex-none gap-[2px]">
+                                  {/* Settings: the label filter on every row, reviews and the run note on the merge-request row. */}
+                                  <RowMoreMenu
+                                    ariaLabel={`More for ${h.repoFullName ?? h.name} ${glRowPill(h)}`}
+                                    items={[
+                                      ...(rowHasSettings(h)
+                                        ? [
+                                            {
+                                              icon: 'settings-2' as const,
+                                              label: 'Settings…',
+                                              onClick: () => openReviewSettings(h)
+                                            }
+                                          ]
+                                        : []),
+                                      {
+                                        icon: 'rotate-ccw-clock' as const,
+                                        label: hookRunsFor === h.id ? 'Hide recent deliveries' : 'Recent deliveries',
+                                        onClick: () => setHookRunsFor(hookRunsFor === h.id ? null : h.id)
+                                      },
+                                      ...routing.menuItems
+                                    ]}
+                                  />
+                                  <button
+                                    className="iconbtn h-[26px] w-[26px] flex-none"
+                                    title={`Stop watching ${glRowPill(h)}`}
+                                    onClick={() => openModal('deleteHook', h)}
+                                  >
+                                    <Icon name="x" size={13} />
+                                  </button>
+                                </span>
                               </div>
-                            )}
-                            {hookRunsFor === h.id && (
-                              <HookRunsPanel hookId={h.id} sessionHref={(sid) => orgPath(`/sessions/${sid}`)} />
-                            )}
-                          </div>
-                        ))}
+                              {routing.error}
+                              {addFamilyError?.key === repoKey && addFamilies.length > 0 && (
+                                <div className="px-[14px] pb-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
+                                  {addFamilyError.message}
+                                </div>
+                              )}
+                              {hookRunsFor === h.id && (
+                                <HookRunsPanel hookId={h.id} sessionHref={(sid) => orgPath(`/sessions/${sid}`)} />
+                              )}
+                            </div>
+                          )
+                        })}
                         <div className="px-[14px] py-2">
                           {/* Straight to the GitLab pane — this button adds a project, not a bot. */}
                           <button
@@ -2506,105 +2447,118 @@ export default function AgentDetailView() {
                         </div>
                       </div>
                       <div className="border-t border-(--border-subtle) bg-(--surface-app)">
-                        {giteaRows.map(({ hook: h, repoKey, first, last, addFamilies }) => (
-                          <div key={h.id} className={last ? 'border-b border-(--border-subtle)' : undefined}>
-                            {/* One repository = one attached block: its first row names it, its
+                        {giteaRows.map(({ hook: h, repoKey, first, last, addFamilies }) => {
+                          const routing = routingRowOf(h)
+                          return (
+                            <div key={h.id} className={last ? 'border-b border-(--border-subtle)' : undefined}>
+                              {/* One repository = one attached block: its first row names it, its
                                   siblings indent to that name and only state their family. */}
-                            <div className={codeHostRowCls(first, last)}>
-                              {first ? (
-                                <>
-                                  <Icon
-                                    name="folder-git-2"
-                                    size={14}
-                                    color="var(--text-tertiary)"
-                                    className="flex-none"
+                              <div className={codeHostRowCls(first, last)}>
+                                {first ? (
+                                  <>
+                                    <Icon
+                                      name="folder-git-2"
+                                      size={14}
+                                      color="var(--text-tertiary)"
+                                      className="flex-none"
+                                    />
+                                    <span className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)">
+                                      {h.repoFullName ?? h.name}
+                                    </span>
+                                  </>
+                                ) : null}
+                                {/* The repository's first row offers what it does not watch yet. */}
+                                {addFamilies.length > 0 && (
+                                  <RowMoreMenu
+                                    ariaLabel={`Watch more on ${h.repoFullName ?? h.name}`}
+                                    icon="plus"
+                                    title={t('integrations.watchAnotherSubject')}
+                                    triggerClassName={ADD_SUBJECT_BTN}
+                                    align="start"
+                                    items={addFamilies.map((fam) => ({
+                                      icon: (giteaFamilyTile(fam)?.icon ?? 'plus') as Parameters<
+                                        typeof Icon
+                                      >[0]['name'],
+                                      label: `Add ${giteaFamilyTile(fam)?.label ?? fam}`,
+                                      onClick: () => void addGiteaFamily(h, repoKey, fam)
+                                    }))}
                                   />
-                                  <span className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)">
-                                    {h.repoFullName ?? h.name}
+                                )}
+                                {giteaHookNeedsNormalization(h) && (
+                                  <span
+                                    className="badge flex-none bg-(--surface-active) text-(--text-tertiary)"
+                                    title={t('integrations.customRuleHint')}
+                                  >
+                                    {t('integrations.customRule')}
                                   </span>
-                                </>
-                              ) : null}
-                              {/* The repository's first row offers what it does not watch yet. */}
-                              {addFamilies.length > 0 && (
-                                <RowMoreMenu
-                                  ariaLabel={`Watch more on ${h.repoFullName ?? h.name}`}
-                                  icon="plus"
-                                  title={t('integrations.watchAnotherSubject')}
-                                  triggerClassName={ADD_SUBJECT_BTN}
-                                  align="start"
-                                  items={addFamilies.map((fam) => ({
-                                    icon: (giteaFamilyTile(fam)?.icon ?? 'plus') as Parameters<typeof Icon>[0]['name'],
-                                    label: `Add ${giteaFamilyTile(fam)?.label ?? fam}`,
-                                    onClick: () => void addGiteaFamily(h, repoKey, fam)
-                                  }))}
-                                />
-                              )}
-                              {giteaHookNeedsNormalization(h) && (
-                                <span
-                                  className="badge flex-none bg-(--surface-active) text-(--text-tertiary)"
-                                  title={t('integrations.customRuleHint')}
-                                >
-                                  {t('integrations.customRule')}
+                                )}
+                                <LabelFilterHint labels={h.labelFilter} onClick={() => openReviewSettings(h)} />
+                                {/* What this row subscribes to, stated at the head of its control cluster. */}
+                                <span className="ml-auto w-[56px] flex-none whitespace-nowrap text-right font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
+                                  {gtRowPill(h)}
                                 </span>
-                              )}
-                              <LabelFilterHint labels={h.labelFilter} onClick={() => openReviewSettings(h)} />
-                              {/* What this row subscribes to, stated at the head of its control cluster. */}
-                              <span className="ml-auto w-[56px] flex-none whitespace-nowrap text-right font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
-                                {gtRowPill(h)}
-                              </span>
-                              <TriggerSelect
-                                className="w-[126px] flex-none"
-                                options={GT_TRIGGER_MODES.map((mode) => ({
-                                  value: mode,
-                                  label: GT_TRIGGER_PILL[mode],
-                                  hint: giteaTriggerTooltip(mode, da.name)
-                                }))}
-                                value={giteaTriggerModeOf(h)}
-                                onChange={(mode) => void setGiteaHookCadence(h, mode)}
-                                ariaLabel={`Trigger for ${h.repoFullName ?? h.name} ${gtRowPill(h)}`}
-                                hint="Trigger — when this agent runs"
-                                busy={hookBusy === h.id}
-                              />
-                              <span className="inline-flex flex-none gap-[2px]">
-                                {/* Settings: the label filter on every row, reviews and the commit status on the pull-request row. */}
-                                <RowMoreMenu
-                                  ariaLabel={`More for ${h.repoFullName ?? h.name} ${gtRowPill(h)}`}
-                                  items={[
-                                    ...(rowHasSettings(h)
-                                      ? [
-                                          {
-                                            icon: 'settings-2' as const,
-                                            label: 'Settings…',
-                                            onClick: () => openReviewSettings(h)
-                                          }
-                                        ]
-                                      : []),
+                                {routing.entry}
+                                <TriggerSelect
+                                  className="w-[126px] flex-none"
+                                  {...routing.trigger(
                                     {
-                                      icon: 'rotate-ccw-clock' as const,
-                                      label: hookRunsFor === h.id ? 'Hide recent deliveries' : 'Recent deliveries',
-                                      onClick: () => setHookRunsFor(hookRunsFor === h.id ? null : h.id)
-                                    }
-                                  ]}
+                                      options: GT_TRIGGER_MODES.map((mode) => ({
+                                        value: mode,
+                                        label: GT_TRIGGER_PILL[mode],
+                                        hint: giteaTriggerTooltip(mode, da.name)
+                                      })),
+                                      value: giteaTriggerModeOf(h),
+                                      onChange: (mode) => void setGiteaHookCadence(h, mode)
+                                    },
+                                    'every'
+                                  )}
+                                  ariaLabel={`Trigger for ${h.repoFullName ?? h.name} ${gtRowPill(h)}`}
+                                  hint="Trigger — when this agent runs"
+                                  busy={hookBusy === h.id}
                                 />
-                                <button
-                                  className="iconbtn h-[26px] w-[26px] flex-none"
-                                  title={`Stop watching ${gtRowPill(h)}`}
-                                  onClick={() => openModal('deleteHook', h)}
-                                >
-                                  <Icon name="x" size={13} />
-                                </button>
-                              </span>
-                            </div>
-                            {addFamilyError?.key === repoKey && addFamilies.length > 0 && (
-                              <div className="px-[14px] pb-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
-                                {addFamilyError.message}
+                                <span className="inline-flex flex-none gap-[2px]">
+                                  {/* Settings: the label filter on every row, reviews and the commit status on the pull-request row. */}
+                                  <RowMoreMenu
+                                    ariaLabel={`More for ${h.repoFullName ?? h.name} ${gtRowPill(h)}`}
+                                    items={[
+                                      ...(rowHasSettings(h)
+                                        ? [
+                                            {
+                                              icon: 'settings-2' as const,
+                                              label: 'Settings…',
+                                              onClick: () => openReviewSettings(h)
+                                            }
+                                          ]
+                                        : []),
+                                      {
+                                        icon: 'rotate-ccw-clock' as const,
+                                        label: hookRunsFor === h.id ? 'Hide recent deliveries' : 'Recent deliveries',
+                                        onClick: () => setHookRunsFor(hookRunsFor === h.id ? null : h.id)
+                                      },
+                                      ...routing.menuItems
+                                    ]}
+                                  />
+                                  <button
+                                    className="iconbtn h-[26px] w-[26px] flex-none"
+                                    title={`Stop watching ${gtRowPill(h)}`}
+                                    onClick={() => openModal('deleteHook', h)}
+                                  >
+                                    <Icon name="x" size={13} />
+                                  </button>
+                                </span>
                               </div>
-                            )}
-                            {hookRunsFor === h.id && (
-                              <HookRunsPanel hookId={h.id} sessionHref={(sid) => orgPath(`/sessions/${sid}`)} />
-                            )}
-                          </div>
-                        ))}
+                              {routing.error}
+                              {addFamilyError?.key === repoKey && addFamilies.length > 0 && (
+                                <div className="px-[14px] pb-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
+                                  {addFamilyError.message}
+                                </div>
+                              )}
+                              {hookRunsFor === h.id && (
+                                <HookRunsPanel hookId={h.id} sessionHref={(sid) => orgPath(`/sessions/${sid}`)} />
+                              )}
+                            </div>
+                          )
+                        })}
                         <div className="px-[14px] py-2">
                           {/* Straight to the Gitea pane — this button adds a repository, not a bot. */}
                           <button
@@ -2866,17 +2820,7 @@ export default function AgentDetailView() {
       {/* One review/check settings surface, rendered as a bottom sheet on mobile
           and a centered dialog on desktop. The dense repository rows only open
           it; they do not duplicate policy controls. */}
-      {routingEvaluationsFor && decisionsPrototype && (
-        <DecisionEvaluationsDrawer
-          source={codeHostRoutingEvaluations(
-            decisionsPrototype.api,
-            decisionsPrototype.orgId,
-            routingEvaluationsFor.routing
-          )}
-          channelName={routingEvaluationsFor.subtitle}
-          onClose={() => setRoutingEvaluationsFor(null)}
-        />
-      )}
+      {routingEvaluationsDrawer}
 
       {reviewSettingsDraft && reviewSettingsHook && (
         <div

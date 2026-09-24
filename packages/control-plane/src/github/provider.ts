@@ -9,7 +9,7 @@
  * disagree about — the App installation claim, App-JWT credential minting, and
  * the GitHub-only workflow-approval and review surfaces.
  */
-import { gitRepoLabel, normalizeGitUrl } from '@agentconnect.md/protocol'
+import { HOOK_DECISION_ROUTING_V1_FEATURE, gitRepoLabel, normalizeGitUrl } from '@agentconnect.md/protocol'
 import {
   refuseWorkspaceCredential,
   type CodeHostDeps,
@@ -152,6 +152,18 @@ export const githubCodeHostProvider: CodeHostProviderModule = {
     // The App's webhook is deployment-wide: no hook or grant write can change
     // what it delivers, so there is nothing to converge.
     convergeManagedRepository: () => {}
+  },
+  routing: {
+    requiredFeatures: [HOOK_DECISION_ROUTING_V1_FEATURE],
+    familyLabel: (family) => (family === 'issues' ? 'issues' : 'pull requests'),
+    // Comments arrive as issue_comment on both subjects; the comment family narrows it to the scope's own.
+    anyUpdateCadence: (family) => ({
+      events: [`${family}:*`, 'issue_comment:created'],
+      commentFamilies: [family],
+      mentionOnly: false
+    }),
+    // The hook row's repoFullName is kept current by the GitHub rename repair.
+    repositoryPath: async () => undefined
   },
 
   /** Raising the tier re-checks the CALLER's own GitHub permission on the repository. */

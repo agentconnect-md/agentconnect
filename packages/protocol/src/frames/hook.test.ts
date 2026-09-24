@@ -16,6 +16,9 @@ import {
   decodeEnvelope,
   isGithubPullRequestRevisionEvent,
   isFrame,
+  CODE_HOST_PROVIDERS,
+  CODE_HOST_ROUTING_PROVIDERS,
+  isCodeHostRoutingScope,
   pickCodeHostHookMembers,
   RdAck,
   RdMsgHook
@@ -550,5 +553,14 @@ describe('code-host Decision routing shapes (code-host-decisions.md §3-§5)', (
       }
     })
     expect(ack.hookRoute?.targets[0]?.hookId).toBe(HOOK_ID)
+  })
+})
+
+describe('code-host routing scopes', () => {
+  it('lists every code-host provider, each with its own routable families', () => {
+    expect([...CODE_HOST_ROUTING_PROVIDERS].sort()).toEqual([...CODE_HOST_PROVIDERS].sort())
+    expect(isCodeHostRoutingScope('gitlab', 'merge_request')).toBe(true)
+    expect(isCodeHostRoutingScope('github', 'merge_request')).toBe(false)
+    expect(isCodeHostRoutingScope('gitea', 'pull_request')).toBe(false)
   })
 })

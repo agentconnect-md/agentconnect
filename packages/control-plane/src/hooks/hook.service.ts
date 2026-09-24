@@ -39,7 +39,7 @@ import { hookRuleSupported, type RelayControlSender } from '../orchestrator/rela
 import { PLACEMENT_ONLY, type PlacementResolver } from '../orchestrator/placementResolver.js'
 import type { RelayChannel } from '../ws/relay-registry.js'
 import { toDbPlatform } from '../persistence/platform.js'
-import { isRoutingFamily, routedCadence } from './hook-routing.js'
+import { routingScopeOf } from './hook-routing.js'
 
 /** The narrow agent read the compiler needs (placement lookup). */
 export interface HookAgentReads {
@@ -103,7 +103,7 @@ export class HookService {
     private readonly projectAgentSpec?: (orgId: OrgId, agentId: AgentId) => Promise<void>,
     /** Absent ⇒ gitea hooks never compile (no connection surface wired). */
     private readonly gitea?: GiteaHookCompileSources,
-    /** The repository scopes' Decision routings; absent ⇒ every github rule compiles unrouted. */
+    /** The repository scopes' Decision routings; absent ⇒ every code-host rule compiles unrouted. */
     private readonly routings?: Pick<CodeHostDecisionRoutingRepo, 'get'>
   ) {}
 
@@ -121,8 +121,9 @@ export class HookService {
 
   /** The rule's routing: undefined when its scope is unrouted or paused, null when routed without a placed host (held). */
   private async routingOf(hook: HookRecord): Promise<RcHookRouting | undefined | null> {
-    if (!this.routings || hook.repoId === null || !isRoutingFamily(hook.family)) return undefined
-    const record = await this.routings.get({ orgId: hook.orgId, repoId: hook.repoId, family: hook.family })
+    const scope = routingScopeOf(hook)
+    if (!this.routings || !scope) return undefined
+    const record = await this.routings.get(scope)
     if (!record || !record.enabled) return undefined
     const host = record.evaluationAgentId ? await this.agents.getUnscoped(record.evaluationAgentId) : null
     const hostDaemonId = host && host.pause !== true ? await this.placement.routableDaemon(host) : null
@@ -199,6 +200,15 @@ export class HookService {
         }
       }
     }
+    // A routed scope without a live host leaves the pool rather than firing unrouted.
+    const routing = await this.routingOf(hook)
+    if (routing === null) return null
+    // A routed rule fires on every update in its provider's vocabulary (code-host-decisions.md §4); the stored mode is kept.
+    const scope = routing ? routingScopeOf(hook) : null
+    const cadence = scope
+      ? codeHostProviders[scope.provider].routing.anyUpdateCadence(scope.family)
+      : { events: hook.events, commentFamilies: hook.commentFamilies, mentionOnly: hook.mentionOnly }
+    const routed = routing ? { routing } : {}
     if (hook.kind === 'gitlab') {
       // gitlab (§11.3): the rule carries the hook agent's runtime identity and
       // the inline signing token. A hook without a working ingress (no webhook,
@@ -223,20 +233,21 @@ export class HookService {
       return {
         ...base,
         kind: 'gitlab',
+        ...routed,
         gitlab: {
           projectId: hook.repoId.toString(),
           projectPath: binding.projectPath,
           sessionKeyPrefix: hook.githubSessionKey ?? `gitlab:${hook.repoId}`,
-          events: hook.events,
-          ...(hook.commentFamilies.length > 0
+          events: cadence.events,
+          ...(cadence.commentFamilies.length > 0
             ? {
-                commentFamilies: hook.commentFamilies.filter(
+                commentFamilies: cadence.commentFamilies.filter(
                   (family): family is 'issues' | 'merge_request' => family !== 'pull_request'
                 )
               }
             : {}),
           labelFilter: hook.labelFilter,
-          mentionOnly: hook.mentionOnly,
+          mentionOnly: cadence.mentionOnly,
           agentName: agent.name,
           serviceAccountUserId: account.serviceAccountUserId.toString(),
           serviceAccountUsername: account.username,
@@ -261,21 +272,22 @@ export class HookService {
       return {
         ...base,
         kind: 'gitea',
+        ...routed,
         gitea: {
           repoId: hook.repoId.toString(),
           repoPath: binding.repoPath,
           sessionKeyPrefix: hook.githubSessionKey ?? `gitea:${hook.repoId}`,
-          events: hook.events,
+          events: cadence.events,
           // The row stores the merge_request FAMILY scope; the wire names the comment SUBJECT the relay filters on.
-          ...(hook.commentFamilies.length > 0
+          ...(cadence.commentFamilies.length > 0
             ? {
-                commentFamilies: hook.commentFamilies.map((family): 'issues' | 'pull_request' =>
+                commentFamilies: cadence.commentFamilies.map((family): 'issues' | 'pull_request' =>
                   family === 'issues' ? 'issues' : 'pull_request'
                 )
               }
             : {}),
           labelFilter: hook.labelFilter,
-          mentionOnly: hook.mentionOnly,
+          mentionOnly: cadence.mentionOnly,
           agentName: agent.name,
           botUserId: connection.botUserId.toString(),
           botUsername: connection.botUsername,
@@ -292,30 +304,20 @@ export class HookService {
     if (hook.repoId === null || !hook.repoFullName || !this.installations) return null
     const valid = (await this.installations.listForOrg(hook.orgId)).filter((i) => !i.suspendedAt)
     if (valid.length === 0) return null
-    // A routed scope without a live host leaves the pool rather than firing unrouted.
-    const routing = await this.routingOf(hook)
-    if (routing === null) return null
     // Empty stored comment families keep the published API's legacy repo-wide meaning, so the optional field is omitted.
-    const cadence =
-      routing && isRoutingFamily(hook.family)
-        ? routedCadence(hook.family)
-        : {
-            events: hook.events,
-            commentFamilies: hook.commentFamilies.filter(
-              (family): family is 'issues' | 'pull_request' => family !== 'merge_request'
-            ),
-            mentionOnly: hook.mentionOnly
-          }
+    const commentFamilies = cadence.commentFamilies.filter(
+      (family): family is 'issues' | 'pull_request' => family !== 'merge_request'
+    )
     return {
       ...base,
       kind: 'github',
-      ...(routing ? { routing } : {}),
+      ...routed,
       github: {
         repoId: hook.repoId.toString(),
         repoFullName: hook.repoFullName,
         sessionKeyPrefix: hook.githubSessionKey ?? hook.repoFullName,
         events: cadence.events,
-        ...(cadence.commentFamilies.length > 0 ? { commentFamilies: cadence.commentFamilies } : {}),
+        ...(commentFamilies.length > 0 ? { commentFamilies } : {}),
         labelFilter: hook.labelFilter,
         // The App slug broadcasts to every matching rule; the immutable agent slug targets this one.
         mentionOnly: cadence.mentionOnly,

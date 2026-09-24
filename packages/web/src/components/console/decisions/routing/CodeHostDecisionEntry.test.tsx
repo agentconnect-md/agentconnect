@@ -60,8 +60,30 @@ const members = [
   { agentId: 'a1', hookId: 'h1', name: 'review-bot' },
   { agentId: 'a2', hookId: 'h2', name: 'security-bot' }
 ]
-const prScope: CodeHostRoutingScope = { repoId: '42', family: 'pull_request', repoFullName: 'acme/api' }
-const issuesScope: CodeHostRoutingScope = { repoId: '42', family: 'issues', repoFullName: 'acme/api' }
+const prScope: CodeHostRoutingScope = {
+  provider: 'github',
+  repoId: '42',
+  family: 'pull_request',
+  repoFullName: 'acme/api'
+}
+const issuesScope: CodeHostRoutingScope = {
+  provider: 'github',
+  repoId: '42',
+  family: 'issues',
+  repoFullName: 'acme/api'
+}
+const gitlabMrScope: CodeHostRoutingScope = {
+  provider: 'gitlab',
+  repoId: '7',
+  family: 'merge_request',
+  repoFullName: 'group/api'
+}
+const giteaPrScope: CodeHostRoutingScope = {
+  provider: 'gitea',
+  repoId: '9',
+  family: 'merge_request',
+  repoFullName: 'acme/api'
+}
 const routed = {
   enabled: true,
   decisionId: 'needs-response',
@@ -164,20 +186,59 @@ describe('CodeHostDecisionEntry', () => {
     )
   })
 
-  it('PUTs the rules and DELETEs them against the live API', async () => {
-    mocks.mockMode = false
-    mocks.fetchCodeHostRouting.mockResolvedValue(dto(prScope))
-    mocks.saveCodeHostRouting.mockImplementation(async (_repoId, _family, config) =>
-      dto(prScope, { config, status: 'enabled' })
+  it('words a GitLab merge-request row for MRs', async () => {
+    await render(gitlabMrScope)
+    expect(
+      document.body.querySelector<HTMLButtonElement>('button[aria-label="Add decision"]')?.getAttribute('title')
+    ).toBe(
+      'Every MR goes to all agents. Add a decision to pick reviewers on every update; the rows then run on any update.'
     )
-    mocks.deleteCodeHostRouting.mockResolvedValue(undefined)
-    await render()
-    expect(mocks.fetchCodeHostRouting).toHaveBeenCalledWith('42', 'pull_request', 'org-test')
+    await click(document.body.querySelector<HTMLButtonElement>('button[aria-label="Add decision"]'))
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain(
+      'Merge requests · picks reviewers among review-bot, security-bot'
+    )
+  })
+
+  it('words a Gitea merge_request row as the pull request Gitea calls it', async () => {
+    await render(giteaPrScope)
+    expect(
+      document.body.querySelector<HTMLButtonElement>('button[aria-label="Add decision"]')?.getAttribute('title')
+    ).toBe(
+      'Every PR goes to all agents. Add a decision to pick reviewers on every update; the rows then run on any update.'
+    )
+  })
+
+  it('PUTs a GitLab scope with its provider', async () => {
+    mocks.mockMode = false
+    mocks.fetchCodeHostRouting.mockResolvedValue(dto(gitlabMrScope))
+    mocks.saveCodeHostRouting.mockImplementation(async (_scope, config) =>
+      dto(gitlabMrScope, { config, status: 'enabled' })
+    )
+    await render(gitlabMrScope)
+    expect(mocks.fetchCodeHostRouting).toHaveBeenCalledWith(gitlabMrScope, 'org-test')
     await pickRules()
     await click(button('Save'))
     expect(mocks.saveCodeHostRouting).toHaveBeenCalledWith(
-      '42',
-      'pull_request',
+      expect.objectContaining({ provider: 'gitlab', repoId: '7', family: 'merge_request' }),
+      expect.objectContaining({ decisionId: 'needs-response' }),
+      'org-test'
+    )
+    expect(
+      document.body.querySelector('button[aria-label="Stop using By decision — every MR goes to all agents"]')
+    ).toBeTruthy()
+  })
+
+  it('PUTs the rules and DELETEs them against the live API', async () => {
+    mocks.mockMode = false
+    mocks.fetchCodeHostRouting.mockResolvedValue(dto(prScope))
+    mocks.saveCodeHostRouting.mockImplementation(async (_scope, config) => dto(prScope, { config, status: 'enabled' }))
+    mocks.deleteCodeHostRouting.mockResolvedValue(undefined)
+    await render()
+    expect(mocks.fetchCodeHostRouting).toHaveBeenCalledWith(prScope, 'org-test')
+    await pickRules()
+    await click(button('Save'))
+    expect(mocks.saveCodeHostRouting).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'github', repoId: '42', family: 'pull_request' }),
       {
         enabled: true,
         decisionId: 'needs-response',
@@ -195,7 +256,10 @@ describe('CodeHostDecisionEntry', () => {
     await click(
       document.body.querySelector('button[aria-label="Stop using By decision — every PR goes to all agents"]')
     )
-    expect(mocks.deleteCodeHostRouting).toHaveBeenCalledWith('42', 'pull_request', 'org-test')
+    expect(mocks.deleteCodeHostRouting).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'github', repoId: '42', family: 'pull_request' }),
+      'org-test'
+    )
     expect(document.body.querySelector<HTMLButtonElement>('button[aria-label="Add decision"]')).toBeTruthy()
   })
 

@@ -15,7 +15,7 @@ import { rawAnswerFields, type DecisionEvaluationInput } from '../decisions/eval
 import { DEFAULT_DECISION_GATE_LIMITS } from '../decisions/gate.js'
 import type { DecisionStateResult } from '../decisions/state.js'
 import type { ChannelRecordRef, DecisionVerdictRow, LocalStore } from '../store/local-store.js'
-import { buildGithubHookState } from './decision-state.js'
+import { buildCodeHostHookState } from './decision-state.js'
 
 /** A code-host routing's verdict subject (code-host-decisions.md §5 step 4). */
 export const hookRouterSubject = (routingId: string): string => `hook-router:${routingId}`
@@ -183,7 +183,7 @@ export class HookRouter {
     try {
       const window = await store.decisionWindow(row.orgId, row.channel, row.seq, undefined, undefined, { thread })
       built = window.current
-        ? buildGithubHookState({
+        ? buildCodeHostHookState({
             msg,
             current: window.current,
             history: window.history,

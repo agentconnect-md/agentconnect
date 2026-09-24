@@ -1,13 +1,14 @@
-import type { DecisionQuestion, RdMsgHook } from '@agentconnect.md/protocol'
+import type { DecisionQuestion, HookContext, RdMsgHook } from '@agentconnect.md/protocol'
 import {
   decisionEntryOf,
   fitsDecisionBudget,
   type DecisionStateEntry,
   type DecisionStateResult
 } from '../decisions/state.js'
+import { hookDecisionFacts, type HookDecisionSubject } from '../messages/hook-message.js'
 import type { ChannelTextRow } from '../store/local-store.js'
 
-export interface GithubHookStateInput {
+export interface CodeHostHookStateInput {
   msg: RdMsgHook
   current: ChannelTextRow
   /** Newest-first, the same thread's earlier rows. */
@@ -20,33 +21,33 @@ export interface GithubHookStateInput {
 /** The body is halved at most this many times before it is dropped outright. */
 const SUBJECT_BODY_HALVINGS = 12
 
-function eventOf(msg: RdMsgHook): { name?: string; action?: string } {
-  const c = msg.context
+function eventOf(msg: RdMsgHook, c: HookContext | undefined): { name?: string; action?: string } {
   const [family, ...rest] = (msg.event ?? '').split(':')
   const name = c?.event ?? (family || undefined)
   const action = c?.action ?? (rest.length ? rest.join(':') : undefined)
   return { ...(name ? { name } : {}), ...(action ? { action } : {}) }
 }
 
-function subjectOf(msg: RdMsgHook, body: string | undefined): Record<string, unknown> {
-  const c = msg.context
+function subjectOf(
+  c: HookContext | undefined,
+  id: HookDecisionSubject,
+  body: string | undefined
+): Record<string, unknown> {
   const s = c?.subject
-  const number = c?.number ?? msg.github?.pullNumber
-  const draft = s?.draft ?? msg.github?.isDraft
   const author = {
     ...(s?.authorLogin ? { login: s.authorLogin } : {}),
     ...(s?.authorType ? { type: s.authorType } : {}),
     ...(s?.authorAssociation ? { association: s.authorAssociation } : {})
   }
   return {
-    ...(msg.github?.subjectKind ? { kind: msg.github.subjectKind } : {}),
-    ...(number !== undefined ? { number } : {}),
+    ...(id.kind ? { kind: id.kind } : {}),
+    ...(id.number !== undefined ? { number: id.number } : {}),
     ...(c?.title ? { title: c.title } : {}),
     ...(c?.htmlUrl ? { url: c.htmlUrl } : {}),
     ...(Object.keys(author).length ? { author } : {}),
     labels: [...(c?.labels ?? [])],
     ...(s?.state ? { state: s.state } : {}),
-    ...(draft !== undefined ? { draft } : {}),
+    ...(id.draft !== undefined ? { draft: id.draft } : {}),
     ...(body !== undefined ? { body } : {})
   }
 }
@@ -58,13 +59,17 @@ function halve(text: string): string {
 }
 
 /** The code-host state Jev sees (code-host-decisions.md §5.1): chat field names, the subject beside them. */
-export function buildGithubHookState(input: GithubHookStateInput): DecisionStateResult {
+export function buildCodeHostHookState(input: CodeHostHookStateInput): DecisionStateResult {
   const { msg } = input
-  const association = msg.context?.authorAssociation
+  // Which host a delivery is, and its subject identity, come from its normalizer; a delivery of none is not judged.
+  const facts = hookDecisionFacts(msg)
+  if (!facts) return { unsupported: true }
+  const c = facts.context
+  const association = c?.authorAssociation
   const base = decisionEntryOf(input.current, false)
   const current = { ...base, sender: { ...base.sender, ...(association ? { association } : {}) } }
   const candidates = input.history.map((row) => decisionEntryOf(row, true))
-  const repository = msg.github?.repoFullName ?? msg.context?.repo
+  const repository = facts.subject.repoPath
   const compose = (included: DecisionStateEntry[], body: string | undefined, bodyTrimmed: boolean) => {
     const omitted = candidates.length - included.length
     const reasons: string[] = []
@@ -75,10 +80,10 @@ export function buildGithubHookState(input: GithubHookStateInput): DecisionState
       reasons,
       omitted,
       state: {
-        source: 'github',
-        event: eventOf(msg),
+        source: facts.provider,
+        event: eventOf(msg, c),
         repository: repository ? { fullName: repository } : {},
-        subject: subjectOf(msg, body),
+        subject: subjectOf(c, facts.subject, body),
         currentMessage: current,
         history: [...included].reverse(),
         context: {
@@ -92,7 +97,7 @@ export function buildGithubHookState(input: GithubHookStateInput): DecisionState
     }
   }
   const fits = (state: Record<string, unknown>) => fitsDecisionBudget(state, input.question, input.model)
-  let body = msg.context?.subject?.body
+  let body = c?.subject?.body
   // Oldest history goes first: the kept set is the newest suffix that fits beside the full body.
   const included: DecisionStateEntry[] = []
   for (const entry of candidates) {

@@ -8,7 +8,8 @@ import type {
   HookRepo
 } from '../persistence/ports.js'
 import type { PlacementResolver } from '../orchestrator/placementResolver.js'
-import { chooseEvaluationAgent, isRoutingFamily, routingMembers, type HostCandidate } from './hook-routing.js'
+import { codeHostProviders } from '../codehost/registry.js'
+import { chooseEvaluationAgent, routingMembers, routingScopeOf, type HostCandidate } from './hook-routing.js'
 import type { HookRoutingReconciler, HookService } from './hook.service.js'
 
 export interface HookRoutingServiceDeps {
@@ -25,7 +26,7 @@ export interface HookRoutingServiceDeps {
   log?: { warn(obj: unknown, msg?: string): void }
 }
 
-const scopeKey = (s: CodeHostRoutingScope) => `${s.orgId}\u0000${s.repoId}\u0000${s.family}`
+const scopeKey = (s: CodeHostRoutingScope) => `${s.orgId}\u0000${s.provider}\u0000${s.repoId}\u0000${s.family}`
 
 /** Keeps each code-host routing scope converged (code-host-decisions.md §3.2): its host, its rules, its hosts' specs. */
 export class HookRoutingService implements HookRoutingReconciler {
@@ -37,14 +38,18 @@ export class HookRoutingService implements HookRoutingReconciler {
     opts: { formerHost?: AgentId | null; membersChanged?: boolean; onlyIfHostMoves?: boolean } = {}
   ): Promise<void> {
     const record = await this.deps.routings.get(scope)
-    const scopeHooks = (await this.deps.hooks.listForOrgKind(scope.orgId, 'github')).filter(
+    const scopeHooks = (await this.deps.hooks.listForOrgKind(scope.orgId, scope.provider)).filter(
       (h) => h.repoId === scope.repoId && h.family === scope.family
     )
     const hosts = new Set<AgentId>()
     if (opts.formerHost) hosts.add(opts.formerHost)
     if (record) {
       const current = record.evaluationAgentId
-      const next = chooseEvaluationAgent(current, await this.candidates(routingMembers(scopeHooks, scope)))
+      const next = chooseEvaluationAgent(
+        current,
+        await this.candidates(routingMembers(scopeHooks, scope)),
+        codeHostProviders[scope.provider].routing.requiredFeatures
+      )
       if (next !== current) {
         if (!(await this.deps.routings.setEvaluationAgent(record.id, current, next as AgentId | null))) {
           // A concurrent reconcile moved it first; its own pass converges the scope.
@@ -78,7 +83,7 @@ export class HookRoutingService implements HookRoutingReconciler {
     const hosted = await this.deps.routings.listForHost(agentId)
     const scopes = new Map<string, CodeHostRoutingScope>()
     for (const s of [...this.scopesOf(await this.deps.hooks.listForAgent(agentId)), ...hosted]) {
-      scopes.set(scopeKey(s), { orgId: s.orgId, repoId: s.repoId, family: s.family })
+      scopes.set(scopeKey(s), { orgId: s.orgId, provider: s.provider, repoId: s.repoId, family: s.family })
     }
     for (const scope of scopes.values()) {
       if (!(await this.deps.routings.get(scope))) continue
@@ -98,9 +103,8 @@ export class HookRoutingService implements HookRoutingReconciler {
   ): CodeHostRoutingScope[] {
     const scopes = new Map<string, CodeHostRoutingScope>()
     for (const h of hooks) {
-      if (!h || h.kind !== 'github' || h.repoId === null || !isRoutingFamily(h.family)) continue
-      const scope = { orgId: h.orgId, repoId: h.repoId, family: h.family }
-      scopes.set(scopeKey(scope), scope)
+      const scope = h ? routingScopeOf(h) : null
+      if (scope) scopes.set(scopeKey(scope), scope)
     }
     return [...scopes.values()]
   }
@@ -129,7 +133,7 @@ export class HookRoutingService implements HookRoutingReconciler {
       await run()
     } catch (err) {
       this.deps.log?.warn(
-        { err, orgId: scope.orgId, repoId: scope.repoId.toString(), family: scope.family },
+        { err, orgId: scope.orgId, provider: scope.provider, repoId: scope.repoId.toString(), family: scope.family },
         'hook routing: scope reconcile deferred'
       )
     }

@@ -5,7 +5,10 @@ import {
   DecisionToolDefinition,
   decisionConditionNeedsReview,
   decisionRoutingIssues,
+  isCodeHostRoutingScope,
   SharedBotDecisionRouting,
+  type CodeHostRoutingFamily,
+  type CodeHostRoutingProvider,
   type DecisionListRequest,
   type DecisionDefinition,
   type DecisionDraftInput
@@ -186,6 +189,7 @@ export class PgDecisionRepo implements DecisionRepo {
         where: { decisionId: id, orgId },
         select: {
           id: true,
+          provider: true,
           repoId: true,
           family: true,
           enabled: true,
@@ -224,7 +228,16 @@ export class PgDecisionRepo implements DecisionRepo {
         consumerIntegrationIds: [...new Set(consumers.map((c) => c.integrationId))].map(IntegrationId),
         consumerBotIds: routings.map((r) => BotId(r.botId)),
         consumerCodeHostRoutings: codeHost.flatMap((r) =>
-          r.family === 'issues' || r.family === 'pull_request' ? [{ orgId, repoId: r.repoId, family: r.family }] : []
+          isCodeHostRoutingScope(r.provider, r.family)
+            ? [
+                {
+                  orgId,
+                  provider: r.provider as CodeHostRoutingProvider,
+                  repoId: r.repoId,
+                  family: r.family as CodeHostRoutingFamily
+                }
+              ]
+            : []
         )
       }
     })

@@ -166,4 +166,26 @@ describe('hook routings per peer (code-host-decisions.md §3.3)', () => {
     expect(encodeAgentSpecForPeer(spec, [])).not.toHaveProperty('hookRoutings')
     expect(encodeAgentSpecForPeer(spec, undefined)).not.toHaveProperty('hookRoutings')
   })
+
+  it('strips a GitLab or Gitea projection from a daemon without hook-decision-routing-v2', () => {
+    const projection = (provider: 'github' | 'gitlab' | 'gitea', family: 'issues' | 'merge_request') =>
+      ({ routingId: `${provider}-routing`, provider, family }) as unknown as NonNullable<
+        AgentSpec['hookRoutings']
+      >[number]
+    const mixed = {
+      ...spec,
+      hookRoutings: [
+        projection('github', 'issues'),
+        projection('gitlab', 'merge_request'),
+        projection('gitea', 'issues')
+      ]
+    }
+    expect(encodeAgentSpecForPeer(mixed, ['hook-decision-routing-v1']).hookRoutings?.map((r) => r.provider)).toEqual([
+      'github'
+    ])
+    expect(
+      encodeAgentSpecForPeer(mixed, ['hook-decision-routing-v1', 'hook-decision-routing-v2']).hookRoutings
+    ).toHaveLength(3)
+    expect(encodeAgentSpecForPeer(mixed, ['hook-decision-routing-v2'])).not.toHaveProperty('hookRoutings')
+  })
 })
