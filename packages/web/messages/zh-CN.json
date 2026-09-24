@@ -1242,6 +1242,7 @@
     "agentConnect": "AgentConnect",
     "uninstallFirst": "请先卸载该集成",
     "defaultDispatch": "默认分发",
+    "dispatch": "分发",
     "directMessages": "私信",
     "groupDm": "群组私信",
     "directMessage": "私信",
@@ -1286,8 +1287,17 @@
       "defaultDispatch": {
         "button": "默认分发——{agent}",
         "label": "默认分发",
-        "thisAgent": "当前Agent",
-        "makeDefault": "将{agent}设为默认"
+        "thisAgent": "当前Agent"
+      },
+      "dispatch": {
+        "sendTo": "所有消息发送给",
+        "orDecision": "或按决策选择",
+        "routedButton": "按决策分发——{name}",
+        "routingFallback": "按决策",
+        "editRouting": "编辑按决策规则",
+        "add": "决策",
+        "addTitle": "用决策为每条消息选择Agent",
+        "stop": "此频道停止使用按决策"
       },
       "gatedNote": "私有Agent仅会在下方启用的对话中响应。",
       "linearGatedNote": "私有Agent仅会在其作为默认Agent的团队中响应。",
@@ -1316,10 +1326,10 @@
         "sessionMode": "会话模式",
         "ariaLabel": "{name}的设置：{value}",
         "menuLabel": "{name}的设置",
-        "optionHint": "<b>{label}</b>——<hint></hint>"
-      },
-      "managedByRouting": "由 {bot} 路由管理",
-      "managedByRoutingHint": "此 Bot 的路由决定由哪个 Agent 在这里回复。"
+        "optionHint": "<b>{label}</b>——<hint></hint>",
+        "respondLocked": "无法设置触发条件",
+        "respondLockedHint": "按决策会决定哪些消息得到回复、由哪个 Agent 回答。移除该决策后才能在这里选择触发条件。"
+      }
     },
     "github": {
       "sync": "同步",
@@ -1766,13 +1776,6 @@
           "existing": "未使用的 QQ 机器人"
         }
       }
-    },
-    "botRouting": {
-      "title": "路由",
-      "configure": "配置路由",
-      "open": "打开路由",
-      "summary": "按决策 · {count, plural, other {# 个频道}}",
-      "notConfigured": "未配置"
     }
   },
   "Agents": {
@@ -2280,9 +2283,21 @@
         "providerModel": "Provider · 模型",
         "chooseDecision": "选择 Decision",
         "openDecision": "在 Decisions 中打开 {name}",
-        "evaluator": "评估模型",
+        "decision": "Decision",
+        "viewAndEdit": "查看并编辑",
+        "types": {
+          "choice": "选项",
+          "boolean": "布尔",
+          "score": "评分"
+        },
+        "when": {
+          "choice": "当答案为",
+          "boolean": "当答案为",
+          "score": "当评分在"
+        },
+        "use": "使用",
+        "min": "最低",
         "rules": "规则",
-        "condition": "答案 / 条件",
         "answer": "规则 {index} 的答案",
         "probability": "规则 {index} 的概率",
         "choiceHelp": "达到阈值的答案中，概率最高者优先；相同概率按规则顺序。",
@@ -2314,8 +2329,6 @@
           "booleanResult": "{value} · true 的概率为 {probability}%",
           "text4": "评估暂时不可用"
         },
-        "answerColumn": "答案",
-        "probabilityColumn": "概率",
         "add": "添加"
       },
       "runtimeModel": {
@@ -4276,8 +4289,14 @@
       "helpMentions": "@提及不会跳过决策；它只决定可以被触发的 Agent 是这一个。",
       "helpHistory": "最近的对话历史会自动包含在内，包括没有触发 Agent 的消息。",
       "helpUnavailable": "如果评估不可用，符合条件的消息会继续交给该 Agent。",
-      "activates": "激活",
-      "activatesAgent": "激活 {agent}",
+      "add": "决策",
+      "addTitle": "Agent 回复前先用决策评估每条消息",
+      "editRules": "编辑按决策规则",
+      "stop": "停止使用按决策",
+      "rulesTitle": "<name>{channel}</name> · 按决策规则",
+      "rulesTitleBare": "按决策规则",
+      "rulesSubtitle": "决定 <name>{agent}</name> 何时在此频道回复",
+      "close": "关闭",
       "noDecisions": "还没有决策。新建一个来评估这里的消息。",
       "hiddenDecision": "你无权查看的决策",
       "saving": "正在保存…",
@@ -4365,6 +4384,7 @@
     },
     "providerModel": "提供方 · 模型",
     "gateTry": {
+      "placeholder": "在此频道试一条消息…",
       "senderLabel": "历史消息 {index} 的发送者",
       "historyLabel": "历史消息 {index}",
       "wouldSkip": "将跳过",
@@ -4497,18 +4517,25 @@
       }
     },
     "routing": {
-      "metadata": {
-        "title": "路由 · AgentConnect"
-      },
-      "breadcrumb": {
-        "integrations": "集成",
-        "configuration": "配置",
-        "routing": "路由"
+      "modal": {
+        "subtitle": "<name>{bot}</name> · 在 <name>{agents}</name> 中选择",
+        "unsaved": "保存后，按决策规则才会在此频道生效。",
+        "alsoApplies": "这些规则属于整个 Bot，也会作用于 {names}。",
+        "answer": "答案",
+        "minProbability": "最低概率",
+        "triggers": "触发",
+        "minFor": "{answer} 的最低概率",
+        "targetFor": "{answer} 的目标",
+        "doNotTrigger": "不触发",
+        "useOtherwise": "使用兜底",
+        "hiddenAgent": "你无法查看的 Agent",
+        "otherwiseHint": "没有规则匹配，或评估不可用",
+        "openBot": "打开 Bot 配置",
+        "offIn": "{channel} 在 {agents} 上是关闭状态。请先在那里开启，再按决策路由。",
+        "offBare": "{channel} 是关闭状态。请先开启，再按决策路由。"
       },
       "title": "路由",
-      "subtitle": "根据一个决策的回答，选择由哪些已连接的 Agent 接收消息。",
       "recentEvaluations": "最近评估",
-      "notShared": "路由仅适用于服务多个 Agent 的共享机器人。",
       "notFound": "此机器人不存在，或你无权查看它的任何 Agent。",
       "loadError": "无法加载路由。{message}",
       "retryLoad": "重试",
@@ -4525,68 +4552,20 @@
         "draft": "未保存的草稿"
       },
       "banner": {
-        "pendingSync": "已保存，尚未生效。评估主机和 Relay 确认后即会生效。",
-        "needsReview": "决策已更改，路由已停用，需修复标出的规则并保存后才能恢复。",
-        "openDecision": "打开决策",
-        "missingCredentials": "{provider} 没有组织密钥，也没有可用的 Cloud 支持，因此评估会失败并使用其后续投递。",
-        "insufficientCredits": "{provider} 没有组织密钥，且组织的 AC 额度已用尽，因此评估会失败并使用其后续投递。",
-        "unknownProvider": "此决策的提供方",
-        "providerKeys": "打开提供方密钥",
-        "daemonOffline": "没有可以评估此机器人对话的 Daemon 在线。路由的消息会等待其重新连接。",
-        "unsupportedHost": "请先升级评估主机 Daemon，然后才能启用此配置。",
-        "unsupportedRelay": "请先升级 Relay 以转发路由的对话，然后才能启用此配置。",
-        "noAgents": "此机器人没有可用的已连接 Agent，因此无法保存“路由到 Agent”规则。",
-        "connectAgent": "连接 Agent",
-        "paused": "路由已暂停。在重新启用之前，这些频道中的新消息（包括 @提及和话题回复）都不会被投递。"
-      },
-      "empty": {
-        "title": "尚未配置路由",
-        "body": "根据决策的回答，将每个新对话路由给相应的 Agent。保存之前不会有任何更改。",
-        "start": "配置路由"
-      },
-      "enabled": {
-        "label": "已启用",
-        "pauseHint": "暂停会停止这些频道中的新投递，包括 @提及和话题回复。正在运行的回合会继续，控制命令仍然可用。"
+        "needsReview": "决策已更改，路由已停用，需修复标出的规则并保存后才能恢复。"
       },
       "decision": {
         "label": "决策",
         "select": "选择决策…",
         "summary": "{type} · {model}",
-        "edit": "编辑",
-        "view": "查看",
-        "create": "新建决策",
         "required": "请选择一个决策。",
         "hidden": "你无权查看的决策",
         "typeChanged": "该决策的问题类型与这些规则不一致。请更新每条规则的条件；系统不会替你重新选择。"
       },
-      "channels": {
-        "label": "频道",
-        "search": "搜索频道",
-        "manage": "对话设置",
-        "count": "{count, plural, other {# 个频道}}",
-        "none": "未选择频道。添加频道之前，路由不会在任何地方生效。",
-        "offRow": "关闭",
-        "enableFirst": "在频道设置中启用",
-        "gateRow": "已有自己的按决策门控；添加后将替换该门控。",
-        "applyNote": "保存后将对 {names} 应用按决策触发。",
-        "conversationSettings": "打开此机器人的对话设置",
-        "noEligible": "此机器人还没有群组频道。",
-        "hidden": "由于你无权查看此机器人的 Agent，频道名称已隐藏。"
-      },
       "removal": {
-        "title": "替换 {channel} 中的路由",
-        "trigger": "替换触发方式",
-        "triggerRequired": "请选择 {channel} 改用的触发方式。",
-        "defaultAgent": "默认 Agent",
-        "keep": "保留当前默认",
-        "triggers": {
-          "off": "关闭",
-          "mention": "@提及",
-          "auto": "任意消息"
-        }
+        "triggerRequired": "请选择 {channel} 改用的触发方式。"
       },
       "rules": {
-        "title": "规则",
         "choiceHint": "每个达到阈值的选项都会生效。",
         "scoreHint": "各行按下限排序；区间不能重叠。",
         "number": "规则 {number}",
@@ -4594,9 +4573,7 @@
         "then": "动作",
         "add": "添加规则",
         "remove": "移除规则 {number}",
-        "empty": "没有规则。所有消息都使用“否则”。",
-        "gap": "{interval} 使用“否则”",
-        "dedupe": "多条规则可以指向同一个 Agent；它只会收到一次消息。"
+        "empty": "没有规则。所有消息都使用“否则”。"
       },
       "action": {
         "label": "规则 {number} 的动作",
@@ -4615,10 +4592,7 @@
       "otherwise": {
         "label": "否则",
         "default": "使用默认 Agent",
-        "skip": "不激活",
-        "appliesHint": "仅在没有规则匹配时生效。",
-        "perChannel": "{channel}：{agent}",
-        "noDefault": "无默认 Agent"
+        "skip": "不激活"
       },
       "notes": {
         "mentions": "@提及和话题回复同样会被评估，也可能被跳过。",
@@ -4626,15 +4600,10 @@
         "history": "最近的对话历史会自动包含在内。"
       },
       "footer": {
-        "test": "测试路由",
         "cancel": "取消",
         "save": "保存",
         "saving": "正在保存…",
-        "saved": "已保存",
-        "retry": "重试",
-        "unsaved": "有未保存的更改",
-        "newDraft": "新配置，尚未保存",
-        "invalid": "请修正标出的字段后再保存。"
+        "retry": "重试"
       },
       "saveError": {
         "invalid": "请检查标出的字段后重新保存。",
@@ -4643,7 +4612,7 @@
         "unsupported": "Relay 或评估主机尚不支持路由。请升级后重试。",
         "conflict": "你编辑期间机器人已发生变化。{message}",
         "failed": "保存失败——你的更改已保留。{message}",
-        "keptDecision": "你新建的决策已保留；重试会保存相同的配置。"
+        "refused": "无法保存：{message}"
       },
       "try": {
         "title": "测试路由",
@@ -4756,6 +4725,22 @@
           "asConfigured": "按评估运行时的决策和路由显示。"
         },
         "subtitle": "共享机器人路由"
+      },
+      "codeHost": {
+        "subtitle": "Pull request · 在 <name>{agents}</name> 中选择 reviewer",
+        "preview": "预览：这些规则只保存在当前浏览器标签页中，暂不会真正选择 reviewer。",
+        "everyAgent": "所有 Agent",
+        "evaluatedOnce": "在 PR 开启会话时评估一次；之后由被选中的 Agent 持续处理该 PR。",
+        "mentionsSkip": "@提及会直接指定 Agent，因此不经过决策。",
+        "otherwiseEveryAgent": "没有规则匹配时，和未使用决策时一样，由所有 Agent 审阅该 PR。",
+        "add": "决策",
+        "addTitle": "每个 PR 都会发给所有 Agent。添加决策可为每个 PR 选择 reviewer。",
+        "addBlocked": "@提及会直接指定 Agent。请先把触发方式从 @-mention 改掉，再添加决策。",
+        "pillTitle": "按决策 · {name}。在 PR 开启会话时评估一次；之后由被选中的 Agent 持续处理该 PR。点击编辑规则。",
+        "stop": "停止使用按决策——每个 PR 都会发给所有 Agent",
+        "stopMenu": "停止使用决策",
+        "mentionOff": "使用决策时不可用。@提及会直接指定 Agent，因此不经过决策。",
+        "hidden": "你无法查看的决策"
       }
     }
   },

@@ -17,11 +17,14 @@ import { Button, Icon, Toggle } from '@/components/ui'
 import { AgentIconView, LoadingState, PlatformMark } from '@/components/marks'
 import { useModal } from '@/components/console/ModalProvider'
 import { DefaultDispatchPicker } from '@/components/console/DefaultDispatchPicker'
+import { DecisionRoutingModal, stopRouting } from '@/components/console/decisions/routing/DecisionRoutingModal'
+import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
+import { useChannelGates } from '@/components/console/decisions/channel-gates'
 import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
 import { useOrgs } from '@/lib/org-context'
 import { creatorLabel, type BotDto, type MeDto } from '@/lib/api'
-import { agentLabel, isDirectConversation, type IntegrationRow } from '@/lib/data'
+import { agentLabel, isDirectConversation, type IntegrationChannelRow, type IntegrationRow } from '@/lib/data'
 import { roomGlyph, roomPlural, rowLabelParts, rowName } from '@/components/console/IntegrationChannelList'
 import { RevokedMarkDot } from '@/components/console/IntegrationMarks'
 import {
@@ -42,7 +45,6 @@ import DeleteBotModal from '@/components/console/modals/DeleteBotModal'
 import GithubCard from '@/components/console/GithubCard'
 import GiteaCard from '@/components/console/GiteaCard'
 import GitlabCard from '@/components/console/GitlabCard'
-import { botRoutingPath } from '@/lib/decisions/usage-links'
 
 // The free-bot sub-line shows where the bot came from without repeating
 // historical usage metadata in the list row.
@@ -112,6 +114,11 @@ interface BotChannelView {
   /** Any integration whose snapshot row backs this channel; ownership PATCHes
    *  are bot-scoped. */
   integrationId: string | null
+  /** The shared bot's By decision routing owns this conversation, and the routed Decision's visible name. */
+  routed: boolean
+  decisionName: string | null
+  /** The backing snapshot row, whose trigger and gate a single-owner bot's By decision reads. */
+  row: IntegrationChannelRow
 }
 
 // The bot's conversation roster, merged across its installs (a shared bot fans out to
@@ -122,7 +129,12 @@ function botChannels(bot: BotDto, integrations: IntegrationRow[]): BotChannelVie
     if (i.botId !== bot.id) continue
     for (const c of i.channels) {
       const explicit = c.agentId ?? null
+      const routed = c.trigger === 'decision' && c.decisionBinding?.type === 'shared_bot_routing'
       const prev = merged.get(c.channelId)
+      if (prev && routed && !prev.routed) {
+        prev.routed = true
+        prev.decisionName = c.decision?.name ?? null
+      }
       if (!prev) {
         merged.set(c.channelId, {
           channelId: c.channelId,
@@ -133,7 +145,10 @@ function botChannels(bot: BotDto, integrations: IntegrationRow[]): BotChannelVie
           ...(c.key ? { key: c.key } : {}),
           ...(c.url ? { url: c.url } : {}),
           agentId: explicit,
-          integrationId: i.id ?? null
+          integrationId: i.id ?? null,
+          routed,
+          decisionName: routed ? (c.decision?.name ?? null) : null,
+          row: c
         })
       } else if (!prev.agentId && explicit) {
         prev.agentId = explicit
@@ -148,35 +163,6 @@ function botChannels(bot: BotDto, integrations: IntegrationRow[]): BotChannelVie
     if (rank(a.kind) !== rank(b.kind)) return rank(a.kind) - rank(b.kind)
     return a.name.localeCompare(b.name)
   })
-}
-
-// The routed conversations of one shared bot, counted once across its installs.
-function routedChannelCount(bot: BotDto, integrations: IntegrationRow[]): number {
-  const routed = new Set<string>()
-  for (const i of integrations)
-    if (i.botId === bot.id)
-      for (const c of i.channels)
-        if (c.trigger === 'decision' && c.decisionBinding?.type === 'shared_bot_routing') routed.add(c.channelId)
-  return routed.size
-}
-
-/** A shared bot's Configuration → Routing entry, beneath its expanded row. */
-function BotRoutingEntry({ bot, integrations }: { bot: BotDto; integrations: IntegrationRow[] }) {
-  const t = useTranslations('Integrations.botRouting')
-  const { orgPath } = useOrgs()
-  const count = routedChannelCount(bot, integrations)
-  return (
-    <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-(--border-subtle) bg-(--surface-card) px-3 py-2">
-      <Icon name="split" size={13} color="var(--text-tertiary)" className="flex-none" />
-      <span className="font-sans text-[12.5px] font-semibold leading-normal">{t('title')}</span>
-      <span className="min-w-0 flex-1 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-        {count > 0 ? t('summary', { count }) : t('notConfigured')}
-      </span>
-      <Link href={botRoutingPath(bot.id, orgPath)} className="lnk text-[12px] font-medium">
-        {count > 0 ? t('open') : t('configure')}
-      </Link>
-    </div>
-  )
 }
 
 /** The page's two section headings. Cards own no top margin here — the section
@@ -274,9 +260,22 @@ function BotsCard({
 }) {
   const t = useTranslations('Integrations')
   const { orgPath } = useOrgs()
-  const { bots, integrations, getAgent, setBotShareable, setChannelAgent, loading: dataLoading } = useConsoleData()
+  const {
+    bots,
+    integrations,
+    getAgent,
+    setBotShareable,
+    setChannelAgent,
+    refresh,
+    loading: dataLoading
+  } = useConsoleData()
   // On an owner-as-default platform the seat IS a private agent's grant, so moving it is confirmed first.
   const ownerGuard = useOwnerChangeGuard()
+  const decisions = useOptionalDecisionsPrototype()
+  const gates = useChannelGates()
+  // The shared-bot conversation whose By decision rules modal is open, and a failed Stop to surface.
+  const [routingRow, setRoutingRow] = useState<{ botId: string; channelId: string; name: string } | null>(null)
+  const [routingErr, setRoutingErr] = useState<{ botId: string; msg: string } | null>(null)
   const tabs = visibleBotPlatformTabs(bots)
   const [platformTabKey, setPlatformTabKey] = useState<string>(tabs[0]?.key ?? '')
   // Bot row expanded to its channel roster (one at a time), the bot whose
@@ -437,7 +436,17 @@ function BotsCard({
           const channels = open ? botChannels(b, integrations) : []
           // One member is no choice — the column would name that agent on every row and offer nothing.
           const showDefaultDispatch = b.shareable && channels.length > 0 && b.agentIds.length > 1
-          const chanGrid = showDefaultDispatch ? 'grid-cols-[1fr_auto]' : 'grid-cols-[1fr]'
+          // A single-owner bot's rooms take the same By decision gate as that agent's Integrations tab.
+          const ownerId = !b.shareable ? (b.agentIds[0] ?? null) : null
+          const showGate = gates.offered && ownerId !== null && gates.decisionTriggers(b.platform)
+          const chanGrid = showDefaultDispatch || showGate ? 'grid-cols-[1fr_auto]' : 'grid-cols-[1fr]'
+          // A shared relay bot routes By decision where its platform offers that trigger; its rules open per conversation.
+          const routable =
+            decisions !== null &&
+            b.shareable &&
+            b.transport === 'http' &&
+            (!channelListSemantics(b.platform).triggers ||
+              channelListSemantics(b.platform).triggers!.includes('decision'))
           // The picker's choices: every agent installed on the bot.
           const agentOptions = b.agentIds.map((id) => {
             const ag = getAgent(id)
@@ -584,12 +593,6 @@ function BotsCard({
               {open && (
                 <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-4 pb-[14px] pl-10 pt-3">
                   {RowSettings && <RowSettings bot={b} canWrite={canWrite} />}
-                  {b.shareable &&
-                    b.transport === 'http' &&
-                    (!channelListSemantics(b.platform).triggers ||
-                      channelListSemantics(b.platform).triggers!.includes('decision')) && (
-                      <BotRoutingEntry bot={b} integrations={integrations} />
-                    )}
                   {channels.length > 0 ? (
                     <>
                       <div
@@ -598,8 +601,19 @@ function BotsCard({
                         {/* The platform's own noun for the room, not "conversation": these rows
                             are a Linear workspace's teams and a Slack bot's channels. */}
                         <span>{roomPlural(roomLabel)}</span>
-                        {showDefaultDispatch && <span className="justify-self-end">{t('defaultDispatch')}</span>}
+                        {showDefaultDispatch && (
+                          <span className="justify-self-end">{routable ? t('dispatch') : t('defaultDispatch')}</span>
+                        )}
                       </div>
+                      {routingErr?.botId === b.id && (
+                        <div
+                          role="alert"
+                          className="mb-2 flex items-start gap-2 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)"
+                        >
+                          <Icon name="triangle-alert" size={13} className="mt-[2px] flex-none" />
+                          <span>{routingErr.msg}</span>
+                        </div>
+                      )}
                       <div className="overflow-visible rounded-lg border border-(--border-subtle) bg-(--surface-card)">
                         {channels.map((c, index) => {
                           const label = rowLabelParts(c, b.platform)
@@ -648,11 +662,43 @@ function BotsCard({
                                     )}
                                   </span>
                                 </span>
+                                {showGate && (
+                                  <span className="justify-self-end">
+                                    {gates.entry({
+                                      botId: b.id,
+                                      platform: b.platform,
+                                      integrationId: canWrite ? (c.integrationId ?? undefined) : undefined,
+                                      row: c.row
+                                    })}
+                                  </span>
+                                )}
                                 {showDefaultDispatch && (
                                   <DefaultDispatchPicker
                                     options={agentOptions}
                                     activeId={c.agentId ?? b.agentIds[0] ?? null}
                                     disabled={!canWrite || !c.integrationId}
+                                    {...(routable && !isDirectConversation(c.kind)
+                                      ? {
+                                          routing: {
+                                            name: c.decisionName,
+                                            active: c.routed,
+                                            canStop: canWrite,
+                                            onOpen: () =>
+                                              setRoutingRow({ botId: b.id, channelId: c.channelId, name: c.name }),
+                                            onStop: () => {
+                                              setRoutingErr(null)
+                                              stopRouting(decisions!, b.id, c.channelId)
+                                                .then(refresh)
+                                                .catch((cause: unknown) =>
+                                                  setRoutingErr({
+                                                    botId: b.id,
+                                                    msg: cause instanceof Error ? cause.message : String(cause)
+                                                  })
+                                                )
+                                            }
+                                          }
+                                        }
+                                      : {})}
                                     onPick={(agentId) =>
                                       ownerGuard.guard(
                                         {
@@ -667,6 +713,14 @@ function BotsCard({
                                   />
                                 )}
                               </div>
+                              {showGate &&
+                                gates.strip({
+                                  botId: b.id,
+                                  integrationId: canWrite ? (c.integrationId ?? undefined) : undefined,
+                                  row: c.row,
+                                  agentName: owner(ownerId)?.label ?? '',
+                                  padX: 12
+                                })}
                             </Fragment>
                           )
                         })}
@@ -683,6 +737,14 @@ function BotsCard({
           )
         })}
       </CardProvider>
+      {routingRow && decisions && (
+        <DecisionRoutingModal
+          botId={routingRow.botId}
+          channelId={routingRow.channelId}
+          channelName={routingRow.name}
+          onClose={() => setRoutingRow(null)}
+        />
+      )}
       {shownBots.length === 0 &&
         (dataLoading ? (
           <LoadingState size={22} padding={20} />

@@ -157,7 +157,8 @@ const dispatchPickers = () => buttons().filter((b) => b.getAttribute('aria-label
 /** Opens the nth team's dispatch menu and claims that row for the page's own agent. */
 async function claimRow(index: number): Promise<void> {
   await act(async () => dispatchPickers()[index]!.click())
-  await act(async () => buttonWithText('Make')!.click())
+  const own = buttons().find((b) => b.hasAttribute('aria-pressed') && b.textContent?.includes('deploy-bot'))
+  await act(async () => own!.click())
 }
 
 beforeEach(() => {

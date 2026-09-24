@@ -158,6 +158,9 @@ async function render(
 
 const all = (selector: string) => [...document.body.querySelectorAll<HTMLElement>(selector)]
 const byText = (text: string) => all('button, span, a, b, label, p').find((node) => node.textContent?.trim() === text)
+/** The saved gate's in-row pill, whose title carries the condition summary. */
+const pill = () =>
+  document.body.querySelector<HTMLButtonElement>('button[aria-label="Edit By decision rules: Support category"]')
 
 async function click(node: Element | undefined | null) {
   if (!node) throw new Error('nothing to click')
@@ -192,13 +195,28 @@ describe('IntegrationChannelList By decision', () => {
     expect(await openSettings(name)).not.toContain('By decision')
   })
 
-  it('renders a saved DTO gate collapsed, naming its decision, condition and target, with no banner when ready', async () => {
+  it('renders a saved DTO gate as a row pill naming its decision and condition, with no banner when ready', async () => {
     await render([gated()])
-    expect(byText('Support category')).toBeTruthy()
-    expect(byText(CHOICE_SUMMARY)).toBeTruthy()
-    expect(byText('Activates Billing')).toBeTruthy()
+    expect(pill()?.textContent).toBe('Support category')
+    expect(pill()?.title).toContain(CHOICE_SUMMARY)
     expect(document.body.querySelector('[role="status"]')).toBeNull()
     expect(byText('Trigger when')).toBeUndefined()
+  })
+
+  it('offers + Decision on a plain row, opening the rules modal named for the channel and its agent', async () => {
+    await render([group()])
+    await click(all('button').find((node) => node.textContent?.trim() === 'Decision'))
+    const dialog = document.body.querySelector('[role="dialog"]')
+    expect(dialog?.getAttribute('aria-label')).toBe('general · By decision rules')
+    expect(dialog?.textContent).toContain('Decides when Billing responds in this channel')
+    expect(byText('Trigger when')).toBeTruthy()
+  })
+
+  it('stops using By decision from the pill with the plain trigger PATCH', async () => {
+    await render([gated()])
+    await click(document.body.querySelector('button[aria-label="Stop using By decision"]'))
+    expect(data.setChannelTrigger).toHaveBeenCalledWith('int-1', 'C1', 'mention')
+    expect(data.setChannelDecision).not.toHaveBeenCalled()
   })
 
   it('lets a read-only viewer open Recent evaluations for the conversation but not edit the gate', async () => {
@@ -224,7 +242,9 @@ describe('IntegrationChannelList By decision', () => {
       nextCursor: null
     })
     await render([gated()])
-    expect(byText('Edit')).toBeUndefined()
+    expect(document.body.querySelector('button[aria-label="Stop using By decision"]')).toBeNull()
+    await click(pill())
+    expect(byText('Save')).toBeUndefined()
     await click(byText('Recent evaluations'))
     await act(async () => {})
     expect(evals.listEvaluations).toHaveBeenCalledWith({ integrationId: 'int-1', channelId: 'C1' }, { limit: 20 })
@@ -302,14 +322,14 @@ describe('IntegrationChannelList By decision', () => {
     expect(data.setChannelDecision).not.toHaveBeenCalled()
   })
 
-  it('returns focus to the collapsed strip Edit after Cancel', async () => {
+  it('returns focus to the row pill after Cancel', async () => {
     await render([gated()])
-    await click(byText('Edit'))
+    await click(pill())
     await click(byText('Cancel'))
     await act(async () => {
       await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)))
     })
-    expect(document.activeElement).toBe(byText('Edit'))
+    expect(document.activeElement).toBe(pill())
   })
 
   it('saves the pick as one trigger-and-gate PATCH and refuses a second submission while it runs', async () => {
@@ -391,29 +411,23 @@ describe('IntegrationChannelList By decision', () => {
     root = undefined
 
     await render([gated()])
-    await click(byText('Edit'))
+    await click(pill())
     expect(byText('Trigger when')).toBeTruthy()
     await click(byText('Cancel'))
-    expect(byText(CHOICE_SUMMARY)).toBeTruthy()
+    expect(pill()?.title).toContain(CHOICE_SUMMARY)
     expect(byText('Trigger when')).toBeUndefined()
   })
 
-  it('switches a saved gate back to @-mentions with the ordinary trigger PATCH', async () => {
+  it('keeps a saved gate’s Respond to listed but inert, since its pill owns the trigger', async () => {
     await render([gated()])
-    await openSettings()
+    expect(await openSettings()).toEqual(['@-mentions', 'All messages', 'Off', 'Per thread', 'Single session'])
+    const plain = all('[role="menuitemradio"][aria-disabled="true"]').map((node) => node.textContent?.trim())
+    expect(plain).toEqual(['@-mentions', 'All messages', 'Off'])
+    expect(document.body.textContent).toContain('Respond to unavailable — By decision chooses which messages')
     await pick('@-mentions')
-    expect(data.setChannelTrigger).toHaveBeenCalledWith('int-1', 'C1', 'mention')
-    expect(data.setChannelDecision).not.toHaveBeenCalled()
-  })
-
-  it('points a shared-bot routed conversation at its bot routing instead of an editor', async () => {
-    await render([group({ trigger: 'decision', decisionBinding: { type: 'shared_bot_routing' }, decision: null })], {
-      shareable: true,
-      botId: 'bot-shared'
-    })
-    const link = byText('Managed by Shared bot routing')
-    expect(link?.getAttribute('href')).toBe('/integrations/bots/bot-shared/routing')
-    expect(byText('Trigger when')).toBeUndefined()
+    expect(data.setChannelTrigger).not.toHaveBeenCalled()
+    // The button reads the session mode alone.
+    expect(all('button[aria-haspopup="menu"]').some((node) => node.textContent?.trim() === 'Per thread')).toBe(true)
   })
 
   it('keeps mock mode on local prototype gates', async () => {
@@ -422,7 +436,7 @@ describe('IntegrationChannelList By decision', () => {
     await openSettings()
     await pick('By decision')
     await click(byText('Save'))
-    expect(byText(CHOICE_SUMMARY)).toBeTruthy()
+    expect(pill()?.title).toContain(CHOICE_SUMMARY)
     expect(data.setChannelDecision).not.toHaveBeenCalled()
     expect(data.setChannelTrigger).not.toHaveBeenCalled()
   })

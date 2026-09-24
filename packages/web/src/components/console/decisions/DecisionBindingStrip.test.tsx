@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// The `By decision` strip in mock mode: it opens a picked row on a usable draft and collapses to a summary once saved.
+// The `By decision` gate in mock mode: a picked row opens the rules modal on a usable draft and collapses to its row pill once saved.
 
 import { act, useEffect, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -25,7 +25,7 @@ vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'org-test' }, myRole: 'owner', orgPath: (path: string) => path })
 }))
 
-import { DecisionBindingStrip } from './DecisionBindingStrip'
+import { DecisionBindingStrip, DecisionGateEntry } from './DecisionBindingStrip'
 
 let root: Root | undefined
 let container: HTMLDivElement | undefined
@@ -57,20 +57,29 @@ function MockStrip({
   }, [bindingKey, setBindingDraft])
   const gate = gates[bindingKey]
   if (!bindingDrafts[bindingKey] && !gate) return <span>reverted</span>
+  const saved = gate ? { decisionId: gate.decisionId, when: gate.when } : null
   return (
-    <DecisionBindingStrip
-      bindingKey={bindingKey}
-      conversation={{ integrationId: 'int-mock', channelId: 'help-channel' }}
-      canWrite={canWrite}
-      agentName={agentName}
-      channelName="#help"
-      padX={18}
-      saved={gate ? { decisionId: gate.decisionId, when: gate.when } : null}
-      status={gate ? (gate.needsReview ? 'needs_review' : 'ready') : null}
-      onSave={async (next) =>
-        setGate(bindingKey, { decisionId: next.decisionId, when: next.when, channelName: '#help', needsReview: false })
-      }
-    />
+    <>
+      <DecisionGateEntry bindingKey={bindingKey} saved={saved} canWrite={canWrite} offer onStop={() => {}} />
+      <DecisionBindingStrip
+        bindingKey={bindingKey}
+        conversation={{ integrationId: 'int-mock', channelId: 'help-channel' }}
+        canWrite={canWrite}
+        agentName={agentName}
+        channelName="#help"
+        padX={18}
+        saved={saved}
+        status={gate ? (gate.needsReview ? 'needs_review' : 'ready') : null}
+        onSave={async (next) =>
+          setGate(bindingKey, {
+            decisionId: next.decisionId,
+            when: next.when,
+            channelName: '#help',
+            needsReview: false
+          })
+        }
+      />
+    </>
   )
 }
 
@@ -103,8 +112,14 @@ async function render(node: ReactNode) {
   })
   // The mock's reads are promises: one more flush lands the decision list.
   await act(async () => {})
-  return container
+  // The rules modal portals to the body, so the whole document is the view.
+  return document.body
 }
+
+const dialogs = () => [...document.body.querySelectorAll<HTMLElement>('[role="dialog"]')]
+/** The saved gate's in-row pill, whose title carries the condition summary. */
+const pill = (name = 'Support category') =>
+  document.body.querySelector<HTMLButtonElement>(`button[aria-label="Edit By decision rules: ${name}"]`)
 
 const findByText = (scope: HTMLElement, text: string) =>
   [...scope.querySelectorAll('button, span, a, b, label')].find((node) => node.textContent?.trim() === text)
@@ -133,54 +148,53 @@ const CHOICE_SUMMARY = 'billing ≥ 50%, technical ≥ 50%, sales ≥ 50%'
 describe('DecisionBindingStrip', () => {
   it('opens the editor on the first decision with its answer keys enabled', async () => {
     const view = await render(<MockStrip bindingKey="org-test|support-bot|#help" />)
+    expect(dialogs()[0]?.getAttribute('aria-label')).toBe('#help · By decision rules')
+    expect(dialogs()[0]?.textContent).toContain('Decides when Billing responds in this channel')
     expect(findByText(view, 'Support category')).toBeTruthy()
     expect(findByText(view, 'Trigger when')).toBeTruthy()
-    expect(findByText(view, 'Activates')).toBeTruthy()
     expect(view.querySelector('input[aria-label="Minimum probability for billing"]')).toBeTruthy()
     expect(view.querySelector('input[aria-label="Minimum probability for technical"]')).toBeTruthy()
     expect((findByText(view, 'Save') as HTMLButtonElement | undefined)?.disabled).toBe(false)
   })
 
-  it('saves the gate and collapses to a summary that names the decision, its condition, and its target', async () => {
+  it('saves the gate and collapses to a row pill that names the decision and carries its condition', async () => {
     const view = await render(<MockStrip bindingKey="org-test|support-bot|#help" />)
     await clickText(view, 'Save')
-    expect(findByText(view, 'Support category')).toBeTruthy()
-    expect(findByText(view, CHOICE_SUMMARY)).toBeTruthy()
-    expect(findByText(view, 'Activates Billing')).toBeTruthy()
-    expect(findByText(view, 'Edit')).toBeTruthy()
+    expect(dialogs()).toHaveLength(0)
+    expect(pill()?.textContent).toBe('Support category')
+    expect(pill()?.title).toContain(CHOICE_SUMMARY)
+    expect(document.body.querySelector('button[aria-label="Stop using By decision"]')).toBeTruthy()
     // The editor is gone: no minimum-probability control survives the save.
     expect(view.querySelector('input[aria-label="Minimum probability for billing"]')).toBeNull()
   })
 
-  it('lands keyboard focus on the collapsed Edit once a save closes the editor', async () => {
+  it('lands keyboard focus on the row pill once a save closes the modal', async () => {
     const view = await render(<MockStrip bindingKey="org-test|support-bot|#help" />)
     await clickText(view, 'Save')
     await act(async () => {
       await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)))
     })
-    expect(document.activeElement).toBe(findByText(view, 'Edit'))
+    expect(document.activeElement).toBe(pill())
   })
 
   it('reverts the row when a fresh gate is abandoned, and keeps the saved one when an edit is', async () => {
     const view = await render(
       <>
         <MockStrip bindingKey="org-test|support-bot|#help" />
-        <div id="saved">
-          <MockStrip bindingKey="org-test|support-bot|#ops" />
-        </div>
+        <MockStrip bindingKey="org-test|support-bot|#ops" />
       </>
     )
-    const fresh = view.firstElementChild as HTMLElement
-    await clickText(fresh, 'Cancel')
+    expect(dialogs()).toHaveLength(2)
+    await clickText(dialogs()[0]!, 'Cancel')
     expect(findByText(view, 'reverted')).toBeTruthy()
 
-    const saved = view.querySelector<HTMLElement>('#saved')!
-    await clickText(saved, 'Save')
-    await clickText(saved, 'Edit')
-    expect(findByText(saved, 'Trigger when')).toBeTruthy()
-    await clickText(saved, 'Cancel')
-    expect(findByText(saved, CHOICE_SUMMARY)).toBeTruthy()
-    expect(findByText(saved, 'reverted')).toBeUndefined()
+    await clickText(dialogs()[0]!, 'Save')
+    await act(async () => pill()?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(findByText(dialogs()[0]!, 'Trigger when')).toBeTruthy()
+    await clickText(dialogs()[0]!, 'Cancel')
+    expect(dialogs()).toHaveLength(0)
+    expect(pill()?.title).toContain(CHOICE_SUMMARY)
+    expect([...view.querySelectorAll('span')].filter((node) => node.textContent === 'reverted')).toHaveLength(1)
   })
 
   it('offers no editor controls without write permission', async () => {
@@ -204,11 +218,9 @@ describe('DecisionBindingStrip', () => {
       saves()[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    // Bot A collapsed to its summary; bot B's editor is untouched.
+    // Bot A collapsed to its pill; bot B's editor is untouched.
     expect(saves()).toHaveLength(1)
-    expect(
-      [...view.querySelectorAll('span')].filter((node) => node.textContent?.trim() === CHOICE_SUMMARY)
-    ).toHaveLength(1)
+    expect(document.body.querySelectorAll('button[aria-label^="Edit By decision rules"]')).toHaveLength(1)
     expect(view.querySelectorAll('input[aria-label="Minimum probability for billing"]')).toHaveLength(1)
   })
 
@@ -216,7 +228,7 @@ describe('DecisionBindingStrip', () => {
   it('runs the gate Try on the conversation without a daemon pick and keeps the verdict after collapsing', async () => {
     const view = await render(<MockStrip bindingKey="org-test|support-bot|#help" />)
     await clickText(view, 'Try a message')
-    await typeInto(view.querySelector('textarea[aria-label="Current message"]'), 'Can someone ship the hotfix?')
+    await typeInto(view.querySelector('input[aria-label="Current message"]'), 'Can someone ship the hotfix?')
     await clickText(view, 'Try')
     await act(async () => {})
 
@@ -225,7 +237,7 @@ describe('DecisionBindingStrip', () => {
     expect(findByText(view, 'Would trigger')).toBeUndefined()
 
     await clickText(view, 'Try a message')
-    expect(view.querySelector('textarea[aria-label="Current message"]')).toBeNull()
+    expect(view.querySelector('input[aria-label="Current message"]')).toBeNull()
     expect(view.querySelector('[data-testid="gate-try-result"]')).toBeTruthy()
   })
 
@@ -240,7 +252,9 @@ describe('DecisionBindingStrip', () => {
       })
       store.setBindingDraft(key, null)
     })
-    expect(findByText(view, 'Edit')).toBeUndefined()
+    expect(document.body.querySelector('button[aria-label="Stop using By decision"]')).toBeNull()
+    await act(async () => pill('Needs a response')?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(findByText(view, 'Save')).toBeUndefined()
     await clickText(view, 'Recent evaluations')
     await act(async () => {})
     const drawer = document.body.querySelector('[data-testid="decision-evaluations"]')!

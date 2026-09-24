@@ -73,6 +73,7 @@ async function type(field: HTMLInputElement | HTMLTextAreaElement | null, value:
   })
 }
 
+const CURRENT = 'input[aria-label="Current message"]'
 const button = (scope: HTMLElement, text: string) =>
   [...scope.querySelectorAll('button')].find((node) => node.textContent?.trim() === text)
 async function click(node: Element | undefined) {
@@ -84,23 +85,16 @@ async function click(node: Element | undefined) {
 }
 
 describe('DecisionGateTry', () => {
-  it('sends the history lines with sender ids and answers Would trigger the target', async () => {
+  it('tries the one message with no sample history and answers Would trigger the target', async () => {
     const api = useApi(decisionMock.createDecisionMockApi())
     const previewGate = vi.spyOn(api, 'previewGate')
     const view = await render(<Try when={{ type: 'boolean', values: [true] }} />)
-    await click(button(view, 'Add message'))
-    await type(view.querySelector('input[aria-label="Sender of history message 1"]'), 'U-customer')
-    await type(view.querySelector('input[aria-label="History message 1"]'), 'Is anyone around?')
-    await click(button(view, 'Add message'))
-    await type(view.querySelector('textarea[aria-label="Current message"]'), ' Please help ')
+    expect(button(view, 'Add message')).toBeUndefined()
+    await type(view.querySelector(CURRENT), ' Please help ')
     await click(button(view, 'Try'))
     expect(previewGate).toHaveBeenCalledWith(conversation, {
       decisionBinding: { type: 'gate', decisionId: 'needs-response', when: { type: 'boolean', values: [true] } },
-      // The blank second line is dropped rather than sent as an empty message.
-      state: {
-        history: [{ sender: 'U-customer', text: 'Is anyone around?' }],
-        currentMessage: { text: 'Please help' }
-      }
+      state: { history: [], currentMessage: { text: 'Please help' } }
     })
     const result = view.querySelector('[data-testid="gate-try-result"]')!
     expect(result.textContent).toContain('Would trigger')
@@ -111,7 +105,7 @@ describe('DecisionGateTry', () => {
   it('marks the result stale once the sample or condition changes', async () => {
     useApi(decisionMock.createDecisionMockApi())
     const view = await render(<Try when={{ type: 'boolean', values: [false] }} />)
-    const current = view.querySelector<HTMLTextAreaElement>('textarea[aria-label="Current message"]')
+    const current = view.querySelector<HTMLInputElement>(CURRENT)
     await type(current, 'Spam spam')
     await click(button(view, 'Try'))
     expect(view.querySelector('[data-testid="gate-try-result"]')?.textContent).toContain('Would skip')
@@ -125,7 +119,7 @@ describe('DecisionGateTry', () => {
     useApi(decisionMock.createDecisionMockApi())
     const when: DecisionCondition = { type: 'boolean', values: [false] }
     const view = await render(<Try when={when} />)
-    await type(view.querySelector('textarea[aria-label="Current message"]'), 'Spam spam')
+    await type(view.querySelector(CURRENT), 'Spam spam')
     await click(button(view, 'Try'))
     expect(view.textContent).not.toContain('The draft changed after this run.')
     const edited = { ...boolean, model: 'jev-other', updatedAt: '2030-01-01T00:00:00.000Z' }
@@ -145,7 +139,7 @@ describe('DecisionGateTry', () => {
     const api = useApi(decisionMock.createDecisionMockApi())
     vi.spyOn(api, 'previewGate').mockRejectedValue(new ApiError('Decision preview is unavailable. Try again.', 503))
     const view = await render(<Try when={{ type: 'boolean', values: [true] }} />)
-    await type(view.querySelector('textarea[aria-label="Current message"]'), 'Hello?')
+    await type(view.querySelector(CURRENT), 'Hello?')
     await click(button(view, 'Try'))
     const alert = view.querySelector('[role="alert"]')?.textContent ?? ''
     expect(alert).toContain('Decision preview is unavailable. Try again.')
@@ -155,7 +149,7 @@ describe('DecisionGateTry', () => {
   it('shows a provider failure as unavailable, continuing to the target, never as a skip', async () => {
     useApi(decisionMock.createDecisionMockApi({ scenario: 'provider_unavailable' }))
     const view = await render(<Try when={{ type: 'boolean', values: [true] }} />)
-    await type(view.querySelector('textarea[aria-label="Current message"]'), 'Hello?')
+    await type(view.querySelector(CURRENT), 'Hello?')
     await click(button(view, 'Try'))
     const result = view.querySelector('[data-testid="gate-try-result"]')!
     expect(result.textContent).toContain('Evaluation unavailable')
@@ -166,7 +160,7 @@ describe('DecisionGateTry', () => {
   it('says Not applied for a stranded condition without an evaluation', async () => {
     useApi(decisionMock.createDecisionMockApi({ scenario: 'needs_review' }))
     const view = await render(<Try when={{ type: 'boolean', values: [true] }} />)
-    await type(view.querySelector('textarea[aria-label="Current message"]'), 'Hello?')
+    await type(view.querySelector(CURRENT), 'Hello?')
     await click(button(view, 'Try'))
     const result = view.querySelector('[data-testid="gate-try-result"]')!
     expect(result.textContent).toContain('Not applied')
@@ -177,7 +171,7 @@ describe('DecisionGateTry', () => {
   it('says the daemon is offline instead of showing a result', async () => {
     useApi(decisionMock.createDecisionMockApi({ scenario: 'daemon_offline' }))
     const view = await render(<Try when={{ type: 'boolean', values: [true] }} />)
-    await type(view.querySelector('textarea[aria-label="Current message"]'), 'Hello?')
+    await type(view.querySelector(CURRENT), 'Hello?')
     await click(button(view, 'Try'))
     expect(view.querySelector('[role="alert"]')?.textContent).toContain('No daemon serving this conversation')
     expect(view.querySelector('[data-testid="gate-try-result"]')).toBeNull()

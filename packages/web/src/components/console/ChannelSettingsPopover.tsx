@@ -22,6 +22,8 @@ export interface ChannelSettingsGroup {
   summarize?: (chosen: Readonly<Record<string, string>>) => boolean
   /** Saves a pick; the popover shows the pick until this settles, and a rejection's message after it. */
   onPick: (value: string) => void | Promise<void>
+  /** Something else owns this choice: its options stay listed but inert, and the footer says why. */
+  locked?: { label: string; hint: ReactNode }
 }
 
 const WIDTH = 248
@@ -48,10 +50,10 @@ export function ChannelSettingsPopover({
   const current = (g: ChannelSettingsGroup) => pending[g.id] ?? g.value
   const chosen = Object.fromEntries(groups.map((g) => [g.id, current(g)]))
   const summary = groups
-    .filter((g) => g.summarize?.(chosen) ?? true)
+    .filter((g) => !g.locked && (g.summarize?.(chosen) ?? true))
     .map((g) => g.options.find((o) => o.value === current(g))?.label ?? current(g))
   const pick = (g: ChannelSettingsGroup, value: string) => {
-    if (disabled || g.id in pending || value === current(g)) return
+    if (disabled || g.locked || g.id in pending || value === current(g)) return
     setError(null)
     setPending((p) => ({ ...p, [g.id]: value }))
     void new Promise<void>((resolve) => resolve(g.onPick(value)))
@@ -126,20 +128,21 @@ export function ChannelSettingsPopover({
               </div>
               <div role="group" aria-labelledby={`${id}-${g.id}`}>
                 {g.options.map((o) => {
-                  const on = o.value === current(g)
+                  const on = !g.locked && o.value === current(g)
                   return (
                     <button
                       key={o.value}
                       type="button"
                       role="menuitemradio"
                       aria-checked={on}
+                      aria-disabled={g.locked ? true : undefined}
                       aria-describedby={`${id}-${g.id}-${o.value}`}
                       onClick={() => pick(g, o.value)}
                       onMouseEnter={() => setPeek({ group: g.id, value: o.value })}
                       onMouseLeave={() => setPeek(null)}
                       onFocus={() => setPeek({ group: g.id, value: o.value })}
                       onBlur={() => setPeek(null)}
-                      className={`${on ? 'fopt on' : 'fopt'} min-h-12 px-3 py-[11px] text-[13.5px] tracking-[-0.006em] focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none desktop:min-h-8 desktop:px-[10px] desktop:py-[7px] desktop:text-[12.5px]`}
+                      className={`${on ? 'fopt on' : 'fopt'} ${g.locked ? 'cursor-default font-normal text-(--text-tertiary) hover:bg-transparent' : ''} min-h-12 px-3 py-[11px] text-[13.5px] tracking-[-0.006em] focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none desktop:min-h-8 desktop:px-[10px] desktop:py-[7px] desktop:text-[12.5px]`}
                     >
                       <span className="inline-flex w-4 flex-none desktop:w-[15px]">
                         {on && (
@@ -167,6 +170,16 @@ export function ChannelSettingsPopover({
               </div>
             )}
             {groups.map((g) => {
+              if (g.locked)
+                return (
+                  <span key={g.id} className="text-pretty">
+                    {t.rich('optionHint', {
+                      label: g.locked.label,
+                      b: (chunks) => <span className="font-medium text-(--text-secondary)">{chunks}</span>,
+                      hint: () => g.locked!.hint
+                    })}
+                  </span>
+                )
               const shown = peek?.group === g.id ? peek.value : current(g)
               return (
                 // Every description shares one cell, so the footer keeps its tallest height and never jumps on hover.
