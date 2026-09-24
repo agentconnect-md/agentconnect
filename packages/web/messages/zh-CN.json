@@ -120,6 +120,8 @@
       "modelsCount": "{count, plural, other {# 个模型}}",
       "showLoginCommand": "显示在 Daemon 主机上登录的命令。",
       "loginRequired": "需要登录",
+      "loginRequiredOn": "{names} 需要登录",
+      "loginRequiredOnMore": "{names} 及另外 {count} 台需要登录",
       "showCommand": "显示命令",
       "models": "模型"
     },
@@ -3452,6 +3454,7 @@
     "runtimeLogin": {
       "title": "登录 {label}",
       "warning": "<runtime>{runtime}</runtime> 需要在 <host>{host}</host> 的主机上登录，请在那里运行此命令。",
+      "warningMany": "<runtime>{runtime}</runtime> 需要在 <host>{host}</host> 的主机上登录，请在每台主机上运行此命令。",
       "daemonHost": "Daemon",
       "terminal": "{daemon} · 终端",
       "daemonTerminal": "Daemon 主机 · 终端",

@@ -119,6 +119,29 @@ describe('runtime aggregation carries model display metadata', () => {
     }
   })
 
+  it('names the members that need a login, in member order, and none when none does', () => {
+    const named = (name: string, authRequired?: boolean) => ({ ...member({ authRequired } as never), name })
+    for (const aggregate of [unionRuntimes, intersectRuntimes]) {
+      expect(aggregate([named('agent-1'), named('agent-2')])[0]).toMatchObject({
+        authRequired: false,
+        authRequiredOn: []
+      })
+      expect(aggregate([named('agent-1', true), named('agent-2'), named('agent-3', true)])[0]).toMatchObject({
+        authRequired: true,
+        authRequiredOn: ['agent-1', 'agent-3']
+      })
+    }
+    // A set's card names them; a single daemon's card is already about one host.
+    const runtimes = intersectRuntimes([named('agent-1', true), named('agent-2', true), named('agent-3', true)])
+    const card = (daemonName?: string) =>
+      renderToStaticMarkup(
+        createElement(FleetRuntimesCard, { title: 'Runtimes', runtimes, agents: [], empty: 'None', daemonName })
+      )
+    expect(card()).toContain('Login required on agent-1, agent-2 +1')
+    expect(card('agent-1')).toContain('Login required<')
+    expect(card('agent-1')).not.toContain('Login required on')
+  })
+
   it('carries them through the intersection too', () => {
     const [rt] = intersectRuntimes([member(), member()])
     expect(rt!.modelInfo?.['opus[1m]']?.description).toBe('Opus 5 with 1M context')

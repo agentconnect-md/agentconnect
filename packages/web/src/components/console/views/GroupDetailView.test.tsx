@@ -273,6 +273,84 @@ describe('GroupDetailView', () => {
     expect(html).not.toContain('v0.60.0')
   })
 
+  describe('names the members whose runtime needs a login', () => {
+    const claude = (authRequired?: boolean) => ({
+      runtime: 'claude',
+      version: '0.54.1',
+      models: ['opus'],
+      acpProtocolVersion: 1,
+      ...(authRequired === undefined ? {} : { authRequired })
+    })
+    const clickLogin = () => {
+      const host = document.createElement('div')
+      document.body.appendChild(host)
+      const root: Root = createRoot(host)
+      act(() => {
+        root.render(<GroupDetailView />)
+      })
+      act(() => {
+        host.querySelector<HTMLElement>('button[title="Show the command to sign in on the daemon host."]')?.click()
+      })
+      act(() => root.unmount())
+      host.remove()
+    }
+
+    it('names the one member, and the command names its host', () => {
+      mocks.memberSets = [group({ memberDaemonIds: ['d1', 'd2'] })]
+      mocks.daemons = [
+        daemon('agent-1', { daemonId: 'd1', runtimeModels: [claude(true)] }),
+        daemon('agent-2', { daemonId: 'd2', runtimeModels: [claude()] })
+      ] as unknown[]
+
+      expect(render()).toContain('Login required on agent-1')
+      clickLogin()
+      expect(mocks.openModal).toHaveBeenCalledWith(
+        'runtimeLogin',
+        expect.objectContaining({ runtimeId: 'claude', daemonName: 'agent-1' })
+      )
+      expect(mocks.openModal.mock.calls[0]![1]).not.toHaveProperty('daemonNames')
+    })
+
+    it('names both members when two need it, and hands the modal the list', () => {
+      mocks.memberSets = [group({ memberDaemonIds: ['d1', 'd2'] })]
+      mocks.daemons = [
+        daemon('agent-1', { daemonId: 'd1', runtimeModels: [claude(true)] }),
+        daemon('agent-2', { daemonId: 'd2', runtimeModels: [claude(true)] })
+      ] as unknown[]
+
+      expect(render()).toContain('Login required on agent-1, agent-2')
+      clickLogin()
+      expect(mocks.openModal).toHaveBeenCalledWith(
+        'runtimeLogin',
+        expect.objectContaining({ runtimeId: 'claude', daemonNames: ['agent-1', 'agent-2'] })
+      )
+      expect(mocks.openModal.mock.calls[0]![1]).not.toHaveProperty('daemonName')
+    })
+
+    it('shows no warning when no member needs it', () => {
+      mocks.memberSets = [group({ memberDaemonIds: ['d1', 'd2'] })]
+      mocks.daemons = [
+        daemon('agent-1', { daemonId: 'd1', runtimeModels: [claude(false)] }),
+        daemon('agent-2', { daemonId: 'd2', runtimeModels: [claude()] })
+      ] as unknown[]
+
+      expect(render()).not.toContain('Login required')
+    })
+
+    it('does not count a member that is offline', () => {
+      // An offline member neither offers the runtime nor constrains it, so its stale probe is not a warning.
+      mocks.memberSets = [group({ memberDaemonIds: ['d1', 'd2'] })]
+      mocks.daemons = [
+        daemon('agent-1', { daemonId: 'd1', runtimeModels: [claude()] }),
+        daemon('agent-2', { daemonId: 'd2', status: 'offline', runtimeModels: [claude(true)] })
+      ] as unknown[]
+
+      const html = render()
+      expect(html).toContain('Claude')
+      expect(html).not.toContain('Login required')
+    })
+  })
+
   it('says members share no runtime, rather than that none reported one', () => {
     mocks.memberSets = [group({ memberDaemonIds: ['d1', 'd2'] })]
     mocks.daemons = [
