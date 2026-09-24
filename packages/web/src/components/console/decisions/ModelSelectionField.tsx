@@ -24,6 +24,7 @@ import { DecisionPicker } from './DecisionPicker'
 import { Button, Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { reachableSteps } from '@/lib/decisions/chain'
+import { NextDecision, NextDecisionChip, useDecisionChainPath } from './DecisionChainControls'
 
 type Rule = AgentModelSelection['rules'][number]
 
@@ -103,12 +104,12 @@ export function ModelSelectionField({
   const { orgPath } = useOrgs()
   const { api, orgId, decisions = [], loading, error } = useOptionalDecisionsPrototype() ?? {}
   const [decisionMode, setDecisionMode] = useState(!!configuration)
-  const [stepPath, setStepPath] = useState<string[]>([])
+  const { path: stepPath, enter, to } = useDecisionChainPath(configuration, onConfigurationChange)
   const stepIndex = configuration?.steps?.findIndex((step) => step.id === stepPath.at(-1)) ?? -1
   const value: DecisionModelStep | null = stepIndex >= 0 ? configuration!.steps![stepIndex]! : configuration
   const onChange = (next: DecisionModelStep | null, steps = configuration?.steps) => {
     if (!next) {
-      setStepPath([])
+      to(0)
       onConfigurationChange(null)
       return
     }
@@ -219,75 +220,29 @@ export function ModelSelectionField({
             />
           </div>
         ) : (
-          <>
-            <button
-              type="button"
-              className="inp mn h-[30px] min-h-0 min-w-0 flex-1 cursor-pointer gap-2 px-[9px] py-0 text-left text-[12px] hover:border-(--border-strong)"
-              aria-label={t('editNext', { name: nextName })}
-              onClick={() => setStepPath([...stepPath, rule.nextStepId])}
-            >
-              <Icon name="git-branch" size={13} className="flex-none" />
-              <span className="truncate">{nextName}</span>
-              <Icon name="chevron-right" size={13} className="ml-auto flex-none" />
-            </button>
-            <button
-              type="button"
-              className={ROW_ACTION}
-              title={t('useModel')}
-              aria-label={t('useModel')}
-              onClick={() => onPick(fallback)}
-            >
-              <Icon name="x" size={13} />
-            </button>
-          </>
+          <NextDecisionChip
+            decision={decisions.find((entry) => entry.id === next?.decisionId)}
+            name={nextName}
+            label={t('editNext', { name: nextName })}
+            removeLabel={t('useModel')}
+            onOpen={() => enter(rule.nextStepId)}
+            onRemove={() => onPick(fallback)}
+          />
         )}
         {'runtime' in rule && (
-          <AnchoredFlyout
-            ariaLabel={t('nextDecision')}
-            width={260}
-            align="end"
-            trigger={({ open, menuId, toggle }) => (
-              <button
-                type="button"
-                className={ROW_ACTION}
-                title={t('nextDecision')}
-                aria-label={`${ariaLabel}: ${t('nextDecision')}`}
-                aria-haspopup="menu"
-                aria-expanded={open}
-                aria-controls={open ? menuId : undefined}
-                disabled={(configuration?.steps?.length ?? 0) >= DECISION_CHAIN_MAX_STEPS - 1 || !decisions.length}
-                onClick={toggle}
-              >
-                <Icon name="git-branch" size={13} />
-              </button>
-            )}
-          >
-            {({ close }) =>
-              decisions.map((entry) => (
-                <button
-                  key={entry.id}
-                  type="button"
-                  role="menuitem"
-                  className="fopt"
-                  onClick={() => {
-                    const id = crypto.randomUUID()
-                    onPick({ nextStepId: id }, [
-                      ...(configuration?.steps ?? []),
-                      {
-                        id,
-                        decisionId: entry.id,
-                        rules: [{ when: nextCondition(entry.question, []), ...fallback }]
-                      }
-                    ])
-                    setStepPath([...stepPath, id])
-                    close()
-                  }}
-                >
-                  <span className="truncate">{entry.name}</span>
-                </button>
-              ))
-            }
-          </AnchoredFlyout>
+          <NextDecision
+            decisions={decisions}
+            ariaLabel={`${ariaLabel}: ${t('nextDecision')}`}
+            disabled={(configuration?.steps?.length ?? 0) >= DECISION_CHAIN_MAX_STEPS - 1}
+            onSelect={(entry) => {
+              const id = crypto.randomUUID()
+              onPick({ nextStepId: id }, [
+                ...(configuration?.steps ?? []),
+                { id, decisionId: entry.id, rules: [{ when: nextCondition(entry.question, []), ...fallback }] }
+              ])
+              enter(id)
+            }}
+          />
         )}
       </div>
     )
@@ -606,7 +561,7 @@ export function ModelSelectionField({
         <>
           {stepIndex >= 0 && (
             <nav aria-label={t('decisionPath')} className="flex flex-wrap items-center gap-1 text-[12px]">
-              <button type="button" className="lnk" onClick={() => setStepPath([])}>
+              <button type="button" className="lnk" onClick={() => to(0)}>
                 {rootDecision?.name ?? t('firstDecision')}
               </button>
               {stepPath.map((id, index) => {
@@ -619,7 +574,7 @@ export function ModelSelectionField({
                       type="button"
                       className="lnk"
                       aria-current={index === stepPath.length - 1 ? 'page' : undefined}
-                      onClick={() => setStepPath(stepPath.slice(0, index + 1))}
+                      onClick={() => to(index + 1)}
                     >
                       {name}
                     </button>

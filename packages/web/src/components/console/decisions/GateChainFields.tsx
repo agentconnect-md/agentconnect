@@ -1,6 +1,5 @@
 'use client'
 
-import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import {
@@ -12,7 +11,13 @@ import {
 import { defaultConditionFor } from '@/lib/decisions/provider'
 import { DecisionPicker } from './DecisionPicker'
 import { DecisionConditionFields } from './DecisionConditionFields'
-import { DecisionChainNav, NextDecision, reachableSteps } from './DecisionChainControls'
+import {
+  DecisionChainNav,
+  NextDecision,
+  NextDecisionChip,
+  reachableSteps,
+  useDecisionChainPath
+} from './DecisionChainControls'
 
 const edges = (step: DecisionGateStep) => [step.nextStepId, step.elseStepId].filter((id): id is string => !!id)
 
@@ -28,7 +33,7 @@ export function GateChainFields({
   onChange: (value: ChannelDecisionGate) => void
 }) {
   const t = useTranslations('Decisions.chain')
-  const [path, setPath] = useState<string[]>([])
+  const { path, enter, to } = useDecisionChainPath(value, onChange)
   const activeId = path.at(-1)
   const step = value.steps?.find((step) => step.id === activeId)
   const current = step ?? value
@@ -54,7 +59,7 @@ export function GateChainFields({
                   t('missing')
               }))
             ]}
-            onBack={(index) => setPath(path.slice(0, index))}
+            onBack={to}
           />
           <DecisionPicker
             decisions={decisions}
@@ -87,6 +92,7 @@ export function GateChainFields({
       {(['nextStepId', 'elseStepId'] as const).map((key) => {
         const id = current[key]
         const next = value.steps?.find((step) => step.id === id)
+        const nextDecision = decisions.find((d) => d.id === next?.decisionId)
         return (
           <div key={key} className="flex items-center gap-2">
             <span className="w-[112px] flex-none text-[12px] text-(--text-secondary)">
@@ -94,32 +100,18 @@ export function GateChainFields({
             </span>
             <Icon name="arrow-right" size={13} className="text-(--text-tertiary)" />
             {id ? (
-              <>
-                <button
-                  type="button"
-                  className="inp min-h-8 min-w-0 flex-1 gap-2 text-[12px]"
-                  onClick={() => setPath([...path, id])}
-                >
-                  <Icon name="split" size={13} />
-                  <span className="truncate">
-                    {decisions.find((d) => d.id === next?.decisionId)?.name ?? t('missing')}
-                  </span>
-                  <Icon name="chevron-right" size={12} />
-                </button>
-                <button
-                  type="button"
-                  className="iconbtn"
+              <span className="flex min-w-0 flex-1">
+                <NextDecisionChip
+                  decision={nextDecision}
+                  name={nextDecision?.name ?? t('missing')}
                   disabled={disabled}
-                  title={t('remove')}
-                  aria-label={t('remove')}
-                  onClick={() => {
+                  onOpen={() => enter(id)}
+                  onRemove={() => {
                     const { [key]: _removed, ...rest } = current
                     change(rest)
                   }}
-                >
-                  <Icon name="x" size={12} />
-                </button>
-              </>
+                />
+              </span>
             ) : (
               <>
                 <span className="min-w-0 flex-1 text-[12px]">{t(key === 'nextStepId' ? 'trigger' : 'skip')}</span>
@@ -132,7 +124,7 @@ export function GateChainFields({
                       ...(value.steps ?? []),
                       { id, decisionId: entry.id, when: defaultConditionFor(entry) }
                     ])
-                    setPath([...path, id])
+                    enter(id)
                   }}
                 />
               </>

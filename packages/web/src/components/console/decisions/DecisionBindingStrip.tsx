@@ -27,6 +27,7 @@ import { DecisionConditionFields, conditionSummary } from './DecisionConditionFi
 import { DecisionEvaluationsDrawer } from './DecisionEvaluationsDrawer'
 import { DecisionGateTry } from './DecisionGateTry'
 import { DecisionChip } from './DecisionChip'
+import { DecisionChainHost, useDecisionChainHost } from './DecisionChainControls'
 import { GateChainFields } from './GateChainFields'
 import { DecisionPicker } from './DecisionPicker'
 
@@ -220,12 +221,14 @@ export function DecisionBindingStrip({
     requestAnimationFrame(() => focusEntry(bindingKey))
   }, [bindingKey, setBindingDraft])
   const open = draft !== null
+  const chain = useDecisionChainHost()
+  const { leave } = chain
   useEffect(() => {
     if (!open || busy || historyOpen) return
-    const onKey = (event: KeyboardEvent) => event.key === 'Escape' && collapse()
+    const onKey = (event: KeyboardEvent) => event.key === 'Escape' && !leave(false) && collapse()
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [open, busy, historyOpen, collapse])
+  }, [open, busy, historyOpen, collapse, leave])
 
   const historyLink = conversation && saved && (
     <button
@@ -472,21 +475,23 @@ export function DecisionBindingStrip({
                 </span>
               )}
               {gate && (
-                <GateChainFields
-                  value={gate}
-                  decisions={decisions}
-                  disabled={!canWrite || busy}
-                  onChange={(next) =>
-                    setBindingDraft(bindingKey, {
-                      decisionId: next.decisionId,
-                      when: next.when,
-                      steps: next.steps,
-                      nextStepId: next.nextStepId,
-                      elseStepId: next.elseStepId,
-                      phase: 'editing'
-                    })
-                  }
-                />
+                <DecisionChainHost value={chain.host}>
+                  <GateChainFields
+                    value={gate}
+                    decisions={decisions}
+                    disabled={!canWrite || busy}
+                    onChange={(next) =>
+                      setBindingDraft(bindingKey, {
+                        decisionId: next.decisionId,
+                        when: next.when,
+                        steps: next.steps,
+                        nextStepId: next.nextStepId,
+                        elseStepId: next.elseStepId,
+                        phase: 'editing'
+                      })
+                    }
+                  />
+                </DecisionChainHost>
               )}
             </fieldset>
 
@@ -560,8 +565,8 @@ export function DecisionBindingStrip({
                     variant="primary"
                     size="sm"
                     className="max-desktop:flex-1"
-                    disabled={!!invalidText || busy || !decision}
-                    onClick={() => void save()}
+                    disabled={chain.depth ? busy : !!invalidText || busy || !decision}
+                    onClick={() => leave(true) || void save()}
                   >
                     {busy ? t('binding.saving') : t('save')}
                   </Button>
@@ -572,7 +577,13 @@ export function DecisionBindingStrip({
                   )}
                 </>
               )}
-              <Button variant="secondary" size="sm" className="max-desktop:flex-1" disabled={busy} onClick={collapse}>
+              <Button
+                variant="secondary"
+                size="sm"
+                className="max-desktop:flex-1"
+                disabled={busy}
+                onClick={() => leave(false) || collapse()}
+              >
                 {canWrite ? t('cancel') : t('binding.close')}
               </Button>
               {historyLink}

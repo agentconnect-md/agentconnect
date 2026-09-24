@@ -178,16 +178,37 @@ describe('CodeHostDecisionEntry', () => {
         rules: [expect.objectContaining({ action: { type: 'agent', agentId: 'a1' } })]
       })
       await click(button('Needs a response'))
-      const next = all('button').find(
-        (node) =>
-          node.classList.contains('inp') &&
-          node.textContent?.includes('Needs a response') &&
-          !node.hasAttribute('aria-haspopup')
+      const next = [...document.body.querySelectorAll('[role="dialog"] button[aria-haspopup="dialog"]')].find(
+        (node) => node.textContent?.trim() === 'Needs a response'
       )
       await click(next)
       expect(document.body.querySelector('button[aria-label="Target for Yes"]')?.textContent).toContain('review-bot')
     }
   )
+
+  it('returns from a child Decision to its parent: Cancel drops the child, Save keeps it unsaved', async () => {
+    const continuation = () =>
+      [...document.body.querySelectorAll('[role="dialog"] button[aria-haspopup="dialog"]')].find(
+        (node) => node.textContent?.trim() === 'Needs a response'
+      )
+    const openChild = async () => {
+      await click(document.body.querySelector('button[aria-label="Continue with a Decision"]'))
+      await click(all('[role="menuitem"]').find((node) => node.textContent?.includes('Needs a response')))
+    }
+    await render()
+    await pickRules()
+    await openChild()
+    expect(document.body.querySelector('nav[aria-label="Decision path"]')).toBeTruthy()
+    await click(button('Cancel'))
+    expect(document.body.querySelector('[role="dialog"]')).toBeTruthy()
+    expect(document.body.querySelector('nav[aria-label="Decision path"]')).toBeNull()
+    expect(continuation()).toBeUndefined()
+    await openChild()
+    await click(button('Save'))
+    expect(document.body.querySelector('nav[aria-label="Decision path"]')).toBeNull()
+    expect(mocks.saveCodeHostRouting).not.toHaveBeenCalled()
+    expect(continuation()).toBeTruthy()
+  })
 
   it('picks reviewers per answer among the members and keeps them as the row’s pill until ×', async () => {
     await render()

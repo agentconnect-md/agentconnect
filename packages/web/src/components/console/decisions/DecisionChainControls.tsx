@@ -1,12 +1,74 @@
 'use client'
 
-import { createContext, useContext, type ReactNode } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type MutableRefObject,
+  type ReactNode,
+  type SetStateAction
+} from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import type { DecisionDefinition } from '@agentconnect.md/protocol/decision'
+import { DecisionChip } from './DecisionChip'
+import { DecisionHoverRows } from './DecisionPicker'
 
 export { reachableSteps } from '@/lib/decisions/chain'
+
+type ChainHost = {
+  back: MutableRefObject<((keep: boolean) => void) | null>
+  setDepth: Dispatch<SetStateAction<number>>
+}
+const ChainHostContext = createContext<ChainHost | null>(null)
+export const DecisionChainHost = ChainHostContext.Provider
+
+// A modal's side of a cascade: Save, Cancel and Escape leave an open lower level before they act on the modal.
+export function useDecisionChainHost() {
+  const back = useRef<((keep: boolean) => void) | null>(null)
+  const [depth, setDepth] = useState(0)
+  const leave = useCallback((keep: boolean) => {
+    if (!back.current) return false
+    back.current(keep)
+    return true
+  }, [])
+  return { host: { back, setDepth }, depth, leave }
+}
+
+// A cascade's open path; each level remembers the value on entry so Cancel can restore it.
+export function useDecisionChainPath<T>(value: T, restore: (value: T) => void) {
+  const [levels, setLevels] = useState<Array<{ id: string; entry: T }>>([])
+  const host = useContext(ChainHostContext)
+  const back = (keep: boolean) => {
+    const last = levels.at(-1)
+    if (!last) return
+    if (!keep) restore(last.entry)
+    setLevels(levels.slice(0, -1))
+  }
+  useEffect(() => {
+    if (!host) return
+    host.back.current = levels.length ? back : null
+    host.setDepth(levels.length)
+  })
+  useEffect(
+    () => () => {
+      if (!host) return
+      host.back.current = null
+      host.setDepth(0)
+    },
+    [host]
+  )
+  return {
+    path: levels.map((level) => level.id),
+    enter: (id: string) => setLevels([...levels, { id, entry: value }]),
+    to: (depth: number) => setLevels(levels.slice(0, depth))
+  }
+}
 
 export function DecisionChainNav({
   path,
@@ -38,10 +100,12 @@ export function DecisionChainNav({
 export function NextDecision({
   decisions,
   disabled,
+  ariaLabel,
   onSelect
 }: {
   decisions: DecisionDefinition[]
   disabled?: boolean
+  ariaLabel?: string
   onSelect: (decision: DecisionDefinition) => void
 }) {
   const t = useTranslations('Decisions.chain')
@@ -51,20 +115,16 @@ export function NextDecision({
       align="end"
       width={260}
       estimatedHeight={Math.min(320, decisions.length * 36 + 12)}
+      triggerClassName="flex flex-none"
       trigger={({ open, menuId, toggle }) => (
-        <button
-          type="button"
-          className="iconbtn h-[30px] w-[30px] flex-none"
+        <DecisionChip
+          name={null}
+          label={ariaLabel ?? t('next')}
           title={t('next')}
-          aria-label={t('next')}
           disabled={disabled || !decisions.length}
-          aria-haspopup="menu"
-          aria-expanded={open}
-          aria-controls={open ? menuId : undefined}
-          onClick={toggle}
-        >
-          <Icon name="git-branch" size={14} />
-        </button>
+          openProps={{ 'aria-haspopup': 'menu', 'aria-expanded': open, 'aria-controls': open ? menuId : undefined }}
+          onOpen={toggle}
+        />
       )}
     >
       {({ close }) =>
@@ -85,6 +145,37 @@ export function NextDecision({
         ))
       }
     </AnchoredFlyout>
+  )
+}
+
+// A chosen next Decision: its chip opens the lower level, and × removes the continuation.
+export function NextDecisionChip({
+  decision,
+  name,
+  label,
+  removeLabel,
+  disabled,
+  onOpen,
+  onRemove
+}: {
+  decision?: DecisionDefinition
+  name: string
+  label?: string
+  removeLabel?: string
+  disabled?: boolean
+  onOpen: () => void
+  onRemove?: () => void
+}) {
+  const t = useTranslations('Decisions.chain')
+  return (
+    <DecisionChip
+      fill
+      name={name}
+      label={label}
+      onOpen={onOpen}
+      hover={decision && <DecisionHoverRows decision={decision} />}
+      remove={onRemove && !disabled ? { label: removeLabel ?? t('remove'), onClick: onRemove } : undefined}
+    />
   )
 }
 
@@ -111,33 +202,17 @@ export function RoutingContinuation({
   const t = useTranslations('Decisions.chain')
   if (!chain) return children
   const step = chain.steps.find((entry) => entry.id === nextStepId)
+  const next = chain.decisions.find((d) => d.id === step?.decisionId)
   return (
     <span className="flex min-w-0 items-center gap-1">
       {nextStepId ? (
-        <>
-          <button
-            type="button"
-            className="inp h-[30px] min-h-0 min-w-0 flex-1 gap-2 text-[12px]"
-            disabled={disabled}
-            onClick={() => chain.open(nextStepId)}
-          >
-            <Icon name="split" size={13} />
-            <span className="truncate">
-              {chain.decisions.find((d) => d.id === step?.decisionId)?.name ?? t('missing')}
-            </span>
-            <Icon name="chevron-right" size={12} />
-          </button>
-          <button
-            type="button"
-            className="iconbtn h-7 w-7 flex-none"
-            disabled={disabled}
-            aria-label={t('remove')}
-            title={t('remove')}
-            onClick={() => onChange(null)}
-          >
-            <Icon name="x" size={12} />
-          </button>
-        </>
+        <NextDecisionChip
+          decision={next}
+          name={next?.name ?? t('missing')}
+          disabled={disabled}
+          onOpen={() => chain.open(nextStepId)}
+          onRemove={() => onChange(null)}
+        />
       ) : (
         <>
           <span className="min-w-0 flex-1">{children}</span>
