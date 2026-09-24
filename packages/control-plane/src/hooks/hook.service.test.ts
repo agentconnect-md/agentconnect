@@ -7,6 +7,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { HookService, type GiteaHookCompileSources, type HookAgentReads } from './hook.service.js'
 import type {
   AgentRecord,
+  CodeHostDecisionRoutingRecord,
   GiteaConnectionRecord,
   GiteaRepositoryBindingRecord,
   GithubInstallationRecord,
@@ -511,5 +512,112 @@ describe('HookService.compile — gitea (gitea-integration.md §7)', () => {
     expect(await make({ gitea: { connection: { state: 'disconnecting' } } }).svc.compile(hook(GITEA_HOOK))).toBeNull()
     // No gitea sources wired at all: the row compiles to nothing rather than to a GitHub rule.
     expect(await make({ installations: [installation(1n)] }).svc.compile(hook(GITEA_HOOK))).toBeNull()
+  })
+})
+
+describe('HookService — Decision routing (code-host-decisions.md §3.2-§3.3)', () => {
+  const ROUTING = '55555555-5555-4555-8555-555555555555'
+  const DECISION = '44444444-4444-4444-8444-444444444444'
+  const HOST = AgentId('66666666-6666-4666-8666-666666666666')
+  const HOST_DAEMON = 'd2d2d2d2-dddd-4ddd-8ddd-dddddddddddd'
+  const github = hook({
+    kind: 'github',
+    sessionMode: 'perThread',
+    urlToken: null,
+    repoId: 42n,
+    repoFullName: 'example-org/example-repo',
+    family: 'issues',
+    events: ['issues:opened']
+  })
+  const record = (over: Partial<CodeHostDecisionRoutingRecord> = {}): CodeHostDecisionRoutingRecord => ({
+    id: ROUTING,
+    orgId: OrgId('org'),
+    provider: 'github',
+    repoId: 42n,
+    repoFullName: 'example-org/example-repo',
+    family: 'issues',
+    enabled: true,
+    decisionId: DECISION,
+    config: null,
+    needsReview: false,
+    evaluationAgentId: HOST,
+    definition: null,
+    updatedAt: new Date(),
+    ...over
+  })
+  const build = (routing: CodeHostDecisionRoutingRecord | null, hostPlaced = true) => {
+    const agents: HookAgentReads = {
+      getUnscoped: vi.fn(async (id: string) =>
+        id === HOST
+          ? ({ id: HOST, name: 'host-agent', daemonId: hostPlaced ? HOST_DAEMON : null } as AgentRecord)
+          : ({ id: AGENT, name: 'review-agent', daemonId: DAEMON } as AgentRecord)
+      )
+    }
+    const placement = { routableDaemon: vi.fn(async (a: { daemonId?: string | null }) => a.daemonId ?? null) }
+    const hooks = { listEnabled: vi.fn(async () => [github]) } as unknown as HookRepo
+    return new HookService(
+      hooks,
+      { get: vi.fn(async () => null) } as unknown as HookSecretStore,
+      agents,
+      {} as RelayControlSender,
+      placement as never,
+      { listForOrg: vi.fn(async () => [installation(1n)]) },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { get: vi.fn(async () => routing) }
+    )
+  }
+
+  it('names the scope routing and its host on every rule of the scope', async () => {
+    expect((await build(record()).compile(github))?.routing).toEqual({
+      routingId: ROUTING,
+      decisionId: DECISION,
+      evaluationAgentId: HOST,
+      evaluationDaemonId: HOST_DAEMON
+    })
+  })
+
+  it('compiles a routed rule on every update, setting aside its own cadence and mention-only mode', async () => {
+    const mentionOnly = hook({ ...github, events: ['issues:opened', 'issue_comment:created'], mentionOnly: true })
+    const routed = await build(record()).compile(mentionOnly)
+    expect(routed?.github).toMatchObject({
+      events: ['issues:*', 'issue_comment:created'],
+      commentFamilies: ['issues'],
+      mentionOnly: false
+    })
+    const paused = await build(record({ enabled: false })).compile(mentionOnly)
+    expect(paused?.github).toMatchObject({ events: ['issues:opened', 'issue_comment:created'], mentionOnly: true })
+  })
+
+  it('keeps routing on a scope needing review, so the host holds it', async () => {
+    expect((await build(record({ needsReview: true })).compile(github))?.routing?.routingId).toBe(ROUTING)
+  })
+
+  it('compiles unrouted without a routing, while paused, and outside a routed family', async () => {
+    expect(await build(null).compile(github)).not.toHaveProperty('routing')
+    expect(await build(record({ enabled: false })).compile(github)).not.toHaveProperty('routing')
+    expect(await build(record()).compile(hook({ ...github, family: 'push' }))).not.toHaveProperty('routing')
+  })
+
+  it('leaves the pool while the routed scope has no placed host', async () => {
+    expect(await build(record(), false).compile(github)).toBeNull()
+    expect(await build(record({ evaluationAgentId: null })).compile(github)).toBeNull()
+  })
+
+  it('replays a routed rule only to a relay advertising hook-decision-routing-v1', async () => {
+    const svc = build(record())
+    const replay = async (features: string[]) => {
+      const sent: string[] = []
+      await svc.replayTo({ features, send: (type: string) => sent.push(type) } as never)
+      return sent
+    }
+    expect(await replay([])).toEqual([])
+    expect(await replay(['hook-decision-routing-v1'])).toEqual(['rc/hook-assign'])
   })
 })

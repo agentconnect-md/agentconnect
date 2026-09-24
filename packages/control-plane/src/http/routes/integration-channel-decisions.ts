@@ -13,7 +13,6 @@ import {
   DecisionPreviewRequest,
   DecisionPreviewSample,
   decisionConditionIssues,
-  manifestFor,
   supportsDecision
 } from '@agentconnect.md/protocol'
 import { canView } from '../../authorization/policy.js'
@@ -112,8 +111,6 @@ export function integrationChannelDecisionRoutes(deps: HttpDeps) {
         if (!bot || !row) return reply.code(404).send(notFound('channel not found'))
         if (row.kind === 'im')
           return reply.code(400).send(badRequest('By decision applies only to group conversations'))
-        if (manifestFor(bot.platform).ownerAsDefault)
-          return reply.code(400).send(badRequest('By decision is not available for this platform'))
         const decision = await visibleDecision(deps, req, gate.decisionId)
         if (!decision) return reply.code(404).send(notFound('decision not found', 'DECISION_NOT_FOUND'))
         if (!supportsDecision(decision))

@@ -461,11 +461,12 @@ function BotsCard({
           const ownerId = !b.shareable ? (b.agentIds[0] ?? null) : null
           const showGate = gates.offered && ownerId !== null && gates.decisionTriggers(b.platform)
           const chanGrid = showDefaultDispatch || showGate ? 'grid-cols-[1fr_auto]' : 'grid-cols-[1fr]'
-          // A shared relay bot routes By decision where its platform offers that trigger; its rules open per conversation.
+          // A shared relay bot routes By decision where its platform offers that trigger and has no per-owner gate.
           const routable =
             decisions !== null &&
             b.shareable &&
             b.transport === 'http' &&
+            channelListSemantics(b.platform).sharedDecision !== 'conversation' &&
             (!channelListSemantics(b.platform).triggers ||
               channelListSemantics(b.platform).triggers!.includes('decision'))
           // The picker's choices: every agent installed on the bot.

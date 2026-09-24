@@ -3,6 +3,7 @@ import {
   DECISION_ROUTING_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
   EMPTY_DECISION_BUNDLE,
+  OWNER_DEFAULT_DECISION_V1_FEATURE,
   type AttributedRoute,
   type IntegrationSpec,
   type RcRoutedConversation
@@ -19,6 +20,11 @@ export function decisionTriggerSupported(features: readonly string[] | undefined
 /** Whether a daemon or relay understands shared-bot routing and never treats a routed conversation as Any. */
 export function decisionRoutingSupported(features: readonly string[] | undefined): boolean {
   return advertises(features, [DECISION_ROUTING_V1_FEATURE])
+}
+
+/** Whether a relay seats an ownerAsDefault assignment's decision route as the channel default. */
+export function ownerDefaultDecisionSupported(features: readonly string[] | undefined): boolean {
+  return advertises(features, [OWNER_DEFAULT_DECISION_V1_FEATURE])
 }
 
 /** Whether a relay both parses routed conversations and forwards them to their evaluation host. */
@@ -75,7 +81,9 @@ export function encodeIntegrationSpecForPeer(
 /** The relay twin: routed routes go without routing-v1 and forward-v1, every decision route without trigger-v1, all muted. */
 export function encodeRelayRoutesForPeer<
   T extends { routes: AttributedRoute[]; mutedChannels: string[]; routedConversations?: RcRoutedConversation[] }
->(frame: T, features: readonly string[] | undefined): T {
+>(frame: T, features: readonly string[] | undefined, opts: { ownerAsDefault?: boolean } = {}): T {
+  // A relay that would rank an ownerAsDefault decision route first gets none, and the conversation holds.
+  if (opts.ownerAsDefault && !ownerDefaultDecisionSupported(features)) frame = stripDecisionRoutes(frame)
   if (!relayRoutingSupported(features) && frame.routedConversations?.length) {
     // A relay that cannot forward to the host would still deliver the decision route gate-style, so the route goes too.
     const routed = new Set(frame.routedConversations.map((c) => c.channel))
@@ -89,6 +97,11 @@ export function encodeRelayRoutesForPeer<
     }
   }
   if (decisionTriggerSupported(features)) return frame
+  return stripDecisionRoutes(frame)
+}
+
+/** Every decision route removed and its conversation muted, never delivered as Any. */
+function stripDecisionRoutes<T extends { routes: AttributedRoute[]; mutedChannels: string[] }>(frame: T): T {
   const decisionRoutes = frame.routes.filter((r) => r.match.kind === 'decision')
   if (decisionRoutes.length === 0) return frame
   const held = decisionRoutes.flatMap((r) => (r.scope?.channel ? [r.scope.channel] : []))

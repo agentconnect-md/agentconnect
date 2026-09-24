@@ -22,6 +22,7 @@ import {
   type HookReviewResult,
   type RdAck,
   type RdHookNotice,
+  type RdHookRouting,
   type RdMsgHook
 } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
@@ -82,6 +83,9 @@ export interface GithubHookDispatchOptions {
   onAdmission?: (result: { accepted: boolean; reason?: string; duplicate?: boolean }) => void
 }
 
+/** The relay's suffix on a host copy's msgId, so its ack never collides with the host agent's own fire. */
+export const HOOK_ROUTE_MSG_SUFFIX = ':route'
+
 export interface AnchorTriggerResult {
   message: NormalizedMessage | null
   postAttempted: boolean
@@ -121,6 +125,8 @@ export interface GithubReviewHost {
     posterPublishState?: QueueEntry['posterPublishState'],
     required?: boolean
   ): Promise<void>
+  /** Record a routed event's host copy and choose its hooks (code-host-decisions.md §5); never a turn. */
+  routeHookHostCopy(msg: RdMsgHook & { routing: RdHookRouting }, recorded: NormalizedMessage): Promise<RdAck>
   emitHookCompletion(
     hook: HookDispatchContext,
     status: 'success' | 'failed',
@@ -221,6 +227,7 @@ export class GithubReviewOrchestrator {
    * the durable-inbox admission barrier; the model turn itself remains async.
    */
   async dispatchRelayHook(msg: RdMsgHook): Promise<RdAck> {
+    if (msg.routing) return await this.routeHostCopy({ ...msg, routing: msg.routing })
     const durable = await this.replayDurableAdmission(msg)
     if (durable) return durable
     const cleanup = codeHostThreadWorktreeCleanup(msg)
@@ -268,6 +275,22 @@ export class GithubReviewOrchestrator {
     }
   }
 
+  // Recording and choosing are not agent work, so a paused or draining host still keeps the thread whole and answers the relay.
+  private async routeHostCopy(msg: RdMsgHook & { routing: RdHookRouting }): Promise<RdAck> {
+    if (!this.agents.get(msg.agentId)) {
+      this.log.warn(`hook: no agent "${msg.agentId}" on this daemon — rejecting host copy ${msg.msgId}`)
+      return { msgId: msg.msgId, accepted: false, reason: 'no_agent' }
+    }
+    const hostMismatch = codeHostHostFence(msg, this.turnFinalHost)
+    if (hostMismatch) return { msgId: msg.msgId, accepted: false, reason: hostMismatch }
+    // The copy's msgId is `<hookId>:<deliveryKey>:route`; its row uses the base identity, the one the host's own fire writes.
+    const base = msg.msgId.endsWith(HOOK_ROUTE_MSG_SUFFIX)
+      ? msg.msgId.slice(0, -HOOK_ROUTE_MSG_SUFFIX.length)
+      : msg.msgId
+    const recorded = buildHookMessage({ ...msg, msgId: base, target: undefined }, randomUUID())
+    return await this.host.routeHookHostCopy(msg, recorded)
+  }
+
   /**
    * A hook fired for `agentId` (explicit target — no routing;
    * webhook-triggers-and-github-events.md). The relay already opened the HookRun
@@ -285,6 +308,9 @@ export class GithubReviewOrchestrator {
     // never an optional IM anchor configured for ordinary hook output.
     const supplement = cleanup || deleted ? undefined : await codeHostPromptSupplement(msg, this.turnFinalHost)
     const nmsg = buildHookMessage(cleanup || deleted ? { ...msg, target: undefined } : msg, randomUUID(), supplement)
+    // A routed fire renders why it was chosen beside the event; it has no background rows to pick.
+    if (msg.routeSelection && !cleanup && !deleted)
+      nmsg.channelIntake = { seq: 0, backgroundSeqs: [], hookRoute: msg.routeSelection }
     const snapshot = hookSnapshot(msg)
     const hookContext: HookDispatchContext = {
       hookId: msg.hookId,

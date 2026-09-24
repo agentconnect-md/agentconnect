@@ -8,6 +8,7 @@ import {
   DECISION_PREVIEW_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
   DECISION_ROUTING_V1_FEATURE,
+  HOOK_DECISION_ROUTING_V1_FEATURE,
   type DecisionBundle,
   type RdRouteBackfillRow,
   DECISION_TOOLS_V1_FEATURE,
@@ -491,7 +492,7 @@ import {
 import { KeyServerClient, type KeyGrant } from './key-server/client.js'
 import { DecisionEvaluator, type DecisionEvaluationInput } from './decisions/evaluator.js'
 import { DecisionEvaluationReader } from './decisions/evaluations.js'
-import { backgroundConversationText, decisionEvidenceText, routeSelectionEvidence } from './decisions/evidence.js'
+import { backgroundConversationText, intakeEvidenceText, routeSelectionEvidence } from './decisions/evidence.js'
 import { DecisionLaneRuntime } from './decisions/lanes.js'
 import {
   DecisionRouter,
@@ -504,6 +505,7 @@ import {
 } from './decisions/router.js'
 import { routerFingerprint, resolveDecisionBundle } from './decisions/bundle.js'
 import { buildDecisionState } from './decisions/state.js'
+import { HookRouter } from './github/hook-routing.js'
 import {
   DecisionGate,
   DEFAULT_DECISION_GATE_LIMITS,
@@ -680,6 +682,7 @@ import type {
   Ack,
   RdMsg,
   RdMsgHook,
+  RdHookRouting,
   RdMsgWebchat,
   RdMsgIm,
   RdMsgPlatformAction,
@@ -1419,6 +1422,7 @@ export class Daemon {
   private readonly decisionGate: DecisionGate
   /** The shared-bot router (message-intake.md §6), sharing the gate's lanes and provider budget. */
   private readonly decisionRouter: DecisionRouter
+  private readonly hookRouter: HookRouter
   private readonly decisionLanes: DecisionLaneRuntime
   /** The relay each routed `rd/msg` arrived on, preferred for its rd/route and report. */
   private readonly relayIngressOf = new WeakMap<object, string>()
@@ -1739,8 +1743,22 @@ export class Daemon {
     this.decisionLanes = new DecisionLaneRuntime(DEFAULT_DECISION_GATE_LIMITS)
     this.decisionGate = new DecisionGate(this.decisionGateHost(), DEFAULT_DECISION_GATE_LIMITS, this.decisionLanes)
     this.decisionRouter = new DecisionRouter(this.decisionRouterHost(), this.decisionLanes)
+    this.hookRouter = new HookRouter({
+      store: () => this.store,
+      evaluate: (input, signal) => this.decisionEvaluator.evaluate(input, signal),
+      now: () => this.clock.now(),
+      ownerFence: () => `${this.cfg.daemonId ?? 'local'}:${this.decisionBootNonce}`,
+      currentProjection: (agentId, routingId) =>
+        this.agents.get(agentId)?.hookRoutings?.find((r) => r.routingId === routingId),
+      log: { warn: (message) => this.log.warn(message) }
+    })
     this.decisionEvaluations = new DecisionEvaluationReader({
       store: () => this.store,
+      // A routing lane is readable while this daemon serves its host agent and the agent still hosts it.
+      servedHookRouting: async (orgId, agentId, routingId) =>
+        this.servesAgent(agentId) &&
+        this.orgForAgent(agentId) === orgId &&
+        (this.agents.get(agentId)?.hookRoutings ?? []).some((r) => r.routingId === routingId),
       servedIntegration: async (orgId, agentId, integrationId) => {
         const integration = this.agents.get(agentId)?.integrations?.find((i) => i.id === integrationId)
         if (!integration || !this.servesAgent(agentId) || this.orgForAgent(agentId) !== orgId) return undefined
@@ -6212,6 +6230,8 @@ export class Daemon {
       DECISION_TRIGGER_V1_FEATURE,
       // This daemon evaluates routed conversations it hosts and admits routed forwards without evaluating.
       DECISION_ROUTING_V1_FEATURE,
+      // This daemon hosts code-host hook routing from AgentSpec.hookRoutings and reads its evaluation lanes.
+      HOOK_DECISION_ROUTING_V1_FEATURE,
       DECISION_TOOLS_V1_FEATURE,
       DECISION_MODEL_SELECTION_V1_FEATURE,
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
@@ -8542,7 +8562,8 @@ export class Daemon {
   /** Let an existing hook receipt win before duty/drain refusal; cache every verdict except `not_holder`. */
   private handleRelayHookMsg(msg: RdMsgHook, dedupKey: string): Promise<RdAck> {
     const task = (async (): Promise<RdAck> => {
-      if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(msg.agentId)) {
+      // A host copy belongs to this daemon as evaluation host, not to the carrier agent's duty (code-host-decisions.md §3.2).
+      if (!msg.routing && this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(msg.agentId)) {
         const durable = await this.githubReviews.replayDurableAdmission(msg)
         if (durable) return durable
         const claimed = await this.dutyCoordinator.claimDutyForTrigger(msg.agentId)
@@ -10090,6 +10111,7 @@ export class Daemon {
       persistInbox: async (entry, key, options) => await this.persistInbox(entry, key, options),
       persistHookState: (entry, posterPublishState, required) =>
         this.persistHookState(entry, posterPublishState, required),
+      routeHookHostCopy: (msg, recorded) => this.routeHookHostCopy(msg, recorded),
       emitHookCompletion: (hook, status, extra, owner) => this.emitHookCompletion(hook, status, extra, owner),
       activeDispatchDone: (key) => this.activeDispatchDoneByKey.get(key),
       cleanupSessionWorktree: (rec) => this.cleanupSessionWorktree(rec),
@@ -10406,11 +10428,31 @@ export class Daemon {
     }
   }
 
+  /** A routed event's host copy (code-host-decisions.md §5): record at the host's coordinates, then choose once. */
+  private async routeHookHostCopy(
+    msg: RdMsgHook & { routing: RdHookRouting },
+    recorded: NormalizedMessage
+  ): Promise<RdAck> {
+    const record = await this.recordChannelInbound(recorded, undefined, { orgAgentId: msg.agentId })
+    if (!record) return { msgId: msg.msgId, accepted: false, reason: 'durability' }
+    // Record-only: the thread's history gains the event and nobody fires.
+    if (msg.routing.candidates.length === 0) return { msgId: msg.msgId, accepted: true }
+    const projection = this.agents.get(msg.agentId)?.hookRoutings?.find((r) => r.routingId === msg.routing.routingId)
+    // Missing, disabled, or another Decision is unsynchronized configuration: hold rather than fire unrouted.
+    if (!projection || !projection.config.enabled || projection.definition.id !== msg.routing.decisionId) {
+      this.log.info(`hook: routing ${msg.routing.routingId} is not in sync here — holding host copy ${msg.msgId}`)
+      return { msgId: msg.msgId, accepted: false, reason: 'pending_sync' }
+    }
+    const outcome = await this.hookRouter.choose(msg, record, projection)
+    if (!outcome.accepted) return { msgId: msg.msgId, accepted: false, reason: outcome.reason }
+    return { msgId: msg.msgId, accepted: true, hookRoute: { targets: outcome.targets } }
+  }
+
   /** A steered By decision delivery's background and evidence, rebuilt from its persisted intake (decisions.md §8.4). */
   private async steerIntakeText(entry: QueueEntry): Promise<{ background?: string; evidence?: string }> {
     const intake = entry.msg.channelIntake
     if (!intake) return {}
-    const evidence = intake.evidence ? decisionEvidenceText(intake.evidence) : undefined
+    const evidence = intakeEvidenceText(intake)
     let background: string | undefined
     if (intake.backgroundSeqs?.length) {
       const transcriptChannel = transcriptChannelKey(entry.msg.channel, entry.msg.transportScope)

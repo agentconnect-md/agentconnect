@@ -4,7 +4,6 @@
 
 import { useLocale, useTranslations } from 'next-intl'
 import useSWR from 'swr'
-import { useDecisionsPrototype } from '@/lib/decisions/provider'
 import { errorParts } from '@/lib/decisions/binding'
 import { answerText, cancelReasonKey, latencyText, OUTCOME_BADGE, outcomeTone } from '@/lib/decisions/evaluations'
 import { modelLine } from '@/lib/decisions/model-result'
@@ -13,7 +12,7 @@ import type {
   DecisionEvaluationRecord,
   DecisionEvaluationRecordDetail
 } from '@agentconnect.md/protocol/decision'
-import type { DecisionConversationRef } from '@agentconnect.md/protocol/decision-api'
+import type { DecisionEvaluationSource } from '@/lib/decisions/evaluation-source'
 import { conditionSummary } from './DecisionConditionFields'
 import { DecisionModelResult } from './DecisionModelResult'
 import { BackLink, ExpiredBanner, Facts, formatEvaluationTime, Message, Note, Row, Section } from './EvaluationParts'
@@ -38,13 +37,13 @@ const MODEL_STATUS: Record<DecisionEvaluationOutcome, 'answered' | 'unavailable'
 }
 
 export function DecisionEvaluationDetail({
-  conversation,
+  source,
   seq,
   summary,
   decisionName,
   onBack
 }: {
-  conversation: DecisionConversationRef
+  source: DecisionEvaluationSource
   seq: number
   /** The list row, shown while the detail loads and kept when it fails. */
   summary: DecisionEvaluationRecord | null
@@ -53,11 +52,7 @@ export function DecisionEvaluationDetail({
 }) {
   const t = useTranslations('Decisions')
   const locale = useLocale()
-  const { api, orgId } = useDecisionsPrototype()
-  const { data, error, isLoading } = useSWR(
-    ['decision-evaluation', api.mode, orgId, conversation.integrationId, conversation.channelId, seq],
-    () => api.getEvaluation(conversation, seq)
-  )
+  const { data, error, isLoading } = useSWR(['decision-evaluation', ...source.key, seq], () => source.get(seq))
   const words = { yes: t('condition.yes'), no: t('condition.no'), none: t('condition.noAnswer') }
   const record: DecisionEvaluationRecordDetail | DecisionEvaluationRecord | null = data ?? summary
   const detail = data ?? null

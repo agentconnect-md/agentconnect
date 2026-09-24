@@ -34,7 +34,7 @@ export type DecisionStateResult =
   | { unsupported: true }
   | { unsupported?: false; state: Record<string, unknown>; omittedMessages: number; reasons: string[] }
 
-interface Entry {
+export interface DecisionStateEntry {
   id: string
   sender: { id: string }
   text: string
@@ -51,7 +51,8 @@ function truncateUtf8(text: string, max: number): string | undefined {
   return out.replace(/�$/, '')
 }
 
-function entryOf(row: ChannelTextRow, truncate: boolean): Entry {
+/** One transcript row as the state names it; history entries are capped, the current message never. */
+export function decisionEntryOf(row: ChannelTextRow, truncate: boolean): DecisionStateEntry {
   const quoted = transcriptQuoted(row)
   const cut = truncate ? truncateUtf8(row.text, DECISION_HISTORY_ENTRY_MAX_BYTES) : undefined
   return {
@@ -65,11 +66,17 @@ function entryOf(row: ChannelTextRow, truncate: boolean): Entry {
   }
 }
 
+/** Whether a state's whole request fits the byte cap and the estimated token budget (decisions.md §8.2). */
+export function fitsDecisionBudget(state: Record<string, unknown>, question: DecisionQuestion, model: string): boolean {
+  const bytes = Buffer.byteLength(decisionRequestBody({ decision: { model, question }, state }), 'utf8')
+  return bytes <= DECISION_REQUEST_MAX_BYTES && Math.ceil(bytes / BYTES_PER_TOKEN) <= DECISION_TOKEN_BUDGET
+}
+
 /** Build the frozen Jev state at a verdict's row: newest history that fits, presented oldest-first. */
 export function buildDecisionState(input: DecisionStateInput): DecisionStateResult {
-  const current = entryOf(input.current, false)
-  const candidates = input.history.map((row) => entryOf(row, true))
-  const compose = (included: Entry[]): { state: Record<string, unknown>; reasons: string[] } => {
+  const current = decisionEntryOf(input.current, false)
+  const candidates = input.history.map((row) => decisionEntryOf(row, true))
+  const compose = (included: DecisionStateEntry[]): { state: Record<string, unknown>; reasons: string[] } => {
     const omitted = candidates.length - included.length
     const reasons: string[] = []
     if (input.full) reasons.push('history_limit')
@@ -107,15 +114,9 @@ export function buildDecisionState(input: DecisionStateInput): DecisionStateResu
       }
     }
   }
-  const fits = (state: Record<string, unknown>): boolean => {
-    const bytes = Buffer.byteLength(
-      decisionRequestBody({ decision: { model: input.model, question: input.question }, state }),
-      'utf8'
-    )
-    return bytes <= DECISION_REQUEST_MAX_BYTES && Math.ceil(bytes / BYTES_PER_TOKEN) <= DECISION_TOKEN_BUDGET
-  }
+  const fits = (state: Record<string, unknown>): boolean => fitsDecisionBudget(state, input.question, input.model)
   // Newest first until the next one no longer fits; the kept set is a newest-suffix of the window.
-  const included: Entry[] = []
+  const included: DecisionStateEntry[] = []
   for (const entry of candidates) {
     if (!fits(compose([...included, entry]).state)) break
     included.push(entry)

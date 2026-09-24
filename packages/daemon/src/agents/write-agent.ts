@@ -771,6 +771,8 @@ export function applySpecFields(
   // the mcpServers contract — always shipped, so an emptied list clears on disk.
   if (spec.skills !== undefined) raw.skills = spec.skills
   if (spec.decisionIds !== undefined) raw.decisionIds = spec.decisionIds
+  // Absent (an older CP) leaves the hosted routings as they were; [] clears them.
+  if (spec.hookRoutings !== undefined) raw.hookRoutings = spec.hookRoutings
   if (spec.modelSelection === null) delete raw.modelSelection
   else if (spec.modelSelection !== undefined) raw.modelSelection = spec.modelSelection
   // Managed skill metadata is also a complete CP-owned set. The archive bytes

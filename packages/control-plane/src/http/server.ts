@@ -36,6 +36,7 @@ import { integrationRoutes } from './routes/integrations.js'
 import { botRoutes } from './routes/bots.js'
 import { decisionRoutes } from './routes/decisions.js'
 import { decisionRoutingRoutes } from './routes/decision-routing.js'
+import { codeHostDecisionRoutingRoutes } from './routes/code-host-decision-routing.js'
 import { decisionRoutingEvaluationRoutes } from './routes/decision-routing-evaluations.js'
 import { decisionRoutingPreviewRoutes } from './routes/decision-routing-preview.js'
 import { integrationChannelDecisionRoutes } from './routes/integration-channel-decisions.js'
@@ -336,6 +337,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           await scope.register(botRoutes(deps))
           await scope.register(decisionRoutes(deps))
           await scope.register(decisionRoutingRoutes(deps))
+          await scope.register(codeHostDecisionRoutingRoutes(deps))
           await scope.register(decisionRoutingPreviewRoutes(deps))
           await scope.register(decisionRoutingEvaluationRoutes(deps))
           await scope.register(integrationChannelDecisionRoutes(deps))

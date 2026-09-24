@@ -13,7 +13,12 @@ import {
 import { canEdit, canView } from '../../authorization/policy.js'
 import { AgentId, DaemonId } from '../../domain/ids.js'
 import { DecisionInUse } from '../../persistence/errors.js'
-import type { AgentRecord, BotDecisionRoutingUsage, DecisionChannelUsage } from '../../persistence/ports.js'
+import type {
+  AgentRecord,
+  BotDecisionRoutingUsage,
+  CodeHostDecisionRoutingUsage,
+  DecisionChannelUsage
+} from '../../persistence/ports.js'
 import { convergeDecisionConsumers } from '../../orchestrator/integrationPush.js'
 import type { HttpDeps } from '../deps.js'
 import { visibleDecision } from '../decision-access.js'
@@ -34,11 +39,14 @@ const DefinitionDto = z.object({
 })
 const IdParam = z.object({ id: z.string().uuid() })
 const UsageDto = z.object({
-  kind: z.enum(['gate', 'shared_bot_routing', 'agent_tool', 'model_selection']),
+  kind: z.enum(['gate', 'shared_bot_routing', 'agent_tool', 'model_selection', 'code_host_routing']),
   id: z.string(),
   label: z.string(),
   integrationId: z.string().optional(),
-  channelId: z.string().optional()
+  channelId: z.string().optional(),
+  // kind=code_host_routing: the routed repository scope.
+  repoId: z.string().optional(),
+  family: z.enum(['issues', 'pull_request']).optional()
 })
 const DecisionInUseDto = ErrorDto.extend({ usages: z.array(UsageDto), hiddenUsageCount: z.number().int() })
 const ReadinessDto = z.object({
@@ -141,6 +149,20 @@ export function decisionRoutes(deps: HttpDeps) {
       kind: 'shared_bot_routing' as const,
       id: u.botId,
       label: u.botName
+    })
+    // Code-host routings on these Decisions, visible when the caller can see one of the scope's members or targets.
+    const codeHostUsages = async (req: FastifyRequest, decisionIds?: readonly string[]) => {
+      const all = await deps.repos.codeHostDecisionRouting.listUsages(orgOf(req), decisionIds)
+      if (all.length === 0) return { all, visible: [] as CodeHostDecisionRoutingUsage[] }
+      const agents = new Set((await deps.repos.agent.list(orgOf(req), ctxOf(req))).map((a) => a.id))
+      return { all, visible: all.filter((usage) => usage.agentIds.some((id) => agents.has(id))) }
+    }
+    const codeHostUsageDto = (u: CodeHostDecisionRoutingUsage) => ({
+      kind: 'code_host_routing' as const,
+      id: u.routingId,
+      label: `${u.repoFullName} · ${u.family === 'issues' ? 'issues' : 'pull requests'}`,
+      repoId: u.repoId.toString(),
+      family: u.family
     })
     // Distinct conversations, counted across sibling rows the same way as the visible set.
     const conversationCount = (usages: readonly DecisionChannelUsage[]) =>
@@ -249,19 +271,20 @@ export function decisionRoutes(deps: HttpDeps) {
           summary: 'List Decisions',
           operationId: 'listDecisions',
           description:
-            'Lists reusable Decision definitions visible to the caller, each with the number of visible consumers: conversations it gates, shared-bot routers, and agents. Message consumers are not enabled by saving a definition.',
+            'Lists reusable Decision definitions visible to the caller, each with the number of visible consumers: conversations it gates, shared-bot routers, code-host routings, and agents. Message consumers are not enabled by saving a definition.',
           response: { 200: z.array(DefinitionDto.extend({ usageCount: z.number().int() })) }
         }
       },
       async (req) => {
         const [rows, agents] = await Promise.all([deps.repos.decision.list(orgOf(req), ctxOf(req)), agentUsages(req)])
         const ids = rows.map((row) => row.id)
-        const [{ visible: gates }, { visible: routers }] = await Promise.all([
+        const [{ visible: gates }, { visible: routers }, { visible: codeHost }] = await Promise.all([
           visibleUsages(req, ids),
-          routingUsages(req, ids)
+          routingUsages(req, ids),
+          codeHostUsages(req, ids)
         ])
         const counts = new Map<string, number>()
-        for (const usage of [...gates, ...routers, ...agents])
+        for (const usage of [...gates, ...routers, ...codeHost, ...agents])
           counts.set(usage.decisionId, (counts.get(usage.decisionId) ?? 0) + 1)
         return rows.map((row) => ({ ...dto(row, req), usageCount: counts.get(row.id) ?? 0 }))
       }
@@ -275,7 +298,7 @@ export function decisionRoutes(deps: HttpDeps) {
           summary: 'Get a Decision',
           operationId: 'getDecision',
           description:
-            'Returns a visible Decision and its visible consumers: each By decision conversation gate whose agent the caller can see, each shared-bot router whose bot connects an agent the caller can see, and each agent that uses it.',
+            'Returns a visible Decision and its visible consumers: each By decision conversation gate whose agent the caller can see, each shared-bot router whose bot connects an agent the caller can see, each code-host routing with a member or target agent the caller can see, and each agent that uses it.',
           params: IdParam,
           response: { 200: z.object({ decision: DefinitionDto, usages: z.array(UsageDto) }), 404: ErrorDto }
         }
@@ -285,12 +308,14 @@ export function decisionRoutes(deps: HttpDeps) {
         if (!row) return reply.code(404).send(notFound)
         const { visible: gates } = await visibleUsages(req, [row.id])
         const { visible: routers } = await routingUsages(req, [row.id])
+        const { visible: codeHost } = await codeHostUsages(req, [row.id])
         const agents = (await agentUsages(req)).filter((usage) => usage.decisionId === row.id)
         return {
           decision: dto(row, req),
           usages: [
             ...gates.map(usageDto),
             ...routers.map(routingUsageDto),
+            ...codeHost.map(codeHostUsageDto),
             ...agents.map(({ decisionId: _decisionId, ...usage }) => usage)
           ]
         }
@@ -327,7 +352,7 @@ export function decisionRoutes(deps: HttpDeps) {
           summary: 'Update a Decision',
           operationId: 'updateDecision',
           description:
-            'Replaces the definition atomically. Omitted visibility and selected members preserve the current audience. Revalidates every By decision conversation gate, marks incompatible ones Needs review (disabled, condition preserved), and re-pushes affected routing.',
+            'Replaces the definition atomically. Omitted visibility and selected members preserve the current audience. Revalidates every By decision conversation gate and routing, marks incompatible ones Needs review (disabled, condition preserved), and re-pushes affected routing.',
           params: IdParam,
           body: UpdateBody,
           response: { 200: DefinitionDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
@@ -355,6 +380,12 @@ export function decisionRoutes(deps: HttpDeps) {
         const result = await deps.repos.decision.update(orgOf(req), req.params.id, input, ctxOf(req))
         if (!result) return reply.code(404).send(notFound)
         await convergeDecisionConsumers(deps, result.consumerIntegrationIds, req.log, result.consumerBotIds)
+        // A code-host routing's Decision rides its host's spec; the relay rules carry only ids.
+        for (const scope of result.consumerCodeHostRoutings) {
+          await deps.hookRouting
+            .reconcile(scope)
+            .catch((err: unknown) => req.log.warn({ err }, 'decision converge: code-host routing reconcile failed'))
+        }
         return dto(result.decision, req)
       }
     )
@@ -367,7 +398,7 @@ export function decisionRoutes(deps: HttpDeps) {
           summary: 'Delete a Decision',
           operationId: 'deleteDecision',
           description:
-            'Deletes a visible definition. Refused with 409 while a conversation gate, a shared-bot router, or an agent still references it: usages lists what the caller can see and hiddenUsageCount counts the conversations, routers, and agents it cannot.',
+            'Deletes a visible definition. Refused with 409 while a conversation gate, a shared-bot router, a code-host routing, or an agent still references it: usages lists what the caller can see and hiddenUsageCount counts the conversations, routers, routings, and agents it cannot.',
           params: IdParam,
           response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: DecisionInUseDto }
         }
@@ -378,6 +409,7 @@ export function decisionRoutes(deps: HttpDeps) {
         const inUse = async () => {
           const { all, visible: shown } = await visibleUsages(req, [req.params.id])
           const routing = await routingUsages(req, [req.params.id])
+          const codeHost = await codeHostUsages(req, [req.params.id])
           const agents = (await agentUsages(req)).filter((usage) => usage.decisionId === req.params.id)
           // Org-wide references count agents the caller cannot see, so the refusal never reads as unused.
           const referencing = new Set(
@@ -388,9 +420,11 @@ export function decisionRoutes(deps: HttpDeps) {
           const hiddenAgents = [...referencing].filter((id) => !agents.some((usage) => usage.id === id)).length
           const conversations = conversationCount(all)
           const routers = routing.all.length
+          const repositories = codeHost.all.length
           const parts = [
             ...(conversations ? [`${conversations} conversation${conversations === 1 ? '' : 's'}`] : []),
             ...(routers ? [`${routers} shared bot${routers === 1 ? '' : 's'}`] : []),
+            ...(repositories ? [`${repositories} repository routing${repositories === 1 ? '' : 's'}`] : []),
             ...(referencing.size ? [`${referencing.size} agent${referencing.size === 1 ? '' : 's'}`] : [])
           ]
           return reply.code(409).send({
@@ -402,15 +436,20 @@ export function decisionRoutes(deps: HttpDeps) {
             usages: [
               ...shown.map(usageDto),
               ...routing.visible.map(routingUsageDto),
+              ...codeHost.visible.map(codeHostUsageDto),
               ...agents.map(({ decisionId: _decisionId, ...usage }) => usage)
             ],
             hiddenUsageCount:
-              Math.max(0, conversations - shown.length) + (routers - routing.visible.length) + hiddenAgents
+              Math.max(0, conversations - shown.length) +
+              (routers - routing.visible.length) +
+              (repositories - codeHost.visible.length) +
+              hiddenAgents
           })
         }
         if (
           (await deps.repos.integrationChannel.listDecisionUsages(orgOf(req), [req.params.id])).length > 0 ||
-          (await deps.repos.botDecisionRouting.listUsages(orgOf(req), [req.params.id])).length > 0
+          (await deps.repos.botDecisionRouting.listUsages(orgOf(req), [req.params.id])).length > 0 ||
+          (await deps.repos.codeHostDecisionRouting.listUsages(orgOf(req), [req.params.id])).length > 0
         )
           return inUse()
         try {

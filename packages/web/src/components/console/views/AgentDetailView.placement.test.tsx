@@ -20,7 +20,10 @@ const mocks = vi.hoisted(() => ({
   tab: 'tab=config'
 }))
 
-vi.mock('@/lib/decisions/provider', () => ({ useOptionalDecisionsPrototype: () => ({ decisions: [] }) }))
+// The page's routing reads key off the API mode and organization; an empty one makes no request.
+vi.mock('@/lib/decisions/provider', () => ({
+  useOptionalDecisionsPrototype: () => ({ decisions: [], api: { mode: 'live' }, orgId: '' })
+}))
 vi.mock('next/navigation', () => ({
   useParams: () => ({ id: 'agent-1' }),
   useSearchParams: () => new URLSearchParams(mocks.tab),

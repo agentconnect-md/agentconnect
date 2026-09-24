@@ -66,6 +66,7 @@ import {
 import { authoritativeHookProjectionState } from '../../github/projection-state.js'
 import { AgentWorkspaceIntegrationConflict, HookMissing } from '../errors.js'
 import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
+import { bumpCodeHostRoutingHosts } from './code-host-decision-routing.repo.js'
 import { joinAxisFence } from './gitlab-axis.js'
 import { joinGiteaAxisFence } from './gitea-axis.js'
 import { joinGiteaBindingFence } from './gitea-binding-fence.js'
@@ -682,6 +683,18 @@ export class PgHookRepo implements HookRepo {
               include: withUsers
             })
           : await tx.hookDef.upsert({ where: { id: input.hookId }, create, update, include: withUsers })
+        // A routed scope's members ride its host's AgentSpec.hookRoutings, so a membership change bumps that host.
+        if (
+          h.kind === 'github' &&
+          (existing === null ||
+            existing.agentId !== h.agentId ||
+            existing.repoId !== h.repoId ||
+            existing.enabled !== h.enabled)
+        )
+          await bumpCodeHostRoutingHosts(tx, h.orgId, [
+            { repoId: existing?.repoId, family: existing?.family },
+            { repoId: h.repoId, family: h.family }
+          ])
         return { kind: 'done', hook: toRecord(h) } as const
       })
       if (result.kind === 'done') return result.hook
@@ -698,7 +711,10 @@ export class PgHookRepo implements HookRepo {
       const result = await this.transaction(async (tx) => {
         const lockedAgentIds = await this.lockAgentLifecycleScopes(tx, [ownerHint ? AgentId(ownerHint) : null])
         await lockHookReviewLifecycleScope(tx, hookId)
-        const hook = await tx.hookDef.findUnique({ where: { id: hookId }, select: { agentId: true, orgId: true } })
+        const hook = await tx.hookDef.findUnique({
+          where: { id: hookId },
+          select: { agentId: true, orgId: true, kind: true, repoId: true, family: true }
+        })
         // Org fence BEFORE the projection tombstones: reaching those with a
         // foreign id would tear down another organization's durable Check
         // projections and only then fail on the delete (§3).
@@ -714,6 +730,7 @@ export class PgHookRepo implements HookRepo {
         await tx.hookDef.delete({
           where: { id: hookId, orgId, ...(expectedOwnerForMutation ? { agentId: expectedOwnerForMutation } : {}) }
         })
+        if (hook?.kind === 'github') await bumpCodeHostRoutingHosts(tx, orgId, [hook])
         return { kind: 'done' } as const
       })
       if (result.kind === 'done') return
@@ -1089,6 +1106,17 @@ export class PgHookRepo implements HookRepo {
       ]
       await tx.agentRepoAuthorization.updateMany({ where: renamedGrants, data: { repoFullName } })
       await bumpAgentConfigRevisions(tx, renamedGrantAgentIds)
+      // The routings' repoFullName rides their hosts' AgentSpec.hookRoutings.
+      const renamedRoutings = { orgId, provider: 'github', repoId, repoFullName: { not: repoFullName } }
+      const routingHosts = await tx.codeHostDecisionRouting.findMany({
+        where: renamedRoutings,
+        select: { evaluationAgentId: true }
+      })
+      await tx.codeHostDecisionRouting.updateMany({ where: renamedRoutings, data: { repoFullName } })
+      await bumpAgentConfigRevisions(
+        tx,
+        routingHosts.flatMap((row) => (row.evaluationAgentId ? [row.evaluationAgentId] : []))
+      )
       const gitRepo = normalizeGitUrl(repoFullName)
       const workspaceWhere = {
         orgId,
@@ -1125,7 +1153,13 @@ export class PgHookRepo implements HookRepo {
       // Both kinds of renamed agent need the live push: the workspace URL and the grant's
       // display name are two fields of the SAME spec, and an owner left out here keeps the
       // stale name on every connected daemon until it reconnects.
-      const renamedAgentIds = [...new Set([...changedAgents.map((agent) => agent.id), ...renamedGrantAgentIds])].sort()
+      const renamedAgentIds = [
+        ...new Set([
+          ...changedAgents.map((agent) => agent.id),
+          ...renamedGrantAgentIds,
+          ...routingHosts.flatMap((row) => (row.evaluationAgentId ? [row.evaluationAgentId] : []))
+        ])
+      ].sort()
       return { hooks, agentIds: renamedAgentIds.map((id) => AgentId(id)) }
     })
   }

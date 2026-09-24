@@ -36,7 +36,7 @@ import {
   type RcVerifyResult,
   type ErrorCode
 } from '@agentconnect.md/protocol'
-import { ReqRep, WireError, type Clock, type ServerTransport } from '@agentconnect.md/connection'
+import { ReqRep, WireError, type Clock, type RequestOpts, type ServerTransport } from '@agentconnect.md/connection'
 import type { Logger } from './log.js'
 
 type State = 'AUTHENTICATING' | 'READY' | 'CLOSED'
@@ -119,18 +119,22 @@ export class RelayDaemonConnection {
   /**
    * Send one inbound item to the daemon (`rd/msg` REQ) and resolve with the
    * `rd/ack` verdict — a browser webchat op, a shared-bot `im` message, or a hook
-   * fire. Rejects (retryable {@link WireError}) if the socket isn't READY.
+   * fire. Rejects (retryable {@link WireError}) if the socket isn't READY. `opts` overrides the retransmit budget.
    */
-  async sendMsg(payload: RdMsg): Promise<RdAck> {
+  async sendMsg(payload: RdMsg, opts?: RequestOpts): Promise<RdAck> {
     if (this.state !== 'READY') throw new WireError('INTERNAL', `rd link not ready (${this.state})`, true)
     const frame = buildRelayDaemonFrame('rd/msg', payload)
     let bytes = 0
     let rep: RelayDaemonFrame
     try {
-      rep = await this.correlator.request(frame, (e) => {
-        bytes = Buffer.byteLength(e)
-        this.transport.send(e)
-      })
+      rep = await this.correlator.request(
+        frame,
+        (e) => {
+          bytes = Buffer.byteLength(e)
+          this.transport.send(e)
+        },
+        opts
+      )
     } catch (err) {
       // The daemon drops an undecodable or oversized frame without a reply, so the size is the one
       // fact the sender can add to a timeout.

@@ -207,6 +207,24 @@ export type DecisionBundle = z.infer<typeof DecisionBundle>
 
 export const EMPTY_DECISION_BUNDLE: DecisionBundle = { bindings: [], definitions: [] }
 
+// Code-host routing (code-host-decisions.md §3): one per organization, repository and subject family.
+export const CODE_HOST_ROUTING_FAMILIES = ['issues', 'pull_request'] as const
+export const CodeHostRoutingFamily = z.enum(CODE_HOST_ROUTING_FAMILIES)
+export type CodeHostRoutingFamily = z.infer<typeof CodeHostRoutingFamily>
+
+// What the evaluation host needs: the config, its Decision, and every watching hook a rule may name.
+export const HookRoutingProjection = z.object({
+  routingId: Id,
+  provider: z.literal('github'),
+  repoId: z.string().min(1).max(64),
+  repoFullName: z.string().min(1).max(256),
+  family: CodeHostRoutingFamily,
+  config: SharedBotDecisionRouting,
+  definition: DecisionBundleDefinition,
+  members: z.array(z.object({ agentId: z.string().uuid(), hookId: z.string().uuid() })).max(64)
+})
+export type HookRoutingProjection = z.infer<typeof HookRoutingProjection>
+
 export const DecisionAnswer = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('boolean'), value: z.boolean(), probability: Probability }),
   z.strictObject({

@@ -24,6 +24,10 @@ export const DECISION_EVALUATIONS_V1_FEATURE = 'decision-evaluations-v1'
 export const DECISION_ROUTING_EVALUATIONS_V1_FEATURE = 'decision-routing-evaluations-v1'
 // The peer returns rawRequest/rawResponse on evaluation details when a request sets includeRaw.
 export const DECISION_EVALUATION_RAW_V1_FEATURE = 'decision-evaluation-raw-v1'
+// The peer hosts code-host hook routing (rd/msg hook `routing`, AgentSpec.hookRoutings) and reads its lanes, or the relay forwards to one.
+export const HOOK_DECISION_ROUTING_V1_FEATURE = 'hook-decision-routing-v1'
+// The relay seats an ownerAsDefault assignment's decision route as the channel default, below keyword and continuity.
+export const OWNER_DEFAULT_DECISION_V1_FEATURE = 'owner-default-decision-v1'
 export const DECISION_LIST_MAX_BYTES = 32 * 1024
 export const DECISION_EVALUATION_DETAIL_MAX_BYTES = 64 * 1024
 
@@ -100,10 +104,12 @@ export const DecisionPreviewReply = z.object({ evaluation: DecisionEvaluation })
 export type DecisionPreviewReply = z.infer<typeof DecisionPreviewReply>
 
 // Bounded, daemon-owned Recent evaluations reads; the CP proxies them and never persists the bodies.
+// A hook routing lane names the routing as `integrationId` and `channel`; `source` is sent only to a hook-decision-routing-v1 peer.
 const EvaluationLane = {
   agentId: z.string().uuid(),
   integrationId: z.string().min(1).max(128),
-  channel: z.string().min(1).max(512)
+  channel: z.string().min(1).max(512),
+  source: z.literal('hook_routing').optional()
 }
 export const DecisionEvaluationsRequest = z.strictObject({
   ...EvaluationLane,

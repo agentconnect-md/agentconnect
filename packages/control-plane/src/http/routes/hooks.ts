@@ -145,10 +145,12 @@ export function hookRoutes(deps: HttpDeps) {
     // safe on the far side of it. It is deliberately skipped when the broadcast REJECTS: the
     // old rule may still be live in the pool, and its callers use this to drop state that
     // rule still depends on. Leaving that state stale is safe and the roster reconciles it.
-    const converge = (hook: HookRecord, afterAssigned?: () => Promise<void>): void => {
+    const converge = (hook: HookRecord, afterAssigned?: () => Promise<void>, previous?: HookRecord): void => {
       void deps.hooks
         .broadcast(hook)
         .then(() => afterAssigned?.())
+        // A routed scope's host and sibling rules follow its membership (code-host-decisions.md §3.2).
+        .then(() => deps.hooks.reconcileRouting([previous, hook]))
         .catch((err) => app.log.warn({ hookId: hook.id, err }, 'hook broadcast failed'))
     }
 
@@ -1236,7 +1238,7 @@ export function hookRoutes(deps: HttpDeps) {
         // `hookAssign` runs, the pool still holds the old rule targeting this very agent, and
         // dropping its host first would have a delivery in that window refused.
         const retargetedFrom = existing.agentId && existing.agentId !== agent.id ? existing.agentId : null
-        converge(hook, retargetedFrom ? () => replicateUpsert(orgOf(req), retargetedFrom) : undefined)
+        converge(hook, retargetedFrom ? () => replicateUpsert(orgOf(req), retargetedFrom) : undefined, existing)
         convergeManagedRepository(hook.kind, orgOf(req), hook.repoId)
         // A retarget moved this hook off `existing.repoId`: the source binding's
         // union shrank too, so converge BOTH distinct repositories.
@@ -1280,6 +1282,9 @@ export function hookRoutes(deps: HttpDeps) {
           })
           .catch(() => {})
         deps.hooks.remove(existing.id)
+        void deps.hooks
+          .reconcileRouting([existing])
+          .catch((err) => app.log.warn({ hookId: existing.id, err }, 'hook routing reconcile failed'))
         // Losing: no rule can fire any more, so dropping the host now cannot orphan a
         // delivery that still quotes it.
         await replicateUpsert(orgOf(req), existing.agentId)

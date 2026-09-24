@@ -208,7 +208,16 @@ describe('POST /integrations/:id/channels/:channelId/decision-preview', () => {
     })
   })
 
-  it('refuses viewers, invisible agents, DMs, owner-as-default platforms, hidden Decisions, and bad conditions', async () => {
+  it('previews a gate on an owner-as-default platform like any group conversation', async () => {
+    const linear = await seedInstall({ name: 'linear-agent', platform: 'linear' })
+    const { app, spy } = appWith()
+    const decisionId = await createDecision(app)
+    const owned = await preview(app, linear.integrationId, 'C1', gate(decisionId))
+    expect(owned.statusCode, owned.body).toBe(200)
+    expect(spy.previews).toHaveLength(1)
+  })
+
+  it('refuses viewers, invisible agents, DMs, hidden Decisions, and bad conditions', async () => {
     const { integrationId } = await seedInstall()
     const { app, spy } = appWith()
     const decisionId = await createDecision(app)
@@ -221,10 +230,6 @@ describe('POST /integrations/:id/channels/:channelId/decision-preview', () => {
     const collaborator = appWith({ userId: await member('collaborator') }).app
     expect((await preview(collaborator, hidden.integrationId, 'C1', gate(decisionId))).statusCode).toBe(404)
     expect((await preview(app, integrationId, 'D1', gate(decisionId))).statusCode).toBe(400)
-    const linear = await seedInstall({ name: 'linear-agent', platform: 'linear' })
-    const owned = await preview(app, linear.integrationId, 'C1', gate(decisionId))
-    expect(owned.statusCode).toBe(400)
-    expect(owned.json().message).toBe('By decision is not available for this platform')
     const restricted = await createDecision(app, {
       ...boolDraft,
       name: 'Private',

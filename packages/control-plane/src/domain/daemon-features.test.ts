@@ -8,6 +8,7 @@ import {
 } from '@agentconnect.md/protocol'
 import {
   daemonSupportsAgent,
+  encodeAgentSpecForPeer,
   encodeSpecWorkspaceForPeer,
   isSelfManagedGitlabHost,
   requiredDaemonFeatures
@@ -151,5 +152,18 @@ describe('§8 per-peer workspace encoding', () => {
     } satisfies Pick<AgentSpec, 'workspace'>
     expect(encodeSpecWorkspaceForPeer(scratch, [])).toBe(scratch)
     expect(encodeSpecWorkspaceForPeer({}, [])).toEqual({})
+  })
+})
+
+describe('hook routings per peer (code-host-decisions.md §3.3)', () => {
+  const spec = {
+    workspace: { mode: 'scratch', isolation: 'shared', gitCredential: 'github-app', additionalRepos: [] },
+    hookRoutings: []
+  } satisfies Pick<AgentSpec, 'workspace' | 'hookRoutings'>
+
+  it('ships hookRoutings only to a daemon that hosts hook routing', () => {
+    expect(encodeAgentSpecForPeer(spec, ['hook-decision-routing-v1'])).toEqual(spec)
+    expect(encodeAgentSpecForPeer(spec, [])).not.toHaveProperty('hookRoutings')
+    expect(encodeAgentSpecForPeer(spec, undefined)).not.toHaveProperty('hookRoutings')
   })
 })

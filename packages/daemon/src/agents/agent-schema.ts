@@ -3,6 +3,7 @@ import {
   AgentDecisionIds,
   AgentModelSelection,
   AgentMemoryBinding,
+  HookRoutingProjection,
   CompatibleAgentSkillEntry,
   IntegrationCoreEnvelope,
   IntegrationDiscordConfig,
@@ -182,6 +183,8 @@ export const AgentSchema = z.object({
   skills: z.array(CompatibleAgentSkillEntry).default([]),
   decisionIds: AgentDecisionIds.optional(),
   modelSelection: AgentModelSelection.optional(),
+  // The code-host routings this agent evaluates as host (code-host-decisions.md §3.2).
+  hookRoutings: z.array(HookRoutingProjection).optional(),
   // Centrally accepted immutable `.skill` revisions. Content stays in the
   // daemon-owned cache and is materialized into the workspace before session
   // creation; this metadata is the exact CP-authorized revision set.

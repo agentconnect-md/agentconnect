@@ -156,7 +156,7 @@ function disabledReason(
 }
 
 /** Sorted-key JSON, so two equal configurations always serialize alike. */
-function canonicalJson(value: unknown): string {
+export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
   if (value && typeof value === 'object')
     return `{${Object.keys(value)

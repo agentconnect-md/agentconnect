@@ -1,5 +1,10 @@
 import type { FastifyRequest } from 'fastify'
-import { DECISION_TRIGGER_V1_FEATURE, type DecisionDefinition } from '@agentconnect.md/protocol'
+import {
+  DECISION_TRIGGER_V1_FEATURE,
+  OWNER_DEFAULT_DECISION_V1_FEATURE,
+  manifestFor,
+  type DecisionDefinition
+} from '@agentconnect.md/protocol'
 import { canView } from '../authorization/policy.js'
 import { decisionTriggerSupported } from '../domain/decision-trigger-features.js'
 import type { AgentRecord, BotRecord, IntegrationChannelRecord, IntegrationRecord } from '../persistence/ports.js'
@@ -58,7 +63,7 @@ export async function gateConsumer(
 export async function decisionGateReadiness(
   deps: Pick<HttpDeps, 'placementResolver' | 'daemonConns' | 'httpBot'>,
   agent: AgentRecord,
-  bot: Pick<BotRecord, 'transport'>
+  bot: Pick<BotRecord, 'transport' | 'platform'>
 ): Promise<DecisionGateReadiness> {
   const ready = (await deps.placementResolver.routableDaemons(agent))
     .map((daemonId) => deps.daemonConns.get(daemonId))
@@ -70,6 +75,12 @@ export async function decisionGateReadiness(
     const relays = deps.httpBot.relayFeatureSupport(DECISION_TRIGGER_V1_FEATURE)
     if (relays.connected === 0) return { status: 'pending_sync', reason: 'No relay is connected.' }
     if (relays.missing > 0) return { status: 'unsupported', reason: 'Upgrade the relay to use By decision.' }
+    // An ownerAsDefault conversation's decision route is held on a relay that cannot seat it as the default.
+    if (
+      manifestFor(bot.platform).ownerAsDefault &&
+      deps.httpBot.relayFeatureSupport(OWNER_DEFAULT_DECISION_V1_FEATURE).missing > 0
+    )
+      return { status: 'unsupported', reason: 'Upgrade the relay to use By decision.' }
   }
   return { status: 'ready' }
 }

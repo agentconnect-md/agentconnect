@@ -64,6 +64,8 @@ export type ConfigRevisionDecision =
  */
 export function agentSpecDigest(spec: AgentSpec): string {
   const { configRevision: _ignored, ...content } = spec
+  // An empty hosted-routing list is the absent field, so a CP that starts shipping it does not conflict at an equal revision.
+  if (content.hookRoutings?.length === 0) delete content.hookRoutings
   return 'sha256:' + createHash('sha256').update(canonicalJson(content)).digest('hex')
 }
 

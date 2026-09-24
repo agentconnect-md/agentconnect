@@ -322,7 +322,9 @@ export class HttpBotOrchestrator {
       this.log.warn({ botId, platform: bot.platform }, 'http-bot: platform contributes no relay ingress — skipping')
       return
     }
-    this.broadcast((ch) => ch.send('rc/bot-assign', encodeRelayRoutesForPeer(assign, ch.features)))
+    this.broadcast((ch) =>
+      ch.send('rc/bot-assign', encodeRelayRoutesForPeer(assign, ch.features, { ownerAsDefault: assign.ownerAsDefault }))
+    )
     this.log.info(
       { botId: bot.id, members: compiled.members.length, routes: compiled.routes.length },
       'http-bot: broadcast assign to relay pool'
@@ -403,7 +405,8 @@ export class HttpBotOrchestrator {
             routedConversations: compiled.routedConversations,
             ...(this.noticeAuthorityFor(bot.id) ? { noticeAuthority: this.noticeAuthorityFor(bot.id) } : {})
           },
-          ch.features
+          ch.features,
+          { ownerAsDefault: compiled.ownerAsDefault }
         )
       )
     )
@@ -541,7 +544,10 @@ export class HttpBotOrchestrator {
       const assign = await this.buildAssign(bot, compiled, secret)
       if (!assign) continue
       try {
-        ch.send('rc/bot-assign', encodeRelayRoutesForPeer(assign, ch.features))
+        ch.send(
+          'rc/bot-assign',
+          encodeRelayRoutesForPeer(assign, ch.features, { ownerAsDefault: assign.ownerAsDefault })
+        )
         for (const t of await this.threads.listForBot(bot.id)) {
           ch.send('rc/assign', { botId: bot.id, sessionKey: t.sessionKey, agentId: t.agentId, daemonId: t.daemonId })
         }
@@ -1445,10 +1451,10 @@ export class HttpBotOrchestrator {
     // Off or unavailable ownership closes unscoped fallback rungs.
     const offConversationIds = new Set(chans.filter((c) => c.trigger === 'off').map((c) => c.channelId))
     const muted = new Set(offConversationIds)
-    // A held By decision conversation (disabled, or no consumer route on this platform) is Off, never Any.
+    // A held By decision conversation (a disabled gate) is Off, never Any.
     for (const c of chans) {
       if (c.trigger !== 'decision' || isRoutedChannel(c)) continue
-      if (ownerAsDefault || !decisionGateState(c)?.enabled) muted.add(c.channelId)
+      if (!decisionGateState(c)?.enabled) muted.add(c.channelId)
     }
     // A routed conversation is held unless its plan names a supported, live evaluation host.
     const routing = await this.planRouting(bot, integrations, chans, placed)
@@ -1477,9 +1483,8 @@ export class HttpBotOrchestrator {
       const p = byAgent.get(c.agentId)
       if (!p) continue
       if (c.trigger === 'off') continue
-      // Such an owner is delivered as this conversation's default below; emitting a scoped rule
-      // for it too would make the FIRST rung swallow every addressed message.
-      if (ownerAsDefault) continue
+      // Such an owner rides the default rung below; a By decision owner's route is seated there by the relay.
+      if (ownerAsDefault && c.trigger !== 'decision') continue
       if (c.trigger === 'decision') {
         // Hold only for a daemon KNOWN to lack the feature; an offline one gets the route and the relay fails closed per delivery.
         const features = this.control.daemonFeatures?.(p.daemonId)

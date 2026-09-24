@@ -17,6 +17,7 @@ import type { z } from 'zod'
 import { AgentSpec as AgentSpecSchema, type AgentSpec, type CronUpsert } from '@agentconnect.md/protocol'
 import {
   agentRemovalTombstones,
+  applySpecFields,
   archiveAgent,
   clearAgentRemoval,
   commitAgentMove,
@@ -1101,5 +1102,46 @@ describe('writeCronDef §6.8 open target platform', () => {
     expect((raw.crons as Record<string, unknown>[])[0]).toMatchObject({
       target: { platform: 'telegram', channel: '-100123' }
     })
+  })
+})
+
+describe('applySpecFields hookRoutings (code-host-decisions.md §3.2)', () => {
+  const routing = {
+    routingId: '11111111-1111-4111-8111-111111111111',
+    provider: 'github',
+    repoId: '123',
+    repoFullName: 'example-org/example-repo',
+    family: 'issues',
+    config: {
+      enabled: true,
+      decisionId: '22222222-2222-4222-8222-222222222222',
+      rules: [],
+      otherwise: { type: 'default_agent' }
+    },
+    definition: {
+      id: '22222222-2222-4222-8222-222222222222',
+      orgId: 'org-1',
+      name: 'Triage',
+      providerId: 'typesafe',
+      model: 'jev-1.13.0',
+      question: { type: 'boolean', instructions: 'Bug?', criteria: { true: 'Yes', false: 'No' } }
+    },
+    members: []
+  }
+  const apply = (raw: Record<string, unknown>, spec: Record<string, unknown>) =>
+    applySpecFields(raw, AgentSpecSchema.parse({ name: 'a', ...spec }), {
+      agentId: 'a',
+      agentDir: '/tmp/a',
+      creating: false
+    })
+
+  it('writes shipped routings, keeps them when absent, and clears them on []', () => {
+    const raw: Record<string, unknown> = {}
+    apply(raw, { hookRoutings: [routing] })
+    expect(raw.hookRoutings).toEqual([routing])
+    apply(raw, {})
+    expect(raw.hookRoutings).toEqual([routing])
+    apply(raw, { hookRoutings: [] })
+    expect(raw.hookRoutings).toEqual([])
   })
 })

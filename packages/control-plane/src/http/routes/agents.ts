@@ -3340,6 +3340,12 @@ export function agentRoutes(deps: HttpDeps) {
             await removeExternalMemoryFromDaemonIfUnused(current.orgId, current.daemonId, current.memory.connectionId)
           }
           for (const h of removedHooks) deps.hooks.remove(h.id)
+          // The cascade wrote no hook row, so the routed scopes these left are re-hosted and their hosts bumped here.
+          void deps.hookRouting
+            .reconcileHooks(removedHooks, { membersChanged: true })
+            .catch((err) =>
+              app.log.warn({ err, agentId: current.id }, 'hook routing reconcile after agent delete failed')
+            )
           // A code-host hook that left with the agent no longer wants ingress: its host narrows the managed webhook to what remains.
           for (const h of removedHooks) {
             if (!isCodeHostHookKind(h.kind)) continue

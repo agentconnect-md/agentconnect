@@ -1,6 +1,6 @@
 'use client'
 
-// A watched repository's pull-request reviewers By decision: which agents a PR's answer selects (UI preview, kept in this tab).
+// A watched repository's issues or pull requests By decision: which member agents each answer selects (code-host-decisions.md §7).
 
 import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -9,30 +9,36 @@ import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { useDecisionsPrototype } from '@/lib/decisions/provider'
-import { routingDraftIssues, type RoutingDraftRule } from '@/lib/decisions/routing-draft'
-import type { RosterAgent } from '@/lib/decisions/routing-roster'
 import {
-  setCodeHostReviewDecision,
-  useCodeHostReviewDecisions,
-  type CodeHostReviewDecision
-} from '@/lib/decisions/code-host-review-preview'
+  draftConfig,
+  draftFromDetail,
+  routingDraftIssues,
+  type RoutingDraft,
+  type RoutingIssue
+} from '@/lib/decisions/routing-draft'
+import type { RosterAgent } from '@/lib/decisions/routing-roster'
+import { useCodeHostRoutingActions } from '@/lib/decisions/code-host-routing'
+import type { CodeHostRoutingDto } from '@/lib/api'
 import { DecisionPicker } from '../DecisionPicker'
-import { Note } from './RoutingFields'
+import { Note, routingSaveError, saveErrorText } from './RoutingFields'
 import { RoutingRulesTable, fitsQuestion } from './RoutingRulesTable'
 
+// A server issue may be rooted at the request body's `config`; the table reads config-relative paths.
+const configRelative = (path: Array<string | number>) => (path[0] === 'config' ? path.slice(1) : path)
+
 export function CodeHostDecisionModal({
-  storeKey,
-  repo,
+  routing,
   agents,
-  onClose
+  onClose,
+  onOpenEvaluations
 }: {
-  /** The preview store's key for this repository (`codeHostReviewKey`). */
-  storeKey: string
-  /** The repository as its row reads. */
-  repo: string
-  /** The agents a PR can go to; without a Decision, every one of them reviews it. */
+  /** The scope's routing read: its saved config, status and members. */
+  routing: CodeHostRoutingDto
+  /** The scope's members as rule targets; without a Decision, every one of them takes the event. */
   agents: RosterAgent[]
   onClose: () => void
+  /** Opens the saved routing's Recent evaluations. */
+  onOpenEvaluations?: () => void
 }) {
   const t = useTranslations('Decisions.routing')
   const tc = useTranslations('Decisions.routing.codeHost')
@@ -40,38 +46,56 @@ export function CodeHostDecisionModal({
   const { orgPath, myRole } = useOrgs()
   const canWrite = myRole !== 'viewer'
   const { decisions, loading } = useDecisionsPrototype()
-  const saved = useCodeHostReviewDecisions().get(storeKey) ?? null
-  // Each opening edits a copy of the stored Decision; nothing is kept until Save.
-  const [draft, setDraft] = useState<{
-    decisionId: string | null
-    rules: RoutingDraftRule[]
-    otherwise: 'default_agent' | 'skip'
-  }>(() => (saved ? structuredClone(saved) : { decisionId: null, rules: [], otherwise: 'default_agent' }))
+  const { save: saveRouting } = useCodeHostRoutingActions()
+  const repo = routing.repoFullName
+  const family = routing.family
+  const saved = routing.config
+  const status = saved && routing.status && routing.status !== 'enabled' ? routing.status : null
+  // Each opening edits a copy of the saved routing; nothing is kept until Save. Otherwise starts at every agent.
+  const [draft, setDraft] = useState<RoutingDraft>(() =>
+    saved
+      ? { ...draftFromDetail({ config: saved, channelIds: [] }), enabled: true }
+      : { enabled: true, decisionId: null, rules: [], otherwise: 'default_agent', channelIds: [], removals: {} }
+  )
   const [helpOpen, setHelpOpen] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<unknown>(null)
   const decision = draft.decisionId ? (decisions.find((entry) => entry.id === draft.decisionId) ?? null) : null
   const question = decision?.question ?? null
   const memberIds = useMemo(() => new Set(agents.map((agent) => agent.id)), [agents])
-  const issues = routingDraftIssues({ ...draft, enabled: true, channelIds: [], removals: {} }, question, {
-    savedChannelIds: [],
-    memberIds
-  })
-  const canSave = canWrite && !!decision && issues.length === 0
+  const localIssues = routingDraftIssues(draft, question, { savedChannelIds: [], memberIds })
+  const serverError = saveError === null ? null : routingSaveError(saveError)
+  const issues: RoutingIssue[] = localIssues.length
+    ? localIssues
+    : serverError?.kind === 'invalid'
+      ? serverError.issues.map((issue) => ({ path: configRelative(issue.path), message: issue.message }))
+      : []
+  const canSave = canWrite && !saving && !!decision && localIssues.length === 0
 
   useEffect(() => {
+    if (saving) return
     const onKey = (event: KeyboardEvent) => event.key === 'Escape' && onClose()
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [onClose])
-  const save = useCallback(() => {
-    if (!canSave || !draft.decisionId) return
-    const next: CodeHostReviewDecision = {
-      decisionId: draft.decisionId,
-      rules: draft.rules,
-      otherwise: draft.otherwise
+  }, [onClose, saving])
+  const edit = useCallback((patch: (current: RoutingDraft) => RoutingDraft) => {
+    setSaveError(null)
+    setDraft(patch)
+  }, [])
+  const save = useCallback(async () => {
+    const config = canSave ? draftConfig(draft) : null
+    if (!config) return
+    setSaving(true)
+    setSaveError(null)
+    try {
+      await saveRouting(routing, config)
+      onClose()
+    } catch (error) {
+      setSaveError(error)
+    } finally {
+      setSaving(false)
     }
-    setCodeHostReviewDecision(storeKey, next)
-    onClose()
-  }, [canSave, draft, storeKey, onClose])
+  }, [canSave, draft, saveRouting, routing, onClose])
 
   return createPortal(
     <div className="scrim" onClick={onClose}>
@@ -93,6 +117,7 @@ export function CodeHostDecisionModal({
             </span>
             <span className="mt-[2px] block truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
               {tc.rich('subtitle', {
+                family,
                 agents: agents.map((agent) => agent.name).join(', '),
                 name: (chunks) => <span className="mono text-(--text-secondary)">{chunks}</span>
               })}
@@ -103,7 +128,24 @@ export function CodeHostDecisionModal({
           </button>
         </div>
         <div className="modalbody flex flex-col gap-3">
-          <Note icon="flask-conical">{tc('preview')}</Note>
+          {status && (
+            <div
+              role="status"
+              className="flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]"
+            >
+              <Icon
+                name={status === 'access_revoked' ? 'lock' : 'triangle-alert'}
+                size={14}
+                className="mt-[2px] flex-none"
+              />
+              <span>
+                {tc(`statusBody.${status}`, {
+                  family,
+                  decision: (saved && decisions.find((entry) => entry.id === saved.decisionId)?.name) ?? tc('hidden')
+                })}
+              </span>
+            </div>
+          )}
           <div className="fld">
             <span className="fldlbl">{t('decision.label')}</span>
             <div className="flex flex-wrap items-center gap-[9px]">
@@ -112,12 +154,12 @@ export function CodeHostDecisionModal({
                 value={draft.decisionId}
                 placeholder={t('decision.select')}
                 loading={loading}
-                disabled={!canWrite}
+                disabled={!canWrite || saving}
                 triggerClassName="block w-[280px] min-w-0 max-w-full max-desktop:w-full"
                 onSelect={(entry) => {
                   if (entry.id === draft.decisionId) return
                   // A rule the new question cannot answer is dropped, so a type switch starts clean.
-                  setDraft((current) => ({
+                  edit((current) => ({
                     ...current,
                     decisionId: entry.id,
                     rules: current.rules.filter((rule) => fitsQuestion(rule.when, entry.question))
@@ -152,11 +194,11 @@ export function CodeHostDecisionModal({
               otherwise={draft.otherwise}
               agents={agents}
               issues={issues}
-              disabled={!canWrite}
+              disabled={!canWrite || saving}
               canWrite={canWrite}
               otherwiseLabels={{ default: tc('everyAgent') }}
-              onRules={(patch) => setDraft((current) => ({ ...current, rules: patch(current.rules) }))}
-              onOtherwise={(otherwise) => setDraft((current) => ({ ...current, otherwise }))}
+              onRules={(patch) => edit((current) => ({ ...current, rules: patch(current.rules) }))}
+              onOtherwise={(otherwise) => edit((current) => ({ ...current, otherwise }))}
               onRefresh={() => {}}
             />
           )}
@@ -174,21 +216,52 @@ export function CodeHostDecisionModal({
           )}
           {decision && helpOpen && (
             <div className="flex flex-col gap-1">
-              <Note icon="git-pull-request">{tc('evaluatedOnce')}</Note>
+              <Note icon={family === 'pull_request' ? 'git-pull-request' : 'circle-dot'}>
+                {tc('evaluatedOnce', { family })}
+              </Note>
               <Note icon="at-sign">{tc('mentionsSkip')}</Note>
-              <Note icon="users">{tc('otherwiseEveryAgent')}</Note>
+              <Note icon="users">{tc('otherwiseEveryAgent', { family })}</Note>
+            </div>
+          )}
+
+          {serverError && (
+            <div
+              role="alert"
+              className="flex items-start gap-[9px] rounded-md border border-(--red-500) bg-(--status-error-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]"
+            >
+              <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
+              <span>{serverError.kind === 'forbidden' ? tc('forbidden') : saveErrorText(t, serverError)}</span>
             </div>
           )}
 
           <div className="flex flex-wrap items-center gap-[9px]">
             {canWrite && (
-              <Button variant="primary" size="sm" className="max-desktop:flex-1" disabled={!canSave} onClick={save}>
-                {t('footer.save')}
+              <Button
+                variant="primary"
+                size="sm"
+                className="max-desktop:flex-1"
+                disabled={!canSave}
+                onClick={() => void save()}
+              >
+                {saving ? t('footer.saving') : t('footer.save')}
               </Button>
             )}
-            <Button variant="secondary" size="sm" className="max-desktop:flex-1" onClick={onClose}>
+            <Button variant="secondary" size="sm" className="max-desktop:flex-1" disabled={saving} onClick={onClose}>
               {canWrite ? t('footer.cancel') : tDecisions('binding.close')}
             </Button>
+            {saved && onOpenEvaluations && (
+              <button
+                type="button"
+                className="lnk ml-auto gap-[6px] text-[11.5px] font-medium max-desktop:ml-0"
+                onClick={() => {
+                  onClose()
+                  onOpenEvaluations()
+                }}
+              >
+                <Icon name="list-checks" size={12} />
+                {t('recentEvaluations')}
+              </button>
+            )}
           </div>
         </div>
       </div>

@@ -644,6 +644,36 @@ export function hookSubjectSessionKey(hookId: string, subjectKey: string): strin
   return `${hookId}:${HOOK_SUBJECT_SEGMENT}:${subjectKey}`
 }
 
+/** One watching hook a routed event would fire; the Decision chooses among them, a mention included. */
+export const RdHookRouteCandidate = z.object({
+  hookId: z.string().uuid(),
+  agentId: z.string().uuid()
+})
+export type RdHookRouteCandidate = z.infer<typeof RdHookRouteCandidate>
+
+export const RdHookRouting = z.object({
+  routingId: z.string().uuid(),
+  decisionId: z.string().uuid(),
+  // Empty ⇒ record-only: the event joins the thread's history and fires nobody.
+  candidates: z.array(RdHookRouteCandidate).max(64)
+})
+export type RdHookRouting = z.infer<typeof RdHookRouting>
+
+/** Why a routed hook fired: the Decision's answer, Otherwise, or a provider failure. */
+export const HookRouteSelection = z.object({
+  routingId: z.string().uuid(),
+  decisionId: z.string().uuid(),
+  reason: z.enum(['decision', 'otherwise', 'unavailable']),
+  // The host's verdict row, for Recent evaluations; absent on the relay's host-unavailable fallback.
+  verdictSeq: z.number().int().nonnegative().optional(),
+  question: DecisionQuestion.optional(),
+  answer: DecisionAnswer.optional(),
+  matchedKeys: z.array(z.string()).max(32).optional(),
+  model: z.string().max(128).optional(),
+  unavailableReason: z.string().max(64).optional()
+})
+export type HookRouteSelection = z.infer<typeof HookRouteSelection>
+
 // R→D REQ → rd/ack. One already-adjudicated trigger delivery: the relay matched
 // the hook rule and names the target agent (explicit-agent short-circuit, same
 // as webchat — no local trigger arbitration). The daemon synthesizes a
@@ -679,6 +709,10 @@ export const RdMsgHook = z.object({
   gitea: GiteaHookMetadata.optional(),
   context: HookContext.optional(), // trimmed envelope; message extraction/fencing happens on the daemon
   target: CronTarget.optional(), // output anchoring; absent ⇒ headless
+  // The evaluation host's copy of a routed event (code-host-decisions.md §5): recorded, then judged for `candidates`; never run itself.
+  routing: RdHookRouting.optional(),
+  // A routed fire to a selected agent: why it was chosen, rendered as evidence beside the event.
+  routeSelection: HookRouteSelection.optional(),
   // A relay-authored maintenance post instead of a model turn: an explicit @-mention by an actor
   // the CP did not admit gets one fixed-text reply on its thread so the silence is explained.
   // The delivery is body-free — no excerpt, no author — and dispatch is gated on `hook-notice-v1`.
@@ -708,6 +742,10 @@ export const RD_ACK_NOT_HOLDER = 'not_holder'
 export const RdAck = z.object({
   msgId: z.string(),
   accepted: z.boolean(),
+  /** A routed hook host copy's verdict: the hooks to fire, each with its selection. */
+  hookRoute: z
+    .object({ targets: z.array(z.object({ hookId: z.string().uuid(), selection: HookRouteSelection })).max(64) })
+    .optional(),
   turnId: z.string().uuid().optional(),
   reason: z.string().optional(),
   /** Bounded human-readable cause for a refusal the browser should explain (see WebchatAck.detail). */

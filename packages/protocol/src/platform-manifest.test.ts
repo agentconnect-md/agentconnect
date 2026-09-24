@@ -72,8 +72,16 @@ describe('platform manifest', () => {
     expect(DEFAULT_MANIFEST.ownerAsDefault).toBe(false)
   })
 
+  it('declares addressing by construction on Linear, and nowhere else', () => {
+    // The decision gate reads it: a Linear follow-up in a session the agent holds is a continuation.
+    expect(manifestFor('linear').addressedByConstruction).toBe(true)
+    for (const p of ['slack', 'telegram', 'discord', 'feishu', 'qq'])
+      expect(manifestFor(p).addressedByConstruction, p).toBe(false)
+    expect(manifestFor('some-future-platform').addressedByConstruction).toBe(false)
+  })
+
   it('keeps Linear on the fail-closed arm of every axis it did not earn', () => {
-    // Linear's row exists for `multiAgentShareable` and `ownerAsDefault` alone: no
+    // Linear's row exists for `multiAgentShareable`, `ownerAsDefault` and `addressedByConstruction` alone: no
     // membership snapshot API, no bot-sender admission, nothing but a conversation to leave.
     // Pin it so the row cannot pick up a Slack-shaped path in passing.
     const m = manifestFor('linear')

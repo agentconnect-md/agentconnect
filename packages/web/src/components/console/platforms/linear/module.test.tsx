@@ -81,10 +81,12 @@ describe('the linear transcript and card semantics', () => {
     expect(semantics).not.toEqual(DEFAULT_CHANNEL_LIST)
   })
 
-  it('offers Mention and Off, never "any message"', () => {
+  it('offers Mention, By decision and Off, never "any message"', () => {
     // Every Linear event is addressed by construction (§6.1), so an "any message" arm
     // would match nothing an operator could ever observe.
-    expect(channelListSemantics('linear').triggers).toEqual(['off', 'mention'])
+    expect(channelListSemantics('linear').triggers).toEqual(['off', 'mention', 'decision'])
+    // By decision gates each team's owner; a Linear bot has no router.
+    expect(channelListSemantics('linear').sharedDecision).toBe('conversation')
   })
 
   it('warns before a team’s default leaves a private agent', () => {

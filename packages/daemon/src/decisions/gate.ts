@@ -1,4 +1,5 @@
 import {
+  manifestFor,
   matchDecisionCondition,
   type DecisionBundle,
   type DecisionEvaluation,
@@ -187,8 +188,9 @@ export class DecisionGate {
       return { kind: 'held', reason: 'record_unavailable' }
     }
     if (existing) return this.joinExisting(existing, lane)
-    // A mention is not participation (message-intake.md §5 step 5): an explicit address is always judged.
-    if (c.target.trigger !== 'mention' && (await this.host.participates(c.agentId, c.target).catch(() => false))) {
+    // A mention is not participation (message-intake.md §5 step 5) unless the platform marks every event mentioned.
+    const explicit = c.target.trigger === 'mention' && !manifestFor(c.target.platform).addressedByConstruction
+    if (!explicit && (await this.host.participates(c.agentId, c.target).catch(() => false))) {
       await this.waitBehindLane(lane, seq, this.limits.participationWaitMs)
       return { kind: 'admit' }
     }

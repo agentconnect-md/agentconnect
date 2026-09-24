@@ -36,6 +36,7 @@ import {
   type RcPullRequestFeedback,
   type GithubHookMetadata,
   type HookContext,
+  type HookRouteSelection,
   type RcGithubInstallation,
   type RcHookAssign,
   type RcRunReport,
@@ -46,6 +47,17 @@ import type { RelayDaemonServer } from '../relay-daemon-server.js'
 import type { HookTable } from './hook-table.js'
 import type { HookRateLimiter } from './rate-limit.js'
 import { dispatchHookFire, noticeDelivery } from './ingress.js'
+import {
+  askGithubRoutingHost,
+  githubEventFamily,
+  githubHostCopy,
+  githubRecordOnlyEligible,
+  githubRoutingHostRule,
+  GITHUB_ROUTED_THREAD_EVENTS,
+  hostUnavailableSelection,
+  sendGithubRecordOnlyCopy,
+  type GithubRouteCandidate
+} from './github-routing.js'
 import { hookSnapshotForDelivery } from './hook-snapshot.js'
 import { verifySha256Header } from './signature.js'
 import { labelFilterAdmits } from './label-filter.js'
@@ -115,7 +127,7 @@ interface GithubPayload {
     user?: { login?: string }
     author_association?: string
   }
-  review?: { body?: string | null; state?: string; user?: { login?: string } }
+  review?: { body?: string | null; state?: string; user?: { login?: string }; author_association?: string }
   // push ("commits") deliveries — no subject, no action.
   ref?: string // 'refs/heads/main'
   compare?: string // diff URL for the pushed range
@@ -193,6 +205,7 @@ interface GithubSubject {
   merge_commit_sha?: string | null
   merged?: boolean
   draft?: boolean
+  state?: string
   /** Present on the `issue` object when an `issue_comment` belongs to a PR. */
   pull_request?: unknown
 }
@@ -226,6 +239,10 @@ export interface GithubMatchCtx {
   /** The derived family of the comment's subject/thread. `issue_comment` uses
    *  the issue object's `pull_request` marker; review comments are always PR. */
   commentSubjectFamily: 'issues' | 'pull_request' | undefined
+  /** The issue/PR number; absent for a push or deployment, which have no numbered thread. */
+  subjectNumber?: number
+  /** The signed payload's repository id, so a rule re-read after an await is fenced to this event's repository. */
+  repoId?: string
 }
 
 function isGithubPullRequestRevision(ctx: Pick<GithubMatchCtx, 'eventAction' | 'baseChanged'>): boolean {
@@ -492,7 +509,10 @@ export function buildGithubContext(event: string, payload: GithubPayload): HookC
   const subject = payload.issue ?? payload.pull_request
   const deployment = isGithubDeploymentEvent(event) ? payload.deployment : undefined
   const status = event === 'deployment_status' ? payload.deployment_status : undefined
+  // A review's own text is what the event says; it never falls back to the PR body.
+  const review = event === 'pull_request_review' ? payload.review : undefined
   const bodySource =
+    (review ? (review.body ?? '') : undefined) ??
     payload.comment?.body ??
     subject?.body ??
     status?.description ??
@@ -500,6 +520,7 @@ export function buildGithubContext(event: string, payload: GithubPayload): HookC
     payload.head_commit?.message ??
     ''
   const excerpt = truncateUtf8(bodySource, GITHUB_BODY_EXCERPT_MAX)
+  const subjectBody = subject?.body ? truncateUtf8(subject.body, GITHUB_BODY_EXCERPT_MAX).text : ''
   const action = githubEventAction(event, payload)
   const htmlUrl = firstUrl(
     payload.comment?.html_url,
@@ -519,12 +540,28 @@ export function buildGithubContext(event: string, payload: GithubPayload): HookC
     ...(subject?.title ? { title: sanitizeTitle(subject.title) } : {}),
     ...(payload.sender?.login ? { senderLogin: payload.sender.login } : {}),
     ...(payload.sender?.avatar_url ? { senderAvatarUrl: payload.sender.avatar_url } : {}),
-    ...((payload.comment?.author_association ?? subject?.author_association)
-      ? { authorAssociation: payload.comment?.author_association ?? subject?.author_association }
+    ...((payload.comment?.author_association ?? review?.author_association ?? subject?.author_association)
+      ? {
+          authorAssociation:
+            payload.comment?.author_association ?? review?.author_association ?? subject?.author_association
+        }
       : {}),
     ...(subject?.labels ? { labels: subject.labels.map((l) => l.name ?? '').filter(Boolean) } : {}),
     ...(htmlUrl ? { htmlUrl } : {}),
     ...(excerpt.text ? { bodyExcerpt: excerpt.text } : {}),
+    // The issue/PR itself, so a Decision can judge a comment against it; the body stays untrusted like the excerpt.
+    ...(subject
+      ? {
+          subject: {
+            ...(subject.user?.login ? { authorLogin: subject.user.login } : {}),
+            ...(subject.user?.type ? { authorType: subject.user.type } : {}),
+            ...(subject.author_association ? { authorAssociation: subject.author_association } : {}),
+            ...(subject.state ? { state: subject.state } : {}),
+            ...(typeof subject.draft === 'boolean' ? { draft: subject.draft } : {}),
+            ...(subjectBody ? { body: subjectBody } : {})
+          }
+        }
+      : {}),
     // The environment and ref ride the daemon's trusted header line, so they get the title's defanging.
     ...(deployment?.environment ? { environment: sanitizeTitle(deployment.environment) } : {}),
     ...(deployment?.ref ? { ref: sanitizeTitle(deployment.ref) } : {}),
@@ -946,6 +983,7 @@ async function dispatchGithubRerequest(
         senderLogin,
         truncated: false
       },
+      // An explicit maintainer control with no authored text: it bypasses Decision routing, like cleanup and notices.
       ...(rule.target ? { target: rule.target } : {})
     }
 
@@ -1057,7 +1095,8 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         return reply.code(202).send({ deliveryKey })
       }
 
-      if (!SUBSCRIPTION_EVENTS.has(event)) return reply.code(202).send({ deliveryKey })
+      if (!SUBSCRIPTION_EVENTS.has(event) && !GITHUB_ROUTED_THREAD_EVENTS.has(event))
+        return reply.code(202).send({ deliveryKey })
 
       const repoId = payload.repository?.id
       const subject = payload.issue ?? payload.pull_request
@@ -1100,6 +1139,8 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
                 ? 'pull_request'
                 : 'issues'
               : undefined,
+        ...(subject?.number !== undefined ? { subjectNumber: subject.number } : {}),
+        ...(repoId !== undefined ? { repoId: String(repoId) } : {}),
         // push: a summon may sit in ANY pushed commit's message, not just the
         // head (GitHub ships ≤20 in the payload — enough for the mention gate).
         // A deployment's only authored text is its (status) description.
@@ -1122,16 +1163,9 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
       const fallbackSessionKeyPrefix = payload.repository?.full_name ?? String(repoId)
       const firedAt = new Date(deps.clock.now()).toISOString()
 
-      const dispatchRule = (rule: RcHookAssign, prAuthorAuthorized = false, notice?: RdHookNotice): void => {
-        // Post-match per-hook budget: a drop is a skip + metadata log, never a 429
-        // (GitHub treats non-2xx as a dead delivery) and never a run row (a storm
-        // must not flood hook_run).
-        if (!cleanupEvent && !deps.limiter.allow(rule.hookId)) {
-          deps.log.info(`github ingress: rate-limited ${rule.hookId}:${deliveryKey} (${ctx.eventAction})`)
-          return
-        }
+      const ruleMessage = (rule: RcHookAssign): RdMsgHook => {
         const github = buildTrustedGithubMetadata(event, payload, rule)
-        const msg: RdMsgHook = {
+        return {
           source: 'hook',
           agentId: rule.agentId,
           sessionKey: `${rule.github?.sessionKeyPrefix ?? fallbackSessionKeyPrefix}#${thread}`,
@@ -1145,10 +1179,47 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
           context,
           ...(rule.target ? { target: rule.target } : {})
         }
+      }
+      const dispatchDeps = {
+        table: deps.table,
+        daemons: deps.daemons,
+        report: deps.report,
+        clock: deps.clock,
+        log: deps.log
+      }
+
+      // Routing (code-host-decisions.md §4): a routed rule that would fire becomes a candidate of its scope instead.
+      const threadFamily = githubEventFamily(ctx)
+      // A routed rule is never narrowed by a mention: its scope's Decision chooses, a mentioned agent included.
+      const routed = (rule: RcHookAssign) => rule.routing !== undefined && threadFamily !== undefined
+      const unrouted = rules.filter((rule) => !routed(rule))
+      const narrowed = new Set(
+        ctx.eventAction === 'pull_request:review_requested'
+          ? unrouted
+          : githubMentionCandidates(unrouted, ctx.mentionText, ctx.teamOwnerLogin)
+      )
+      const mentionCandidates = rules.filter((rule) => routed(rule) || narrowed.has(rule))
+      const routeCandidates = new Map<string, Map<string, GithubRouteCandidate>>()
+      const authzTasks: Promise<void>[] = []
+
+      const fireRule = (rule: RcHookAssign, msg: RdMsgHook, label = ''): void => {
+        void dispatchHookFire(dispatchDeps, rule, msg)
+        deps.log.info(
+          `github ingress: queued ${label}${label ? ' ' : ''}${rule.hookId}:${deliveryKey} (${ctx.eventAction} ${msg.sessionKey})`
+        )
+      }
+
+      const dispatchRule = (rule: RcHookAssign, prAuthorAuthorized = false, notice?: RdHookNotice): void => {
+        // Cleanup is maintenance and a notice a fixed post: neither is routed.
+        const routing = !cleanupEvent && notice === undefined && threadFamily !== undefined ? rule.routing : undefined
+        // Post-match per-hook budget: a drop is a logged skip, never a 429 (a dead delivery to GitHub) nor a run row; a routed rule spends it only when selected.
+        if (!routing && !cleanupEvent && !deps.limiter.allow(rule.hookId)) {
+          deps.log.info(`github ingress: rate-limited ${rule.hookId}:${deliveryKey} (${ctx.eventAction})`)
+          return
+        }
+        const msg = ruleMessage(rule)
         if (!cleanupEvent && notice === undefined && pullRequestNeedsMaintainer(ctx, prAuthorAuthorized)) {
-          // No third-party-authored PR lifecycle payload reaches the daemon.
-          // Revision events still create a durable, actionable informational
-          // Check so a maintainer can request the first review explicitly.
+          // No third-party-authored PR lifecycle payload reaches the daemon as a fire; revisions still get an actionable Check.
           if (isGithubPullRequestRevision(ctx)) {
             reportReviewRequestRequired(deps, rule, msg)
             deps.log.info(
@@ -1157,16 +1228,91 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
           }
           return
         }
-        // 202 below does not wait for the daemon; the delivery verdict travels
-        // out-of-band with the event:action stamped on for the HookRun row.
-        void dispatchHookFire(
-          { table: deps.table, daemons: deps.daemons, report: deps.report, clock: deps.clock, log: deps.log },
-          rule,
-          notice ? noticeDelivery(msg, notice) : msg
-        )
-        deps.log.info(
-          `github ingress: queued ${notice ?? ''}${notice ? ' ' : ''}${rule.hookId}:${deliveryKey} (${ctx.eventAction} ${msg.sessionKey})`
-        )
+        if (routing) {
+          const scope = routeCandidates.get(routing.routingId) ?? new Map<string, GithubRouteCandidate>()
+          scope.set(rule.hookId, { rule })
+          routeCandidates.set(routing.routingId, scope)
+          return
+        }
+        // 202 below does not wait for the daemon; the verdict travels out-of-band, stamped with event:action.
+        fireRule(rule, notice ? noticeDelivery(msg, notice) : msg, notice)
+      }
+
+      const fireSelected = (rule: RcHookAssign, selection: HookRouteSelection): void => {
+        if (!deps.limiter.allow(rule.hookId)) {
+          deps.log.info(`github ingress: rate-limited ${rule.hookId}:${deliveryKey} (${ctx.eventAction})`)
+          return
+        }
+        fireRule(rule, { ...ruleMessage(rule), routeSelection: selection }, `routed:${selection.reason}`)
+      }
+
+      const routeScope = async (routingId: string, scopeRules: RcHookAssign[]): Promise<void> => {
+        const candidates = [...(routeCandidates.get(routingId)?.values() ?? [])]
+        const routing = scopeRules[0]?.routing ?? candidates[0]?.rule.routing
+        if (!routing) return
+        const hostRule = githubRoutingHostRule(scopeRules, routing, ctx)
+        if (candidates.length === 0) {
+          // A record-only copy on its own budget key: it never spends, or is starved by, the fire budget.
+          if (!hostRule || !githubRecordOnlyEligible(hostRule, ctx)) return
+          if (!deps.limiter.allow(`routing-record:${routingId}`)) {
+            deps.log.info(
+              `github ingress: record-only copy rate-limited ${routingId}:${deliveryKey} (${ctx.eventAction})`
+            )
+            return
+          }
+          sendGithubRecordOnlyCopy(deps.daemons, routing, githubHostCopy(ruleMessage(hostRule), routing, []), deps.log)
+          return
+        }
+        const verdict = hostRule
+          ? await askGithubRoutingHost(
+              deps.daemons,
+              routing,
+              githubHostCopy(ruleMessage(hostRule), routing, candidates)
+            )
+          : ({ kind: 'unavailable', reason: 'no_host_rule' } as const)
+        if (verdict.kind === 'held') {
+          deps.log.info(`github ingress: routing held ${routingId}:${deliveryKey} (${verdict.reason})`)
+          return
+        }
+        if (verdict.kind === 'unavailable') {
+          deps.log.warn(`github ingress: routing host unavailable ${routingId}:${deliveryKey} (${verdict.reason})`)
+          const selection = hostUnavailableSelection(routing)
+          for (const { rule } of candidates) fireSelected(rule, selection)
+          return
+        }
+        // Only a candidate may fire; dispatchHookFire re-reads and fences every selected rule against the captured one.
+        const byHook = new Map(candidates.map((candidate) => [candidate.rule.hookId, candidate.rule]))
+        for (const target of verdict.targets) {
+          const rule = byHook.get(target.hookId)
+          if (!rule || target.selection.routingId !== routingId) {
+            deps.log.warn(`github ingress: routing host named a non-candidate ${target.hookId}:${deliveryKey}`)
+            continue
+          }
+          byHook.delete(target.hookId)
+          fireSelected(rule, target.selection)
+        }
+      }
+
+      // Every scope is settled once all maintainer checks have: a candidate set is final only then.
+      const routeScopes = (): void => {
+        void Promise.allSettled(authzTasks)
+          .then(async () => {
+            if (threadFamily === undefined || repoId === undefined) return
+            const current = deps.table.getByCodeHostRepo('github', String(repoId))
+            const scopeIds = new Set([
+              ...current.flatMap((rule) => (rule.routing ? [rule.routing.routingId] : [])),
+              ...routeCandidates.keys()
+            ])
+            await Promise.all(
+              [...scopeIds].map((routingId) =>
+                routeScope(
+                  routingId,
+                  current.filter((rule) => rule.routing?.routingId === routingId)
+                )
+              )
+            )
+          })
+          .catch((err) => deps.log.warn(`github ingress: routing failed ${deliveryKey}: ${String(err)}`))
       }
 
       if (cleanupEvent) {
@@ -1315,13 +1461,12 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         }
       }
 
-      const candidates =
-        ctx.eventAction === 'pull_request:review_requested'
-          ? rules
-          : githubMentionCandidates(rules, ctx.mentionText, ctx.teamOwnerLogin)
-      const matched = candidates
-        .map((rule) => ({ rule, verdict: githubRuleVerdict(rule, ctx) }))
-        .filter((candidate) => candidate.verdict !== 'no-match')
+      // A record-only event (a PR review) matches nothing: it only joins its thread's history on a routing host.
+      const matched = SUBSCRIPTION_EVENTS.has(event)
+        ? mentionCandidates
+            .map((rule) => ({ rule, verdict: githubRuleVerdict(rule, ctx) }))
+            .filter((candidate) => candidate.verdict !== 'no-match')
+        : []
       // A native reviewer request is an explicit maintainer action; a drop always deserves a line.
       if (ctx.eventAction === 'pull_request:review_requested' && matched.length === 0) {
         deps.log.info(
@@ -1336,14 +1481,18 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
           dispatchRule(rule, true)
         }
         const needsAuthz = matched.filter((candidate) => candidate.verdict === 'needs-authz').map(({ rule }) => rule)
-        if (needsAuthz.length === 0) return reply.code(202).send({ deliveryKey })
-        void authorizeAndDispatch(
-          needsAuthz,
-          { senderLogin: ctx.subjectAuthorLogin },
-          ctx.event === 'pull_request' ? 'request-review' : 'skip'
-        ).catch((err) => {
-          deps.log.warn(`github ingress: thread-author authz task failed ${deliveryKey}: ${String(err)}`)
-        })
+        if (needsAuthz.length > 0) {
+          authzTasks.push(
+            authorizeAndDispatch(
+              needsAuthz,
+              { senderLogin: ctx.subjectAuthorLogin },
+              ctx.event === 'pull_request' ? 'request-review' : 'skip'
+            ).catch((err) => {
+              deps.log.warn(`github ingress: thread-author authz task failed ${deliveryKey}: ${String(err)}`)
+            })
+          )
+        }
+        routeScopes()
         return reply.code(202).send({ deliveryKey })
       }
 
@@ -1359,16 +1508,20 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         // Never hold GitHub's HTTP request open on the CP/GitHub permission
         // lookup. One repository-scoped decision fences the complete matching
         // fan-out, and every rejection is contained locally.
-        void authorizeAndDispatch(
-          fanout,
-          {
-            senderLogin: actorLogin,
-            ...(requireSubjectAuthor ? { subjectAuthorLogin: ctx.subjectAuthorLogin, requireSubjectAuthor: true } : {})
-          },
-          'skip'
-        ).catch((err) => {
-          deps.log.warn(`github ingress: authz task failed ${fanout[0]!.hookId}:${deliveryKey}: ${String(err)}`)
-        })
+        authzTasks.push(
+          authorizeAndDispatch(
+            fanout,
+            {
+              senderLogin: actorLogin,
+              ...(requireSubjectAuthor
+                ? { subjectAuthorLogin: ctx.subjectAuthorLogin, requireSubjectAuthor: true }
+                : {})
+            },
+            'skip'
+          ).catch((err) => {
+            deps.log.warn(`github ingress: authz task failed ${fanout[0]!.hookId}:${deliveryKey}: ${String(err)}`)
+          })
+        )
       }
 
       if (isGithubThreadComment(ctx)) {
@@ -1386,6 +1539,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         // lifecycle events already returned through the subject-author batch.
         queueAuthorizedFanout(needsAuthz, payload.sender?.login)
       }
+      routeScopes()
       return reply.code(202).send({ deliveryKey })
     })
   })

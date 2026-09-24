@@ -35,6 +35,33 @@ describe('agentSpecDigest', () => {
     expect(agentSpecDigest(spec({ configRevision: '1' }))).toBe(agentSpecDigest(spec({ configRevision: '99' })))
   })
 
+  it('digests an empty hosted-routing list as the absent field, and a routing as content', () => {
+    expect(agentSpecDigest(spec({ hookRoutings: [] }))).toBe(agentSpecDigest(spec({})))
+    const routing = {
+      routingId: '11111111-1111-4111-8111-111111111111',
+      provider: 'github' as const,
+      repoId: '123',
+      repoFullName: 'example-org/example-repo',
+      family: 'issues' as const,
+      config: {
+        enabled: true,
+        decisionId: '22222222-2222-4222-8222-222222222222',
+        rules: [],
+        otherwise: { type: 'default_agent' as const }
+      },
+      definition: {
+        id: '22222222-2222-4222-8222-222222222222',
+        orgId: 'org-1',
+        name: 'Triage',
+        providerId: 'typesafe',
+        model: 'jev-1.13.0',
+        question: { type: 'boolean' as const, instructions: 'Bug?', criteria: { true: 'Yes', false: 'No' } }
+      },
+      members: []
+    }
+    expect(agentSpecDigest(spec({ hookRoutings: [routing] }))).not.toBe(agentSpecDigest(spec({})))
+  })
+
   it('is insensitive to key order but sensitive to values', () => {
     const a = agentSpecDigest(spec({ env: { A: '1', B: '2' } }))
     const b = agentSpecDigest(spec({ env: { B: '2', A: '1' } }))

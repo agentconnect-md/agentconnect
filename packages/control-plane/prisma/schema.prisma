@@ -114,6 +114,7 @@ model Org {
   skillSources              SkillSource[]
   decisions                 Decision[]
   botDecisionRoutings       BotDecisionRouting[]
+  codeHostDecisionRoutings  CodeHostDecisionRouting[]
   memoryPluginInstallations MemoryPluginInstallation[]
   externalMemoryConnections ExternalMemoryConnection[]
   webchatConversations      WebchatConversation[]
@@ -189,6 +190,8 @@ model User {
   createdMcpProviders              McpProvider[]              @relation("McpProviderCreatedBy")
   createdDecisions                 Decision[]                 @relation("DecisionCreatedBy")
   createdBotDecisionRoutings       BotDecisionRouting[]       @relation("BotDecisionRoutingCreatedBy")
+  createdCodeHostDecisionRoutings  CodeHostDecisionRouting[]  @relation("CodeHostDecisionRoutingCreatedBy")
+  updatedCodeHostDecisionRoutings  CodeHostDecisionRouting[]  @relation("CodeHostDecisionRoutingUpdatedBy")
   createdSkillSources              SkillSource[]              @relation("SkillSourceCreatedBy")
   createdMemoryPluginInstallations MemoryPluginInstallation[] @relation("MemoryPluginInstallationCreatedBy")
   createdExternalMemoryConnections ExternalMemoryConnection[] @relation("ExternalMemoryConnectionCreatedBy")
@@ -911,6 +914,7 @@ model Agent {
   memoryFiles           AgentMemoryFile[]
   memoryMutations       AgentMemoryMutation[]
   memoryHistory         AgentMemoryHistory[]
+  hostedHookRoutings    CodeHostDecisionRouting[]
 
   @@unique([orgId, name]) // slug is unique within an org
   // Referenced by the composite assignment FK: a binding cannot name an agent in
@@ -3989,6 +3993,7 @@ model Decision {
   createdBy       User?              @relation("DecisionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   channelBindings IntegrationChannel[]
   routings        BotDecisionRouting[]
+  codeHostRoutings CodeHostDecisionRouting[]
 
   @@index([orgId])
   @@index([sharedWith], type: Gin)
@@ -4018,4 +4023,38 @@ model BotDecisionRouting {
   @@index([orgId])
   @@index([decisionId])
   @@map("bot_decision_routing")
+}
+
+// Decision routing across the agents watching one GitHub repository (code-host-decisions.md §3): one per org, repo and subject family.
+model CodeHostDecisionRouting {
+  id                String    @id @default(uuid()) @db.Uuid
+  orgId             String
+  provider          String    @default("github")
+  repoId            BigInt // the hook rows' numeric repository id (rename-proof)
+  repoFullName      String
+  family            String // 'issues' | 'pull_request' (DB CHECK)
+  // Paused keeps the configuration; the scope's hooks fire unrouted meanwhile.
+  enabled           Boolean   @default(true)
+  decisionId        String    @db.Uuid
+  // Ordered SharedBotDecisionRouting rules and its Otherwise action, stored verbatim.
+  rules             Json
+  otherwise         Json
+  // A Decision edit invalidated a rule; only a routing save clears it, and the scope holds meanwhile.
+  needsReview       Boolean   @default(false)
+  // The member hosting evaluation (§3.2); persisted so its AgentSpec.hookRoutings moves only with a configRevision bump.
+  evaluationAgentId String?   @db.Uuid
+  createdByUserId   String?
+  updatedByUserId   String?
+  createdAt         DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @db.Timestamptz(6)
+  org               Org       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  decision          Decision  @relation(fields: [decisionId], references: [id], onDelete: Restrict)
+  evaluationAgent   Agent?    @relation(fields: [evaluationAgentId], references: [id], onDelete: SetNull)
+  createdBy         User?     @relation("CodeHostDecisionRoutingCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  updatedBy         User?     @relation("CodeHostDecisionRoutingUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([orgId, provider, repoId, family])
+  @@index([decisionId])
+  @@index([evaluationAgentId])
+  @@map("code_host_decision_routing")
 }

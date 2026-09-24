@@ -25,6 +25,7 @@ import {
   type DutyAgentBundle,
   type AgentAdditionalRepo,
   type AgentSkillEntry,
+  type HookRoutingProjection,
   type ManagedSkillEntry,
   type CronUpsert,
   type IntegrationSpec
@@ -163,6 +164,8 @@ interface MoveBundle {
   /** Whether an enabled gitlab hook rides the agent — the §24.4 consumer no other
    *  bundle field reveals, and the host must be on the spec before the agent spawns. */
   gitlabHook: boolean
+  /** The code-host routings the agent hosts, pinned so activation ships them to the target. */
+  hookRoutings?: HookRoutingProjection[]
 }
 
 interface ActivationSnapshot {
@@ -890,7 +893,8 @@ export class AgentMoveService {
       managedSkills,
       organizationEnvironment,
       additionalRepos,
-      gitlabHook
+      gitlabHook,
+      hookRoutings
     ] = await Promise.all([
       this.deps.integrations.listForAgent(agent.id),
       this.deps.crons.listForAgent(agent.id),
@@ -899,7 +903,8 @@ export class AgentMoveService {
       this.deps.specs.managedSkillsOf(agent),
       this.deps.specs.organizationEnvironmentOf(agent),
       this.deps.specs.additionalReposOf(agent),
-      this.deps.specs.gitlabHookOf(agent)
+      this.deps.specs.gitlabHookOf(agent),
+      this.deps.specs.hookRoutingsOf(agent)
     ])
     const specs = await Promise.all(
       integrations.map(async (integration) => {
@@ -937,7 +942,8 @@ export class AgentMoveService {
       managedSkills,
       organizationEnvironment,
       additionalRepos,
-      gitlabHook
+      gitlabHook,
+      ...(hookRoutings !== undefined ? { hookRoutings } : {})
     }
   }
 
@@ -954,7 +960,9 @@ export class AgentMoveService {
         bundle.managedSkills,
         bundle.organizationEnvironment,
         bundle.additionalRepos,
-        bundle.gitlabHook
+        bundle.gitlabHook,
+        false,
+        bundle.hookRoutings
       ),
       integrations: bundle.integrations.map(({ spec }) => spec),
       crons: bundle.crons

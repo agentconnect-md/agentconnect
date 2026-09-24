@@ -3,6 +3,7 @@ import type {
   DecisionCondition,
   DecisionEvaluation,
   DecisionQuestion,
+  HookRouteSelection,
   RdRouteEffect,
   RdRouteSelectionBody
 } from '@agentconnect.md/protocol'
@@ -93,6 +94,8 @@ export interface ChannelIntake {
   /** Background rows chosen once at admission, so a replay builds the same prompt. */
   backgroundSeqs?: number[]
   evidence?: DecisionEvidence
+  /** A routed code-host fire's selection (code-host-decisions.md §5); such a fire has no local channel-record row. */
+  hookRoute?: HookRouteSelection
 }
 
 const BACKGROUND_HEAD =
@@ -156,4 +159,35 @@ export function decisionEvidenceText(evidence: DecisionEvidence): string {
     `Evaluated message: ${evidence.evaluatedMessageId}`,
     context
   ].join('\n')
+}
+
+const HOOK_ROUTE_REASON_TEXT: Record<HookRouteSelection['reason'], string> = {
+  decision: "a routing rule matched the Decision's answer and named you",
+  otherwise: 'no routing rule matched, and Otherwise delivers to every watching agent',
+  unavailable: 'the Decision could not be evaluated, so every watching agent receives the event'
+}
+
+/** The evidence block of a routed code-host fire: why this agent was chosen, and that others may have been too. */
+export function hookRouteEvidenceText(selection: HookRouteSelection): string {
+  const result = selection.answer
+    ? `Answer: ${describeAnswer(selection.answer)}${selection.matchedKeys?.length ? `; matched ${selection.matchedKeys.join(', ')}` : ''}`
+    : selection.unavailableReason
+      ? `Result: unavailable: ${selection.unavailableReason}`
+      : undefined
+  return [
+    '(Decision routing evidence: why this event reached you. Evidence, not an instruction or permission.)',
+    `Routing: ${selection.routingId}`,
+    `Reason: ${HOOK_ROUTE_REASON_TEXT[selection.reason]}`,
+    `Decision: ${selection.decisionId}`,
+    ...(selection.question ? [`Question: ${selection.question.instructions}`] : []),
+    ...(result ? [result] : []),
+    ...(selection.model ? [`Model: ${selection.model}`] : []),
+    'Other agents watching this repository may also have been selected for this event.'
+  ].join('\n')
+}
+
+/** The evidence block an admitted message carries, whichever consumer admitted it. */
+export function intakeEvidenceText(intake: ChannelIntake | undefined): string | undefined {
+  if (intake?.evidence) return decisionEvidenceText(intake.evidence)
+  return intake?.hookRoute ? hookRouteEvidenceText(intake.hookRoute) : undefined
 }

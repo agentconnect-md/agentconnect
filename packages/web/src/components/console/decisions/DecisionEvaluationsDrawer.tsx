@@ -1,14 +1,15 @@
 'use client'
 
-// Recent evaluations for one gated conversation (decisions.md §9.5): a bounded daemon read, never stored by the CP.
+// Recent evaluations for one gated conversation or code-host routing (decisions.md §9.5): a bounded daemon read, never stored by the CP.
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocale, useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { Button, Icon } from '@/components/ui'
 import { useDecisionsPrototype } from '@/lib/decisions/provider'
 import { errorParts } from '@/lib/decisions/binding'
 import { answerText, latencyText } from '@/lib/decisions/evaluations'
+import { conversationEvaluations, type DecisionEvaluationSource } from '@/lib/decisions/evaluation-source'
 import type { DecisionEvaluationRecord } from '@agentconnect.md/protocol/decision'
 import type { DecisionConversationRef } from '@agentconnect.md/protocol/decision-api'
 import { DecisionEvaluationDetail, OutcomeBadge } from './DecisionEvaluationDetail'
@@ -26,13 +27,16 @@ function unavailableKind(cause: unknown): 'offline' | 'unsupported' | null {
 
 export function DecisionEvaluationsDrawer({
   conversation,
+  source: givenSource,
   channelName,
   agentName,
   initialSeq,
   onClose
-}: {
-  conversation: DecisionConversationRef
-  /** The conversation as its row reads, for the drawer's subtitle. */
+}: (
+  | { conversation: DecisionConversationRef; source?: undefined }
+  | { conversation?: undefined; source: DecisionEvaluationSource }
+) & {
+  /** The conversation or routed repository as its row reads, for the drawer's subtitle. */
   channelName?: string
   agentName?: string
   /** Opens straight on this evaluation's detail; Back still lands on the list. */
@@ -42,14 +46,20 @@ export function DecisionEvaluationsDrawer({
   const t = useTranslations('Decisions')
   const locale = useLocale()
   const { api, orgId, decisions } = useDecisionsPrototype()
+  const integrationId = conversation?.integrationId
+  const channelId = conversation?.channelId
+  const source = useMemo(
+    () => givenSource ?? conversationEvaluations(api, orgId, { integrationId: integrationId!, channelId: channelId! }),
+    [givenSource, api, orgId, integrationId, channelId]
+  )
+  const copy = source.lane === 'code_host' ? 'evaluations.codeHost' : 'evaluations'
   const words = { yes: t('condition.yes'), no: t('condition.no') }
   const decisionName = useCallback(
     (id: string) => decisions.find((entry) => entry.id === id)?.name ?? t('binding.hiddenDecision'),
     [decisions, t]
   )
-  const { data, error, isLoading, mutate } = useSWR(
-    ['decision-evaluations', api.mode, orgId, conversation.integrationId, conversation.channelId],
-    () => api.listEvaluations(conversation, { limit: PAGE })
+  const { data, error, isLoading, mutate } = useSWR(['decision-evaluations', ...source.key], () =>
+    source.list({ limit: PAGE })
   )
   // Later pages are appended locally; a fresh first page (revalidation or a new key) drops them.
   const [appended, setAppended] = useState<{
@@ -78,7 +88,7 @@ export function DecisionEvaluationsDrawer({
     setLoadingMore(true)
     setMoreError(null)
     try {
-      const page = await api.listEvaluations(conversation, { cursor: nextCursor, limit: PAGE })
+      const page = await source.list({ cursor: nextCursor, limit: PAGE })
       setAppended((current) => ({
         base: data,
         items: [...(current && current.base === data ? current.items : []), ...page.items],
@@ -112,14 +122,14 @@ export function DecisionEvaluationsDrawer({
     const kind = unavailableKind(error)
     body =
       kind === 'offline'
-        ? note('wifi-off', t('evaluations.offline'), { label: t('binding.retry'), run: () => void mutate() })
+        ? note('wifi-off', t(`${copy}.offline`), { label: t('binding.retry'), run: () => void mutate() })
         : kind === 'unsupported'
-          ? note('circle-arrow-up', t('evaluations.unsupported'))
+          ? note('circle-arrow-up', t(`${copy}.unsupported`))
           : note('triangle-alert', t('evaluations.error', { message: errorParts(error)?.message ?? String(error) }), {
               label: t('binding.retry'),
               run: () => void mutate()
             })
-  } else if (items.length === 0) body = note('info', t('evaluations.empty'))
+  } else if (items.length === 0) body = note('info', t(`${copy}.empty`))
   else
     body = (
       <>
@@ -208,7 +218,7 @@ export function DecisionEvaluationsDrawer({
     >
       {open !== null ? (
         <DecisionEvaluationDetail
-          conversation={conversation}
+          source={source}
           seq={open}
           summary={items.find((record) => record.seq === open) ?? null}
           decisionName={decisionName}

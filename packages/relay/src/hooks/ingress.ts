@@ -191,6 +191,9 @@ export function noticeDelivery(msg: RdMsgHook, notice: RdHookNotice): RdMsgHook 
     reviewPolicy: _reviewPolicy,
     reportingMode: _reportingMode,
     gateMode: _gateMode,
+    // A notice is a fixed maintenance post: never routed, never a host's choice.
+    routing: _routing,
+    routeSelection: _routeSelection,
     ...rest
   } = msg
   return {
@@ -212,6 +215,7 @@ function withoutAuthoredText(context: NonNullable<RdMsgHook['context']>): NonNul
     senderLogin: _sender,
     senderAvatarUrl: _avatar,
     authorAssociation: _association,
+    subject: _subject,
     ...bare
   } = context
   return bare

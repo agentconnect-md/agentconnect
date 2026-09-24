@@ -57,10 +57,11 @@ function build(
   const onReady = vi.fn()
   const onClosed = vi.fn()
   const transport = new FakeServerTransport()
+  const clock = new FakeClock()
   const conn = new RelayDaemonConnection(transport, {
     verify,
     relayId: () => ('relayId' in opts ? opts.relayId : RELAY_ID),
-    clock: new FakeClock(),
+    clock,
     onChat: () => {},
     onWebchatPost: () => {},
     onAgentMsg: async () => ({ deliveryId: 'unused', delivered: false }),
@@ -71,7 +72,7 @@ function build(
     log: silentLog
   })
   conn.start()
-  return { conn, transport, verify, onReady, onClosed }
+  return { conn, transport, clock, verify, onReady, onClosed }
 }
 
 describe('RelayDaemonConnection (rd/* accept FSM)', () => {
@@ -88,6 +89,33 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
     expect(conn.state).toBe('READY')
     expect(conn.daemonId).toBe(DAEMON_ID)
     expect(onReady).toHaveBeenCalledWith(DAEMON_ID, conn)
+  })
+
+  it('honours a per-request ack budget on rd/msg: one send, rejected only after its own timeout', async () => {
+    const { conn, transport, clock } = build()
+    transport.feed('rd/hello', { apiKey: 'the-key', daemonId: DAEMON_ID })
+    await vi.waitFor(() => expect(conn.state).toBe('READY'))
+    const msg = {
+      source: 'hook' as const,
+      agentId: OTHER_DAEMON,
+      sessionKey: 'example-org/example-repo#1',
+      msgId: 'h:d:route',
+      hookId: RELAY_ID,
+      deliveryKey: 'd',
+      firedAt: '2026-01-01T00:00:00.000Z'
+    }
+    let settled: unknown
+    conn.sendMsg(msg, { ackTimeoutMs: 15_000, maxTries: 1 }).then(
+      () => (settled = 'resolved'),
+      (err: unknown) => (settled = err)
+    )
+    clock.advance(10_000)
+    await Promise.resolve()
+    expect(settled).toBeUndefined()
+    expect(transport.sent.filter((f) => f.type === 'rd/msg')).toHaveLength(1)
+    clock.advance(5_000)
+    await vi.waitFor(() => expect(settled).toBeInstanceOf(Error))
+    expect(transport.sent.filter((f) => f.type === 'rd/msg')).toHaveLength(1)
   })
 
   it('delegates a projected ServiceAccount token as daemon-token, in place of any key', async () => {

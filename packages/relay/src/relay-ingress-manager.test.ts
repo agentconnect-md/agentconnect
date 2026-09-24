@@ -1886,6 +1886,38 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       expect(sent).toMatchObject({ agentId: OTHER_AGENT_ID, integrationId: OTHER_INTEGRATION_ID })
     })
 
+    it('forwards a By decision team delegation to its decision owner with the decisionId, and reports the binding', async () => {
+      const sendMsg = vi.fn(async (m: { msgId: string }): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+      const daemon = { sendMsg, supports: () => true } as unknown as RelayDaemonConnection
+      const reportThreadAssign = vi.fn(() => true)
+      const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, reportThreadAssign }))
+      const internals = internalsOf(manager)
+      const a = linearAssignment()
+      internals.router.upsert({
+        ...a,
+        conversationDefaults: [],
+        routes: [
+          ...a.routes,
+          {
+            agentId: OTHER_AGENT_ID,
+            daemonId: OTHER_DAEMON_ID,
+            integrationId: OTHER_INTEGRATION_ID,
+            scope: { channel: TEAM },
+            match: { kind: 'decision' },
+            decisionId: 'dec-1'
+          }
+        ]
+      })
+
+      expect(await internals.forward(BOT_ID, delegation('agent-session-1'))).toBe('accepted')
+      expect(sendMsg).toHaveBeenCalledTimes(1)
+      expect(sendMsg.mock.calls[0]![0]).toMatchObject({ agentId: OTHER_AGENT_ID, decisionId: 'dec-1' })
+      // The session stays bound to its one writer, so a Stop on any pod finds it.
+      expect(reportThreadAssign).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionKey: `${TEAM}/agent-session-1`, agentId: OTHER_AGENT_ID })
+      )
+    })
+
     it('withdraws the old gated grant in the same update, so a bound follow-up is refused', async () => {
       // The default seat IS the grant on such a platform, so the hot update has to move both
       // facts together — a stale default would keep honouring a withdrawn binding.

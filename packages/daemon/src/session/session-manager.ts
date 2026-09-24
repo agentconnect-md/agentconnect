@@ -29,7 +29,7 @@ import { ingestInboundTranscript } from './turn/transcript-ingest.js'
 import { matchSkillInvocation, renderSkillInvocation } from './skill-invocation.js'
 import type { DecisionRuntimeTarget, RuntimeCommand } from '@agentconnect.md/protocol'
 import { deriveTitle } from './derive-title.js'
-import { backgroundConversationText, decisionEvidenceText } from '../decisions/evidence.js'
+import { backgroundConversationText, intakeEvidenceText } from '../decisions/evidence.js'
 
 // The recall lifecycle contract lives with the collaborator that emits it; re-exported
 // here because SessionManagerDeps is the seam production wires its observer through.
@@ -806,7 +806,7 @@ export class SessionManager {
         currentThread
       )
     }
-    const evidenceBlock = intake?.evidence ? decisionEvidenceText(intake.evidence) : undefined
+    const evidenceBlock = intakeEvidenceText(intake)
     let evidenceAt = -1
     // The session's own read scope: the coordinate matches a createNew session's rows directly,
     // the key matches every row admitted into it (message-intake.md §3).

@@ -13,6 +13,11 @@ import {
   fetchConversationByKey,
   fetchSessionFacets,
   fetchGithubRepoRoster,
+  deleteCodeHostRouting,
+  fetchCodeHostRouting,
+  fetchCodeHostRoutingEvaluation,
+  fetchCodeHostRoutingEvaluations,
+  saveCodeHostRouting,
   fetchMySessionIdentity,
   fmtCountCompact,
   invalidateGithubRepoRosterCache,
@@ -407,6 +412,45 @@ describe('GitHub hook review settings', () => {
       gateMode: 'informational'
     })
     expect(JSON.parse(String(fetchMock.mock.calls[1]![1]?.body))).toEqual({ kind: 'github', ...input })
+  })
+})
+
+describe('GitHub decision routing', () => {
+  afterEach(() => {
+    setApiOrgId(null)
+    vi.unstubAllGlobals()
+  })
+
+  it('reads, saves and stops a repository family routing and reads its evaluations', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
+      init?.method === 'DELETE'
+        ? new Response(null, { status: 204 })
+        : new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const config = {
+      enabled: true,
+      decisionId: 'dec-1',
+      rules: [{ id: 'r1', when: { type: 'boolean' as const, values: [true] }, action: { type: 'skip' as const } }],
+      otherwise: { type: 'default_agent' as const }
+    }
+
+    await fetchCodeHostRouting('42', 'issues', 'org-1')
+    await saveCodeHostRouting('42', 'pull_request', config, 'org-1')
+    await deleteCodeHostRouting('42', 'pull_request', 'org-1')
+    await fetchCodeHostRoutingEvaluations('42', 'issues', { cursor: 9, limit: 20 }, 'org-1')
+    await fetchCodeHostRoutingEvaluation('42', 'issues', 7, 'org-1')
+
+    const calls = fetchMock.mock.calls.map((call) => [String(call[0]), call[1]?.method ?? 'GET'])
+    expect(calls[0]).toEqual([expect.stringMatching(/\/orgs\/org-1\/decision-routing\/github\/42\/issues$/), 'GET'])
+    expect(calls[1]).toEqual([
+      expect.stringMatching(/\/orgs\/org-1\/decision-routing\/github\/42\/pull_request$/),
+      'PUT'
+    ])
+    expect(JSON.parse(String(fetchMock.mock.calls[1]![1]?.body))).toEqual({ config })
+    expect(calls[2]).toEqual([expect.stringMatching(/\/decision-routing\/github\/42\/pull_request$/), 'DELETE'])
+    expect(calls[3]![0]).toMatch(/\/decision-routing\/github\/42\/issues\/evaluations\?cursor=9&limit=20$/)
+    expect(calls[4]![0]).toMatch(/\/decision-routing\/github\/42\/issues\/evaluations\/7$/)
   })
 })
 

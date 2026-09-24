@@ -16,7 +16,9 @@ import {
   decodeEnvelope,
   isGithubPullRequestRevisionEvent,
   isFrame,
-  pickCodeHostHookMembers
+  pickCodeHostHookMembers,
+  RdAck,
+  RdMsgHook
 } from '../index.js'
 
 const HOOK_ID = '11111111-1111-4111-8111-111111111111'
@@ -486,5 +488,67 @@ describe('code-host member view (gitea-integration.md §13)', () => {
     expect(pickCodeHostHookMembers({ gitlab, github: undefined })).toEqual({ gitlab })
     expect(pickCodeHostHookMembers({ gitea })).toEqual({ gitea })
     expect(pickCodeHostHookMembers({})).toEqual({})
+  })
+})
+
+describe('code-host Decision routing shapes (code-host-decisions.md §3-§5)', () => {
+  const ROUTING_ID = '55555555-5555-4555-8555-555555555555'
+  const DECISION_ID = '66666666-6666-4666-8666-666666666666'
+  const fire = {
+    source: 'hook',
+    agentId: AGENT_ID,
+    sessionKey: 'github:1#42',
+    msgId: `${HOOK_ID}:delivery-1`,
+    hookId: HOOK_ID,
+    deliveryKey: 'delivery-1',
+    firedAt: '2026-01-01T00:00:00.000Z'
+  }
+
+  it('carries the host copy, its candidates, and the subject on a routed event', () => {
+    const msg = RdMsgHook.parse({
+      ...fire,
+      routing: {
+        routingId: ROUTING_ID,
+        decisionId: DECISION_ID,
+        candidates: [{ hookId: HOOK_ID, agentId: AGENT_ID }]
+      },
+      context: { source: 'github', subject: { authorLogin: 'octo', state: 'open', draft: false, body: 'Steps' } }
+    })
+    expect(msg.routing?.candidates).toHaveLength(1)
+    expect(msg.context?.subject?.authorLogin).toBe('octo')
+  })
+
+  it('carries why a routed fire was selected', () => {
+    const msg = RdMsgHook.parse({
+      ...fire,
+      routeSelection: {
+        routingId: ROUTING_ID,
+        decisionId: DECISION_ID,
+        reason: 'decision',
+        verdictSeq: 7,
+        answer: { type: 'boolean', value: true, probability: 0.9 },
+        matchedKeys: ['true']
+      }
+    })
+    expect(msg.routeSelection?.reason).toBe('decision')
+  })
+
+  it('still decodes a fire without either', () => {
+    const msg = RdMsgHook.parse(fire)
+    expect(msg.routing).toBeUndefined()
+    expect(msg.routeSelection).toBeUndefined()
+  })
+
+  it('returns the host verdict on the ack', () => {
+    const ack = RdAck.parse({
+      msgId: fire.msgId,
+      accepted: true,
+      hookRoute: {
+        targets: [
+          { hookId: HOOK_ID, selection: { routingId: ROUTING_ID, decisionId: DECISION_ID, reason: 'otherwise' } }
+        ]
+      }
+    })
+    expect(ack.hookRoute?.targets[0]?.hookId).toBe(HOOK_ID)
   })
 })
