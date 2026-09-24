@@ -384,6 +384,58 @@ it.skipIf(process.platform === 'win32')(
 )
 
 it.skipIf(process.platform === 'win32')(
+  'starts a placed microsandbox session on a holder that runs no VM, and refuses the same strategy locally',
+  async () => {
+    const root = scaffold({ workspace: { mode: 'from-scratch', path: 'workspace' }, execution: 'microsandbox' })
+    const daemon = new Daemon({ root, sandboxMechanism: 'bwrap', probeRuntimes: async () => [] })
+    try {
+      await daemon.start()
+      // This holder has no KVM: no VM catalog, and its own table offers no microsandbox.
+      ;(daemon as any).microsandboxFailure = 'no KVM on this holder'
+      ;(daemon as any).microsandboxCatalog = undefined
+      const agent = (daemon as any).agents.get('bot-a')
+      const placedKey = KEY('placed-vm')
+      const build = (key: string) =>
+        (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
+          hostKey: sessionHostKey(agent.id, key),
+          strategy: 'microsandbox',
+          cwd: agent.workspace.path
+        }).host
+      const installed = { command: '/opt/agentconnect/runtime/bin/adapter', args: ['acp'] }
+      const runtimeDefFor = vi.fn((_key: string, runtime: Record<string, unknown>) => ({ ...runtime, ...installed }))
+      ;(daemon as any).executorPlane = {
+        placementOf: (key: string) =>
+          key === placedKey
+            ? {
+                agentId: agent.id,
+                sessionKey: placedKey,
+                leaf: 'leaf',
+                subject: 'bot-a/leaf',
+                executorDaemonId: 'executor-a',
+                strategy: 'microsandbox'
+              }
+            : undefined,
+        homeFor: () => '/srv/executor/sessions/leaf/home',
+        rootsFor: () => ({ runtimeRoot: '/run/agentconnect', missingHelpers: [] }),
+        runtimeDefFor,
+        spawnFor: () => ({ driver: {} }),
+        stop: async () => {}
+      }
+
+      // The executor's VM is the boundary, and its image's adapter starts; this holder's missing VM catalog is not consulted.
+      expect(build(placedKey).runtime).toMatchObject(installed)
+      expect(runtimeDefFor).toHaveBeenCalledWith(placedKey, expect.objectContaining({ args: ['unused'] }))
+      expect(() => build(KEY('local-vm'))).toThrow(
+        'runs its sessions in the microsandbox strategy, which this daemon cannot run: no KVM on this holder'
+      )
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+)
+
+it.skipIf(process.platform === 'win32')(
   "reopens a placed Codex session's clones' `.git` where they run, through the whole launch assembly",
   async () => {
     const root = scaffold({ runtime: 'codex-acp', workspace: { mode: 'from-scratch', path: 'workspace' } })

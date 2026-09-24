@@ -5906,8 +5906,10 @@ export class Daemon {
   } {
     const agentId = agent.id
     const onUpdate = (sid: string, u: any) => this.enqueueAcpUpdate(opts.hostKey, sid, u)
-    const micro = !this.k8s && opts.strategy === 'microsandbox'
-    // Each strategy launches the install it starts: the image's runtimes in a VM, this host's otherwise.
+    // A session placed on another machine runs inside that machine's strategy, so this one's own VM composes none of it (§7).
+    const remoteSession = this.placedSession(hostKeySessionKey(opts.hostKey))
+    const micro = !this.k8s && opts.strategy === 'microsandbox' && !remoteSession
+    // Each local strategy launches the install it starts: the image's runtimes in a VM, this host's otherwise; a placed session starts from this host's definition, which its executor's install replaces (§8).
     const catalog = micro ? this.microsandboxCatalog : (this.localRuntimeCatalog ?? this.runtimeCatalog)
     const runtimeEntry = catalog?.entries[agent.runtime]
     if (runtimeEntry?.source === 'curated') {
@@ -5934,13 +5936,10 @@ export class Daemon {
       return { host: this.opts.hostFactory(agent, onUpdate), configFileState }
     }
     // A placed session's executor checked its strategy at prepare; one here must be a strategy this table can run.
-    if (!this.placedSession(hostKeySessionKey(opts.hostKey))) this.assertStrategyRunnable(agent, opts.strategy)
+    if (!remoteSession) this.assertStrategyRunnable(agent, opts.strategy)
     const runtime = catalog?.runtimes[agent.runtime]
     if (!runtime) throw new Error(this.runtimeUnavailableMessage(agent.runtime))
-    // A session placed on another machine runs inside that machine's strategy, so this one's own VM composes none of it (§7).
-    const remoteSession = this.placedSession(hostKeySessionKey(opts.hostKey))
-    const microPlacement =
-      micro && !remoteSession ? this.microsandboxPlacement(agent, opts.cwd, opts.hostKey) : undefined
+    const microPlacement = micro ? this.microsandboxPlacement(agent, opts.cwd, opts.hostKey) : undefined
     // Its HOME is the one its executor seeded, on the root that machine's shim reported; without it a launch would name this disk (§7, §8).
     const remoteHome = remoteSession && this.executorPlane?.homeFor(remoteSession.subject)
     // The roots its `prepare` named, where the session gitconfig and config files land in that machine's environment (§5).
