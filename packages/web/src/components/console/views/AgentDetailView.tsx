@@ -2617,7 +2617,7 @@ export default function AgentDetailView() {
                       return (
                         <div
                           key={p.key}
-                          className={`ptile w-33 flex-none flex-col justify-center gap-[6px] px-2 text-center ${available ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}
+                          className={`ptile w-33 flex-none flex-col desktop:w-[min(--spacing(33),calc((100%_-_(var(--tile-cols)_-_1)_*_--spacing(2))_/_var(--tile-cols)))] justify-center gap-[6px] px-2 text-center ${available ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}
                           aria-disabled={!available}
                           title={available ? INTEGRATION_BLURB[p.key] : 'Not supported by this daemon'}
                           onClick={available ? () => openModal('integration', da, { platform: p.key }) : undefined}
