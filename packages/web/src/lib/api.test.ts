@@ -415,7 +415,7 @@ describe('GitHub hook review settings', () => {
   })
 })
 
-describe('GitHub decision routing', () => {
+describe('Code-host decision routing', () => {
   afterEach(() => {
     setApiOrgId(null)
     vi.unstubAllGlobals()
@@ -435,11 +435,13 @@ describe('GitHub decision routing', () => {
       otherwise: { type: 'default_agent' as const }
     }
 
-    await fetchCodeHostRouting('42', 'issues', 'org-1')
-    await saveCodeHostRouting('42', 'pull_request', config, 'org-1')
-    await deleteCodeHostRouting('42', 'pull_request', 'org-1')
-    await fetchCodeHostRoutingEvaluations('42', 'issues', { cursor: 9, limit: 20 }, 'org-1')
-    await fetchCodeHostRoutingEvaluation('42', 'issues', 7, 'org-1')
+    const issues = { provider: 'github', repoId: '42', family: 'issues' } as const
+    const pulls = { provider: 'github', repoId: '42', family: 'pull_request' } as const
+    await fetchCodeHostRouting(issues, 'org-1')
+    await saveCodeHostRouting(pulls, config, 'org-1')
+    await deleteCodeHostRouting(pulls, 'org-1')
+    await fetchCodeHostRoutingEvaluations(issues, { cursor: 9, limit: 20 }, 'org-1')
+    await fetchCodeHostRoutingEvaluation(issues, 7, 'org-1')
 
     const calls = fetchMock.mock.calls.map((call) => [String(call[0]), call[1]?.method ?? 'GET'])
     expect(calls[0]).toEqual([expect.stringMatching(/\/orgs\/org-1\/decision-routing\/github\/42\/issues$/), 'GET'])
@@ -451,6 +453,34 @@ describe('GitHub decision routing', () => {
     expect(calls[2]).toEqual([expect.stringMatching(/\/decision-routing\/github\/42\/pull_request$/), 'DELETE'])
     expect(calls[3]![0]).toMatch(/\/decision-routing\/github\/42\/issues\/evaluations\?cursor=9&limit=20$/)
     expect(calls[4]![0]).toMatch(/\/decision-routing\/github\/42\/issues\/evaluations\/7$/)
+  })
+
+  it('addresses GitLab and Gitea routings by provider, repository id and stored family', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
+      init?.method === 'DELETE'
+        ? new Response(null, { status: 204 })
+        : new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const config = { enabled: true, decisionId: 'dec-1', rules: [], otherwise: { type: 'default_agent' as const } }
+    const gitlab = { provider: 'gitlab', repoId: '7', family: 'merge_request' } as const
+    const gitea = { provider: 'gitea', repoId: '9', family: 'issues' } as const
+
+    await fetchCodeHostRouting(gitlab, 'org-1')
+    await saveCodeHostRouting(gitea, config, 'org-1')
+    await deleteCodeHostRouting(gitlab, 'org-1')
+    await fetchCodeHostRoutingEvaluations(gitea, { limit: 20 }, 'org-1')
+    await fetchCodeHostRoutingEvaluation(gitlab, 3, 'org-1')
+
+    const calls = fetchMock.mock.calls.map((call) => [String(call[0]), call[1]?.method ?? 'GET'])
+    expect(calls[0]).toEqual([
+      expect.stringMatching(/\/orgs\/org-1\/decision-routing\/gitlab\/7\/merge_request$/),
+      'GET'
+    ])
+    expect(calls[1]).toEqual([expect.stringMatching(/\/orgs\/org-1\/decision-routing\/gitea\/9\/issues$/), 'PUT'])
+    expect(calls[2]).toEqual([expect.stringMatching(/\/decision-routing\/gitlab\/7\/merge_request$/), 'DELETE'])
+    expect(calls[3]![0]).toMatch(/\/decision-routing\/gitea\/9\/issues\/evaluations\?limit=20$/)
+    expect(calls[4]![0]).toMatch(/\/decision-routing\/gitlab\/7\/merge_request\/evaluations\/3$/)
   })
 })
 

@@ -4415,7 +4415,7 @@
       "offline": "No daemon serving this conversation is connected, so recent evaluations can't be read right now.",
       "unsupported": "Upgrade the daemon serving this conversation to see its recent evaluations.",
       "codeHost": {
-        "empty": "No evaluations yet. New issues and pull requests judged for this repository appear here.",
+        "empty": "No evaluations yet. New issues and change requests judged for this repository appear here.",
         "offline": "The daemon that evaluates this repository's routing is not connected, so recent evaluations can't be read right now.",
         "unsupported": "Upgrade the daemon that evaluates this repository's routing to see its recent evaluations."
       },
@@ -4747,20 +4747,20 @@
         "subtitle": "shared bot routing"
       },
       "codeHost": {
-        "subtitle": "{family, select, pull_request {Pull requests · picks reviewers among <name>{agents}</name>} other {Issues · picks agents among <name>{agents}</name>}}",
+        "subtitle": "{subject, select, pull_request {Pull requests · picks reviewers among <name>{agents}</name>} merge_request {Merge requests · picks reviewers among <name>{agents}</name>} other {Issues · picks agents among <name>{agents}</name>}}",
         "everyAgent": "Every agent",
-        "evaluatedOnce": "Evaluated on every update of the {family, select, pull_request {PR} other {issue}}; each event goes to the agents the decision picks.",
+        "evaluatedOnce": "Evaluated on every update of the {subject, select, pull_request {PR} merge_request {MR} other {issue}}; each event goes to the agents the decision picks.",
         "mentionsSkip": "A mention does not pick the agent: mentioned events are judged too, and the decision's choice wins.",
-        "otherwiseEveryAgent": "{family, select, pull_request {Without a matching rule, every agent reviews the PR as it does without a decision.} other {Without a matching rule, every agent takes the issue as it does without a decision.}}",
+        "otherwiseEveryAgent": "{subject, select, pull_request {Without a matching rule, every agent reviews the PR as it does without a decision.} merge_request {Without a matching rule, every agent reviews the MR as it does without a decision.} other {Without a matching rule, every agent takes the issue as it does without a decision.}}",
         "add": "Add decision",
-        "addTitle": "{family, select, pull_request {Every PR goes to all agents. Add a decision to pick reviewers on every update; the rows then run on any update.} other {Every issue goes to all agents. Add a decision to pick agents on every update; the rows then run on any update.}}",
-        "pillTitle": "By decision · {name}. Every update of the {family, select, pull_request {PR} other {issue}} is judged, and the decision picks who takes it. Click to edit rules.",
+        "addTitle": "{subject, select, pull_request {Every PR goes to all agents. Add a decision to pick reviewers on every update; the rows then run on any update.} merge_request {Every MR goes to all agents. Add a decision to pick reviewers on every update; the rows then run on any update.} other {Every issue goes to all agents. Add a decision to pick agents on every update; the rows then run on any update.}}",
+        "pillTitle": "By decision · {name}. Every update of the {subject, select, pull_request {PR} merge_request {MR} other {issue}} is judged, and the decision picks who takes it. Click to edit rules.",
         "pillStatusTitle": "By decision · {name} · {status}. Click to review the rules.",
         "statusBody": {
-          "needs_review": "{decision} changed and these rules no longer fit its answers. New {family, select, pull_request {pull requests} other {issues}} on this repository are held until you save the rules again.",
-          "access_revoked": "The saved decision is no longer available, so new {family, select, pull_request {pull requests} other {issues}} are held. Choose another decision, or stop using one."
+          "needs_review": "{decision} changed and these rules no longer fit its answers. New {subject, select, pull_request {pull requests} merge_request {merge requests} other {issues}} on this repository are held until you save the rules again.",
+          "access_revoked": "The saved decision is no longer available, so new {subject, select, pull_request {pull requests} merge_request {merge requests} other {issues}} are held. Choose another decision, or stop using one."
         },
-        "stop": "Stop using By decision — every {family, select, pull_request {PR} other {issue}} goes to all agents",
+        "stop": "Stop using By decision — every {subject, select, pull_request {PR} merge_request {MR} other {issue}} goes to all agents",
         "stopMenu": "Stop using decision",
         "stopError": "Couldn't stop using the decision. {message}",
         "hidden": "A decision you cannot see",

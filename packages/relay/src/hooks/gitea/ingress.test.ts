@@ -4,6 +4,8 @@ import { createHmac, randomBytes } from 'node:crypto'
 import { FakeClock } from '@agentconnect.md/connection'
 import {
   GITEA_V1_FEATURE,
+  HOOK_DECISION_ROUTING_V1_FEATURE,
+  HOOK_DECISION_ROUTING_V2_FEATURE,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   type RcCodeHostDelivery,
   type RcCodeHostMembershipAuthz,
@@ -16,7 +18,15 @@ import {
 import { HookTable } from '../hook-table.js'
 import { HookRateLimiter } from '../rate-limit.js'
 import { registerGiteaIngress } from './ingress.js'
-import { giteaRuleVerdict, normalizeGiteaEvent, type GiteaPayload } from './events.js'
+import {
+  giteaRuleFamilies,
+  giteaRuleVerdict,
+  normalizeGiteaEvent,
+  GITEA_ROUTING,
+  type GiteaMatchCtx,
+  type GiteaPayload
+} from './events.js'
+import { codeHostRecordOnlyEligible, HOOK_ROUTING_ACK_TIMEOUT_MS } from '../code-host-routing.js'
 
 // Every identifier below is synthetic. The probe captures that shaped these fixtures carried real
 // repository, user, and delivery identities; none of them appear here (publication policy).
@@ -25,6 +35,13 @@ const HOOK_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const AGENT = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 const AGENT_B = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
 const DAEMON = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+const HOOK_C = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+const AGENT_C = '99999999-9999-4999-8999-999999999999'
+const DAEMON_B = '88888888-8888-4888-8888-888888888888'
+const DAEMON_C = '77777777-7777-4777-8777-777777777777'
+const ROUTING = '66666666-6666-4666-8666-666666666666'
+const ROUTING_MR = '55555555-5555-4555-8555-555555555555'
+const DECISION = '44444444-4444-4444-8444-444444444444'
 const REPO = 7701234
 const FORK_REPO = 7709999
 const BOT_USER = 424242
@@ -215,6 +232,7 @@ interface Harness {
   table: HookTable
   clock: FakeClock
   sent: RdMsg[]
+  dispatches: Array<{ daemonId: string; msg: RdMsg; opts?: unknown }>
   reports: RcRunReport[]
   /** Every `rc/codehost-delivery` the ingress emitted — one per verified delivery, matched or not. */
   observed: RcCodeHostDelivery[]
@@ -223,34 +241,57 @@ interface Harness {
   ack: RdAck
   offline: boolean
   giteaSupported: boolean
+  /** The routing host's answer to a host copy; the default selects every candidate as Otherwise. */
+  routeAck: (msg: RdMsgHook) => RdAck | Promise<RdAck>
+  routingSupported: boolean
+  routingV2Supported: boolean
+  /** When set, only these daemons are online. */
+  onlineDaemons?: Set<string>
 }
 
 function makeHarness(): Harness {
   const clock = new FakeClock()
-  const h: Partial<Harness> & Pick<Harness, 'sent' | 'reports' | 'observed' | 'authzRequests'> = {
+  const h: Partial<Harness> & Pick<Harness, 'sent' | 'dispatches' | 'reports' | 'observed' | 'authzRequests'> = {
     sent: [],
+    dispatches: [],
     reports: [],
     observed: [],
     authzRequests: [],
     authzResult: true,
     ack: { msgId: 'x', accepted: true },
     offline: false,
-    giteaSupported: true
+    giteaSupported: true,
+    routingSupported: true,
+    routingV2Supported: true,
+    routeAck: (msg) => ({
+      msgId: msg.msgId,
+      accepted: true,
+      hookRoute: {
+        targets: (msg.routing?.candidates ?? []).map((c) => ({
+          hookId: c.hookId,
+          selection: { routingId: msg.routing!.routingId, decisionId: msg.routing!.decisionId, reason: 'otherwise' }
+        }))
+      }
+    })
   }
   const app = Fastify()
   const table = new HookTable()
   const deps = {
     table,
     daemons: () => ({
-      get: () => {
-        if (h.offline) return undefined
+      get: (daemonId: string) => {
+        if (h.offline || (h.onlineDaemons && !h.onlineDaemons.has(daemonId))) return undefined
         return {
           supports: (capability: string) => {
             if (capability === GITEA_V1_FEATURE) return h.giteaSupported === true
+            if (capability === HOOK_DECISION_ROUTING_V1_FEATURE) return h.routingSupported === true
+            if (capability === HOOK_DECISION_ROUTING_V2_FEATURE) return h.routingV2Supported === true
             return true
           },
-          sendMsg: async (msg: RdMsg) => {
+          sendMsg: async (msg: RdMsg, opts?: unknown) => {
             h.sent.push(msg)
+            h.dispatches.push({ daemonId, msg, ...(opts ? { opts } : {}) })
+            if (msg.source === 'hook' && msg.routing) return h.routeAck!(msg)
             return h.ack!
           }
         } as never
@@ -812,5 +853,436 @@ describe('gitea ingress', () => {
     const review = normalizeGiteaEvent('pull_request_review_rejected', reviewPayload() as GiteaPayload)!
     expect(giteaRuleVerdict(rule({}, { events: ['merge_request:*'] }), review)).toBe('no-match')
     expect(giteaRuleVerdict(rule({}, { commentFamilies: ['pull_request'] }), review)).toBe('needs-authz')
+  })
+
+  describe('Decision routing (code-host-decisions.md §4)', () => {
+    const routingFor = (routingId = ROUTING, host = { agentId: AGENT, daemonId: DAEMON }) => ({
+      routingId,
+      decisionId: DECISION,
+      evaluationAgentId: host.agentId,
+      evaluationDaemonId: host.daemonId
+    })
+    // The CP compiles a routed scope with its Any update cadence; Gitea's comment scope names the subject.
+    const anyIssues = { events: ['issues:*'], commentFamilies: ['issues' as const] }
+    const anyPulls = { events: ['merge_request:*'], commentFamilies: ['pull_request' as const] }
+    const routed = (
+      overrides: Partial<RcHookAssign> = {},
+      gitea: Partial<NonNullable<RcHookAssign['gitea']>> = anyIssues,
+      routing = routingFor()
+    ) => rule({ routing, ...overrides }, gitea)
+    const peer = { hookId: HOOK_B, agentId: AGENT_B, daemonId: DAEMON_B, dispatchDaemonId: DAEMON_B }
+    const hookMsgs = () => h.sent as RdMsgHook[]
+    const hostCopies = () => hookMsgs().filter((m) => m.routing !== undefined)
+    const fires = () => hookMsgs().filter((m) => m.routing === undefined)
+    const unavailable = {
+      routingId: ROUTING,
+      decisionId: DECISION,
+      reason: 'unavailable',
+      unavailableReason: 'host_unavailable'
+    }
+    const settle = async () => {
+      for (let i = 0; i < 3; i++) await flush()
+    }
+    const issues = { eventType: 'issues' }
+    const issueComment = { eventType: 'issue_comment' }
+
+    beforeEach(() => {
+      h.onlineDaemons = new Set([DAEMON, DAEMON_B])
+    })
+
+    it('sends one host copy with every candidate, then fires exactly the selected hook', async () => {
+      h.table.upsert(routed())
+      h.table.upsert(routed(peer))
+      const selection = { routingId: ROUTING, decisionId: DECISION, reason: 'decision' as const, verdictSeq: 3 }
+      h.routeAck = (msg) => ({
+        msgId: msg.msgId,
+        accepted: true,
+        hookRoute: { targets: [{ hookId: HOOK_B, selection }] }
+      })
+      expect((await post(h, issuePayload(), issues)).statusCode).toBe(202)
+      await settle()
+
+      expect(h.authzRequests).toHaveLength(1)
+      expect(hostCopies()).toHaveLength(1)
+      expect(hostCopies()[0]).toMatchObject({
+        hookId: HOOK,
+        agentId: AGENT,
+        msgId: `${HOOK}:${DELIVERY}:route`,
+        deliveryKey: DELIVERY,
+        sessionKey: `gitea:${REPO}:issue:42`,
+        event: 'issues:opened',
+        gitea: { repoId: String(REPO), target: { kind: 'issue', index: 42 } },
+        context: expect.objectContaining({
+          subject: { authorLogin: 'alice', body: 'the primary is unreachable' }
+        }),
+        routing: {
+          routingId: ROUTING,
+          decisionId: DECISION,
+          candidates: [
+            { hookId: HOOK, agentId: AGENT },
+            { hookId: HOOK_B, agentId: AGENT_B }
+          ]
+        }
+      })
+      expect(h.dispatches.find((d) => (d.msg as RdMsgHook).routing)).toMatchObject({
+        daemonId: DAEMON,
+        opts: { ackTimeoutMs: HOOK_ROUTING_ACK_TIMEOUT_MS, maxTries: 1 }
+      })
+      expect(fires()).toEqual([
+        expect.objectContaining({ hookId: HOOK_B, msgId: `${HOOK_B}:${DELIVERY}`, routeSelection: selection })
+      ])
+      expect(h.dispatches.find((d) => d.msg.msgId === `${HOOK_B}:${DELIVERY}`)?.daemonId).toBe(DAEMON_B)
+      expect(h.reports).toEqual([expect.objectContaining({ hookId: HOOK_B, status: 'accepted' })])
+    })
+
+    it('keeps every routed rule a candidate when a targeted @agent mention names one of them', async () => {
+      h.table.upsert(routed({}, { ...anyIssues, agentName: 'review-alpha' }))
+      h.table.upsert(routed(peer, { ...anyIssues, agentName: 'review-beta' }))
+      await post(h, issueCommentPayload({ comment: { id: 2, body: '@review-beta take this' } }), issueComment)
+      await settle()
+      expect(h.authzRequests).toHaveLength(2)
+      expect(hostCopies()).toHaveLength(1)
+      expect(hostCopies()[0]?.routing?.candidates).toEqual(
+        expect.arrayContaining([
+          { hookId: HOOK, agentId: AGENT },
+          { hookId: HOOK_B, agentId: AGENT_B }
+        ])
+      )
+      expect(hostCopies()[0]?.routing?.candidates).toHaveLength(2)
+    })
+
+    it('fires nothing when the host holds the event', async () => {
+      h.table.upsert(routed())
+      h.table.upsert(routed(peer))
+      h.routeAck = (msg) => ({ msgId: msg.msgId, accepted: false, reason: 'pending_sync' })
+      await post(h, issuePayload(), issues)
+      await settle()
+      expect(hostCopies()).toHaveLength(1)
+      expect(fires()).toHaveLength(0)
+      expect(h.reports).toHaveLength(0)
+    })
+
+    it.each<[string, (h: Harness) => ReturnType<typeof routingFor>]>([
+      ['the host daemon is offline', () => routingFor(ROUTING, { agentId: AGENT, daemonId: DAEMON_C })],
+      [
+        'the host daemon predates code-host routing',
+        (harness) => {
+          harness.routingSupported = false
+          return routingFor()
+        }
+      ],
+      [
+        'the host daemon routes only GitHub (no v2)',
+        (harness) => {
+          harness.routingV2Supported = false
+          return routingFor()
+        }
+      ],
+      [
+        'the host does not answer in time',
+        (harness) => {
+          harness.routeAck = async () => {
+            throw new Error('no ack after 1 tries')
+          }
+          return routingFor()
+        }
+      ],
+      ['the host agent has no rule in the scope', () => routingFor(ROUTING, { agentId: AGENT_C, daemonId: DAEMON })]
+    ])('fires every candidate as unavailable when %s', async (_name, setup) => {
+      const routing = setup(h)
+      h.table.upsert(routed({}, anyIssues, routing))
+      h.table.upsert(routed(peer, anyIssues, routing))
+      await post(h, issuePayload(), issues)
+      await settle()
+      expect(fires().map((m) => [m.hookId, m.routeSelection])).toEqual([
+        [HOOK, unavailable],
+        [HOOK_B, unavailable]
+      ])
+      expect(h.reports.map((r) => r.status)).toEqual(['accepted', 'accepted'])
+    })
+
+    it('skips a selected rule that changed while the host decided', async () => {
+      h.table.upsert(routed())
+      h.table.upsert(routed(peer))
+      h.routeAck = (msg) => {
+        h.table.upsert(routed({ ...peer, configRevision: '4' }))
+        return {
+          msgId: msg.msgId,
+          accepted: true,
+          hookRoute: {
+            targets: [{ hookId: HOOK_B, selection: { routingId: ROUTING, decisionId: DECISION, reason: 'otherwise' } }]
+          }
+        }
+      }
+      await post(h, issuePayload(), issues)
+      await settle()
+      expect(fires()).toHaveLength(0)
+      expect(h.reports).toHaveLength(0)
+    })
+
+    it('fires no hook the host names outside the candidates', async () => {
+      h.table.upsert(routed())
+      h.table.upsert(routed(peer, { events: ['merge_request:*'] }))
+      h.routeAck = (msg) => ({
+        msgId: msg.msgId,
+        accepted: true,
+        hookRoute: {
+          targets: [{ hookId: HOOK_B, selection: { routingId: ROUTING, decisionId: DECISION, reason: 'otherwise' } }]
+        }
+      })
+      await post(h, issuePayload(), issues)
+      await settle()
+      expect(hostCopies()[0]?.routing?.candidates).toEqual([{ hookId: HOOK, agentId: AGENT }])
+      expect(fires()).toHaveLength(0)
+    })
+
+    it('fires an unrouted rule directly beside a routed scope, with no routing fields', async () => {
+      h.table.upsert(routed())
+      h.table.upsert(rule({ hookId: HOOK_C, agentId: AGENT_C }))
+      h.routeAck = () => new Promise<RdAck>(() => {})
+      await post(h, issuePayload(), issues)
+      await settle()
+      expect(hostCopies()).toEqual([
+        expect.objectContaining({
+          routing: expect.objectContaining({ candidates: [{ hookId: HOOK, agentId: AGENT }] })
+        })
+      ])
+      expect(fires()).toEqual([expect.objectContaining({ hookId: HOOK_C, msgId: `${HOOK_C}:${DELIVERY}` })])
+      expect(fires()[0]).not.toHaveProperty('routeSelection')
+    })
+
+    it('routes an issues scope and a pull-request scope independently', async () => {
+      const mrRouting = routingFor(ROUTING_MR, { agentId: AGENT_B, daemonId: DAEMON_B })
+      h.table.upsert(routed())
+      h.table.upsert(routed(peer, anyPulls, mrRouting))
+      h.table.upsert(routed({ hookId: HOOK_C, agentId: AGENT_C }, anyPulls, mrRouting))
+      await post(h, issuePayload(), issues)
+      await post(h, pullPayload(), { eventType: 'pull_request', delivery: 'd2' })
+      await settle()
+      expect(
+        h.dispatches
+          .filter((d) => (d.msg as RdMsgHook).routing)
+          .map((d) => [d.daemonId, (d.msg as RdMsgHook).routing!.routingId, (d.msg as RdMsgHook).routing!.candidates])
+      ).toEqual([
+        [DAEMON, ROUTING, [{ hookId: HOOK, agentId: AGENT }]],
+        [
+          DAEMON_B,
+          ROUTING_MR,
+          [
+            { hookId: HOOK_B, agentId: AGENT_B },
+            { hookId: HOOK_C, agentId: AGENT_C }
+          ]
+        ]
+      ])
+      expect(fires().map((m) => [m.hookId, m.routeSelection?.routingId])).toEqual([
+        [HOOK, ROUTING],
+        [HOOK_B, ROUTING_MR],
+        [HOOK_C, ROUTING_MR]
+      ])
+    })
+
+    it('sends a record-only copy for a thread event nothing fires on, without waiting or reporting', async () => {
+      h.table.upsert(routed({}, { events: ['issues:opened'] }))
+      h.routeAck = () => new Promise<RdAck>(() => {})
+      await post(h, issueCommentPayload(), issueComment)
+      await settle()
+      expect(hookMsgs()).toHaveLength(1)
+      expect(hostCopies()[0]).toMatchObject({
+        hookId: HOOK,
+        msgId: `${HOOK}:${DELIVERY}:route`,
+        sessionKey: `gitea:${REPO}:issue:42`,
+        event: 'note:created',
+        routing: { routingId: ROUTING, decisionId: DECISION, candidates: [] },
+        gitea: expect.objectContaining({ commentId: '1692903', target: { kind: 'issue', index: 42 } }),
+        context: expect.objectContaining({
+          event: 'note',
+          number: 42,
+          bodyExcerpt: 'what is the rollout plan?',
+          subject: expect.objectContaining({ authorLogin: 'mallory' })
+        })
+      })
+      expect(hostCopies()[0]).not.toHaveProperty('routeSelection')
+      expect(h.reports).toHaveLength(0)
+    })
+
+    it('records nothing for an unrouted rule', async () => {
+      h.table.upsert(rule({}, { events: ['issues:opened'] }))
+      await post(h, issueCommentPayload(), issueComment)
+      await settle()
+      expect(h.sent).toHaveLength(0)
+    })
+
+    it('records a bot-authored comment, which the veto keeps from firing', async () => {
+      h.table.upsert(routed())
+      await post(h, issueCommentPayload({ sender: sender(BOT_USER, BOT_LOGIN) }), issueComment)
+      await settle()
+      expect(hookMsgs()).toEqual([expect.objectContaining({ routing: expect.objectContaining({ candidates: [] }) })])
+      expect(h.authzRequests).toHaveLength(0)
+    })
+
+    it('records a label change the §8 veto keeps from firing', async () => {
+      h.table.upsert(routed())
+      await post(h, issuePayload({ action: 'label_updated' }), { eventType: 'issue_label' })
+      await settle()
+      expect(hookMsgs()).toEqual([
+        expect.objectContaining({ event: 'issues:labeled', routing: expect.objectContaining({ candidates: [] }) })
+      ])
+      expect(h.authzRequests).toHaveLength(0)
+    })
+
+    it('records an event the membership gate refused', async () => {
+      h.table.upsert(routed())
+      h.authzResult = false
+      await post(h, issueCommentPayload(), issueComment)
+      await settle()
+      expect(h.authzRequests).toHaveLength(1)
+      expect(hookMsgs()).toEqual([expect.objectContaining({ routing: expect.objectContaining({ candidates: [] }) })])
+      expect(h.reports).toHaveLength(0)
+    })
+
+    it("records nothing when the host's hook moves to another repository during authz", async () => {
+      h.table.upsert(routed())
+      h.authzResult = async () => {
+        h.table.upsert(routed({}, { ...anyIssues, repoId: '1', repoPath: 'example-org/other-repo' }))
+        return false
+      }
+      await post(h, issueCommentPayload(), issueComment)
+      await settle()
+      expect(h.authzRequests).toHaveLength(1)
+      expect(h.sent).toHaveLength(0)
+    })
+
+    it('records a denied external pull request beside its review-request-required row', async () => {
+      h.table.upsert(routed({}, anyPulls))
+      h.authzResult = false
+      await post(
+        h,
+        pullPayload({
+          pull_request: { user: sender(OUTSIDER, 'mallory'), head: { sha: HEAD_SHA, repo_id: FORK_REPO } }
+        }),
+        { eventType: 'pull_request' }
+      )
+      await settle()
+      expect(hookMsgs()).toEqual([
+        expect.objectContaining({ event: 'merge_request:opened', routing: expect.objectContaining({ candidates: [] }) })
+      ])
+      expect(h.reports).toEqual([
+        expect.objectContaining({ status: 'failed', reason: HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED })
+      ])
+    })
+
+    it('records a review submission for a pull-request scope, carrying the review text', async () => {
+      h.table.upsert(routed({}, { events: ['merge_request:opened'] }))
+      await post(h, reviewPayload(), { eventType: 'pull_request_review_comment' })
+      await settle()
+      expect(hookMsgs()).toEqual([
+        expect.objectContaining({
+          event: 'review:commented',
+          sessionKey: `gitea:${REPO}:pull:77`,
+          routing: expect.objectContaining({ candidates: [] }),
+          context: expect.objectContaining({
+            bodyExcerpt: 'review body',
+            subject: expect.objectContaining({ draft: false, body: 'please review' })
+          })
+        })
+      ])
+      expect(h.reports).toHaveLength(0)
+    })
+
+    it('lets a mention narrow only unrouted rules, while the routed scope still judges the event', async () => {
+      h.table.upsert(routed({}, { ...anyIssues, agentName: 'review-alpha' }))
+      h.table.upsert(rule({ hookId: HOOK_C, agentId: AGENT_C }, { ...anyIssues, agentName: 'review-gamma' }))
+      await post(h, issueCommentPayload({ comment: { id: 2, body: '@review-gamma take this' } }), issueComment)
+      await settle()
+      expect(hostCopies()).toEqual([
+        expect.objectContaining({
+          routing: expect.objectContaining({ candidates: [{ hookId: HOOK, agentId: AGENT }] })
+        })
+      ])
+      expect(fires().filter((m) => m.hookId === HOOK_C)).toEqual([
+        expect.not.objectContaining({ routeSelection: expect.anything() })
+      ])
+    })
+
+    it('records nothing when the host cannot take a Gitea copy', async () => {
+      h.table.upsert(routed({}, { events: ['issues:opened'] }))
+      h.routingV2Supported = false
+      await post(h, issueCommentPayload(), issueComment)
+      await settle()
+      expect(h.sent).toHaveLength(0)
+      expect(h.reports).toHaveLength(0)
+    })
+
+    it('keeps record-only copies off the fire budget', async () => {
+      h.table.upsert(routed({}, { events: ['issues:*'] }))
+      // The harness budget is 5: a sixth record-only copy is dropped, yet the next fire still goes out.
+      for (let i = 0; i < 6; i++) await post(h, issueCommentPayload(), { ...issueComment, delivery: `d-rec-${i}` })
+      await post(h, issuePayload(), { ...issues, delivery: 'd-fire' })
+      await settle()
+      expect(hostCopies().filter((m) => m.routing!.candidates.length === 0)).toHaveLength(5)
+      expect(fires().map((m) => m.deliveryKey)).toEqual(['d-fire'])
+    })
+
+    it('fires a push directly: no scope covers it', async () => {
+      h.table.upsert(routed({}, { events: ['push:*'] }))
+      await post(h, pushPayload(), { eventType: 'push' })
+      await settle()
+      expect(hookMsgs()).toEqual([expect.objectContaining({ event: 'push' })])
+      expect(hookMsgs()[0]).not.toHaveProperty('routing')
+      expect(hookMsgs()[0]).not.toHaveProperty('routeSelection')
+    })
+
+    it('sends thread cleanup unrouted, as maintenance', async () => {
+      h.table.upsert(routed({}, anyPulls))
+      await post(h, pullPayload({ action: 'closed', pull_request: { merged: true } }), { eventType: 'pull_request' })
+      await settle()
+      expect(hookMsgs()).toEqual([expect.objectContaining({ event: 'merge_request:merged' })])
+      expect(hookMsgs()[0]).not.toHaveProperty('routing')
+      expect(hookMsgs()[0]).not.toHaveProperty('routeSelection')
+    })
+  })
+
+  describe('routing callbacks', () => {
+    const routing = { routingId: ROUTING, decisionId: DECISION, evaluationAgentId: AGENT, evaluationDaemonId: DAEMON }
+    const comment = normalizeGiteaEvent('issue_comment', issueCommentPayload() as GiteaPayload)!
+    const pullComment = normalizeGiteaEvent('pull_request_comment', pullCommentPayload() as GiteaPayload)!
+    const review = normalizeGiteaEvent('pull_request_review_approved', reviewPayload() as GiteaPayload)!
+    const push = normalizeGiteaEvent('push', pushPayload() as GiteaPayload)!
+    const eligible = (hostRule: RcHookAssign, ctx: GiteaMatchCtx, repoId = String(REPO)) =>
+      codeHostRecordOnlyEligible(GITEA_ROUTING, hostRule, { ctx, repoId })
+
+    it.each<[string, RcHookAssign, GiteaMatchCtx, string, boolean]>([
+      ['routed issues rule, issue comment', rule({ routing }), comment, String(REPO), true],
+      ['unrouted rule', rule(), comment, String(REPO), false],
+      ['foreign kind', rule({ routing, kind: 'gitlab' }), comment, String(REPO), false],
+      ['another repository', rule({ routing }), comment, '1', false],
+      ['pull comment on an issues rule', rule({ routing }), pullComment, String(REPO), false],
+      [
+        'pull comment on a pull rule',
+        rule({ routing }, { events: ['merge_request:*'] }),
+        pullComment,
+        String(REPO),
+        true
+      ],
+      [
+        'review on a pull comment scope',
+        rule({ routing }, { commentFamilies: ['pull_request'] }),
+        review,
+        String(REPO),
+        true
+      ],
+      ['push', rule({ routing }, { events: ['push:*'] }), push, String(REPO), false]
+    ])('record-only eligibility: %s', (_name, hostRule, ctx, repoId, expected) => {
+      expect(eligible(hostRule, ctx, repoId)).toBe(expected)
+    })
+
+    it('maps the comment-subject vocabulary onto the event families', () => {
+      expect([...giteaRuleFamilies(rule({}, { events: ['push:*'], commentFamilies: ['pull_request'] }))]).toEqual([
+        'merge_request'
+      ])
+      expect(GITEA_ROUTING.eventFamily({ ctx: review, repoId: String(REPO) })).toBe('merge_request')
+      expect(GITEA_ROUTING.eventFamily({ ctx: push, repoId: String(REPO) })).toBeUndefined()
+      expect(GITEA_ROUTING.hostFeatures).toEqual([HOOK_DECISION_ROUTING_V1_FEATURE, HOOK_DECISION_ROUTING_V2_FEATURE])
+    })
   })
 })

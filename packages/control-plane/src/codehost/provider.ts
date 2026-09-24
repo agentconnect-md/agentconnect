@@ -38,7 +38,8 @@ import type {
   AgentSpec,
   AgentWorkspaceCredential as SpecWorkspaceCredential,
   CodeHostHookRule,
-  CodeHostProvider
+  CodeHostProvider,
+  CodeHostRoutingFamily
 } from '@agentconnect.md/protocol'
 import type {
   AgentRecord,
@@ -211,6 +212,25 @@ export interface CodeHostProviderHooks {
   ): void
 }
 
+/** A routed rule's Any update cadence (code-host-decisions.md §4), in the vocabulary this host's hook rows store. */
+export interface CodeHostRoutedCadence {
+  events: string[]
+  commentFamilies: CodeHostRoutingFamily[]
+  mentionOnly: false
+}
+
+/** Decision routing across the agents watching one of this host's repositories (code-host-decisions.md §3-§4). */
+export interface CodeHostProviderRouting {
+  /** Features a relay or host daemon must advertise before one of this host's routed scopes reaches it (§3.3). */
+  readonly requiredFeatures: readonly string[]
+  /** How a Decision's Used by label names one routable family. */
+  familyLabel(family: CodeHostRoutingFamily): string
+  /** The cadence every rule of a routed scope compiles with, whatever trigger mode the row stores. */
+  anyUpdateCadence(family: CodeHostRoutingFamily): CodeHostRoutedCadence
+  /** The repository path a routing records, as the compile reads it; undefined ⇒ the member hook's own path. */
+  repositoryPath(deps: CodeHostDeps, orgId: OrgId, repoId: bigint): Promise<string | undefined>
+}
+
 /** One code host's control-plane module. */
 export interface CodeHostProviderModule {
   readonly provider: CodeHostProvider
@@ -221,6 +241,7 @@ export interface CodeHostProviderModule {
   readonly features: CodeHostProviderFeatures
   readonly workspace: CodeHostProviderWorkspace
   readonly hooks: CodeHostProviderHooks
+  readonly routing: CodeHostProviderRouting
   /** Raise one additional-repository grant to a stronger tier (§8.3). */
   upgradeRepoAuthorization(ctx: CodeHostRepoAuthorizationContext): Promise<AgentRepoAuthDtoT | undefined>
 }

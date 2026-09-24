@@ -1,10 +1,12 @@
 // @vitest-environment happy-dom
-// A github repository's issues and pull-request rows carry their scope's decision routing: the entry, the mention lock, Stop, and Recent evaluations.
+// Every code host's issues and change-request rows carry their scope's decision routing: the entry, the trigger lock, Stop, and Recent evaluations.
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { githubFamilySubscription } from '@/lib/github-events'
+import { gitlabFamilySubscription } from '@/lib/gitlab-events'
+import { giteaFamilySubscription } from '@/lib/gitea-events'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -58,6 +60,7 @@ vi.mock('@/lib/api', async (importOriginal) => {
     fetchAgentRepos: vi.fn(async () => []),
     fetchGithubInstallations: vi.fn(async () => ({ enabled: false, installations: [] })),
     fetchGitlabConnections: vi.fn(async () => ({ enabled: false, connections: [] })),
+    fetchGiteaConnections: vi.fn(async () => ({ enabled: false, connections: [] })),
     fetchCodeHostRouting: mocks.fetchCodeHostRouting,
     deleteCodeHostRouting: mocks.deleteCodeHostRouting,
     fetchCodeHostRoutingEvaluations: mocks.fetchCodeHostRoutingEvaluations
@@ -84,17 +87,32 @@ const agent = {
   visibility: 'org'
 } as unknown as Parameters<typeof Object.freeze>[0]
 
-function row(family: 'issues' | 'pull_request', mode: 'first' | 'every' | 'mention'): Record<string, unknown> {
+type Provider = 'github' | 'gitlab' | 'gitea'
+type Family = 'issues' | 'pull_request' | 'merge_request'
+type Mode = 'first' | 'every' | 'mention'
+const REPO: Record<Provider, { repoId: string; name: string }> = {
+  github: { repoId: '1', name: 'acme/api' },
+  gitlab: { repoId: '7', name: 'group/api' },
+  gitea: { repoId: '9', name: 'acme/web' }
+}
+
+function subscription(provider: Provider, family: Family, mode: Mode) {
+  if (provider === 'github') return githubFamilySubscription(family as 'issues' | 'pull_request', mode)
+  if (provider === 'gitlab') return gitlabFamilySubscription(family as 'issues' | 'merge_request', mode)
+  return giteaFamilySubscription(family as 'issues' | 'merge_request', mode)
+}
+
+function row(family: Family, mode: Mode, provider: Provider = 'github'): Record<string, unknown> {
   return {
-    id: `hook-${family}`,
+    id: `hook-${provider}-${family}`,
     agentId: 'agent-1',
-    kind: 'github',
+    kind: provider,
     enabled: true,
-    repoId: '1',
-    name: 'acme/api',
-    repoFullName: 'acme/api',
+    repoId: REPO[provider].repoId,
+    name: REPO[provider].name,
+    repoFullName: REPO[provider].name,
     family,
-    ...githubFamilySubscription(family, mode),
+    ...subscription(provider, family, mode),
     labelFilter: [],
     reviewPolicy: 'off',
     reportingMode: 'off',
@@ -103,10 +121,11 @@ function row(family: 'issues' | 'pull_request', mode: 'first' | 'every' | 'menti
   }
 }
 
-function routing(family: 'issues' | 'pull_request', routed: boolean) {
+function routing(family: Family, routed: boolean, provider: Provider = 'github') {
   return {
-    repoId: '1',
-    repoFullName: 'acme/api',
+    provider,
+    repoId: REPO[provider].repoId,
+    repoFullName: REPO[provider].name,
     family,
     config: routed
       ? {
@@ -119,10 +138,17 @@ function routing(family: 'issues' | 'pull_request', routed: boolean) {
         }
       : null,
     status: routed ? 'enabled' : null,
-    members: [{ agentId: 'agent-1', hookId: `hook-${family}`, name: 'pilot' }],
+    members: [{ agentId: 'agent-1', hookId: `hook-${provider}-${family}`, name: 'pilot' }],
     evaluationAgentId: 'agent-1'
   }
 }
+
+const scopeOf = (provider: Provider, family: Family) => ({
+  provider,
+  repoId: REPO[provider].repoId,
+  family,
+  repoFullName: REPO[provider].name
+})
 
 const { DecisionsPrototypeProvider } = await import('@/lib/decisions/provider')
 const AgentDetailView = (await import('./AgentDetailView')).default
@@ -170,9 +196,18 @@ const entries = (scope: ParentNode) =>
 
 beforeEach(() => {
   mocks.hooks = [row('issues', 'first'), row('pull_request', 'every')]
-  mocks.routings = { issues: routing('issues', false), pull_request: routing('pull_request', true) }
+  mocks.routings = {
+    'github|issues': routing('issues', false),
+    'github|pull_request': routing('pull_request', true),
+    'gitlab|issues': routing('issues', false, 'gitlab'),
+    'gitlab|merge_request': routing('merge_request', true, 'gitlab'),
+    'gitea|issues': routing('issues', false, 'gitea'),
+    'gitea|merge_request': routing('merge_request', true, 'gitea')
+  }
   mocks.fetchCodeHostRouting.mockReset()
-  mocks.fetchCodeHostRouting.mockImplementation(async (_repoId: string, family: string) => mocks.routings[family])
+  mocks.fetchCodeHostRouting.mockImplementation(
+    async (scope: { provider: string; family: string }) => mocks.routings[`${scope.provider}|${scope.family}`]
+  )
   mocks.deleteCodeHostRouting.mockReset()
   mocks.deleteCodeHostRouting.mockResolvedValue(undefined)
   mocks.fetchCodeHostRoutingEvaluations.mockReset()
@@ -189,8 +224,8 @@ afterEach(async () => {
 describe('AgentDetailView, github decision routing', () => {
   it('reads each family scope and mounts its entry on the issues and pull-request rows', async () => {
     const scope = await render()
-    expect(mocks.fetchCodeHostRouting).toHaveBeenCalledWith('1', 'issues', 'org-1')
-    expect(mocks.fetchCodeHostRouting).toHaveBeenCalledWith('1', 'pull_request', 'org-1')
+    expect(mocks.fetchCodeHostRouting).toHaveBeenCalledWith(scopeOf('github', 'issues'), 'org-1')
+    expect(mocks.fetchCodeHostRouting).toHaveBeenCalledWith(scopeOf('github', 'pull_request'), 'org-1')
     // Pull requests order first within a repository.
     expect(entries(scope)).toEqual(['Needs a response', 'Add decision'])
   })
@@ -216,7 +251,10 @@ describe('AgentDetailView, github decision routing', () => {
     const scope = await render()
     await click(scope.querySelector('[aria-label="More for acme/api PRs"]'))
     await click(menuItem('Stop using decision'))
-    expect(mocks.deleteCodeHostRouting).toHaveBeenCalledWith('1', 'pull_request', 'org-1')
+    expect(mocks.deleteCodeHostRouting).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'github', repoId: '1', family: 'pull_request' }),
+      'org-1'
+    )
     expect(entries(scope)).toEqual(['Add decision', 'Add decision'])
   })
 
@@ -229,6 +267,71 @@ describe('AgentDetailView, github decision routing', () => {
     const drawer = document.querySelector<HTMLElement>('[data-testid="decision-evaluations"]')!
     expect(drawer.textContent).toContain('acme/api · PRs')
     expect(drawer.textContent).toContain('judged for this repository appear here')
-    expect(mocks.fetchCodeHostRoutingEvaluations).toHaveBeenCalledWith('1', 'pull_request', { limit: 20 }, 'org-1')
+    expect(mocks.fetchCodeHostRoutingEvaluations).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'github', repoId: '1', family: 'pull_request' }),
+      { limit: 20 },
+      'org-1'
+    )
+  })
+})
+
+describe.each([
+  {
+    provider: 'gitlab' as const,
+    repo: 'group/api',
+    change: 'MRs',
+    any: 'update',
+    modes: ['create', 'update', '@-mention']
+  },
+  {
+    provider: 'gitea' as const,
+    repo: 'acme/web',
+    change: 'PRs',
+    any: 'update',
+    modes: ['create', 'update', '@-mention']
+  }
+])('AgentDetailView, $provider decision routing', ({ provider, repo, change, any, modes }) => {
+  beforeEach(() => {
+    mocks.hooks = [row('issues', 'first', provider), row('merge_request', 'first', provider)]
+  })
+
+  it('reads each family scope by provider and mounts its entry on the issues and change-request rows', async () => {
+    const scope = await render()
+    expect(mocks.fetchCodeHostRouting).toHaveBeenCalledWith(scopeOf(provider, 'issues'), 'org-1')
+    expect(mocks.fetchCodeHostRouting).toHaveBeenCalledWith(scopeOf(provider, 'merge_request'), 'org-1')
+    expect(entries(scope).sort()).toEqual(['Add decision', 'Needs a response'])
+  })
+
+  it('locks the routed row on Any update and leaves the unrouted row alone', async () => {
+    const scope = await render()
+    const trigger = scope.querySelector(`[aria-label="Trigger for ${repo} ${change}"]`)
+    expect(trigger?.textContent).toContain(any)
+    await click(trigger)
+    for (const mode of modes) expect(menuItem(mode)?.getAttribute('aria-disabled')).toBe('true')
+    await click(trigger)
+    await click(scope.querySelector(`[aria-label="Trigger for ${repo} Issues"]`))
+    expect(menuItem('@-mention')?.getAttribute('aria-disabled')).toBeNull()
+  })
+
+  it('opens Recent evaluations and stops the routing from the row menu', async () => {
+    const scope = await render()
+    await click(scope.querySelector(`[aria-label="More for ${repo} Issues"]`))
+    expect(menuItem('Recent evaluations')).toBeUndefined()
+    await click(scope.querySelector(`[aria-label="More for ${repo} ${change}"]`))
+    await click(menuItem('Recent evaluations'))
+    const drawer = document.querySelector<HTMLElement>('[data-testid="decision-evaluations"]')!
+    expect(drawer.textContent).toContain(`${repo} · ${change}`)
+    expect(mocks.fetchCodeHostRoutingEvaluations).toHaveBeenCalledWith(
+      expect.objectContaining({ provider, repoId: REPO[provider].repoId, family: 'merge_request' }),
+      { limit: 20 },
+      'org-1'
+    )
+    await click(scope.querySelector(`[aria-label="More for ${repo} ${change}"]`))
+    await click(menuItem('Stop using decision'))
+    expect(mocks.deleteCodeHostRouting).toHaveBeenCalledWith(
+      expect.objectContaining({ provider, repoId: REPO[provider].repoId, family: 'merge_request' }),
+      'org-1'
+    )
+    expect(entries(scope)).toEqual(['Add decision', 'Add decision'])
   })
 })

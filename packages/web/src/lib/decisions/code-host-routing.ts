@@ -1,32 +1,55 @@
 'use client'
 
-// A GitHub repository's decision routing per subject family, read and written through the CP (code-host-decisions.md §3.1).
+// A code-host repository's decision routing per provider and subject family, read and written through the CP (code-host-decisions.md §3.1).
 
 import { useCallback } from 'react'
 import useSWR, { useSWRConfig } from 'swr'
-import type { SharedBotDecisionRouting } from '@agentconnect.md/protocol/decision'
+import {
+  CODE_HOST_ROUTING_PROVIDER_FAMILIES,
+  type CodeHostRoutingProvider,
+  type SharedBotDecisionRouting
+} from '@agentconnect.md/protocol/decision'
 import {
   deleteCodeHostRouting,
   fetchCodeHostRouting,
   saveCodeHostRouting,
   type CodeHostRoutingDto,
-  type CodeHostRoutingFamily
+  type CodeHostRoutingFamily,
+  type CodeHostRoutingKey
 } from '@/lib/api'
 import type { AgentIcon } from '@/lib/agent-icon'
+import { CODE_HOST_PROJECTION } from '@/lib/code-hosts'
 import { useOptionalDecisionsPrototype } from './provider'
 import type { RosterAgent } from './routing-roster'
 
-export interface CodeHostRoutingScope {
-  repoId: string
-  family: CodeHostRoutingFamily
+export interface CodeHostRoutingScope extends CodeHostRoutingKey {
   repoFullName: string
 }
 
 export type CodeHostRoutingMember = CodeHostRoutingDto['members'][number]
 
-/** One scope's identity within an organization: repository and family. */
-export const codeHostScopeId = (scope: Pick<CodeHostRoutingScope, 'repoId' | 'family'>) =>
-  `${scope.repoId}|${scope.family}`
+/** One scope's identity within an organization: provider, repository and family. */
+export const codeHostScopeId = (scope: CodeHostRoutingKey) => `${scope.provider}|${scope.repoId}|${scope.family}`
+
+/** A hook row's routing scope when its provider routes its family (the protocol's table); null otherwise. */
+export function codeHostRoutingScopeOf(
+  hook: { kind: string; repoId?: string | null; repoFullName: string | null; name: string },
+  family: string | null
+): CodeHostRoutingScope | null {
+  const families = CODE_HOST_ROUTING_PROVIDER_FAMILIES[hook.kind as CodeHostRoutingProvider] as
+    readonly string[] | undefined
+  if (!hook.repoId || !family || !families?.includes(family)) return null
+  return {
+    provider: hook.kind as CodeHostRoutingProvider,
+    repoId: hook.repoId,
+    family: family as CodeHostRoutingFamily,
+    repoFullName: hook.repoFullName ?? hook.name
+  }
+}
+
+/** The copy selector for a scope's subject: `issues`, or what its host calls a proposed change. */
+export const codeHostRoutingSubject = (scope: CodeHostRoutingKey): 'issues' | 'pull_request' | 'merge_request' =>
+  scope.family === 'issues' ? 'issues' : CODE_HOST_PROJECTION[scope.provider].changeNoun
 
 /** A saved routing that is on: its scope's @-mention trigger is unavailable. */
 export const codeHostRouted = (routing: CodeHostRoutingDto | null | undefined) => routing?.config?.enabled === true
@@ -66,6 +89,7 @@ function mockRouting(
 ): CodeHostRoutingDto {
   const config = mockConfigs.get(`${orgId}|${codeHostScopeId(scope)}`) ?? null
   return {
+    provider: scope.provider,
     repoId: scope.repoId,
     repoFullName: scope.repoFullName,
     family: scope.family,
@@ -98,10 +122,9 @@ export function useCodeHostRoutings(
       scopes.map(async (scope): Promise<[string, CodeHostRoutingDto | null]> => {
         try {
           const routing =
-            mode === 'mock'
-              ? mockRouting(orgId, scope, mockMembers)
-              : await fetchCodeHostRouting(scope.repoId, scope.family, orgId)
-          return [codeHostScopeId(scope), routing]
+            mode === 'mock' ? mockRouting(orgId, scope, mockMembers) : await fetchCodeHostRouting(scope, orgId)
+          // An older CP omits `provider`; the scope that was asked for is the routing's address.
+          return [codeHostScopeId(scope), { ...routing, provider: scope.provider }]
         } catch {
           return [codeHostScopeId(scope), null]
         }
@@ -140,7 +163,7 @@ export function useCodeHostRoutingActions() {
       if (mode === 'mock') {
         mockConfigs.set(`${orgId}|${codeHostScopeId(current)}`, structuredClone(config))
         next = mockRouting(orgId, current, current.members)
-      } else next = await saveCodeHostRouting(current.repoId, current.family, config, orgId)
+      } else next = { ...(await saveCodeHostRouting(current, config, orgId)), provider: current.provider }
       await apply(next)
       return next
     },
@@ -149,7 +172,7 @@ export function useCodeHostRoutingActions() {
   const remove = useCallback(
     async (current: CodeHostRoutingDto) => {
       if (mode === 'mock') mockConfigs.delete(`${orgId}|${codeHostScopeId(current)}`)
-      else await deleteCodeHostRouting(current.repoId, current.family, orgId)
+      else await deleteCodeHostRouting(current, orgId)
       await apply({ ...current, config: null, status: null })
     },
     [mode, orgId, apply]

@@ -21,12 +21,32 @@ export interface CodeHostProjection {
   readonly repoNoun: string
   /** The same object in the console's short register ("repo", "project"). */
   readonly repoNounShort: string
+  /** What this host calls a proposed change, as a copy selector: Gitea stores `merge_request` but says pull request. */
+  readonly changeNoun: 'pull_request' | 'merge_request'
 }
 
 export const CODE_HOST_PROJECTION: Record<CodeHostProvider, CodeHostProjection> = {
-  github: { label: 'GitHub', publicHost: 'github.com', repoNoun: 'repository', repoNounShort: 'repo' },
-  gitlab: { label: 'GitLab', publicHost: 'gitlab.com', repoNoun: 'project', repoNounShort: 'project' },
-  gitea: { label: 'Gitea', publicHost: 'gitea.com', repoNoun: 'repository', repoNounShort: 'repo' }
+  github: {
+    label: 'GitHub',
+    publicHost: 'github.com',
+    repoNoun: 'repository',
+    repoNounShort: 'repo',
+    changeNoun: 'pull_request'
+  },
+  gitlab: {
+    label: 'GitLab',
+    publicHost: 'gitlab.com',
+    repoNoun: 'project',
+    repoNounShort: 'project',
+    changeNoun: 'merge_request'
+  },
+  gitea: {
+    label: 'Gitea',
+    publicHost: 'gitea.com',
+    repoNoun: 'repository',
+    repoNounShort: 'repo',
+    changeNoun: 'pull_request'
+  }
 }
 
 /**

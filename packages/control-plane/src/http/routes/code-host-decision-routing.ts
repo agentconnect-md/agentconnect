@@ -2,15 +2,17 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import {
   CodeHostRoutingFamily,
+  CodeHostRoutingProvider,
   DECISION_EVALUATIONS_V1_FEATURE,
   DecisionEvaluationRecordDetail,
   DecisionEvaluationRecordPage,
-  HOOK_DECISION_ROUTING_V1_FEATURE,
   SharedBotDecisionRouting,
   decisionRoutingIssues,
+  isCodeHostRoutingScope,
   supportsDecision,
   type DecisionValidationIssue
 } from '@agentconnect.md/protocol'
+import { codeHostsOf } from '../../codehost/registry.js'
 import { canEdit, canView } from '../../authorization/policy.js'
 import { ProtocolError } from '../../domain/errors.js'
 import { OrgId } from '../../domain/ids.js'
@@ -31,16 +33,29 @@ import { Tag } from '../plugins/openapi.js'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import { ctxOf, denyViewerWrite, orgOf } from '../rbac.js'
 
-const ScopeParams = z.object({ repoId: z.string().regex(/^[1-9]\d{0,18}$/), family: CodeHostRoutingFamily })
+// The family must be one its provider routes (CODE_HOST_ROUTING_PROVIDER_FAMILIES), as the hook rows name it.
+const routableScope = <T extends { provider: string; family: string }>(schema: z.ZodType<T>) =>
+  schema.refine((params) => isCodeHostRoutingScope(params.provider, params.family), {
+    path: ['family'],
+    message: 'The family is not routable for this provider.'
+  })
+const ScopeShape = z.object({
+  provider: CodeHostRoutingProvider,
+  repoId: z.string().regex(/^[1-9]\d{0,18}$/),
+  family: CodeHostRoutingFamily
+})
+const ScopeParams = routableScope(ScopeShape)
+const EvaluationParams = routableScope(ScopeShape.extend({ seq: z.coerce.number().int().nonnegative() }))
 const Issue = z.object({ path: z.array(z.union([z.string(), z.number()])), message: z.string() })
 const IssuesErrorDto = ErrorDto.extend({ issues: z.array(Issue).optional(), code: z.string().optional() })
 const DetailDto = z.object({
+  provider: CodeHostRoutingProvider,
   repoId: z.string(),
   repoFullName: z.string(),
   family: CodeHostRoutingFamily,
   config: SharedBotDecisionRouting.nullable(),
   status: z.enum(['enabled', 'needs_review', 'access_revoked']).nullable(),
-  // Every agent with an enabled GitHub trigger on this repository and family: the only valid rule targets.
+  // Every agent with an enabled trigger of this provider on this repository and family: the only valid rule targets.
   members: z.array(z.object({ agentId: z.string(), hookId: z.string(), name: z.string().nullable() })),
   evaluationAgentId: z.string().nullable()
 })
@@ -85,10 +100,16 @@ interface ScopeView {
 export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
   return async function codeHostDecisionRoutingRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
+    const routingOf = (scope: CodeHostRoutingScope) => codeHostsOf(deps)[scope.provider].routing
 
     const scopeOf = (req: FastifyRequest): CodeHostRoutingScope => {
       const params = req.params as z.infer<typeof ScopeParams>
-      return { orgId: OrgId(orgOf(req)), repoId: BigInt(params.repoId), family: params.family }
+      return {
+        orgId: OrgId(orgOf(req)),
+        provider: params.provider,
+        repoId: BigInt(params.repoId),
+        family: params.family
+      }
     }
 
     // Null when there is neither a routing nor a member; members whose agent is gone are dropped.
@@ -96,17 +117,24 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
       const scope = scopeOf(req)
       const [record, hooks] = await Promise.all([
         deps.repos.codeHostDecisionRouting.get(scope),
-        deps.repos.hook.listForOrgKind(scope.orgId, 'github')
+        deps.repos.hook.listForOrgKind(scope.orgId, scope.provider)
       ])
       const members: ScopeView['members'] = []
       for (const hook of routingMembers(hooks, scope)) {
         const agent = await deps.repos.agent.get(scope.orgId, hook.agentId)
         if (agent) members.push({ hook, agent })
       }
-      const repoFullName = record?.repoFullName ?? members[0]?.hook.repoFullName
+      if (!record && members.length === 0) return null
+      const repoFullName =
+        (await routingOf(scope).repositoryPath(deps, scope.orgId, scope.repoId)) ??
+        record?.repoFullName ??
+        members[0]?.hook.repoFullName
       if (!repoFullName) return null
       return { scope, record, members, repoFullName }
     }
+
+    // Every feature a relay or host daemon needs before this provider's routed scope reaches it.
+    const requiredFeatures = (scope: CodeHostRoutingScope) => routingOf(scope).requiredFeatures
 
     // Reading needs view access to one member; an orphaned routing (no member left) is visible to the owner only.
     const readable = (req: FastifyRequest, view: ScopeView | null): view is ScopeView =>
@@ -121,6 +149,7 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
     const detail = (req: FastifyRequest, view: ScopeView) => {
       const agentIds = new Set(view.members.map((m) => m.agent.id))
       return {
+        provider: view.scope.provider,
         repoId: view.scope.repoId.toString(),
         repoFullName: view.repoFullName,
         family: view.scope.family,
@@ -136,16 +165,16 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
     }
 
     r.get(
-      '/decision-routing/github/:repoId/:family',
+      '/decision-routing/:provider/:repoId/:family',
       {
         schema: {
           tags: [Tag.Decisions],
           summary: 'Get repository routing',
           operationId: 'getCodeHostDecisionRouting',
           description:
-            "Returns the Decision routing for one GitHub repository and subject family (`issues` or `pull_request`): its config (null when none is saved), status (`enabled`, `needs_review`, `access_revoked`; pause is the config's own `enabled`), the members — every agent with an enabled GitHub trigger on that repository and family, the only valid rule targets — and the evaluation agent. Needs view access to one member; member names appear only for agents the caller can view.",
+            "Returns the Decision routing for one code-host repository and subject family — `github` with `issues` or `pull_request`, `gitlab` or `gitea` with `issues` or `merge_request` (400 for another pair): its config (null when none is saved), status (`enabled`, `needs_review`, `access_revoked`; pause is the config's own `enabled`), the members — every agent with an enabled trigger of that provider on that repository and family, the only valid rule targets — and the evaluation agent. Needs view access to one member; member names appear only for agents the caller can view.",
           params: ScopeParams,
-          response: { 200: DetailDto, 404: ErrorDto }
+          response: { 200: DetailDto, 400: ErrorDto, 404: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -156,14 +185,14 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
     )
 
     r.put(
-      '/decision-routing/github/:repoId/:family',
+      '/decision-routing/:provider/:repoId/:family',
       {
         schema: {
           tags: [Tag.Decisions],
           summary: 'Save repository routing',
           operationId: 'saveCodeHostDecisionRouting',
           description:
-            "Saves the complete routing config for one GitHub repository and subject family and clears Needs review. The Decision must be visible and supported (`code` DECISION_NOT_FOUND, 404), the rules must fit its question, and every rule's agent must be a member (400 with `issues`). Needs edit access to every member agent, since the routing decides which of them fire. `enabled: false` pauses routing: the members' triggers fire unrouted. Enabling is refused with `code` DECISION_UNSUPPORTED_CONSUMER (409) while a connected relay does not support routing.",
+            "Saves the complete routing config for one code-host repository and subject family and clears Needs review. The Decision must be visible and supported (`code` DECISION_NOT_FOUND, 404), the rules must fit its question, and every rule's agent must be a member (400 with `issues`). Needs edit access to every member agent, since the routing decides which of them fire. `enabled: false` pauses routing: the members' triggers fire unrouted. Enabling is refused with `code` DECISION_UNSUPPORTED_CONSUMER (409) while a connected relay does not support routing for this provider.",
           params: ScopeParams,
           body: z.strictObject({ config: SharedBotDecisionRouting }),
           response: { 200: DetailDto, 400: IssuesErrorDto, 403: ErrorDto, 404: IssuesErrorDto, 409: IssuesErrorDto }
@@ -174,7 +203,13 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
         const view = await load(req)
         if (!readable(req, view)) return reply.code(404).send(notFound(REPOSITORY_NOT_FOUND))
         if (view.members.length === 0)
-          return reply.code(400).send(badRequest('No enabled GitHub trigger watches this repository and family.'))
+          return reply
+            .code(400)
+            .send(
+              badRequest(
+                `No enabled ${codeHostsOf(deps)[view.scope.provider].displayName} trigger watches this repository and family.`
+              )
+            )
         if (!editable(req, view)) return reply.code(403).send(forbidden('cannot edit every agent watching this scope'))
         const { config } = req.body
         const decision = await visibleDecision(deps, req, config.decisionId)
@@ -190,7 +225,10 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
         if (issues.length > 0) return reply.code(400).send(badRequest('The routing configuration is invalid.', issues))
         // An older relay drops a routed scope's rules, so turning routing on there would silence the scope.
         const turningOn = config.enabled && !view.record?.enabled
-        if (turningOn && deps.httpBot.relayFeatureSupport(HOOK_DECISION_ROUTING_V1_FEATURE).missing > 0)
+        if (
+          turningOn &&
+          requiredFeatures(view.scope).some((feature) => deps.httpBot.relayFeatureSupport(feature).missing > 0)
+        )
           return reply
             .code(409)
             .send(conflict('Upgrade the relay to use Decision routing.', 'DECISION_UNSUPPORTED_CONSUMER'))
@@ -214,16 +252,16 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
     )
 
     r.delete(
-      '/decision-routing/github/:repoId/:family',
+      '/decision-routing/:provider/:repoId/:family',
       {
         schema: {
           tags: [Tag.Decisions],
           summary: 'Delete repository routing',
           operationId: 'deleteCodeHostDecisionRouting',
           description:
-            "Removes the routing for one GitHub repository and subject family; the members' triggers fire unrouted again. Needs edit access to every member agent (an owner for a routing with no member left).",
+            "Removes the routing for one code-host repository and subject family; the members' triggers fire unrouted again. Needs edit access to every member agent (an owner for a routing with no member left).",
           params: ScopeParams,
-          response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto }
+          response: { 204: z.null(), 400: ErrorDto, 403: ErrorDto, 404: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -250,6 +288,7 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
       req: FastifyRequest,
       reply: FastifyReply,
       host: AgentRecord,
+      scope: CodeHostRoutingScope,
       read: (daemonId: string) => Promise<T>
     ): Promise<{ ok: true; value: T } | { ok: false }> => {
       const ready = (await deps.placementResolver.servingDaemons(host)).filter((id) => readyConn(id))
@@ -260,7 +299,7 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
       // `source: 'hook_routing'` reaches only a peer that reads routing lanes; an older strict one would reject it.
       const capable = ready.filter((id) => {
         const features = readyConn(id)?.capabilities?.features ?? []
-        return features.includes(DECISION_EVALUATIONS_V1_FEATURE) && features.includes(HOOK_DECISION_ROUTING_V1_FEATURE)
+        return [DECISION_EVALUATIONS_V1_FEATURE, ...requiredFeatures(scope)].every((f) => features.includes(f))
       })
       if (capable.length === 0) {
         await reply.code(503).send(unavailable(UNSUPPORTED, 'DAEMON_UPGRADE_REQUIRED'))
@@ -293,13 +332,17 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
     const lane = async (
       req: FastifyRequest,
       opts: { bodies?: boolean } = {}
-    ): Promise<{ record: CodeHostDecisionRoutingRecord; host: AgentRecord | null } | 'forbidden' | null> => {
+    ): Promise<
+      | { record: CodeHostDecisionRoutingRecord; host: AgentRecord | null; scope: CodeHostRoutingScope }
+      | 'forbidden'
+      | null
+    > => {
       const view = await load(req)
       if (!readable(req, view) || !view.record) return null
       if (opts.bodies && !editable(req, view)) return 'forbidden'
       const hostId = view.record.evaluationAgentId
       const host = hostId ? await deps.repos.agent.get(view.scope.orgId, hostId) : null
-      return { record: view.record, host }
+      return { record: view.record, host, scope: view.scope }
     }
     const sameLane = (
       a: { record: CodeHostDecisionRoutingRecord; host: AgentRecord | null },
@@ -307,7 +350,7 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
     ) => !!b && b !== 'forbidden' && b.record.id === a.record.id && b.host?.id === a.host?.id
 
     r.get(
-      '/decision-routing/github/:repoId/:family/evaluations',
+      '/decision-routing/:provider/:repoId/:family/evaluations',
       {
         schema: {
           tags: [Tag.Decisions],
@@ -320,7 +363,7 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
             cursor: z.coerce.number().int().positive().optional(),
             limit: z.coerce.number().int().min(1).max(50).default(20)
           }),
-          response: { 200: DecisionEvaluationRecordPage, 404: ErrorDto, 503: ErrorDto }
+          response: { 200: DecisionEvaluationRecordPage, 400: ErrorDto, 404: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -328,7 +371,7 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
         if (!asked || asked === 'forbidden') return reply.code(404).send(notFound(REPOSITORY_NOT_FOUND))
         if (!asked.host) return reply.code(503).send(unavailable(OFFLINE, 'DAEMON_OFFLINE'))
         const host = asked.host
-        const result = await proxied(req, reply, host, (daemonId) =>
+        const result = await proxied(req, reply, host, asked.scope, (daemonId) =>
           deps.control.decisionEvaluations(daemonId, orgOf(req), {
             agentId: host.id,
             integrationId: asked.record.id,
@@ -346,7 +389,7 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
     )
 
     r.get(
-      '/decision-routing/github/:repoId/:family/evaluations/:seq',
+      '/decision-routing/:provider/:repoId/:family/evaluations/:seq',
       {
         schema: {
           tags: [Tag.Decisions],
@@ -354,8 +397,8 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
           operationId: 'getCodeHostDecisionRoutingEvaluation',
           description:
             "One routing evaluation with its frozen Decision and rules snapshot, input and history, answer, model, usage, the raw provider request and response JSON (from daemons that support it), and evidence while the host still retains the bodies (bounded to 64 KiB); once stripped, `detailsExpired` is true. Proxied from the evaluation agent's serving daemon, never stored or logged. Needs edit access to every member agent. Returns 404 when the evaluation is gone and 503 when the host daemon is offline or must be upgraded.",
-          params: ScopeParams.extend({ seq: z.coerce.number().int().nonnegative() }),
-          response: { 200: DecisionEvaluationRecordDetail, 403: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+          params: EvaluationParams,
+          response: { 200: DecisionEvaluationRecordDetail, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -365,7 +408,7 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
           return reply.code(403).send(forbidden('evaluation details need edit access to every member agent'))
         if (!asked.host) return reply.code(503).send(unavailable(OFFLINE, 'DAEMON_OFFLINE'))
         const host = asked.host
-        const result = await proxied(req, reply, host, (daemonId) =>
+        const result = await proxied(req, reply, host, asked.scope, (daemonId) =>
           deps.control.decisionEvaluation(daemonId, orgOf(req), {
             agentId: host.id,
             integrationId: asked.record.id,

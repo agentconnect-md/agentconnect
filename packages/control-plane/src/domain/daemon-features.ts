@@ -117,14 +117,20 @@ export function encodeSpecWorkspaceForPeer<S extends Pick<AgentSpec, 'workspace'
   return { ...spec, workspace: legacy }
 }
 
-/** Every per-peer AgentSpec encoding: hook routings only to a peer that hosts them, then the workspace arm (§8). */
+/** Every per-peer AgentSpec encoding: hook routings only to a peer that hosts them, each only where its provider is read, then the workspace arm (§8). */
 export function encodeAgentSpecForPeer<S extends Pick<AgentSpec, 'workspace' | 'hookRoutings'>>(
   spec: S,
-  advertisedFeatures: readonly string[] | undefined
+  advertisedFeatures: readonly string[] | undefined,
+  codeHosts: CodeHostProviderRegistry = codeHostProviders
 ): S {
   if (spec.hookRoutings !== undefined && !advertises(advertisedFeatures, [HOOK_DECISION_ROUTING_V1_FEATURE])) {
     const { hookRoutings: _stripped, ...rest } = spec
     spec = rest as S
+  } else if (spec.hookRoutings !== undefined) {
+    const readable = spec.hookRoutings.filter((routing) =>
+      advertises(advertisedFeatures, codeHosts[routing.provider].routing.requiredFeatures)
+    )
+    if (readable.length !== spec.hookRoutings.length) spec = { ...spec, hookRoutings: readable }
   }
-  return encodeSpecWorkspaceForPeer(spec, advertisedFeatures)
+  return encodeSpecWorkspaceForPeer(spec, advertisedFeatures, codeHosts)
 }

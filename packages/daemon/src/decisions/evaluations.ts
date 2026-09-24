@@ -28,7 +28,7 @@ import {
 } from '@agentconnect.md/protocol'
 import { transcriptChannelKey, type DecisionVerdictRow, type LocalStore } from '../store/local-store.js'
 import { routerSubject } from './router.js'
-import { hookRouterSubject } from '../github/hook-routing.js'
+import { hookRouterSubject } from '../codehost/hook-routing.js'
 
 /** Refused because this daemon does not serve the lane the frame names (answered as SCOPE_DENIED). */
 export class DecisionEvaluationScopeError extends Error {

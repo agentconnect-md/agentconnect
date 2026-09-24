@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import {
+  CodeHostRoutingFamily,
+  CodeHostRoutingProvider,
   DECISION_PREVIEW_V1_FEATURE,
   DECISION_PROVIDER_PROFILES,
   DecisionDraft,
@@ -19,6 +21,7 @@ import type {
   CodeHostDecisionRoutingUsage,
   DecisionChannelUsage
 } from '../../persistence/ports.js'
+import { codeHostsOf } from '../../codehost/registry.js'
 import { convergeDecisionConsumers } from '../../orchestrator/integrationPush.js'
 import type { HttpDeps } from '../deps.js'
 import { visibleDecision } from '../decision-access.js'
@@ -45,8 +48,9 @@ const UsageDto = z.object({
   integrationId: z.string().optional(),
   channelId: z.string().optional(),
   // kind=code_host_routing: the routed repository scope.
+  provider: CodeHostRoutingProvider.optional(),
   repoId: z.string().optional(),
-  family: z.enum(['issues', 'pull_request']).optional()
+  family: CodeHostRoutingFamily.optional()
 })
 const DecisionInUseDto = ErrorDto.extend({ usages: z.array(UsageDto), hiddenUsageCount: z.number().int() })
 const ReadinessDto = z.object({
@@ -160,7 +164,8 @@ export function decisionRoutes(deps: HttpDeps) {
     const codeHostUsageDto = (u: CodeHostDecisionRoutingUsage) => ({
       kind: 'code_host_routing' as const,
       id: u.routingId,
-      label: `${u.repoFullName} · ${u.family === 'issues' ? 'issues' : 'pull requests'}`,
+      label: `${u.repoFullName} · ${codeHostsOf(deps)[u.provider].routing.familyLabel(u.family)}`,
+      provider: u.provider,
       repoId: u.repoId.toString(),
       family: u.family
     })

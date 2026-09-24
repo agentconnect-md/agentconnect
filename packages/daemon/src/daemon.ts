@@ -9,6 +9,7 @@ import {
   DECISION_TRIGGER_V1_FEATURE,
   DECISION_ROUTING_V1_FEATURE,
   HOOK_DECISION_ROUTING_V1_FEATURE,
+  HOOK_DECISION_ROUTING_V2_FEATURE,
   type DecisionBundle,
   type RdRouteBackfillRow,
   DECISION_TOOLS_V1_FEATURE,
@@ -505,7 +506,7 @@ import {
 } from './decisions/router.js'
 import { routerFingerprint, resolveDecisionBundle } from './decisions/bundle.js'
 import { buildDecisionState } from './decisions/state.js'
-import { HookRouter } from './github/hook-routing.js'
+import { HookRouter } from './codehost/hook-routing.js'
 import {
   DecisionGate,
   DEFAULT_DECISION_GATE_LIMITS,
@@ -6234,6 +6235,8 @@ export class Daemon {
       DECISION_ROUTING_V1_FEATURE,
       // This daemon hosts code-host hook routing from AgentSpec.hookRoutings and reads its evaluation lanes.
       HOOK_DECISION_ROUTING_V1_FEATURE,
+      // It also hosts GitLab and Gitea routings: their projections and hook fires share the one router.
+      HOOK_DECISION_ROUTING_V2_FEATURE,
       DECISION_TOOLS_V1_FEATURE,
       DECISION_MODEL_SELECTION_V1_FEATURE,
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),

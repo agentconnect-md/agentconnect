@@ -1,6 +1,6 @@
 'use client'
 
-// A watched repository's issues or pull requests By decision: which member agents each answer selects (code-host-decisions.md §7).
+// A watched repository's issues or change requests By decision: which member agents each answer selects (code-host-decisions.md §7).
 
 import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -17,7 +17,7 @@ import {
   type RoutingIssue
 } from '@/lib/decisions/routing-draft'
 import type { RosterAgent } from '@/lib/decisions/routing-roster'
-import { useCodeHostRoutingActions } from '@/lib/decisions/code-host-routing'
+import { codeHostRoutingSubject, useCodeHostRoutingActions } from '@/lib/decisions/code-host-routing'
 import type { CodeHostRoutingDto } from '@/lib/api'
 import { DecisionPicker } from '../DecisionPicker'
 import { Note, routingSaveError, saveErrorText } from './RoutingFields'
@@ -48,7 +48,7 @@ export function CodeHostDecisionModal({
   const { decisions, loading } = useDecisionsPrototype()
   const { save: saveRouting } = useCodeHostRoutingActions()
   const repo = routing.repoFullName
-  const family = routing.family
+  const subject = codeHostRoutingSubject(routing)
   const saved = routing.config
   const status = saved && routing.status && routing.status !== 'enabled' ? routing.status : null
   // Each opening edits a copy of the saved routing; nothing is kept until Save. Otherwise starts at every agent.
@@ -117,7 +117,7 @@ export function CodeHostDecisionModal({
             </span>
             <span className="mt-[2px] block truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
               {tc.rich('subtitle', {
-                family,
+                subject,
                 agents: agents.map((agent) => agent.name).join(', '),
                 name: (chunks) => <span className="mono text-(--text-secondary)">{chunks}</span>
               })}
@@ -140,7 +140,7 @@ export function CodeHostDecisionModal({
               />
               <span>
                 {tc(`statusBody.${status}`, {
-                  family,
+                  subject,
                   decision: (saved && decisions.find((entry) => entry.id === saved.decisionId)?.name) ?? tc('hidden')
                 })}
               </span>
@@ -216,11 +216,11 @@ export function CodeHostDecisionModal({
           )}
           {decision && helpOpen && (
             <div className="flex flex-col gap-1">
-              <Note icon={family === 'pull_request' ? 'git-pull-request' : 'circle-dot'}>
-                {tc('evaluatedOnce', { family })}
+              <Note icon={subject === 'issues' ? 'circle-dot' : 'git-pull-request'}>
+                {tc('evaluatedOnce', { subject })}
               </Note>
               <Note icon="at-sign">{tc('mentionsSkip')}</Note>
-              <Note icon="users">{tc('otherwiseEveryAgent', { family })}</Note>
+              <Note icon="users">{tc('otherwiseEveryAgent', { subject })}</Note>
             </div>
           )}
 

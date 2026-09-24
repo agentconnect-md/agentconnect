@@ -258,3 +258,146 @@ describe('code-host Decision routing host (daemon)', () => {
     await daemon.stop()
   })
 })
+
+// §5.1: GitLab and Gitea host copies and fires take the same path; only the normalizer's subject differs.
+describe('code-host Decision routing host for GitLab and Gitea (daemon)', () => {
+  const GITLAB_PROJECT = '4455667'
+  const GITEA_REPO = '556677'
+  const gitlabEvent = (text: string): RdMsgHook =>
+    event(
+      {
+        sessionKey: `gitlab:${GITLAB_PROJECT}:merge_request:42`,
+        event: 'note:created',
+        github: undefined,
+        gitlab: {
+          projectId: GITLAB_PROJECT,
+          projectPath: 'example-group/example-project',
+          target: { kind: 'merge_request', iid: 42, isDraft: true }
+        },
+        context: {
+          source: 'gitlab',
+          event: 'note',
+          action: 'created',
+          repo: 'example-group/example-project',
+          number: 42,
+          title: 'Fix the primary',
+          htmlUrl: 'https://gitlab.example.test/example-group/example-project/-/merge_requests/42',
+          senderLogin: 'reporter',
+          bodyExcerpt: text,
+          subject: { authorLogin: 'reporter', state: 'opened', body: 'Fixes the crash.' },
+          truncated: false
+        }
+      },
+      text
+    )
+  const giteaEvent = (text: string): RdMsgHook =>
+    event(
+      {
+        sessionKey: `gitea:${GITEA_REPO}:issue:12`,
+        event: 'note:created',
+        github: undefined,
+        gitea: { repoId: GITEA_REPO, repoPath: 'example-org/example-repo', target: { kind: 'issue', index: 12 } },
+        context: {
+          source: 'gitea',
+          event: 'note',
+          action: 'created',
+          repo: 'example-org/example-repo',
+          number: 12,
+          title: 'Crash on start',
+          senderLogin: 'reporter',
+          bodyExcerpt: text,
+          subject: { authorLogin: 'reporter', state: 'open', body: 'The app crashes.' },
+          truncated: false
+        }
+      },
+      text
+    )
+  const cases = [
+    {
+      provider: 'gitlab' as const,
+      family: 'merge_request' as const,
+      repoId: GITLAB_PROJECT,
+      repoFullName: 'example-group/example-project',
+      fire: gitlabEvent,
+      thread: `gitlab:${GITLAB_PROJECT}:merge_request:42`,
+      subject: { kind: 'merge_request', number: 42, draft: true }
+    },
+    {
+      provider: 'gitea' as const,
+      family: 'issues' as const,
+      repoId: GITEA_REPO,
+      repoFullName: 'example-org/example-repo',
+      fire: giteaEvent,
+      thread: `gitea:${GITEA_REPO}:issue:12`,
+      subject: { kind: 'issue', number: 12 }
+    }
+  ]
+  const threadRows = async (store: any): Promise<{ text: string; thread: string; channel: string }[]> =>
+    (await store.db.prepare(`SELECT text, thread, channel FROM transcript WHERE kind = 'text' ORDER BY seq`).all()) as {
+      text: string
+      thread: string
+      channel: string
+    }[]
+
+  it.each(cases)('records, evaluates and returns targets for a $provider host copy', async (c) => {
+    const routing = projection({
+      provider: c.provider,
+      family: c.family,
+      repoId: c.repoId,
+      repoFullName: c.repoFullName
+    })
+    const { daemon, host, evaluate, store } = await boot({ pause: true, hookRoutings: [routing] })
+    evaluate.mockResolvedValue(answered(true))
+    await send(daemon, hostCopy(c.fire('Earlier comment'), { candidates: [] }))
+    const fired = c.fire('Please fix this')
+    const ack = await send(daemon, hostCopy(fired))
+    expect(ack).toMatchObject({ msgId: `${fired.msgId}:route`, accepted: true })
+    expect(ack.hookRoute.targets).toEqual([
+      { hookId: OTHER_HOOK, selection: expect.objectContaining({ routingId: ROUTING, reason: 'decision' }) }
+    ])
+    const recorded = await threadRows(store)
+    expect(recorded.map((r) => [r.text, r.thread])).toEqual([
+      ['Earlier comment', c.thread],
+      ['Please fix this', c.thread]
+    ])
+    const state = evaluate.mock.calls[0]![0].state as any
+    expect(state).toMatchObject({
+      source: c.provider,
+      repository: { fullName: c.repoFullName },
+      subject: c.subject,
+      currentMessage: { text: 'Please fix this' }
+    })
+    expect(state.history.map((h: { text: string }) => h.text)).toEqual(['Earlier comment'])
+    expect(await verdicts(store)).toEqual([
+      { subject: `hook-router:${ROUTING}`, state: 'admitted', disposition: 'match' }
+    ])
+    ;(daemon as any).relayMsgAcks.clear()
+    expect(await send(daemon, hostCopy(fired))).toEqual(ack)
+    expect(evaluate).toHaveBeenCalledTimes(1)
+    expect(host.prompt).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+
+  it('renders a selected GitLab fire as decision evidence', async () => {
+    const routing = projection({ provider: 'gitlab', family: 'merge_request', repoId: GITLAB_PROJECT })
+    const { daemon, host, hookReports } = await boot({ hookRoutings: [routing] })
+    const selected = {
+      ...gitlabEvent('Please fix this'),
+      routeSelection: {
+        routingId: ROUTING,
+        decisionId: DECISION,
+        reason: 'decision' as const,
+        verdictSeq: 3,
+        question,
+        answer: { type: 'boolean' as const, value: true, probability: 0.9 },
+        model: 'jev-1.13.0'
+      }
+    }
+    expect(await send(daemon, selected)).toEqual({ msgId: selected.msgId, accepted: true })
+    await vi.waitFor(() => expect(hookReports).toHaveLength(1), WAIT)
+    const blocks = host.prompt.mock.calls[0]![1].map((b) => b.text ?? '')
+    const evidence = blocks.find((b) => b.startsWith('(Decision routing evidence'))
+    expect(evidence).toContain("a routing rule matched the Decision's answer and named you")
+    await daemon.stop()
+  })
+})

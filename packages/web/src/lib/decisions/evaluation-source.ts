@@ -2,7 +2,7 @@
 
 import type { DecisionEvaluationRecordDetail, DecisionEvaluationRecordPage } from '@agentconnect.md/protocol/decision'
 import type { DecisionApi, DecisionConversationRef } from '@agentconnect.md/protocol/decision-api'
-import { fetchCodeHostRoutingEvaluation, fetchCodeHostRoutingEvaluations, type CodeHostRoutingFamily } from '@/lib/api'
+import { fetchCodeHostRoutingEvaluation, fetchCodeHostRoutingEvaluations, type CodeHostRoutingKey } from '@/lib/api'
 
 export interface DecisionEvaluationSource {
   /** Which surface the lane belongs to, so the drawer words its empty and unavailable states. */
@@ -30,18 +30,16 @@ export function conversationEvaluations(
 export function codeHostRoutingEvaluations(
   api: DecisionApi,
   orgId: string,
-  scope: { repoId: string; family: CodeHostRoutingFamily }
+  scope: CodeHostRoutingKey
 ): DecisionEvaluationSource {
-  const { repoId, family } = scope
-  const ref = { integrationId: `github:${repoId}:${family}`, channelId: `github:${repoId}:${family}` }
+  const key = { provider: scope.provider, repoId: scope.repoId, family: scope.family }
+  const lane = `${key.provider}:${key.repoId}:${key.family}`
+  const ref = { integrationId: lane, channelId: lane }
   return {
     lane: 'code_host',
-    key: [api.mode, orgId, 'code_host', 'github', repoId, family],
+    key: [api.mode, orgId, 'code_host', key.provider, key.repoId, key.family],
     list: (page) =>
-      api.mode === 'mock'
-        ? api.listEvaluations(ref, page)
-        : fetchCodeHostRoutingEvaluations(repoId, family, page, orgId),
-    get: (seq) =>
-      api.mode === 'mock' ? api.getEvaluation(ref, seq) : fetchCodeHostRoutingEvaluation(repoId, family, seq, orgId)
+      api.mode === 'mock' ? api.listEvaluations(ref, page) : fetchCodeHostRoutingEvaluations(key, page, orgId),
+    get: (seq) => (api.mode === 'mock' ? api.getEvaluation(ref, seq) : fetchCodeHostRoutingEvaluation(key, seq, orgId))
   }
 }

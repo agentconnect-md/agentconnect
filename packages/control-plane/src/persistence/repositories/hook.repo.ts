@@ -685,15 +685,14 @@ export class PgHookRepo implements HookRepo {
           : await tx.hookDef.upsert({ where: { id: input.hookId }, create, update, include: withUsers })
         // A routed scope's members ride its host's AgentSpec.hookRoutings, so a membership change bumps that host.
         if (
-          h.kind === 'github' &&
-          (existing === null ||
-            existing.agentId !== h.agentId ||
-            existing.repoId !== h.repoId ||
-            existing.enabled !== h.enabled)
+          existing === null ||
+          existing.agentId !== h.agentId ||
+          existing.repoId !== h.repoId ||
+          existing.enabled !== h.enabled
         )
           await bumpCodeHostRoutingHosts(tx, h.orgId, [
-            { repoId: existing?.repoId, family: existing?.family },
-            { repoId: h.repoId, family: h.family }
+            { kind: existing?.kind, repoId: existing?.repoId, family: existing?.family },
+            { kind: h.kind, repoId: h.repoId, family: h.family }
           ])
         return { kind: 'done', hook: toRecord(h) } as const
       })
@@ -730,7 +729,7 @@ export class PgHookRepo implements HookRepo {
         await tx.hookDef.delete({
           where: { id: hookId, orgId, ...(expectedOwnerForMutation ? { agentId: expectedOwnerForMutation } : {}) }
         })
-        if (hook?.kind === 'github') await bumpCodeHostRoutingHosts(tx, orgId, [hook])
+        if (hook) await bumpCodeHostRoutingHosts(tx, orgId, [hook])
         return { kind: 'done' } as const
       })
       if (result.kind === 'done') return

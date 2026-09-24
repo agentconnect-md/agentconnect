@@ -913,7 +913,13 @@ export class PgAgentRepo implements AgentRepo {
       if (grantAgentIds.length > 0) {
         await tx.agentRepoAuthorization.updateMany({ where: staleGrants, data: { repoFullName: projectPath } })
       }
-      const ids = [...new Set([...workspaceIds, ...grantAgentIds])].sort()
+      // A routing's recorded path rides its host's AgentSpec.hookRoutings, so the host converges with the rename.
+      const staleRoutings = { orgId, provider, repoId: projectId, repoFullName: { not: projectPath } }
+      const routingHostIds = (
+        await tx.codeHostDecisionRouting.findMany({ where: staleRoutings, select: { evaluationAgentId: true } })
+      ).flatMap((row: { evaluationAgentId: string | null }) => (row.evaluationAgentId ? [row.evaluationAgentId] : []))
+      await tx.codeHostDecisionRouting.updateMany({ where: staleRoutings, data: { repoFullName: projectPath } })
+      const ids = [...new Set([...workspaceIds, ...grantAgentIds, ...routingHostIds])].sort()
       // One bump per agent, after both writes: an agent holding the workspace AND
       // a grant on the same project must not advance two revisions for one rename.
       await bumpAgentConfigRevisions(tx, ids)

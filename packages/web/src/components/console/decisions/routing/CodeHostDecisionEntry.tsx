@@ -1,13 +1,13 @@
 'use client'
 
-// A watched repository's issues or pull-request row control: its routing Decision's chip, empty or bound.
+// A watched repository's issues or change-request row control: its routing Decision's chip, empty or bound.
 
 import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { useOrgs } from '@/lib/org-context'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import type { RosterAgent } from '@/lib/decisions/routing-roster'
-import { useCodeHostRoutingActions } from '@/lib/decisions/code-host-routing'
+import { codeHostRoutingSubject, useCodeHostRoutingActions } from '@/lib/decisions/code-host-routing'
 import type { CodeHostRoutingDto } from '@/lib/api'
 import { DecisionChip } from '../DecisionChip'
 import { CodeHostDecisionModal } from './CodeHostDecisionModal'
@@ -34,7 +34,7 @@ export function CodeHostDecisionEntry({
   const [stopping, setStopping] = useState(false)
   const [stopError, setStopError] = useState<string | null>(null)
   if (!decisions || !routing) return null
-  const family = routing.family
+  const subject = codeHostRoutingSubject(routing)
   const modal = open && (
     <CodeHostDecisionModal
       routing={routing}
@@ -60,7 +60,7 @@ export function CodeHostDecisionEntry({
     }
     const title = status
       ? t('pillStatusTitle', { name, status: tDecisions(`binding.status.${status}`) })
-      : t('pillTitle', { name, family })
+      : t('pillTitle', { name, subject })
     return (
       <>
         <DecisionChip
@@ -71,8 +71,8 @@ export function CodeHostDecisionEntry({
           remove={
             canWrite
               ? {
-                  label: t('stop', { family }),
-                  title: stopError ?? t('stop', { family }),
+                  label: t('stop', { subject }),
+                  title: stopError ?? t('stop', { subject }),
                   onClick: () => void stop(),
                   busy: stopping,
                   failed: stopError !== null
@@ -87,7 +87,7 @@ export function CodeHostDecisionEntry({
   if (!canWrite) return null
   return (
     <>
-      <DecisionChip name={null} label={t('add')} title={t('addTitle', { family })} onOpen={() => setOpen(true)} />
+      <DecisionChip name={null} label={t('add')} title={t('addTitle', { subject })} onOpen={() => setOpen(true)} />
       {modal}
     </>
   )

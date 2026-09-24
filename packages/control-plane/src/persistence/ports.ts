@@ -5550,6 +5550,7 @@ export interface BotDecisionRoutingRepo {
 /** One code-host routing scope (code-host-decisions.md §3.1). */
 export interface CodeHostRoutingScope {
   orgId: OrgId
+  provider: import('@agentconnect.md/protocol').CodeHostRoutingProvider
   repoId: bigint
   family: import('@agentconnect.md/protocol').CodeHostRoutingFamily
 }
@@ -5557,7 +5558,6 @@ export interface CodeHostRoutingScope {
 /** A stored code-host routing; `config` is null when the stored rules no longer parse (the scope then holds). */
 export interface CodeHostDecisionRoutingRecord extends CodeHostRoutingScope {
   id: string
-  provider: 'github'
   repoFullName: string
   enabled: boolean
   decisionId: string
@@ -5572,6 +5572,7 @@ export interface CodeHostDecisionRoutingRecord extends CodeHostRoutingScope {
 export interface CodeHostDecisionRoutingUsage {
   decisionId: string
   routingId: string
+  provider: import('@agentconnect.md/protocol').CodeHostRoutingProvider
   repoId: bigint
   repoFullName: string
   family: import('@agentconnect.md/protocol').CodeHostRoutingFamily

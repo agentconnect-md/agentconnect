@@ -12,6 +12,8 @@ import {
   GITLAB_COM_V1_FEATURE,
   GITLAB_INSTANCE_V1_FEATURE,
   GitCloneUrlError,
+  HOOK_DECISION_ROUTING_V1_FEATURE,
+  HOOK_DECISION_ROUTING_V2_FEATURE,
   isSelfManagedGitlabHost,
   normalizeGitCloneUrl,
   normalizeGitUrl
@@ -130,6 +132,15 @@ export const gitlabCodeHostProvider: CodeHostProviderModule = {
       if (!gitlab || repoId === null) return
       void gitlab.provisioner.convergeProject(orgId, repoId).catch(onError)
     }
+  },
+  routing: {
+    requiredFeatures: [HOOK_DECISION_ROUTING_V1_FEATURE, HOOK_DECISION_ROUTING_V2_FEATURE],
+    familyLabel: (family) => (family === 'issues' ? 'issues' : 'merge requests'),
+    // A note subscription is the row's own family, so `family:*` plus that family covers every update and reply.
+    anyUpdateCadence: (family) => ({ events: [`${family}:*`], commentFamilies: [family], mentionOnly: false }),
+    // The binding's path is what the compiled rule carries.
+    repositoryPath: async (deps, orgId, repoId) =>
+      (await deps.repos.gitlabProjectBinding.byProject(orgId, repoId))?.projectPath
   },
 
   /** Raising the tier raises the account's project role, so it re-runs the same ensure the grant took. */

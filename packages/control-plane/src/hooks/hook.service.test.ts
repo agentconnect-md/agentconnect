@@ -133,6 +133,8 @@ function make(
       connection?: Partial<GiteaConnectionRecord> | null
       keys?: { current: string; next: string | null } | null
     }
+    /** The scope's Decision routing read (code-host-decisions.md §3.2). */
+    routing?: CodeHostDecisionRoutingRecord | null
   } = {}
 ) {
   const agents: HookAgentReads = {
@@ -180,7 +182,8 @@ function make(
       gitlabAccounts,
       undefined,
       undefined,
-      opts.gitea ? giteaSources(opts.gitea) : undefined
+      opts.gitea ? giteaSources(opts.gitea) : undefined,
+      opts.routing !== undefined ? { get: vi.fn(async () => opts.routing ?? null) } : undefined
     ),
     assigns,
     removes
@@ -619,5 +622,90 @@ describe('HookService — Decision routing (code-host-decisions.md §3.2-§3.3)'
     }
     expect(await replay([])).toEqual([])
     expect(await replay(['hook-decision-routing-v1'])).toEqual(['rc/hook-assign'])
+  })
+})
+
+describe('HookService — GitLab and Gitea Decision routing (code-host-decisions.md §3.3, §4)', () => {
+  const ROUTING = '55555555-5555-4555-8555-555555555555'
+  const DECISION = '44444444-4444-4444-8444-444444444444'
+  const record = (over: Partial<CodeHostDecisionRoutingRecord>): CodeHostDecisionRoutingRecord => ({
+    id: ROUTING,
+    orgId: OrgId('org'),
+    provider: 'gitlab',
+    repoId: 4455667n,
+    repoFullName: 'example-group/example-project',
+    family: 'merge_request',
+    enabled: true,
+    decisionId: DECISION,
+    config: null,
+    needsReview: false,
+    evaluationAgentId: AGENT,
+    definition: null,
+    updatedAt: new Date(),
+    ...over
+  })
+  // The host is the hook agent itself, on DAEMON.
+  const routed = (routing: CodeHostDecisionRoutingRecord | null, opts: Parameters<typeof make>[0]) =>
+    make({ ...opts, routing }).svc
+  const mentionOnlyMr: Partial<HookRecord> = {
+    ...GITLAB_HOOK,
+    family: 'merge_request',
+    events: ['merge_request:opened'],
+    commentFamilies: [],
+    mentionOnly: true
+  }
+
+  it('compiles a routed GitLab rule on every update in its own vocabulary, naming the host', async () => {
+    const rule = await routed(record({}), { gitlabBinding: {} }).compile(hook(mentionOnlyMr))
+    expect(rule?.routing).toEqual({
+      routingId: ROUTING,
+      decisionId: DECISION,
+      evaluationAgentId: AGENT,
+      evaluationDaemonId: DAEMON
+    })
+    expect(rule?.gitlab).toMatchObject({
+      events: ['merge_request:*'],
+      commentFamilies: ['merge_request'],
+      mentionOnly: false
+    })
+    // Paused: the stored mode applies again.
+    const paused = await routed(record({ enabled: false }), { gitlabBinding: {} }).compile(hook(mentionOnlyMr))
+    expect(paused).not.toHaveProperty('routing')
+    expect(paused?.gitlab).toMatchObject({ events: ['merge_request:opened'], mentionOnly: true })
+    expect(paused?.gitlab).not.toHaveProperty('commentFamilies')
+  })
+
+  it('compiles a routed Gitea rule with the merge_request comment family mapped to the wire pull_request', async () => {
+    const giteaRouting = record({ provider: 'gitea', repoId: 556677n, repoFullName: 'example-org/example-repo' })
+    const rule = await routed(giteaRouting, { gitea: {} }).compile(
+      hook({ ...GITEA_HOOK, family: 'merge_request', events: ['merge_request:opened'], commentFamilies: [] })
+    )
+    expect(rule?.routing?.routingId).toBe(ROUTING)
+    expect(rule?.gitea).toMatchObject({
+      events: ['merge_request:*'],
+      commentFamilies: ['pull_request'],
+      mentionOnly: false
+    })
+  })
+
+  it('leaves the pool while a routed GitLab scope has no host', async () => {
+    expect(
+      await routed(record({ evaluationAgentId: null }), { gitlabBinding: {} }).compile(hook(mentionOnlyMr))
+    ).toBeNull()
+  })
+
+  it('replays a routed Gitea rule only to a relay advertising hook-decision-routing-v2', async () => {
+    const giteaRouting = record({ provider: 'gitea', repoId: 556677n })
+    const giteaHook = hook({ ...GITEA_HOOK, family: 'merge_request' })
+    const svc = routed(giteaRouting, { gitea: {}, hooks: { listEnabled: vi.fn(async () => [giteaHook]) } })
+    const replay = async (features: string[]) => {
+      const sent: string[] = []
+      await svc.replayTo({ features, send: (type: string) => sent.push(type) } as never)
+      return sent
+    }
+    expect(await replay(['gitea-v1', 'hook-decision-routing-v1'])).toEqual([])
+    expect(await replay(['gitea-v1', 'hook-decision-routing-v1', 'hook-decision-routing-v2'])).toEqual([
+      'rc/hook-assign'
+    ])
   })
 })

@@ -1,24 +1,4 @@
-/**
- * Gitea ingress — `POST /webhooks/gitea`, the relay's per-repository webhook
- * endpoint (gitea-integration.md §7, §8). Verification is per-rule: the compiled
- * rule carries the repository's signing key inline, so the bounded first parse
- * only extracts the numeric repository id, `X-Gitea-Signature` is checked
- * against the matching rules' keys, and only then is the payload trusted as
- * filter input. Uniform 404 for invalid signatures, unknown repositories,
- * missing headers, and malformed bodies — no connected-repository oracle.
- * Verified unmatched deliveries answer 202.
- *
- * Gitea sends no timestamp header, so there is no replay window — the same
- * position GitHub is in. `X-Gitea-Delivery` is the delivery key, `msgId` is
- * `${hookId}:${deliveryKey}`, and the daemon's durable `(sessionKey, msgId)`
- * inbox plus the Control Plane's unique `(hookId, deliveryKey)` `HookRun`
- * absorb every provider retry.
- *
- * Deployment supplies the HTTPS termination this endpoint requires (§7), exactly
- * as it does for the GitHub and GitLab endpoints.
- *
- * The payload is NEVER logged; rules carry secret material.
- */
+/** Gitea ingress (`POST /webhooks/gitea`, gitea-integration.md §7, §8): per-rule `X-Gitea-Signature` verification before matching, uniform 404, no replay window (durable msgId dedup absorbs retries); the payload is never logged. */
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import type { Clock } from '@agentconnect.md/connection'
 import {
@@ -35,6 +15,7 @@ import type { RelayDaemonServer } from '../../relay-daemon-server.js'
 import type { HookTable } from '../hook-table.js'
 import type { HookRateLimiter } from '../rate-limit.js'
 import { dispatchHookFire, noticeDelivery } from '../ingress.js'
+import { createCodeHostRouter } from '../code-host-routing.js'
 import { hookSnapshotForDelivery } from '../hook-snapshot.js'
 import { verifyHexHmacSha256 } from '../signature.js'
 import type { Logger } from '../../log.js'
@@ -46,6 +27,7 @@ import {
   giteaRuleVerdict,
   giteaSessionKey,
   giteaThreadWorktreeCleanup,
+  GITEA_ROUTING,
   normalizeGiteaEvent,
   type GiteaPayload
 } from './events.js'
@@ -91,8 +73,7 @@ function notFound(reply: FastifyReply): FastifyReply {
 }
 
 export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDeps): void {
-  // Own plugin scope: the buffer content parser (raw bytes for the signature)
-  // must not leak onto the relay's other JSON surfaces.
+  // Own plugin scope, so the raw-body parser the signature needs does not leak onto other JSON routes.
   void app.register(async (scope) => {
     scope.addContentTypeParser(
       'application/json',
@@ -102,8 +83,7 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
 
     scope.post('/webhooks/gitea', { bodyLimit: GITEA_BODY_LIMIT }, async (req, reply) => {
       const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
-      // §7 order: bounded parse for the repository id FIRST, then the rules'
-      // signing key verifies the delivery, and only then is anything matched.
+      // §7 order: parse the repository id, verify with the rules' key, only then match.
       let payload: GiteaPayload
       try {
         payload = JSON.parse(raw.toString('utf8')) as GiteaPayload
@@ -118,16 +98,13 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
       const deliveryHeader = headerString(req.headers['x-gitea-delivery'])
       const signature = headerString(req.headers['x-gitea-signature'])
       if (!deliveryHeader || !signature) return notFound(reply)
-      // `X-Gitea-Signature` is bare hex HMAC-SHA256 over the exact raw body (§16). Mid-rotation a
-      // rule carries the successor beside the current key, and either verifies (§7); which one did
-      // is what the CP promotes on.
+      // Hex HMAC-SHA256 over the raw body (§16); mid-rotation either key verifies, and which one did is what the CP promotes on (§7).
       const verifiedWith = verifiedGiteaKey(rules, raw, signature)
       if (!verifiedWith) return notFound(reply)
 
       const deliveryKey = deliveryHeader.slice(0, 200)
       const firedAt = new Date(deps.clock.now()).toISOString()
-      // Every verified delivery is reported, matched or not: the managed webhook's test delivery
-      // is exactly one no rule ever matches, and it is what proves the relay is reachable (§6).
+      // Report every verified delivery, matched or not: the test delivery proves the relay is reachable (§6).
       deps.observe?.({
         provider: 'gitea',
         repoExternalId: String(repoId),
@@ -135,15 +112,13 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
         receivedAt: firedAt,
         verifiedWith
       })
-      // Never `X-Gitea-Event`: it collapses the sync and reviewer-request types into
-      // `pull_request`, and names a review `pull_request_comment` — a timeline comment's type (§7).
+      // Never `X-Gitea-Event`: it collapses sync/reviewer-request into `pull_request` and mislabels reviews (§7).
       const eventType = headerString(req.headers['x-gitea-event-type'])
       if (!eventType) return reply.code(202).send({ deliveryKey })
 
       const cleanup = giteaThreadWorktreeCleanup(eventType, payload)
       if (cleanup) {
-        // Maintenance cleanup (§8): relay-authored, never a model turn, and it
-        // bypasses the actor gate — a low-role closer must not leak a worktree.
+        // Maintenance cleanup (§8): relay-authored, never a turn, and past the actor gate so no worktree leaks.
         const { event: cleanupEvent, kind, index: cleanupIndex } = cleanup
         for (const rule of rules) {
           if (rule.kind !== 'gitea' || !rule.gitea) continue
@@ -186,17 +161,17 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
       if (!ctx) return reply.code(202).send({ deliveryKey })
       const context = buildGiteaContext(payload, ctx)
 
-      const dispatchRule = (rule: RcHookAssign, notice?: RdHookNotice): void => {
-        if (!deps.limiter.allow(rule.hookId)) {
-          deps.log.info(`gitea ingress: rate-limited ${rule.hookId}:${deliveryKey} (${ctx.eventAction})`)
-          return
-        }
+      const dispatchDeps = {
+        table: deps.table,
+        daemons: deps.daemons,
+        report: deps.report,
+        clock: deps.clock,
+        log: deps.log
+      }
+      const ruleMessage = (rule: RcHookAssign): RdMsgHook | undefined => {
         const gitea = buildTrustedGiteaMetadata(payload, ctx, rule)
-        if (!gitea) {
-          deps.log.info(`gitea ingress: rejected incomplete identity ${rule.hookId}:${deliveryKey}`)
-          return
-        }
-        const msg: RdMsgHook = {
+        if (!gitea) return undefined
+        return {
           source: 'hook',
           agentId: rule.agentId,
           sessionKey: giteaSessionKey(rule, gitea.target),
@@ -210,14 +185,40 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
           context,
           ...(rule.target ? { target: rule.target } : {})
         }
-        void dispatchHookFire(
-          { table: deps.table, daemons: deps.daemons, report: deps.report, clock: deps.clock, log: deps.log },
-          rule,
-          notice ? noticeDelivery(msg, notice) : msg
-        )
+      }
+      const fireRule = (rule: RcHookAssign, msg: RdMsgHook, label = ''): void => {
+        void dispatchHookFire(dispatchDeps, rule, msg)
         deps.log.info(
-          `gitea ingress: queued ${notice ?? ''}${notice ? ' ' : ''}${rule.hookId}:${deliveryKey} (${ctx.eventAction} ${msg.sessionKey})`
+          `gitea ingress: queued ${label}${label ? ' ' : ''}${rule.hookId}:${deliveryKey} (${ctx.eventAction} ${msg.sessionKey})`
         )
+      }
+      // Routing (code-host-decisions.md §4): a routed rule that would fire becomes a candidate of its scope instead.
+      const router = createCodeHostRouter(deps, GITEA_ROUTING, {
+        event: { ctx, repoId: String(repoId) },
+        repoId: String(repoId),
+        deliveryKey,
+        eventAction: ctx.eventAction,
+        messageFor: ruleMessage,
+        fire: fireRule
+      })
+
+      const dispatchRule = (rule: RcHookAssign, notice?: RdHookNotice): void => {
+        // A notice is a fixed post, never routed; a routed rule spends the budget only when selected.
+        const routed = notice === undefined && router.routed(rule)
+        if (!routed && !deps.limiter.allow(rule.hookId)) {
+          deps.log.info(`gitea ingress: rate-limited ${rule.hookId}:${deliveryKey} (${ctx.eventAction})`)
+          return
+        }
+        const msg = ruleMessage(rule)
+        if (!msg) {
+          deps.log.info(`gitea ingress: rejected incomplete identity ${rule.hookId}:${deliveryKey}`)
+          return
+        }
+        if (routed) {
+          router.collect(rule)
+          return
+        }
+        fireRule(rule, notice ? noticeDelivery(msg, notice) : msg, notice)
       }
 
       const reportReviewRequestRequired = (rule: RcHookAssign): void => {
@@ -236,22 +237,27 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
         })
       }
 
-      const candidates =
+      // A routed rule is never narrowed by a mention: its scope's Decision chooses, a mentioned agent included.
+      const unrouted = rules.filter((rule) => !router.routed(rule))
+      const narrowed = new Set(
         ctx.eventAction === 'merge_request:review_requested'
-          ? rules
-          : giteaMentionCandidates(rules, ctx.mentionText, ctx.teamOwnerLogin)
+          ? unrouted
+          : giteaMentionCandidates(unrouted, ctx.mentionText, ctx.teamOwnerLogin)
+      )
+      const candidates = rules.filter((rule) => router.routed(rule) || narrowed.has(rule))
       const matched = candidates
         .map((rule) => ({ rule, verdict: giteaRuleVerdict(rule, ctx) }))
         .filter((candidate) => candidate.verdict !== 'no-match')
       for (const { rule, verdict } of matched) if (verdict === 'trusted') dispatchRule(rule)
       const needsAuthz = matched.filter((candidate) => candidate.verdict === 'needs-authz').map(({ rule }) => rule)
-      if (needsAuthz.length === 0) return reply.code(202).send({ deliveryKey })
+      if (needsAuthz.length === 0) {
+        router.routeScopes()
+        return reply.code(202).send({ deliveryKey })
+      }
 
-      // §8: one live membership decision fences the whole fan-out. An external pull request
-      // (`head.repo_id` ≠ `repository.id`) never starts automatically — its author fails the gate.
+      // §8: one live membership decision fences the whole fan-out; an external pull request's author fails it.
       const isLifecycle = ctx.family === 'issues' || ctx.family === 'merge_request'
-      // Lifecycle authorizes the subject author, comments and reviews their own author, and a
-      // reviewer request the REQUESTING actor — never the untrusted pull-request author (§8).
+      // Lifecycle authorizes the subject author, comments and reviews their author, a reviewer request the requester (§8).
       const gated =
         ctx.eventAction !== 'merge_request:review_requested' && isLifecycle && ctx.subjectAuthorId !== undefined
           ? { id: ctx.subjectAuthorId, login: ctx.subjectAuthorLogin }
@@ -284,8 +290,7 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
           provider: 'gitea',
           repoExternalId: representative.gitea.repoId,
           actorExternalId: actorId,
-          // Gitea's permission lookup is by username, so the login travels beside the id; the CP
-          // re-resolves the name and refuses a mismatch, so a rename cannot borrow a permission.
+          // Gitea checks permission by username; the CP re-resolves it against the id, so a rename borrows nothing.
           ...(gated.login ? { actorUsername: gated.login } : {}),
           ...(requireSubjectAuthor && ctx.subjectAuthorId && ctx.subjectAuthorId !== actorId
             ? {
@@ -306,31 +311,26 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
             : {})
         }
         let allowed = false
-        // Only the CP's own `false` is a verdict on the actor; an operational failure leaves
-        // `allowed` false too and earns nobody a notice.
+        // Only the CP's own `false` refuses the actor; an operational failure earns no notice.
         let refused = false
         try {
           allowed = await deps.authorizeMembership(request)
           refused = !allowed
         } catch (err) {
-          // Rolling upgrade against an older CP (UNKNOWN_FRAME), timeout, and
-          // transient failures all fail closed (§8).
+          // An older CP (UNKNOWN_FRAME), a timeout or a transient failure all fail closed (§8).
           deps.log.warn(`gitea ingress: authz failed ${representative.hookId}:${deliveryKey}: ${String(err)}`)
         }
         if (!allowed) {
           deps.log.info(
             `gitea ingress: authz denied ${representative.hookId}:${deliveryKey} (${ctx.eventAction} actor ${actorId})`
           )
-          // An explicit @-mention by an actor the CP did not admit gets one fixed-text reply on its
-          // thread — the daemon tells a thread once — so the silence is explained. Anything less
-          // deliberate than a mention stays silent, and the reply carries nothing the actor wrote.
+          // A refused explicit @-mention gets one fixed-text notice on its thread; anything less deliberate stays silent.
           if (refused && fanout.some((rule) => giteaRuleIsSummoned(rule, ctx)))
             dispatchRule(representative, 'actor_not_trusted')
           if (onDenied === 'request-review') for (const rule of fanout) reportReviewRequestRequired(rule)
           return
         }
-        // The membership wait crossed a remote boundary: re-read every rule and re-run the
-        // verdict, so a remove/reconfigure/retarget in that window cannot dispatch a stale capture.
+        // Authz crossed a remote boundary: re-read and re-judge every rule so a stale capture never dispatches.
         for (const rule of fanout) {
           const current = deps.table.getByHookId(rule.hookId)
           if (
@@ -350,24 +350,28 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
         }
       }
 
-      // Comments and review submissions on an unmentioned thread continuation also require the
-      // subject author's membership (§8); a summoning comment authorizes only its author.
-      if (ctx.family === 'note' || ctx.family === 'review') {
-        const summonedRules = needsAuthz.filter((rule) => giteaRuleIsSummoned(rule, ctx))
-        const unsummoned = needsAuthz.filter((rule) => !giteaRuleIsSummoned(rule, ctx))
-        if (summonedRules.length > 0)
-          void authorizeAndDispatch(summonedRules, false).catch((err) => {
+      // An unmentioned comment or review also fences the subject author (§8); the router waits on every lookup before routing.
+      const queueAuthorized = (fanout: RcHookAssign[], requireSubjectAuthor: boolean): void => {
+        if (fanout.length === 0) return
+        router.track(
+          authorizeAndDispatch(fanout, requireSubjectAuthor).catch((err) => {
             deps.log.warn(`gitea ingress: authz task failed ${deliveryKey}: ${String(err)}`)
           })
-        if (unsummoned.length > 0)
-          void authorizeAndDispatch(unsummoned, true).catch((err) => {
-            deps.log.warn(`gitea ingress: authz task failed ${deliveryKey}: ${String(err)}`)
-          })
-      } else {
-        void authorizeAndDispatch(needsAuthz, false).catch((err) => {
-          deps.log.warn(`gitea ingress: authz task failed ${deliveryKey}: ${String(err)}`)
-        })
+        )
       }
+      if (ctx.family === 'note' || ctx.family === 'review') {
+        queueAuthorized(
+          needsAuthz.filter((rule) => giteaRuleIsSummoned(rule, ctx)),
+          false
+        )
+        queueAuthorized(
+          needsAuthz.filter((rule) => !giteaRuleIsSummoned(rule, ctx)),
+          true
+        )
+      } else {
+        queueAuthorized(needsAuthz, false)
+      }
+      router.routeScopes()
       return reply.code(202).send({ deliveryKey })
     })
   })

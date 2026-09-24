@@ -7,7 +7,14 @@
  * one changes nothing at the provider. The feature predicates are `gitea-v1` alone: one string
  * covers gitea.com and a self-hosted address (§11).
  */
-import { GITEA_V1_FEATURE, GitCloneUrlError, normalizeGitCloneUrl, normalizeGitUrl } from '@agentconnect.md/protocol'
+import {
+  GITEA_V1_FEATURE,
+  GitCloneUrlError,
+  HOOK_DECISION_ROUTING_V1_FEATURE,
+  HOOK_DECISION_ROUTING_V2_FEATURE,
+  normalizeGitCloneUrl,
+  normalizeGitUrl
+} from '@agentconnect.md/protocol'
 import {
   refuseWorkspaceCredential,
   type CodeHostProviderModule,
@@ -164,6 +171,15 @@ export const giteaCodeHostProvider: CodeHostProviderModule = {
       if (!gitea || repoId === null) return
       void gitea.provisioner.convergeRepository(orgId, repoId).catch(onError)
     }
+  },
+  routing: {
+    requiredFeatures: [HOOK_DECISION_ROUTING_V1_FEATURE, HOOK_DECISION_ROUTING_V2_FEATURE],
+    familyLabel: (family) => (family === 'issues' ? 'issues' : 'pull requests'),
+    // Stored names, as the row keeps them; the compile maps the merge_request comment family to the wire's pull_request.
+    anyUpdateCadence: (family) => ({ events: [`${family}:*`], commentFamilies: [family], mentionOnly: false }),
+    // The binding's path is what the compiled rule carries.
+    repositoryPath: async (deps, orgId, repoId) =>
+      (await deps.repos.giteaRepositoryBinding.byRepo(orgId, repoId))?.repoPath
   },
 
   /** Raising the tier raises nothing at the provider (§5): the row's clamp moves and the agent is re-projected. */

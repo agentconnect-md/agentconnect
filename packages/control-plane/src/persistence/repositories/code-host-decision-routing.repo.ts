@@ -1,9 +1,12 @@
 import {
   CODE_HOST_ROUTING_FAMILIES,
+  CODE_HOST_ROUTING_PROVIDERS,
   DecisionBundleDefinition,
   SharedBotDecisionRouting,
   decisionRoutingAgentIds,
-  type CodeHostRoutingFamily
+  isCodeHostRoutingScope,
+  type CodeHostRoutingFamily,
+  type CodeHostRoutingProvider
 } from '@agentconnect.md/protocol'
 import { AgentId, OrgId, type DaemonId } from '../../domain/ids.js'
 import type { CodeHostDecisionRouting, Decision, Prisma } from '../../generated/prisma/client.js'
@@ -18,8 +21,11 @@ import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
 
 type Tx = Prisma.TransactionClient
 
-const isFamily = (family: string | null | undefined): family is CodeHostRoutingFamily =>
-  (CODE_HOST_ROUTING_FAMILIES as readonly string[]).includes(family ?? '')
+/** Whether a stored (provider, family) pair is a routable scope, narrowing both. */
+const isScope = <R extends { provider: string; family: string | null }>(
+  row: R
+): row is R & { provider: CodeHostRoutingProvider; family: CodeHostRoutingFamily } =>
+  isCodeHostRoutingScope(row.provider, row.family)
 
 function definitionOf(d: Decision | null | undefined): DecisionBundleDefinition | null {
   if (!d) return null
@@ -36,7 +42,7 @@ function definitionOf(d: Decision | null | undefined): DecisionBundleDefinition 
 
 // A stored config that no longer parses keeps its row with a null config, so the scope holds rather than firing unrouted.
 function toRecord(row: CodeHostDecisionRouting & { decision?: Decision | null }): CodeHostDecisionRoutingRecord | null {
-  if (!isFamily(row.family) || row.provider !== 'github') return null
+  if (!isScope(row)) return null
   const config = SharedBotDecisionRouting.safeParse({
     enabled: row.enabled,
     decisionId: row.decisionId,
@@ -46,7 +52,7 @@ function toRecord(row: CodeHostDecisionRouting & { decision?: Decision | null })
   return {
     id: row.id,
     orgId: OrgId(row.orgId),
-    provider: 'github',
+    provider: row.provider,
     repoId: row.repoId,
     repoFullName: row.repoFullName,
     family: row.family,
@@ -61,25 +67,34 @@ function toRecord(row: CodeHostDecisionRouting & { decision?: Decision | null })
 }
 
 const scopeWhere = (scope: CodeHostRoutingScope) => ({
-  orgId_provider_repoId_family: { orgId: scope.orgId, provider: 'github', repoId: scope.repoId, family: scope.family }
+  orgId_provider_repoId_family: {
+    orgId: scope.orgId,
+    provider: scope.provider,
+    repoId: scope.repoId,
+    family: scope.family
+  }
 })
 
 /** Bump the hosts of these scopes' routings: a member hook write changes what their AgentSpec.hookRoutings carries. */
 export async function bumpCodeHostRoutingHosts(
   tx: Tx,
   orgId: string,
-  scopes: ReadonlyArray<{ repoId: bigint | null | undefined; family: string | null | undefined }>
+  scopes: ReadonlyArray<{
+    kind: string | null | undefined
+    repoId: bigint | null | undefined
+    family: string | null | undefined
+  }>
 ): Promise<void> {
   const keyed = scopes.filter(
-    (s): s is { repoId: bigint; family: CodeHostRoutingFamily } => typeof s.repoId === 'bigint' && isFamily(s.family)
+    (s): s is { kind: CodeHostRoutingProvider; repoId: bigint; family: CodeHostRoutingFamily } =>
+      typeof s.repoId === 'bigint' && isCodeHostRoutingScope(s.kind ?? '', s.family)
   )
   if (keyed.length === 0) return
   const hosts = await tx.codeHostDecisionRouting.findMany({
     where: {
       orgId,
-      provider: 'github',
       evaluationAgentId: { not: null },
-      OR: keyed.map((s) => ({ repoId: s.repoId, family: s.family }))
+      OR: keyed.map((s) => ({ provider: s.kind, repoId: s.repoId, family: s.family }))
     },
     select: { evaluationAgentId: true }
   })
@@ -119,7 +134,7 @@ export class PgCodeHostDecisionRoutingRepo implements CodeHostDecisionRoutingRep
         where: scopeWhere(scope),
         create: {
           orgId: scope.orgId,
-          provider: 'github',
+          provider: scope.provider,
           repoId: scope.repoId,
           family: scope.family,
           ...data,
@@ -179,62 +194,72 @@ export class PgCodeHostDecisionRoutingRepo implements CodeHostDecisionRoutingRep
   }
 
   async listScopesForDaemon(daemonId: DaemonId): Promise<CodeHostRoutingScope[]> {
-    const hooks = await this.db.hookDef.findMany({
-      where: {
-        kind: 'github',
-        enabled: true,
-        repoId: { not: null },
-        family: { in: [...CODE_HOST_ROUTING_FAMILIES] },
-        agent: { daemonId }
-      },
-      select: { orgId: true, repoId: true, family: true },
-      distinct: ['orgId', 'repoId', 'family']
-    })
+    const hooks = (
+      await this.db.hookDef.findMany({
+        where: {
+          kind: { in: [...CODE_HOST_ROUTING_PROVIDERS] },
+          enabled: true,
+          repoId: { not: null },
+          family: { in: [...CODE_HOST_ROUTING_FAMILIES] },
+          agent: { daemonId }
+        },
+        select: { orgId: true, kind: true, repoId: true, family: true },
+        distinct: ['orgId', 'kind', 'repoId', 'family']
+      })
+    ).filter((h) => isCodeHostRoutingScope(h.kind, h.family))
     if (hooks.length === 0) return []
     const routed = await this.db.codeHostDecisionRouting.findMany({
-      where: { provider: 'github', OR: hooks.map((h) => ({ orgId: h.orgId, repoId: h.repoId!, family: h.family! })) },
-      select: { orgId: true, repoId: true, family: true }
+      where: {
+        OR: hooks.map((h) => ({ orgId: h.orgId, provider: h.kind, repoId: h.repoId!, family: h.family! }))
+      },
+      select: { orgId: true, provider: true, repoId: true, family: true }
     })
     return routed.flatMap((r) =>
-      isFamily(r.family) ? [{ orgId: OrgId(r.orgId), repoId: r.repoId, family: r.family }] : []
+      isScope(r) ? [{ orgId: OrgId(r.orgId), provider: r.provider, repoId: r.repoId, family: r.family }] : []
     )
   }
 
   async listUsages(orgId: OrgId, decisionIds?: readonly string[]): Promise<CodeHostDecisionRoutingUsage[]> {
     if (decisionIds?.length === 0) return []
-    const rows = await this.db.codeHostDecisionRouting.findMany({
+    const stored = await this.db.codeHostDecisionRouting.findMany({
       where: { orgId, ...(decisionIds ? { decisionId: { in: [...decisionIds] } } : {}) },
-      select: { id: true, decisionId: true, repoId: true, repoFullName: true, family: true, rules: true },
+      select: {
+        id: true,
+        decisionId: true,
+        provider: true,
+        repoId: true,
+        repoFullName: true,
+        family: true,
+        rules: true
+      },
       orderBy: [{ repoFullName: 'asc' }, { family: 'asc' }]
     })
+    const rows = stored.filter(isScope)
     if (rows.length === 0) return []
     const hooks = await this.db.hookDef.findMany({
       where: {
         orgId,
-        kind: 'github',
         enabled: true,
         agentId: { not: null },
-        OR: rows.map((row) => ({ repoId: row.repoId, family: row.family }))
+        OR: rows.map((row) => ({ kind: row.provider, repoId: row.repoId, family: row.family }))
       },
-      select: { agentId: true, repoId: true, family: true }
+      select: { agentId: true, kind: true, repoId: true, family: true }
     })
-    return rows.flatMap((row) => {
-      if (!isFamily(row.family)) return []
+    return rows.map((row) => {
       const rules = SharedBotDecisionRouting.shape.rules.safeParse(row.rules)
       const targets = rules.success ? decisionRoutingAgentIds({ rules: rules.data }) : []
       const members = hooks
-        .filter((h) => h.repoId === row.repoId && h.family === row.family)
+        .filter((h) => h.kind === row.provider && h.repoId === row.repoId && h.family === row.family)
         .flatMap((h) => (h.agentId ? [h.agentId] : []))
-      return [
-        {
-          decisionId: row.decisionId,
-          routingId: row.id,
-          repoId: row.repoId,
-          repoFullName: row.repoFullName,
-          family: row.family,
-          agentIds: [...new Set([...members, ...targets])].map(AgentId)
-        }
-      ]
+      return {
+        decisionId: row.decisionId,
+        routingId: row.id,
+        provider: row.provider,
+        repoId: row.repoId,
+        repoFullName: row.repoFullName,
+        family: row.family,
+        agentIds: [...new Set([...members, ...targets])].map(AgentId)
+      }
     })
   }
 }

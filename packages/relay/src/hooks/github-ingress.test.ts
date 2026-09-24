@@ -30,7 +30,8 @@ import {
   GITHUB_BODY_EXCERPT_MAX,
   type GithubMatchCtx
 } from './github-ingress.js'
-import { githubRecordOnlyEligible, HOOK_ROUTING_ACK_TIMEOUT_MS } from './github-routing.js'
+import { githubRecordOnlyEligible } from './github-routing.js'
+import { HOOK_ROUTING_ACK_TIMEOUT_MS } from './code-host-routing.js'
 
 const HOOK = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const HOOK_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'

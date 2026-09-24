@@ -81,4 +81,32 @@ describe('RelayControlSender.hookAssign — Decision routing (code-host-decision
     new RelayControlSender(reg).hookAssign(rule as never)
     expect(olderRelay).toHaveBeenCalledWith('rc/hook-assign', rule)
   })
+
+  it('sends a routed GitLab or Gitea rule only to a relay that routes those providers, and removes it elsewhere', () => {
+    const reg = new RelayRegistry()
+    const v2Relay = vi.fn()
+    const v1Relay = vi.fn()
+    reg.add({
+      relayId: 'v2',
+      features: ['gitea-v1', 'hook-decision-routing-v1', 'hook-decision-routing-v2'],
+      send: v2Relay,
+      close: vi.fn()
+    })
+    reg.add({ relayId: 'v1', features: ['gitea-v1', 'hook-decision-routing-v1'], send: v1Relay, close: vi.fn() })
+    const routed = {
+      ...rule,
+      kind: 'gitea',
+      webhook: undefined,
+      gitea: { repoId: '556677', repoPath: 'example-org/example-repo', host: 'https://gitea.example.test' },
+      routing: {
+        routingId: '55555555-5555-4555-8555-555555555555',
+        decisionId: '44444444-4444-4444-8444-444444444444',
+        evaluationAgentId: '22222222-2222-4222-8222-222222222222',
+        evaluationDaemonId: 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
+      }
+    }
+    new RelayControlSender(reg).hookAssign(routed as never)
+    expect(v2Relay).toHaveBeenCalledWith('rc/hook-assign', routed)
+    expect(v1Relay).toHaveBeenCalledWith('rc/hook-remove', { hookId: rule.hookId })
+  })
 })

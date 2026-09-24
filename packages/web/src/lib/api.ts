@@ -8,6 +8,8 @@ import type { DecisionApi, DecisionConversationRef } from '@agentconnect.md/prot
 import type {
   AgentModelSelection,
   ChannelDecisionGate,
+  CodeHostRoutingFamily,
+  CodeHostRoutingProvider,
   DecisionEvaluationRecordDetail,
   DecisionEvaluationRecordPage,
   SharedBotDecisionRouting
@@ -4294,54 +4296,53 @@ export async function fetchHookRuns(id: string, orgId?: string): Promise<HookRun
   return apiGet<HookRunDto[]>(`${orgBase(orgId)}/hooks/${encodeURIComponent(id)}/runs`)
 }
 
-// A GitHub repository's decision routing for one subject family (code-host-decisions.md §3.1, §7).
-export type CodeHostRoutingFamily = 'issues' | 'pull_request'
+// A code-host repository's decision routing for one subject family (code-host-decisions.md §3.1, §7).
+export type { CodeHostRoutingFamily, CodeHostRoutingProvider }
 
 /** `needs_review` after a Decision edit made the rules incompatible; `access_revoked` once the Decision is unusable. */
 export type CodeHostRoutingStatus = 'enabled' | 'needs_review' | 'access_revoked'
 
-export interface CodeHostRoutingDto {
+/** One routing's address: provider, the provider's numeric repository or project id, and the family its hook rows store. */
+export interface CodeHostRoutingKey {
+  provider: CodeHostRoutingProvider
   repoId: string
-  repoFullName: string
   family: CodeHostRoutingFamily
+}
+
+export interface CodeHostRoutingDto extends CodeHostRoutingKey {
+  repoFullName: string
   /** `otherwise: default_agent` means every candidate agent. */
   config: SharedBotDecisionRouting | null
   status: CodeHostRoutingStatus | null
-  /** The agents with an enabled GitHub hook on this repository and family: the only valid rule targets. */
+  /** The agents with an enabled hook of this provider on this repository and family: the only valid rule targets. */
   // `name` is null for a member agent the caller cannot view.
   members: Array<{ agentId: string; hookId: string; name: string | null }>
   evaluationAgentId: string | null
 }
 
-const codeHostRoutingPath = (repoId: string, family: CodeHostRoutingFamily, orgId?: string) =>
-  `${orgBase(orgId)}/decision-routing/github/${encodeURIComponent(repoId)}/${encodeURIComponent(family)}`
+const codeHostRoutingPath = ({ provider, repoId, family }: CodeHostRoutingKey, orgId?: string) =>
+  `${orgBase(orgId)}/decision-routing/${encodeURIComponent(provider)}/${encodeURIComponent(repoId)}/${encodeURIComponent(family)}`
 
-export function fetchCodeHostRouting(
-  repoId: string,
-  family: CodeHostRoutingFamily,
-  orgId?: string
-): Promise<CodeHostRoutingDto> {
-  return apiGet(codeHostRoutingPath(repoId, family, orgId))
+export function fetchCodeHostRouting(scope: CodeHostRoutingKey, orgId?: string): Promise<CodeHostRoutingDto> {
+  return apiGet(codeHostRoutingPath(scope, orgId))
 }
 
 // 400 carries `issues` at decisionRoutingIssues paths, 404 DECISION_NOT_FOUND a Decision this org cannot use.
 export function saveCodeHostRouting(
-  repoId: string,
-  family: CodeHostRoutingFamily,
+  scope: CodeHostRoutingKey,
   config: SharedBotDecisionRouting,
   orgId?: string
 ): Promise<CodeHostRoutingDto> {
-  return apiPut(codeHostRoutingPath(repoId, family, orgId), { config })
+  return apiPut(codeHostRoutingPath(scope, orgId), { config })
 }
 
-export function deleteCodeHostRouting(repoId: string, family: CodeHostRoutingFamily, orgId?: string): Promise<void> {
-  return apiDelete(codeHostRoutingPath(repoId, family, orgId))
+export function deleteCodeHostRouting(scope: CodeHostRoutingKey, orgId?: string): Promise<void> {
+  return apiDelete(codeHostRoutingPath(scope, orgId))
 }
 
 // A routing's Recent evaluations, proxied from its evaluation host; 503 when that daemon is offline or too old.
 export function fetchCodeHostRoutingEvaluations(
-  repoId: string,
-  family: CodeHostRoutingFamily,
+  scope: CodeHostRoutingKey,
   page: { cursor?: number; limit?: number } = {},
   orgId?: string
 ): Promise<DecisionEvaluationRecordPage> {
@@ -4349,16 +4350,15 @@ export function fetchCodeHostRoutingEvaluations(
   if (page.cursor !== undefined) query.set('cursor', String(page.cursor))
   if (page.limit !== undefined) query.set('limit', String(page.limit))
   const suffix = query.toString()
-  return apiGet(`${codeHostRoutingPath(repoId, family, orgId)}/evaluations${suffix ? `?${suffix}` : ''}`)
+  return apiGet(`${codeHostRoutingPath(scope, orgId)}/evaluations${suffix ? `?${suffix}` : ''}`)
 }
 
 export function fetchCodeHostRoutingEvaluation(
-  repoId: string,
-  family: CodeHostRoutingFamily,
+  scope: CodeHostRoutingKey,
   seq: number,
   orgId?: string
 ): Promise<DecisionEvaluationRecordDetail> {
-  return apiGet(`${codeHostRoutingPath(repoId, family, orgId)}/evaluations/${encodeURIComponent(String(seq))}`)
+  return apiGet(`${codeHostRoutingPath(scope, orgId)}/evaluations/${encodeURIComponent(String(seq))}`)
 }
 
 // PATCH a conversation's trigger (By decision with its gate), session mode or default agent; Off/Mention/Any clear the gate server-side.
