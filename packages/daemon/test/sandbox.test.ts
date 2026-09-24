@@ -24,6 +24,7 @@ import {
   sandboxBoundary,
   SandboxError,
   detectSandbox,
+  explainUserNamespaceFailure,
   probeSandboxHost,
   removeHostSandboxState,
   writeSandboxSettings
@@ -124,6 +125,41 @@ describe('probeSandboxHost', () => {
     expect(probe.reason).toBeTruthy()
     expect(probe.reason).not.toContain('\n')
     expect(probe.reason!.length).toBeLessThanOrEqual(300)
+  })
+})
+
+// Ubuntu 23.10+ ships kernel.apparmor_restrict_unprivileged_userns=1, and bwrap's own text never says so.
+describe('explainUserNamespaceFailure', () => {
+  const userNamespaceFailures = [
+    'bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted',
+    'bwrap: setting up uid map: Permission denied',
+    'bwrap: Creating new namespace failed: Operation not permitted',
+    'bwrap: cannot open /proc/self/setgroups: Permission denied'
+  ]
+
+  it.each(userNamespaceFailures)('names the AppArmor restriction and keeps the original text: %s', (failure) => {
+    const reason = explainUserNamespaceFailure(failure, () => '1\n')
+    expect(reason).toMatch(/^AppArmor restricts unprivileged user namespaces/)
+    expect(reason).toContain('/usr/bin/bwrap')
+    expect(reason).toContain('set the sysctl to 0 persistently')
+    expect(reason).toContain(
+      'https://docs.agentconnect.md/docs/sandboxing#ubuntu-2310-and-later-allow-user-namespaces-for-bubblewrap'
+    )
+    expect(reason.endsWith(`(${failure})`)).toBe(true)
+  })
+
+  it.each([
+    ['the sysctl is 0', () => '0\n'],
+    ['the sysctl is absent', () => undefined]
+  ])('leaves the reason unchanged when %s', (_label, readRestriction) => {
+    for (const failure of userNamespaceFailures) {
+      expect(explainUserNamespaceFailure(failure, readRestriction)).toBe(failure)
+    }
+  })
+
+  it('leaves another failure unchanged even with the sysctl at 1', () => {
+    const failure = 'Sandbox dependencies are not available: ripgrep (rg) not found'
+    expect(explainUserNamespaceFailure(failure, () => '1')).toBe(failure)
   })
 })
 

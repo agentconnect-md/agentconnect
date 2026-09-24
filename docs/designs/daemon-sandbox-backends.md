@@ -98,7 +98,12 @@ apply to every sandboxing strategy. Configured is what a machine offers, and eac
 startup probe decides whether an offered strategy is available or records why not.
 
 Every probe is cheap and has no side effects. `srt` is the existing live SRT
-probe. `microsandbox` opens `/dev/kvm`, resolves the image reference, and, when the
+probe. When it fails on a user-namespace error and
+`kernel.apparmor_restrict_unprivileged_userns` reads `1` (the Ubuntu 23.10+
+default), its reason names that restriction, the host fix (an AppArmor `userns`
+profile for `/usr/bin/bwrap` or the sysctl set to `0`) and the user docs, then
+keeps bwrap's own text; the daemon never changes the host setting.
+`microsandbox` opens `/dev/kvm`, resolves the image reference, and, when the
 daemon's runtime store already holds the pinned msb, checks that msb and its
 libkrunfw are there. It installs nothing, pulls no image and boots no VM: the
 first session that uses the strategy installs msb when needed, prepares the image

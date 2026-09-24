@@ -5,6 +5,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -130,7 +131,7 @@ function probeSandbox(env: NodeJS.ProcessEnv): SandboxProbe {
       windowsHide: true
     })
     if (probe.status === 0) return { mechanism: 'bwrap' }
-    return { mechanism: undefined, reason: probeFailureReason(probe) }
+    return { mechanism: undefined, reason: explainUserNamespaceFailure(probeFailureReason(probe)) }
   } catch (error) {
     return { mechanism: undefined, reason: boundedReason(error instanceof Error ? error.message : String(error)) }
   } finally {
@@ -145,6 +146,29 @@ function probeFailureReason(probe: { stderr?: string; status: number | null; sig
   if (probe.error) return boundedReason(probe.error.message)
   if (probe.signal) return `the SRT probe was killed by ${probe.signal}`
   return `the SRT probe exited with status ${probe.status ?? 'unknown'}`
+}
+
+const APPARMOR_USERNS_SYSCTL = '/proc/sys/kernel/apparmor_restrict_unprivileged_userns'
+const APPARMOR_USERNS_DOCS =
+  'https://docs.agentconnect.md/docs/sandboxing#ubuntu-2310-and-later-allow-user-namespaces-for-bubblewrap'
+const USERNS_FAILURE = /RTM_NEWADDR|uid map|Operation not permitted|Permission denied/i
+
+/** Ubuntu 23.10+ defaults the sysctl to 1, which strips unprivileged user namespaces of the capabilities bwrap needs. */
+function readAppArmorUsernsRestriction(): string | undefined {
+  try {
+    return readFileSync(APPARMOR_USERNS_SYSCTL, 'utf8')
+  } catch {
+    return undefined
+  }
+}
+
+/** Name the AppArmor restriction and its host fix when it explains bwrap's failure; any other failure passes through. */
+export function explainUserNamespaceFailure(
+  reason: string,
+  readRestriction: () => string | undefined = readAppArmorUsernsRestriction
+): string {
+  if (!USERNS_FAILURE.test(reason) || readRestriction()?.trim() !== '1') return reason
+  return `AppArmor restricts unprivileged user namespaces (kernel.apparmor_restrict_unprivileged_userns=1). Allow them for /usr/bin/bwrap with an AppArmor userns profile, or set the sysctl to 0 persistently: ${APPARMOR_USERNS_DOCS} (${reason})`
 }
 
 /** One bounded log line: SRT's message is multi-line and the daemon logger is line-oriented. */
