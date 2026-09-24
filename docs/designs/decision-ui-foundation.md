@@ -246,11 +246,8 @@ Decision's shared-bot usage links to the bot's configuration.
   among, the saved status when it is not Ready, and read-only access. Opening it from a row
   puts that row in the draft's scope ("Save to apply By decision rules in this channel");
   the rules are the bot's own, so the modal names the other routed channels they apply to.
-  Since `saveRouting` never enables an Off channel, a row Off on any install says so. The
-  trigger PATCH is bot-scoped (one write turns every sibling on), so Save is blocked unless
-  the editor can edit every Off install's agent; otherwise Save sends one Mention PATCH
-  through an editable install, then saves the routing. If the routing save then fails, the
-  modal says the channel was left on.
+  A row Off on any install is added as is: the console neither switches its trigger nor
+  blocks Save, and whether routing may cover an Off conversation is the CP's decision.
 - The form reads Routing enabled (pause or resume the bot's routing), Decision (picker, type
   and model, View and edit, inline Create decision — its return URL names the row, which
   reopens on the kept draft),

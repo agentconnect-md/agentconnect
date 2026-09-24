@@ -17,8 +17,7 @@ const routing = vi.hoisted(() => ({
   saveRouting: vi.fn(),
   refresh: vi.fn(),
   setChannelTrigger: vi.fn(async () => undefined),
-  integrations: [] as unknown[],
-  lockedAgentIds: [] as string[]
+  integrations: [] as unknown[]
 }))
 
 vi.mock('@/lib/data', async (original) => ({ ...(await original<object>()), MOCK_MODE: false }))
@@ -57,10 +56,7 @@ vi.mock('@/lib/data-context', () => {
       botsLoaded: true,
       integrationsLoaded: true,
       agents,
-      getAgent: (id: string) => {
-        const agent = agents.find((entry) => entry.id === id)
-        return agent && { ...agent, canEdit: !routing.lockedAgentIds.includes(id) }
-      },
+      getAgent: (id: string) => agents.find((agent) => agent.id === id),
       get integrations() {
         return routing.integrations
       }
@@ -140,7 +136,6 @@ beforeEach(() => {
   routing.refresh.mockReset()
   routing.integrations = []
   routing.setChannelTrigger.mockClear()
-  routing.lockedAgentIds = []
 })
 
 afterEach(async () => {
@@ -290,61 +285,16 @@ describe('IntegrationChannelList shared-bot routing', () => {
   }
   const saveButton = () => all('button').find((node) => node.textContent?.trim() === 'Save') as HTMLButtonElement
 
-  it('turns an Off row on with one bot-scoped PATCH through an editable install, then routes it', async () => {
+  it('routes a row Off on another install as is, without turning it on or blocking Save', async () => {
     routing.getRouting.mockResolvedValue(detail())
     routing.integrations = offInstalls()
     await render([row()])
     await openAdd()
-    expect(dialog()?.textContent).toContain(
-      'deploys is Off for review-bot. Saving turns it on (@-mention) first, then routes it by decision.'
-    )
+    expect(dialog()?.textContent).not.toContain('is Off')
     await pickTarget()
     await click(saveButton())
-    expect(routing.setChannelTrigger.mock.calls).toEqual([['int-1', 'C1', 'mention']])
-    expect(routing.setChannelTrigger.mock.invocationCallOrder[0]).toBeLessThan(
-      routing.saveRouting.mock.invocationCallOrder[0]!
-    )
-    expect(routing.saveRouting).toHaveBeenCalledTimes(1)
-  })
-
-  it('writes nothing when an Off install belongs to an agent the editor cannot edit', async () => {
-    routing.getRouting.mockResolvedValue(detail())
-    routing.integrations = offInstalls()
-    routing.lockedAgentIds = ['agent-2']
-    await render([row()])
-    await openAdd()
-    await pickTarget()
-    expect(dialog()?.textContent).toContain('deploys is Off for review-bot, which you cannot edit.')
-    expect(saveButton().disabled).toBe(true)
     expect(routing.setChannelTrigger).not.toHaveBeenCalled()
-  })
-
-  it('says a failed routing save left the Off row turned on', async () => {
-    routing.getRouting.mockResolvedValue(detail())
-    routing.saveRouting.mockRejectedValue(new Error('network down'))
-    routing.integrations = offInstalls()
-    await render([row()])
-    await openAdd()
-    await pickTarget()
-    await click(saveButton())
-    expect(dialog()?.textContent).toContain('deploys was turned on (@-mention), but the routing was not saved.')
-  })
-
-  it('keeps the left-on notice when a Retry fails after the row reads as on', async () => {
-    routing.getRouting.mockResolvedValue(detail())
-    routing.integrations = offInstalls()
-    routing.saveRouting.mockImplementation(async () => {
-      routing.integrations = [offInstalls()[0]!, { ...offInstalls()[1]!, channels: [row()] }]
-      throw new Error('network down')
-    })
-    await render([row()])
-    await openAdd()
-    await pickTarget()
-    await click(saveButton())
-    await click(all('button').find((node) => node.textContent?.trim() === 'Retry'))
-    expect(routing.saveRouting).toHaveBeenCalledTimes(2)
-    expect(routing.setChannelTrigger).toHaveBeenCalledTimes(1)
-    expect(dialog()?.textContent).toContain('deploys was turned on (@-mention), but the routing was not saved.')
+    expect(routing.saveRouting).toHaveBeenCalledTimes(1)
   })
 
   it.each(['the header ×', 'the scrim'])(

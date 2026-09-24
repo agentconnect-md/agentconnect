@@ -11,8 +11,6 @@ import useSWR from 'swr'
 import { Button, Icon, Toggle } from '@/components/ui'
 import { LoadingState } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
-import { useConsoleData } from '@/lib/data-context'
-import { agentLabel } from '@/lib/data'
 import { useDecisionsPrototype } from '@/lib/decisions/provider'
 import { errorParts } from '@/lib/decisions/binding'
 import {
@@ -98,7 +96,6 @@ export function DecisionRoutingModal({
   const { api, orgId, decisions, loading, reload, routingDrafts, routingKeyFor, dispatchRouting, beginInlineCreate } =
     useDecisionsPrototype()
   const roster = useRoutingRoster(botId)
-  const { integrations, getAgent, setChannelTrigger } = useConsoleData()
   const state = routingDrafts[routingKeyFor(botId)] ?? INITIAL_ROUTING_STATE
   const dispatch = useCallback((event: RoutingEvent) => dispatchRouting(botId, event), [botId, dispatchRouting])
   const [helpOpen, setHelpOpen] = useState(false)
@@ -152,30 +149,7 @@ export function DecisionRoutingModal({
     : serverError?.kind === 'invalid'
       ? serverError.issues.map((issue) => ({ path: issue.path, message: issue.message }))
       : []
-  // A routing save never enables Off (a private agent's gate), so Save first turns an Off channel on with one trigger PATCH.
-  const additions = (draft?.channelIds ?? []).filter((id) => !savedChannelIds.includes(id))
-  const agentName = (id: string) =>
-    roster.agents.find((agent) => agent.id === id)?.name ?? (getAgent(id) ? agentLabel(getAgent(id)!) : id)
-  // That PATCH is bot-scoped, so every Off install's agent must be editable before it; `via` is null where Save cannot.
-  const offRooms = additions.flatMap((id) => {
-    if (api.mode === 'mock')
-      return roster.channels.find((c) => c.channelId === id)?.trigger === 'off'
-        ? [{ id, agents: [] as string[], locked: [] as string[], via: null as string | null }]
-        : []
-    const installs = integrations.filter(
-      (i) => i.botId === botId && !!i.id && i.channels.some((c) => c.channelId === id)
-    )
-    const off = installs.filter((i) => i.channels.some((c) => c.channelId === id && c.trigger === 'off'))
-    if (!off.length) return []
-    const editable = (agentId: string | undefined) => !!agentId && getAgent(agentId)?.canEdit === true
-    const locked = off.filter((i) => !editable(i.agentId)).map((i) => (i.agentId ? agentName(i.agentId) : ''))
-    const via = locked.length ? null : (installs.find((i) => editable(i.agentId))?.id ?? null)
-    return [{ id, agents: off.map((i) => (i.agentId ? agentName(i.agentId) : '')).filter(Boolean), locked, via }]
-  })
-  const offBlocks = offRooms.some((room) => room.via === null)
-  // Rooms a failed Save left turned on, so the failure never hides that the channel is now on.
-  const [leftOn, setLeftOn] = useState<string[]>([])
-  const canSave = routingCanSave(state, localIssues, canWrite) && !offBlocks
+  const canSave = routingCanSave(state, localIssues, canWrite)
   const disabled = !canWrite || busy
   // Inline Create decision returns here with the row named, so its modal reopens on the same draft.
   const returnParams = new URLSearchParams(search.toString())
@@ -191,20 +165,13 @@ export function DecisionRoutingModal({
     if (!body || saving.current) return
     saving.current = true
     dispatch(retry ? { type: 'RETRY' } : { type: 'SAVE_START', body })
-    const enabled: string[] = []
     try {
-      for (const room of offRooms) {
-        if (!room.via) throw new Error(`${room.id} cannot be turned on here`)
-        await setChannelTrigger(room.via, room.id, 'mention')
-        enabled.push(room.id)
-      }
       const detail = await api.saveRouting(botId, body)
       dispatch({ type: 'SAVE_OK', detail })
       void mutate(detail, { revalidate: false })
       roster.refresh()
       onClose()
     } catch (cause) {
-      if (enabled.length) setLeftOn((prev) => [...new Set([...prev, ...enabled])])
       dispatch({ type: 'SAVE_FAIL', error: cause })
       if (routingSaveError(cause).kind === 'decision_missing') void reload()
     } finally {
@@ -285,31 +252,6 @@ export function DecisionRoutingModal({
           </Note>
         )}
         {!savedChannelIds.includes(channelId) && <Note icon="info">{tm('unsaved')}</Note>}
-        {offRooms.map((room) => (
-          <div
-            key={room.id}
-            role="status"
-            className="flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]"
-          >
-            <Icon name={room.via ? 'power' : 'lock'} size={14} className="mt-[2px] flex-none" />
-            <span>
-              {room.via
-                ? tm('offWillEnable', { channel: nameOf(room.id), agents: room.agents.join(', ') })
-                : room.locked.length
-                  ? tm('offLocked', { channel: nameOf(room.id), agents: room.locked.join(', ') })
-                  : tm('offBare', { channel: nameOf(room.id) })}
-            </span>
-          </div>
-        ))}
-        {leftOn.length > 0 && (
-          <div
-            role="alert"
-            className="flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]"
-          >
-            <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
-            <span>{tm('leftOn', { channels: leftOn.map(nameOf).join(', ') })}</span>
-          </div>
-        )}
         {others.length > 0 && <Note icon="users">{tm('alsoApplies', { names: others.map(nameOf).join(', ') })}</Note>}
 
         <div className="fld">
