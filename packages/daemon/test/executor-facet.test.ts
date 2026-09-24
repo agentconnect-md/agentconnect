@@ -962,6 +962,26 @@ describe('seedSessionHome', () => {
     }
   })
 
+  it("takes a key from this machine's runtime definition over its process env, as a local launch does", async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-xf-seed-'))
+    try {
+      const definition = { command: 'dsh-acp', args: [], env: [{ name: 'DEEPSEEK_API_KEY', value: 'fixture-def-key' }] }
+      const home = join(root, 'sessions', LEAF, 'home')
+      const machine = join(root, 'machine')
+      const only = seedSessionHome(home, { 'dsh-acp': definition }, { warn: () => {} }, { HOME: machine })
+      expect(only.env).toEqual({ DEEPSEEK_API_KEY: 'fixture-def-key' })
+      const both = seedSessionHome(
+        home,
+        { 'dsh-acp': definition },
+        { warn: () => {} },
+        { HOME: machine, DEEPSEEK_API_KEY: 'fixture-process-key' }
+      )
+      expect(both.env).toEqual({ DEEPSEEK_API_KEY: 'fixture-def-key' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('answers where the Claude sign-in it leaves out of the HOME lives on this machine', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ac-xf-seed-'))
     try {

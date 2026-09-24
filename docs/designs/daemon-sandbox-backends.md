@@ -1126,7 +1126,8 @@ machine admits, because a `prepare` names no runtime: a shared login is linked t
 the machine's own file, other runtimes' small config and credential files are
 copied once, and files already in the session's `home` always win. The seed also
 carries this machine's own values of the provider-key variables a holder strips, for
-the runtimes it admits, as a local launch here inherits them; the shim fills the seed
+the runtimes it admits, from their definitions over its environment as a local launch
+here takes them; the shim fills the seed
 in beneath the holder's environment. A `microsandbox` environment seeds
 its own `home` instead, through the local VM's credential step
 ([API key protection](#api-key-protection)): the VM starts with this machine's

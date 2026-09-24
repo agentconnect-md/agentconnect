@@ -115,6 +115,23 @@ describe('the microsandbox strategy launcher', () => {
     for (const text of filesUnder(join(root, 'sessions', LEAF))) expect(text).not.toContain(KEY)
   })
 
+  it("protects a key configured in the executor's runtime definition as a local VM launch does", async () => {
+    root = await mkdtemp(join(tmpdir(), 'ac-xv-'))
+    const { manager, prepared } = stubManager()
+    const launcher = microsandboxLauncher({
+      manager: () => manager,
+      runtimes: () => ({
+        'dsh-acp': { command: 'dsh-acp', args: [], env: [{ name: 'DEEPSEEK_API_KEY', value: KEY }] }
+      }),
+      hostEnv: { HOME: join(root, 'machine') }
+    })
+    await launcher.start({ daemonRoot: root, sessionLeaf: LEAF, log: quiet })
+
+    expect(prepared[0]!.secrets!.map((secret) => [secret.env, secret.readValue()])).toEqual([['DEEPSEEK_API_KEY', KEY]])
+    expect(prepared[0]!.hosted!.env.DEEPSEEK_API_KEY).toBe('msb-secret-DEEPSEEK_API_KEY')
+    expect(JSON.stringify(prepared)).not.toContain(KEY)
+  })
+
   it("fills in the executor's own environment key a preparer does not protect, as a local VM on it inherits one", async () => {
     root = await mkdtemp(join(tmpdir(), 'ac-xv-'))
     const { manager, prepared } = stubManager()

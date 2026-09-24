@@ -1086,7 +1086,8 @@ see the segment. TLS-PSK covers every byte above the handshake.
   strips is each preparer's own list: the runtime's variable for the key it protects
   (`ANTHROPIC_API_KEY` for Claude, `OPENAI_API_KEY` for Codex, `DEEPSEEK_API_KEY` for
   DeepSeek) and the variables it binds a key to. The executor fills the same variables
-  in from its own environment, as a local launch on it inherits them, through the
+  in from its own runtime definitions and environment, with a local launch's
+  precedence, through the
   shim's seed beneath the holder's environment: `host` as values, and a VM behind the
   placeholders its preparers set, or as values where they set none, as a local VM
   receives an environment-only Claude or Codex key.

@@ -4,7 +4,12 @@ import { join } from 'node:path'
 import type { RuntimeDef } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
 import type { MicrosandboxEnvironment, MicrosandboxManager } from '../microsandbox/driver.js'
-import { microsandboxCredentialStep, ownCredentialEnv, type MicrosandboxSecret } from '../microsandbox/secrets.js'
+import {
+  definitionEnv,
+  microsandboxCredentialStep,
+  ownCredentialEnv,
+  type MicrosandboxSecret
+} from '../microsandbox/secrets.js'
 import { canonicalPath, contains } from '../runtimes/read-roots.js'
 import { DEFAULT_SHIM_RUNTIME_ROOT } from '../shim/sandbox-paths.js'
 import { SESSIONS_DIR } from '../workspace/session-layout.js'
@@ -30,7 +35,9 @@ export function seedHostedHome(
   // Every preparer before any seed, so no runtime's plain seed copies a file another one projects.
   const steps = Object.entries(runtimes).flatMap(([runtimeId, runtime]) => {
     try {
-      return [{ runtimeId, runtime, step: microsandboxCredentialStep(runtimeId, runtime, hostEnv) }]
+      // The definition's env is explicit, as in a local launch, so a key configured there is protected too.
+      const step = microsandboxCredentialStep(runtimeId, runtime, hostEnv, definitionEnv(runtime))
+      return [{ runtimeId, runtime, step }]
     } catch (error) {
       // Refused, never downgraded to a plain seed: that runtime's sign-in stays off the guest and it answers authRequired.
       log.warn(`executor: a hosted VM gets no ${runtimeId} sign-in (${message(error)})`)

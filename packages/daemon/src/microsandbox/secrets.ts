@@ -73,14 +73,19 @@ export function isRecognizedCredentialEnv(runtimeId: string, runtime: RuntimeDef
   return preparerFor(runtimeId, runtime)?.env.test(name) === true
 }
 
-/** This machine's own values of those variables: what an executor fills in for a placed session in place of the holder's (§8). */
+/** A runtime definition's own env, which a local launch merges above the process env. */
+export function definitionEnv(runtime: RuntimeDef | undefined): Record<string, string> {
+  return Object.fromEntries((runtime?.env ?? []).map(({ name, value }) => [name, value]))
+}
+
+/** This machine's own values of those variables, its runtime definition's over its process env as a local launch takes them: what an executor fills in for a placed session in place of the holder's (§8). */
 export function ownCredentialEnv(
   runtimeId: string,
   runtime: RuntimeDef | undefined,
   hostEnv: NodeJS.ProcessEnv
 ): Record<string, string> {
   return Object.fromEntries(
-    Object.entries(hostEnv).filter(
+    Object.entries({ ...hostEnv, ...definitionEnv(runtime) }).filter(
       (entry): entry is [string, string] =>
         Boolean(entry[1]?.trim()) && isRecognizedCredentialEnv(runtimeId, runtime, entry[0])
     )
