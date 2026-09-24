@@ -727,7 +727,6 @@ function DecisionEditor() {
               />
               {issueFor('question.instructions') && <IssueLine>{issueFor('question.instructions')}</IssueLine>}
             </Field>
-            <VisibilityField value={draft} onChange={(sharing) => patch(sharing)} disabled={!editable || saving} />
           </fieldset>
 
           <fieldset disabled={!editable || saving} className="card min-w-0">
@@ -855,6 +854,10 @@ function DecisionEditor() {
               )}
               {criteriaIssue && <IssueLine>{criteriaIssue}</IssueLine>}
             </div>
+          </fieldset>
+
+          <fieldset disabled={!editable || saving} className="card min-w-0 p-4">
+            <VisibilityField value={draft} onChange={(sharing) => patch(sharing)} disabled={!editable || saving} />
           </fieldset>
 
           <div className="card">
