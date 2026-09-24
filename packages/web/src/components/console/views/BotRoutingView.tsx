@@ -4,14 +4,14 @@
 
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { Button, Icon } from '@/components/ui'
 import { AgentIconView, LoadingState, PlatformMark } from '@/components/marks'
 import { DecisionRoutingEditor } from '@/components/console/decisions/routing/DecisionRoutingEditor'
 import { DecisionRoutingTry } from '@/components/console/decisions/routing/DecisionRoutingTry'
-import { DecisionRoutingEvaluationsPanel } from '@/components/console/decisions/routing/DecisionRoutingEvaluationsPanel'
+import { DecisionRoutingEvaluationsDrawer } from '@/components/console/decisions/routing/DecisionRoutingEvaluationsDrawer'
 import { useOrgs } from '@/lib/org-context'
 import { errorParts } from '@/lib/decisions/binding'
 import { useDecisionProviders, useDecisionsPrototype } from '@/lib/decisions/provider'
@@ -79,7 +79,6 @@ function BotRouting({ botId }: { botId: string }) {
   const dispatch = useCallback((event: RoutingEvent) => dispatchRouting(botId, event), [botId, dispatchRouting])
   const [testing, setTesting] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
-  const historyRef = useRef<HTMLElement>(null)
   const { data, error, mutate } = useSWR(orgId && botId ? ['decision-routing', api.mode, orgId, botId] : null, () =>
     api.getRouting(botId)
   )
@@ -94,9 +93,6 @@ function BotRouting({ botId }: { botId: string }) {
   useEffect(() => {
     if (savedDetail) void mutate(savedDetail, { revalidate: false })
   }, [savedDetail, mutate])
-  useEffect(() => {
-    if (historyOpen) historyRef.current?.scrollIntoView({ block: 'start' })
-  }, [historyOpen])
 
   const integrations = orgPath('/integrations')
   const botSettings = orgPath(`/integrations?bot=${encodeURIComponent(botId)}`)
@@ -273,13 +269,8 @@ function BotRouting({ botId }: { botId: string }) {
           </span>
           <span className={`badge flex-none ${STATUS_BADGE[status]}`}>{t(`status.${status}`)}</span>
           <span className="flex-1" />
-          <Button
-            variant="secondary"
-            size="sm"
-            ariaExpanded={historyOpen}
-            onClick={() => setHistoryOpen((open) => !open)}
-          >
-            <Icon name="list" size={14} />
+          <Button variant="secondary" size="sm" onClick={() => setHistoryOpen(true)}>
+            <Icon name="history" size={14} />
             {t('recentEvaluations')}
           </Button>
         </div>
@@ -311,17 +302,14 @@ function BotRouting({ botId }: { botId: string }) {
       )}
 
       {historyOpen && (
-        <section ref={historyRef} aria-labelledby="routing-history" className="flex flex-col gap-2">
-          <h2 id="routing-history" className="m-0 font-sans text-[14px] font-semibold leading-normal">
-            {t('evaluations.title')}
-          </h2>
-          <DecisionRoutingEvaluationsPanel
-            botId={botId}
-            channels={routedChannels}
-            agentNames={agentNames}
-            ruleNumbers={savedRuleNumbers}
-          />
-        </section>
+        <DecisionRoutingEvaluationsDrawer
+          botId={botId}
+          {...(bot?.name ? { botName: bot.name } : {})}
+          channels={routedChannels}
+          agentNames={agentNames}
+          ruleNumbers={savedRuleNumbers}
+          onClose={() => setHistoryOpen(false)}
+        />
       )}
     </div>
   )

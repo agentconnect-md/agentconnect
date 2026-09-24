@@ -1,5 +1,6 @@
 import {
   DECISION_EVALUATION_DETAIL_MAX_BYTES,
+  DECISION_RAW_JSON_MAX_CHARS,
   DECISION_LIST_MAX_BYTES,
   DecisionAnswer,
   DecisionCondition,
@@ -11,6 +12,7 @@ import {
   SharedBotDecisionRouting,
   routingEvaluationOutcome,
   type DecisionAnswerSummary,
+  type DecisionRawJson,
   type DecisionRoutingEvaluationRecordDetail,
   type DecisionRoutingEvaluationReply,
   type DecisionRoutingEvaluationRequest,
@@ -276,6 +278,68 @@ function routerConstraintOf(
   return row.state === 'admitted' || row.state === 'canceled' || row.state === 'skipped' ? null : []
 }
 
+/** A raw body cut to `max` characters without splitting a surrogate pair. */
+function rawJson(text: string, max = DECISION_RAW_JSON_MAX_CHARS, cut = false): DecisionRawJson {
+  if (text.length <= max) return { text, truncated: cut }
+  const end = /[\uD800-\uDBFF]/.test(text.charAt(max - 1)) ? max - 1 : max
+  return { text: text.slice(0, end), truncated: true }
+}
+
+function rawResponseOf(row: DecisionVerdictRow): DecisionRawJson | null {
+  const stored = record(parseJson(row.answerJson))
+  return typeof stored?.raw === 'string' ? rawJson(stored.raw, undefined, stored.rawTruncated === true) : null
+}
+
+// The request body exactly as the evaluator sent it; verdicts settled before it was stored have none.
+function rawRequestText(row: DecisionVerdictRow): string | null {
+  const stored = record(parseJson(row.answerJson))
+  return typeof stored?.request === 'string' ? stored.request : null
+}
+
+type RawDetail = {
+  input: DecisionEvaluationRecordDetail['input']
+  rawRequest?: DecisionRawJson | null
+  rawResponse?: DecisionRawJson | null
+}
+
+// Fit order: shorten the stored request, then drop the oldest history, then the raw response, then the input.
+function fitDetail(detail: RawDetail, conversation: DecisionEvaluationConversation, requestText: string | null): void {
+  const fits = () => encodedBytes({ evaluation: detail, conversation }) <= DECISION_EVALUATION_DETAIL_MAX_BYTES
+  if (detail.rawRequest && requestText !== null && !fits()) {
+    let lo = 0
+    let hi = detail.rawRequest.text.length - 1
+    let best: DecisionRawJson | null = null
+    while (lo <= hi) {
+      const mid = Math.floor((lo + hi) / 2)
+      detail.rawRequest = rawJson(requestText, mid, true)
+      if (fits()) {
+        best = detail.rawRequest
+        lo = mid + 1
+      } else hi = mid - 1
+    }
+    detail.rawRequest = best
+  }
+  while (!fits() && detail.input && detail.input.history.length > 0) {
+    detail.input.history.shift()
+    detail.input.historyOmitted += 1
+  }
+  if (!fits() && detail.rawResponse) detail.rawResponse = null
+  if (!fits()) detail.input = null
+}
+
+/** The raw provider bodies a detail carries when asked; both null once retention stripped them. */
+function rawOf(
+  row: DecisionVerdictRow,
+  expired: boolean
+): { rawRequest: DecisionRawJson | null; rawResponse: DecisionRawJson | null; requestText: string | null } {
+  const requestText = expired ? null : rawRequestText(row)
+  return {
+    rawRequest: requestText === null ? null : rawJson(requestText),
+    rawResponse: expired ? null : rawResponseOf(row),
+    requestText
+  }
+}
+
 /** Recent evaluations (decisions.md §9.5): bounded, read-only views of one conversation lane's verdicts. */
 export class DecisionEvaluationReader {
   constructor(private readonly deps: DecisionEvaluationReaderDeps) {}
@@ -341,13 +405,9 @@ export class DecisionEvaluationReader {
       evidence:
         row.state === 'admitted' ? { snapshotSeq: Number(row.seq), suppliedBackground: suppliedCount(row) } : null
     }
-    const fits = () => encodedBytes({ evaluation: detail, conversation }) <= DECISION_EVALUATION_DETAIL_MAX_BYTES
-    // The oldest history goes first; the current message is kept or the whole input is.
-    while (!fits() && detail.input && detail.input.history.length > 0) {
-      detail.input.history.shift()
-      detail.input.historyOmitted += 1
-    }
-    if (!fits()) detail.input = null
+    const { requestText, ...raw } = req.includeRaw ? rawOf(row, expired) : { requestText: null }
+    Object.assign(detail, raw)
+    fitDetail(detail, conversation, requestText)
     return { evaluation: detail, conversation }
   }
 
@@ -404,13 +464,9 @@ export class DecisionEvaluationReader {
       input: expired ? null : inputOf(row),
       fullAnswer: expired ? null : answerOf(row).answer
     }
-    const fits = () => encodedBytes({ evaluation: detail, conversation }) <= DECISION_EVALUATION_DETAIL_MAX_BYTES
-    // The oldest history goes first; the current message is kept or the whole input is.
-    while (!fits() && detail.input && detail.input.history.length > 0) {
-      detail.input.history.shift()
-      detail.input.historyOmitted += 1
-    }
-    if (!fits()) detail.input = null
+    const { requestText, ...raw } = req.includeRaw ? rawOf(row, expired) : { requestText: null }
+    Object.assign(detail, raw)
+    fitDetail(detail, conversation, requestText)
     return { evaluation: detail, conversation }
   }
 }

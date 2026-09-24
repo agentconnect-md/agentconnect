@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// Routing Recent evaluations: one row per outcome, per-target admissions, Load more, the detail sheet, and 503 states.
+// Routing Recent evaluations drawer: one row per outcome, per-target admissions, Load more, the detail with model result, and 503 states.
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -21,7 +21,7 @@ vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'org-test' }, myRole: 'viewer', orgPath: (path: string) => path })
 }))
 
-import { DecisionRoutingEvaluationsPanel } from './DecisionRoutingEvaluationsPanel'
+import { DecisionRoutingEvaluationsDrawer } from './DecisionRoutingEvaluationsDrawer'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 let root: Root | undefined
@@ -42,7 +42,7 @@ const names = new Map([
 async function settle() {
   for (let i = 0; i < 4; i += 1) await act(async () => {})
 }
-async function render(api: DecisionApi) {
+async function render(api: DecisionApi, onClose: () => void = () => {}) {
   vi.spyOn(decisionMock, 'createDecisionMockApi').mockReturnValue(api)
   container = document.createElement('div')
   document.body.append(container)
@@ -51,8 +51,10 @@ async function render(api: DecisionApi) {
     root?.render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
         <DecisionsPrototypeProvider>
-          <DecisionRoutingEvaluationsPanel
+          <DecisionRoutingEvaluationsDrawer
             botId="support-bot"
+            botName="Support bot"
+            onClose={onClose}
             channels={[{ channelId: 'help-channel', name: '#help' }]}
             agentNames={names}
             ruleNumbers={
@@ -68,9 +70,17 @@ async function render(api: DecisionApi) {
     )
   })
   await settle()
-  return container
+  return drawer()
 }
+const drawer = () => document.body.querySelector<HTMLElement>('[data-testid="routing-evaluations"]')!
+const detail = () => document.body.querySelector<HTMLElement>('[data-testid="routing-evaluation-detail"]')
 const rows = (scope: ParentNode) => [...scope.querySelectorAll<HTMLButtonElement>('li button')]
+async function escape() {
+  await act(async () => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+  })
+  await settle()
+}
 async function click(node: Element | undefined | null) {
   if (!node) throw new Error('nothing to click')
   await act(async () => {
@@ -79,7 +89,7 @@ async function click(node: Element | undefined | null) {
   await settle()
 }
 
-describe('DecisionRoutingEvaluationsPanel', () => {
+describe('DecisionRoutingEvaluationsDrawer', () => {
   it('lists each routing outcome with channel, matched rules, targets, and latency', async () => {
     const view = await render(decisionMock.createDecisionMockApi())
     const list = rows(view)
@@ -102,21 +112,27 @@ describe('DecisionRoutingEvaluationsPanel', () => {
     expect(list[1]!.textContent).toContain('710 ms')
   })
 
-  it('opens the detail with snapshots, constraint, and per-target admission, and says Details expired', async () => {
+  it('opens the detail with snapshots, constraint, per-target admission and model result, and says Details expired', async () => {
     const view = await render(decisionMock.createDecisionMockApi())
+    expect(view.textContent).toContain('Support bot · shared bot routing')
     await click(rows(view)[2])
-    const sheet = document.body.querySelector('[role="dialog"]')!
-    expect(sheet.textContent).toContain('Routing evaluation')
+    const sheet = detail()!
     expect(sheet.textContent).toContain('Admitted')
     expect(sheet.textContent).toContain('Unavailable')
     expect(sheet.textContent).toContain('Routing at evaluation')
     expect(sheet.textContent).toContain('The export fails and I was charged for it.')
     expect(sheet.textContent).toContain('None: a new, unaddressed conversation')
-    await click(sheet.querySelector('button[aria-label="Close routing evaluation"]'))
-    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+    const bars = [...sheet.querySelectorAll('[data-testid="model-result"] li')]
+    expect(bars[0]!.textContent).toContain('✓ triggers')
+    expect(bars[0]!.textContent).toContain('Rule 1 → Billing')
+    expect(bars[1]!.textContent).toContain('Rule 2 → Technical')
+    expect(bars[2]!.textContent).not.toContain('✓ triggers')
+    expect(sheet.querySelector('[data-testid="model-result"] details pre')?.textContent).toContain('"type": "choice"')
+    await escape()
+    expect(detail()).toBeNull()
     expect(document.activeElement).toBe(rows(view)[2])
     await click(rows(view)[7])
-    const expired = document.body.querySelector('[role="dialog"]')!
+    const expired = detail()!
     expect(expired.textContent).toContain('Details expired')
     expect(expired.textContent).not.toContain('Evaluated message')
   })
@@ -148,11 +164,9 @@ describe('DecisionRoutingEvaluationsPanel', () => {
     })
     const view = await render(api)
     await click(rows(view)[2])
-    const sheet = document.body.querySelector('[role="dialog"]')!
-    const text = sheet.textContent ?? ''
-    expect(text.indexOf('Billing')).toBeGreaterThan(-1)
-    expect(text.indexOf('Rule 1')).toBeLessThan(text.indexOf('Billing', text.indexOf('Rule 1')))
-    expect(text.indexOf('Billing', text.indexOf('Rule 1'))).toBeLessThan(text.indexOf('Rule 2'))
+    const frozen = [...detail()!.querySelectorAll('ol li')].map((row) => row.textContent)
+    expect(frozen[0]).toMatch(/^1.*Billing$/)
+    expect(frozen[1]).toMatch(/^2.*Technical$/)
   })
 
   it('keeps Load more while the cursor continues, even after an audience-filtered empty page', async () => {

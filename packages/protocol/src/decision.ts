@@ -290,6 +290,14 @@ export const DecisionEvaluationInput = z.strictObject({
 })
 export type DecisionEvaluationInput = z.infer<typeof DecisionEvaluationInput>
 
+// Raw provider JSON as sent or received, capped; `truncated` marks a cut body.
+export const DECISION_RAW_JSON_MAX_CHARS = 16 * 1024
+export const DecisionRawJson = z.strictObject({
+  text: z.string().max(DECISION_RAW_JSON_MAX_CHARS),
+  truncated: z.boolean()
+})
+export type DecisionRawJson = z.infer<typeof DecisionRawJson>
+
 // A Recent evaluations summary row, read from the daemon's decision_verdict (decisions.md §9.5).
 export const DecisionEvaluationRecord = z.strictObject({
   seq: z.number().int().nonnegative(),
@@ -324,6 +332,9 @@ export const DecisionEvaluationRecordDetail = DecisionEvaluationRecord.extend({
     .nullable(),
   input: DecisionEvaluationInput.nullable(),
   fullAnswer: DecisionAnswer.nullable(),
+  // Present only when the CP asked for it (decision-evaluation-raw-v1); null once retention strips bodies.
+  rawRequest: DecisionRawJson.nullable().optional(),
+  rawResponse: DecisionRawJson.nullable().optional(),
   evidence: z
     .strictObject({
       snapshotSeq: z.number().int().nonnegative(),
@@ -419,7 +430,9 @@ export const DecisionRoutingEvaluationRecordDetail = DecisionRoutingEvaluationRe
     .max(64)
     .nullable(),
   input: DecisionEvaluationInput.nullable(),
-  fullAnswer: DecisionAnswer.nullable()
+  fullAnswer: DecisionAnswer.nullable(),
+  rawRequest: DecisionRawJson.nullable().optional(),
+  rawResponse: DecisionRawJson.nullable().optional()
 })
 export type DecisionRoutingEvaluationRecordDetail = z.infer<typeof DecisionRoutingEvaluationRecordDetail>
 

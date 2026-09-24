@@ -1,4 +1,5 @@
 import type {
+  DecisionAnswer,
   DecisionCondition,
   DecisionDefinition,
   DecisionEvaluation,
@@ -200,8 +201,8 @@ export function createDecisionMockSeed(scenario: DecisionMockScenario = 'ready')
       }
     ],
     routings: [{ botId: bot.id, config, readiness }],
-    evaluations: mockEvaluations(decisions),
-    routingEvaluations: mockRoutingEvaluations(decisions[0]!, config)
+    evaluations: withRawJson(mockEvaluations(decisions)),
+    routingEvaluations: withRawJson(mockRoutingEvaluations(decisions[0]!, config))
   })
   if (scenario === 'needs_review') {
     seed.channels[3]!.settings = {
@@ -282,6 +283,52 @@ const entry = (id: string, sender: string, text: string): DecisionEvaluationEntr
   threadId: null,
   time: '2026-01-01T10:00:00.000Z'
 })
+
+// The Jev wire answer a stored answer came from (daemon typesafe.ts reverses this).
+function jevAnswer(answer: DecisionAnswer): Record<string, unknown> {
+  if (answer.type === 'boolean') return { type: 'noul', noul: answer.probability }
+  if (answer.type === 'choice')
+    return { type: 'choice', choice: answer.value, probabilities: answer.probabilities, confidence: answer.confidence }
+  return {
+    type: 'score',
+    score: answer.value,
+    probabilities: Object.fromEntries(answer.probabilities.map((value, level) => [String(level), value])),
+    confidence: answer.confidence
+  }
+}
+
+// The raw request and response a daemon with decision-evaluation-raw-v1 reports; a provider error keeps its body.
+function withRawJson<T extends DecisionEvaluationRecordDetail | DecisionRoutingEvaluationRecordDetail>(
+  entries: T[]
+): T[] {
+  const raw = (value: unknown) => ({ text: JSON.stringify(value), truncated: false })
+  return entries.map((entry) => {
+    if (entry.detailsExpired || !entry.input || !entry.snapshot)
+      return { ...entry, rawRequest: null, rawResponse: null }
+    const { question, model } = entry.snapshot
+    const rawRequest = raw({
+      model,
+      state: {
+        currentMessage: entry.input.currentMessage,
+        history: entry.input.history,
+        conversation: {},
+        addressing: { mentions: [] },
+        context: { ...entry.input.context, snapshotSequence: entry.seq, tokenCount: 'estimate' }
+      },
+      questions: { decision: { ...question, type: question.type === 'boolean' ? 'noul' : question.type } }
+    })
+    const rawResponse = entry.fullAnswer
+      ? raw({
+          model: entry.actualModel ?? entry.requestedModel,
+          answers: { decision: jevAnswer(entry.fullAnswer) },
+          usage: { input_tokens: entry.usage?.inputTokens ?? 0, output_tokens: entry.usage?.outputTokens ?? 0 }
+        })
+      : entry.reason === 'provider'
+        ? raw({ error: { type: 'overloaded_error', message: 'The model is temporarily overloaded.' } })
+        : null
+    return { ...entry, rawRequest, rawResponse }
+  })
+}
 
 // One of each Recent evaluations outcome, plus a row whose bodies retention already stripped.
 function mockEvaluations(decisions: DecisionDefinition[]): DecisionEvaluationRecordDetail[] {

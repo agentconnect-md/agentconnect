@@ -13,7 +13,7 @@ import { bindingSaveError, type BindingSaveError, type GateStatus, type SavedGat
 import type { ChannelDecisionGate, DecisionCondition } from '@agentconnect.md/protocol/decision'
 import type { DecisionConversationRef } from '@agentconnect.md/protocol/decision-api'
 import { DecisionConditionFields, conditionSummary } from './DecisionConditionFields'
-import { DecisionEvaluationsPanel } from './DecisionEvaluationsPanel'
+import { DecisionEvaluationsDrawer } from './DecisionEvaluationsDrawer'
 import { DecisionGateTry } from './DecisionGateTry'
 import { DecisionPicker } from './DecisionPicker'
 
@@ -60,6 +60,7 @@ export function DecisionBindingStrip({
   conversation,
   canWrite: writable,
   agentName,
+  channelName,
   padX,
   saved,
   savedName,
@@ -73,6 +74,8 @@ export function DecisionBindingStrip({
   canWrite: boolean
   /** The agent this conversation dispatches to — the gate's one fixed target. */
   agentName: string
+  /** The conversation as its row reads, for the Recent evaluations subtitle. */
+  channelName?: string
   padX: number
   /** The conversation's saved gate, or null while only a draft exists. */
   saved: SavedGate | null
@@ -122,6 +125,27 @@ export function DecisionBindingStrip({
     refocus.current = true
     setBindingDraft(bindingKey, null)
   }
+
+  // Recent evaluations opens beside the strip, from the collapsed gate or the editor's action row.
+  const historyLink = conversation && saved && (
+    <button
+      type="button"
+      className="lnk self-start gap-[6px] text-[11.5px] font-medium"
+      aria-haspopup="dialog"
+      onClick={() => setHistoryOpen(true)}
+    >
+      <Icon name="history" size={12} />
+      {t('evaluations.toggle')}
+    </button>
+  )
+  const historyDrawer = conversation && historyOpen && (
+    <DecisionEvaluationsDrawer
+      conversation={conversation}
+      {...(channelName ? { channelName } : {})}
+      {...(agentName ? { agentName } : {})}
+      onClose={() => setHistoryOpen(false)}
+    />
+  )
 
   const words = { yes: t('condition.yes'), no: t('condition.no'), none: t('condition.noAnswer') }
   const savedDecision = saved ? (decisions.find((entry) => entry.id === saved.decisionId) ?? null) : null
@@ -229,18 +253,8 @@ export function DecisionBindingStrip({
             )}
           </div>
         )}
-        {conversation && (
-          <button
-            type="button"
-            className="lnk self-start gap-[6px] text-[11.5px] font-medium"
-            aria-expanded={historyOpen}
-            onClick={() => setHistoryOpen((open) => !open)}
-          >
-            <Icon name={historyOpen ? 'chevron-down' : 'chevron-right'} size={12} />
-            {t('evaluations.toggle')}
-          </button>
-        )}
-        {conversation && historyOpen && <DecisionEvaluationsPanel conversation={conversation} />}
+        {historyLink}
+        {historyDrawer}
       </div>
     )
   }
@@ -451,8 +465,10 @@ export function DecisionBindingStrip({
           <Button variant="secondary" size="sm" className="max-desktop:flex-1" disabled={busy} onClick={collapse}>
             {t('cancel')}
           </Button>
+          {historyLink}
         </div>
       )}
+      {historyDrawer}
     </div>
   )
 }

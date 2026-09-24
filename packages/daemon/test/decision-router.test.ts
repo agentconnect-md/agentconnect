@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { DECISION_RAW_JSON_MAX_CHARS } from '@agentconnect.md/protocol'
 import type {
   DecisionEvaluation,
   RdRouteAck,
@@ -304,6 +305,35 @@ describe('DecisionRouter', () => {
     expect(h.forwards).toHaveLength(0)
     // A participant is not reported again; no owner is chosen for a constrained conversation.
     expect(h.reports).toEqual([])
+  })
+
+  it('keeps the raw provider response in the verdict for answered and unavailable settles', async () => {
+    const h = await harness()
+    h.state.routing = routingOf({ otherwise: { type: 'skip' }, rules: [routingConfig.rules[0]!] })
+    const m = await h.post({ constraint: [entry(A, true), entry(B, false)] })
+    await h.router.intake(m.candidate)
+    await vi.waitFor(() => expect(h.calls).toHaveLength(1), WAIT)
+    h.calls[0]!.input.onRawRequest?.('{"model":"jev-latest"}')
+    h.calls[0]!.input.onRawResponse?.('{"model":"jev-example"}')
+    h.calls[0]!.resolve(none)
+    await h.router.idle()
+    expect(JSON.parse((await h.verdict(m.record.seq)).answerJson!)).toMatchObject({
+      request: '{"model":"jev-latest"}',
+      raw: '{"model":"jev-example"}'
+    })
+    expect(JSON.parse((await h.verdict(m.record.seq)).answerJson!)).not.toHaveProperty('rawTruncated')
+
+    const down = await harness()
+    const n = await down.post({ constraint: [entry(A, true), entry(C, false)] })
+    await down.router.intake(n.candidate)
+    await vi.waitFor(() => expect(down.calls).toHaveLength(1), WAIT)
+    down.calls[0]!.input.onRawResponse?.('x'.repeat(DECISION_RAW_JSON_MAX_CHARS + 5))
+    down.calls[0]!.resolve({ status: 'unavailable', reason: 'provider' })
+    await down.router.idle()
+    const stored = JSON.parse((await down.verdict(n.record.seq)).answerJson!)
+    expect(stored.raw).toHaveLength(DECISION_RAW_JSON_MAX_CHARS)
+    expect(stored.rawTruncated).toBe(true)
+    expect(down.admits[1]!.evidence.result).toMatchObject({ status: 'unavailable', reason: 'provider' })
   })
 
   it('(c) an all-participant reply settles with no model call and keeps every participant', async () => {

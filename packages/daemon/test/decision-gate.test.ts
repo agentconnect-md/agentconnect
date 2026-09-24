@@ -209,6 +209,34 @@ describe('DecisionGate', () => {
     await h.gate.idle()
   })
 
+  it('keeps the raw provider response with the answer, and alone on an unavailable settle', async () => {
+    const h = await harness()
+    const a = await h.post()
+    const b = await h.post()
+    await h.candidate(a)
+    await h.candidate(b)
+    await vi.waitFor(() => expect(h.calls).toHaveLength(2), WAIT)
+    h.calls[0]!.input.onRawRequest?.('{"model":"jev-latest","sent":1}')
+    h.calls[0]!.input.onRawResponse?.('{"model":"jev-1.13.0-actual"}')
+    h.calls[0]!.resolve(no)
+    h.calls[1]!.input.onRawRequest?.('{"model":"jev-latest","sent":2}')
+    h.calls[1]!.input.onRawResponse?.('upstream error')
+    h.calls[1]!.resolve({ status: 'unavailable', reason: 'provider' })
+    await vi.waitFor(() => expect(h.releases).toHaveLength(1), WAIT)
+    expect(JSON.parse((await h.store.getDecisionVerdict(a.record.seq, AGENT))!.answerJson!)).toMatchObject({
+      answer: { type: 'boolean', value: false },
+      request: '{"model":"jev-latest","sent":1}',
+      raw: '{"model":"jev-1.13.0-actual"}'
+    })
+    expect(JSON.parse((await h.store.getDecisionVerdict(b.record.seq, AGENT))!.answerJson!)).toEqual({
+      request: '{"model":"jev-latest","sent":2}',
+      raw: 'upstream error'
+    })
+    expect(h.releases[0]!.request.evidence.result).toMatchObject({ status: 'unavailable', reason: 'provider' })
+    h.releases[0]!.resolve({ kind: 'admitted' })
+    await h.gate.idle()
+  })
+
   it('(c) recovers a pending verdict as unavailable with no provider call, before a settled later one', async () => {
     const store = await openTestStore()
     const one = await harness({ store, fence: 'daemon-1:boot-1' })

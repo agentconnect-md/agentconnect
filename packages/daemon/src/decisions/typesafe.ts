@@ -35,7 +35,7 @@ const ResponseBody = z.object({
   usage: z.object({ input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative() })
 })
 
-async function readResponse(response: Response): Promise<unknown> {
+async function readText(response: Response): Promise<string> {
   const reader = response.body?.getReader()
   if (!reader) throw new DecisionProviderError('invalid_response')
   const chunks: Uint8Array[] = []
@@ -48,7 +48,7 @@ async function readResponse(response: Response): Promise<unknown> {
       if (size > 128 * 1024) throw new DecisionProviderError('invalid_response')
       chunks.push(value)
     }
-    return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
+    return Buffer.concat(chunks).toString('utf8')
   } finally {
     await reader.cancel().catch(() => {})
     reader.releaseLock()
@@ -60,7 +60,8 @@ export async function evaluateTypesafe(
   body: string,
   credentials: ProviderCredential,
   signal: AbortSignal,
-  fetcher: typeof fetch = fetch
+  fetcher: typeof fetch = fetch,
+  onRawResponse?: (text: string) => void
 ): Promise<DecisionEvaluation> {
   const base = ProviderEndpoint.safeParse(credentials.endpoint)
   if (!base.success) throw new DecisionProviderError('credentials')
@@ -70,7 +71,9 @@ export async function evaluateTypesafe(
   headers.set('content-type', 'application/json')
   const response = await fetcher(url, { method: 'POST', headers, body, signal, redirect: 'error' })
   if (!response.ok) {
-    await response.body?.cancel()
+    // An error body is kept best effort for the evaluation record; the status still decides the reason.
+    const text = await readText(response).catch(() => null)
+    if (text !== null) onRawResponse?.(text)
     const reason = [401, 403].includes(response.status)
       ? 'credentials'
       : [429, 529].includes(response.status)
@@ -80,8 +83,10 @@ export async function evaluateTypesafe(
           : 'provider'
     throw new DecisionProviderError(reason)
   }
+  const text = await readText(response)
+  onRawResponse?.(text)
   try {
-    const result = ResponseBody.parse(await readResponse(response))
+    const result = ResponseBody.parse(JSON.parse(text) as unknown)
     const answer = result.answers.decision
     let normalized: unknown
     if (answer.type === 'noul') {

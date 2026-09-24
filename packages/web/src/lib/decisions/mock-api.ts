@@ -541,7 +541,15 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
       const limit = Math.min(50, Math.max(1, page.limit ?? 20))
       const after = evaluations.filter((entry) => page.cursor === undefined || entry.seq < page.cursor)
       const items: DecisionEvaluationRecord[] = after.slice(0, limit).map((entry) => {
-        const { snapshot: _snapshot, input: _input, fullAnswer: _fullAnswer, evidence: _evidence, ...summary } = entry
+        const {
+          snapshot: _snapshot,
+          input: _input,
+          fullAnswer: _fullAnswer,
+          evidence: _evidence,
+          rawRequest: _rawRequest,
+          rawResponse: _rawResponse,
+          ...summary
+        } = entry
         return summary
       })
       return copy({ items, nextCursor: after.length > limit ? (items.at(-1)?.seq ?? null) : null })
@@ -684,6 +692,8 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
           constraint: _constraint,
           input: _input,
           fullAnswer: _fullAnswer,
+          rawRequest: _rawRequest,
+          rawResponse: _rawResponse,
           ...summary
         } = entry
         return summary

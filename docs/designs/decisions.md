@@ -1438,6 +1438,16 @@ naming an audience: there the summary list follows the organization read baselin
 (closed while an external-access policy is active), and the detail read with frozen
 bodies additionally requires edit access to the consumer agent. Expired snapshots
 say **Details expired**. Editing a definition cannot relabel a historical result.
+Details also carry the raw provider JSON, both kept inside the verdict's answer
+record: the request body verbatim as the evaluator sent it (never rebuilt, so a
+later change to the request format cannot relabel it) and the response body as
+received, including error and malformed bodies. A verdict canceled before it
+settled, or settled by an older daemon, has none. The request is stored whole
+(the provider input is already capped at 32 KiB) and the response up to 16K
+characters; a detail serves each up to 16K characters, marked truncated, and both
+disappear with the other bodies at retention. A daemon advertises
+`decision-evaluation-raw-v1` and returns them only when the CP's detail request
+sets `includeRaw`, so neither side sends a field an older strict peer rejects.
 
 Routing reads follow the same rules on the bot's evaluation host. The host answers
 `decision/routing-evaluations` and `decision/routing-evaluation` (feature

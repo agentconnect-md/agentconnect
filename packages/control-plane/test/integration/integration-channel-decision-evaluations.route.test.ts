@@ -61,6 +61,8 @@ const detail: DecisionEvaluationRecordDetail = {
     context: { partial: false, reasons: [], omittedMessages: 0 }
   },
   fullAnswer: { type: 'boolean', value: true, probability: 0.9 },
+  rawRequest: { text: '{"model":"jev-latest"}', truncated: false },
+  rawResponse: { text: '{"model":"jev-1.13.0"}', truncated: true },
   evidence: { snapshotSeq: 12, suppliedBackground: 0 }
 }
 

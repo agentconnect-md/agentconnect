@@ -94,7 +94,9 @@ describe('BotRoutingView', () => {
     await click(button(view, 'Test routing'))
     expect(view.querySelector('[data-testid="routing-try"]')).not.toBeNull()
     await click(button(view, 'Recent evaluations'))
-    expect(view.querySelector('[data-testid="routing-evaluations"]')?.textContent).toContain('Partially routed')
+    expect(document.body.querySelector('[data-testid="routing-evaluations"]')?.textContent).toContain(
+      'Partially routed'
+    )
   })
 
   it('distinguishes saved from applied while pending sync', async () => {
