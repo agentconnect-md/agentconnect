@@ -188,6 +188,38 @@ describe('GithubRunCoordinator', () => {
     expect(kick).toHaveBeenCalledOnce()
   })
 
+  it('converges queued, preparing, and session start from the durable run state', async () => {
+    let row = run()
+    const hooks = {
+      getRun: vi.fn(async () => row),
+      upsertReviewProjection: vi.fn<HookRepo['upsertReviewProjection']>(async () =>
+        projection({ currentHookRunId: row.id })
+      ),
+      bindRunProjection: vi.fn(async () => true),
+      setProjectionDesired: vi.fn<HookRepo['setProjectionDesired']>(async () => true),
+      upsertReviewSubject: vi.fn(async () => {})
+    }
+    const coordinator = new GithubRunCoordinator({
+      hooks: hooks as never,
+      agents: { getUnscoped: vi.fn(async () => agent()) },
+      clock: new FakeClock(NOW)
+    })
+
+    await coordinator.afterAccepted(hookId, row.deliveryKey)
+    row = run({ preparingAt: new Date(NOW + 100) })
+    await coordinator.afterPreparing(hookId, row.deliveryKey)
+    row = run({ preparingAt: new Date(NOW + 100), turnStartedAt: new Date(NOW + 200) })
+    await coordinator.afterStart(hookId, row.deliveryKey)
+    await coordinator.afterAccepted(hookId, row.deliveryKey)
+
+    expect(hooks.upsertReviewProjection.mock.calls[0]?.[0]).toMatchObject({ desiredState: 'queued' })
+    expect(hooks.setProjectionDesired.mock.calls.map((call) => call[2])).toEqual([
+      'preparing',
+      'in_progress',
+      'in_progress'
+    ])
+  })
+
   it('never binds or converges a delayed edge onto a tombstoned projection', async () => {
     const row = run()
     const hooks = {
@@ -836,6 +868,27 @@ describe('GithubRunReporter', () => {
     expect(hooks.completeProjectionWrite).toHaveBeenCalledWith(
       expect.objectContaining({ observedState: 'in_progress' })
     )
+  })
+
+  it('shows workspace preparation as in progress before a session exists', async () => {
+    const p = projection({ desiredState: 'preparing', observedState: 'queued', checkRunId: '90071992547409931' })
+    const fetchImpl = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async () =>
+      Response.json({ id: p.checkRunId, external_id: p.externalId, status: 'in_progress', conclusion: null })
+    )
+    const { reporter, hooks } = worker(p, fetchImpl)
+
+    await reporter.tick()
+
+    const mutation = fetchImpl.mock.calls.find(([, init]) => init?.method === 'PATCH')
+    const body = JSON.parse(String(mutation?.[1]?.body)) as Record<string, unknown>
+    expect(body.status).toBe('in_progress')
+    expect(body).not.toHaveProperty('details_url')
+    expect(body).not.toHaveProperty('conclusion')
+    expect(body.output).toMatchObject({
+      title: 'Preparing review',
+      summary: expect.stringContaining('Phase: preparing')
+    })
+    expect(hooks.completeProjectionWrite).toHaveBeenCalledWith(expect.objectContaining({ observedState: 'preparing' }))
   })
 
   it('updates the same check run to a terminal conclusion', async () => {
@@ -1511,7 +1564,7 @@ describe('GithubRunReporter', () => {
     expect(hooks.completeProjectionWrite).not.toHaveBeenCalled()
   })
 
-  it('reconciles an ambiguous create to the marker-bound state when the same generation advanced', async () => {
+  it('reconciles an ambiguous preparing create when the same generation advanced', async () => {
     const marker = 'durable-marker'
     const p = projection({
       desiredState: 'success',
@@ -1523,7 +1576,7 @@ describe('GithubRunReporter', () => {
     const fetchImpl = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(
       async () =>
         new Response(
-          `{"total_count":1,"check_runs":[{"id":12345678901234567,"external_id":"${p.externalId}","status":"queued","conclusion":null,"output":{"summary":"Phase: queued\\n<!-- agentconnect-write:${marker} -->"}}]}`,
+          `{"total_count":1,"check_runs":[{"id":12345678901234567,"external_id":"${p.externalId}","status":"in_progress","conclusion":null,"output":{"summary":"Phase: preparing\\n<!-- agentconnect-write:${marker} -->"}}]}`,
           { status: 200, headers: { 'content-type': 'application/json' } }
         )
     )
@@ -1542,9 +1595,9 @@ describe('GithubRunReporter', () => {
       expect.objectContaining({
         writeMarker: marker,
         checkRunId: '12345678901234567',
-        // The lost response belonged to queued. `success` still needs its own
+        // The lost response belonged to preparing. `success` still needs its own
         // association barrier + PATCH after this mutex is cleared.
-        observedState: 'queued'
+        observedState: 'preparing'
       })
     )
   })

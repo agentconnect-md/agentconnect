@@ -56,6 +56,8 @@ import {
   GithubReviewResultOk,
   GithubReviewResultReport,
   HookReport,
+  HookPreparing,
+  HookPreparingOk,
   HookStart,
   HookStartOk
 } from './frames/hook.js'
@@ -328,6 +330,8 @@ export const FRAME_SCHEMAS = {
   'cron/run': CronRunNow,
   // ── hooks (content fires ride rd/*; only metadata/effect control is here) ──
   'hook/report': HookReport,
+  'hook/preparing': HookPreparing,
+  'hook/preparing/ok': HookPreparingOk,
   'hook/start': HookStart,
   'hook/start/ok': HookStartOk,
   'github/review-authorize': GithubReviewAuthorize,
@@ -663,6 +667,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('cron/report', FRAME_SCHEMAS['cron/report']),
   frame('cron/run', FRAME_SCHEMAS['cron/run']),
   frame('hook/report', FRAME_SCHEMAS['hook/report']),
+  frame('hook/preparing', FRAME_SCHEMAS['hook/preparing']),
+  frame('hook/preparing/ok', FRAME_SCHEMAS['hook/preparing/ok']),
   frame('hook/start', FRAME_SCHEMAS['hook/start']),
   frame('hook/start/ok', FRAME_SCHEMAS['hook/start/ok']),
   frame('github/review-authorize', FRAME_SCHEMAS['github/review-authorize']),

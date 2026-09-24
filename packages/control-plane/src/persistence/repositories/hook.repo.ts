@@ -38,6 +38,7 @@ import type {
   GithubRepoFullNameRefreshResult,
   GithubCommentFamily,
   HookReportInput,
+  HookPreparingInput,
   HookStartInput,
   HookReviewAttemptInput,
   HookReviewAttemptResult,
@@ -149,6 +150,7 @@ function toRunRecord(r: HookRun): HookRunRecord {
     isDraft: r.isDraft,
     baseChanged: r.baseChanged,
     startedAt: r.startedAt,
+    preparingAt: r.preparingAt,
     turnStartedAt: r.turnStartedAt,
     completedAt: r.completedAt,
     orphanedAt: r.orphanedAt,
@@ -243,12 +245,13 @@ function isStrictlyNewerRun(
 }
 
 function isTerminalProjectionState(state: string): boolean {
-  return state !== 'queued' && state !== 'in_progress'
+  return state !== 'queued' && state !== 'preparing' && state !== 'in_progress'
 }
 
 function isProjectionDesiredState(state: string): boolean {
   return (
     state === 'queued' ||
+    state === 'preparing' ||
     state === 'in_progress' ||
     state === 'success' ||
     state === 'action_required' ||
@@ -964,6 +967,7 @@ export class PgHookRepo implements HookRepo {
             reportSha: r.reportSha ?? null,
             isDraft: r.isDraft ?? null,
             baseChanged: r.baseChanged ?? null,
+            preparingAt: null,
             turnStartedAt: null,
             completedAt: null,
             orphanedAt: null,
@@ -1218,6 +1222,8 @@ export class PgHookRepo implements HookRepo {
               THEN 'skipped'
             WHEN latest."turnStartedAt" IS NOT NULL
               THEN 'in_progress'
+            WHEN latest."preparingAt" IS NOT NULL
+              THEN 'preparing'
             ELSE 'queued'
           END AS "expectedState"
         FROM latest
@@ -1251,6 +1257,49 @@ export class PgHookRepo implements HookRepo {
       LIMIT ${take}
     `)
     return rows.map(toRunRecord)
+  }
+
+  async recordPreparing(hookId: HookId, reportingDaemonId: DaemonId, input: HookPreparingInput): Promise<boolean> {
+    const authority = await this.dispatchAuthority(hookId)
+    return this.transaction(async (tx) => {
+      await lockHookReviewLifecycleScope(tx, hookId)
+      await lockHookDeliveryRedeliveryScope(tx, input.deliveryKey)
+      const found = await tx.hookRun.findUnique({
+        where: { hookId_deliveryKey: { hookId, deliveryKey: input.deliveryKey } }
+      })
+      if (!found) return false
+      const run = await this.lockHookRunById(tx, found.id)
+      const hook = await tx.hookDef.findUnique({ where: { id: hookId } })
+      if (
+        !run ||
+        !hook ||
+        !hook.enabled ||
+        hook.kind !== 'github' ||
+        hook.agentId !== input.agentId ||
+        hook.configRevision !== input.configRevision ||
+        hook.dispatchRevision !== input.dispatchRevision ||
+        hook.projectionEpoch !== run.projectionEpoch ||
+        hook.reviewPolicy !== run.reviewPolicySnapshot ||
+        hook.reportingMode !== run.reportingModeSnapshot ||
+        hook.gateMode !== run.gateModeSnapshot ||
+        run.status !== 'running' ||
+        run.projectionIntent !== 'revision_event' ||
+        run.agentId !== input.agentId ||
+        run.configRevision !== input.configRevision ||
+        run.dispatchRevision !== input.dispatchRevision ||
+        run.dispatchDaemonId !== input.dispatchDaemonId ||
+        reportingDaemonId !== input.dispatchDaemonId ||
+        !servedBy(authority, input.agentId, reportingDaemonId)
+      )
+        return false
+      if (run.preparingAt !== null) return true
+      if (run.turnStartedAt !== null) return false
+      const changed = await tx.hookRun.updateMany({
+        where: { id: run.id, status: 'running', preparingAt: null, turnStartedAt: null },
+        data: { preparingAt: input.at }
+      })
+      return changed.count === 1
+    })
   }
 
   async recordStart(hookId: HookId, reportingDaemonId: DaemonId, r: HookStartInput): Promise<boolean> {
@@ -2568,20 +2617,13 @@ export class PgHookRepo implements HookRepo {
     return this.transaction(async (tx) => {
       let effectiveDesiredState = desiredState
       if (currentHookRunId !== undefined) {
-        // Global mutation order for run-bound lifecycle edges is HookRun ->
-        // projection. recordReviewResult/recordReport/reaper use the same order.
-        // Whichever side wins, a submitted formal verdict is observed here or
-        // commits afterwards and overwrites this generic edge in its own tx.
+        // Lock HookRun before projection so delayed lifecycle edges see the latest verdict.
         const currentRun = await this.lockHookRunById(tx, currentHookRunId)
         if (!currentRun || currentRun.projectionId !== projectionId || currentRun.projectionGeneration !== generation)
           return false
-        if (currentRun.redeliveryAttempts > 0 && currentRun.redeliveryLastRequestedAt !== null) {
-          const authoritative = authoritativeHookProjectionState(toRunRecord(currentRun))
-          if (authoritative === null) return false
-          effectiveDesiredState = authoritative
-        } else {
-          effectiveDesiredState = submittedReviewProjectionState(currentRun) ?? desiredState
-        }
+        const authoritative = authoritativeHookProjectionState(toRunRecord(currentRun))
+        if (authoritative === null) return false
+        effectiveDesiredState = authoritative
       }
       const terminal = isTerminalProjectionState(effectiveDesiredState)
       const changed = await tx.hookReviewProjection.updateMany({
@@ -2590,9 +2632,7 @@ export class PgHookRepo implements HookRepo {
           generation,
           tombstonedAt: null,
           ...(currentHookRunId !== undefined ? { currentHookRunId } : {}),
-          // queued/in_progress are lifecycle hints. Once any terminal authority
-          // seals this generation, a delayed accepted/start edge can no longer
-          // regress it even if its coordinator held a stale row snapshot.
+          // Nonterminal lifecycle hints cannot reopen a sealed generation.
           ...(terminal ? {} : { sealedThrough: { lt: generation } })
         },
         data: {

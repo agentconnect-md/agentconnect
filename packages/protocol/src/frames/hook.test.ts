@@ -195,6 +195,22 @@ describe('R1/R2a hook control schemas', () => {
   })
 
   it('round-trips hook/start and all formal-review correlated requests', () => {
+    const preparing = buildEnvelope('hook/preparing', {
+      hookId: HOOK_ID,
+      agentId: AGENT_ID,
+      deliveryKey: 'delivery-1',
+      ...snapshot
+    })
+    const decodedPreparing = decodeEnvelope(JSON.stringify(preparing))
+    expect(decodedPreparing.ok).toBe(true)
+    if (!decodedPreparing.ok || !isFrame('hook/preparing')(decodedPreparing.frame)) {
+      throw new Error('expected hook/preparing')
+    }
+    expect(decodedPreparing.frame.payload.dispatchRevision).toBe(snapshot.dispatchRevision)
+    expect(
+      decodeEnvelope(JSON.stringify(buildEnvelope('hook/preparing/ok', { accepted: true }, { corr: preparing.id }))).ok
+    ).toBe(true)
+
     const start = buildEnvelope('hook/start', {
       hookId: HOOK_ID,
       agentId: AGENT_ID,

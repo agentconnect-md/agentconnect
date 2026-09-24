@@ -1931,6 +1931,22 @@ describe('R1/R2a persistence foundation', () => {
       })
     ).toBe(false)
 
+    const preparing = {
+      deliveryKey: accepted.deliveryKey,
+      agentId,
+      configRevision: hook.configRevision,
+      dispatchRevision: hook.dispatchRevision,
+      dispatchDaemonId: D1,
+      at: new Date('2026-07-11T01:00:00.500Z')
+    }
+    expect(await repo.recordPreparing(hookId, D1, preparing)).toBe(true)
+    expect(await repo.recordPreparing(hookId, D1, preparing)).toBe(true)
+    expect(await repo.recordPreparing(hookId, D2, preparing)).toBe(false)
+    expect(await repo.getRun(hookId, accepted.deliveryKey)).toMatchObject({
+      preparingAt: preparing.at,
+      sessionId: null
+    })
+
     const start = {
       deliveryKey: accepted.deliveryKey,
       agentId,
@@ -2095,6 +2111,8 @@ describe('R1/R2a persistence foundation', () => {
       subjectSyncErrorCode: null,
       desiredState: 'queued'
     })
+    expect(await repo.setProjectionDesired(projection.id, projection.generation, 'queued', firedAt, run!.id)).toBe(true)
+    expect(await repo.getReviewProjection(projection.id)).toMatchObject({ desiredState: 'success' })
     // A capped/partial GitHub read records the generation-scoped block but
     // never closes rows from the last complete association snapshot.
     expect(
@@ -2106,7 +2124,7 @@ describe('R1/R2a persistence foundation', () => {
     expect(await repo.getReviewProjection(projection.id)).toMatchObject({
       subjectSyncGeneration: projection.generation,
       subjectSyncErrorCode: 'pr_association_incomplete',
-      desiredState: 'queued'
+      desiredState: 'success'
     })
 
     expect(

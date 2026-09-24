@@ -53,6 +53,7 @@ import { handleGitCredRequest } from './gitcred.js'
 import { handleLinearCredRequest } from './linearcred.js'
 import { handleProviderCredentials } from './provider-credentials.js'
 import { handleHookStart } from './hook-start.js'
+import { handleHookPreparing } from './hook-preparing.js'
 import { handleApprovalRoute } from './approval-route.js'
 import { handleGithubReviewAuthorize } from './github-review-authorize.js'
 import { handleGithubReviewResult } from './github-review-result.js'
@@ -104,6 +105,7 @@ export class FrameRouter {
       'executor/release': handleExecutorRelease,
       'agent/exists': handleAgentExists,
       'hook/report': handleHookReport,
+      'hook/preparing': handleHookPreparing,
       'hook/start': handleHookStart,
       'agent/approval-route': handleApprovalRoute,
       'github/review-authorize': handleGithubReviewAuthorize,

@@ -15,6 +15,7 @@ import {
   type GithubReviewResultReport,
   type HookConfigSnapshot,
   type HookReviewEvent,
+  type HookPreparing,
   type HookStart
 } from '@agentconnect.md/protocol'
 import type { Clock } from '../domain/clock.js'
@@ -45,7 +46,10 @@ export class GithubReviewBrokerError extends Error {
 }
 
 export interface GithubReviewBrokerDeps {
-  hook: Pick<HookRepo, 'getUnscoped' | 'getRun' | 'recordStart' | 'reserveReviewAttempt' | 'recordReviewResult'>
+  hook: Pick<
+    HookRepo,
+    'getUnscoped' | 'getRun' | 'recordPreparing' | 'recordStart' | 'reserveReviewAttempt' | 'recordReviewResult'
+  >
   agent: Pick<AgentRepo, 'getUnscoped'>
   github: Pick<GithubService, 'mintReviewForAgent' | 'validateReviewForAgent'>
   clock: Pick<Clock, 'now'>
@@ -287,6 +291,32 @@ export class GithubReviewBrokerService {
       denied(message, 'CONFLICT')
     }
     return run
+  }
+
+  /** Report active preparation without granting formal review authority. */
+  async prepare(input: HookPreparing, reportingDaemonId: DaemonId, reportingOrgId?: string): Promise<void> {
+    const hookId = HookId(input.hookId)
+    const run = requireAcceptedRun(await this.deps.hook.getRun(hookId, input.deliveryKey), input, reportingDaemonId, {
+      started: false
+    })
+    if (reportingOrgId && run.orgId !== reportingOrgId) denied('organization does not match the accepted hook run')
+    if (run.agentId !== AgentId(input.agentId) || run.projectionIntent !== 'revision_event') {
+      denied('hook preparation does not match an accepted review')
+    }
+    requireCurrentHookForStart(await this.deps.hook.getUnscoped(hookId), run, reportingDaemonId)
+    const agent = await this.deps.agent.getUnscoped(run.agentId)
+    if (!agent || agent.status !== 'active' || !(await this.serves(agent, reportingDaemonId))) {
+      denied('agent is no longer active on the accepted dispatch daemon')
+    }
+    const accepted = await this.deps.hook.recordPreparing(hookId, reportingDaemonId, {
+      deliveryKey: input.deliveryKey,
+      agentId: run.agentId,
+      configRevision: bigintWire(input.configRevision),
+      dispatchRevision: bigintWire(input.dispatchRevision),
+      dispatchDaemonId: DaemonId(input.dispatchDaemonId),
+      at: run.preparingAt ?? new Date(this.deps.clock.now())
+    })
+    if (!accepted) denied('hook preparation was rejected', 'CONFLICT')
   }
 
   /** Persist the exact start barrier before a GitHub hook enters the prompt. */
