@@ -59,7 +59,7 @@ export const handleExecutorCandidates: Handler = async (frame, conn, deps) => {
   if ('refused' in gate) return reply({ candidates: [], reason: gate.refused })
   if (!gate.spreads) return reply({ candidates: [], reason: 'group_switch_off' })
 
-  // A HINT for a successor holder, from the CP's own session row: where this session last ran (§7). Stale is harmless — a prepare there attaches or creates.
+  // A HINT for a successor holder: where this session last ran, as fresh as the last ready prepare (§7). Stale is harmless — a prepare there attaches or creates.
   const asked = frame.payload.sessionKey
   const current = asked ? await deps.session.executorForKey(agentId, parseSessionKey(asked)) : null
 
@@ -148,6 +148,29 @@ function relayPrepare(
   return run
 }
 
+/** The hint a successor's `executor/candidates` reads; advisory, so a failed write must not cost the holder its reply. */
+async function recordPrepared(deps: DaemonWsDeps, holderId: string, req: ExecutorPrepareReq, at: Date): Promise<void> {
+  try {
+    await deps.session.recordExecutorObservation({
+      agentId: AgentId(req.agentId),
+      key: parseSessionKey(req.sessionKey),
+      executorDaemonId: DaemonId(req.executorDaemonId),
+      at,
+      source: 'prepare'
+    })
+  } catch (err) {
+    deps.log.error(
+      {
+        daemonId: holderId,
+        executorDaemonId: req.executorDaemonId,
+        agentId: req.agentId,
+        code: err instanceof Error ? err.name : 'unknown'
+      },
+      'executor/prepare: recording the executor hint failed'
+    )
+  }
+}
+
 export const handleExecutorPrepare: Handler = async (frame, conn, deps) => {
   if (!isFrame('executor/prepare')(frame)) return
   // NEVER log `result`: its `ready` arm carries the pipe's pre-shared key.
@@ -183,8 +206,11 @@ export const handleExecutorPrepare: Handler = async (frame, conn, deps) => {
   const relayed = relayPrepare(deps, orgId, conn.daemonId, executor, req)
 
   const result = await relayed
+  const answeredAt = new Date(deps.clock.now())
   // The duty may have moved while the executor prepared: a deposed holder is refused and never sees the key, and its successor's new launch rotates it.
   if (!(await deps.dutyLease.holdsAgent(holder, agentId))) return refuse('not_holder')
+  // Recorded before the holder has the key, so a successor is hinted even if this holder dies before its report lands (§7).
+  if (result.status === 'ready') await recordPrepared(deps, conn.daemonId, req, answeredAt)
   reply(result)
 }
 

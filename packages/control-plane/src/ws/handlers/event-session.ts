@@ -165,6 +165,30 @@ async function externalCandidate(p: EventSession, orgId: OrgId, agentId: AgentId
   }
 }
 
+/** The verdict also lands on the executor hint, where it outranks any prepare it postdates (session-executors.md §7). */
+async function recordReportedExecutor(p: EventSession, agentId: AgentId, deps: DaemonWsDeps): Promise<void> {
+  if (p.platform === undefined || p.channel === undefined) return
+  const executorDaemonId =
+    p.executorDaemonId !== undefined
+      ? DaemonId(p.executorDaemonId)
+      : p.stayedHomeReason !== undefined
+        ? null
+        : undefined
+  if (executorDaemonId === undefined) return
+  try {
+    await deps.session.recordExecutorObservation({
+      agentId,
+      key: { platform: p.platform, channel: p.channel, ...(p.thread !== undefined ? { thread: p.thread } : {}) },
+      executorDaemonId,
+      at: new Date(p.ts),
+      source: 'report'
+    })
+  } catch (err) {
+    // Advisory: the milestone itself is committed, and the next report carries the verdict again.
+    deps.log.error({ err, agentId, sessionId: p.sessionId }, 'event/session: recording the executor hint failed')
+  }
+}
+
 async function recordEventSession(
   p: EventSession,
   orgId: OrgId,
@@ -222,6 +246,7 @@ async function recordEventSession(
     at: new Date(p.ts)
   })
   if (!recorded) return
+  await recordReportedExecutor(p, agentId, deps)
   // Confirm the capture gate for the rows whose privacy the daemon cannot
   // infer locally (§5.1): an A2A child always starts excluded and only a
   // CP-confirmed `org` state may open it, and a settled child's tier is by

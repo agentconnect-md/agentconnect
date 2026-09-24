@@ -22,6 +22,7 @@ const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
 const SET = '33333333-3333-4333-8333-333333333333'
 const ORG = 'org-a'
 const PSK = 'cHNrLXRoYXQtbXVzdC1uZXZlci1iZS1sb2dnZWQ'
+const NOW = Date.parse('2026-09-24T10:00:00.000Z')
 
 const FACTS: ExecutorFacts = {
   enabled: true,
@@ -99,8 +100,10 @@ function fakeDeps(over: {
   const log = vi.fn()
   const recordHostedSessions = vi.fn(async () => undefined)
   const executorForKey = vi.fn(async () => over.executorForKey ?? null)
+  const recordExecutorObservation = vi.fn(async () => undefined)
   const deps = {
     log: { error: log },
+    clock: { now: () => NOW },
     agent: {
       get: async () => ({
         id: AGENT,
@@ -109,7 +112,7 @@ function fakeDeps(over: {
       })
     },
     dutyLease: { holdsAgent: async (daemonId: string) => (over.holds ? over.holds(daemonId) : true) },
-    session: { executorForKey },
+    session: { executorForKey, recordExecutorObservation },
     memberSets: {
       get: async () => {
         if (++setReads === 1 && over.slowSetRead) await over.slowSetRead
@@ -128,7 +131,7 @@ function fakeDeps(over: {
       recordHostedSessions
     }
   } as unknown as DaemonWsDeps
-  return { deps, log, recordHostedSessions, executorForKey, setReads: () => setReads }
+  return { deps, log, recordHostedSessions, executorForKey, recordExecutorObservation, setReads: () => setReads }
 }
 
 const replied = (conn: ReturnType<typeof fakeConn>) => conn.replyTo.mock.calls.map((call) => call[2] as unknown)
@@ -379,6 +382,43 @@ describe('handleExecutorPrepare', () => {
 
     await handleExecutorPrepare(frame('executor/prepare', PREPARE), conn, deps)
     expect(replied(conn)).toEqual([{ status: 'full', liveCount: 32 }])
+  })
+
+  it('records a ready prepare as the session’s executor before replying, and a failed write still replies', async () => {
+    const executor = member(EXECUTOR, { executor: FACTS })
+    executor.conn.request.mockResolvedValue(READY)
+    const conn = fakeConn()
+    const { deps, log, recordExecutorObservation } = fakeDeps({ members: [member(HOLDER), executor] })
+    recordExecutorObservation.mockImplementationOnce(async () => {
+      expect(replied(conn)).toEqual([])
+    })
+    await handleExecutorPrepare(frame('executor/prepare', PREPARE), conn, deps)
+    expect(recordExecutorObservation.mock.calls).toEqual([
+      [
+        {
+          agentId: AGENT,
+          key: { platform: 'slack', channel: 'C1', thread: '1700000000.000100' },
+          executorDaemonId: EXECUTOR,
+          at: new Date(NOW),
+          source: 'prepare'
+        }
+      ]
+    ])
+    expect(replied(conn)).toEqual([READY])
+
+    recordExecutorObservation.mockRejectedValueOnce(new Error('database is away'))
+    const again = fakeConn()
+    await handleExecutorPrepare(frame('executor/prepare', PREPARE), again, deps)
+    expect(replied(again)).toEqual([READY])
+    expect(JSON.stringify(log.mock.calls)).not.toContain(PSK)
+  })
+
+  it('records nothing for an answer other than ready', async () => {
+    const executor = member(EXECUTOR, { executor: FACTS })
+    executor.conn.request.mockResolvedValue({ status: 'full', liveCount: 32 })
+    const { deps, recordExecutorObservation } = fakeDeps({ members: [member(HOLDER), executor] })
+    await handleExecutorPrepare(frame('executor/prepare', PREPARE), fakeConn(), deps)
+    expect(recordExecutorObservation).not.toHaveBeenCalled()
   })
 })
 

@@ -898,6 +898,7 @@ model Agent {
   assignments           Assignment[]
   launches              AgentLaunch[]
   sessions              SessionMeta[]
+  sessionExecutorHints  SessionExecutorHint[]
   sessionUsage          SessionUsage[]
   sessionSpend          SessionSpend[]
   crons                 CronDef[]
@@ -1323,6 +1324,19 @@ model SessionMeta {
   @@index([daemonId])
   @@index([orgId, externalProvider, externalScopeId])
   @@map("session_meta")
+}
+
+// Where one agent's session key last ran (session-executors.md §7): the newer of a relayed ready `prepare` and a reported verdict. Ids and a stamp only.
+model SessionExecutorHint {
+  agentId          String   @db.Uuid
+  sessionKey       String // canonical `sessionKeyStr` form
+  executorDaemonId String?  @db.Uuid // null: a newer report said the session stayed with its holder
+  observedAt       DateTime @db.Timestamptz(6) // CP clock for a prepare, the report's own `ts` for a report
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, sessionKey])
+  @@map("session_executor_hint")
 }
 
 // Durable PR ownership plus an optional level-triggered wake; no feedback bodies or CI logs.
