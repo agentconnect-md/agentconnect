@@ -24,6 +24,15 @@ vi.mock('@/lib/decisions/provider', () => ({
           instructions: 'Classify this task.',
           criteria: { deploy: 'Deployment', infrastructure_maintenance: 'Infrastructure maintenance' }
         }
+      },
+      {
+        id: '55555555-5555-4555-8555-555555555555',
+        name: 'Urgent',
+        question: {
+          type: 'boolean',
+          instructions: 'Is this urgent?',
+          criteria: { true: 'It needs action now', false: 'It can wait' }
+        }
       }
     ]
   })
@@ -230,4 +239,67 @@ it('edits the agent run settings from the fixed picker', async () => {
     expect.objectContaining({ runtime: 'claude', model: 'model-standard', effort: 'medium' })
   )
   expect(onFallbackChange.mock.calls[0]![0].permissionMode).not.toBe('default')
+})
+
+it('reorders choice rules from the keyboard on the drag handle', async () => {
+  const onChange = vi.fn()
+  const deploy = { when: { type: 'choice', thresholds: { deploy: 0.6 } }, runtime: 'claude', model: 'model-standard' }
+  const maintenance = {
+    when: { type: 'choice', thresholds: { infrastructure_maintenance: 0.4 } },
+    runtime: 'claude',
+    model: 'model-standard'
+  }
+  container = document.createElement('div')
+  document.body.appendChild(container)
+  root = createRoot(container)
+  await act(async () =>
+    root!.render(
+      <ModelSelectionField
+        value={{ decisionId: '44444444-4444-4444-8444-444444444444', rules: [deploy, maintenance] as never }}
+        onChange={onChange}
+        onValidityChange={vi.fn()}
+        source={{ runtimeModels: [{ runtime: 'claude', version: '', models: ['model-standard'] }] }}
+        runtimes={['claude']}
+        fallback={{ runtime: 'claude', model: 'model-standard' }}
+        onFallbackChange={vi.fn()}
+      />
+    )
+  )
+  const handle = container.querySelector<HTMLButtonElement>('button[aria-label^="Reorder rule 1"]')!
+  expect(handle.getAttribute('draggable')).toBe('true')
+  await act(async () => handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ rules: [maintenance, deploy] }))
+})
+
+it('lists Yes and No and splits a shared Boolean rule when one answer gets its own model', async () => {
+  const onChange = vi.fn()
+  container = document.createElement('div')
+  document.body.appendChild(container)
+  root = createRoot(container)
+  await act(async () =>
+    root!.render(
+      <ModelSelectionField
+        value={{
+          decisionId: '55555555-5555-4555-8555-555555555555',
+          rules: [{ when: { type: 'boolean', values: [false, true] }, runtime: 'claude', model: 'model-standard' }]
+        }}
+        onChange={onChange}
+        onValidityChange={vi.fn()}
+        source={{ runtimeModels: [{ runtime: 'claude', version: '', models: ['model-standard'] }] }}
+        runtimes={['claude']}
+        fallback={{ runtime: 'claude', model: 'model-standard' }}
+        onFallbackChange={vi.fn()}
+      />
+    )
+  )
+  expect(container.querySelectorAll('[data-testid="model-rule"]')).toHaveLength(2)
+  expect(container.querySelector('button[aria-label="Add rule"]')).toBeNull()
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('[aria-label="Provider and model when the answer is No"]')!.click()
+  )
+  await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Fast mode"]')!.click())
+  expect(onChange.mock.calls[0]![0].rules).toEqual([
+    { when: { type: 'boolean', values: [false] }, runtime: 'claude', model: 'model-standard', fastMode: true },
+    { when: { type: 'boolean', values: [true] }, runtime: 'claude', model: 'model-standard' }
+  ])
 })

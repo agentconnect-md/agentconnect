@@ -250,7 +250,7 @@ it('edits run settings in the open picker and adapts them when choosing another 
     fastMode: true
   })
   expect(document.querySelector('[role="dialog"]')).not.toBeNull()
-  expect(trigger.textContent).toContain('capable (High)')
+  expect(trigger.textContent).toContain('capableHigh')
   expect(trigger.textContent).not.toContain('Plan')
   expect(trigger.textContent).toContain('FAST')
   await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Claude Code · small"]')!.click())
@@ -263,7 +263,7 @@ it('edits run settings in the open picker and adapts them when choosing another 
   })
   expect(document.querySelector('[role="dialog"]')).not.toBeNull()
   expect(document.querySelector('[aria-label="Fast mode"]')).toBeNull()
-  expect(trigger.textContent).toContain('small (Low)')
+  expect(trigger.textContent).toContain('smallLow')
   const search = document.querySelector<HTMLInputElement>('[aria-label="Search all providers"]')!
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'other')

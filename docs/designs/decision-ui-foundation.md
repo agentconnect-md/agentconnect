@@ -255,9 +255,11 @@ Decision's shared-bot usage links to the bot's configuration.
   table: each answer with its description, a Choice minimum probability, and where it
   triggers (an agent, Do not trigger, or Use Otherwise, which leaves the answer uncovered).
   Otherwise is the table's last row: each channel's default agent, or Do not trigger.
-- Any other rule set (every Score question) is numbered When / Then rows. When reuses
+- A Score question reads as a compact rule table: number, From ≥, To <, the interval's track,
+  and the agent it triggers or Do not trigger. Rows sort by lower bound.
+- Any other Choice or Boolean rule set is numbered When / Then rows. When reuses
   `DecisionConditionFields`; Then is Route to agent with a same-bot agent picker (identity and availability) or Do not
-  activate. Score rows sort by lower bound and uncovered ranges read "… uses Otherwise".
+  activate.
   Both rows of a duplicated key or an overlapping interval are marked, as the API does.
   A removed target stays as Target removed; an unavailable one keeps its selection.
   Otherwise follows the rules.

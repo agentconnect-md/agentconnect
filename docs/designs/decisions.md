@@ -1758,9 +1758,11 @@ Live model switching continues to follow the runtime's `modelSwitching` capabili
 **Editor.** By decision offers saved Decisions with name, question type, evaluator,
 and a separate link to open each definition. The selected evaluator is read-only:
 it belongs to the Decision and is distinct from every execution target. Rules
-show the answer condition, target pair, move-up/down controls, and Remove. Choice
-uses a probability threshold per answer; Boolean uses the selected value; Score
-uses non-overlapping intervals. Fallback appears below the rules. Basics summarizes
+form one compact table, with Fallback as its last row. Choice rows carry a drag
+handle (arrow keys also reorder), the answer, a minimum probability, the target
+pair, and Remove. Boolean always lists Yes and No; an answer without its own rule
+shows the fallback until one is picked. Score rows use non-overlapping From / To
+intervals. Basics summarizes
 the mode as **Runtime and model · By decision · Decision name**. A retained hidden
 Decision keeps its saved rules without disclosing its question.
 

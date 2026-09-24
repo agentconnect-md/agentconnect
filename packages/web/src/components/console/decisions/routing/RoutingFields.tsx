@@ -190,7 +190,7 @@ export function RuleRow({
     <li
       data-testid="routing-rule"
       aria-label={t('rules.number', { number })}
-      className={`grid grid-cols-1 gap-3 rounded-lg border bg-(--surface-card) p-3 desktop:grid-cols-[36px_minmax(0,1.3fr)_minmax(0,1fr)_32px] desktop:items-start desktop:rounded-none desktop:border-0 desktop:border-b desktop:border-(--border-subtle) desktop:bg-transparent desktop:px-0 desktop:py-3 ${
+      className={`grid grid-cols-1 gap-3 rounded-lg border bg-(--surface-card) p-3 desktop:grid-cols-[36px_minmax(0,1.3fr)_minmax(0,1fr)_32px] desktop:items-start desktop:rounded-none desktop:border-0 desktop:border-b desktop:border-(--border-subtle) desktop:bg-transparent desktop:px-0 desktop:py-2 ${
         invalid ? 'border-(--red-500)' : 'border-(--border-subtle)'
       }`}
     >
