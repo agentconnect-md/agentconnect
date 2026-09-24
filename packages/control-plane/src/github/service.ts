@@ -127,6 +127,9 @@ const REPO_PAGE_CACHE_MS = 5 * 60_000
 const MAX_REPO_PAGE_CACHE_ENTRIES = 1_000
 /** Delivery-list pages one sweep may walk — the firehose bound, not the window. */
 const MAX_DELIVERY_PAGES = 10
+// The remedy rides the first refusal: it is what an agent reports to its user, so it must say what to change.
+const NOT_AUTHORIZED_FOR_AGENT =
+  "is not authorized for this agent — add it under Additional repositories in the agent's workspace settings"
 
 type RepoPageLookup = { ins: GithubInstallationRecord; page: number; perPage: number }
 
@@ -855,11 +858,7 @@ export class GithubService {
       (row) => row.provider === 'github' && row.repoId === repoId
     )
     if (!auth) {
-      throw new GitCredDeniedError(
-        `${repoFullName} is not authorized for this agent — add it under the agent's Repositories settings`,
-        'SCOPE_DENIED',
-        false
-      )
+      throw new GitCredDeniedError(`${repoFullName} ${NOT_AUTHORIZED_FOR_AGENT}`, 'SCOPE_DENIED', false)
     }
     if (auth.repoFullName !== ref.fullName) {
       await this.deps.repoAuths?.updateFullName(auth.id, ref.fullName).catch(() => {})
@@ -1108,7 +1107,7 @@ export class GithubService {
       skillRenameCandidates.length === 0 &&
       !workspaceRenameCandidate
     ) {
-      throw new GitCredDeniedError(`${repoFullName} is not authorized for this agent`, 'SCOPE_DENIED', false)
+      throw new GitCredDeniedError(`${repoFullName} ${NOT_AUTHORIZED_FOR_AGENT}`, 'SCOPE_DENIED', false)
     }
 
     const installation = await this.deps.installations.liveByOrgAndAccount(agent.orgId, owner)
@@ -1135,7 +1134,13 @@ export class GithubService {
     }
 
     const ref = await this.repoRefFor(installation, owner, repo)
-    if (!ref) throw new GitCredDeniedError(`${repoFullName} is not covered by the installation`, 'SCOPE_DENIED', false)
+    if (!ref) {
+      throw new GitCredDeniedError(
+        `${repoFullName} is not covered by the installation — give the GitHub App access to it first`,
+        'SCOPE_DENIED',
+        false
+      )
+    }
     if (
       workspace.mode === 'git' &&
       workspace.credential?.provider === 'github' &&
@@ -1160,7 +1165,7 @@ export class GithubService {
       if (renamedSkill) {
         return { kind: 'skill-source', repoId: renamedSkill.repoId, repoFullName, access: 'read', installation }
       }
-      throw new GitCredDeniedError(`${repoFullName} is not authorized for this agent`, 'SCOPE_DENIED', false)
+      throw new GitCredDeniedError(`${repoFullName} ${NOT_AUTHORIZED_FOR_AGENT}`, 'SCOPE_DENIED', false)
     }
     if (renamed.repoFullName !== ref.fullName) {
       await this.deps.repoAuths?.updateFullName(renamed.id, ref.fullName).catch(() => {})

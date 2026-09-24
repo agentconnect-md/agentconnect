@@ -8,6 +8,8 @@ export interface GitCredIpcReply {
   ok: boolean
   password?: string
   error?: string
+  /** Present when the control plane refused, as opposed to the daemon being unreachable. */
+  denied?: 'repository' | 'agent'
 }
 
 /** One newline-delimited-JSON round trip on the gitcred socket. Never rejects: an unreachable

@@ -2,7 +2,7 @@
 // gh reads a STATIC GH_TOKEN fixed at spawn and has no credential-helper hook, so the wrapper goes first on PATH.
 // Thin on purpose: locate the real gh, forward the whole argv to the token command, exec gh with what it printed.
 // Which repo that token names is decided by `cp/gh-target.ts` on the Node side — sh must not parse `gh api` paths.
-// A user-supplied GH_TOKEN always wins, and when no token can be served the wrapper runs the real gh untouched.
+// A user-supplied GH_TOKEN always wins; a refused repository stops here, an unreachable daemon runs the real gh untouched.
 // Secret-free (paths + agent id only): tokens transit a shell variable and the exec'd env, never argv, never disk.
 import { chmodSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -50,10 +50,14 @@ fi
 # Fresh token from the daemon; it resolves the target repo from the argv forwarded below
 # (stdout = token only; stderr passes through so the agent can read WHY a repo was refused).
 # Exit 2 = "not ours" (non-github host) — run the real gh untouched.
+# Exit 3 = refused — stop, since gh without a token would only add "not logged in" advice to the reason.
 _TOKEN=$(${tokenCommand})
 _RC=$?
 if [ "$_RC" -eq 2 ]; then
   exec "$REAL_GH" "$@"
+fi
+if [ "$_RC" -eq 3 ]; then
+  exit 1
 fi
 if [ -n "$_TOKEN" ]; then
   GH_TOKEN="$_TOKEN" exec "$REAL_GH" "$@"

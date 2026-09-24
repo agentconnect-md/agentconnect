@@ -85,7 +85,9 @@ export class GitCredUnavailableError extends Error {
   constructor(
     message: string,
     /** Terminal (agent-level SCOPE_DENIED): stop asking for this agent until config changes. */
-    readonly terminal: boolean
+    readonly terminal: boolean,
+    /** Set when the control plane refused (SCOPE_DENIED), naming what it refused; absent for an outage. */
+    readonly denied?: 'repository' | 'agent'
   ) {
     super(message)
     this.name = 'GitCredUnavailableError'
@@ -167,8 +169,8 @@ export class GitCredentialCache {
    *  SCOPE_DENIED — moved/mode-off). Per KEY, so a gh-plane denial never
    *  silences the git plane. */
   private readonly denied = new Set<string>()
-  /** Repo-keyed denials → monotonic retry-after deadline (60s negative cache). */
-  private readonly deniedRepos = new Map<string, number>()
+  /** Repo-keyed denials → monotonic retry-after deadline (60s negative cache) and the CP's own reason. */
+  private readonly deniedRepos = new Map<string, { retryAfter: number; reason: string }>()
   private readonly monoNow: () => number
 
   constructor(private readonly deps: GitCredentialCacheDeps) {
@@ -378,15 +380,12 @@ export class GitCredentialCache {
     payload: Parameters<GitCredentialCacheDeps['request']>[0]
   ): Promise<Entry> {
     if (this.denied.has(key)) {
-      throw new GitCredUnavailableError('control plane denied git credentials for this agent', true)
+      throw new GitCredUnavailableError('control plane denied git credentials for this agent', true, 'agent')
     }
-    const retryAfter = this.deniedRepos.get(key)
-    if (retryAfter !== undefined) {
-      if (retryAfter > this.monoNow()) {
-        throw new GitCredUnavailableError(
-          `${payload.repoFullName ?? 'repo'} is not authorized for this agent — authorize it under the agent's Repositories settings`,
-          false
-        )
+    const repoDenial = this.deniedRepos.get(key)
+    if (repoDenial !== undefined) {
+      if (repoDenial.retryAfter > this.monoNow()) {
+        throw new GitCredUnavailableError(repoDenial.reason, false, 'repository')
       }
       this.deniedRepos.delete(key)
     }
@@ -453,23 +452,24 @@ export class GitCredentialCache {
       if (code === 'SCOPE_DENIED') {
         // §14.1/§14.2: a purpose its host re-resolves live — hook/binding lifecycle changes never
         // replicate an agent spec, so a refusal is never durable and the next turn asks the CP again.
+        const denied = payload.repoFullName !== undefined ? 'repository' : 'agent'
         if (isLiveCredentialPurpose(payload.purpose)) {
           this.entries.delete(key)
-          throw new GitCredUnavailableError((e as Error).message, false)
+          throw new GitCredUnavailableError((e as Error).message, false, denied)
         }
         if (payload.repoFullName !== undefined) {
-          // Repo-keyed: negative-cache and retry in a minute — the operator may
-          // be authorizing the repo in the console right now.
-          this.deniedRepos.set(key, this.monoNow() + REPO_DENIAL_TTL_MS)
+          // Repo-keyed: negative-cache and retry in a minute — the operator may be authorizing it right now.
+          const reason = (e as Error).message
+          this.deniedRepos.set(key, { retryAfter: this.monoNow() + REPO_DENIAL_TTL_MS, reason })
           this.entries.delete(key)
-          throw new GitCredUnavailableError((e as Error).message, false)
+          throw new GitCredUnavailableError(reason, false, 'repository')
         }
         // Workspace-keyed terminal: the agent moved daemons or left github-app
         // mode. Stop asking on THIS key until the CP replicates a new spec
         // (which clears it).
         this.denied.add(key)
         this.entries.delete(key)
-        throw new GitCredUnavailableError((e as Error).message, true)
+        throw new GitCredUnavailableError((e as Error).message, true, 'agent')
       }
       // 19.3: LEASE_DENIED is an authoritative refusal of new effects, not an outage — evict so no revoked token keeps serving.
       if (code === 'LEASE_DENIED') this.entries.delete(key)

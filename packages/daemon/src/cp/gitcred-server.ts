@@ -295,7 +295,9 @@ export class GitCredServer {
       const msg =
         e instanceof GitCredUnavailableError ? e.message : `git credentials unavailable: ${(e as Error).message}`
       this.audit('denied', req.agentId, plane, repo)
-      return reply({ ok: false, error: msg })
+      // `denied` tells the helper and the gh wrapper this was a refusal, not an unreachable daemon.
+      const denied = e instanceof GitCredUnavailableError ? e.denied : undefined
+      return reply({ ok: false, error: msg, ...(denied ? { denied } : {}) })
     }
   }
 

@@ -101,9 +101,10 @@ export async function runGitCredential(action: string, agentId: string, socketPa
     ...qualifier
   })
   if (!res.ok || !res.username || !res.password) {
+    // A refusal is the control plane's answer, so the daemon-reachability hint would only mislead.
     process.stderr.write(
       `agentconnect: no git credentials for agent ${agentId}${repo ? ` on ${repo}` : ''}: ${res.error ?? 'unknown error'}\n` +
-        `(the daemon must be running and connected to the control plane)\n`
+        (res.denied ? '' : `(the daemon must be running and connected to the control plane)\n`)
     )
     process.exitCode = 1
     return
@@ -155,6 +156,7 @@ interface IpcReply {
   password?: string
   repoFullName?: string
   error?: string
+  denied?: 'repository' | 'agent'
 }
 
 function ipc(path: string, msg: unknown): Promise<IpcReply> {
