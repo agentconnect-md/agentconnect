@@ -334,16 +334,16 @@ backend keeps its microsandbox state, including stopped VMs and their disks, in
 case the backend is switched back, and logs a startup warning with the number of
 retained environments and how to reclaim the space.
 
-The ACP runtime, its two helper endpoints, workspace filesystem operations and
-skill publication use the same persistent Node shim and WebSocket protocol as
-Kubernetes, so a VM and a pool pod are driven the same way. The local driver
-carries that WebSocket over agentd's TCP stream to guest loopback; it does not
-publish a host port or add a forwarding process. Daemon-run Git continues to use
-direct SDK exec. The shim starts with each running VM, before anything else runs
-in it, and a VM whose shim or helper endpoints cannot start is refused. It does
-not prevent idle suspension. Each request holds the VM until it finishes, and a
-resumed VM gets a new binding generation and identity token. The binding grants
-`acp`, `tunnel`, `read` and the skill channels, and nothing else. Its credential
+The ACP runtime, its two helper endpoints, daemon-run Git, workspace filesystem
+operations and skill publication use the same persistent Node shim and WebSocket
+protocol as Kubernetes, so a VM and a pool pod are driven the same way. The local
+driver carries that WebSocket over agentd's TCP stream to guest loopback; it does
+not publish a host port or add a forwarding process. The shim starts with each
+running VM, before anything else runs in it, and a VM whose shim or helper
+endpoints cannot start is refused. It does not prevent idle suspension. Each
+request holds the VM until it finishes, and a resumed VM gets a new binding
+generation and identity token. The binding grants `acp`, `exec`, `tunnel`, `read`
+and the skill channels, and nothing else. Its credential
 lives for a day rather than a pod's ten minutes. The shim renews at half that
 lifetime by presenting the same one-time token again, which proves nothing new,
 and a renewal ends any helper stream with a frame in flight, such as the MCP
@@ -671,21 +671,22 @@ stderr; the shim's own tagged lines go to the debug log. Native tools run inside
 the existing harness and VM. There is no external CLI invocation for each tool
 call.
 
-Daemon-owned Git operations for mounted workspaces execute Git through the SDK,
-sharing command policy and result parsing with the pool runner. A small shell
-checks physical guest paths and then replaces itself with Git; no Node dispatcher
-starts per command. Canonical clone preparation outside an exposed
-workspace remains host-side. Workspace reads and attachment access use host-backed
-directories mounted at the same guest paths. Once a VM exists, workspace mutations
-run a small Python operation in the guest: renaming a staged clone on the host
-can leave the VM's cached directory view stale, while a guest rename is immediately
-visible to guest Git. Initial directory preparation remains local before VM boot.
-This does not require a second filesystem copy or a Kubernetes tunnel. The
-runtime's command lookup happens in the shim, and generated launch files use the
-guest file API. Filesystem
-mutations retain descriptor-anchored paths, no-follow checks, and atomic writes;
-write content streams over stdin and its complete byte count is checked before
-publication. The shim's tunnel host serves the MCP and Git credential sockets at
+Daemon-owned Git operations for mounted workspaces cross the shim's exec channel
+with the pool's runner, command policy and result parsing. The shim fences each
+command's working directory and path operands to the workspace root in the guest,
+and the launch's HOME, PATH, XDG directories and Git credential socket replace the
+host's in the environment a caller supplies. A command that never reached the
+shim, because the VM could not start or is stopping, fails as a transport error.
+Canonical clone preparation outside an exposed workspace remains host-side.
+Workspace reads and attachment access use host-backed directories mounted at the
+same guest paths. Once a VM exists, workspace mutations cross the shim's file
+channel, so a rename is the guest's own and immediately visible to guest Git,
+whereas renaming a staged clone on the host could leave the VM's cached directory
+view stale. Initial directory preparation remains local before VM boot. This does
+not require a second filesystem copy or a Kubernetes tunnel. The runtime's command
+lookup happens in the shim, and generated launch files use the guest file API.
+Filesystem mutations retain descriptor-anchored paths, no-follow checks, and
+atomic writes. The shim's tunnel host serves the MCP and Git credential sockets at
 the pool's in-guest paths and proxies each connection over the channel to this
 daemon's own socket, so the guest reaches those two servers and nothing else;
 the image's Kubernetes entrypoint and control connection are not started.
@@ -701,7 +702,7 @@ paths. This change does not redesign Git storage.
 ### Current image contract and VM storage
 
 The resolved OCI image must contain Node at
-`/usr/local/bin/node`, `/usr/bin/git`, Python 3.11+ for filesystem operations and shim staging, the declared runtime tools,
+`/usr/local/bin/node`, `/usr/bin/git`, Python 3.11+ for shim staging and overlay mounts, the declared runtime tools,
 and `/opt/agentconnect/runtime/k8s-runtimes.json`. The daemon's full image also
 includes `bubblewrap` and `socat` for the native Claude sandbox.
 Startup reads and validates that table in a real VM; individual
@@ -719,9 +720,9 @@ the pinned SDK's exec protocol and explicitly closes that client before reportin
 process completion or releasing the VM's active-execution count. Closing stdin
 sends EOF; it does not close a process that is still running. This avoids relying
 on garbage collection of the SDK's high-level exec handles, while retaining
-cancellation, backpressure, and live output limits. The shim itself and
-daemon-run Git are the executions that use this channel; ACP streams are
-multiplexed on the shim's WebSocket instead.
+cancellation, backpressure, and live output limits. The shim and its staging
+are the executions that use this channel; ACP streams, daemon-run Git and
+workspace files are multiplexed on the shim's WebSocket instead.
 After an output-limit failure, the daemon kills the process and drains its
 terminal event before closing: the pinned relay can otherwise reuse the client
 ID while old output is still arriving. Losing transport before that terminal
@@ -1211,7 +1212,7 @@ Delivery is split into independently reviewable steps:
    the pool and unsandboxed-agent paths.
 2. **Implemented, workload validation pending — minimal microsandbox execution:**
    explicit image and resources, Linux VM boot/runtime-table/stop-start checks,
-   shim-backed ACP streams and helper tunnels, SDK-backed guest Git, shared host
+   shim-backed ACP streams, helper tunnels and guest Git, shared host
    filesystem paths, and retained environment lifecycle. Keep upstream public-only
    networking and SRT as default.
 3. **Implemented — release image and Docker:** bundle the shared release image
@@ -1226,17 +1227,18 @@ Delivery is split into independently reviewable steps:
    counts. Change the default only after compatibility and resource measurements
    support it.
 6. **Designed — strategy table and convergence:** the strategy table and the agent's
-   strategy choice ([above](#strategy-table-designed-not-implemented)); local
-   microsandbox Git and workspace files over the shim instead of agentd exec, and local
-   VMs launched through the in-process executor; `srt` as an SRT boundary around the
-   shim, local and remote (session-executors.md §5, §11, §12).
+   strategy choice ([above](#strategy-table-designed-not-implemented)); local VMs
+   launched through the in-process executor; `srt` as an SRT boundary around the
+   shim, local and remote (session-executors.md §5, §11, §12). Local microsandbox Git
+   and workspace files already cross the shim instead of agentd exec.
 
 Implementation status above does not establish successful end-to-end daemon
 execution. Pull requests that reach this path boot one real VM in CI
 (`packages/daemon/scripts/smoke-microsandbox-runtime.mts`): the startup probe, the
 image's ACP runtime answering `initialize` through the shim on a cold, a running
-and a resumed VM, the runtime's user, directory and environment, and both helper
-endpoints reached from inside the guest. It submits no model turn and checks no
+and a resumed VM, the runtime's user, directory and environment, both helper
+endpoints reached from inside the guest, and daemon-run Git through the shim with
+its workspace-root fence. It submits no model turn and checks no
 network policy. The current VM slice still needs complete-session and lifecycle
 evidence, with the following acceptance checks:
 

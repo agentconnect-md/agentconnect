@@ -13,12 +13,6 @@ export interface MicrosandboxExecuteOptions {
   stdin?: string
 }
 
-export type MicrosandboxExecute = (
-  command: string,
-  args: string[],
-  options?: MicrosandboxExecuteOptions
-) => Promise<{ exitCode: number; stdout: string; stderr: string }>
-
 const MessageSchema = z.object({ v: z.literal(7), t: z.string(), p: z.instanceof(Uint8Array) })
 const DataSchema = z.object({ data: z.instanceof(Uint8Array) })
 const ErrorSchema = z.object({ message: z.string() })

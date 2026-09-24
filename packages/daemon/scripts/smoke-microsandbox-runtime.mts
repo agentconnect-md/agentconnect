@@ -1,6 +1,6 @@
 // Real-VM smoke test and measurement for the microsandbox backend and the executor facet's VM strategy; needs Linux with a usable /dev/kvm and a built daemon.
 // Usage: pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-microsandbox-runtime.mts <image> [transfer-MiB]
-// It reads the guest socket paths from the launch environment and calls only what both sides of the move onto the shim have, so the same file measures the previous mechanism from a checkout of it.
+// It reads the guest socket paths from the launch environment rather than assuming the shim's.
 import assert from 'node:assert/strict'
 import { existsSync, realpathSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
@@ -15,11 +15,13 @@ import { microsandboxLauncher } from '../src/execution/executor-vm.js'
 import type { PlaneLaunch } from '../src/execution/plane.js'
 import { assembleRuntimeLaunch } from '../src/launch/assemble.js'
 import { makeLogger } from '../src/log.js'
+import { microsandboxGitRunner } from '../src/microsandbox/git.js'
 import { installMicrosandbox } from '../src/microsandbox/install.js'
 import { prepareMicrosandboxLaunch } from '../src/microsandbox/launch.js'
 import { microsandboxSupportMounts } from '../src/microsandbox/support.js'
 import { sessionSandboxSubject } from '../src/remote/sandbox-subject.js'
 import { DEFAULT_SHIM_RUNTIME_ROOT } from '../src/shim/sandbox-paths.js'
+import { workspaceGitLocalEnv } from '../src/workspace/git-injection.js'
 
 const [image, transferArg] = process.argv.slice(2)
 if (!image) throw new Error('usage: smoke-microsandbox-runtime.mts <image> [transfer-MiB]')
@@ -301,6 +303,37 @@ try {
     assert.equal((await guest(tunnel, 'echo hello')).reply, `${tunnel}:hello`)
   }
   step('both-helper-endpoints-reach-their-own-daemon-socket', { guestSockets })
+
+  // Daemon-run Git crosses the shim's exec channel with the workspace manager's env; `init` is not allowlisted, so setup uses agentd exec.
+  const repo = join(cwd, 'repo')
+  const init = await manager.exec(
+    environment,
+    '/bin/sh',
+    ['-c', 'git init -q --initial-branch=main "$1" && printf x > "$1/tracked.txt"', 'sh', repo],
+    { cwd: environment.workspaceRoot, env: launch.env, timeoutMs: 60_000 }
+  )
+  assert.equal(init.exitCode, 0, init.stderr)
+  const git = microsandboxGitRunner({ manager, environment, cwd: repo, env: launch.env }).withEnv({
+    ...workspaceGitLocalEnv(),
+    GIT_AUTHOR_NAME: 'Smoke',
+    GIT_AUTHOR_EMAIL: 'smoke@example.test',
+    GIT_COMMITTER_NAME: 'Smoke',
+    GIT_COMMITTER_EMAIL: 'smoke@example.test'
+  })
+  const gitStarted = performance.now()
+  const status = await git.status()
+  summary.gitStatusMs = elapsed(gitStarted)
+  assert.equal(status.current, 'main')
+  assert.deepEqual(status.files, [{ path: 'tracked.txt', index: '?', working_dir: '?' }])
+  await git.raw(['add', 'tracked.txt'])
+  await git.raw(['commit', '-q', '-m', 'from the guest'])
+  assert.equal((await git.log({ maxCount: 1 }))[0]?.subject, 'from the guest')
+  assert.equal(await readFile(join(repo, '.git', 'COMMIT_EDITMSG'), 'utf8'), 'from the guest\n')
+  await assert.rejects(
+    git.raw(['clone', '--shared', repo, join(dirname(environment.workspaceRoot), 'escaped')]),
+    /path escapes the workspace root/
+  )
+  step('daemon-git-runs-through-the-shim-fenced-to-the-workspace-root', { ms: summary.gitStatusMs })
 
   await manager.suspend(environment.id)
   summary.resumedLaunchToInitializeMs = await acpRoundTrip()
