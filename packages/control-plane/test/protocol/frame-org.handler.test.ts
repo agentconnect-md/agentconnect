@@ -64,6 +64,7 @@ const ORG_SCOPED: Array<{ type: FrameType; payload: unknown }> = [
   { type: 'cron/report', payload: { cronId: randomUUID(), agentId: AGENT, firedAt: now() } },
   { type: 'channel/agents', payload: { platform: 'slack', requesterAgentId: AGENT } },
   { type: 'gitcred/request', payload: { agentId: AGENT } },
+  { type: 'repo-candidates/request', payload: { agentId: AGENT } },
   { type: 'duty/fetch', payload: { agentId: AGENT } },
   { type: 'knowledge/search', payload: { requesterAgentId: AGENT, query: 'q' } },
   { type: 'session/child-status', payload: { parentSessionId: 'p', childSessionId: 'c', childAgentId: AGENT } },

@@ -58,6 +58,7 @@ import { resolveLinearPlatformAppConfig } from './config/linear-platform.js'
 import type { FetchLike } from './github/api.js'
 import { ConnectorsClient, parseBlocklist, parseWhitelist } from './connectors/index.js'
 import { GithubService } from './github/service.js'
+import { RepoCandidatesService } from './github/repo-candidates.js'
 import { GithubInstallationDoorbell } from './github/installation-doorbell.service.js'
 import { GithubCommentAuthzService } from './github/comment-authz.service.js'
 import { GithubRerequestService } from './github/rerequest.service.js'
@@ -2336,6 +2337,16 @@ export function buildContainer(
     agentMemoryTransaction,
     agentMemoryHistory: repos.agentMemoryHistory,
     ...(github ? { github } : {}),
+    ...(github
+      ? {
+          repoCandidates: new RepoCandidatesService({
+            installationAuths: repos.agentInstallationAuth,
+            repoAuths: repos.agentRepoAuth,
+            installations: repos.githubInstallation,
+            github
+          })
+        }
+      : {}),
     // gitcred v2 (§13.1): the gitlab arm serves the agent's own account PATs; absent ⇒ disabled.
     ...(gitlab
       ? {

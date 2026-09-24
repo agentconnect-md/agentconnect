@@ -482,6 +482,22 @@ describe('agent spec / CRUD frames (CP→daemon spec sync)', () => {
     if (rm.ok && isFrame('agent/remove')(rm.frame)) expect(rm.frame.payload.agentId).toBe(AGENT_ID)
   })
 
+  it('agent/upsert carries the repository selector: absent stays absent, null clears, an older decoder strips it', () => {
+    const decodeSpec = (spec: Record<string, unknown>) => {
+      const r = decodeEnvelope(envelope('agent/upsert', { agentId: AGENT_ID, spec: { name: 'helper', ...spec } }))
+      if (!r.ok || !isFrame('agent/upsert')(r.frame)) throw new Error('expected agent/upsert')
+      return r.frame.payload.spec
+    }
+    expect(decodeSpec({})).not.toHaveProperty('repositorySelector')
+    expect(decodeSpec({ repositorySelector: null })).toHaveProperty('repositorySelector', null)
+    const repositorySelector = { providerId: 'typesafe', model: 'jev-latest' }
+    expect(decodeSpec({ repositorySelector }).repositorySelector).toEqual(repositorySelector)
+    expect(() => decodeSpec({ repositorySelector: { providerId: 'typesafe' } })).toThrow()
+    const older = FRAME_SCHEMAS['agent/upsert'].shape.spec.omit({ repositorySelector: true })
+    expect(older.parse({ name: 'helper', repositorySelector })).not.toHaveProperty('repositorySelector')
+    expect(decodeSpec({})).toEqual(older.parse({ name: 'helper' }))
+  })
+
   it('agent/detach and agent/activate decode for acknowledged moves', () => {
     const detach = decodeEnvelope(
       envelope('agent/detach', {

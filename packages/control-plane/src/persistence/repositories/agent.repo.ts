@@ -7,6 +7,7 @@ import {
   AgentMemoryBinding,
   modelSelectionDecisionIds,
   type AgentModelSelection,
+  type AgentRepositorySelector,
   isCodeHostProvider,
   redactGitUrlSecrets,
   type CodeHostProvider
@@ -215,6 +216,20 @@ function storedMemoryBinding(memory: AgentMemoryBinding | undefined): AgentMemor
   return parsed.success ? parsed.data : memory
 }
 
+// The selector's evaluator columns are one pair: both set, or both null to clear.
+function repositorySelectorColumns(selector: AgentRepositorySelector | null) {
+  return {
+    repositorySelectorProviderId: selector?.providerId ?? null,
+    repositorySelectorModel: selector?.model ?? null
+  }
+}
+
+function repositorySelectorOf(a: Agent): { repositorySelector?: AgentRepositorySelector } {
+  return a.repositorySelectorProviderId !== null && a.repositorySelectorModel !== null
+    ? { repositorySelector: { providerId: a.repositorySelectorProviderId, model: a.repositorySelectorModel } }
+    : {}
+}
+
 // Preset one-shot settle (preset-agents.md §3.2): the FIRST placement of any
 // kind — and an explicit delete — permanently stamps `placementSettledAt`, so
 // M1 auto-placement never fights a user who placed, moved, or removed the
@@ -306,6 +321,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     skills: ov.skills ?? [],
     decisionIds: ov.decisionIds ?? [],
     ...(ov.modelSelection ? { modelSelection: ov.modelSelection } : {}),
+    ...repositorySelectorOf(a),
     managedSkills: a.managedSkills,
     memory: storedMemoryBinding(ov.memory),
     status: a.status as AgentRecord['status'],
@@ -417,6 +433,7 @@ export class PgAgentRepo implements AgentRepo {
           runtime: input.runtime,
           ...placementCreateColumns(input),
           ...(input.managedSkills ? { managedSkills: input.managedSkills } : {}),
+          ...(input.repositorySelector ? repositorySelectorColumns(input.repositorySelector) : {}),
           ...(input.model ||
           input.reasoningEffort ||
           input.outputMode ||
@@ -728,6 +745,7 @@ export class PgAgentRepo implements AgentRepo {
         ...(patch.gitAccess !== undefined ? { gitAccess: patch.gitAccess } : {}),
         ...(patch.agentDir !== undefined ? { agentDir: patch.agentDir } : {}),
         ...(patch.managedSkills !== undefined ? { managedSkills: patch.managedSkills ?? [] } : {}),
+        ...(patch.repositorySelector !== undefined ? repositorySelectorColumns(patch.repositorySelector) : {}),
         ...(overrides !== undefined ? { runtimeOverrides: overrides } : {}),
         // A PATCH is a human edit — advance the last-modified audit. The editor is
         // stamped when known (absent under devAuth ⇒ leave the prior editor as-is).

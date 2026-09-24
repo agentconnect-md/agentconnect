@@ -31,6 +31,7 @@ import type {
   AgentIcon,
   AgentMemoryBinding,
   AgentModelSelection,
+  AgentRepositorySelector,
   DecimalAmount,
   CodeHostNoteState,
   GithubPublishedComment,
@@ -699,6 +700,7 @@ export interface CreateAgentInput {
   mcpServers?: string[] // daemon-configured MCP server names to attach at session/new (AgentSpec.mcpServers)
   decisionIds?: string[] // explicitly enabled saved Decisions
   modelSelection?: AgentModelSelection
+  repositorySelector?: AgentRepositorySelector // the repository selector's evaluator (multi-repository-workspaces.md decision 15)
   skills?: string[] // enabled skills, "<sourceName>/<skillName>" or "<sourceName>/*" (shared-skills.md)
   managedSkills?: string[] // accepted managed_skill ids, explicitly enabled
   memory?: AgentMemoryBinding // memory backend
@@ -756,6 +758,7 @@ export interface UpdateAgentInput {
   mcpServers?: string[] | null // replaced wholesale when provided; null clears
   decisionIds?: string[] | null // replaced wholesale; null clears
   modelSelection?: AgentModelSelection | null
+  repositorySelector?: AgentRepositorySelector | null // null clears
   skills?: string[] | null // enabled skills; replaced wholesale when provided; null clears
   managedSkills?: string[] | null // accepted managed_skill ids; replaced wholesale when provided; null clears
   memory?: AgentMemoryBinding | null // memory backend
@@ -801,6 +804,7 @@ export interface AgentRecord {
   mcpServers: string[] // from runtimeOverrides.mcpServers ([] when unset ⇒ none attached)
   decisionIds?: string[] // from runtimeOverrides.decisionIds; absent means none
   modelSelection?: AgentModelSelection
+  repositorySelector?: AgentRepositorySelector // from the repositorySelector* columns; absent means none
   skills: string[] // from runtimeOverrides.skills — enabled "<source>/<skill>" / "<source>/*" ([] ⇒ none)
   managedSkills: string[] // accepted managed_skill ids ([] ⇒ none)
   memory: AgentMemoryBinding | null // runtimeOverrides.memory

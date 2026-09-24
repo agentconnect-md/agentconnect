@@ -135,6 +135,7 @@ import { canView, canViewSession, canEdit, canManageSharing, type ViewCtx } from
 import { makeSessionAccessResolver } from '../session-access.js'
 import { resolveShareSet } from '../sharing.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
+import { repositorySelectorRefusal } from '../../agents/repository-selector.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { AgentMoveConflict, AgentMoveFailed } from '../../orchestrator/agentMove.js'
 import { AgentWakeCoordinator, agentWakeRequest } from '../../orchestrator/agentWake.js'
@@ -402,6 +403,7 @@ function toDto(
     skills: a.skills,
     decisionIds: a.decisionIds ?? [],
     modelSelection: a.modelSelection ?? null,
+    repositorySelector: a.repositorySelector ?? null,
     managedSkills: a.managedSkills,
     memory: a.memory,
     status: a.status,
@@ -1842,7 +1844,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Create an agent',
           description:
-            'Mint a new agent definition scoped to the caller’s org; the CP assigns its UUID. With ?connect=true, also provisions a daemon connect token and start command for onboarding. A managed memory binding is stored with its resolved home: an agent placed on a group or the managed pool keeps its memory in the Control Plane (an explicit daemon home there is refused with 409); anywhere else the given home or daemon. `execution` names the strategy sessions run in and is checked against the strategies the placement reports: one it does not offer, or offers but cannot run now, is refused with 409 and the reason. The legacy `runInSandbox` maps to `host` or the placement’s sandbox, and a request naming both must agree (400).',
+            'Mint a new agent definition scoped to the caller’s org; the CP assigns its UUID. With ?connect=true, also provisions a daemon connect token and start command for onboarding. A managed memory binding is stored with its resolved home: an agent placed on a group or the managed pool keeps its memory in the Control Plane (an explicit daemon home there is refused with 409); anywhere else the given home or daemon. `execution` names the strategy sessions run in and is checked against the strategies the placement reports: one it does not offer, or offers but cannot run now, is refused with 409 and the reason. The legacy `runInSandbox` maps to `host` or the placement’s sandbox, and a request naming both must agree (400). `repositorySelector` names the Decision provider and model the per-session repository selector asks; one that does not answer Choice questions is refused with 400.',
           operationId: 'createAgent',
           body: CreateAgentBody,
           querystring: z.object({ connect: z.stringbool().default(false) }),
@@ -1884,6 +1886,8 @@ export function agentRoutes(deps: HttpDeps) {
           return conflict('managed skills require a daemon that supports organization knowledge')
         }
         if (contradictsExecution(req.body)) return badRequest(reply, EXECUTION_CONTRADICTION)
+        const selectorRefusal = repositorySelectorRefusal(req.body.repositorySelector)
+        if (selectorRefusal) return badRequest(reply, selectorRefusal)
         const executionChoice = resolveExecution(
           placementStrategies((wantsSet ? setMembers : placedDaemon ? [placedDaemon] : []).map(strategyReportOf)),
           { execution: req.body.execution, runInSandbox: req.body.runInSandbox }
@@ -2056,6 +2060,9 @@ export function agentRoutes(deps: HttpDeps) {
                   ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
                   ...(req.body.decisionIds !== undefined ? { decisionIds: req.body.decisionIds } : {}),
                   ...(req.body.modelSelection !== undefined ? { modelSelection: req.body.modelSelection } : {}),
+                  ...(req.body.repositorySelector !== undefined
+                    ? { repositorySelector: req.body.repositorySelector }
+                    : {}),
                   ...(req.body.managedSkills !== undefined ? { managedSkills: req.body.managedSkills } : {}),
                   ...(memory !== undefined ? { memory } : {}),
                   ...(targetSetId !== null
@@ -2489,7 +2496,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Update an agent',
           description:
-            'Edit the agent spec or widen an existing GitHub workspace from read to write access; the change hot-syncs the owning daemon’s replica and rides the next register/launch. A managed memory binding without a home keeps the current one. Switching the home from daemon to control-plane is accepted and flags a migration the owning daemon completes; the reverse is refused with 409 unless force is set, and then drops every memory file and change-log record the Control Plane holds for the agent. An agent placed on a group or the managed pool cannot name the daemon home. A new `execution` (or the legacy `runInSandbox`) is checked against the strategies the placement reports and refused with 409 when it cannot run there; it reaches only sessions created afterwards.',
+            'Edit the agent spec or widen an existing GitHub workspace from read to write access; the change hot-syncs the owning daemon’s replica and rides the next register/launch. A managed memory binding without a home keeps the current one. Switching the home from daemon to control-plane is accepted and flags a migration the owning daemon completes; the reverse is refused with 409 unless force is set, and then drops every memory file and change-log record the Control Plane holds for the agent. An agent placed on a group or the managed pool cannot name the daemon home. A new `execution` (or the legacy `runInSandbox`) is checked against the strategies the placement reports and refused with 409 when it cannot run there; it reaches only sessions created afterwards. `repositorySelector` names the Decision provider and model the per-session repository selector asks, must answer Choice questions (400 otherwise), and null clears it.',
           operationId: 'updateAgent',
           params: IdParam,
           body: UpdateAgentBody,
@@ -2541,6 +2548,8 @@ export function agentRoutes(deps: HttpDeps) {
           }
           const placementView = await placementViewFor(deps, existing)
           if (contradictsExecution(req.body)) return badRequest(reply, EXECUTION_CONTRADICTION)
+          const selectorRefusal = repositorySelectorRefusal(req.body.repositorySelector)
+          if (selectorRefusal) return badRequest(reply, selectorRefusal)
           const asksExecution = req.body.execution !== undefined || req.body.runInSandbox !== undefined
           const executionChoice = asksExecution
             ? resolveExecution(

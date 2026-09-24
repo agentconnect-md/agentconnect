@@ -233,6 +233,7 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
       managedSkills: [], // managed organization skill bindings; likewise always shipped
       decisionIds: [],
       modelSelection: null,
+      repositorySelector: null, // always shipped value-or-null so clearing the evaluator replicates
       // Agent→agent call policy (§2.5), always shipped so a policy/allow-list change replicates.
       callPolicy: 'all',
       allowedCallerAgentIds: [],

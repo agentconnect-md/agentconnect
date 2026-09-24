@@ -82,14 +82,35 @@ export const DECISION_PROVIDER_PROFILES = [
   models: Array<{ id: string; label: string; questionTypes: DecisionQuestion['type'][] }>
 }>
 
-export function supportsDecision(decision: Pick<DecisionDraft, 'providerId' | 'model' | 'question'>): boolean {
-  return DECISION_PROVIDER_PROFILES.some(
+// The catalog shape `supportsDecision` reads; the default is the application's own.
+export type DecisionProviderCatalog = ReadonlyArray<{
+  id: string
+  models: ReadonlyArray<{ id: string; questionTypes: ReadonlyArray<DecisionQuestion['type']> }>
+}>
+
+export function supportsDecision(
+  decision: Pick<DecisionDraft, 'providerId' | 'model'> & { question: Pick<DecisionQuestion, 'type'> },
+  catalog: DecisionProviderCatalog = DECISION_PROVIDER_PROFILES
+): boolean {
+  return catalog.some(
     (provider) =>
       provider.id === decision.providerId &&
       provider.models.some(
         (model) => model.id === decision.model && model.questionTypes.includes(decision.question.type)
       )
   )
+}
+
+// The evaluator the per-session repository selector asks (multi-repository-workspaces.md decision 15); the daemon writes the question.
+export const AgentRepositorySelector = z.object({ providerId: Id, model: Id })
+export type AgentRepositorySelector = z.infer<typeof AgentRepositorySelector>
+
+// The selector asks Choice questions, so its evaluator must answer them.
+export function supportsRepositorySelector(
+  selector: AgentRepositorySelector,
+  catalog: DecisionProviderCatalog = DECISION_PROVIDER_PROFILES
+): boolean {
+  return supportsDecision({ ...selector, question: { type: 'choice' } }, catalog)
 }
 
 export const DecisionCondition = z

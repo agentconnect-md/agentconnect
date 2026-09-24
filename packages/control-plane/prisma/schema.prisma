@@ -884,6 +884,9 @@ model Agent {
   runInSandbox          Boolean            @default(false) // #642: request an OS sandbox; daemon policy may force it on
   // The strategy slug sessions run in (session-executors.md §5), kept in step with runInSandbox; null ⇒ a sandboxed agent whose daemon has not yet reported its backend.
   execution             String?
+  // The evaluator the per-session repository selector asks (multi-repository-workspaces.md decision 15); both set or both null.
+  repositorySelectorProviderId String?
+  repositorySelectorModel      String?
   // Monotonic revision of the fully resolved AgentSpec (organization-secrets-and-
   // variables.md §5). NOT environment-specific: every durable mutation that can
   // change a CP-owned field assembled into the spec bumps it through the same

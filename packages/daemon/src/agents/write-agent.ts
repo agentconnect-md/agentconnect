@@ -775,6 +775,8 @@ export function applySpecFields(
   if (spec.hookRoutings !== undefined) raw.hookRoutings = spec.hookRoutings
   if (spec.modelSelection === null) delete raw.modelSelection
   else if (spec.modelSelection !== undefined) raw.modelSelection = spec.modelSelection
+  if (spec.repositorySelector === null) delete raw.repositorySelector
+  else if (spec.repositorySelector !== undefined) raw.repositorySelector = spec.repositorySelector
   // Managed skill metadata is also a complete CP-owned set. The archive bytes
   // are fetched separately and never enter agent.json.
   if (spec.managedSkills !== undefined) raw.managedSkills = spec.managedSkills

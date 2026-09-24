@@ -10,6 +10,7 @@ import { RESERVED_AGENT_SLUGS } from '../../domain/reserved-agent-slugs.js'
 import {
   AgentDecisionIds,
   AgentModelSelection,
+  AgentRepositorySelector,
   AgentMemoryBinding,
   ChannelDecisionBinding,
   ChannelDecisionGate,
@@ -677,6 +678,9 @@ export const AgentIconDto = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('image') })
 ])
 
+// The repository selector's evaluator (multi-repository-workspaces.md decision 15); the routes check it answers Choice.
+const RepositorySelectorBody = AgentRepositorySelector.strict()
+
 export const CreateAgentBody = z.object({
   name: AgentSlug,
   displayName: z.string().min(1).optional(),
@@ -706,6 +710,7 @@ export const CreateAgentBody = z.object({
   managedSkills: ManagedSkillEnableBody.optional(),
   decisionIds: AgentDecisionIds.optional(),
   modelSelection: AgentModelSelection.optional(),
+  repositorySelector: RepositorySelectorBody.optional(),
   // Memory backend; absent ⇒ managed default. The CP resolves `home`: `control-plane` on a member set (`daemon` refused), else the given value or `daemon`.
   memory: MemoryConfigInputBody.optional(),
   // Placement at create. `set` uses `setId`; `daemon` (the default) uses `daemonId`. `pool` is
@@ -766,6 +771,7 @@ export const UpdateAgentBody = z
     managedSkills: ManagedSkillEnableBody.nullable().optional(), // accepted managed-skill ids; null clears
     decisionIds: AgentDecisionIds.nullable().optional(),
     modelSelection: AgentModelSelection.nullable().optional(),
+    repositorySelector: RepositorySelectorBody.nullable().optional(), // null clears
     // Memory backend; null clears (revert to managed). A managed `home` moves one way, `daemon` → `control-plane`;
     // the reverse is refused unless `force` is set, and never accepted on the managed pool.
     memory: MemoryConfigInputBody.nullable().optional(),
@@ -871,6 +877,7 @@ export const AgentDto = z.object({
   managedSkills: z.array(z.string().uuid()), // explicitly enabled accepted managed-skill ids
   decisionIds: AgentDecisionIds,
   modelSelection: AgentModelSelection.nullable(),
+  repositorySelector: AgentRepositorySelector.nullable(), // the repository selector's evaluator; null ⇒ none
   // Memory backend (null ⇒ managed default). A managed binding carries its resolved `home` and, while a
   // `daemon` → `control-plane` copy is under way, the read-only `homeMigration: 'pending'`.
   memory: MemoryConfigBody.nullable(),
