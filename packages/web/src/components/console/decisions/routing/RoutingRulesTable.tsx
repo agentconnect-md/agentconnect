@@ -15,6 +15,7 @@ import {
 } from '@/lib/decisions/routing-draft'
 import type { RosterAgent } from '@/lib/decisions/routing-roster'
 import type { DecisionCondition, DecisionQuestion } from '@agentconnect.md/protocol/decision'
+import { RoutingContinuation } from '../DecisionChainControls'
 import { IntervalSlider } from '../DecisionConditionFields'
 import { AgentMark16, FieldIssue, Note, RuleRow, issueText } from './RoutingFields'
 
@@ -71,7 +72,11 @@ export function fitsQuestion(when: DecisionCondition | null, question: DecisionQ
   return true
 }
 
-type Target = { type: 'agent'; agentId: string } | { type: 'skip' } | { type: 'otherwise' }
+type Target =
+  | { type: 'agent'; agentId: string }
+  | { type: 'skip' }
+  | { type: 'otherwise' }
+  | { type: 'decision'; nextStepId: string }
 
 /** Where an answer's messages go: an agent, nowhere, or on to Otherwise when no rule covers the answer. */
 function TargetPicker({
@@ -116,59 +121,65 @@ function TargetPicker({
     </button>
   )
   return (
-    <AnchoredFlyout
-      ariaLabel={label}
-      align="start"
-      width={260}
-      matchTriggerWidth
-      estimatedHeight={20 + (agents.length + 2) * 36}
-      triggerClassName="block min-w-0"
-      trigger={({ open, menuId, toggle }) => (
-        <button
-          type="button"
-          aria-label={label}
-          disabled={disabled}
-          aria-haspopup="menu"
-          aria-expanded={open}
-          aria-controls={open ? menuId : undefined}
-          onClick={toggle}
-          className={`${PICKER} ${disabled ? 'cursor-default opacity-60' : 'cursor-pointer'}`}
-        >
-          <span
-            className={`flex min-w-0 items-center gap-[7px] font-mono text-[12px] leading-normal ${value.type === 'agent' ? 'text-(--text-primary)' : 'text-(--text-secondary)'}`}
-          >
-            {selected && <AgentMark16 agent={selected} />}
-            <span className="truncate">{text}</span>
-          </span>
-          <Icon name="chevron-down" size={14} color="var(--text-tertiary)" className="flex-none" />
-        </button>
-      )}
+    <RoutingContinuation
+      nextStepId={value.type === 'decision' ? value.nextStepId : undefined}
+      disabled={disabled}
+      onChange={(id) => onChange(id ? { type: 'decision', nextStepId: id } : { type: 'skip' })}
     >
-      {({ close }) => (
-        <>
-          {agents.map((agent) =>
-            option(
-              agent.id,
-              value.type === 'agent' && value.agentId === agent.id,
-              <>
-                <AgentMark16 agent={agent} />
-                <span className="min-w-0 flex-1 truncate font-mono text-[12px]">{agent.name}</span>
-                <span
-                  aria-hidden="true"
-                  className={`h-[7px] w-[7px] flex-none rounded-full ${agent.available ? 'bg-(--status-online)' : 'bg-(--gray-300)'}`}
-                />
-              </>,
-              { type: 'agent', agentId: agent.id },
-              close
-            )
-          )}
-          <div className="my-1 h-px bg-(--border-subtle)" />
-          {option('skip', value.type === 'skip', t('doNotTrigger'), { type: 'skip' }, close)}
-          {allowOtherwise &&
-            option('otherwise', value.type === 'otherwise', t('useOtherwise'), { type: 'otherwise' }, close)}
-        </>
-      )}
-    </AnchoredFlyout>
+      <AnchoredFlyout
+        ariaLabel={label}
+        align="start"
+        width={260}
+        matchTriggerWidth
+        estimatedHeight={20 + (agents.length + 2) * 36}
+        triggerClassName="block min-w-0"
+        trigger={({ open, menuId, toggle }) => (
+          <button
+            type="button"
+            aria-label={label}
+            disabled={disabled}
+            aria-haspopup="menu"
+            aria-expanded={open}
+            aria-controls={open ? menuId : undefined}
+            onClick={toggle}
+            className={`${PICKER} ${disabled ? 'cursor-default opacity-60' : 'cursor-pointer'}`}
+          >
+            <span
+              className={`flex min-w-0 items-center gap-[7px] font-mono text-[12px] leading-normal ${value.type === 'agent' ? 'text-(--text-primary)' : 'text-(--text-secondary)'}`}
+            >
+              {selected && <AgentMark16 agent={selected} />}
+              <span className="truncate">{text}</span>
+            </span>
+            <Icon name="chevron-down" size={14} color="var(--text-tertiary)" className="flex-none" />
+          </button>
+        )}
+      >
+        {({ close }) => (
+          <>
+            {agents.map((agent) =>
+              option(
+                agent.id,
+                value.type === 'agent' && value.agentId === agent.id,
+                <>
+                  <AgentMark16 agent={agent} />
+                  <span className="min-w-0 flex-1 truncate font-mono text-[12px]">{agent.name}</span>
+                  <span
+                    aria-hidden="true"
+                    className={`h-[7px] w-[7px] flex-none rounded-full ${agent.available ? 'bg-(--status-online)' : 'bg-(--gray-300)'}`}
+                  />
+                </>,
+                { type: 'agent', agentId: agent.id },
+                close
+              )
+            )}
+            <div className="my-1 h-px bg-(--border-subtle)" />
+            {option('skip', value.type === 'skip', t('doNotTrigger'), { type: 'skip' }, close)}
+            {allowOtherwise &&
+              option('otherwise', value.type === 'otherwise', t('useOtherwise'), { type: 'otherwise' }, close)}
+          </>
+        )}
+      </AnchoredFlyout>
+    </RoutingContinuation>
   )
 }
 
@@ -214,8 +225,7 @@ export function RoutingRulesTable({
     onRules((rules) => {
       const index = rules.findIndex((rule) => answerKey(rule.when) === answer.key)
       if (target.type === 'otherwise') return rules.filter((_, at) => at !== index)
-      const action: RoutingDraftRule['action'] =
-        target.type === 'agent' ? { type: 'agent', agentId: target.agentId } : { type: 'skip' }
+      const action: RoutingDraftRule['action'] = target
       if (index >= 0) return rules.map((rule, at) => (at === index ? { ...rule, action } : rule))
       return [...rules, { ...newRule(question, rules), when: structuredClone(answer.when), action }]
     })
@@ -311,11 +321,13 @@ export function RoutingRulesTable({
             const rule = index >= 0 ? rules[index]! : null
             const target: Target = !rule
               ? { type: 'otherwise' }
-              : rule.action.type === 'skip'
-                ? { type: 'skip' }
-                : rule.action.agentId
-                  ? { type: 'agent', agentId: rule.action.agentId }
-                  : { type: 'otherwise' }
+              : rule.action.type === 'decision'
+                ? rule.action
+                : rule.action.type === 'skip'
+                  ? { type: 'skip' }
+                  : rule.action.agentId
+                    ? { type: 'agent', agentId: rule.action.agentId }
+                    : { type: 'otherwise' }
             const rowIssues = index >= 0 ? ruleIssues(issues, index) : []
             const threshold = rule?.when?.type === 'choice' ? (rule.when.thresholds[answer.key] ?? 0.5) : null
             return (
@@ -460,11 +472,13 @@ function ScoreRuleRow({
     return raw === '' || !Number.isFinite(parsed) ? current : parsed
   }
   const target: Target =
-    rule.action.type === 'skip'
-      ? { type: 'skip' }
-      : rule.action.agentId
-        ? { type: 'agent', agentId: rule.action.agentId }
-        : { type: 'otherwise' }
+    rule.action.type === 'decision'
+      ? rule.action
+      : rule.action.type === 'skip'
+        ? { type: 'skip' }
+        : rule.action.agentId
+          ? { type: 'agent', agentId: rule.action.agentId }
+          : { type: 'otherwise' }
   const agent = target.type === 'agent' ? agents.find((entry) => entry.id === target.agentId) : undefined
   const messages = issues.map((issue) => (issue.code ? issueText(t, issue) : (issue.message ?? ''))).filter(Boolean)
   return (
@@ -519,7 +533,7 @@ function ScoreRuleRow({
             onChange={(next) =>
               onChange({
                 ...rule,
-                action: next.type === 'agent' ? { type: 'agent', agentId: next.agentId } : { type: 'skip' }
+                action: next.type === 'otherwise' ? { type: 'skip' } : next
               })
             }
           />

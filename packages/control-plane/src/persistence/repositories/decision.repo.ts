@@ -145,7 +145,10 @@ export class PgDecisionRepo implements DecisionRepo {
       )
       // Revalidate every gate: an incompatible one stays saved but is marked Needs review (decisions.md §6.1).
       const consumers = await tx.integrationChannel.findMany({
-        where: { decisionId: id },
+        where: {
+          integration: { orgId },
+          OR: [{ decisionId: id }, { decisionBinding: { path: ['steps'], array_contains: [{ decisionId: id }] } }]
+        },
         select: { integrationId: true, channelId: true, decisionBinding: true, decisionNeedsReview: true }
       })
       const previous = DecisionQuestion.safeParse(existing.question)
@@ -153,7 +156,9 @@ export class PgDecisionRepo implements DecisionRepo {
         if (c.decisionNeedsReview) return false
         const gate = ChannelDecisionGate.safeParse(c.decisionBinding)
         if (!gate.success || !previous.success) return true
-        return decisionConditionNeedsReview(previous.data, draft.question, gate.data.when)
+        return [gate.data, ...(gate.data.steps ?? [])]
+          .filter((step) => step.decisionId === id)
+          .some((step) => decisionConditionNeedsReview(previous.data, draft.question, step.when))
       })
       if (review.length > 0)
         await tx.integrationChannel.updateMany({
@@ -162,8 +167,16 @@ export class PgDecisionRepo implements DecisionRepo {
         })
       // Routers too: an invalidated one keeps its saved config and is projected disabled until re-saved.
       const routings = await tx.botDecisionRouting.findMany({
-        where: { decisionId: id, orgId },
-        select: { botId: true, enabled: true, decisionId: true, rules: true, otherwise: true, needsReview: true }
+        where: { orgId, OR: [{ decisionId: id }, { steps: { array_contains: [{ decisionId: id }] } }] },
+        select: {
+          botId: true,
+          enabled: true,
+          decisionId: true,
+          rules: true,
+          otherwise: true,
+          steps: true,
+          needsReview: true
+        }
       })
       const reviewBots = routings.filter((r) => {
         if (r.needsReview) return false
@@ -171,13 +184,15 @@ export class PgDecisionRepo implements DecisionRepo {
           enabled: r.enabled,
           decisionId: r.decisionId,
           rules: r.rules,
-          otherwise: r.otherwise
+          otherwise: r.otherwise,
+          steps: r.steps
         })
         if (!config.success || !previous.success) return true
-        return (
-          decisionRoutingIssues(draft.question, config.data).length > 0 ||
-          config.data.rules.some((rule) => decisionConditionNeedsReview(previous.data, draft.question, rule.when))
-        )
+        return [config.data, ...(config.data.steps ?? [])]
+          .filter((step) => step.decisionId === id)
+          .some((step) =>
+            step.rules.some((rule) => decisionConditionNeedsReview(previous.data, draft.question, rule.when))
+          )
       })
       if (reviewBots.length > 0)
         await tx.botDecisionRouting.updateMany({
@@ -259,12 +274,20 @@ export class PgDecisionRepo implements DecisionRepo {
             orgId,
             OR: [
               { runtimeOverrides: { path: ['decisionIds'], array_contains: [id] } },
-              { runtimeOverrides: { path: ['modelSelection', 'decisionId'], equals: id } }
+              { runtimeOverrides: { path: ['modelSelection', 'decisionId'], equals: id } },
+              { runtimeOverrides: { path: ['modelSelection', 'steps'], array_contains: [{ decisionId: id }] } }
             ]
           }
         })
       )
         throw new DecisionInUse(id)
+      const [gates, routers] = await Promise.all([
+        tx.integrationChannel.count({
+          where: { integration: { orgId }, decisionBinding: { path: ['steps'], array_contains: [{ decisionId: id }] } }
+        }),
+        tx.botDecisionRouting.count({ where: { orgId, steps: { array_contains: [{ decisionId: id }] } } })
+      ])
+      if (gates || routers) throw new DecisionInUse(id)
       try {
         await tx.decision.deleteMany({ where: { id, orgId, ...visibilityWhere({ ...actor, role: membership.role }) } })
       } catch (err) {

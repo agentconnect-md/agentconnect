@@ -11,6 +11,7 @@ import { errorParts } from '@/lib/decisions/binding'
 import type { RoutingDraftRule, RoutingIssue } from '@/lib/decisions/routing-draft'
 import type { RosterAgent } from '@/lib/decisions/routing-roster'
 import type { DecisionQuestion, DecisionValidationIssue } from '@agentconnect.md/protocol/decision'
+import { RoutingContinuation } from '../DecisionChainControls'
 import { DecisionConditionFields } from '../DecisionConditionFields'
 
 export type T = ReturnType<typeof useTranslations<'Decisions.routing'>>
@@ -226,35 +227,41 @@ export function RuleRow({
         <span className="font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
           {t('rules.then')}
         </span>
-        <select
-          className="inp h-8 min-h-0"
-          aria-label={t('action.label', { number })}
-          value={rule.action.type}
+        <RoutingContinuation
+          nextStepId={rule.action.type === 'decision' ? rule.action.nextStepId : undefined}
           disabled={disabled}
-          onChange={(event) =>
-            onChange({
-              ...rule,
-              action:
-                event.target.value === 'skip'
-                  ? { type: 'skip' }
-                  : { type: 'agent', agentId: rule.action.type === 'agent' ? rule.action.agentId : null }
-            })
-          }
+          onChange={(id) => onChange({ ...rule, action: id ? { type: 'decision', nextStepId: id } : { type: 'skip' } })}
         >
-          <option value="agent">{t('action.route')}</option>
-          <option value="skip">{t('action.skip')}</option>
-        </select>
-        {rule.action.type === 'agent' && (
-          <AgentPicker
-            agents={agents}
-            value={rule.action.agentId}
-            label={t('action.agent', { number })}
-            placeholder={t('action.selectAgent')}
-            hiddenLabel={t('action.targetRemoved')}
+          <select
+            className="inp h-8 min-h-0"
+            aria-label={t('action.label', { number })}
+            value={rule.action.type}
             disabled={disabled}
-            onChange={(agentId) => onChange({ ...rule, action: { type: 'agent', agentId } })}
-          />
-        )}
+            onChange={(event) =>
+              onChange({
+                ...rule,
+                action:
+                  event.target.value === 'skip'
+                    ? { type: 'skip' }
+                    : { type: 'agent', agentId: rule.action.type === 'agent' ? rule.action.agentId : null }
+              })
+            }
+          >
+            <option value="agent">{t('action.route')}</option>
+            <option value="skip">{t('action.skip')}</option>
+          </select>
+          {rule.action.type === 'agent' && (
+            <AgentPicker
+              agents={agents}
+              value={rule.action.agentId}
+              label={t('action.agent', { number })}
+              placeholder={t('action.selectAgent')}
+              hiddenLabel={t('action.targetRemoved')}
+              disabled={disabled}
+              onChange={(agentId) => onChange({ ...rule, action: { type: 'agent', agentId } })}
+            />
+          )}
+        </RoutingContinuation>
         {actionIssue && <FieldIssue>{issueText(t, actionIssue)}</FieldIssue>}
         {target && !target.available && (
           <span className="flex flex-wrap items-center gap-[6px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--amber-500)">

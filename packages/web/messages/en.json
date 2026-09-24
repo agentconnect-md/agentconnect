@@ -2295,6 +2295,11 @@
         "fallback": "No rule matches, or the evaluation is unavailable.",
         "providerModel": "Provider · model",
         "chooseDecision": "Choose a Decision",
+        "nextDecision": "Continue with a Decision",
+        "editNext": "Edit next Decision: {name}",
+        "useModel": "Choose a model instead",
+        "decisionPath": "Decision path",
+        "firstDecision": "First Decision",
         "openDecision": "Open {name} in Decisions",
         "evaluator": "Evaluator",
         "answerColumn": "Answer",
@@ -2332,10 +2337,12 @@
           "noMatch": "No matching rule",
           "fallback": "Fallback",
           "notNeeded": "Not needed",
+          "continued": "Matching rule",
           "fallbackUsed": "Use the fallback provider and model",
           "startsOn": "Session starts on",
           "booleanResult": "{value} · {probability}% true",
-          "text4": "The evaluator is temporarily unavailable"
+          "text4": "The evaluator is temporarily unavailable",
+          "branchMatched": "Rule {index} matches ({condition}) → {decision}."
         },
         "add": "Add"
       },
@@ -4771,6 +4778,18 @@
         "hiddenAgent": "An agent you cannot see",
         "triggerLocked": "Set by the decision: every update is judged, so this row's own trigger does not apply."
       }
+    },
+    "chain": {
+      "path": "Decision path",
+      "next": "Continue with a Decision",
+      "first": "First Decision",
+      "missing": "Unavailable Decision",
+      "remove": "Remove next Decision",
+      "matches": "When matched",
+      "misses": "Otherwise",
+      "trigger": "Trigger",
+      "skip": "Skip",
+      "resetCondition": "Reset condition"
     }
   },
   "ProviderKeys": {

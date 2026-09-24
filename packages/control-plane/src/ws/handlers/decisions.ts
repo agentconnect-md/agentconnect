@@ -1,4 +1,9 @@
-import { DECISION_LIST_MAX_BYTES, isFrame, type DecisionListReply } from '@agentconnect.md/protocol'
+import {
+  DECISION_LIST_MAX_BYTES,
+  isFrame,
+  modelSelectionDecisionIds,
+  type DecisionListReply
+} from '@agentconnect.md/protocol'
 import { AgentId } from '../../domain/ids.js'
 import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import { frameOrgId } from './frame-org.js'
@@ -45,7 +50,7 @@ export const handleDecisionRead: Handler = async (frame, conn, deps) => {
   } else {
     const bound = (current: typeof agent) =>
       frame.payload.purpose === 'model_selection'
-        ? current.modelSelection?.decisionId === frame.payload.decisionId
+        ? modelSelectionDecisionIds(current.modelSelection).includes(frame.payload.decisionId)
         : current.decisionIds?.includes(frame.payload.decisionId)
     const decision = bound(agent) ? await repo.getForAgent(orgId, frame.payload.decisionId) : null
     const current = await authorized()

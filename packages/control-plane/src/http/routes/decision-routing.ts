@@ -10,13 +10,14 @@ import {
 } from '@agentconnect.md/protocol'
 import { canEdit, canView } from '../../authorization/policy.js'
 import { AgentId, BotId, DaemonId } from '../../domain/ids.js'
+import { DecisionBindingDenied } from '../../persistence/decision-binding-fence.js'
 import { Prisma } from '../../generated/prisma/client.js'
 import { RoutingChannelInvalid, RoutingScopeChanged } from '../../persistence/errors.js'
 import type { AgentRecord, BotRecord, SeedTrigger } from '../../persistence/ports.js'
 import { pickConversationOwner, type RoutingDescription } from '../../orchestrator/httpBot.js'
 import { refreshMutationAgent } from '../mutation-agent.js'
 import type { HttpDeps } from '../deps.js'
-import { visibleDecision } from '../decision-access.js'
+import { visibleDecisionChain } from '../decision-access.js'
 import { ErrorDto } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
 import type { ZodTypeProvider } from '../plugins/zod.js'
@@ -197,14 +198,19 @@ export function decisionRoutingRoutes(deps: HttpDeps) {
         if (manifestFor(bot.platform).ownerAsDefault)
           return reply.code(400).send(badRequest('By decision is not available for this platform'))
         const { config, channelIds, removals } = req.body
-        const decision = await visibleDecision(deps, req, config.decisionId)
+        const definitions = await visibleDecisionChain(deps, req, config)
+        const decision = definitions?.get(config.decisionId)
         if (!decision) return reply.code(404).send(notFound('decision not found', 'DECISION_NOT_FOUND'))
-        if (!supportsDecision(decision))
+        if ([...definitions!.values()].some((d) => !supportsDecision(d)))
           return reply.code(400).send(badRequest('Unsupported Decision provider, model, or question type.'))
-        const issues = decisionRoutingIssues(decision.question, config)
+        const issues = decisionRoutingIssues(
+          decision.question,
+          config,
+          new Map([...definitions!].map(([id, d]) => [id, d.question]))
+        )
         // Same message for a non-member and an invisible agent, so the check discloses nothing.
         const targets = new Map<string, AgentRecord>()
-        for (const [index, rule] of config.rules.entries()) {
+        for (const [index, rule] of [config, ...(config.steps ?? [])].flatMap((step) => step.rules).entries()) {
           if (rule.action.type !== 'agent') continue
           const id = rule.action.agentId
           const agent = bot.agentIds.includes(AgentId(id)) ? await deps.repos.agent.get(orgOf(req), AgentId(id)) : null
@@ -309,7 +315,10 @@ export function decisionRoutingRoutes(deps: HttpDeps) {
                     )
                   )
           // The Decision was deleted between validation and the write (FK RESTRICT on the router).
-          if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003')
+          if (
+            err instanceof DecisionBindingDenied ||
+            (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003')
+          )
             return reply.code(404).send(notFound('decision not found', 'DECISION_NOT_FOUND'))
           throw err
         } finally {

@@ -115,6 +115,52 @@ describe('Decision management and standalone preview', () => {
     expect(retained).toEqual([expect.objectContaining({ id })])
     expect(retained[0]).not.toHaveProperty('question')
     expect((await owner.app.inject({ method: 'DELETE', url: `${BASE}/${id}` })).statusCode).toBe(409)
+    const nextId = (
+      await owner.app.inject({
+        method: 'POST',
+        url: BASE,
+        payload: {
+          ...draft,
+          name: 'Complexity',
+          visibility: 'restricted',
+          sharedWith: [DEFAULT_OWNER_ID]
+        }
+      })
+    ).json().id
+    const chain = {
+      ...modelSelection,
+      rules: [{ when: modelSelection.rules[0]!.when, nextStepId: 'complexity' }],
+      steps: [{ id: 'complexity', decisionId: nextId, rules: modelSelection.rules }]
+    }
+    expect((await patch(editor, { modelSelection: chain })).statusCode).toBe(403)
+    expect(
+      (
+        await patch(owner, {
+          modelSelection: {
+            ...chain,
+            steps: [
+              {
+                ...chain.steps[0],
+                rules: [{ when: { type: 'score', min: 0, max: 1 }, runtime: 'claude', model: 'model-capable' }]
+              }
+            ]
+          }
+        })
+      ).statusCode
+    ).toBe(400)
+    expect((await patch(owner, { modelSelection: chain })).json()).toMatchObject({ modelSelection: chain })
+    expect((await patch(editor, { modelSelection: chain })).statusCode).toBe(200)
+    expect((await owner.app.inject({ method: 'GET', url: `${BASE}/${nextId}` })).json().usages).toEqual([
+      expect.objectContaining({ kind: 'model_selection', id: agentId })
+    ])
+    expect((await owner.app.inject({ method: 'DELETE', url: `${BASE}/${nextId}` })).statusCode).toBe(409)
+    const chainMetadata = (
+      await editor.app.inject({ method: 'GET', url: `${url}/decisions?purpose=model_selection` })
+    ).json()
+    expect(chainMetadata.map((entry: { id: string }) => entry.id).sort()).toEqual([id, nextId].sort())
+    expect(chainMetadata.every((entry: object) => !('question' in entry))).toBe(true)
+    expect((await patch(editor, { modelSelection })).statusCode).toBe(200)
+    expect((await owner.app.inject({ method: 'DELETE', url: `${BASE}/${nextId}` })).statusCode).toBe(204)
     expect((await patch(owner, { model: null })).statusCode).toBe(400)
     expect((await patch(owner, { modelSelection: null })).statusCode).toBe(200)
     expect((await owner.app.inject({ method: 'DELETE', url: `${BASE}/${id}` })).statusCode).toBe(204)

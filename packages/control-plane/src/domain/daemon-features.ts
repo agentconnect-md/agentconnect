@@ -19,6 +19,7 @@
 import {
   CODE_HOST_PROVIDERS,
   HOOK_DECISION_ROUTING_V1_FEATURE,
+  DECISION_CHAIN_V1_FEATURE,
   WORKSPACE_GIT_V1_FEATURE,
   isSelfManagedGitlabHost,
   type AgentSpec
@@ -39,6 +40,7 @@ type WorkspaceShapedAgent = {
   }
   gitlabHost?: string
   giteaHost?: string
+  modelSelection?: { steps?: readonly unknown[] } | null
 }
 
 export { isSelfManagedGitlabHost }
@@ -65,6 +67,7 @@ export function requiredDaemonFeatures(
   codeHosts: CodeHostProviderRegistry = codeHostProviders
 ): readonly string[] {
   const features: string[] = []
+  if (agent.modelSelection?.steps?.length) features.push(DECISION_CHAIN_V1_FEATURE)
   for (const provider of CODE_HOST_PROVIDERS) {
     const host = codeHosts[provider].features
     // Three sources of a consumer, not one. A vouched workspace (git-workspace-model.md

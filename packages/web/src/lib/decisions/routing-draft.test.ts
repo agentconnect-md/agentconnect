@@ -48,6 +48,28 @@ const run = (events: RoutingEvent[], state: RoutingEditorState = INITIAL_ROUTING
 const members = new Set(['a', 'b'])
 
 describe('routing draft', () => {
+  it('saves reachable child rules and prunes a replaced continuation', () => {
+    const draft = draftFromDetail(detail())
+    draft.rules[0]!.action = { type: 'decision', nextStepId: 'follow' }
+    draft.steps = [
+      {
+        id: 'follow',
+        decisionId: 'd2',
+        rules: [{ id: 'finish', when: { type: 'boolean', values: [true] }, action: { type: 'agent', agentId: 'b' } }]
+      }
+    ]
+    const questions = new Map<string, DecisionQuestion>([
+      ['d1', choice],
+      ['d2', { type: 'boolean', instructions: 'Continue?', criteria: { true: 'Yes', false: 'No' } }]
+    ])
+    expect(routingDraftIssues(draft, choice, { savedChannelIds: ['C1', 'C2'], memberIds: members, questions })).toEqual(
+      []
+    )
+    expect(toSave(draft, ['C1', 'C2'])!.config.steps).toEqual(draft.steps)
+    draft.rules[0]!.action = { type: 'agent', agentId: 'a' }
+    expect(toSave(draft, ['C1', 'C2'])!.config.steps).toBeUndefined()
+  })
+
   it('resets to the latest saved state, dropping an edit and a failed attempt from another row', () => {
     const edited = run([
       { type: 'LOADED', detail: detail() },

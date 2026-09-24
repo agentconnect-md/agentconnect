@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import {
+  DECISION_CHAIN_V1_FEATURE,
   DECISION_PREVIEW_V1_FEATURE,
   DECISION_ROUTING_FORWARD_V1_FEATURE,
   DECISION_ROUTING_V1_FEATURE,
@@ -23,7 +24,7 @@ import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const DAEMON = 'd6d6d6d6-dddd-4ddd-8ddd-dddddddddddd'
 const OFFLINE_DAEMON = 'd7d7d7d7-dddd-4ddd-8ddd-dddddddddddd'
-const ROUTING = [DECISION_TRIGGER_V1_FEATURE, DECISION_ROUTING_V1_FEATURE]
+const ROUTING = [DECISION_TRIGGER_V1_FEATURE, DECISION_ROUTING_V1_FEATURE, DECISION_CHAIN_V1_FEATURE]
 const CONN = [...ROUTING, DECISION_PREVIEW_V1_FEATURE]
 const RELAY_ROUTING = [...ROUTING, DECISION_ROUTING_FORWARD_V1_FEATURE]
 
@@ -244,6 +245,43 @@ describe('POST /bots/:id/decision-routing/preview', () => {
       conversation: { name: 'general' },
       addressing: { mentions: [], constraint: { eligibleAgentIds: [], participantAgentIds: [] } }
     })
+    expect(await writes()).toBe(before)
+  })
+
+  it('routes a matched branch through a second Decision to its final Agent', async () => {
+    const { botId, decisionId, b, config } = await routed()
+    const { app, spy } = appWith()
+    const childId = await createDecision(app, { ...choiceDraft, name: 'Follow-up' })
+    const draft = {
+      ...config,
+      rules: [
+        {
+          id: 'start',
+          when: { type: 'choice', thresholds: { billing: 0.3 } },
+          action: { type: 'decision', nextStepId: 'follow' }
+        }
+      ],
+      steps: [
+        {
+          id: 'follow',
+          decisionId: childId,
+          rules: [
+            {
+              id: 'finish',
+              when: { type: 'choice', thresholds: { tech: 0.3 } },
+              action: { type: 'agent', agentId: b.agentId }
+            }
+          ]
+        }
+      ]
+    }
+    const before = await writes()
+    const res = await preview(app, botId, body(draft))
+    expect(res.statusCode, res.body).toBe(200)
+    expect(res.json().consumer.targets).toEqual([expect.objectContaining({ agentId: b.agentId, effect: 'selected' })])
+    expect(res.json().chain.map((step: { decisionId: string }) => step.decisionId)).toEqual([decisionId, childId])
+    expect(spy.previews).toHaveLength(2)
+    expect(spy.previews[1]!.req.state).toEqual(spy.previews[0]!.req.state)
     expect(await writes()).toBe(before)
   })
 

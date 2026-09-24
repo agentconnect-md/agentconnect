@@ -171,6 +171,7 @@ export interface DecisionGatePreviewInput {
 
 // Gate Try on the conversation's serving daemon; `unavailable` continues to the target and is never a skip.
 export interface DecisionGatePreviewResult {
+  chain?: import('./decision.js').DecisionChainTrace
   mode: 'mock' | 'live'
   readiness: DecisionReadiness
   evaluation: DecisionEvaluation | null
@@ -199,6 +200,7 @@ export type DecisionRoutingNotAppliedReason = 'off' | 'outside_scope' | 'paused'
 
 // Routing Try on the bot's evaluation host; `unavailable` names its continuation and is never a skip.
 export interface DecisionRoutingPreviewResult {
+  chain?: import('./decision.js').DecisionChainTrace
   mode: 'mock' | 'live'
   readiness: DecisionReadiness
   evaluation: DecisionEvaluation | null

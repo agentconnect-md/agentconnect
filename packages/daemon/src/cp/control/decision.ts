@@ -29,7 +29,10 @@ export const decisionPreview: ControlHandler<DecisionControlDeps> = async (frame
   }
   try {
     const input = DecisionPreviewRequest.parse(frame.payload)
-    const evaluation = await deps.decisionEvaluator.evaluate(input)
+    const evaluation = await deps.decisionEvaluator.evaluate({
+      ...input,
+      ...(input.budgetMs ? { deadlineAt: performance.timeOrigin + performance.now() + input.budgetMs } : {})
+    })
     wire.reply(frame, 'decision/preview/result', { evaluation })
   } catch {
     wire.sendError(frame.id, 'INTERNAL', 'Decision preview could not complete', true)

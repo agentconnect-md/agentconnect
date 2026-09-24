@@ -2,6 +2,7 @@
 
 // One routing evaluation inside the drawer: frozen snapshots, model result and raw JSON, constraint, targets and input (§9.5).
 
+import { DecisionChainResults } from '../DecisionChainResults'
 import { useLocale, useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { useDecisionsPrototype } from '@/lib/decisions/provider'
@@ -76,7 +77,7 @@ export function DecisionRoutingEvaluationDetail({
   const t = useTranslations('Decisions.routing')
   const tDecisions = useTranslations('Decisions')
   const locale = useLocale()
-  const { api, orgId } = useDecisionsPrototype()
+  const { api, orgId, decisions } = useDecisionsPrototype()
   const { data, error, isLoading } = useSWR(
     ['decision-routing-evaluation', api.mode, orgId, botId, channelId, seq],
     () => api.getRoutingEvaluation(botId, { channelId, seq })
@@ -98,7 +99,11 @@ export function DecisionRoutingEvaluationDetail({
     for (const rule of snapshot.routing.rules) {
       if (!record.matchedRuleIds.includes(rule.id) || rule.when.type !== 'choice') continue
       const label = `${t('rules.number', { number: numbers.get(rule.id) ?? 0 })} → ${
-        rule.action.type === 'agent' ? targetName(rule.action, agentNames) : t('action.skip')
+        rule.action.type === 'agent'
+          ? targetName(rule.action, agentNames)
+          : rule.action.type === 'decision'
+            ? tDecisions('chain.next')
+            : t('action.skip')
       }`
       for (const key of Object.keys(rule.when.thresholds)) {
         if (!record.matchedKeys.includes(key)) continue
@@ -171,6 +176,7 @@ export function DecisionRoutingEvaluationDetail({
           <Row label={t('evaluations.columns.latency')} value={latencyText(record.latencyMs) ?? '—'} />
         </Facts>
       )}
+      <DecisionChainResults chain={detail?.chain} names={decisions} />
       {record && (
         <DecisionModelResult
           question={snapshot?.question ?? null}
@@ -178,7 +184,11 @@ export function DecisionRoutingEvaluationDetail({
           summary={record.answer}
           {...(snapshot ? { ruleThresholds } : {})}
           matchedKeys={record.matchedKeys}
-          matched={record.matchedRuleIds.length > 0 && !record.usedOtherwise}
+          matched={
+            snapshot
+              ? snapshot.routing.rules.some((rule) => record.matchedRuleIds.includes(rule.id))
+              : record.matchedRuleIds.length > 0 && !record.usedOtherwise
+          }
           keyNotes={keyNotes}
           requestedModel={record.requestedModel}
           actualModel={record.actualModel}
@@ -275,7 +285,11 @@ export function DecisionRoutingEvaluationDetail({
                   </span>
                   <span className="text-(--text-tertiary)">→</span>
                   <span className="mono text-[11.5px] text-(--text-secondary)">
-                    {rule.action.type === 'agent' ? targetName(rule.action, agentNames) : t('action.skip')}
+                    {rule.action.type === 'agent'
+                      ? targetName(rule.action, agentNames)
+                      : rule.action.type === 'decision'
+                        ? tDecisions('chain.next')
+                        : t('action.skip')}
                   </span>
                 </li>
               )

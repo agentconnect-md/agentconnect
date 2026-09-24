@@ -110,7 +110,76 @@ export const DecisionCondition = z
   })
 export type DecisionCondition = z.infer<typeof DecisionCondition>
 
-export const ChannelDecisionGate = z.strictObject({ type: z.literal('gate'), decisionId: Id, when: DecisionCondition })
+export const DECISION_CHAIN_MAX_STEPS = 8
+
+export interface DecisionChainStep {
+  decisionId: string
+}
+
+export function decisionChainIds(
+  chain: (DecisionChainStep & { steps?: readonly DecisionChainStep[] }) | null | undefined
+): string[] {
+  return chain ? [...new Set([chain.decisionId, ...(chain.steps ?? []).map((step) => step.decisionId)])] : []
+}
+
+function validateDecisionChain<T extends DecisionChainStep>(
+  chain: T & { steps?: Array<T & { id: string }> },
+  edges: (step: T) => Array<{ id: string; path: Array<string | number> }>,
+  ctx: z.RefinementCtx
+): void {
+  const steps = new Map(chain.steps?.map((step) => [step.id, step]))
+  if (steps.size !== (chain.steps?.length ?? 0))
+    ctx.addIssue({ code: 'custom', path: ['steps'], message: 'Step IDs must be unique.' })
+  const visited = new Set<string>()
+  const visit = (step: T, ancestors: Set<string>, path: Array<string | number>) => {
+    for (const edge of edges(step)) {
+      const target = steps.get(edge.id)
+      if (!target || ancestors.has(edge.id)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [...path, ...edge.path],
+          message: target ? 'Decision steps must not form a cycle.' : 'Choose an existing next step.'
+        })
+        continue
+      }
+      if (visited.has(target.id)) continue
+      visited.add(target.id)
+      visit(target, new Set([...ancestors, target.id]), ['steps', chain.steps!.indexOf(target)])
+    }
+  }
+  visit(chain, new Set(), [])
+  chain.steps?.forEach((step, index) => {
+    if (!visited.has(step.id))
+      ctx.addIssue({
+        code: 'custom',
+        path: ['steps', index],
+        message: 'Every step must be reachable from the first Decision.'
+      })
+  })
+}
+
+export const DecisionGateStep = z.strictObject({
+  decisionId: Id,
+  when: DecisionCondition,
+  nextStepId: Id.optional(),
+  elseStepId: Id.optional()
+})
+export type DecisionGateStep = z.infer<typeof DecisionGateStep>
+
+export const ChannelDecisionGate = DecisionGateStep.extend({
+  type: z.literal('gate'),
+  steps: z
+    .array(DecisionGateStep.extend({ id: Id }))
+    .max(DECISION_CHAIN_MAX_STEPS - 1)
+    .optional()
+}).superRefine((gate, ctx) =>
+  validateDecisionChain<DecisionGateStep>(
+    gate,
+    (step) =>
+      (['nextStepId', 'elseStepId'] as const).flatMap((key) => (step[key] ? [{ id: step[key]!, path: [key] }] : [])),
+    ctx
+  )
+)
 export type ChannelDecisionGate = z.infer<typeof ChannelDecisionGate>
 
 export const DecisionRuntimeTarget = z.strictObject({
@@ -122,14 +191,44 @@ export const DecisionRuntimeTarget = z.strictObject({
 })
 export type DecisionRuntimeTarget = z.infer<typeof DecisionRuntimeTarget>
 
-export const AgentModelSelection = z.strictObject({
+export const DecisionModelTarget = z.union([DecisionRuntimeTarget, z.strictObject({ nextStepId: Id })])
+export type DecisionModelTarget = z.infer<typeof DecisionModelTarget>
+
+const DecisionModelRule = z.union([
+  DecisionRuntimeTarget.extend({ when: DecisionCondition }),
+  z.strictObject({ nextStepId: Id, when: DecisionCondition })
+])
+
+export const DecisionModelStep = z.strictObject({
   decisionId: z.string().uuid(),
-  rules: z
-    .array(DecisionRuntimeTarget.extend({ when: DecisionCondition }))
-    .min(1)
-    .max(32)
+  rules: z.array(DecisionModelRule).min(1).max(32)
 })
+export type DecisionModelStep = z.infer<typeof DecisionModelStep>
+
+export const AgentModelSelection = DecisionModelStep.extend({
+  steps: z
+    .array(DecisionModelStep.extend({ id: Id }))
+    .max(DECISION_CHAIN_MAX_STEPS - 1)
+    .optional()
+}).superRefine((selection, ctx) =>
+  validateDecisionChain<DecisionModelStep>(
+    selection,
+    (step) =>
+      step.rules.flatMap((rule, index) =>
+        'nextStepId' in rule ? [{ id: rule.nextStepId, path: ['rules', index, 'nextStepId'] }] : []
+      ),
+    ctx
+  )
+)
 export type AgentModelSelection = z.infer<typeof AgentModelSelection>
+
+export const modelSelectionDecisionIds = decisionChainIds
+
+export function modelSelectionTargets(selection: AgentModelSelection): DecisionRuntimeTarget[] {
+  return [selection, ...(selection.steps ?? [])].flatMap((step) =>
+    step.rules.flatMap(({ when: _when, ...target }) => ('runtime' in target ? [target] : []))
+  )
+}
 
 export const ChannelDecisionBinding = z.discriminatedUnion('type', [
   ChannelDecisionGate,
@@ -164,29 +263,52 @@ export type DecisionChannelSettings = z.infer<typeof DecisionChannelSettings>
 
 export const RoutingAction = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('agent'), agentId: Id }),
-  z.strictObject({ type: z.literal('skip') })
+  z.strictObject({ type: z.literal('skip') }),
+  z.strictObject({ type: z.literal('decision'), nextStepId: Id })
 ])
 export type RoutingAction = z.infer<typeof RoutingAction>
 
-export const SharedBotDecisionRouting = z
-  .strictObject({
-    enabled: z.boolean(),
-    decisionId: Id,
-    rules: z.array(z.strictObject({ id: Id, when: DecisionCondition, action: RoutingAction })).max(32),
-    otherwise: z.discriminatedUnion('type', [
-      z.strictObject({ type: z.literal('default_agent') }),
-      z.strictObject({ type: z.literal('skip') })
-    ])
-  })
-  .refine((routing) => new Set(routing.rules.map((rule) => rule.id)).size === routing.rules.length, {
-    path: ['rules'],
-    message: 'Rule IDs must be unique.'
-  })
+export const DecisionRoutingStep = z.strictObject({
+  decisionId: Id,
+  rules: z.array(z.strictObject({ id: Id, when: DecisionCondition, action: RoutingAction })).max(32)
+})
+export type DecisionRoutingStep = z.infer<typeof DecisionRoutingStep>
+
+export const SharedBotDecisionRouting = DecisionRoutingStep.extend({
+  enabled: z.boolean(),
+  otherwise: z.discriminatedUnion('type', [
+    z.strictObject({ type: z.literal('default_agent') }),
+    z.strictObject({ type: z.literal('skip') })
+  ]),
+  steps: z
+    .array(DecisionRoutingStep.extend({ id: Id }))
+    .max(DECISION_CHAIN_MAX_STEPS - 1)
+    .optional()
+}).superRefine((routing, ctx) => {
+  validateDecisionChain<DecisionRoutingStep>(
+    routing,
+    (step) =>
+      step.rules.flatMap((rule, index) =>
+        rule.action.type === 'decision'
+          ? [{ id: rule.action.nextStepId, path: ['rules', index, 'action', 'nextStepId'] }]
+          : []
+      ),
+    ctx
+  )
+  const rules = [routing, ...(routing.steps ?? [])].flatMap((step) => step.rules)
+  if (rules.length > 32 || new Set(rules.map((rule) => rule.id)).size !== rules.length)
+    ctx.addIssue({ code: 'custom', path: ['rules'], message: 'Use at most 32 rules with unique IDs across the chain.' })
+})
 export type SharedBotDecisionRouting = z.infer<typeof SharedBotDecisionRouting>
 
-// The distinct agents a routing configuration can activate through its rules.
-export function decisionRoutingAgentIds(routing: Pick<SharedBotDecisionRouting, 'rules'>): string[] {
-  return [...new Set(routing.rules.flatMap((rule) => (rule.action.type === 'agent' ? [rule.action.agentId] : [])))]
+export function decisionRoutingAgentIds(routing: Pick<SharedBotDecisionRouting, 'rules' | 'steps'>): string[] {
+  return [
+    ...new Set(
+      [routing, ...(routing.steps ?? [])].flatMap((step) =>
+        step.rules.flatMap((rule) => (rule.action.type === 'agent' ? [rule.action.agentId] : []))
+      )
+    )
+  ]
 }
 
 // The bot's routing config for exactly the conversations this recipient hosts, with each resolved default agent.
@@ -278,6 +400,17 @@ export const DecisionEvaluation = z.discriminatedUnion('status', [
   })
 ])
 export type DecisionEvaluation = z.infer<typeof DecisionEvaluation>
+
+export const DecisionChainTrace = z
+  .array(
+    z.strictObject({
+      stepId: z.string().max(128),
+      decisionId: Id,
+      evaluation: DecisionEvaluation
+    })
+  )
+  .max(DECISION_CHAIN_MAX_STEPS)
+export type DecisionChainTrace = z.infer<typeof DecisionChainTrace>
 
 // A Gate Try sample: ordered history lines with sender ids, then the message being judged.
 export const DecisionPreviewSample = z.strictObject({
@@ -373,6 +506,7 @@ export const DecisionEvaluationRecordDetail = DecisionEvaluationRecord.extend({
     .nullable(),
   input: DecisionEvaluationInput.nullable(),
   fullAnswer: DecisionAnswer.nullable(),
+  chain: DecisionChainTrace.optional(),
   // Present only when the CP asked for it (decision-evaluation-raw-v1); null once retention strips bodies.
   rawRequest: DecisionRawJson.nullable().optional(),
   rawResponse: DecisionRawJson.nullable().optional(),
@@ -472,6 +606,7 @@ export const DecisionRoutingEvaluationRecordDetail = DecisionRoutingEvaluationRe
     .nullable(),
   input: DecisionEvaluationInput.nullable(),
   fullAnswer: DecisionAnswer.nullable(),
+  chain: DecisionChainTrace.optional(),
   rawRequest: DecisionRawJson.nullable().optional(),
   rawResponse: DecisionRawJson.nullable().optional()
 })
@@ -515,12 +650,53 @@ export function decisionConditionIssues(
 
 export function decisionRoutingIssues(
   question: DecisionQuestion,
-  routing: SharedBotDecisionRouting
+  routing: SharedBotDecisionRouting,
+  questions?: ReadonlyMap<string, DecisionQuestion>
 ): DecisionValidationIssue[] {
   const parsed = SharedBotDecisionRouting.safeParse(routing)
   if (!parsed.success)
     return parsed.error.issues.map((issue) => ({ path: issue.path.map(String), message: issue.message }))
-  return decisionRuleIssues(question, routing.rules)
+  return [
+    ...decisionRuleIssues(question, routing.rules),
+    ...(routing.steps ?? []).flatMap((step, index) => {
+      const next = questions?.get(step.decisionId)
+      return next
+        ? decisionRuleIssues(next, step.rules).map((issue) => ({ ...issue, path: ['steps', index, ...issue.path] }))
+        : []
+    })
+  ]
+}
+
+export function decisionGateIssues(
+  question: DecisionQuestion,
+  gate: ChannelDecisionGate,
+  questions?: ReadonlyMap<string, DecisionQuestion>
+): DecisionValidationIssue[] {
+  const parsed = ChannelDecisionGate.safeParse(gate)
+  if (!parsed.success)
+    return parsed.error.issues.map((issue) => ({ path: issue.path.map(String), message: issue.message }))
+  return [
+    ...decisionConditionIssues(question, gate.when),
+    ...(gate.steps ?? []).flatMap((step, index) => {
+      const next = questions?.get(step.decisionId)
+      return next
+        ? decisionConditionIssues(next, step.when).map((issue) => ({
+            ...issue,
+            path: ['steps', index, 'when', ...issue.path]
+          }))
+        : []
+    })
+  ]
+}
+
+export function nextGateStep(
+  question: DecisionQuestion,
+  step: DecisionGateStep,
+  answer: DecisionAnswer
+): { matched: boolean; matchedKeys: string[]; nextStepId?: string } {
+  const match = matchDecisionCondition(question, step.when, answer)
+  const nextStepId = match.matched ? step.nextStepId : step.elseStepId
+  return { ...match, ...(nextStepId ? { nextStepId } : {}) }
 }
 
 const DUPLICATE_ANSWER = 'An answer can appear in only one routing rule.'
@@ -578,23 +754,33 @@ function decisionRuleIssues(
 
 export function decisionModelSelectionIssues(
   question: DecisionQuestion,
-  selection: AgentModelSelection
+  selection: AgentModelSelection,
+  questions?: ReadonlyMap<string, DecisionQuestion>
 ): DecisionValidationIssue[] {
   const parsed = AgentModelSelection.safeParse(selection)
   if (!parsed.success)
     return parsed.error.issues.map((issue) => ({ path: issue.path.map(String), message: issue.message }))
-  return decisionRuleIssues(question, selection.rules)
+  return [
+    ...decisionRuleIssues(question, selection.rules),
+    ...(selection.steps ?? []).flatMap((step, index) => {
+      const question = questions?.get(step.decisionId)
+      return question
+        ? decisionRuleIssues(question, step.rules).map((issue) => ({ ...issue, path: ['steps', index, ...issue.path] }))
+        : []
+    })
+  ]
 }
 
 // A model consumer selects one winner; equal choice probabilities retain the configured rule order.
 export function selectDecisionTarget(
   question: DecisionQuestion,
-  selection: AgentModelSelection,
+  selection: DecisionModelStep,
   answer: DecisionAnswer
-): DecisionRuntimeTarget | undefined {
-  requireValid(decisionModelSelectionIssues(question, selection))
+): DecisionModelTarget | undefined {
+  DecisionModelStep.parse({ decisionId: selection.decisionId, rules: selection.rules })
+  requireValid(decisionRuleIssues(question, selection.rules))
   parseDecisionAnswer(question, answer)
-  let selected: { target: DecisionRuntimeTarget; probability: number } | undefined
+  let selected: { target: DecisionModelTarget; probability: number } | undefined
   for (const { when, ...target } of selection.rules) {
     const match = matchDecisionCondition(question, when, answer)
     if (!match.matched) continue
@@ -676,7 +862,8 @@ export function matchDecisionRouting(
   question: DecisionQuestion,
   routing: SharedBotDecisionRouting,
   answer: DecisionAnswer,
-  defaultAgentId?: string
+  defaultAgentId?: string,
+  chain?: ReadonlyMap<string, { question: DecisionQuestion; answer: DecisionAnswer }>
 ): DecisionRoutingMatch {
   requireValid(decisionRoutingIssues(question, routing))
   parseDecisionAnswer(question, answer)
@@ -688,17 +875,34 @@ export function matchDecisionRouting(
     activates: false
   }
   if (!routing.enabled) return result
-  for (const rule of routing.rules) {
-    const match = matchDecisionCondition(question, rule.when, answer)
-    if (!match.matched) continue
-    result.matchedRuleIds.push(rule.id)
-    result.matchedKeys.push(...match.matchedKeys)
-    if (rule.action.type === 'agent') result.agentIds.push(rule.action.agentId)
+  const visited = new Set<string>()
+  const steps = new Map(routing.steps?.map((step) => [step.id, step]))
+  const visit = (step: DecisionRoutingStep, question: DecisionQuestion, answer: DecisionAnswer) => {
+    requireValid(decisionRuleIssues(question, step.rules))
+    const matched = step.rules.filter((rule) => {
+      const match = matchDecisionCondition(question, rule.when, answer)
+      if (match.matched) result.matchedKeys.push(...match.matchedKeys)
+      return match.matched
+    })
+    if (!matched.length) result.usedOtherwise = true
+    for (const rule of matched) {
+      result.matchedRuleIds.push(rule.id)
+      if (rule.action.type === 'agent') result.agentIds.push(rule.action.agentId)
+      if (rule.action.type === 'decision' && !visited.has(rule.action.nextStepId)) {
+        const id = rule.action.nextStepId
+        const next = steps.get(id)
+        const evaluated = chain?.get(id)
+        if (!next || !evaluated) throw new Error('Missing chained Decision answer.')
+        visited.add(id)
+        visit(next, evaluated.question, evaluated.answer)
+      }
+    }
   }
-  result.usedOtherwise = result.matchedRuleIds.length === 0
+  visit(routing, question, answer)
   result.activates = result.agentIds.length > 0 || (result.usedOtherwise && routing.otherwise.type === 'default_agent')
   if (result.usedOtherwise && routing.otherwise.type === 'default_agent' && defaultAgentId)
     result.agentIds.push(defaultAgentId)
+  result.matchedKeys = [...new Set(result.matchedKeys)].slice(0, 32)
   result.agentIds = [...new Set(result.agentIds)]
   return result
 }
@@ -774,6 +978,7 @@ export function resolveRoutingTargets(input: {
   constraint: readonly RoutingConstraintInput[]
   defaultAgentId?: string
   candidates: readonly RoutingCandidate[]
+  chain?: ReadonlyMap<string, { question: DecisionQuestion; answer: DecisionAnswer }>
 }): RoutingSettlement {
   const { participants, eligible, evaluate } = partitionRoutingConstraint(input.constraint)
   const constrained = participants.length + eligible.length > 0
@@ -816,14 +1021,15 @@ export function resolveRoutingTargets(input: {
       fallback: 'default'
     }
   }
-  const match = matchDecisionRouting(input.question, input.routing, input.answer, input.defaultAgentId)
+  const match = matchDecisionRouting(input.question, input.routing, input.answer, input.defaultAgentId, input.chain)
   let targets: RoutingTarget[]
   if (constrained) {
     // An activating result keeps the eligible recipients; it never adds or replaces them (§3.2 step 5).
     targets = match.activates ? [...kept, ...eligible.map((entry) => fromEntry(entry, 'kept'))] : kept
   } else {
     const ruleAgents = new Set(
-      input.routing.rules
+      [input.routing, ...(input.routing.steps ?? [])]
+        .flatMap((step) => step.rules)
         .filter((rule) => match.matchedRuleIds.includes(rule.id) && rule.action.type === 'agent')
         .map((rule) => (rule.action as { agentId: string }).agentId)
     )

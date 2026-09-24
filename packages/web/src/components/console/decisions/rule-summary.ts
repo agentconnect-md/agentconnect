@@ -17,5 +17,8 @@ export function ruleSummaries(
   selection: AgentModelSelection,
   question?: DecisionQuestion
 ): { when: string; then: string }[] {
-  return selection.rules.map((rule) => ({ when: conditionText(rule.when, question), then: rule.model || rule.runtime }))
+  return selection.rules.map((rule) => ({
+    when: conditionText(rule.when, question),
+    then: 'runtime' in rule ? rule.model || rule.runtime : 'Decision'
+  }))
 }

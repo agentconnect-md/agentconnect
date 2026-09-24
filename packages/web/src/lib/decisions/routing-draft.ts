@@ -4,11 +4,14 @@ import {
   decisionRoutingIssues,
   type DecisionCondition,
   type DecisionQuestion,
+  type DecisionRoutingStep,
   type SharedBotDecisionRouting
 } from '@agentconnect.md/protocol/decision'
+import { reachableSteps } from './chain'
 import type { DecisionRoutingDetail, DecisionRoutingSave } from '@agentconnect.md/protocol/decision-api'
 
-export type RoutingDraftAction = { type: 'agent'; agentId: string | null } | { type: 'skip' }
+export type RoutingDraftAction =
+  { type: 'agent'; agentId: string | null } | { type: 'skip' } | { type: 'decision'; nextStepId: string }
 export interface RoutingDraftRule {
   id: string
   when: DecisionCondition | null
@@ -20,6 +23,7 @@ export interface RoutingRemoval {
   agentId?: string
 }
 export interface RoutingDraft {
+  steps?: Array<{ id: string; decisionId: string; rules: RoutingDraftRule[] }>
   enabled: boolean
   decisionId: string | null
   rules: RoutingDraftRule[]
@@ -51,12 +55,13 @@ export function draftFromDetail(detail: Pick<DecisionRoutingDetail, 'config' | '
       removals: {}
     }
   return {
+    ...(config.steps?.length ? { steps: structuredClone(config.steps) } : {}),
     enabled: config.enabled,
     decisionId: config.decisionId,
     rules: config.rules.map((rule) => ({
       id: rule.id,
       when: structuredClone(rule.when),
-      action: rule.action.type === 'agent' ? { type: 'agent', agentId: rule.action.agentId } : { type: 'skip' }
+      action: structuredClone(rule.action)
     })),
     otherwise: config.otherwise.type,
     channelIds: [...detail.channelIds],
@@ -67,16 +72,36 @@ export function draftFromDetail(detail: Pick<DecisionRoutingDetail, 'config' | '
 /** The draft's routing configuration, or null while a rule lacks a condition or target. */
 export function draftConfig(draft: RoutingDraft): SharedBotDecisionRouting | null {
   if (!draft.decisionId) return null
-  const rules: SharedBotDecisionRouting['rules'] = []
-  for (const rule of draft.rules) {
-    if (!rule.when || (rule.action.type === 'agent' && !rule.action.agentId)) return null
-    rules.push({
-      id: rule.id,
-      when: rule.when,
-      action: rule.action.type === 'agent' ? { type: 'agent', agentId: rule.action.agentId! } : { type: 'skip' }
-    })
+  const convert = (step: { decisionId: string | null; rules: RoutingDraftRule[] }): DecisionRoutingStep | null => {
+    if (
+      !step.decisionId ||
+      step.rules.some((rule) => !rule.when || (rule.action.type === 'agent' && !rule.action.agentId))
+    )
+      return null
+    return {
+      decisionId: step.decisionId,
+      rules: step.rules.map((rule) => ({
+        id: rule.id,
+        when: rule.when!,
+        action: rule.action.type === 'agent' ? { type: 'agent', agentId: rule.action.agentId! } : rule.action
+      }))
+    }
   }
-  return { enabled: draft.enabled, decisionId: draft.decisionId, rules, otherwise: { type: draft.otherwise } }
+  const root = convert(draft)
+  const steps = reachableSteps<{ rules: RoutingDraftRule[] }>(draft, draft.steps ?? [], (step) =>
+    step.rules.flatMap((rule) => (rule.action.type === 'decision' ? [rule.action.nextStepId] : []))
+  )
+  const converted = steps.map((step) => ({
+    ...convert(step as NonNullable<RoutingDraft['steps']>[number]),
+    id: step.id
+  }))
+  if (!root || converted.some((step) => !step.decisionId)) return null
+  return {
+    ...root,
+    enabled: draft.enabled,
+    otherwise: { type: draft.otherwise },
+    ...(converted.length ? { steps: converted as NonNullable<SharedBotDecisionRouting['steps']> } : {})
+  }
 }
 
 /** The complete save body, or null while a required field is missing. */
@@ -101,7 +126,11 @@ export function toSave(draft: RoutingDraft, savedChannelIds: readonly string[]):
 export function routingDraftIssues(
   draft: RoutingDraft,
   question: DecisionQuestion | null,
-  context: { savedChannelIds: readonly string[]; memberIds: ReadonlySet<string> }
+  context: {
+    savedChannelIds: readonly string[]
+    memberIds: ReadonlySet<string>
+    questions?: ReadonlyMap<string, DecisionQuestion>
+  }
 ): RoutingIssue[] {
   const issues: RoutingIssue[] = []
   if (!draft.decisionId || !question) issues.push({ path: ['decisionId'], code: 'decision_required' })
@@ -124,6 +153,24 @@ export function routingDraftIssues(
       ...decisionRoutingIssues(question, config).map((issue) => ({ path: issue.path, message: issue.message }))
     )
   }
+  const reached = reachableSteps<{ rules: RoutingDraftRule[] }>(draft, draft.steps ?? [], (step) =>
+    step.rules.flatMap((rule) => (rule.action.type === 'decision' ? [rule.action.nextStepId] : []))
+  )
+  for (const [index, step] of (draft.steps ?? []).entries()) {
+    if (!reached.some((entry) => entry.id === step.id)) continue
+    const next = context.questions?.get(step.decisionId)
+    if (!next) issues.push({ path: ['steps', index, 'decisionId'], code: 'decision_required' })
+    else
+      issues.push(
+        ...routingDraftIssues({ ...draft, ...step, steps: undefined, removals: {} }, next, {
+          savedChannelIds: [],
+          memberIds: context.memberIds
+        }).map((issue) => ({ ...issue, path: ['steps', index, ...issue.path] }))
+      )
+  }
+  const config = draftConfig(draft)
+  if (config && question && context.questions)
+    issues.push(...decisionRoutingIssues(question, config, context.questions))
   for (const channelId of context.savedChannelIds)
     if (!draft.channelIds.includes(channelId) && !draft.removals[channelId]?.trigger)
       issues.push({ path: ['removals', channelId], code: 'trigger_required' })
