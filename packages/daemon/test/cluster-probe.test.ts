@@ -7,6 +7,7 @@ import {
   probeClusterRuntimes
 } from '../src/runtimes/cluster-probe.js'
 import type { RuntimeDef } from '../src/config/config-schema.js'
+import { configuredRuntimeEnvironment } from '../src/runtimes/runtime-environment.js'
 
 /** The `--k8s` credentialed model probe: what a probed runtime launches with, and how the sweep
  *  behaves when one of them refuses. */
@@ -92,6 +93,27 @@ describe('cluster runtime probe', () => {
     expect(clusterProbeEnv('codex-acp', codex, { agentId: 'probe', claudeModelAliases: aliases }).env).toEqual({
       AC_AGENT_ID: 'probe'
     })
+  })
+
+  it('delivers one Secret through the same runtime-specific env used at spawn, without exposing it in probe errors', () => {
+    const source = 'AC_RUNTIME_SECRET_0123456789ABCDEF'
+    const runtimeEnvironment = configuredRuntimeEnvironment({
+      AC_RUNTIME_ENV_BINDINGS: JSON.stringify({ 'qwen-code': { OPENAI_API_KEY: source } }),
+      [source]: 'operator-key'
+    })
+    const { env, redactValues, uncredentialed } = clusterProbeEnv(
+      'qwen-code',
+      { command: 'qwen', args: ['--acp'], env: [] },
+      { agentId: 'probe', runtimeEnvironment }
+    )
+    expect(env).toEqual({ AC_AGENT_ID: 'probe', OPENAI_API_KEY: 'operator-key' })
+    expect(redactValues).toContain('operator-key')
+    expect(uncredentialed).toBe(false)
+    expect(() =>
+      configuredRuntimeEnvironment({
+        AC_RUNTIME_ENV_BINDINGS: JSON.stringify({ qwen: { OPENAI_API_KEY: 'DATABASE_URL' } })
+      })
+    ).toThrow(/Secret references/)
   })
 
   it('reports every runtime as it answers, and one refusal does not end the sweep', async () => {

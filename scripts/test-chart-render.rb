@@ -5,6 +5,7 @@
 
 require 'yaml'
 require 'open3'
+require 'json'
 
 chart = File.expand_path('../charts/agentconnect', __dir__)
 command = [
@@ -18,6 +19,7 @@ command = [
   '--set', 'daemonPool.dataPlane.existingSecret=example-data-plane',
   # Install-wide model credentials arrive by reference, so the render must never carry a value.
   '--set', 'daemonPool.modelCredentials.existingSecret=example-model-credentials',
+  '--set-json', 'daemonPool.runtimeEnvironment.runtimes={"qwen-code":{"OPENAI_API_KEY":"PROVIDER_KEY"}}',
   # The operator's clone policy: a self-managed code host is served only if the deployment says so.
   '--set-json', 'daemonPool.workspaceGitAllowedOrigins=["https://github.com","https://gitlab.example.test"]',
   # Placement is per-install, so the contract only holds if a consumer's values can set it.
@@ -49,6 +51,13 @@ container = pod.fetch('containers').find { |item| item['name'] == 'daemon-pool' 
 env = container.fetch('env').to_h { |item| [item.fetch('name'), item['value']] }
 mounts = container.fetch('volumeMounts').to_h { |item| [item.fetch('name'), item] }
 volumes = pod.fetch('volumes').to_h { |item| [item.fetch('name'), item] }
+
+# Runtime-specific keys stay in a Secret even though the binding itself is deployment config.
+binding = JSON.parse(env.fetch('AC_RUNTIME_ENV_BINDINGS')).fetch('qwen-code').fetch('OPENAI_API_KEY')
+entry = container.fetch('env').find { |item| item['name'] == binding } || abort('missing runtime Secret source')
+abort('runtime binding must reference the configured Secret') unless
+  entry.dig('valueFrom', 'secretKeyRef') == { 'name' => 'example-model-credentials', 'key' => 'PROVIDER_KEY' }
+abort('runtime binding must never contain the key value') if entry.key?('value')
 
 abort('daemon pool must default to three replicas') unless spec['replicas'] == 3
 # Readiness is a real signal (#1056), so this is only a settle margin on top of it — not a
@@ -239,6 +248,16 @@ abort('agent pods must tolerate the configured node taint') unless template_pod[
 ]
 runtime_container = template_pod.fetch('containers').find { |item| item['name'] == 'runtime' } || abort('missing runtime container')
 abort('runtime container must use the effective runtime-sandbox tag') unless runtime_container['image'] == 'ghcr.io/agentconnect-md/runtime-sandbox:v1.41.0-rc.88'
+full_rendered, full_error, full_status = Open3.capture3(
+  *(command + ['--set', 'daemonPool.runtime.repository=ghcr.io/agentconnect-md/runtime-sandbox-full'])
+)
+abort("helm template (full runtime) failed:\n#{full_error}") unless full_status.success?
+full_documents = YAML.load_stream(full_rendered).compact
+full_image = 'ghcr.io/agentconnect-md/runtime-sandbox-full:v1.41.0-rc.88'
+full_pool = full_documents.find { |doc| doc['kind'] == 'Deployment' && doc.dig('metadata', 'name') == 'example-agentconnect-daemon-pool' }
+full_template = full_documents.find { |doc| doc['kind'] == 'SandboxTemplate' && doc.dig('metadata', 'name') == 'example-agentconnect-runtime' }
+abort('full runtime repository must roll pool probes') unless full_pool.dig('spec', 'template', 'metadata', 'annotations', 'agentconnect.md/runtime-sandbox-image') == full_image
+abort('full runtime repository must keep the effective runtime tag') unless full_template.dig('spec', 'podTemplate', 'spec', 'containers', 0, 'image') == full_image
 abort('runtime container must root the workspace and place the shim listener') unless runtime_container.fetch('env') == [
   { 'name' => 'AC_SHIM_WORKSPACE_ROOT', 'value' => '/agent' },
   { 'name' => 'AC_SHIM_PORT', 'value' => '8085' }

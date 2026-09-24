@@ -523,6 +523,11 @@ import {
   type ModelCredential,
   type ModelProviderTarget
 } from './runtimes/model-provider-config.js'
+import {
+  applyRuntimeEnvironment,
+  configuredRuntimeEnvironment,
+  type RuntimeEnvironment
+} from './runtimes/runtime-environment.js'
 import { KeyServerClient, type KeyGrant } from './key-server/client.js'
 import { DecisionEvaluator, type DecisionEvaluationInput } from './decisions/evaluator.js'
 import { DecisionEvaluationReader } from './decisions/evaluations.js'
@@ -1465,6 +1470,7 @@ export class Daemon {
    *  whose sandbox pod spec predates the value (the pod-env copy is a frozen snapshot). */
   private readonly codexSessionFloor?: string
   private readonly claudeModelAliases?: Record<string, string>
+  private readonly runtimeEnvironment: RuntimeEnvironment
   /** Reads this pod's projected CP-audience token; undefined unless the daemon runs
    *  in-cluster AND the volume is actually mounted (decided once, at boot). */
   private readonly clusterIdentityToken?: () => string | undefined
@@ -1777,6 +1783,7 @@ export class Daemon {
     // Base URLs are deployment topology and always come from here, key server or not; an issuer
     // supplies the key alone.
     this.modelSessions.staticModelCredentials = this.k8s ? configuredModelCredentials(process.env) : undefined
+    this.runtimeEnvironment = this.k8s ? configuredRuntimeEnvironment(process.env) : {}
     this.decisionEvaluator = new DecisionEvaluator({
       orgForAgent: (agentId) => this.orgForAgent(agentId),
       credentials: (request, signal) => {
@@ -6292,20 +6299,23 @@ export class Daemon {
             ? { configFileLaunchDir: shimPaths(launchFilesRoot).configFilesDir }
             : { configFileDir: agent.dir }),
         finalizeLaunchEnv: (launchEnv) => {
+          if (this.k8s)
+            applyRuntimeEnvironment(this.runtimeEnvironment, runtimeEntry?.aliasOf ?? agent.runtime, launchEnv)
           // A dream host on OpenCode carries the daemon-authored `read-only` agent, which the extraction gate prefers over `plan`.
           // Every launch but a pod inherits this daemon's environment beneath the explicit env, so overlay that value too.
           if (excludeAgentToolCredentials) {
             applyOpenCodeReadOnlyMode(target, launchEnv, this.k8s ? undefined : process.env.OPENCODE_CONFIG_CONTENT)
           }
-          if (!this.k8s || !target) return
-          if (opts.modelCredential) applyModelCredential(target, launchEnv, opts.modelCredential.credential)
-          else {
-            const configured = this.modelSessions.staticCredential(target.runtime)
-            if (configured) applyStaticModelConfig(target, launchEnv, configured)
+          if (!this.k8s) return
+          if (target) {
+            if (opts.modelCredential) applyModelCredential(target, launchEnv, opts.modelCredential.credential)
+            else {
+              const configured = this.modelSessions.staticCredential(target.runtime)
+              if (configured) applyStaticModelConfig(target, launchEnv, configured)
+            }
+            if (this.codexSessionFloor) applyCodexSessionFloor(target, launchEnv, this.codexSessionFloor)
+            if (this.claudeModelAliases) applyClaudeModelAliases(target, launchEnv, this.claudeModelAliases)
           }
-          // Last, so every key the daemon authored above stays authoritative over the floor.
-          if (this.codexSessionFloor) applyCodexSessionFloor(target, launchEnv, this.codexSessionFloor)
-          if (this.claudeModelAliases) applyClaudeModelAliases(target, launchEnv, this.claudeModelAliases)
         },
         runtimeReadRoots:
           runInSandbox && !micro
@@ -22827,7 +22837,11 @@ export class Daemon {
   private poolProbeKeyFor(imageRef: string | undefined): string | undefined {
     return imageRef === undefined
       ? undefined
-      : poolProbeKey(imageRef, { ...this.claudeModelAliases, AC_CODEX_CONFIG: this.codexSessionFloor })
+      : poolProbeKey(imageRef, {
+          ...this.claudeModelAliases,
+          AC_CODEX_CONFIG: this.codexSessionFloor,
+          AC_RUNTIME_ENV_BINDINGS: process.env.AC_RUNTIME_ENV_BINDINGS
+        })
   }
 
   /** Adopt an answer another member already published for this image, if there is one. */
@@ -22957,16 +22971,7 @@ export class Daemon {
     this.runtimeFacts.emitFacts()
   }
 
-  /**
-   * Read the models each declared runtime actually offers, by running it — with credentials — in
-   * the probe sandbox the image table just came from.
-   *
-   * The table itself cannot carry this: it is generated at image build time with no provider
-   * credentials, so it publishes no model list and the console shows an empty picker for every
-   * cluster runtime. The credentials are the whole difference, and they exist in exactly two
-   * places this launch reaches: the deployment's own pair on the daemon, and the pod's `AC_*`
-   * fill-in on the SandboxTemplate.
-   */
+  /** Probe each installed runtime in the sandbox with its install-wide credentials and environment. */
   private async probeK8sRuntimeModels(sandbox: { agentId: string; cwd: string }): Promise<RuntimeProbeResult[]> {
     const plane = this.k8sPlane
     if (!plane) return []
@@ -22988,6 +22993,7 @@ export class Daemon {
           isolateAccountApps: this.cfg.security.isolateAccountApps
         }),
       staticCredential: (kind) => this.modelSessions.staticCredential(kind),
+      runtimeEnvironment: this.runtimeEnvironment,
       ...(this.codexSessionFloor ? { codexSessionFloor: this.codexSessionFloor } : {}),
       ...(this.claudeModelAliases ? { claudeModelAliases: this.claudeModelAliases } : {}),
       log: this.log,

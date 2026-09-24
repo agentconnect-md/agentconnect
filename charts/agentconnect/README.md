@@ -36,8 +36,17 @@ helm install agentconnect oci://ghcr.io/agentconnect-md/charts/agentconnect \
 ```
 
 Every value is documented inline in [values.yaml](values.yaml) — it is the reference.
-The chart holds no secrets: it references the namespace Secrets above by name, and
-provider credentials are entered later through the Setup Server, not through values.
+The chart holds no secret values: it references namespace Secrets by name. Configure
+install-wide model API keys through a Secret, or add organization keys later in the console.
+
+The pool uses `runtime-sandbox` by default. To run the additional ACP runtimes in
+the published full image, set `daemonPool.runtime.repository` to
+`ghcr.io/agentconnect-md/runtime-sandbox-full`. The chart keeps the selected
+release tag; `daemonPool.runtime.image` remains available for an exact image pin.
+For Qwen Code, OpenCode, or another ACP runtime, map its API-key and endpoint variables
+from a Secret with `daemonPool.runtimeEnvironment.runtimes`. The mapping reaches both
+the pool's model probe and agent sessions. See the
+[Kubernetes runtime authentication guide](https://docs.agentconnect.md/docs/kubernetes-runtime-authentication).
 
 A slimmer install turns the extras off explicitly — for example, no agent execution in
 this cluster and no public ingress:

@@ -260,7 +260,8 @@ daemonPool:
   # Install-wide model credentials, referenced BY NAME like every other secret here — the chart
   # never holds the value. Create the Secret with one entry per variable the daemon reads:
   # `<PREFIX>MODEL_TOKEN` and `<PREFIX>MODEL_BASE_URL`, where PREFIX is `ANTHROPIC_` (claude),
-  # `OPENAI_` (codex), `DEEPSEEK_`, or empty for the pair every runtime falls back to. A token
+  # `OPENAI_` (codex), `DEEPSEEK_`, or empty for the shared fallback of those recognized runtimes
+  # and OpenCode. Other ACP runtimes need `runtimeEnvironment` below. A token
   # with no base URL is a plain provider key on that provider's own endpoint; a base URL with no
   # token aims a runtime at an endpoint that issues its own credential. Every entry is optional,
   # so the Secret names only the providers this install pays for and may land in either order
@@ -280,6 +281,13 @@ daemonPool:
   # source, aiming a real provider key at a gateway that never issued it.
   modelCredentials:
     existingSecret: ''
+  # Per-runtime environment from one Secret, for any runtime in the selected image. Map each
+  # runtime's own variable name to a Secret entry; the daemon resolves it at both model probe
+  # and session launch. When existingSecret is empty, use modelCredentials.existingSecret.
+  # See the runtime's official API-key documentation for its variable names and endpoint format.
+  runtimeEnvironment:
+    existingSecret: ''
+    runtimes: {}
   # Extra plain env (name: value), the same hook and conventions as controlPlane.extraEnv.
   # OpenTelemetry goes here: the daemon already carries the instruments — sandbox launch
   # latency and its stages, shim handshake/TokenReview rejections, drain timeouts, k8s API
@@ -347,9 +355,11 @@ daemonPool:
     # component's own EFFECTIVE tag, when a release pipeline supplies one per component;
     # empty ⇒ the shared image.tag. It also stamps the daemon-pool Deployment's
     # `agentconnect.md/runtime-sandbox-tag` annotation, so a runtime change rolls the
-    # members and repeats runtime discovery — and only a runtime change does. `image` pins a
-    # full reference outright; empty ⇒ `<image.registry>/runtime-sandbox:<tag>`.
+    # members and repeats runtime discovery even when the daemon tag is unchanged. `repository`
+    # selects an image package without changing tag selection; empty uses
+    # `<image.registry>/runtime-sandbox`. `image` pins a full reference outright and wins.
     tag: ''
+    repository: ''
     image: ''
     # Pull secrets for the sandbox pods ONLY, separate from the install-wide `imagePullSecrets`
     # on purpose: these pods are created by the agent-sandbox controller in `sandboxNamespace`,
