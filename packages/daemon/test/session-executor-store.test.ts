@@ -69,6 +69,61 @@ describe('LocalStore session executor', () => {
     await store.close()
   })
 
+  it('records the strategy the session was born with beside either half, and keeps the first one recorded', async () => {
+    const store = await openTestStore()
+    const rec = session(`t-${crypto.randomUUID()}`)
+    await store.upsertSession(rec)
+    await store.setSessionExecutor(rec.key, { stayedHomeReason: 'holder_least_loaded', birthStrategy: 'srt' })
+    expect(await store.getSessionExecutor(rec.key)).toEqual({
+      stayedHomeReason: 'holder_least_loaded',
+      birthStrategy: 'srt'
+    })
+    await store.upsertSession({ ...rec, state: 'prompting', updatedAt: 2 })
+    expect(await store.getSession(rec.key)).toMatchObject({ birthStrategy: 'srt' })
+
+    // A move to another machine, or a verdict written without one, never changes the boundary it was born in (§5).
+    await store.setSessionExecutor(rec.key, { executorDaemonId: EXECUTOR, birthStrategy: 'host' })
+    expect(await store.getSessionExecutor(rec.key)).toEqual({ executorDaemonId: EXECUTOR, birthStrategy: 'srt' })
+    await store.setSessionExecutor(rec.key, { executorDaemonId: OTHER })
+    expect(await store.getSessionExecutor(rec.key)).toEqual({ executorDaemonId: OTHER, birthStrategy: 'srt' })
+    await store.close()
+  })
+
+  it('fills the birth strategy of one agent’s earlier verdicts, and nothing it already has or that has no verdict', async () => {
+    const store = await openTestStore()
+    const agent = `bot-${crypto.randomUUID()}`
+    const other = `bot-${crypto.randomUUID()}`
+    const row = async (agentId: string): Promise<string> => {
+      const rec = { ...session(`t-${crypto.randomUUID()}`), agentId }
+      await store.upsertSession(rec)
+      return rec.key
+    }
+    const placed = await row(agent)
+    await store.setSessionExecutor(placed, { executorDaemonId: EXECUTOR })
+    const home = await row(agent)
+    await store.setSessionExecutor(home, { stayedHomeReason: 'shared_session' })
+    const recorded = await row(agent)
+    await store.setSessionExecutor(recorded, { stayedHomeReason: 'not_on_group', birthStrategy: 'srt' })
+    const undecided = await row(agent)
+    const elsewhere = await row(other)
+    await store.setSessionExecutor(elsewhere, { stayedHomeReason: 'shared_session' })
+
+    await store.backfillBirthStrategy(agent, 'microsandbox')
+    expect(await store.getSessionExecutor(placed)).toEqual({
+      executorDaemonId: EXECUTOR,
+      birthStrategy: 'microsandbox'
+    })
+    expect(await store.getSessionExecutor(home)).toEqual({
+      stayedHomeReason: 'shared_session',
+      birthStrategy: 'microsandbox'
+    })
+    expect(await store.getSessionExecutor(recorded)).toEqual({ stayedHomeReason: 'not_on_group', birthStrategy: 'srt' })
+    // Nothing placed it yet, so its birth is still ahead of it.
+    expect(await store.getSession(undecided)).toMatchObject({ birthStrategy: null })
+    expect(await store.getSessionExecutor(elsewhere)).toEqual({ stayedHomeReason: 'shared_session' })
+    await store.close()
+  })
+
   it('lists the open isolated sessions of the given agents, and none that execute elsewhere', async () => {
     const store = await openTestStore()
     const held = `bot-${crypto.randomUUID()}`
@@ -120,7 +175,7 @@ describe('LocalStore session executor', () => {
       const db = new DatabaseSync(path)
       const { sql } = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'sessions'").get() as { sql: string }
       db.close()
-      for (const column of ['executorDaemonId', 'stayedHomeReason']) {
+      for (const column of ['executorDaemonId', 'stayedHomeReason', 'birthStrategy']) {
         const at = sql.indexOf(column)
         expect([column, sql.slice(sql.lastIndexOf(',', at) + 1, at).trim()]).toEqual([column, ''])
       }
@@ -169,4 +224,25 @@ describe('LocalStore session executor', () => {
     after.close()
     expect(version).toBe(SCHEMA_VERSION)
   })
+
+  it.skipIf(usingPostgresStore())(
+    'adds the birth strategy to a v27 store, leaving its verdicts without one',
+    async () => {
+      const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v27-')), 'local.sqlite')
+      await (await LocalStore.open(path)).close()
+      const old = new DatabaseSync(path)
+      old.exec('ALTER TABLE sessions DROP COLUMN birthStrategy')
+      old.exec(`INSERT INTO sessions (key, agentId, platform, channel, thread, acpSessionId, state, updatedAt, executorDaemonId)
+      VALUES ('k1', 'bot-a', 'slack', 'C1', 'T1', 'acp-1', 'idle', 100, '${EXECUTOR}')`)
+      old.exec('PRAGMA user_version = 27')
+      old.close()
+
+      const upgraded = await LocalStore.open(path)
+      // What the daemon's startup fills from the agent (session-executors.md §5).
+      expect(await upgraded.getSessionExecutor('k1')).toEqual({ executorDaemonId: EXECUTOR })
+      await upgraded.backfillBirthStrategy('bot-a', 'host')
+      expect(await upgraded.getSessionExecutor('k1')).toEqual({ executorDaemonId: EXECUTOR, birthStrategy: 'host' })
+      await upgraded.close()
+    }
+  )
 })

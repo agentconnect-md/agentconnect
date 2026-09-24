@@ -349,20 +349,31 @@ agent's current setting, which may have changed since:
 
 - _The holder_ records the strategy in the session's birth verdict
   (`setSessionExecutor`), beside the executor it chose or the reason it stayed home,
-  so a local session records one too. Every later launch — a restart, a re-dial —
-  sends the recorded strategy and never asks the agent. A successor holder has no
-  such row without a shared store, so the Control Plane keeps the strategy beside the
-  executor in its hint of where the session last ran (§6), written from the same
-  relayed `ready` prepare, and `executor/candidates` returns both; a successor with
-  neither is launching a new session, not resuming one. A row written before this
-  revision carries none and is filled once at upgrade with the agent's migrated
-  `execution`, which is correct because no one can have changed it in between.
+  so a local session records one too, and the first strategy recorded is never
+  replaced. A daemon with no Control Plane records no verdict at all. Every later
+  launch — a restart, a re-dial, a move after executor loss — uses the recorded
+  strategy and never asks the agent: a placed session's `prepare` names it, and a
+  local session's own host launches in it, with the tier it gets while nothing stands
+  on disk for it. A session its agent's shared host serves has no host of its own, so
+  it runs in whatever that host runs. Until the in-process executor entry (§11 step 4)
+  routes a local VM's Git and file reads per environment, they still follow the
+  agent's strategy. A successor holder has no such row without a shared store, so the
+  Control Plane keeps the strategy beside the executor in its hint of where the
+  session last ran (§6), written from the same relayed `ready` prepare, and
+  `executor/candidates` returns both; a successor with neither is launching a new
+  session, not resuming one. A row written before this revision carries none and is
+  filled once, when the daemon first starts with it, with the agent's migrated
+  `execution`, which is correct because no one can have changed it in between. A row
+  an older member of a shared store writes later is filled the same way at its
+  session's next launch.
 - _The executor_ already writes the strategy into its environment record
   (`<daemonRoot>/sessions/<leaf>.json`). A `prepare` for an existing environment that
-  names a different strategy is refused as `strategy_mismatch`: it neither attaches
-  nor rewrites the record, because the directory's state belongs to one boundary — a
-  host tree is not a VM's mount. The holder surfaces the refusal as a startup error
-  and does not recreate the environment, which would discard the session's work.
+  names a different strategy is refused as `strategy_mismatch`, even when the other
+  strategy is one the machine cannot run: it neither attaches nor rewrites the
+  record, because the directory's state belongs to one boundary — a host tree is not
+  a VM's mount. The holder surfaces the refusal as a startup error. It neither
+  recreates the environment nor prepares the session on another candidate, either of
+  which would discard the session's work.
 
 **Placement is a match.** The holder places a session on an executor whose effective
 table offers the named strategy — its own machine included, which after §11 is the
@@ -1349,9 +1360,9 @@ commits, including claim, sleep and orphan machinery this design does not need.
 About nine hundred of those lines are the generic layer, already extracted and
 reused as is. The shim, at twice the size of that whole path, is reused unchanged.
 
-**The 2026-09-24 revision** adds the following. S1, S2a, S2c, S3, M1, M2 and M3 have
-landed and the rest have not started. Each lands alone; S1–S3 are one feature, S2
-lands in three parts, and M1–M4 precede R1.
+**The 2026-09-24 revision** adds the following. S1, S2a, S2b, S2c, S3, M1, M2 and M3
+have landed and the rest have not started. Each lands alone; S1–S3 are one feature,
+S2 lands in three parts, and M1–M4 precede R1.
 
 | PR  | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

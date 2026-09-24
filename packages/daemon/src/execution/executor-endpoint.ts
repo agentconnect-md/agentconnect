@@ -89,14 +89,7 @@ export class ExecutorEndpoints implements ShimEndpointProvider<ExecutorLaunch> {
     })
   }
 
-  /**
-   * One launch's `prepare`, and the three answers that are not a ready environment (§6, §7).
-   *
-   * A retired launch is the executor saying it has finished with the one being asked about, so the
-   * holder mints a new one — that is what advances the fence after a wake or a restart. An executor
-   * the CP cannot relay to is judged lazily, from the CP's own record of it. Everything else is a
-   * refusal, and a refusal is not a loss: the environment is intact and the turn may simply retry.
-   */
+  /** One launch's `prepare` (§6, §7): a retired launch gets a new id, an unreachable executor the loss rule, and any other refusal fails the turn with the environment intact. */
   private async prepareLaunch(launch: ExecutorLaunch): Promise<ExecutorReady> {
     // Bounded: each pass either settles the launch or replaces what it is asking (a new launch id, another machine).
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -116,6 +109,13 @@ export class ExecutorEndpoints implements ShimEndpointProvider<ExecutorLaunch> {
         const moved = await this.moveOrWait(launch, result.lastSeenAt)
         if (!moved) throw new ExecutorUnavailableError('offline', `executor ${launch.executorDaemonId} is unreachable`)
         continue
+      }
+      if (result.reason === 'strategy_mismatch') {
+        // Never recreated: the directory's state belongs to the boundary that made it, and a new one would discard the session's work (§5).
+        throw new ExecutorUnavailableError(
+          result.reason,
+          `session ${launch.leaf} has an environment on daemon ${launch.executorDaemonId} made under another strategy than ${launch.strategy}; it is left as it is rather than recreated`
+        )
       }
       if (result.reason !== 'launch_retired') {
         throw new ExecutorUnavailableError(
