@@ -4543,7 +4543,9 @@
         "pausedLabel": "路由已暂停",
         "pauseHint": "暂停后，此 Bot 路由的所有频道都不再投递新消息，包括@提及和话题回复。进行中的回合会继续。",
         "pausedHint": "已暂停：这些频道中的新消息不会被投递。开启并保存即可恢复。",
-        "offWillEnable": "{channel} 在 {agents} 上是关闭状态。保存时会先在那里开启，再按决策路由。"
+        "offWillEnable": "{channel} 在 {agents} 上是关闭状态。保存时会先开启（@-mention），再按决策路由。",
+        "offLocked": "{channel} 在 {agents} 上是关闭状态，而你无法编辑该 Agent。请让该 Agent 的编辑者先开启，再设置路由。",
+        "leftOn": "{channels} 已被开启（@-mention），但路由没有保存。请重新保存，或在其设置中改回关闭。"
       },
       "title": "路由",
       "recentEvaluations": "最近评估",

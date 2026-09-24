@@ -4543,7 +4543,9 @@
         "pausedLabel": "Routing paused",
         "pauseHint": "Pausing stops new deliveries in every channel this bot routes, including mentions and thread replies. Running turns continue.",
         "pausedHint": "Paused: new messages in these channels are not delivered. Turn it on and save to resume.",
-        "offWillEnable": "{channel} is Off for {agents}. Saving turns it on there first, then routes it by decision."
+        "offWillEnable": "{channel} is Off for {agents}. Saving turns it on (@-mention) first, then routes it by decision.",
+        "offLocked": "{channel} is Off for {agents}, which you cannot edit. Ask one of that agent's editors to turn it on, then route it.",
+        "leftOn": "{channels} was turned on (@-mention), but the routing was not saved. Save again, or turn it back Off in its settings."
       },
       "title": "Routing",
       "recentEvaluations": "Recent evaluations",

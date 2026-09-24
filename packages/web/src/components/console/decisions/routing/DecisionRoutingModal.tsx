@@ -152,23 +152,29 @@ export function DecisionRoutingModal({
     : serverError?.kind === 'invalid'
       ? serverError.issues.map((issue) => ({ path: issue.path, message: issue.message }))
       : []
-  // A routing save never enables Off (a private agent's gate), so Save first turns each Off install on through its own PATCH.
+  // A routing save never enables Off (a private agent's gate), so Save first turns an Off channel on with one trigger PATCH.
   const additions = (draft?.channelIds ?? []).filter((id) => !savedChannelIds.includes(id))
   const agentName = (id: string) =>
     roster.agents.find((agent) => agent.id === id)?.name ?? (getAgent(id) ? agentLabel(getAgent(id)!) : id)
+  // That PATCH is bot-scoped, so every Off install's agent must be editable before it; `via` is null where Save cannot.
   const offRooms = additions.flatMap((id) => {
     if (api.mode === 'mock')
       return roster.channels.find((c) => c.channelId === id)?.trigger === 'off'
-        ? [{ id, agents: [] as string[], installs: [] as string[] }]
+        ? [{ id, agents: [] as string[], locked: [] as string[], via: null as string | null }]
         : []
-    const off = integrations.filter(
-      (i) => i.botId === botId && !!i.id && i.channels.some((c) => c.channelId === id && c.trigger === 'off')
+    const installs = integrations.filter(
+      (i) => i.botId === botId && !!i.id && i.channels.some((c) => c.channelId === id)
     )
-    const agents = off.map((i) => (i.agentId ? agentName(i.agentId) : '')).filter(Boolean)
-    return off.length ? [{ id, agents, installs: off.map((i) => i.id!) }] : []
+    const off = installs.filter((i) => i.channels.some((c) => c.channelId === id && c.trigger === 'off'))
+    if (!off.length) return []
+    const editable = (agentId: string | undefined) => !!agentId && getAgent(agentId)?.canEdit === true
+    const locked = off.filter((i) => !editable(i.agentId)).map((i) => (i.agentId ? agentName(i.agentId) : ''))
+    const via = locked.length ? null : (installs.find((i) => editable(i.agentId))?.id ?? null)
+    return [{ id, agents: off.map((i) => (i.agentId ? agentName(i.agentId) : '')).filter(Boolean), locked, via }]
   })
-  // Mock data has no per-install trigger write, so an Off room there still blocks Save.
-  const offBlocks = offRooms.some((room) => room.installs.length === 0)
+  const offBlocks = offRooms.some((room) => room.via === null)
+  // Rooms a failed Save left turned on, so the failure never hides that the channel is now on.
+  const [leftOn, setLeftOn] = useState<string[]>([])
   const canSave = routingCanSave(state, localIssues, canWrite) && !offBlocks
   const disabled = !canWrite || busy
   // Inline Create decision returns here with the row named, so its modal reopens on the same draft.
@@ -185,15 +191,20 @@ export function DecisionRoutingModal({
     if (!body || saving.current) return
     saving.current = true
     dispatch(retry ? { type: 'RETRY' } : { type: 'SAVE_START', body })
+    const enabled: string[] = []
     try {
-      for (const room of offRooms)
-        for (const integrationId of room.installs) await setChannelTrigger(integrationId, room.id, 'mention')
+      for (const room of offRooms) {
+        if (!room.via) throw new Error(`${room.id} cannot be turned on here`)
+        await setChannelTrigger(room.via, room.id, 'mention')
+        enabled.push(room.id)
+      }
       const detail = await api.saveRouting(botId, body)
       dispatch({ type: 'SAVE_OK', detail })
       void mutate(detail, { revalidate: false })
       roster.refresh()
       onClose()
     } catch (cause) {
+      setLeftOn(enabled)
       dispatch({ type: 'SAVE_FAIL', error: cause })
       if (routingSaveError(cause).kind === 'decision_missing') void reload()
     } finally {
@@ -280,14 +291,25 @@ export function DecisionRoutingModal({
             role="status"
             className="flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]"
           >
-            <Icon name="power" size={14} className="mt-[2px] flex-none" />
+            <Icon name={room.via ? 'power' : 'lock'} size={14} className="mt-[2px] flex-none" />
             <span>
-              {room.installs.length
+              {room.via
                 ? tm('offWillEnable', { channel: nameOf(room.id), agents: room.agents.join(', ') })
-                : tm('offBare', { channel: nameOf(room.id) })}
+                : room.locked.length
+                  ? tm('offLocked', { channel: nameOf(room.id), agents: room.locked.join(', ') })
+                  : tm('offBare', { channel: nameOf(room.id) })}
             </span>
           </div>
         ))}
+        {leftOn.length > 0 && (
+          <div
+            role="alert"
+            className="flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]"
+          >
+            <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
+            <span>{tm('leftOn', { channels: leftOn.map(nameOf).join(', ') })}</span>
+          </div>
+        )}
         {others.length > 0 && <Note icon="users">{tm('alsoApplies', { names: others.map(nameOf).join(', ') })}</Note>}
 
         <div className="fld">
