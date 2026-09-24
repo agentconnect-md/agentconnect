@@ -1,5 +1,10 @@
 // Placement at session birth (session-executors.md §6, §7). The two consents are already in what the CP answers, so what is left here is the eligibility predicate, the one rule that selects, and the reason a session that stays home records.
-import type { ExecutorCandidate, ExecutorCandidatesResult, SessionStayedHomeReason } from '@agentconnect.md/protocol'
+import type {
+  ExecutorCandidate,
+  ExecutorCandidatesResult,
+  RuntimeStrategyEntry,
+  SessionStayedHomeReason
+} from '@agentconnect.md/protocol'
 
 /** What the holder knows about a session being born, and nothing wider. */
 export interface PlacementAsk {
@@ -9,6 +14,8 @@ export interface PlacementAsk {
   strategy: string
   /** The runtime this session runs; a candidate that cannot authenticate it is not one (§8). */
   runtime: string
+  /** The model it runs; a candidate whose catalog for the strategy lacks it is not one (§5). */
+  model?: string
   /** A managed-memory binding the Control Plane's boot-time flip has not reached yet; the predicate has no other memory condition (§7). */
   memoryDaemonHomed?: boolean
 }
@@ -43,6 +50,31 @@ function authenticates(candidate: ExecutorCandidate, runtime: string): boolean {
   return candidate.runtimes.some((profile) => profile.runtime === runtime && !profile.authRequired)
 }
 
+/** Whether one strategy's catalog starts the runtime with this model; a `cached` or absent list is permissive, as the activation check reads it (§5). */
+export function catalogOffers(entry: RuntimeStrategyEntry | undefined, model: string | undefined): boolean {
+  if (!entry?.available) return false
+  if (model === undefined || entry.models === undefined || entry.modelsSource === 'cached') return true
+  return entry.models.includes(model)
+}
+
+/** The candidate's catalog for the ask's strategy; a member that reports no entries predates them and is not second-guessed (§5). */
+function offers(candidate: ExecutorCandidate, ask: PlacementAsk): boolean {
+  const profile = candidate.runtimes.find((entry) => entry.runtime === ask.runtime)
+  if (!profile?.strategies) return true
+  return catalogOffers(profile.strategies[ask.strategy], ask.model)
+}
+
+/** A member the session could land on: its table offers the strategy, it has an endpoint, and it authenticates and starts the runtime and model (§5, §8). */
+export function candidateEligible(ask: PlacementAsk, candidate: ExecutorCandidate): boolean {
+  // No endpoint means nothing to dial, whatever the table says.
+  return (
+    strategyFor(ask, candidate) !== undefined &&
+    !!candidate.endpoint &&
+    authenticates(candidate, ask.runtime) &&
+    offers(candidate, ask)
+  )
+}
+
 /** As fresh as the last heartbeat and advisory either way; a member that has not reported one yet hosts nothing (§6). */
 function load(candidate: ExecutorCandidate): number {
   return candidate.hostedSessions ?? 0
@@ -74,6 +106,8 @@ export function placeSession(input: {
   holderCapacity: number
   /** Whether this machine authenticates `ask.runtime`, by the rule the candidates are read with (§8); false ⇒ a home only when nothing else is. */
   holderAuthenticates: boolean
+  /** Whether this machine's own catalog for the strategy starts `ask.runtime` and `ask.model` (§5); false ⇒ likewise. */
+  holderOffers?: boolean
   /** The CP's answer; undefined ⇒ it could not be asked, and the session stays home. */
   answer?: ExecutorCandidatesResult
   /** A lost executor being replaced (§7): it is no candidate, and the holder cannot take a placed session back, so only the rest are ordered. */
@@ -88,13 +122,10 @@ export function placeSession(input: {
   const holder: Fill = { hosted: input.holderHostedSessions, capacity: Math.max(0, input.holderCapacity) }
   const eligible: Array<{ fill: Fill; choice: PlacementChoice }> = []
   for (const candidate of answer.candidates) {
-    if (candidate.daemonId === replacing) continue
-    const strategy = strategyFor(ask, candidate)
-    // No endpoint means nothing to dial, whatever the table says.
-    if (!strategy || !candidate.endpoint || !authenticates(candidate, ask.runtime)) continue
+    if (candidate.daemonId === replacing || !candidateEligible(ask, candidate)) continue
     eligible.push({
       fill: { hosted: load(candidate), capacity: candidate.capacity ?? holder.capacity },
-      choice: { daemonId: candidate.daemonId, strategy }
+      choice: { daemonId: candidate.daemonId, strategy: ask.strategy }
     })
   }
   if (eligible.length === 0) return { stayedHome: emptyReason(answer) }
@@ -106,8 +137,13 @@ export function placeSession(input: {
   // The hint wins over the rule: a successor attaches to the environment its predecessor left rather than re-placing the work in it (§7).
   const hinted = ordered.findIndex(({ choice }) => choice.daemonId === hint)
   if (hinted >= 0) ordered.unshift(...ordered.splice(hinted, 1))
-  // Credentials never travel: a holder that cannot authenticate the runtime is no candidate, so its lighter load keeps nothing (§8).
-  else if (replacing === undefined && input.holderAuthenticates && compareFill(holder, ordered[0]!.fill) <= 0) {
+  // Credentials never travel: a holder that cannot authenticate or start the runtime is no candidate, so its lighter load keeps nothing (§8).
+  else if (
+    replacing === undefined &&
+    input.holderAuthenticates &&
+    input.holderOffers !== false &&
+    compareFill(holder, ordered[0]!.fill) <= 0
+  ) {
     return { stayedHome: 'holder_least_loaded' }
   }
   return { spread: ordered.map(({ choice }) => choice) }

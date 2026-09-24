@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import type { ExecutorCandidate, ExecutorCandidatesResult } from '@agentconnect.md/protocol'
+import type { ExecutorCandidate, ExecutorCandidatesResult, RuntimeStrategyEntry } from '@agentconnect.md/protocol'
 import {
+  candidateEligible,
+  catalogOffers,
   executorLost,
   placeSession,
   strategyFor,
@@ -362,6 +364,78 @@ describe('the holder as a candidate', () => {
       answer: answer([signedIn('b', { hostedSessions: 2 })])
     })
     expect(placement).toEqual({ stayedHome: 'holder_least_loaded' })
+  })
+})
+
+describe('the strategy’s own catalog', () => {
+  const vm: PlacementAsk = { ...ASK, strategy: 'microsandbox', model: 'model-b' }
+  const offering = (daemonId: string, entry: RuntimeStrategyEntry, over: Partial<ExecutorCandidate> = {}) =>
+    candidate(daemonId, {
+      strategies: { host: { available: true }, microsandbox: { available: true } },
+      runtimes: [
+        {
+          runtime: 'claude',
+          authRequired: false,
+          strategies: {
+            // The host install advertises the model; only the entry for the session's strategy counts.
+            host: { available: true, models: ['model-a', 'model-b'], modelsSource: 'probed' },
+            microsandbox: entry
+          }
+        }
+      ],
+      ...over
+    })
+
+  it('reads a live list strictly, and a cached or absent one permissively, as the activation check does', () => {
+    expect(catalogOffers({ available: true, models: ['model-a'], modelsSource: 'probed' }, 'model-b')).toBe(false)
+    expect(catalogOffers({ available: true, models: ['model-a'] }, 'model-b')).toBe(false)
+    expect(catalogOffers({ available: true, models: ['model-a'], modelsSource: 'cached' }, 'model-b')).toBe(true)
+    expect(catalogOffers({ available: true }, 'model-b')).toBe(true)
+    expect(catalogOffers({ available: true, models: ['model-a'] }, undefined)).toBe(true)
+    expect(catalogOffers({ available: false, unavailableReason: 'not in the image' }, undefined)).toBe(false)
+    expect(catalogOffers(undefined, undefined)).toBe(false)
+  })
+
+  it('judges a candidate by the entry for the session’s strategy alone', () => {
+    expect(candidateEligible(vm, offering('b', { available: true, models: ['model-a'], modelsSource: 'probed' }))).toBe(
+      false
+    )
+    expect(candidateEligible(vm, offering('c', { available: false, unavailableReason: 'not in the image' }))).toBe(
+      false
+    )
+    expect(candidateEligible(vm, offering('d', { available: true }))).toBe(true)
+    expect(candidateEligible(vm, offering('e', { available: true, models: ['model-b'], modelsSource: 'probed' }))).toBe(
+      true
+    )
+    // A member that reports no entries predates them, and only its table and sign-in are read.
+    expect(candidateEligible(vm, candidate('f', { strategies: { microsandbox: { available: true } } }))).toBe(true)
+  })
+
+  it('lands the session only where its runtime and model run, and never keeps it on a holder that lacks them', () => {
+    const placement = placeSession({
+      ask: vm,
+      holderHostedSessions: 0,
+      holderCapacity: 32,
+      holderAuthenticates: true,
+      holderOffers: false,
+      answer: answer([
+        offering('b', { available: true, models: ['model-a'], modelsSource: 'probed' }, { hostedSessions: 0 }),
+        offering('c', { available: true, models: ['model-b'], modelsSource: 'probed' }, { hostedSessions: 9 })
+      ])
+    })
+    expect(placement).toEqual({ spread: [{ daemonId: 'c', strategy: 'microsandbox' }] })
+  })
+
+  it('keeps the session on a holder that runs it when no member does', () => {
+    const placement = placeSession({
+      ask: vm,
+      holderHostedSessions: 9,
+      holderCapacity: 32,
+      holderAuthenticates: true,
+      holderOffers: true,
+      answer: answer([offering('b', { available: false, unavailableReason: 'not in the image' })])
+    })
+    expect(placement).toEqual({ stayedHome: 'no_candidate' })
   })
 })
 

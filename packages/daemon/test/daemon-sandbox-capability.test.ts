@@ -272,6 +272,40 @@ describe('a runtime under each strategy this machine offers', () => {
     }
   })
 
+  it('names the models the image advertised in this machine’s own VM, and reads a recorded list as cached', async () => {
+    const { daemon, stop } = await boot({ root: scaffold({ sandbox: IMAGE }), srt: true, kvm: true })
+    const recordModels = vi.fn(async () => {})
+    try {
+      daemon.microsandbox = {
+        recordModels,
+        cachedModels: async () => ({ 'arbitrary-acp': ['m-recorded'] }),
+        environmentIds: async () => []
+      }
+      daemon.microsandboxCatalog = { entries: { 'arbitrary-acp': { name: 'arbitrary-acp' } }, runtimes: {} }
+      const vm = () => daemon.runtimeFacts.profileFor('arbitrary-acp').strategies.microsandbox
+      // Read back at startup without a VM, and permissive until this run's own session confirms it.
+      await daemon.loadMicrosandboxModels()
+      expect(vm()).toEqual({ available: true, models: ['m-recorded'], modelsSource: 'cached' })
+      const advertised = ['m-vm', 'm-recorded']
+      const host = { modelOptions: () => ({ current: 'm-vm', models: advertised }) }
+      const run = { key: 'example-session', agent: daemon.agents.get(AGENT_ID) }
+      // A host that runs on this machine's host install is no probe of the image.
+      await daemon.captureTurnModel(run, host, 'acp-1', undefined)
+      expect(vm()).toMatchObject({ models: ['m-recorded'], modelsSource: 'cached' })
+      daemon.imageRuntimeHosts.set(host, 'arbitrary-acp')
+      await daemon.captureTurnModel(run, host, 'acp-1', undefined)
+      expect(vm()).toEqual({ available: true, models: advertised, modelsSource: 'probed' })
+      expect(recordModels).toHaveBeenCalledWith('arbitrary-acp', advertised)
+      // Later turns advertising the same list record nothing more; the host entry keeps the host probe's list.
+      await daemon.captureTurnModel(run, host, 'acp-1', undefined)
+      expect(recordModels).toHaveBeenCalledOnce()
+      expect(daemon.runtimeFacts.profileFor('arbitrary-acp').strategies.host).not.toHaveProperty('models', advertised)
+    } finally {
+      daemon.microsandbox = undefined
+      await stop()
+    }
+  })
+
   it('carries an unavailable strategy’s reason and leaves out a withdrawn one', async () => {
     const { daemon, stop } = await boot({ root: scaffold({ sandbox: { srt: false } }) })
     try {
