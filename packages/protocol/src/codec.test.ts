@@ -422,15 +422,14 @@ describe('agent spec / CRUD frames (CP→daemon spec sync)', () => {
   })
 
   it('spec.workspace round-trips the additional-repository allowlist on both modes', () => {
-    // A provider-less entry is what a pre-GitLab control plane sends, and it means
-    // github — the tolerant-reader default the two hosts' independent numbering needs.
+    // A provider-less entry is what a pre-GitLab control plane sends and means github; a materialize-less one means always.
     const additionalRepos = [
       { repoFullName: 'acme/infra', repoId: '4711' },
       { repoFullName: 'example-group/example-project', repoId: '815', provider: 'gitlab' }
     ]
     const qualified = [
-      { repoFullName: 'acme/infra', repoId: '4711', provider: 'github' },
-      { repoFullName: 'example-group/example-project', repoId: '815', provider: 'gitlab' }
+      { repoFullName: 'acme/infra', repoId: '4711', provider: 'github', materialize: 'always' },
+      { repoFullName: 'example-group/example-project', repoId: '815', provider: 'gitlab', materialize: 'always' }
     ]
     const scratch = decodeEnvelope(
       envelope('agent/upsert', {
