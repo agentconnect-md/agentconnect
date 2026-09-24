@@ -3913,6 +3913,11 @@ export class Daemon {
     }
   }
 
+  /** Whether this machine authenticates the runtime, read from the same `authRequired` its own `facts/daemon-runtimes` reports (§8). */
+  private holderAuthenticates(runtime: string): boolean {
+    return this.runtimeFacts.profileFor(runtime).authRequired !== true
+  }
+
   /** The strategy v1's ask names: `runInSandbox` true asks for a sandboxing one, false for `host` (§5). */
   private askedStrategy(ask: PlacementAsk): string {
     return ask.runInSandbox ? 'microsandbox' : 'host'
@@ -3953,6 +3958,7 @@ export class Daemon {
       ask,
       holderHostedSessions: await this.hostedSessionCount(sessionKey),
       holderCapacity: this.cfg.limits.maxConcurrentSessions,
+      holderAuthenticates: this.holderAuthenticates(ask.runtime),
       ...(answer ? { answer } : {})
     })
     if ('stayedHome' in placement) return await this.recordSessionExecutor(sessionKey, placement.stayedHome)
@@ -4017,10 +4023,12 @@ export class Daemon {
     const agent = this.sessionAgent(placed.agentId, placed.sessionKey)
     if (!agent) return undefined
     const answer = await this.executorCandidates(placed.agentId, placed.sessionKey)
+    const ask = this.placementAsk(agent, placed.sessionKey)
     const placement = placeSession({
-      ask: this.placementAsk(agent, placed.sessionKey),
+      ask,
       holderHostedSessions: await this.hostedSessionCount(placed.sessionKey),
       holderCapacity: this.cfg.limits.maxConcurrentSessions,
+      holderAuthenticates: this.holderAuthenticates(ask.runtime),
       replacing: placed.executorDaemonId,
       ...(answer ? { answer } : {})
     })
