@@ -2,6 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { connect, type Server } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { FakeClock } from '@agentconnect.md/connection'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { microsandboxLauncher } from '../src/execution/executor-vm.js'
 import { LocalExecutor } from '../src/execution/local-executor.js'
@@ -27,7 +28,9 @@ function guestClient(path: string) {
 }
 
 /** A local VM as this daemon drives it (session-executors.md §11 step 4): the real launcher over one fake VM, bound by the in-process entry. */
-async function fixture(options: { guestDir?: string; identity?: string; channelTimeoutMs?: number } = {}) {
+async function fixture(
+  options: { guestDir?: string; identity?: string; channelTimeoutMs?: number; clock?: FakeClock } = {}
+) {
   const root = await mkdtemp(join(tmpdir(), 'ms-shim-'))
   const guest = options.guestDir ?? join(root, 'guest')
   const sockets = { mcp: join(root, 'mcp.sock'), gitcred: join(root, 'gitcred.sock') }
@@ -56,7 +59,8 @@ async function fixture(options: { guestDir?: string; identity?: string; channelT
     },
     tunnelSocketPath: (tunnel) => sockets[tunnel],
     log,
-    ...(options.channelTimeoutMs ? { channelTimeoutMs: options.channelTimeoutMs } : {})
+    ...(options.channelTimeoutMs ? { channelTimeoutMs: options.channelTimeoutMs } : {}),
+    ...(options.clock ? { clock: options.clock } : {})
   })
   const environment: EnvironmentDescriptor = { id: 'agent/session-example', mounts: [], workspaceRoot: root }
   closers.push(
@@ -139,8 +143,17 @@ describe('a local VM bound in process (session-executors.md §11 step 4)', () =>
   })
 
   it('refuses a shim that presents another identity than the one its VM was started with', async () => {
-    const { bind } = await fixture({ identity: 'another-token-entirely-of-the-same-length-xx', channelTimeoutMs: 500 })
-    await expect(bind()).rejects.toThrow(/no shim channel bound/)
+    const clock = new FakeClock()
+    const { bind, warn } = await fixture({
+      identity: 'another-token-entirely-of-the-same-length-xx',
+      channelTimeoutMs: 500,
+      clock
+    })
+    const outcome = expect(bind()).rejects.toThrow(/no shim channel bound/)
+    // The refusal itself, and only then the budget, so the outcome never depends on which timer a busy runner fires first.
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(expect.stringMatching(/sandbox token was not accepted/)))
+    clock.advance(500)
+    await outcome
   })
 
   it('serves both helper endpoints in the guest, each reaching only its own daemon socket', async () => {
