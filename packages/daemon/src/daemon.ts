@@ -462,6 +462,7 @@ import {
   type PlacementChoice
 } from './execution/executor-placement.js'
 import { HOSTED_PREFIX, microsandboxLauncher } from './execution/executor-vm.js'
+import { LocalExecutor } from './execution/local-executor.js'
 import {
   agentStrategyOf,
   assertSomeStrategyAvailable,
@@ -1479,6 +1480,17 @@ export class Daemon {
   // An undefined entry awaits retry; a promise is the one takeover already in flight.
   private readonly k8sAdoptions = new Map<string, Promise<void> | undefined>()
   private microsandbox?: MicrosandboxManager
+  // This machine's own VMs, bound in process as any executor's shim is (session-executors.md §11 step 4); undefined under --k8s.
+  private localExecutor?: LocalExecutor
+  // The one `microsandbox` launcher: the VMs the facet hosts and this machine's own start through it.
+  private readonly vmLauncher = microsandboxLauncher({
+    manager: () => this.microsandbox,
+    runtimes: () => {
+      this.refreshAdmittedRuntimes()
+      return this.runtimes
+    },
+    ready: async () => void (await this.microsandboxReady())
+  })
   private microsandboxTable?: K8sRuntimeTable
   // Why the microsandbox probe failed; absent ⇒ available, its msb and image prepared by the first use (session-executors.md §5).
   private microsandboxFailure?: string
@@ -2363,6 +2375,14 @@ export class Daemon {
       }
       return
     }
+    // A local session starts and runs with the control plane down, as it always has: this entry asks it nothing (§11 step 4).
+    this.localExecutor = new LocalExecutor({
+      launcher: this.vmLauncher,
+      generations: { nextSandboxGeneration: (subject) => this.store.nextSandboxGeneration(subject) },
+      tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
+      log: this.log,
+      clock: this.clock
+    })
     // A withdrawn srt confines nothing, not even a probe.
     if (cfg.sandbox.srt) this.logSandboxPreflight()
     else this.sandboxMechanism = undefined
@@ -2411,8 +2431,7 @@ export class Daemon {
       root,
       config: cfg.sandbox.microsandbox === false ? undefined : cfg.sandbox.microsandbox,
       sockets: { mcp: mcpSocketPath(root), gitcred: gitcredSocketPath(root) },
-      log: this.log,
-      nextShimGeneration: (subject) => this.store.nextSandboxGeneration(subject)
+      log: this.log
     }
   }
 
@@ -3961,14 +3980,7 @@ export class Daemon {
       launchers: {
         host: hostLauncher(root),
         // A VM seeds its own HOME from the same admitted runtimes, with their credentials behind placeholders (§8).
-        microsandbox: microsandboxLauncher({
-          manager: () => this.microsandbox,
-          runtimes: () => {
-            this.refreshAdmittedRuntimes()
-            return this.runtimes
-          },
-          ready: async () => void (await this.microsandboxReady())
-        })
+        microsandbox: this.vmLauncher
       },
       capacity: () => this.cfg.limits.maxConcurrentSessions,
       ownSessions: () => this.ownIsolatedSessionCount,
@@ -4973,7 +4985,19 @@ export class Daemon {
     // The daemon's own parent directory is used to prepare canonical clones before exposing a checkout.
     if (cwd === agent.dir) return undefined
     const { environment, launch } = this.microsandboxContext(agent, cwd)
-    return microsandboxGitRunner({ manager: this.microsandbox, environment, cwd, env: launch.env, abort })
+    const local = this.localVms()
+    return microsandboxGitRunner({
+      run: (work) => local.withEnvironment(environment, work),
+      cwd,
+      env: launch.env,
+      abort
+    })
+  }
+
+  /** The in-process entry every local VM is reached through; refused outside a running, non-cluster daemon. */
+  private localVms(): LocalExecutor {
+    if (!this.localExecutor) throw new Error('microsandbox unavailable: this daemon is not running its local VMs')
+    return this.localExecutor
   }
 
   private microsandboxWorkspaceEnvironment(agent: LoadedAgent, path: string): MicrosandboxEnvironment | undefined {
@@ -4997,7 +5021,7 @@ export class Daemon {
     return {
       agentId: sandboxSubjectAgentId(environment.id),
       request: (capability, payload, options) =>
-        this.microsandbox!.withShim(environment, (shim) => shim.session.request(capability, payload, options))
+        this.localVms().withEnvironment(environment, (session) => session.request(capability, payload, options))
     }
   }
 
@@ -5036,7 +5060,7 @@ export class Daemon {
   private readonly microsandboxPlane: ExecutionPlane = {
     // The environment names the VM; the host key rides along on every launch.
     spawnFor: ({ agent, hostKey, cwd, prepared }) => ({
-      driver: this.microsandbox!.driverFor(
+      driver: this.localVms().driverFor(
         localMicrosandboxEnvironment(this.microsandboxPlacement(agent, cwd, hostKey).id, prepared.microsandbox!)
       ),
       hostKey
@@ -5105,7 +5129,9 @@ export class Daemon {
     if (!agent || !this.usesMicrosandbox(agent)) return undefined
     const environment = this.microsandboxWorkspaceEnvironment(agent, cwd)
     if (!environment) return undefined
-    return this.microsandbox!.withShim(environment, async (shim) => read(await microsandboxSkillTarget(shim, cwd)))
+    return this.localVms().withEnvironment(environment, async (session) =>
+      read(await microsandboxSkillTarget(session, cwd))
+    )
   }
 
   /** Where a memory home is reached from: this member's sandbox plane (under `--k8s`) and its CP connection. */
@@ -5567,8 +5593,7 @@ export class Daemon {
     const loaded = this.agents.get(agent.id)
     if (!loaded) throw new Error('skill preparation agent is unavailable')
     const { environment } = this.microsandboxContext(loaded, cwd)
-    return this.microsandbox!.withShim(environment, async (shim) => {
-      const owner = this.microsandbox!.environment(environment.id)
+    return this.localVms().withEnvironment(environment, async (session) => {
       const authority = this.duties.dutyForAgent(agent.id)
       let localAuthority: { groupId: string; term: string; daemonId: string } | undefined
       if (!authority && !this.dutyCoordinator.dutyEnforced()) {
@@ -5592,7 +5617,7 @@ export class Daemon {
         }
         localAuthority = await pending
       }
-      const { client, workspaceIncarnation } = await microsandboxSkillTarget(shim, cwd)
+      const { client, workspaceIncarnation } = await microsandboxSkillTarget(session, cwd)
       const initialLedger = (await this.store.clusterSkillLedger(agent.id, workspaceIncarnation))
         ? undefined
         : await legacySandboxSkillLedger(agent.id, cwd, join(this.root, 'skill-installs'))
@@ -5600,8 +5625,9 @@ export class Daemon {
         client,
         workspaceIncarnation,
         initialLedger,
-        shimGeneration: shim.session.generation,
-        isLaunchCurrent: () => this.microsandbox?.environment(environment.id) === owner && shim.session.isAttached(),
+        shimGeneration: session.generation,
+        // One bound session is one launch of the VM: a restarted one binds another.
+        isLaunchCurrent: () => this.localExecutor?.sessionFor(environment.id) === session,
         localAuthority
       })
       return [...(ledger?.roots.map((root) => root.path) ?? []), '.agentconnect/cluster-skill-state']
@@ -23284,6 +23310,8 @@ export class Daemon {
     // Only now: the shim channel IS the runtimes' transport, so closing it before the drain
     // would cut in-flight turns and closing it before host teardown would leave `AcpHost.stop()`
     // unable to send its ACP close — a sandbox process still running, and reconnecting.
+    await this.localExecutor?.stop().catch((error: unknown) => errors.push(error))
+    this.localExecutor = undefined
     await this.microsandbox?.stopAll().catch((error: unknown) => errors.push(error))
     this.microsandbox = undefined
     // The drain above already stopped every hosted shim; this closes the listener and whatever a late launch left.

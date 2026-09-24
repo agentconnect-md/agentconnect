@@ -1,15 +1,12 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { lstat, readFile, realpath } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { Socket } from 'node:net'
 import type { Duplex } from 'node:stream'
-import { ClientTransport } from '@agentconnect.md/connection'
 import type { Sandbox } from 'microsandbox'
 import { z } from 'zod'
 import type { Logger } from '../log.js'
-import { ShimDialer } from '../shim/dialer.js'
-import { ShimSession } from '../shim/session.js'
+import type { ShimSession } from '../shim/session.js'
 import { ClusterSkillClient } from '../shim/skill-client.js'
 import { DEFAULT_SHIM_RUNTIME_ROOT, SANDBOX_SKILL_STAGING_DIR } from '../shim/sandbox-paths.js'
 import {
@@ -19,14 +16,10 @@ import {
   SHIM_SEED_ENV,
   SHIM_WORKSPACE_ROOT_ENV
 } from '../shim/protocol.js'
-import { TunnelNameSchema, type TunnelName } from '../shim/tunnel.js'
-import { TunnelProxy } from '../shim/tunnel-proxy.js'
 import { openExecStream, MICROSANDBOX_NODE, type MicrosandboxExecStream } from './exec.js'
 import { openGuestTcp } from './tcp.js'
 
 const TIMEOUT_MS = 15_000
-// Renewal re-presents the same one-time token, so it proves nothing new here and only ends tunnel streams with a frame in flight.
-const CREDENTIAL_TTL_MS = 24 * 60 * 60_000
 const ARTIFACTS = ['index.js', 'skills/dist/cli.js', 'skills/package.json', 'skills/workspace-mutation.js']
 let artifacts: Promise<string> | undefined
 
@@ -80,13 +73,8 @@ for name, content in data['files'].items():
 print(root, flush=True)
 `
 
-export interface MicrosandboxShim {
-  session: ShimSession
-  incarnation: string
-  stop(): Promise<void>
-}
-
-export async function microsandboxSkillTarget(shim: MicrosandboxShim, cwd: string) {
+/** A local VM's skills seam over its bound shim, fenced on the workspace's own identity. */
+export async function microsandboxSkillTarget(session: Pick<ShimSession, 'request' | 'hasCapability'>, cwd: string) {
   // VM replacement preserves bind-mounted storage; replacing that storage must revoke its receipts.
   const stat = await lstat(cwd, { bigint: true })
   if (!stat.isDirectory()) throw new Error('skill workspace root is unsafe')
@@ -94,12 +82,10 @@ export async function microsandboxSkillTarget(shim: MicrosandboxShim, cwd: strin
   return {
     workspaceIncarnation: `workspace:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`,
     client: new ClusterSkillClient(
-      {
-        request: (capability, request, options) => shim.session.request(capability, { cwd, request }, options)
-      },
-      shim.session.hasCapability('skills-wide'),
+      { request: (capability, request, options) => session.request(capability, { cwd, request }, options) },
+      session.hasCapability('skills-wide'),
       true,
-      shim.session.hasCapability('skills-receipts')
+      session.hasCapability('skills-receipts')
     )
   }
 }
@@ -262,95 +248,6 @@ export async function startGuestShim(input: {
       clearTimeout(timer)
     }
     return { connect: () => openGuestTcp(sdk, sandbox.name, DEFAULT_SHIM_LISTEN_PORT), token, exited, stop }
-  } catch (error) {
-    await stop()
-    throw error
-  }
-}
-
-export async function startMicrosandboxShim(input: {
-  sdk: Pick<typeof import('microsandbox'), 'AgentClient'>
-  sandbox: Sandbox
-  agentId: string
-  subject: string
-  workspaceRoot: string
-  generation: number
-  /** This daemon's own servers, which the VM reaches through the shim's tunnels and nothing else. */
-  sockets: Record<TunnelName, string>
-  /** What the runtime writes to stderr: the shim starts it with its own stderr, so it arrives on the shim's stream. */
-  runtimeStderr: (text: string) => void
-  failed: () => void
-  log?: Logger
-  // Overridden by tests; the real one reads this daemon's built shim bundle.
-  artifacts?: () => Promise<string>
-}): Promise<MicrosandboxShim> {
-  const { sdk, sandbox, subject, generation } = input
-  const log = { info: (s: string) => input.log?.debug(s), warn: (s: string) => input.log?.warn(s) }
-  const session = new ShimSession(subject, generation, {
-    setTimeout: (fn, ms) => setTimeout(fn, ms),
-    clearTimeout: (timer) => clearTimeout(timer as NodeJS.Timeout)
-  })
-  const guest = await startGuestShim({
-    sdk,
-    sandbox,
-    workspaceRoot: input.workspaceRoot,
-    // This daemon drives the VM from the same machine and sends each runtime's whole environment.
-    completeEnv: true,
-    runtimeStderr: input.runtimeStderr,
-    failed: (error) => {
-      session.lose(error.message)
-      input.failed()
-    },
-    ...(input.log ? { log: input.log } : {}),
-    ...(input.artifacts ? { artifacts: input.artifacts } : {})
-  })
-  const dialer = new ShimDialer({
-    verifier: {
-      reviewToken: async (presented) => {
-        const bytes = Buffer.from(presented)
-        return {
-          authenticated:
-            bytes.length === Buffer.byteLength(guest.token) && timingSafeEqual(bytes, Buffer.from(guest.token)),
-          podName: subject,
-          podUid: sandbox.id
-        }
-      }
-    },
-    dial: async (url, options) => {
-      const socket = await guest.connect()
-      try {
-        return await ClientTransport.dial(url, { ...options, createConnection: () => socket as Socket })
-      } catch (error) {
-        socket.destroy()
-        throw error
-      }
-    },
-    onConnection: (connection) => session.attach(connection),
-    credentialTtlMs: CREDENTIAL_TTL_MS,
-    log
-  })
-  const stop = async () => {
-    dialer.stop()
-    session.lose('microsandbox shim stopped')
-    await guest.stop()
-  }
-  try {
-    await dialer.connect(
-      `ws://127.0.0.1:${DEFAULT_SHIM_LISTEN_PORT}`,
-      {
-        agentId: input.agentId,
-        subject,
-        sandboxUid: sandbox.id,
-        generation,
-        grants: ['acp', 'exec', 'tunnel', 'read', 'skills', 'skills-wide', 'skills-receipts'],
-        podName: subject
-      },
-      TIMEOUT_MS
-    )
-    // Both helper endpoints exist before anything runs in the VM, and a VM without them is refused rather than degraded.
-    const tunnels = new TunnelProxy({ session, socketPathFor: (tunnel) => input.sockets[tunnel], log })
-    for (const tunnel of TunnelNameSchema.options) await tunnels.ensure(tunnel)
-    return { session, incarnation: sandbox.id, stop }
   } catch (error) {
     await stop()
     throw error

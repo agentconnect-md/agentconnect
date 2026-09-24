@@ -601,14 +601,12 @@ describe('Daemon session lifecycle (#118)', () => {
       const agent = d.agents.get('bot-a')
       mkdirSync(agent.workspace.path, { recursive: true })
       const environment = { id: 'bot-a/agent' }
-      d.microsandbox = {
-        environment: () => environment,
-        stopAll: async () => {},
-        withShim: async (_environment: unknown, run: (shim: unknown) => Promise<unknown>) =>
-          run({
-            session: { hasCapability: () => true, generation: 1, isAttached: () => true }
-          })
-      }
+      d.microsandbox = { environment: () => environment, stopAll: async () => {} }
+      // The VM's bound shim, as the in-process executor entry hands it over (session-executors.md §11 step 4).
+      vi.spyOn(d.localExecutor, 'withEnvironment').mockImplementation((async (
+        _environment: unknown,
+        run: (session: unknown) => Promise<unknown>
+      ) => run({ hasCapability: () => true, generation: 1, isAttached: () => true })) as never)
       vi.spyOn(d, 'microsandboxContext').mockReturnValue({ environment })
       vi.spyOn(d.store, 'clusterSkillLedger').mockResolvedValue({ revision: 1, ledger: { roots: [] } })
       const prepare = vi.spyOn(d, 'reconcileSandboxSkills').mockResolvedValue({ roots: [] })

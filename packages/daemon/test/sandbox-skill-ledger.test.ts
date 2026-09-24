@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import { skillLedgerLocation, treeDigest } from '../src/skills/skill-install-ledger.js'
 import { legacySandboxSkillLedger } from '../src/skills/sandbox-skill-ledger.js'
-import { microsandboxSkillTarget, type MicrosandboxShim } from '../src/microsandbox/shim.js'
+import { microsandboxSkillTarget } from '../src/microsandbox/shim.js'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -16,9 +16,10 @@ it('retains skill authority across VM replacement but revokes it when storage is
   roots.push(root)
   const cwd = join(root, 'workspace')
   await mkdir(cwd)
-  const shim = { session: { hasCapability: () => true }, incarnation: 'first-vm' } as unknown as MicrosandboxShim
-  const first = await microsandboxSkillTarget(shim, cwd)
-  const replacement = { ...shim, incarnation: 'replacement-vm' }
+  const session = { request: async () => undefined, hasCapability: () => true }
+  const first = await microsandboxSkillTarget(session, cwd)
+  // A replaced VM binds a new session over the same bind-mounted storage.
+  const replacement = { ...session }
   expect((await microsandboxSkillTarget(replacement, cwd)).workspaceIncarnation).toBe(first.workspaceIncarnation)
   await rename(cwd, join(root, 'retired'))
   await mkdir(cwd)

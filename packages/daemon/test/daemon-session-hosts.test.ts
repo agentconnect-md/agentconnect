@@ -10,6 +10,7 @@ import { prepareRuntimeLaunch, privateRuntimeHomeFor } from '../src/launch/prepa
 import { sessionKey } from '../src/store/local-store.js'
 import { pendingTurnKey, sdkLeaseKey } from '../src/daemon/turn-types.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import { fakeVm, fakeVmManager } from './fixtures/microsandbox-vm.js'
 import { WAIT } from './wait-support.js'
 
 /** git-workspace-model §11: a confined self-hosted session gets its own ACP host; nothing else does, and the tier a session is served on is its own for life. */
@@ -106,8 +107,11 @@ function makeRoutable(daemon: Daemon): void {
 }
 
 function useMicrosandbox(daemon: Daemon, environments: string[] = []) {
+  // A local VM's driver is the in-process executor entry's, bound over the manager's VM (session-executors.md §11 step 4).
+  const driverFor = vi.fn(() => ({}))
+  ;(daemon as any).localExecutor.driverFor = driverFor
   const manager = {
-    driverFor: vi.fn(() => ({})),
+    driverFor,
     prepareEnvironment: vi.fn(async () => {}),
     refreshEnvironment: vi.fn(async () => {}),
     environmentIds: vi.fn(async () => environments),
@@ -272,6 +276,45 @@ it.skipIf(process.platform === 'win32')(
       expect(spawnFor.mock.calls.at(-1)![0]).toMatchObject({ agent, hostKey, cwd: agent.workspace.path })
     } finally {
       await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+)
+
+it.skipIf(process.platform === 'win32')(
+  'starts and runs a local microsandbox session with no control plane, through the in-process executor entry',
+  async () => {
+    const root = scaffold({ workspace: { mode: 'from-scratch', path: 'workspace' } }, 'shared')
+    const daemon = new Daemon({ root, sandboxMechanism: 'bwrap', probeRuntimes: async () => [] })
+    const vm = fakeVm({ mcp: join(root, 'guest', 'mcp.sock'), gitcred: join(root, 'guest', 'gitcred.sock') })
+    const fake = fakeVmManager({ vm })
+    try {
+      await daemon.start()
+      const d = daemon as any
+      // No control plane at all: nothing this launch does may ask one, as a local session never has (§11 step 4).
+      expect(d.cpClient).toBeUndefined()
+      const placed = vi.spyOn(d.executorPlane, 'prepareAt')
+      const stub = useMicrosandbox(daemon)
+      // The real entry this time, over a manager whose one VM runs a real shim.
+      d.localExecutor.driverFor = Object.getPrototypeOf(d.localExecutor).driverFor
+      d.microsandbox = Object.assign(stub, fake.manager, { environment: () => undefined })
+      const agent = d.agents.get('bot-a')
+      const hostKey = sessionHostKey(agent.id, KEY('offline'))
+      const { host } = d.buildAcpHost(agent, d.cfg, { hostKey, strategy: 'microsandbox', cwd: agent.workspace.path })
+      const environmentId = `bot-a/${hostKeyDirName(hostKey)}`
+      const runtime = await host.opts.driver.launch({ command: 'cat', args: [], env: host.opts.env, hostKey })
+      await runtime.toAgent.getWriter().write(Buffer.from('offline\n'))
+      const reader = runtime.fromAgent.getReader()
+      expect(Buffer.from((await reader.read()).value!).toString()).toBe('offline\n')
+      reader.releaseLock()
+      expect(fake.manager.prepareEnvironment).toHaveBeenCalledWith(expect.objectContaining({ id: environmentId }))
+      expect(d.localExecutor.sessionFor(environmentId)).toBeDefined()
+      expect(placed).not.toHaveBeenCalled()
+      await runtime.stop(2_000)
+    } finally {
+      await daemon.stop()
+      await fake.stop()
+      await vm.close()
       rmSync(root, { recursive: true, force: true })
     }
   }

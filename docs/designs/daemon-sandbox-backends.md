@@ -377,18 +377,27 @@ pre-pulls the next release's image only on a machine that has pulled one before.
 
 The ACP runtime, its two helper endpoints, daemon-run Git, workspace filesystem
 operations and skill publication use the same persistent Node shim and WebSocket
-protocol as Kubernetes, so a VM and a pool pod are driven the same way. The local
-driver carries that WebSocket over agentd's TCP stream to guest loopback; it does
-not publish a host port or add a forwarding process. The shim starts with each
-running VM, before anything else runs in it, and a VM whose shim or helper
-endpoints cannot start is refused. It does not prevent idle suspension. Each
-request holds the VM until it finishes, and a resumed VM gets a new binding
-generation and identity token. The binding grants `acp`, `exec`, `tunnel`, `read`
-and the skill channels, and nothing else. Its credential
-lives for a day rather than a pod's ten minutes. The shim renews at half that
-lifetime by presenting the same one-time token again, which proves nothing new,
-and a renewal ends any helper stream with a frame in flight, such as the MCP
-bridge's connection.
+protocol as Kubernetes, so a VM and a pool pod are driven the same way. The shim
+starts with each running VM, before anything else runs in it, and a VM whose shim
+cannot start is refused. It starts exposed and unbound, as a hosted VM's does, and
+whoever drives the VM binds it: for this machine's own sessions that is the
+in-process executor entry (`execution/local-executor.ts`,
+[session-executors.md](session-executors.md) §11 step 4), which binds it as a
+holder binds an executor's, with no Control Plane request and no pipe, so a local
+session starts and runs while the Control Plane is down. The entry carries the
+WebSocket over agentd's TCP stream to guest loopback; it does not publish a host
+port or add a forwarding process. It compares the shim's one-time token on every
+dial and binds at this daemon's own generation, from the store's allocator under
+the environment's id. The shim does not prevent idle suspension. Each runtime and
+each Git, file or skill operation holds the VM until it finishes; a stopped VM
+ends the binding, and the next use binds the resumed VM at a new generation with
+a new token. The binding grants `acp`, `materialize`, `exec`, `tunnel`, `read` and
+the skill channels, and nothing else. Both helper tunnels are opened on every
+bind; one that cannot be served is logged by name and the VM still runs, as for
+every executor. The credential lives for a day rather than a pod's ten minutes.
+The shim renews at half that lifetime by presenting the same one-time token again,
+which proves nothing new, and a renewal ends any helper stream with a frame in
+flight, such as the MCP bridge's connection.
 
 The daemon stages its bundled shim and audited skills CLI in root-owned `/run`
 files on startup, including when the VM retains an older runtime image. This
@@ -701,11 +710,12 @@ and measure there; do not extrapolate bare-metal or desktop boot numbers.
 
 ## 3. Session environment and image contract
 
-`MicrosandboxManager` supplies the existing `SpawnDriver` contract. ACP runs
-through the VM's shim with the same `createRemoteRuntime` the pool uses: the shim
+`MicrosandboxManager` owns the VMs, and the in-process executor entry supplies the
+`SpawnDriver` contract over them. ACP runs through the VM's shim with the pool's
+`RemoteShimDriver` and `createRemoteRuntime`: the shim
 resolves the command and its executable hints in the guest, starts the runtime as
 the image's ordinary user in its own process group, relays its stdio as numbered
-frames, and reports its exit. The driver sends the image's environment beneath
+frames, and reports its exit. The entry sends the image's environment beneath
 the launch environment and names the workspace root as the working directory, as
 a direct guest exec did. The VM starter sets `AC_SHIM_COMPLETE_ENV=1`, because
 the daemon that drives the VM is on the same machine, so the shim treats that
