@@ -319,4 +319,53 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
       await daemon.stop()
     }
   })
+
+  it('applies the agent configured model to the dream extraction session while retaining read-only mode (#2277)', async () => {
+    const root = scaffold()
+    let stopped = 0
+    let modelSet: string | undefined
+    let permModeSet: string | undefined
+    const host = {
+      start: async () => {},
+      hasSession: () => true,
+      usesMetaSystemPrompt: () => false,
+      newSession: async () => 'dream-sess',
+      modelOptions: () => (modelSet ? { current: modelSet } : null),
+      setSessionModel: async (_sess: string, model: string) => {
+        modelSet = model
+      },
+      permissionModeOptions: () => ({ modes: ['read-only'] }),
+      setSessionPermissionMode: async (_sess: string, mode: string) => {
+        permModeSet = mode
+        return true
+      },
+      prompt: async () => ({ stopReason: 'end_turn' }),
+      discardSession: () => {},
+      cancel: async () => {},
+      stop: async () => {
+        stopped++
+      }
+    } as any
+    const daemon = new Daemon({ root, hostFactory: vi.fn(() => host), dreamOperationPolicy: 'test-only' })
+    await daemon.start()
+    try {
+      const inner = daemon as any
+      const agent = inner.agents.get('bot-a')
+      agent.runtimeOverrides = { model: 'opencode/mimo-v2.6-flash-free' }
+      agent.permissionMode = 'full'
+      const res = await inner.runDreamExtraction('bot-a', 'system', 'prompt', new AbortController().signal, {
+        dreamId: 'drm-model-test',
+        trigger: 'manual',
+        sessionIds: [],
+        inputDir: join(root, 'in')
+      })
+      expect(modelSet).toBe('opencode/mimo-v2.6-flash-free')
+      expect(permModeSet).toBe('read-only')
+      expect(res.model).toBe('opencode/mimo-v2.6-flash-free')
+      expect(stopped).toBe(1)
+    } finally {
+      await daemon.stop()
+    }
+  })
 })
+
