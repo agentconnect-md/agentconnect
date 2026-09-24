@@ -8,7 +8,12 @@ import { describe, it, expect, vi } from 'vitest'
 import { jwtVerify } from 'jose'
 import type { GitCredCapability } from '@agentconnect.md/protocol'
 import { FakeClock } from '../../test/fakes/fake-clock.js'
-import type { AgentRepoAuthorizationRecord, GithubInstallationRecord, SkillSourceRecord } from '../persistence/ports.js'
+import type {
+  AgentInstallationAuthorizationRecord,
+  AgentRepoAuthorizationRecord,
+  GithubInstallationRecord,
+  SkillSourceRecord
+} from '../persistence/ports.js'
 import { OrgId } from '../domain/ids.js'
 import { githubAppBotIdentity, resolveGithubAppConfig, type GithubAppConfig } from './config.js'
 import { GithubApiError, githubRequest, githubRetryAfterMs, mintAppJwt, type FetchLike } from './api.js'
@@ -1173,6 +1178,8 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     withRepoAuths?: boolean
     /** Skill-source registry rows by name (shared-skills.md §3 read grants). */
     skillSources?: Record<string, SkillSourceRecord>
+    /** Installation grants (decision 10); absent ⇒ the dependency is not wired. */
+    installationGrants?: AgentInstallationAuthorizationRecord[]
   }) {
     const clock = new FakeClock(1_700_000_000_000)
     const byAccount = opts.installationsByAccount ?? { acme: installation() }
@@ -1199,6 +1206,8 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     }
     const listForAgent = vi.fn(async () => opts.rows ?? [])
     const updateFullName = vi.fn(async () => {})
+    const listInstallationGrants = vi.fn(async () => opts.installationGrants ?? [])
+    const updateAccountLogin = vi.fn(async () => {})
     const svc = new GithubService({
       cfg: cfg(),
       clock,
@@ -1211,13 +1220,25 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       } as never,
       installState: { put: async () => {}, consume: async () => true },
       ...(opts.withRepoAuths === false ? {} : { repoAuths: { listForAgent, updateFullName } as never }),
+      ...(opts.installationGrants
+        ? { installationAuths: { listForAgent: listInstallationGrants, updateAccountLogin } }
+        : {}),
       ...(opts.skillSources
         ? { skillSources: { getByName: async (_org: string, name: string) => opts.skillSources![name] ?? null } }
         : {}),
       pepper: 'p'.repeat(32),
       fetchImpl
     })
-    return { svc, mintBodies, repoLookups, accountLookups, listForAgent, updateFullName }
+    return {
+      svc,
+      mintBodies,
+      repoLookups,
+      accountLookups,
+      listForAgent,
+      updateFullName,
+      listInstallationGrants,
+      updateAccountLogin
+    }
   }
 
   function skillSourceRow(over: Partial<SkillSourceRecord> = {}): SkillSourceRecord {
@@ -1499,6 +1520,183 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     })
     await expect(suspended.svc.mintForAgent(AGENT, [], CONTENTS, 'acme/tools')).rejects.toMatchObject({
       code: 'LEASE_DENIED'
+    })
+  })
+
+  describe('installation grants (agent-multi-repo-authorization.md decision 10)', () => {
+    function installationGrant(
+      over: Partial<AgentInstallationAuthorizationRecord> = {}
+    ): AgentInstallationAuthorizationRecord {
+      return {
+        id: 'ia-1',
+        agentId: 'agent-1' as never,
+        provider: 'github',
+        installationId: 42n, // the acme installation above
+        accountLogin: 'acme',
+        access: 'read',
+        materialize: 'on-demand',
+        createdAt: new Date(0),
+        createdBy: null,
+        ...over
+      }
+    }
+    const TOOLS = { 'acme/tools': { id: 111, full_name: 'acme/tools' } }
+    const FULL_ASK: readonly GitCredCapability[] = ['contents', 'issues', 'pull_requests', 'actions']
+
+    it('a grant on the owner’s live installation justifies the probe, mints by id at its tier and echoes the request', async () => {
+      const { svc, mintBodies, repoLookups } = harness({
+        rows: [],
+        installationGrants: [installationGrant({ access: 'comment' })],
+        repoRefs: TOOLS
+      })
+
+      const grant = await svc.mintForAgent(SCRATCH_AGENT, [], FULL_ASK, 'acme/Tools')
+
+      expect(grant).toMatchObject({ repoFullName: 'acme/Tools', access: 'read', repoId: 111n })
+      expect(repoLookups).toEqual(['acme/Tools'])
+      expect(mintBodies).toEqual([
+        {
+          repository_ids: [111],
+          permissions: { metadata: 'read', contents: 'read', issues: 'write', pull_requests: 'write' }
+        }
+      ])
+    })
+
+    it('a repository the installation does not cover is refused as not covered', async () => {
+      const { svc, mintBodies } = harness({ rows: [], installationGrants: [installationGrant()], repoRefs: {} })
+
+      const denied = svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, 'acme/elsewhere')
+
+      await expect(denied).rejects.toMatchObject({ code: 'SCOPE_DENIED', retryable: false })
+      await expect(denied).rejects.toThrow('acme/elsewhere is not covered by the installation')
+      expect(mintBodies).toEqual([])
+    })
+
+    it('an explicit row keeps its own tier over the grant, by name and after a rename', async () => {
+      const exact = harness({
+        rows: [grantRow({ repoFullName: 'acme/tools', access: 'write' })],
+        installationGrants: [installationGrant()]
+      })
+      await exact.svc.mintForAgent(AGENT, [], CONTENTS, 'acme/tools')
+      expect(exact.mintBodies[0]).toMatchObject({ repository_ids: [111], permissions: { contents: 'write' } })
+      expect(exact.listInstallationGrants).not.toHaveBeenCalled()
+
+      const renamed = harness({
+        rows: [grantRow({ id: 'ra-2', repoId: 222n, repoFullName: 'acme/old-name', access: 'write' })],
+        installationGrants: [installationGrant()],
+        repoRefs: { 'acme/new-name': { id: 222, full_name: 'acme/new-name' } }
+      })
+      await renamed.svc.mintForAgent(AGENT, [], CONTENTS, 'acme/new-name')
+      expect(renamed.mintBodies[0]).toMatchObject({ repository_ids: [222], permissions: { contents: 'write' } })
+    })
+
+    it('a grant on another owner’s installation does not apply, and nothing is probed', async () => {
+      const { svc, repoLookups, mintBodies } = harness({
+        rows: [],
+        installationGrants: [installationGrant()],
+        installationsByAccount: {
+          acme: installation(),
+          'example-co': installation({ id: 'row-2', installationId: 43n, accountLogin: 'example-co' })
+        }
+      })
+
+      await expect(svc.mintForAgent(AGENT, [], CONTENTS, 'example-co/lib')).rejects.toMatchObject({
+        code: 'SCOPE_DENIED',
+        retryable: false
+      })
+      expect(repoLookups).toEqual([])
+      expect(mintBodies).toEqual([])
+    })
+
+    it('names the installation as a remedy only when the owner has a live installation this organization claimed', async () => {
+      const { svc } = harness({
+        rows: [],
+        installationsByAccount: {
+          acme: installation(),
+          'example-co': installation({ id: 'row-2', installationId: 43n, suspendedAt: new Date(1) })
+        }
+      })
+      const remedy = "add it under Additional repositories in the agent's workspace settings"
+
+      // A scratch agent: no workspace owner makes the probe legitimate, so these are first refusals.
+      await expect(svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, 'acme/tools')).rejects.toThrow(
+        `acme/tools is not authorized for this agent — ${remedy}, or authorize its installation`
+      )
+      for (const uncovered of ['evil/repo', 'example-co/lib']) {
+        const denied = svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, uncovered)
+        await expect(denied).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
+        await expect(denied).rejects.toThrow(new RegExp(`${remedy}$`))
+      }
+    })
+
+    it('a suspended, revoked or replaced installation leaves the grant inert', async () => {
+      // Suspended, or gone with no reinstall: the grant still names its account, so the denial is a lease one.
+      const inert: Array<Record<string, GithubInstallationRecord>> = [
+        { acme: installation({ suspendedAt: new Date(1) }) },
+        {}
+      ]
+      for (const installationsByAccount of inert) {
+        const { svc, repoLookups } = harness({
+          rows: [],
+          installationGrants: [installationGrant()],
+          installationsByAccount
+        })
+        await expect(svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, 'acme/tools')).rejects.toMatchObject({
+          code: 'LEASE_DENIED',
+          retryable: false
+        })
+        expect(repoLookups).toEqual([])
+      }
+      // Reinstalled under a new id: the old grant covers nothing, and the new installation is offered.
+      const reinstalled = harness({
+        rows: [],
+        installationGrants: [installationGrant()],
+        installationsByAccount: { acme: installation({ installationId: 99n }) },
+        repoRefs: TOOLS
+      })
+      await expect(reinstalled.svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, 'acme/tools')).rejects.toThrow(
+        /or authorize its installation$/
+      )
+      expect(reinstalled.repoLookups).toEqual([])
+    })
+
+    it('refreshes the grant’s projected login from the installation row it minted through', async () => {
+      const { svc, updateAccountLogin } = harness({
+        rows: [],
+        installationGrants: [installationGrant({ accountLogin: 'acme-previous' })],
+        repoRefs: TOOLS
+      })
+
+      await svc.mintForAgent(AGENT, [], CONTENTS, 'acme/tools')
+
+      expect(updateAccountLogin).toHaveBeenCalledWith('ia-1', 'acme')
+    })
+
+    it('the by-id resolver takes the same fallback for reviews, but never for Checks', async () => {
+      const { svc } = harness({
+        rows: [],
+        installationGrants: [installationGrant({ access: 'comment' })],
+        installationsByAccount: { acme: installation({ permissions: { pull_requests: 'write', checks: 'write' } }) },
+        repoRefs: TOOLS
+      })
+
+      await expect(svc.resolveAgentRepoAuthorization(AGENT, 111n, 'acme/tools')).resolves.toMatchObject({
+        kind: 'installation',
+        repoId: 111n,
+        repoFullName: 'acme/tools',
+        access: 'comment'
+      })
+      // A comment tier may COMMENT-review, as a comment-tier row may; approving needs write.
+      await expect(svc.validateReviewForAgent(AGENT, 111n, 'acme/tools', 'COMMENT')).resolves.toMatchObject({
+        kind: 'installation'
+      })
+      await expect(svc.validateReviewForAgent(AGENT, 111n, 'acme/tools', 'APPROVE')).rejects.toMatchObject({
+        code: 'SCOPE_DENIED'
+      })
+      // A grant has no per-repository Check cleanup on revoke, so Checks never rest on one.
+      const checks = svc.mintChecksForAgent(AGENT, 111n, 'acme/tools')
+      await expect(checks).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
+      await expect(checks).rejects.toThrow(/workspace settings$/)
     })
   })
 })

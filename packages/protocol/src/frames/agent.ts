@@ -36,6 +36,15 @@ export const AgentAdditionalRepo = z.object({
 })
 export type AgentAdditionalRepo = z.infer<typeof AgentAdditionalRepo>
 
+// One installation grant (agent-multi-repo-authorization.md decision 10): every repository its account covers, no roster.
+export const AgentAdditionalInstallation = z.object({
+  provider: CodeHostProviderString.default('github'),
+  accountLogin: z.string(),
+  access: z.enum(['read', 'comment', 'write']),
+  materialize: RepoMaterialization.default('on-demand')
+})
+export type AgentAdditionalInstallation = z.infer<typeof AgentAdditionalInstallation>
+
 /**
  * Where the agent runs. The **path is always daemon-generated** — never
  * specified by the caller (UX picks the mode, the machine owns the dir).
@@ -54,6 +63,7 @@ export type AgentAdditionalRepo = z.infer<typeof AgentAdditionalRepo>
  *   that do not advertise `workspace-git-v1`.
  *
  * Every mode carries `additionalRepos`, the CP-projected allowlist: the daemon checks out each `always` entry and scopes credentials to the whole list.
+ * Every mode also carries `additionalInstallations`, the installation grants beside it; one is never expanded into `additionalRepos`.
  */
 // Who vouches for a `git` workspace's repository (git-workspace-model.md §3).
 // Absent ⇒ anonymous clone; the daemon's operator-owned `workspaceGitAllowedOrigins`
@@ -78,7 +88,8 @@ export const AgentWorkspace = z.discriminatedUnion('mode', [
     // Scratch has no implicit/default repository. The credential helper still
     // lets git/gh request explicitly authorized repositories by name.
     gitCredential: z.enum(['github-app']).optional(),
-    additionalRepos: z.array(AgentAdditionalRepo).default([])
+    additionalRepos: z.array(AgentAdditionalRepo).default([]),
+    additionalInstallations: z.array(AgentAdditionalInstallation).default([])
   }),
   // The host-neutral repository workspace (git-workspace-model.md §3): `mode`
   // answers "is there a repository", `credential` answers "who vouches for it".
@@ -91,7 +102,8 @@ export const AgentWorkspace = z.discriminatedUnion('mode', [
     branch: z.string().default('main'),
     agentDir: z.string().optional(), // subdir within the repo; omitted ⇒ repo root
     credential: AgentWorkspaceCredential.optional(),
-    additionalRepos: z.array(AgentAdditionalRepo).default([])
+    additionalRepos: z.array(AgentAdditionalRepo).default([]),
+    additionalInstallations: z.array(AgentAdditionalInstallation).default([])
   }),
   z.object({
     mode: z.literal('github'),
@@ -104,7 +116,8 @@ export const AgentWorkspace = z.discriminatedUnion('mode', [
     // CP-minted installation tokens over gitcred/request and injects them via
     // the local credential helper — no durable git credential on the host.
     gitCredential: z.enum(['github-app']).optional(),
-    additionalRepos: z.array(AgentAdditionalRepo).default([])
+    additionalRepos: z.array(AgentAdditionalRepo).default([]),
+    additionalInstallations: z.array(AgentAdditionalInstallation).default([])
   }),
   // gitlab-com-integration.md M4: a managed GitLab project binding is the
   // workspace. FRAME-FATAL on a pre-GitLab daemon (§17.3): the CP never
@@ -120,7 +133,8 @@ export const AgentWorkspace = z.discriminatedUnion('mode', [
     agentDir: z.string().optional(),
     // The rename-stable numeric project id — the gitcred v2 request identity.
     projectId: z.string().regex(/^[1-9]\d*$/),
-    additionalRepos: z.array(AgentAdditionalRepo).default([])
+    additionalRepos: z.array(AgentAdditionalRepo).default([]),
+    additionalInstallations: z.array(AgentAdditionalInstallation).default([])
   })
 ])
 export type AgentWorkspace = z.infer<typeof AgentWorkspace>

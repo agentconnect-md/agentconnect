@@ -2347,6 +2347,38 @@ export const UpdateAgentRepoAuthBody = z
 
 export const AgentRepoAuthParam = z.object({ agentId: z.string(), repoAuthId: z.string() })
 
+// ── agent installation grants (agent-multi-repo-authorization.md decision 10) ─
+/** How an installation grant materializes (multi-repository-workspaces.md decision 14): never `always`, so the schema refuses it. */
+export const InstallationMaterializationDto = z.enum(['decision', 'on-demand'])
+
+/** One installation grant on an agent: every repository the installation covers, at one tier. */
+export const AgentInstallationAuthDto = z.object({
+  id: z.string(),
+  provider: z.literal('github'),
+  installationId: z.number(), // GitHub-side id, as the organization's installation list reports it
+  accountLogin: z.string(),
+  access: RepoAccessDto,
+  materialize: InstallationMaterializationDto,
+  createdBy: z.string().nullable(), // app_user id (member directory resolves display)
+  createdAt: z.string() // ISO-8601
+})
+export const AgentInstallationAuthListDto = z.array(AgentInstallationAuthDto)
+export type AgentInstallationAuthDtoT = z.infer<typeof AgentInstallationAuthDto>
+
+/** `POST /agents/:agentId/installations` — one of the organization's installations by its GitHub-side id. */
+export const CreateAgentInstallationAuthBody = z.strictObject({
+  installationId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  access: RepoAccessDto.default('read'),
+  materialize: InstallationMaterializationDto.default('on-demand')
+})
+
+/** `PATCH /agents/:agentId/installations/:id` — raise the tier and/or change how it materializes. */
+export const UpdateAgentInstallationAuthBody = z
+  .strictObject({ access: RepoAccessDto.optional(), materialize: InstallationMaterializationDto.optional() })
+  .refine((b) => b.access !== undefined || b.materialize !== undefined, { message: 'nothing to update' })
+
+export const AgentInstallationAuthParam = z.object({ agentId: z.string(), id: z.string() })
+
 // ── trusted users (webhook-triggers-and-github-events.md, "Trusted users") ──
 /** One vouched-for user on the hook's repository. `actorId` is the host's numeric user id — the
  *  authority the gates match; `login` is display only and refreshes on re-add. */

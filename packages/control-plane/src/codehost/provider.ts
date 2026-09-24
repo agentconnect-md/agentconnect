@@ -142,6 +142,7 @@ export interface LegacySpecWorkspaceShared {
   branch: string
   agentDir?: string
   additionalRepos: Extract<AgentSpec['workspace'], { mode: 'git' }>['additionalRepos']
+  additionalInstallations: Extract<AgentSpec['workspace'], { mode: 'git' }>['additionalInstallations']
 }
 
 /** A projected spec, read for the §24.4 instance axis its host put there. */

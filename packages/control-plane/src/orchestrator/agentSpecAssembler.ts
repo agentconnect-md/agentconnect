@@ -19,6 +19,7 @@ import {
   normalizeGitCloneUrl,
   normalizeGithubRepoUrl,
   redactGitUrlSecrets,
+  type AgentAdditionalInstallation,
   type AgentAdditionalRepo,
   type AgentSkillEntry,
   type HookRoutingProjection,
@@ -26,6 +27,7 @@ import {
   type AgentSpec
 } from '@agentconnect.md/protocol'
 import type {
+  AgentInstallationAuthorizationRepo,
   AgentRecord,
   AgentRepoAuthorizationRepo,
   AgentSecretStore,
@@ -49,6 +51,12 @@ import {
 
 /** The wire spec plus the id it is keyed by on `agent/upsert` / the roster. */
 export type AssembledAgentSpec = AgentSpec & { agentId: string }
+
+/** Both authorization lists the workspace projects, read together so a move pins them at one revision. */
+export interface WorkspaceGrants {
+  additionalRepos: AgentAdditionalRepo[]
+  additionalInstallations: AgentAdditionalInstallation[]
+}
 
 /** Byte-order string compare — deliberately not `localeCompare`, whose order is host-dependent. */
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
@@ -90,7 +98,9 @@ export class AgentSpecAssembler {
     private readonly routingSources?: {
       routings: Pick<CodeHostDecisionRoutingRepo, 'listForHost'>
       hooks: Pick<HookRepo, 'listForOrgKind'>
-    }
+    },
+    // Optional for minimal test graphs: the agent's installation grants (decision 10); absent ⇒ [].
+    private readonly agentInstallationAuth?: Pick<AgentInstallationAuthorizationRepo, 'listForAgent'>
   ) {}
 
   /** Fetch the agent's secret values + resolve its skills, then project the spec. */
@@ -103,7 +113,8 @@ export class AgentSpecAssembler {
       additionalRepos,
       gitlabHook,
       giteaHook,
-      hookRoutings
+      hookRoutings,
+      additionalInstallations
     ] = await Promise.all([
       this.secrets.get(a.orgId, a.id),
       resolveAgentSkillEntries(a, this.skillSources, (invalid) => this.onInvalidSkillSource?.(a.id, invalid)),
@@ -112,7 +123,8 @@ export class AgentSpecAssembler {
       this.additionalReposOf(a),
       this.gitlabHookOf(a),
       this.giteaHookOf(a),
-      this.hookRoutingsOf(a)
+      this.hookRoutingsOf(a),
+      this.additionalInstallationsOf(a)
     ])
     return this.project(
       a,
@@ -123,7 +135,8 @@ export class AgentSpecAssembler {
       additionalRepos,
       gitlabHook,
       giteaHook,
-      hookRoutings
+      hookRoutings,
+      additionalInstallations
     )
   }
 
@@ -204,6 +217,34 @@ export class AgentSpecAssembler {
       .sort((x, y) => cmp(x.provider, y.provider) || cmp(x.repoFullName, y.repoFullName))
   }
 
+  /** The agent's installation grants, never expanded into rows; sorted over every projected field so the digest is stable. */
+  async additionalInstallationsOf(a: Pick<AgentRecord, 'id'>): Promise<AgentAdditionalInstallation[]> {
+    const grants = (await this.agentInstallationAuth?.listForAgent(a.id)) ?? []
+    return grants
+      .map((grant) => ({
+        provider: grant.provider,
+        accountLogin: grant.accountLogin,
+        access: grant.access,
+        materialize: grant.materialize
+      }))
+      .sort(
+        (x, y) =>
+          cmp(x.provider, y.provider) ||
+          cmp(x.accountLogin, y.accountLogin) ||
+          cmp(x.access, y.access) ||
+          cmp(x.materialize, y.materialize)
+      )
+  }
+
+  /** Both lists at once — the move path re-reads them together after every revision-advancing write it makes. */
+  async workspaceGrantsOf(a: Pick<AgentRecord, 'id'>): Promise<WorkspaceGrants> {
+    const [additionalRepos, additionalInstallations] = await Promise.all([
+      this.additionalReposOf(a),
+      this.additionalInstallationsOf(a)
+    ])
+    return { additionalRepos, additionalInstallations }
+  }
+
   /** Resolve the agent's skill entries — pinned into the move {@link MoveBundle} so
    *  the authoritative `agent/activate` path ships them (a bare `project` would
    *  default to [], which `writeAgentSpec` reads as "clear", wiping skills on move). */
@@ -255,7 +296,8 @@ export class AgentSpecAssembler {
     additionalRepos: AgentAdditionalRepo[] = [],
     gitlabHook = false,
     giteaHook = false,
-    hookRoutings?: HookRoutingProjection[]
+    hookRoutings?: HookRoutingProjection[],
+    additionalInstallations: AgentAdditionalInstallation[] = []
   ): AssembledAgentSpec {
     // Resolve by key across both sources BEFORE splitting into the two wire maps
     // (organization-secrets-and-variables.md §3.2), so the winner of a collision
@@ -272,7 +314,8 @@ export class AgentSpecAssembler {
       additionalRepos,
       gitlabHost(this.gitlabHost, a.workspace, additionalRepos, gitlabHook),
       giteaHost(this.giteaHost, a.workspace, additionalRepos, giteaHook),
-      hookRoutings
+      hookRoutings,
+      additionalInstallations
     )
   }
 }
@@ -346,7 +389,9 @@ export function agentRecordToSpec(
   host?: string,
   // The Gitea instance carriage, already decided by {@link giteaHost}.
   giteaInstance?: string,
-  hookRoutings?: HookRoutingProjection[]
+  hookRoutings?: HookRoutingProjection[],
+  // The agent's installation grants, already sorted; always shipped beside `additionalRepos` and never merged into it.
+  additionalInstallations: AgentAdditionalInstallation[] = []
 ): AssembledAgentSpec {
   // Domain AgentWorkspace uses `gitBranch`; the wire AgentWorkspace uses `branch`.
   // The assembled spec always carries the host-neutral `git` arm; the per-peer
@@ -372,13 +417,15 @@ export function agentRecordToSpec(
           ...(a.workspace.agentDir !== undefined ? { agentDir: a.workspace.agentDir } : {}),
           // The vouching host owns its own wire shape; absent ⇒ anonymous clone.
           ...(specCredential ? { credential: specCredential } : {}),
-          additionalRepos
+          additionalRepos,
+          additionalInstallations
         }
       : {
           mode: 'scratch',
           isolation: a.workspace.isolation ?? 'shared',
           gitCredential: 'github-app',
-          additionalRepos
+          additionalRepos,
+          additionalInstallations
         }
   return {
     agentId: a.id,

@@ -21,7 +21,8 @@
  *    a re-projected spec; `decision` is refused until the selector ships;
  *  - github hooks may watch only workspace ∪ authorized repos: 409 before the
  *    grant, 200 after; the workspace repo needs no row; grandfathered rows
- *    keep working for non-binding edits but a repo CHANGE re-enters the gate.
+ *    keep working for non-binding edits but a repo CHANGE re-enters the gate;
+ *  - installation grants (decision 10): owner-only writes, the org's live claim, projection beside the rows, the hook gate.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { generateKeyPairSync, randomUUID } from 'node:crypto'
@@ -32,6 +33,7 @@ import { buildHttpApp, TEST_API_KEY_PEPPER, type HttpApp } from '../fakes/build-
 import { GithubService } from '../../src/github/service.js'
 import { UserAuthzDeniedError } from '../../src/github/user-authz.js'
 import {
+  PgAgentInstallationAuthorizationRepo,
   PgAgentRepoAuthorizationRepo,
   PgGithubInstallationRepo,
   PgGithubInstallStateStore,
@@ -100,6 +102,7 @@ function stubbedGithub(): GithubService {
     installations: new PgGithubInstallationRepo(prisma),
     installState: new PgGithubInstallStateStore(prisma),
     repoAuths: new PgAgentRepoAuthorizationRepo(prisma),
+    installationAuths: new PgAgentInstallationAuthorizationRepo(prisma),
     pepper: TEST_API_KEY_PEPPER,
     fetchImpl
   })
@@ -1374,6 +1377,280 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
       })
       expect(retarget.statusCode).toBe(409)
       expect((retarget.json() as { message: string }).message).toMatch(/not authorized for this agent/)
+    })
+  })
+})
+
+describe('agent installation grants REST (agent-multi-repo-authorization.md decision 10)', () => {
+  const grants = (agentId: string) => `${ORG}/agents/${agentId}/installations`
+  const grantInstallation = (a: HttpApp, agentId: string, payload: Record<string, unknown>) =>
+    a.app.inject({ method: 'POST', url: grants(agentId), payload })
+  const listGrants = (a: HttpApp, agentId: string) => a.app.inject({ method: 'GET', url: grants(agentId) })
+  const CLAIMED = Number(INSTALLATION)
+
+  async function seedRelay(): Promise<void> {
+    await prisma.relay.create({
+      data: {
+        id: randomUUID(),
+        name: `relay-${randomUUID().slice(0, 8)}`,
+        daemonUrl: 'wss://relay-0',
+        lastSeenAt: new Date()
+      }
+    })
+  }
+
+  it('an owner grants a claimed installation: defaults, listing, audit, and a projection beside the rows', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = await workspaceAgent()
+    await seedInstallation()
+    const spy = new UpsertSpy()
+    const a = replicatingApp(spy)
+    const before = (await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).configRevision
+
+    const created = await grantInstallation(a, agentId, { installationId: CLAIMED })
+
+    expect(created.statusCode).toBe(200)
+    const dto = created.json() as { id: string }
+    expect(dto).toMatchObject({
+      provider: 'github',
+      installationId: CLAIMED,
+      accountLogin: 'acme',
+      access: 'read',
+      materialize: 'on-demand'
+    })
+    expect((await listGrants(a, agentId)).json()).toEqual([dto])
+    expect(await prisma.agentInstallationAuthorization.findUniqueOrThrow({ where: { id: dto.id } })).toMatchObject({
+      agentId,
+      installationId: INSTALLATION,
+      materialize: 'on_demand'
+    })
+    // Replicated at the advanced revision, beside the repository rows and never as one.
+    expect(spy.upserts).toHaveLength(1)
+    expect(spy.upserts[0]!.spec.workspace).toMatchObject({
+      additionalRepos: [],
+      additionalInstallations: [{ provider: 'github', accountLogin: 'acme', access: 'read', materialize: 'on-demand' }]
+    })
+    expect(BigInt(spy.upserts[0]!.spec.configRevision!)).toBe(before + 1n)
+    expect(await prisma.agentRepoAuthorization.count()).toBe(0)
+    await vi.waitFor(async () => {
+      const audits = await prisma.auditEvent.findMany({ where: { kind: 'agent_repo_change', agentId } })
+      expect(audits.map((e) => e.details)).toEqual([
+        expect.objectContaining({
+          installationAuthId: dto.id,
+          installationId: INSTALLATION.toString(),
+          accountLogin: 'acme',
+          access: 'read',
+          materialize: 'on-demand'
+        })
+      ])
+    })
+  })
+
+  it('only an organization owner writes a grant; a collaborator reads it, and a hidden agent stays 404', async () => {
+    const collaborator = await makeUser('grants-collaborator', 'collaborator')
+    const viewer = await makeUser('grants-viewer', 'viewer')
+    await seedDaemon(prisma, DAEMON)
+    const agentId = await workspaceAgent()
+    const hidden = await workspaceAgent({ visibility: 'restricted', sharedWith: [viewer] })
+    await seedInstallation()
+    const { id } = (await grantInstallation(app(), agentId, { installationId: CLAIMED })).json() as { id: string }
+
+    const asCollaborator = buildHttpApp(
+      prisma,
+      { PUBLIC_RELAY_URL: RELAY_URL, DEFAULT_OWNER_ID: collaborator },
+      undefined,
+      undefined,
+      { github: stubbedGithub() }
+    )
+    opened.push(asCollaborator)
+    expect((await listGrants(asCollaborator, agentId)).json()).toMatchObject([{ id, accountLogin: 'acme' }])
+    const writes = [
+      await grantInstallation(asCollaborator, agentId, { installationId: CLAIMED, access: 'write' }),
+      await asCollaborator.app.inject({
+        method: 'PATCH',
+        url: `${grants(agentId)}/${id}`,
+        payload: { access: 'write' }
+      }),
+      await asCollaborator.app.inject({ method: 'DELETE', url: `${grants(agentId)}/${id}` })
+    ]
+    for (const denied of writes) {
+      // The refusal names the role rather than hiding the resource.
+      expect(denied.statusCode).toBe(403)
+      expect(denied.json()).toMatchObject({ message: 'only an organization owner can do this' })
+    }
+    // Not viewable ⇒ 404 before the role is judged (no oracle).
+    expect((await listGrants(asCollaborator, hidden)).statusCode).toBe(404)
+    expect((await grantInstallation(asCollaborator, hidden, { installationId: CLAIMED })).statusCode).toBe(404)
+
+    const asViewer = buildHttpApp(prisma, { DEFAULT_OWNER_ID: viewer })
+    opened.push(asViewer)
+    expect((await listGrants(asViewer, hidden)).statusCode).toBe(200)
+    expect((await grantInstallation(asViewer, hidden, { installationId: CLAIMED })).statusCode).toBe(403)
+    expect(await prisma.agentInstallationAuthorization.findMany({ select: { id: true, access: true } })).toEqual([
+      { id, access: 'read' }
+    ])
+  })
+
+  it('refuses `always`, `decision` for now, an unclaimed or revoked installation, a suspended one, and a duplicate', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = await workspaceAgent()
+    await seedInstallation()
+    const foreignOrg = `org-${randomUUID().slice(0, 8)}`
+    await prisma.org.create({ data: { id: foreignOrg, slug: foreignOrg } })
+    const installation = (orgId: string, installationId: bigint, accountLogin: string, over = {}) =>
+      prisma.githubInstallation.create({
+        data: { orgId, installationId, accountLogin, accountType: 'Organization', repositorySelection: 'all', ...over }
+      })
+    await installation(foreignOrg, 7654321n, 'example-co')
+    await installation(DEFAULT_ORG_ID, 2345678n, 'example-gone', { revokedAt: new Date() })
+    await installation(DEFAULT_ORG_ID, 3456789n, 'example-paused', { suspendedAt: new Date() })
+    const a = app()
+
+    const always = await grantInstallation(a, agentId, { installationId: CLAIMED, materialize: 'always' })
+    expect(always.statusCode).toBe(400)
+    expect(always.json()).toMatchObject({ message: 'request does not match schema' })
+    const decision = await grantInstallation(a, agentId, { installationId: CLAIMED, materialize: 'decision' })
+    expect(decision.statusCode).toBe(400)
+    expect(decision.json()).toMatchObject({
+      message: 'selecting repositories by decision is not available yet; choose `on-demand`'
+    })
+    // Another organization's claim, a revoked row and an unknown id all read alike.
+    for (const installationId of [7654321, 2345678, 1111111]) {
+      const refused = await grantInstallation(a, agentId, { installationId })
+      expect(refused.statusCode).toBe(400)
+      expect(refused.json()).toMatchObject({ message: "not one of this organization's GitHub App installations" })
+    }
+    const suspended = await grantInstallation(a, agentId, { installationId: 3456789 })
+    expect(suspended.statusCode).toBe(409)
+    expect(suspended.json()).toMatchObject({ message: 'the example-paused installation is suspended on GitHub' })
+
+    expect((await grantInstallation(a, agentId, { installationId: CLAIMED })).statusCode).toBe(200)
+    const duplicate = await grantInstallation(a, agentId, { installationId: CLAIMED, access: 'write' })
+    expect(duplicate.statusCode).toBe(409)
+    expect(await prisma.agentInstallationAuthorization.count()).toBe(1)
+  })
+
+  it('the table itself refuses a non-github provider and `always`', async () => {
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, {})
+    const base = { agentId, installationId: INSTALLATION, accountLogin: 'acme', access: 'read' as const }
+
+    await expect(
+      prisma.agentInstallationAuthorization.create({ data: { ...base, materialize: 'always' } })
+    ).rejects.toThrow()
+    await expect(
+      prisma.agentInstallationAuthorization.create({ data: { ...base, provider: 'gitlab' } })
+    ).rejects.toThrow()
+    await expect(prisma.agentInstallationAuthorization.create({ data: base })).resolves.toMatchObject({
+      provider: 'github',
+      materialize: 'on_demand'
+    })
+  })
+
+  it('PATCH raises the tier and re-projects; it refuses a downgrade, `always`, `decision` and an empty body', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = await workspaceAgent()
+    await seedInstallation()
+    const spy = new UpsertSpy()
+    const a = replicatingApp(spy)
+    const { id } = (await grantInstallation(a, agentId, { installationId: CLAIMED, access: 'comment' })).json() as {
+      id: string
+    }
+    const patchGrant = (payload: Record<string, unknown>, grantId = id) =>
+      a.app.inject({ method: 'PATCH', url: `${grants(agentId)}/${grantId}`, payload })
+
+    const raised = await patchGrant({ access: 'write' })
+    expect(raised.statusCode).toBe(200)
+    expect(raised.json()).toMatchObject({ access: 'write', materialize: 'on-demand' })
+    expect(spy.upserts).toHaveLength(2)
+    expect(spy.upserts[1]!.spec.workspace).toMatchObject({ additionalInstallations: [{ access: 'write' }] })
+    expect(BigInt(spy.upserts[1]!.spec.configRevision!)).toBeGreaterThan(BigInt(spy.upserts[0]!.spec.configRevision!))
+
+    expect((await patchGrant({ access: 'read' })).statusCode).toBe(409)
+    expect((await patchGrant({ materialize: 'decision' })).statusCode).toBe(400)
+    expect((await patchGrant({ materialize: 'always' })).statusCode).toBe(400)
+    expect((await patchGrant({})).statusCode).toBe(400)
+    expect((await patchGrant({ access: 'write' }, randomUUID())).statusCode).toBe(404)
+    // An unchanged value is a no-op: nothing is audited or pushed.
+    expect((await patchGrant({ access: 'write', materialize: 'on-demand' })).statusCode).toBe(200)
+    expect(spy.upserts).toHaveLength(2)
+    expect(await prisma.agentInstallationAuthorization.findUniqueOrThrow({ where: { id } })).toMatchObject({
+      access: 'write'
+    })
+    await vi.waitFor(async () => {
+      const audits = await prisma.auditEvent.findMany({ where: { kind: 'agent_repo_change', agentId } })
+      expect(audits.map((e) => e.details)).toContainEqual(
+        expect.objectContaining({ installationAuthId: id, previousAccess: 'comment', access: 'write' })
+      )
+      expect(audits).toHaveLength(2)
+    })
+  })
+
+  it('DELETE revokes and re-projects; another agent’s or an unknown grant reads 404', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = await workspaceAgent()
+    const otherAgent = await workspaceAgent()
+    await seedInstallation()
+    const spy = new UpsertSpy()
+    const a = replicatingApp(spy)
+    const { id } = (await grantInstallation(a, agentId, { installationId: CLAIMED })).json() as { id: string }
+
+    expect((await a.app.inject({ method: 'DELETE', url: `${grants(otherAgent)}/${id}` })).statusCode).toBe(404)
+    expect((await a.app.inject({ method: 'DELETE', url: `${grants(agentId)}/${randomUUID()}` })).statusCode).toBe(404)
+    expect((await a.app.inject({ method: 'DELETE', url: `${grants(agentId)}/${id}` })).statusCode).toBe(204)
+
+    expect((await listGrants(a, agentId)).json()).toEqual([])
+    expect(spy.upserts.at(-1)!.spec.workspace).toMatchObject({ additionalInstallations: [] })
+    await vi.waitFor(async () => {
+      const audits = await prisma.auditEvent.findMany({ where: { kind: 'agent_repo_change', agentId } })
+      expect(audits.map((e) => e.message).sort()).toEqual([
+        'installation acme authorization revoked',
+        'installation acme authorized (read, on-demand)'
+      ])
+    })
+  })
+
+  it('a hook may watch a repository its installation grant covers, but Checks need the repository itself', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    await seedInstallation()
+    await seedRelay()
+    const a = app()
+    const hook = {
+      agentId,
+      kind: 'github',
+      name: 'gh-hook',
+      repoFullName: 'acme/tools',
+      family: 'issues',
+      events: ['issues:opened']
+    }
+
+    expect((await a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: hook })).statusCode).toBe(409)
+    expect((await grantInstallation(a, agentId, { installationId: CLAIMED, access: 'write' })).statusCode).toBe(200)
+    expect((await a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: hook })).statusCode).toBe(200)
+    // A repository the installation does not cover is still not watchable.
+    const uncovered = await a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks`,
+      payload: { ...hook, name: 'gh-uncovered', repoFullName: 'acme/unknown' }
+    })
+    expect(uncovered.statusCode).toBe(400)
+
+    const checks = await a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks`,
+      payload: {
+        ...hook,
+        name: 'gh-checks',
+        family: 'pull_request',
+        events: ['pull_request:*'],
+        reportingMode: 'check'
+      }
+    })
+    expect(checks.statusCode).toBe(409)
+    expect(checks.json()).toMatchObject({
+      message: expect.stringContaining('an installation grant does not carry them')
     })
   })
 })

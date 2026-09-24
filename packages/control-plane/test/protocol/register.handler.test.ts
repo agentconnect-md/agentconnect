@@ -245,7 +245,13 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
       // Preset marker — always shipped so the daemon can gate preset-only capabilities.
       builtin: false,
       // The additional-repository allowlist rides the workspace; always shipped so a revoke replicates.
-      workspace: { mode: 'scratch', isolation: 'shared', gitCredential: 'github-app', additionalRepos: [] }
+      workspace: {
+        mode: 'scratch',
+        isolation: 'shared',
+        gitCredential: 'github-app',
+        additionalRepos: [],
+        additionalInstallations: []
+      }
     })
 
     // drop: the stale local keys the CP no longer owns for this daemon.

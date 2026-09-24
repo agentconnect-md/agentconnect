@@ -494,6 +494,28 @@ describe('writeAgentSpec — merge (agent.json exists)', () => {
     expect(readJson(file).workspace).toMatchObject({ additionalRepos: [] })
   })
 
+  it('mirrors the CP installation grants beside the allowlist, including their removal', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+    const additionalInstallations = [
+      { provider: 'github', accountLogin: 'example-org', access: 'read', materialize: 'on-demand' } as const
+    ]
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ workspace: { mode: 'scratch', additionalInstallations } }), deps)
+    // A grant is never expanded into repository rows.
+    expect(readJson(file).workspace).toMatchObject({ additionalInstallations })
+    expect(readJson(file).workspace).not.toHaveProperty('additionalRepos.0')
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ workspace: { mode: 'scratch', additionalInstallations: [] } }), deps)
+    expect(readJson(file).workspace).toMatchObject({ additionalInstallations: [] })
+  })
+
   it('persists and normalizes a GitHub working subdirectory', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
     const file = seedAgent(dir, 'bot-a', {

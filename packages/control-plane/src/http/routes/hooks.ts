@@ -337,13 +337,7 @@ export function hookRoutes(deps: HttpDeps) {
       502: 'Bad Gateway'
     } as const
 
-    // The trigger plane must not outrun the credential plane (issue #457,
-    // multi-repo design decision 6; gitlab-com-integration.md §8.3): a code-host
-    // hook may only watch the agent's workspace repository or an explicitly
-    // authorized one — otherwise the agent's write-back on the watched repository
-    // is credential-less by construction, which is exactly the "could not review"
-    // note both agents post. Enforced on create and on a binding-CHANGING edit;
-    // pre-existing rows are grandfathered (the console badges them instead).
+    // Triggers never outrun credentials (multi-repo decision 6): workspace, row, or installation grant, on create and binding-changing edits only.
     type WatchRepoAuthz = { ok: true } | { ok: false; status: 409 | 429 | 502; message: string }
     const watchRepoAuthorized = async (
       agent: AgentRecord,
@@ -361,6 +355,16 @@ export function hookRoutes(deps: HttpDeps) {
         (await deps.repos.agentRepoAuth.listForAgent(agent.id)).some(
           (row) => row.provider === provider && row.repoId === repoId
         )
+      // After the rows (decision 10): the caller resolved `repoFullName` through its owner's live installation, the coverage proof.
+      const installationGranted = async (): Promise<boolean> => {
+        const owner = provider === 'github' ? repoFullName.split('/')[0] : undefined
+        const ins = owner ? await deps.repos.githubInstallation.liveByOrgAndAccount(agent.orgId, owner) : null
+        if (!ins || ins.suspendedAt) return false
+        return (await deps.repos.agentInstallationAuth.listForAgent(agent.id)).some(
+          (grant) => grant.provider === 'github' && grant.installationId === ins.installationId
+        )
+      }
+      const granted = async () => (await explicitlyGranted()) || (await installationGranted())
       // The workspace is this repository only when it is the SAME host's: the two
       // number theirs independently, so the credential provider qualifies the id (§8.1).
       const workspaceProvider = agent.workspace.mode === 'git' ? agent.workspace.credential?.provider : undefined
@@ -386,13 +390,12 @@ export function hookRoutes(deps: HttpDeps) {
             }
           } catch (e) {
             if (!(e instanceof GithubApiError)) throw e
-            // GitHub down mid-check: an explicit grant still authorizes; short
-            // of one, report the upstream failure — not a misleading denial.
-            return (await explicitlyGranted()) ? { ok: true } : { ok: false, ...githubUpstream(e) }
+            // GitHub down mid-check: a grant still authorizes; short of one, report the upstream failure, not a misleading denial.
+            return (await granted()) ? { ok: true } : { ok: false, ...githubUpstream(e) }
           }
         }
       }
-      return (await explicitlyGranted()) ? { ok: true } : denied
+      return (await granted()) ? { ok: true } : denied
     }
 
     // The two effect axes both code hosts carry; github adds its own gate axis on top.
@@ -433,7 +436,9 @@ export function hookRoutes(deps: HttpDeps) {
 
       if (cfg.reviewPolicy !== 'off') {
         const commentOnlyAdditional =
-          resolved.kind === 'additional' && resolved.access === 'comment' && cfg.reviewPolicy === 'comment'
+          (resolved.kind === 'additional' || resolved.kind === 'installation') &&
+          resolved.access === 'comment' &&
+          cfg.reviewPolicy === 'comment'
         if (resolved.access !== 'write' && !commentOnlyAdditional) {
           return misconfigured(
             cfg.reviewPolicy === 'comment'
@@ -446,6 +451,12 @@ export function hookRoutes(deps: HttpDeps) {
         }
       }
       if (cfg.reportingMode === 'check') {
+        // Revoking a row retires its Checks; a grant has no per-repository cleanup, so it does not carry them.
+        if (resolved.kind === 'installation') {
+          return misconfigured(
+            'informational Checks need this repository authorized on its own; an installation grant does not carry them'
+          )
+        }
         if (resolved.access !== 'write') return misconfigured('informational Checks require write repository access')
         if (resolved.installation.permissions?.checks !== 'write') {
           return misconfigured('this GitHub App installation has not accepted the Checks write permission')

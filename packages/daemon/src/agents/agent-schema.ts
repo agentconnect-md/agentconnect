@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import {
+  AgentAdditionalInstallation,
   AgentDecisionIds,
   AgentModelSelection,
   AgentMemoryBinding,
@@ -263,6 +264,8 @@ export const AgentSchema = z.object({
         })
       )
       .default([]),
+    // The CP-replicated installation grants (agent-multi-repo-authorization.md decision 10), one per account; never rows of `additionalRepos`.
+    additionalInstallations: z.array(AgentAdditionalInstallation).default([]),
     pullOnNewSession: z.boolean().default(true),
     // DEPRECATED: superseded by the top-level `skills` field (AgentSkillEntry[]).
     // Kept so historical agent.json files still parse; nothing consumes it.

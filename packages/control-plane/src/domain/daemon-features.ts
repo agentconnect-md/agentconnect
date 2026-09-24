@@ -110,7 +110,8 @@ export function encodeSpecWorkspaceForPeer<S extends Pick<AgentSpec, 'workspace'
     gitRepo: workspace.gitRepo,
     branch: workspace.branch,
     ...(workspace.agentDir !== undefined ? { agentDir: workspace.agentDir } : {}),
-    additionalRepos: workspace.additionalRepos
+    additionalRepos: workspace.additionalRepos,
+    additionalInstallations: workspace.additionalInstallations
   }
   const credential = workspace.credential
   const hostArm = credential ? codeHosts[credential.provider].workspace.legacySpecArm(shared, credential) : null

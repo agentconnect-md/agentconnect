@@ -911,6 +911,8 @@ export function applySpecFields(
     // The CP is the authority on the additional-repository allowlist and always ships
     // the full set, so mirror it exactly — [] must replicate as a cleared list.
     existing.additionalRepos = ws.additionalRepos
+    // Installation grants replicate the same way; an older CP's absent list decodes as [].
+    existing.additionalInstallations = ws.additionalInstallations
     if (opts.creating && existing.path === undefined) {
       existing.path = join(opts.agentDir, 'workspace')
     }

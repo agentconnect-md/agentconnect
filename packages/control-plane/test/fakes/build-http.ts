@@ -34,6 +34,7 @@ import {
   PgUserRepo,
   PgGithubInstallationRepo,
   PgAgentRepoAuthorizationRepo,
+  PgAgentInstallationAuthorizationRepo,
   PgCodeHostRepositoryRepo,
   PgCodeHostTrustedActorRepo,
   PgGitlabConnectionRepo,
@@ -340,6 +341,7 @@ export function buildHttpApp(
   const hookSecretStore = new PgHookSecretStore(prisma, cipher)
   const githubInstallationRepo = new PgGithubInstallationRepo(prisma)
   const agentRepoAuthRepo = new PgAgentRepoAuthorizationRepo(prisma)
+  const agentInstallationAuthRepo = new PgAgentInstallationAuthorizationRepo(prisma)
   // An empty relay registry ⇒ multi-agent installs 409 (no relay) and hook broadcasts are
   // no-ops — exactly the prod graph with no relay dialed in, unless a test wires one up.
   const relayReg = new RelayRegistry()
@@ -385,7 +387,8 @@ export function buildHttpApp(
     depsOverrides?.gitlab?.api.baseUrl,
     hookRepo,
     giteaSeam?.api.baseUrl,
-    { routings: codeHostDecisionRoutingRepo, hooks: hookRepo }
+    { routings: codeHostDecisionRoutingRepo, hooks: hookRepo },
+    agentInstallationAuthRepo
   )
   const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, placement: placementResolver })
 
@@ -518,6 +521,7 @@ export function buildHttpApp(
       waitlist: waitlistRepo,
       githubInstallation: githubInstallationRepo,
       agentRepoAuth: agentRepoAuthRepo,
+      agentInstallationAuth: agentInstallationAuthRepo,
       codeHostRepository: new PgCodeHostRepositoryRepo(prisma),
       codeHostTrustedActor: new PgCodeHostTrustedActorRepo(prisma),
       gitlabConnection: new PgGitlabConnectionRepo(prisma),

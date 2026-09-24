@@ -536,7 +536,8 @@ describe('agentRecordToSpec runtime overrides', () => {
       mode: 'scratch',
       isolation: 'shared',
       gitCredential: 'github-app',
-      additionalRepos: []
+      additionalRepos: [],
+      additionalInstallations: []
     })
     // The preset marker always ships (definite record field) so the daemon can
     // gate preset-only behavior such as `agentconnect-admin` attachment.
