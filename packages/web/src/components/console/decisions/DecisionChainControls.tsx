@@ -1,19 +1,9 @@
 'use client'
 
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-  type Dispatch,
-  type MutableRefObject,
-  type ReactNode,
-  type SetStateAction
-} from 'react'
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
-import { Icon } from '@/components/ui'
+import { Button, Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import type { DecisionDefinition } from '@agentconnect.md/protocol/decision'
 import { DecisionChip } from './DecisionChip'
@@ -21,79 +11,115 @@ import { DecisionHoverRows } from './DecisionPicker'
 
 export { reachableSteps } from '@/lib/decisions/chain'
 
-type ChainHost = {
-  back: MutableRefObject<((keep: boolean) => void) | null>
-  setDepth: Dispatch<SetStateAction<number>>
-}
-const ChainHostContext = createContext<ChainHost | null>(null)
-export const DecisionChainHost = ChainHostContext.Provider
-
-// A modal's side of a cascade: Save, Cancel and Escape leave an open lower level before they act on the modal.
-export function useDecisionChainHost() {
-  const back = useRef<((keep: boolean) => void) | null>(null)
-  const [depth, setDepth] = useState(0)
-  const leave = useCallback((keep: boolean) => {
-    if (!back.current) return false
-    back.current(keep)
-    return true
-  }, [])
-  return { host: { back, setDepth }, depth, leave }
-}
-
 // A cascade's open path; each level remembers the value on entry so Cancel can restore it.
 export function useDecisionChainPath<T>(value: T, restore: (value: T) => void) {
   const [levels, setLevels] = useState<Array<{ id: string; entry: T }>>([])
-  const host = useContext(ChainHostContext)
   const back = (keep: boolean) => {
     const last = levels.at(-1)
     if (!last) return
     if (!keep) restore(last.entry)
     setLevels(levels.slice(0, -1))
   }
-  useEffect(() => {
-    if (!host) return
-    host.back.current = levels.length ? back : null
-    host.setDepth(levels.length)
-  })
-  useEffect(
-    () => () => {
-      if (!host) return
-      host.back.current = null
-      host.setDepth(0)
-    },
-    [host]
-  )
   return {
     path: levels.map((level) => level.id),
     enter: (id: string) => setLevels([...levels, { id, entry: value }]),
-    to: (depth: number) => setLevels(levels.slice(0, depth))
+    to: (depth: number) => setLevels(levels.slice(0, depth)),
+    back
   }
 }
 
-export function DecisionChainNav({
-  path,
-  onBack
+// Each deeper sheet sits a little lower and narrower, so the levels behind it stay visible.
+const SHEET_STACK = [
+  'max-w-[720px] desktop:translate-y-3 max-desktop:max-h-[86vh]',
+  'max-w-[688px] desktop:translate-y-6 max-desktop:max-h-[80vh]',
+  'max-w-[656px] desktop:translate-y-9 max-desktop:max-h-[74vh]'
+]
+
+// A later Decision of a chain, stacked over its parent with its own Save and Cancel.
+export function DecisionChainSheet({
+  depth,
+  top,
+  parent,
+  condition,
+  title,
+  canWrite,
+  onParent,
+  onSave,
+  onCancel,
+  children
 }: {
-  path: Array<{ id: string; name: string }>
-  onBack: (index: number) => void
+  /** 1 for the first Decision after the root. */
+  depth: number
+  /** Only the top sheet answers Escape, before the editor underneath can close. */
+  top: boolean
+  /** The Decision this one follows, and the rule that leads here. */
+  parent: string
+  condition?: string
+  title: string
+  canWrite: boolean
+  /** Return to the parent keeping edits, as the path link does. */
+  onParent: () => void
+  onSave: () => void
+  onCancel: () => void
+  children: ReactNode
 }) {
-  const t = useTranslations('Decisions.chain')
-  return (
-    <nav aria-label={t('path')} className="flex flex-wrap items-center gap-1 text-[12px] text-(--text-secondary)">
-      {path.map((step, index) => (
-        <span key={step.id} className="inline-flex min-w-0 items-center gap-1">
-          {index > 0 && <Icon name="chevron-right" size={12} />}
-          <button
-            type="button"
-            className="lnk max-w-[180px] truncate"
-            onClick={() => onBack(index)}
-            aria-current={index === path.length - 1 ? 'step' : undefined}
-          >
-            {step.name}
+  const t = useTranslations('Decisions')
+  useEffect(() => {
+    if (!top) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.stopImmediatePropagation()
+      onCancel()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [top, onCancel])
+  return createPortal(
+    <div className="scrim bg-[rgba(17,22,29,0.28)]" onClick={onCancel}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className={`modal ${SHEET_STACK[Math.min(depth, SHEET_STACK.length) - 1]}`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="modalhead">
+          <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
+            <nav
+              aria-label={t('chain.path')}
+              className="flex min-w-0 items-center gap-[5px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)"
+            >
+              <Icon name="corner-up-left" size={12} className="flex-none" />
+              <button type="button" className="lnk min-w-0 truncate" onClick={onParent}>
+                {parent}
+              </button>
+              {condition && <span className="mono min-w-0 truncate">· {condition}</span>}
+            </nav>
+            <span className="flex min-w-0 items-center gap-[7px] font-sans text-[16px] font-semibold leading-normal">
+              <Icon name="split" size={15} className="flex-none text-(--brand)" />
+              <span className="truncate">{title}</span>
+            </span>
+          </span>
+          <button type="button" className="iconbtn" aria-label={t('cancel')} onClick={onCancel}>
+            <Icon name="x" size={16} />
           </button>
-        </span>
-      ))}
-    </nav>
+        </div>
+        <div className="modalbody flex flex-col gap-3">
+          {children}
+          <div className="flex flex-wrap items-center gap-[9px]">
+            {canWrite && (
+              <Button variant="primary" size="sm" className="max-desktop:flex-1" onClick={onSave}>
+                {t('save')}
+              </Button>
+            )}
+            <Button variant="secondary" size="sm" className="max-desktop:flex-1" onClick={onCancel}>
+              {canWrite ? t('cancel') : t('binding.close')}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body
   )
 }
 
