@@ -73,14 +73,41 @@ settings.
 
 | Setting                        | Meaning and delivery status                                                                                                                                                                                                                                                                                                                 |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sandbox.backend`              | Implemented: `srt` is the default; `microsandbox` selects the Linux VM implementation for sandboxed launches.                                                                                                                                                                                                                               |
+| `sandbox.backend`              | Implemented: `srt` is the default; `microsandbox` selects the Linux VM implementation for sandboxed launches. Retiring: replaced by the strategy table below.                                                                                                                                                                               |
 | `sandbox.env`                  | Environment defaults for sandboxed session runtimes, default `{}`; shared by SRT and microsandbox. Runtime and agent variables override them; daemon-enforced private paths and security settings remain authoritative.                                                                                                                     |
-| `security.requireSandbox`      | Existing behavior: require sandboxed execution for every agent, using the selected backend.                                                                                                                                                                                                                                                 |
-| Agent **Run in sandbox**       | Keeps its current role when the daemon does not require sandboxing. Selecting a backend does not change the trust choice for unsandboxed agents.                                                                                                                                                                                            |
+| `security.requireSandbox`      | Existing behavior: require sandboxed execution for every agent, using the selected backend. Retiring: `host: false` in the strategy table.                                                                                                                                                                                                  |
+| Agent **Run in sandbox**       | Keeps its current role when the daemon does not require sandboxing. Selecting a backend does not change the trust choice for unsandboxed agents. Retiring: the agent's `execution` names a strategy.                                                                                                                                        |
 | `sandbox.microsandbox.image`   | Implemented: optional, non-empty OCI override. Release builds default to their bundled shared-image reference; development builds require an explicit image. No Kubernetes image lookup is used.                                                                                                                                            |
 | `cpus`, `memoryMiB`, `diskGiB` | Per-VM CPU allocation, memory limit, and capacity of each writable disk; defaults are `2`, `2048`, and `10`. New VMs have a root upper disk and a Docker data disk, plus one disk when overlay mounts are configured, each capped by `diskGiB`. All are sparse; host capacity planning remains the operator's responsibility.               |
 | `sandbox.mounts`               | Operator-owned filesystem mappings, default `[]`, with `source`, `target`, and `mode` (`readonly` by default, or `writable` / `overlay`). SRT requires equal normalized host paths; microsandbox accepts absolute guest targets and `~/` relative to the session HOME. Workspace, HOME, and runtime state remain automatically provisioned. |
 | `sandbox.share`                | Implemented: default `false`. `true` lets this machine host isolated sessions for the other members of its daemon group, under this machine's runtime sign-in, and opens one TLS-PSK port for them. Read at start; `config/push` cannot set it. See [Sharing a machine with its group](#sharing-a-machine-with-its-group).                  |
+
+### Strategy table (designed, not implemented)
+
+One daemon runs several backends side by side, and an agent chooses which one its
+sessions use ([session-executors.md](session-executors.md) §5). `sandbox.backend` becomes
+a table of strategies, all on by default, each made available or unavailable by its
+startup probe:
+
+```json
+{
+  "sandbox": {
+    "host": true,
+    "srt": true,
+    "microsandbox": { "cpus": 2, "memoryMiB": 2048, "diskGiB": 10 }
+  }
+}
+```
+
+`true` takes a strategy's defaults and `false` withdraws it; `sandbox.env` and
+`sandbox.mounts` apply to every sandboxing strategy. The microsandbox probe pulls no
+image, so enabling it by default costs nothing until a session uses it, and its state
+collection runs whenever it is enabled. A file that still sets `backend` or
+`security.requireSandbox` is mapped once with a warning: either backend gives the
+default table, `requireSandbox: true` is `host: false`, and a table with no available
+entry refuses startup. The agent's **Run in sandbox** becomes a strategy picker,
+`runInSandbox` migrates to `host` or to the backend its daemon reports, and an
+unavailable strategy refuses a session rather than downgrading it.
 
 ### Shared mounts and manual conversion
 
@@ -1069,10 +1096,12 @@ seeds the session's `home` from it with the local confined tier's own preparers
 (`prepareRuntimeHome`, `prepareSharedRuntimeCredentials`), for every runtime the
 machine admits, because a `prepare` names no runtime: a shared login is linked to
 the machine's own file, other runtimes' small config and credential files are
-copied once, and files already in the session's `home` always win. Provider
-credentials and agent secrets still come from the session's holder, over the
-encrypted pipe. One gap is open: a preparer that answers with an environment
-variable rather than a file in HOME (the Claude secure-storage directory) has no
+copied once, and files already in the session's `home` always win. Runtime
+credentials — sign-in and recognized provider keys — are this machine's only: the
+holder strips them from the launch, and a runtime this machine cannot authenticate
+answers `authRequired` (session-executors.md §8). The agent's environment and secrets
+come from the session's holder, over the encrypted pipe. One gap is open: a preparer
+that answers with an environment variable rather than a file in HOME (the Claude secure-storage directory) has no
 channel to a `host` runtime yet, so that sign-in is not usable on an executor
 until one exists.
 
@@ -1196,6 +1225,11 @@ Delivery is split into independently reviewable steps:
 5. **Pending — performance measurement:** run real projects at increasing session
    counts. Change the default only after compatibility and resource measurements
    support it.
+6. **Designed — strategy table and convergence:** the strategy table and the agent's
+   strategy choice ([above](#strategy-table-designed-not-implemented)); local
+   microsandbox Git and workspace files over the shim instead of agentd exec, and local
+   VMs launched through the in-process executor; `srt` as an SRT boundary around the
+   shim, local and remote (session-executors.md §5, §11, §12).
 
 Implementation status above does not establish successful end-to-end daemon
 execution. Pull requests that reach this path boot one real VM in CI
