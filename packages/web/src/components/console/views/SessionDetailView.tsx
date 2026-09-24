@@ -3380,14 +3380,12 @@ export default function SessionDetailView() {
   const visibleHasEarlier = wantTranscript && transcriptMatchesSession && hasEarlier
   const agentNameById = useMemo(() => new Map(agents.map((a) => [a.id, agentLabel(a)])), [agents])
   // The owner's judged messages: a merged row from another member's source is that member's gate, not this one's.
+  const ownsDecisionSeq = (m: SessionMessageDto): boolean => {
+    const owner = conversationSourceAgentByMessageRef.current.get(m)
+    return m.sender !== session?.agentId && (!owner || owner === session?.agentId)
+  }
   const judgedSeqs = useMemo(
-    () =>
-      (visibleMsgs ?? [])
-        .filter((m) => {
-          const owner = conversationSourceAgentByMessageRef.current.get(m)
-          return m.sender !== session?.agentId && (!owner || owner === session?.agentId)
-        })
-        .map((m) => m.seq),
+    () => (visibleMsgs ?? []).filter(ownsDecisionSeq).map((m) => m.seq),
     [visibleMsgs, session?.agentId, conversationSourceAgentByMessageRef]
   )
   const decisionResults = useSessionDecisionResults(
@@ -4255,7 +4253,8 @@ export default function SessionDetailView() {
           cronId: cron?.id ?? null,
           platform: rowPlatform,
           body: parseUserTurnBody(m.body),
-          seq: m.seq
+          // Seqs are per daemon store, so only the owner's own rows can match its gate's verdicts.
+          ...(ownsDecisionSeq(m) ? { seq: m.seq } : {})
         })
       }
     }

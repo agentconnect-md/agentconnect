@@ -15,6 +15,7 @@ import { OutcomeBadge } from './DecisionEvaluationDetail'
 
 const PAGE = 50
 const MAX_PAGES = 5
+const PENDING_POLL_MS = 5000
 const NONE = new Map<number, DecisionEvaluationRecord>()
 
 /** The session's gated lane and each judged message's evaluation, keyed by transcript seq. */
@@ -57,7 +58,12 @@ export function useSessionDecisionResults(
       }
       return records
     },
-    { revalidateOnFocus: false, shouldRetryOnError: false }
+    {
+      revalidateOnFocus: false,
+      shouldRetryOnError: false,
+      // A verdict read mid-evaluation settles without touching the transcript, so poll only while one is pending.
+      refreshInterval: (latest) => (latest?.some((record) => record.outcome === 'pending') ? PENDING_POLL_MS : 0)
+    }
   )
   const bySeq = useMemo(() => (data ? evaluationsBySeq(data, seqSet) : NONE), [data, seqSet])
   return { lane, bySeq }
