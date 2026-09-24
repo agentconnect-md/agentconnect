@@ -95,6 +95,20 @@ export interface SessionEnvironment {
   exited: Promise<unknown>
   /** Stop the shim and free the slot; the session's directory and the applied generation stay (§7). */
   stop(): Promise<void>
+  /** What the in-process entry needs of an environment this machine drives itself (§11 step 4); absent on a hosted one. */
+  local?: LocalSessionEnvironment
+}
+
+/** A local environment as its own daemon drives it: the shim's identity to compare, and what a remote holder has no use for. */
+export interface LocalSessionEnvironment {
+  /** The one-time token the shim presents, compared on every dial: a local dial crosses no pipe that could prove it. */
+  identity: string
+  /** What every runtime starts from beneath its launch's env, which a complete-env shim takes as all there is. */
+  runtimeEnv: Record<string, string>
+  /** Drop the runtime stderr the shim relays until the returned release, for a launch that asked for silence. */
+  quiet(): () => void
+  /** Fence the environment: it stops with what runs in it, and its next use starts it again. */
+  fail(): void
 }
 
 /** What seeding a session HOME left pointing at this machine (§8): the env a runtime is pointed at, and the sign-in files and directories the HOME names or links to. */
@@ -114,7 +128,7 @@ export interface EnvironmentDescriptor {
   workspaceRoot: string
   mounts: SandboxMount[]
   secrets?: MicrosandboxSecret[]
-  /** A session this machine hosts for another member: its shim EXPOSED for the executor's pipe, never bound here (§6), and started with what the HOME seed points a runtime at. Absent on every local environment. */
+  /** A session this machine hosts for another member: its shim bound by that member through the executor's pipe (§6), and started with what the HOME seed points a runtime at. Absent on every local environment. */
   hosted?: { env: Record<string, string> }
 }
 
@@ -125,6 +139,10 @@ export interface StrategyLauncher {
   start(input: { environment: EnvironmentDescriptor; log: Logger }): Promise<SessionEnvironment>
   /** Remove what the strategy owns beyond the environment's directory — a VM and its disks — by the environment's id; `host` owns nothing that outlives its shim. */
   discard?(id: string): Promise<void>
+  /** Hold a local environment against its owner's idle stop until the returned release; absent where nothing on this machine judges idleness but the facet's linger. */
+  hold?(environment: EnvironmentDescriptor): () => void
+  /** Whether two descriptors start the same environment, by the strategy's own rule; absent ⇒ one id is one environment. */
+  sameEnvironment?(a: EnvironmentDescriptor, b: EnvironmentDescriptor): boolean
 }
 
 /** The `host` strategy (§5): the shim as a plain child of this daemon, reached over the unix socket inside its private runtime root under `daemonRoot`. */

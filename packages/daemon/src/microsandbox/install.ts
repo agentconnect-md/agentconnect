@@ -18,7 +18,6 @@ export interface MicrosandboxInstallOptions {
   config: MicrosandboxConfig | undefined
   sockets: { mcp: string; gitcred: string }
   log: Logger
-  nextShimGeneration?: (subject: string) => Promise<number>
 }
 
 /** Why this machine cannot run a VM at all; undefined ⇒ Linux with a usable /dev/kvm. Opens a device and nothing else. */

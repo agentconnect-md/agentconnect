@@ -44,11 +44,12 @@ export class RemoteShimDriver<L extends Launch = Launch> implements SpawnDriver 
   }
 
   // Start the runtime and hand `AcpHost` a stream pair; command resolution is deliberately NOT done here, the shim resolves it in the filesystem the runtime will read.
-  async launch(request: SpawnRequest): Promise<SpawnedRuntime> {
+  async launch(request: SpawnRequest, target?: { subject: SandboxSubject; cwd?: string }): Promise<SpawnedRuntime> {
     const agentId = request.env.AC_AGENT_ID
     if (!agentId) throw new Error('cluster launch requires AC_AGENT_ID in the runtime environment')
-    // The host key names the pod (§11): a session-bound host launches into the session's own; the agent's host, into the agent's.
-    const subject = request.hostKey ? sandboxSubjectFor(request.hostKey) : agentSandboxSubject(agentId)
+    // The host key names the pod (§11), unless the caller names the environment and where in it to start, as a local VM's placement does.
+    const subject =
+      target?.subject ?? (request.hostKey ? sandboxSubjectFor(request.hostKey) : agentSandboxSubject(agentId))
     if (sandboxSubjectAgentId(subject) !== agentId) {
       throw new Error(
         `cluster launch host key names agent ${sandboxSubjectAgentId(subject)}, its environment ${agentId}`
@@ -71,6 +72,7 @@ export class RemoteShimDriver<L extends Launch = Launch> implements SpawnDriver 
       const runtime = createRemoteRuntime({
         session,
         request,
+        ...(target?.cwd === undefined ? {} : { cwd: target.cwd }),
         log: this.deps.log,
         metrics: this.deps.metrics,
         // The open is asynchronous, so the stage closes when the runtime reports — and only a successful one, or a rejection would sit in runtime-ready latency as a fast success.

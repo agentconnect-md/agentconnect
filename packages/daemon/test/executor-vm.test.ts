@@ -26,13 +26,21 @@ function stubManager() {
     exited: new Promise<void>(() => {}),
     stop: vi.fn()
   }
-  const manager = {
+  const release = vi.fn()
+  const unquiet = vi.fn()
+  const stubbed = {
     prepareEnvironment: async (environment: MicrosandboxEnvironment) => void prepared.push(environment),
     guestShim: (id: string) => (prepared.some((environment) => environment.id === id) ? guest : undefined),
     suspend: async (id: string) => void suspended.push(id),
-    discard: async (id: string) => void discarded.push(id)
-  } as unknown as MicrosandboxManager
-  return { manager, guest, prepared, suspended, discarded }
+    discard: async (id: string) => void discarded.push(id),
+    runtimeEnv: vi.fn(async () => ({ PATH: '/image/bin', NODE_OPTIONS: '--dns-result-order=ipv4first' })),
+    hold: vi.fn(() => release),
+    quiet: vi.fn(() => unquiet),
+    stopFailedEnvironment: vi.fn(),
+    sameEnvironment: vi.fn(() => true)
+  }
+  const manager = stubbed as unknown as MicrosandboxManager
+  return { manager, stubbed, guest, prepared, suspended, discarded, release, unquiet }
 }
 
 /** What the facet does for a hosted prepare: the launcher's own seed into the session HOME, then the environment built from the leaf. */
@@ -231,6 +239,46 @@ describe('the microsandbox strategy launcher', () => {
     expect(order.slice(0, 2)).toEqual(['ready', 'runtimes'])
     expect(prepared[0]!.secrets!.map((secret) => secret.env)).toEqual(['DEEPSEEK_API_KEY'])
     expect(prepared[0]!.hosted!.env.DEEPSEEK_API_KEY).toBe('msb-secret-DEEPSEEK_API_KEY')
+  })
+
+  // session-executors.md §11 step 4: this machine's own VM, started by the same launcher for the in-process entry to bind.
+  it('starts a local VM over what its launch composed, and hands the in-process entry its identity and image environment', async () => {
+    root = await mkdtemp(join(tmpdir(), 'ac-xv-'))
+    const { manager, stubbed, guest, prepared, release, unquiet } = stubManager()
+    const launcher = microsandboxLauncher({ manager: () => manager })
+    const workspaceRoot = join(root, 'agent')
+    const environment: MicrosandboxEnvironment = { id: 'agent/session-example', mounts: [], workspaceRoot }
+    const started = await launcher.start({ environment, log: quiet })
+    expect(prepared).toEqual([environment])
+    // The launch composition made the agent's roots; the launcher creates no hosted layout under it.
+    expect(existsSync(join(workspaceRoot, 'repos'))).toBe(false)
+    expect(started.local).toEqual({
+      identity: guest.token,
+      runtimeEnv: { PATH: '/image/bin', NODE_OPTIONS: '--dns-result-order=ipv4first' },
+      quiet: expect.any(Function),
+      fail: expect.any(Function)
+    })
+    expect(stubbed.runtimeEnv).toHaveBeenCalledWith(environment.id)
+    started.local!.quiet()()
+    expect(stubbed.quiet).toHaveBeenCalledWith(environment.id)
+    expect(unquiet).toHaveBeenCalledOnce()
+    started.local!.fail()
+    expect(stubbed.stopFailedEnvironment).toHaveBeenCalledWith(environment.id)
+    // The local idle judge is the manager's session ttl, which a hold defers; the spec decides whether two descriptors are one VM.
+    launcher.hold!(environment)()
+    expect(stubbed.hold).toHaveBeenCalledWith(environment)
+    expect(release).toHaveBeenCalledOnce()
+    expect(launcher.sameEnvironment!(environment, { ...environment })).toBe(true)
+    expect(stubbed.sameEnvironment).toHaveBeenCalledOnce()
+  })
+
+  it('hands a hosted VM no local surface: its holder is on another machine', async () => {
+    root = await mkdtemp(join(tmpdir(), 'ac-xv-'))
+    const { manager, stubbed } = stubManager()
+    const launcher = microsandboxLauncher({ manager: () => manager, runtimes: () => ({}), hostEnv: { HOME: root } })
+    const started = await startHosted(launcher, root)
+    expect(started.local).toBeUndefined()
+    expect(stubbed.runtimeEnv).not.toHaveBeenCalled()
   })
 
   it('refuses on a machine that runs no microsandbox backend, writes no HOME, and discards nothing there', async () => {

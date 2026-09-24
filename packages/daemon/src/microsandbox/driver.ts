@@ -1,12 +1,12 @@
 import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { link, mkdir, readFile, readdir, readlink, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { dirname, join, posix } from 'node:path'
+import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { ImageHandle, Sandbox, SandboxBuilder, SandboxHandle } from 'microsandbox'
 import type { SecretBuilder } from 'microsandbox/native'
 import { z } from 'zod'
-import type { SpawnDriver, SpawnedRuntime, SpawnRequest } from '../acp/spawn-driver.js'
+import type { SpawnedRuntime } from '../acp/spawn-driver.js'
 import type { SandboxMount } from '../config/config-schema.js'
 import type { EnvironmentDescriptor } from '../execution/strategies.js'
 import { pidAlive } from '../lock.js'
@@ -15,13 +15,11 @@ import { formatErr } from '../daemon/text.js'
 import { shareStartup, awaitStartup, withStartupPhase } from '../session/startup-progress.js'
 import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-runtimes.js'
 import { canonicalPath, contains } from '../runtimes/read-roots.js'
-import { createRemoteRuntime } from '../remote/remote-runtime.js'
-import { SinkRelPathSchema } from '../shim/file-sink.js'
 import { SANDBOX_MCP_BRIDGE_ENTRY } from '../shim/sandbox-paths.js'
 import { assertKvmAvailable } from './kvm.js'
 import { overlayMounts, OVERLAY_BASE_ROOT, OVERLAY_STATE_ROOT, prepareOverlayMounts } from './overlay.js'
 import type { MicrosandboxSecret } from './secrets.js'
-import { startGuestShim, startMicrosandboxShim, type GuestShim, type MicrosandboxShim } from './shim.js'
+import { startGuestShim, type GuestShim } from './shim.js'
 import {
   MICROSANDBOX_NODE,
   imageEnv,
@@ -97,9 +95,8 @@ export interface MicrosandboxManagerOptions {
   lockHolder?: (volume: string) => Promise<LockHolder | undefined>
   log?: Logger
   sockets: { mcp: string; gitcred: string }
-  nextShimGeneration?: (subject: string) => Promise<number>
-  // Overridden by tests; the real one stages this daemon's shim into the VM and dials it.
-  startShim?: typeof startMicrosandboxShim
+  // Overridden by tests; the real one stages this daemon's shim into the VM and starts it.
+  startShim?: typeof startGuestShim
 }
 
 interface EnvironmentState {
@@ -156,12 +153,10 @@ const ImageModelsRecordSchema = z.object({
 })
 const FlatRefSchema = z.object({ manifest_digest: z.string(), artifact_digest: z.string() })
 
-/** Owns VM lifecycle while exposing the existing ACP process-stream contract. */
+/** Owns VM lifecycle; each VM's shim is exposed, and whoever drives the VM binds it (session-executors.md §11 step 4). */
 export class MicrosandboxManager {
   private readonly environments = new Map<string, EnvironmentState>()
-  // One per running VM, up before anything runs in it: the runtime, its two helper tunnels and the workspace channels all ride it.
-  private readonly shims = new Map<string, MicrosandboxShim>()
-  // The same, for a hosted environment: started and left for the executor facet's pipe, with nothing bound here.
+  // One exposed shim per running VM, up before anything runs in it and bound by whoever drives it: the local executor or a holder's pipe (session-executors.md §11 step 4).
   private readonly guests = new Map<string, GuestShim>()
   private preparation?: Promise<K8sRuntimeTable>
   private recovery?: Promise<void>
@@ -291,10 +286,6 @@ export class MicrosandboxManager {
     this.options.log?.info(`microsandbox: image prepared in ${((performance.now() - started) / 1000).toFixed(1)}s`)
   }
 
-  driverFor(environment: MicrosandboxEnvironment): SpawnDriver {
-    return { launch: (request) => this.launch(environment, request) }
-  }
-
   // Warm only the VM and mounts; ACP starts when a caller launches a runtime.
   async prepareEnvironment(environment: MicrosandboxEnvironment): Promise<void> {
     const { state, release } = this.acquire(environment)
@@ -321,22 +312,32 @@ export class MicrosandboxManager {
     await this.prepareEnvironment(environment)
   }
 
-  async withShim<T>(environment: MicrosandboxEnvironment, work: (shim: MicrosandboxShim) => Promise<T>): Promise<T> {
-    const { state, release } = this.acquire(environment)
-    let resolve!: () => void
-    const pending = new Promise<void>((done) => {
-      resolve = done
-    })
-    state.pending.add(pending)
-    try {
-      await awaitStartup(state.sandbox)
-      const shim = this.shims.get(environment.id)
-      if (this.closed || state.closing || state.failed || !shim) throw new Error('microsandbox environment is stopping')
-      return await work(shim)
-    } finally {
-      state.pending.delete(pending)
-      resolve()
-      release()
+  /** Hold the VM against the idle sweep until the returned release, starting it if it is not up; refused while it stops or after it failed. */
+  hold(environment: MicrosandboxEnvironment): () => void {
+    return this.acquire(environment).release
+  }
+
+  /** Whether two descriptors start the same VM: the spec its binding records, never an object's identity. */
+  sameEnvironment(a: MicrosandboxEnvironment, b: MicrosandboxEnvironment): boolean {
+    return a.id === b.id && this.spec(a) === this.spec(b)
+  }
+
+  /** The image's own environment in a running VM, which a complete-env shim gives a runtime nothing of unless it is sent. */
+  async runtimeEnv(id: string): Promise<Record<string, string>> {
+    const state = this.environments.get(id)
+    if (!state) throw new Error(`microsandbox environment ${id} is not running`)
+    return imageEnv(await awaitStartup(state.sandbox))
+  }
+
+  /** Drop the runtime stderr a local VM's shim relays until the returned release. */
+  quiet(id: string): () => void {
+    const state = this.environments.get(id)
+    if (!state) return () => {}
+    state.quiet++
+    let released = false
+    return () => {
+      if (!released) state.quiet--
+      released = true
     }
   }
 
@@ -427,7 +428,7 @@ export class MicrosandboxManager {
     return this.environments.get(id)?.environment
   }
 
-  /** The exposed shim of a hosted environment, which the executor facet pipes a remote holder to (§6). */
+  /** The exposed shim of a running VM: the local executor dials it in process, the facet pipes a remote holder to it (§6). */
   guestShim(id: string): GuestShim | undefined {
     return this.guests.get(id)
   }
@@ -450,7 +451,8 @@ export class MicrosandboxManager {
       [...this.environments.entries()].map(async ([id, state]) => {
         await Promise.all([...state.pending])
         await Promise.all([...state.processes].map((process) => process.stop(STOP_TIMEOUT_MS)))
-        await this.suspend(id)
+        // Drained: a runtime's hold is released by its exit, which a shutdown does not wait for.
+        await this.suspend(id, { drain: true })
       })
     )
     const errors = results.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []))
@@ -1090,7 +1092,7 @@ export class MicrosandboxManager {
       }
       await this.writeBinding(next)
     } catch (error) {
-      await this.stopShims(environment.id).catch(() => {})
+      await this.stopShim(environment.id).catch(() => {})
       await sandbox?.stopWithTimeout(STOP_TIMEOUT_MS).catch(() => {})
       await sandbox?.detach().catch(() => {})
       await this.cleanReplacement(binding).catch((cleanup: unknown) =>
@@ -1110,62 +1112,41 @@ export class MicrosandboxManager {
     await writeFileAtomic(path, JSON.stringify(binding))
   }
 
-  /** End whichever shim an environment has: the one bound here, or the exposed one a hosted environment keeps. */
-  private async stopShims(id: string): Promise<void> {
-    const shim = this.shims.get(id)
-    this.shims.delete(id)
+  private async stopShim(id: string): Promise<void> {
     const guest = this.guests.get(id)
     this.guests.delete(id)
-    await shim?.stop()
     await guest?.stop()
   }
 
-  // Runs inside the VM's start, so nothing can launch into a VM whose shim or helper tunnels are missing.
+  // Runs inside the VM's start, so nothing can launch into a VM whose shim is missing; whoever drives it binds it (§6, §11 step 4).
   private async startShim(environment: MicrosandboxEnvironment, sandbox: Sandbox): Promise<void> {
-    const id = environment.id
-    if (environment.hosted) {
-      // No binding and no complete environment here: the daemon that drives this session is on another machine (§6).
-      this.guests.set(
-        id,
-        await startGuestShim({
-          sdk: this.options.sdk,
-          sandbox,
-          workspaceRoot: environment.workspaceRoot,
-          completeEnv: false,
-          seedEnv: environment.hosted.env,
-          runtimeStderr: (text) => this.options.log?.debug(`microsandbox ${id}: ${text.trimEnd()}`),
-          failed: (error) => {
-            this.options.log?.error(`microsandbox: the hosted shim of ${id} ended — ${error.message}`)
-            // Fenced as a bound shim's loss is: the VM stops, and the executor facet's next prepare starts it again.
-            this.stopFailedEnvironment(id)
-          },
-          ...(this.options.log ? { log: this.options.log } : {})
-        })
-      )
-      return
-    }
-    if (!this.options.nextShimGeneration) throw new Error('microsandbox shim generation allocator is unavailable')
-    const shim = await (this.options.startShim ?? startMicrosandboxShim)({
-      sdk: this.options.sdk,
-      sandbox,
-      subject: id,
-      agentId: id.split('/')[0]!,
-      workspaceRoot: environment.workspaceRoot,
-      generation: await this.options.nextShimGeneration(id),
-      sockets: this.options.sockets,
-      runtimeStderr: (text) => {
-        if (!this.environments.get(id)?.quiet) process.stderr.write(text)
-      },
-      failed: () => {
-        this.options.log?.error(`microsandbox: shim exited for ${id}`)
-        this.stopFailedEnvironment(id)
-      },
-      log: this.options.log
-    })
-    this.shims.set(id, shim)
+    const { id, hosted } = environment
+    this.guests.set(
+      id,
+      await (this.options.startShim ?? startGuestShim)({
+        sdk: this.options.sdk,
+        sandbox,
+        workspaceRoot: environment.workspaceRoot,
+        // A local VM's driver is this daemon, which sends each runtime its whole environment; a hosted one's is on another machine.
+        completeEnv: !hosted,
+        ...(hosted ? { seedEnv: hosted.env } : {}),
+        runtimeStderr: hosted
+          ? (text) => this.options.log?.debug(`microsandbox ${id}: ${text.trimEnd()}`)
+          : (text) => {
+              if (!this.environments.get(id)?.quiet) process.stderr.write(text)
+            },
+        failed: (error) => {
+          this.options.log?.error(`microsandbox: the shim of ${id} ended — ${error.message}`)
+          // The VM stops, and its next use starts it again.
+          this.stopFailedEnvironment(id)
+        },
+        ...(this.options.log ? { log: this.options.log } : {})
+      })
+    )
   }
 
-  private stopFailedEnvironment(id: string): void {
+  /** Fence an environment whose shim or runtime can no longer be trusted: it stops, draining what runs in it. */
+  stopFailedEnvironment(id: string): void {
     const state = this.environments.get(id)
     if (state) state.failed = true
     void this.closeEnvironment(id, false, true).catch((error: unknown) => {
@@ -1246,7 +1227,7 @@ export class MicrosandboxManager {
       const sandbox = await awaitStartup(state.sandbox)
       if (this.closed) throw new Error('microsandbox manager is shutting down')
       options.abort?.throwIfAborted()
-      if (!this.shims.has(environment.id))
+      if (!this.guests.has(environment.id))
         throw new Error(`microsandbox environment ${environment.id} shim is not running`)
       const handle = await openExecStream(this.options.sdk, sandbox, command, args, {
         cwd: options.cwd ?? environment.workspaceRoot,
@@ -1283,63 +1264,6 @@ export class MicrosandboxManager {
     }
   }
 
-  // The runtime starts through the VM's shim, the way a pool member starts one in a pod; the shim resolves the command and its hints in the guest.
-  private async launch(environment: MicrosandboxEnvironment, request: SpawnRequest): Promise<SpawnedRuntime> {
-    const { state, release } = this.acquire(environment)
-    let ready!: () => void
-    const pending = new Promise<void>((resolve) => {
-      ready = resolve
-    })
-    state.pending.add(pending)
-    try {
-      const sandbox = await awaitStartup(state.sandbox)
-      if (this.closed) throw new Error('microsandbox manager is shutting down')
-      for (const file of request.files ?? []) {
-        SinkRelPathSchema.parse(file.relPath)
-        if (!posix.isAbsolute(file.root)) throw new Error('microsandbox materialization root must be absolute')
-        const path = posix.join(file.root, ...file.relPath)
-        await sandbox.fs().mkdir(posix.dirname(path))
-        await sandbox.fs().write(path, file.content)
-        const output = await sandbox.exec('chmod', ['0600', path])
-        if (!output.success) throw new Error('microsandbox could not protect materialized file permissions')
-      }
-      // A process in the VM starts from the image's environment, which the shim's own allowlist would otherwise drop.
-      const env = { ...(await imageEnv(sandbox)), ...request.env }
-      const shim = this.shims.get(environment.id)
-      if (state.failed || state.closing || !shim)
-        throw new Error(`microsandbox environment ${environment.id} is stopping`)
-      const runtime = createRemoteRuntime({
-        session: shim.session,
-        request: { ...request, env },
-        cwd: environment.workspaceRoot,
-        log: { info: (message) => this.options.log?.info(message), warn: (message) => this.options.log?.warn(message) }
-      })
-      if (request.suppressChildStderr) state.quiet++
-      state.processes.add(runtime)
-      let exited = false
-      runtime.onExit(() => {
-        exited = true
-        if (request.suppressChildStderr) state.quiet--
-        state.processes.delete(runtime)
-        release()
-      })
-      return {
-        ...runtime,
-        stop: async (deadlineMs, eofGraceMs) => {
-          await runtime.stop(deadlineMs, eofGraceMs)
-          // A stop the shim never confirmed leaves a runtime nobody can reach, so the VM is fenced as it was for a lost exec stream.
-          if (!exited) this.stopFailedEnvironment(environment.id)
-        }
-      }
-    } catch (error) {
-      release()
-      throw error
-    } finally {
-      state.pending.delete(pending)
-      ready()
-    }
-  }
-
   private async closeEnvironment(id: string, remove: boolean, drain = false): Promise<void> {
     const state = this.environments.get(id)
     if (state?.closing) {
@@ -1355,7 +1279,7 @@ export class MicrosandboxManager {
           await Promise.all([...state.processes].map((process) => process.stop(STOP_TIMEOUT_MS)))
         }
         const binding = await this.readBinding(id)
-        await this.stopShims(id)
+        await this.stopShim(id)
         if (binding) await this.cleanReplacement(binding)
         const handle = await this.find(this.sandboxName(id, binding))
         if (handle) {

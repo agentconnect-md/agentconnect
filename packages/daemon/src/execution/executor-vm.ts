@@ -1,4 +1,4 @@
-// The `microsandbox` strategy on the executor facet (session-executors.md §5, §7): one VM per hosted session, its state in an executor-local mount, its shim reached over agentd's TCP stream.
+// The `microsandbox` strategy (session-executors.md §5, §7, §11): one VM per hosted session, its state in an executor-local mount, and this machine's own VMs through the same launcher; every shim is reached over agentd's TCP stream.
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { RuntimeDef } from '../config/config-schema.js'
@@ -92,7 +92,7 @@ export function hostedEnvironment(
   }
 }
 
-/** The launcher the facet picks for a `microsandbox` prepare; the manager is this machine's one, so VM starts stay serialized with its own. */
+/** The launcher for a `microsandbox` prepare and for this machine's own VMs alike; the manager is this machine's one, so every VM start stays serialized. */
 export function microsandboxLauncher(deps: {
   manager: () => MicrosandboxManager | undefined
   /** The runtimes this machine admits, whose sign-in each hosted HOME is seeded from. */
@@ -119,13 +119,24 @@ export function microsandboxLauncher(deps: {
       // The first hosted VM may be this machine's first: it installs msb and prepares the image before any environment starts.
       await deps.ready?.()
       const manager = required()
-      // The mount source must exist before the VM starts.
-      for (const leaf of ['workspace', 'repos', 'home'])
-        await mkdir(join(environment.workspaceRoot, leaf), { recursive: true, mode: 0o700 })
+      // A hosted mount source must exist before the VM starts; a local launch composition made its own roots.
+      if (environment.hosted)
+        for (const leaf of ['workspace', 'repos', 'home'])
+          await mkdir(join(environment.workspaceRoot, leaf), { recursive: true, mode: 0o700 })
       await manager.prepareEnvironment(environment)
       const guest = manager.guestShim(environment.id)
       if (!guest) throw new Error(`the VM ${environment.id} started no shim`)
+      // Driven from this machine: the dial compares the shim's token, and a runtime starts from the image's environment (§11 step 4).
+      const local = environment.hosted
+        ? undefined
+        : {
+            identity: guest.token,
+            runtimeEnv: await manager.runtimeEnv(environment.id),
+            quiet: () => manager.quiet(environment.id),
+            fail: () => manager.stopFailedEnvironment(environment.id)
+          }
       return {
+        ...(local ? { local } : {}),
         connect: () => guest.connect(),
         // The image's fixed layout, NOT a per-session root: in a VM the shim owns its filesystem namespace, which is why #2155's parameterization was needed for `host` alone (§5).
         runtimeRoot: DEFAULT_SHIM_RUNTIME_ROOT,
@@ -139,6 +150,9 @@ export function microsandboxLauncher(deps: {
     // A release takes the VM and its disposable disks; the session's directory is the facet's own to remove.
     discard: async (id) => {
       await deps.manager()?.discard(id)
-    }
+    },
+    // A local VM's idle judge is this machine's session ttl, which a hold defers; a hosted one's is the facet's linger (§7).
+    hold: (environment) => required().hold(environment),
+    sameEnvironment: (a, b) => deps.manager()?.sameEnvironment(a, b) ?? false
   }
 }

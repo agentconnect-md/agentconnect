@@ -31,8 +31,8 @@ import { ExecutorEndpoints, ExecutorUnavailableError, type ExecutorLaunch } from
 import type { PlacementChoice } from './executor-placement.js'
 import type { ExecutionPlane, PlaneLaunch, PlaneScope, PlaneSpawn } from './plane.js'
 
-/** What a runtime in an executor environment may do. The pool's list without `automerge`: the merge-when-ready watcher runs in the holder process for a spread session (§7). */
-const EXECUTOR_GRANTS: ShimCapability[] = [
+/** What a runtime in an executor environment may do, local or remote. The pool's list without `automerge`: the merge-when-ready watcher runs in the holder process (§7). */
+export const EXECUTOR_GRANTS: ShimCapability[] = [
   'acp',
   'materialize',
   'exec',

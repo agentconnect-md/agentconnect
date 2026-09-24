@@ -1254,10 +1254,11 @@ lack (#2397).
 
 The holder's own machine is another executor, so for a sandboxing strategy a local
 session and a spread one take the same path: the strategy's launcher prepares the
-environment and `RemoteShimDriver` drives the shim in it. Today each strategy has two
-— the local microsandbox VM is keyed, driven and reached for Git differently from a
-hosted one, and a local `srt` session is a direct child with its own policy plumbing —
-and a fix to one does not reach the other.
+environment and `RemoteShimDriver` drives the shim in it. Each strategy had two — the
+local microsandbox VM was keyed, driven and reached for Git differently from a hosted
+one, and a local `srt` session is a direct child with its own policy plumbing — and a
+fix to one did not reach the other. `microsandbox` now has one (step 4); `srt` still has
+two until R1.
 
 The local path reaches the launcher **in process**. It does not relay `prepare`
 through the Control Plane, open a pipe or run the TLS-PSK handshake: a local session
@@ -1265,9 +1266,9 @@ must start and run while the Control Plane is down, as it does today. What is sh
 is everything from the launcher down — environment keying, the shim channel for ACP,
 Git, workspace files and tunnels, the credential preparers, lifecycle.
 
-**`microsandbox` first.** The runtime already starts through the VM's shim both ways
-(§4), and a VM already carries a shim, so converging costs no memory. What still
-differs locally goes, in four steps that each land alone:
+**`microsandbox` first.** The runtime already started through the VM's shim both ways
+(§4), and a VM already carried a shim, so converging cost no memory. What differed
+locally went, in four steps that each landed alone:
 
 1. **Git and workspace files over the shim — landed.** Locally they ran over agentd
    exec, a shell wrapper around Git and a guest Python for renames. They now cross
@@ -1279,8 +1280,8 @@ differs locally goes, in four steps that each land alone:
    (`microsandboxCredentialStep`) serves the local launch composition
    (`microsandbox/launch.ts`) and the hosted-VM launcher, so a hosted VM gets
    placeholder substitution for its executor's own credentials (§8) and a local one
-   keeps it. The local launch still calls the step itself until step 4 routes it through
-   the launcher.
+   keeps it. The local launch composition runs the step and hands its placeholders to
+   the launcher in the descriptor.
 3. **The launcher takes an environment, not a leaf — landed.** A `StrategyLauncher`
    derived everything from `(daemonRoot, sessionLeaf)`. It now starts an
    `EnvironmentDescriptor` — its id, workspace root, mounts, placeholder secrets and
@@ -1295,28 +1296,37 @@ differs locally goes, in four steps that each land alone:
    (`microsandbox/placement.ts`, behind `microsandboxPlacement` and
    `microsandboxContext`) yields the same type: `agent/session-…` for a
    session-isolated session, and `agent/agent` or `agent/<host key>` for a `shared` or
-   retained legacy one, with the agent's own mounts. Local launches do not go through
-   the launcher yet; step 4 passes that descriptor straight through. Identities do not
-   change, so every existing VM, disk and binding is adopted as it is and **nothing is
+   retained legacy one, with the agent's own mounts; step 4 passes that descriptor
+   straight through. Identities do not change, so every existing VM, disk and binding is adopted as it is and **nothing is
    migrated**. The remote contract does not change either: a relayed `prepare` names
    only a session leaf, so an agent-scoped environment is unreachable from another
    machine by construction, and the two id spaces already cannot collide
    (`HOSTED_PREFIX`).
-4. **An in-process executor entry.** `ExecutorPlane` gains a local provider that calls
-   the launcher with the local descriptor, and `RemoteShimDriver` binds the shim as it
-   binds any executor's, with this daemon's own generation allocator. The manager's two
-   shim modes become one: a local VM starts its shim exposed, as a hosted one does
-   (`startGuestShim`), and the bound mode (`startMicrosandboxShim` binding in place)
-   retires with the rest of the local wiring — the manager-driven launch and the local
-   Git runner selection. Every caller of the manager's `withShim` moves with it, not
-   only Git: the workspace-file requester, the skill reads and the skill reconcile in
-   `daemon.ts` need a bound channel when no runtime is running, and take it from the
-   plane's `withEnvironment` (`ensureChannel` binds the shim without starting a
-   runtime and holds the environment against the idle sweep), as a placed session's
-   workspace already does. Lifecycle stays with the environment's owner: a local
-   environment keeps the manager's session idle policy and the workspace model's
-   retirement, and a hosted one keeps the facet's linger, `release` and backstop, which
-   never look at `agent/` ids.
+4. **An in-process executor entry — landed.** `LocalExecutor`
+   (`execution/local-executor.ts`) calls the launcher with the local descriptor, and
+   `RemoteShimDriver` binds the shim as it binds any executor's, with this daemon's own
+   generation allocator. It sits beside `ExecutorPlane` rather than inside it: the two
+   share the driver, the channel and tunnel binders and the grants, and differ exactly
+   where §4 says a backend does — its provider starts the environment in process
+   instead of relaying `prepare`, and its dialer opens the VM's own stream and compares
+   the shim's one-time token instead of crossing a pipe. A local session therefore
+   starts and runs while the Control Plane is down. A launch names its environment by
+   the placement's id, and the generation comes from the store's allocator under that
+   id, as the bound mode's did, so nothing is migrated. The manager's two shim modes
+   became one: every VM starts its shim exposed (`startGuestShim`), a local one with
+   the complete-env claim, and the bound mode (`startMicrosandboxShim`, the `shims`
+   map, the manager-driven launch and `withShim`) is gone. Every caller of `withShim`
+   moved with it — local Git (`microsandbox/git.ts`), the workspace-file requester,
+   skill reads and skill reconcile in `daemon.ts` — and takes a bound channel from the
+   entry's `withEnvironment`, which binds the shim without starting a runtime and holds
+   the environment against the idle sweep for the whole operation. Lifecycle stays with
+   the environment's owner: a local VM keeps the manager's session idle policy, which
+   every runtime and operation holds off through the launcher's `hold`, and the
+   workspace model's retirement; a stopped VM ends its launch, and the next use binds
+   the resumed one at a new generation. A hosted one keeps the facet's linger,
+   `release` and backstop, which never look at `agent/` ids. One behavior follows the
+   executor path: a helper tunnel the shim cannot serve is logged by name and the VM
+   still runs, where the bound mode refused the VM.
 
 **`srt` second**, on §5's launcher from its first version, local and remote at once.
 The local direct SRT launch retires with it — the provider around each runtime, the
@@ -1377,8 +1387,8 @@ commits, including claim, sleep and orphan machinery this design does not need.
 About nine hundred of those lines are the generic layer, already extracted and
 reused as is. The shim, at twice the size of that whole path, is reused unchanged.
 
-**The 2026-09-24 revision** adds the following. S1, S2a, S2b, S2c, S3, M1, M2 and M3
-have landed and the rest have not started. Each lands alone; S1–S3 are one feature,
+**The 2026-09-24 revision** adds the following. S1, S2a, S2b, S2c, S3 and M1–M4 have
+landed and R1 has not started. Each lands alone; S1–S3 are one feature,
 S2 lands in three parts, and M1–M4 precede R1.
 
 | PR  | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -1391,7 +1401,7 @@ S2 lands in three parts, and M1–M4 precede R1.
 | M1  | Local microsandbox Git and workspace files over the shim's channels (§11 step 1).                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | M2  | The credential preparers in the microsandbox launcher (§11 step 2, §8).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | M3  | The launcher takes an environment descriptor instead of a session leaf: hosted and local descriptors, identities unchanged, nothing migrated (§11 step 3).                                                                                                                                                                                                                                                                                                                                                                                               |
-| M4  | The in-process executor entry: local microsandbox launches through it, a local VM's shim starts exposed and `RemoteShimDriver` binds it, every `withShim` caller (Git, workspace files, skills) moves to the plane's `withEnvironment`, and the bound shim mode retires (§11 step 4).                                                                                                                                                                                                                                                                    |
+| M4  | The in-process executor entry: local microsandbox launches through it, a local VM's shim starts exposed and `RemoteShimDriver` binds it, every `withShim` caller (Git, workspace files, skills) moves to the entry's `withEnvironment`, and the bound shim mode retires (§11 step 4).                                                                                                                                                                                                                                                                    |
 | R1  | The `srt` strategy (§5): the launcher, the three changes the probe found, the executor's policy; local `srt` launches through it and the direct SRT launch retires.                                                                                                                                                                                                                                                                                                                                                                                      |
 
 ## 13. Open questions

@@ -1,4 +1,4 @@
-// Real-VM smoke test and measurement for the microsandbox backend and the executor facet's VM strategy; needs Linux with a usable /dev/kvm and a built daemon.
+// Real-VM smoke test and measurement for the microsandbox backend, its local VMs through the in-process executor entry and the facet's hosted ones; needs Linux with a usable /dev/kvm and a built daemon.
 // Usage: pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-microsandbox-runtime.mts <image> [transfer-MiB]
 // It reads the guest socket paths from the launch environment rather than assuming the shim's.
 import assert from 'node:assert/strict'
@@ -12,6 +12,7 @@ import type { SpawnedRuntime } from '../src/acp/spawn-driver.js'
 import { seedSessionHome, startExecutorFacet } from '../src/execution/executor-facet.js'
 import { ExecutorPlane } from '../src/execution/executor-plane.js'
 import { microsandboxLauncher } from '../src/execution/executor-vm.js'
+import { LocalExecutor } from '../src/execution/local-executor.js'
 import type { PlaneLaunch } from '../src/execution/plane.js'
 import { assembleRuntimeLaunch } from '../src/launch/assemble.js'
 import { makeLogger } from '../src/log.js'
@@ -140,8 +141,14 @@ const manager = await installMicrosandbox({
   root,
   config: { image, cpus: 2, memoryMiB: 2048, diskGiB: 8 },
   sockets,
-  log: makeLogger('info'),
-  nextShimGeneration: async () => ++generation
+  log: makeLogger('info')
+})
+// This machine's own VM as the daemon drives it (session-executors.md §11 step 4): the launcher in process, bound at this allocator's generation.
+const local = new LocalExecutor({
+  launcher: microsandboxLauncher({ manager: () => manager }),
+  generations: { nextSandboxGeneration: async () => ++generation },
+  tunnelSocketPath: (tunnel) => sockets[tunnel],
+  log: makeLogger('info')
 })
 let passed = false
 const environmentId = 'smoke/session-000000000000000000000000'
@@ -255,7 +262,9 @@ try {
   })
   const environment = { id: environmentId, ...launch.microsandbox }
   const guestSockets = dirname(launch.env.AC_GITCRED_SOCKET!)
-  const driver = manager.driverFor(environment)
+  const driver = local.driverFor(environment)
+  // Every shim driver routes a launch by its agent, which the environment id names.
+  const launchEnv = { ...launch.env, AC_AGENT_ID: 'smoke' }
   const initialize = `${JSON.stringify({
     jsonrpc: '2.0',
     id: 1,
@@ -266,7 +275,7 @@ try {
   /** Start the image's ACP runtime and time the launch up to its `initialize` reply. */
   const acpRoundTrip = async (): Promise<number> => {
     const started = performance.now()
-    const runtime = await driver.launch({ command: 'claude-agent-acp', args: [], env: launch.env })
+    const runtime = await driver.launch({ command: 'claude-agent-acp', args: [], env: launchEnv })
     const writer = runtime.toAgent.getWriter()
     await writer.write(Buffer.from(initialize))
     writer.releaseLock()
@@ -291,7 +300,7 @@ try {
   const identity = await driver.launch({
     command: probe,
     args: [],
-    env: { ...launch.env, OPENAI_API_KEY: 'inherited-from-the-host' }
+    env: { ...launchEnv, OPENAI_API_KEY: 'inherited-from-the-host' }
   })
   const who = await firstJsonLine(identity)
   await identity.stop(10_000)
@@ -329,7 +338,11 @@ try {
     { cwd: environment.workspaceRoot, env: launch.env, timeoutMs: 60_000 }
   )
   assert.equal(init.exitCode, 0, init.stderr)
-  const git = microsandboxGitRunner({ manager, environment, cwd: repo, env: launch.env }).withEnv({
+  const git = microsandboxGitRunner({
+    run: (work) => local.withEnvironment(environment, work),
+    cwd: repo,
+    env: launch.env
+  }).withEnv({
     ...workspaceGitLocalEnv(),
     GIT_AUTHOR_NAME: 'Smoke',
     GIT_AUTHOR_EMAIL: 'smoke@example.test',
@@ -352,6 +365,7 @@ try {
   step('daemon-git-runs-through-the-shim-fenced-to-the-workspace-root', { ms: summary.gitStatusMs })
 
   await manager.suspend(environment.id)
+  // The stopped VM's shim exited, so its launch went with it: the next one binds the resumed VM at a new generation.
   summary.resumedLaunchToInitializeMs = await acpRoundTrip()
   step('acp-initialize-answered-after-resuming-the-stopped-vm', { ms: summary.resumedLaunchToInitializeMs })
   for (const tunnel of ['mcp', 'gitcred'] as const) {
@@ -483,6 +497,7 @@ try {
   passed = true
 } finally {
   await plane.stop().catch((error: unknown) => console.error(error))
+  await local.stop().catch((error: unknown) => console.error(error))
   await facet.stop().catch((error: unknown) => console.error(error))
   await manager.discard(environmentId).catch((error: unknown) => console.error(error))
   await manager.discard(`executor/${LEAF}`).catch((error: unknown) => console.error(error))
