@@ -81,7 +81,9 @@ export function DecisionEvaluationDetail({
         <div role="alert" className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)">
           {errorParts(error)?.status === 404
             ? t('evaluations.sheet.notFound')
-            : t('evaluations.sheet.error', { message: errorParts(error)?.message ?? String(error) })}
+            : errorParts(error)?.status === 403
+              ? t('evaluations.sheet.forbidden')
+              : t('evaluations.sheet.error', { message: errorParts(error)?.message ?? String(error) })}
         </div>
       )}
       {expired && (

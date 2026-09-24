@@ -941,7 +941,8 @@ describe('github ingress', () => {
       routingId: ROUTING,
       decisionId: DECISION,
       reason: 'unavailable',
-      unavailableReason: 'host_unavailable'
+      unavailableReason: 'host_unavailable',
+      scope: { repoId: String(REPO_ID), family: 'issues' }
     }
 
     beforeEach(() => {
@@ -952,6 +953,7 @@ describe('github ingress', () => {
       h.table.upsert(routed())
       h.table.upsert(routed(peer))
       const selection = { routingId: ROUTING, decisionId: DECISION, reason: 'decision' as const, verdictSeq: 3 }
+      const fired = { ...selection, scope: { repoId: String(REPO_ID), family: 'issues' } }
       h.routeAck = (msg) => ({
         msgId: msg.msgId,
         accepted: true,
@@ -982,7 +984,7 @@ describe('github ingress', () => {
         opts: { ackTimeoutMs: HOOK_ROUTING_ACK_TIMEOUT_MS, maxTries: 1 }
       })
       expect(fires()).toEqual([
-        expect.objectContaining({ hookId: HOOK_B, msgId: `${HOOK_B}:gh-delivery-1`, routeSelection: selection })
+        expect.objectContaining({ hookId: HOOK_B, msgId: `${HOOK_B}:gh-delivery-1`, routeSelection: fired })
       ])
       expect(h.dispatches.find((d) => d.msg.msgId === `${HOOK_B}:gh-delivery-1`)?.daemonId).toBe(DAEMON_B)
       // The selected fire reports as usual; the host copy and the unselected candidate report nothing.

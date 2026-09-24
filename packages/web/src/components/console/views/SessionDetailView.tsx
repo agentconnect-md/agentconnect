@@ -167,7 +167,12 @@ import { useSessionList } from '@/lib/use-session-list'
 import { isFlatSessionView } from '@/lib/session-list-view'
 import { approvalNotice, WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
-import { DecisionResultMarker, useSessionDecisionResults } from '@/components/console/decisions/SessionDecisionResults'
+import {
+  CodeHostDecisionResult,
+  DecisionResultMarker,
+  useSessionDecisionResults
+} from '@/components/console/decisions/SessionDecisionResults'
+import type { DecisionEvaluationSource } from '@/lib/decisions/evaluation-source'
 import { DecisionEvaluationsDrawer } from '@/components/console/decisions/DecisionEvaluationsDrawer'
 import {
   sessionEffortAfterModelChange,
@@ -3393,6 +3398,11 @@ export default function SessionDetailView() {
     judgedSeqs
   )
   const [openDecisionSeq, setOpenDecisionSeq] = useState<number | null>(null)
+  const [openRouting, setOpenRouting] = useState<{
+    source: DecisionEvaluationSource
+    seq: number
+    repoName?: string
+  } | null>(null)
   const memberNameByIdentity = useMemo(() => {
     const names = new Map<string, string>()
     for (const m of members) {
@@ -5535,6 +5545,8 @@ export default function SessionDetailView() {
                                 decisionName={decisionCatalog?.decisions.find((d) => d.id === record.decisionId)?.name}
                                 onOpen={() => setOpenDecisionSeq(record.seq)}
                               />
+                            ) : turn.body?.codehost?.routing ? (
+                              <CodeHostDecisionResult facts={turn.body.codehost} onOpen={setOpenRouting} />
                             ) : null
                           })()}
                       </div>
@@ -5549,6 +5561,16 @@ export default function SessionDetailView() {
                     agentName={session.agentName}
                     initialSeq={openDecisionSeq}
                     onClose={() => setOpenDecisionSeq(null)}
+                  />
+                )}
+                {openRouting && (
+                  <DecisionEvaluationsDrawer
+                    key={`${openRouting.source.key.join('|')}:${openRouting.seq}`}
+                    source={openRouting.source}
+                    channelName={openRouting.repoName}
+                    agentName={session.agentName}
+                    initialSeq={openRouting.seq}
+                    onClose={() => setOpenRouting(null)}
                   />
                 )}
 

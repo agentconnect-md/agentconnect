@@ -4479,6 +4479,7 @@
         "title": "Evaluation details",
         "close": "Close evaluation details",
         "notFound": "This evaluation is no longer available.",
+        "forbidden": "Its details need edit access to every agent this routing chooses from.",
         "error": "Couldn't load this evaluation. {message}",
         "detailsExpired": "Details expired",
         "detailsExpiredBody": "Retention removed this evaluation's input, answer and raw JSON after 24 hours or 20 newer evaluations. The summary is kept, and it is never rebuilt from the current decision or history.",

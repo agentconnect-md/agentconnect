@@ -148,6 +148,15 @@ describe('DecisionEvaluationsDrawer', () => {
     expect(rows()).toHaveLength(6)
   })
 
+  it('keeps the summary and says why when the detail needs edit access the viewer lacks', async () => {
+    const api = decisionMock.createDecisionMockApi()
+    const [, second] = (await api.listEvaluations(conversation)).items
+    vi.spyOn(api, 'getEvaluation').mockRejectedValue(new ApiError('forbidden', 403))
+    await render(api, () => {}, second!.seq)
+    expect(detail()!.textContent).toContain('Skipped')
+    expect(detail()!.textContent).toContain('need edit access to every agent')
+  })
+
   it('loads the next page by cursor', async () => {
     const seed = createDecisionMockSeed()
     const template = seed.evaluations[1]!

@@ -88,6 +88,8 @@ export type CodeHostHostVerdict =
   | { kind: 'held'; reason: string }
   | { kind: 'unavailable'; reason: string }
 
+type RoutedScope = NonNullable<HookRouteSelection['scope']>
+
 type Daemons = () => Pick<RelayDaemonServer, 'get'> | undefined
 
 /** The scope host's connection, when it can read this provider's routed copies. */
@@ -182,7 +184,7 @@ export function createCodeHostRouter<E>(
   const tasks: Promise<unknown>[] = []
 
   // A routed rule spends the per-hook budget only when selected.
-  const fireSelected = (rule: RcHookAssign, selection: HookRouteSelection): void => {
+  const fireSelected = (rule: RcHookAssign, selection: HookRouteSelection, scope: RoutedScope): void => {
     if (!deps.limiter.allow(rule.hookId)) {
       deps.log.info(`${label}: rate-limited ${rule.hookId}:${deliveryKey} (${eventAction})`)
       return
@@ -192,10 +194,10 @@ export function createCodeHostRouter<E>(
       deps.log.info(`${label}: rejected incomplete identity ${rule.hookId}:${deliveryKey}`)
       return
     }
-    delivery.fire(rule, { ...msg, routeSelection: selection }, `routed:${selection.reason}`)
+    delivery.fire(rule, { ...msg, routeSelection: { ...selection, scope } }, `routed:${selection.reason}`)
   }
 
-  const routeScope = async (routingId: string, scopeRules: RcHookAssign[]): Promise<void> => {
+  const routeScope = async (routingId: string, scopeRules: RcHookAssign[], scope: RoutedScope): Promise<void> => {
     const candidates = [...(candidatesByScope.get(routingId)?.values() ?? [])]
     const routing = scopeRules[0]?.routing ?? candidates[0]?.rule.routing
     if (!routing) return
@@ -227,7 +229,7 @@ export function createCodeHostRouter<E>(
     if (verdict.kind === 'unavailable') {
       deps.log.warn(`${label}: routing host unavailable ${routingId}:${deliveryKey} (${verdict.reason})`)
       const selection = hostUnavailableSelection(routing)
-      for (const { rule } of candidates) fireSelected(rule, selection)
+      for (const { rule } of candidates) fireSelected(rule, selection, scope)
       return
     }
     // Only a candidate may fire; dispatchHookFire re-reads and fences every selected rule against the captured one.
@@ -239,7 +241,7 @@ export function createCodeHostRouter<E>(
         continue
       }
       byHook.delete(target.hookId)
-      fireSelected(rule, target.selection)
+      fireSelected(rule, target.selection, scope)
     }
   }
 
@@ -261,6 +263,7 @@ export function createCodeHostRouter<E>(
       void Promise.allSettled(tasks)
         .then(async () => {
           if (family === undefined || delivery.repoId === undefined) return
+          const scope: RoutedScope = { repoId: delivery.repoId, family }
           const current = deps.table.getByCodeHostRepo(provider.provider, delivery.repoId)
           const scopeIds = new Set([
             ...current.flatMap((rule) => (rule.routing ? [rule.routing.routingId] : [])),
@@ -270,7 +273,8 @@ export function createCodeHostRouter<E>(
             [...scopeIds].map((routingId) =>
               routeScope(
                 routingId,
-                current.filter((rule) => rule.routing?.routingId === routingId)
+                current.filter((rule) => rule.routing?.routingId === routingId),
+                scope
               )
             )
           )
