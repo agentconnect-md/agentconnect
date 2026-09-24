@@ -1,14 +1,21 @@
 'use client'
 
-// The `By decision` strip under one conversation row: the saved gate and its status, or the editor that writes it (decisions.md §9.1).
+// A conversation's `By decision` gate: the in-row entry, the status strip under the row, and the rules modal that writes it (decisions.md §9.1).
 
 import Link from 'next/link'
 import { usePathname, useSearchParams } from 'next/navigation'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
-import { defaultConditionFor, emptyConditionFor, gateIssues, useDecisionsPrototype } from '@/lib/decisions/provider'
+import {
+  defaultConditionFor,
+  emptyConditionFor,
+  gateIssues,
+  useDecisionsPrototype,
+  type DecisionBindingDraft
+} from '@/lib/decisions/provider'
 import { bindingSaveError, type BindingSaveError, type GateStatus, type SavedGate } from '@/lib/decisions/binding'
 import type { ChannelDecisionGate, DecisionCondition } from '@agentconnect.md/protocol/decision'
 import type { DecisionConversationRef } from '@agentconnect.md/protocol/decision-api'
@@ -17,12 +24,30 @@ import { DecisionEvaluationsDrawer } from './DecisionEvaluationsDrawer'
 import { DecisionGateTry } from './DecisionGateTry'
 import { DecisionPicker } from './DecisionPicker'
 
+type DecisionEntry = ReturnType<typeof useDecisionsPrototype>['decisions'][number]
+
 /** True when a condition is missing or selects no answer, so a repair still waits on the operator. */
 function selectsNothing(when: DecisionCondition | null): boolean {
   if (!when) return true
   if (when.type === 'boolean') return when.values.length === 0
   if (when.type === 'choice') return Object.keys(when.thresholds).length === 0
   return false
+}
+
+/** The draft an edit of a saved gate opens: another question type restarts empty, and no Decision asks for a pick. */
+function editDraftFor(saved: SavedGate, decision: DecisionEntry | null): DecisionBindingDraft {
+  if (!decision) return { decisionId: null, when: null, phase: 'editing', explicitPick: true }
+  if (decision.question.type !== saved.when.type)
+    return { decisionId: decision.id, when: emptyConditionFor(decision), phase: 'editing', awaitingCondition: true }
+  return { decisionId: decision.id, when: saved.when, phase: 'editing' }
+}
+
+/** Closing the modal unmounts the focused control, so focus returns to the row's entry (`data-gate-entry`). */
+function focusEntry(bindingKey: string) {
+  const entry = [...document.querySelectorAll<HTMLElement>('[data-gate-entry]')].find(
+    (node) => node.dataset.gateEntry === bindingKey
+  )
+  entry?.focus()
 }
 
 function Note({ icon, children }: { icon: string; children: ReactNode }) {
@@ -55,6 +80,96 @@ function saveErrorText(t: ReturnType<typeof useTranslations<'Decisions'>>, error
   return t('binding.saveErrors.failed', { message: error.message })
 }
 
+/** The row's By decision control: the saved gate as a pill that opens its rules, or `+ Decision` to start one. */
+export function DecisionGateEntry({
+  bindingKey,
+  saved,
+  savedName,
+  canWrite: writable,
+  offer,
+  disabled = false,
+  onStop
+}: {
+  bindingKey: string
+  saved: SavedGate | null
+  /** The saved Decision's name as the channel DTO reports it; null when the viewer cannot see it. */
+  savedName?: string | null
+  canWrite: boolean
+  /** Whether a new gate can start here; a saved one always shows. */
+  offer: boolean
+  disabled?: boolean
+  /** Leave By decision for the row's plain trigger. */
+  onStop: () => void | Promise<void>
+}) {
+  const t = useTranslations('Decisions')
+  const { myRole } = useOrgs()
+  const canWrite = writable && myRole !== 'viewer'
+  const { decisions, bindingDrafts, setBindingDraft } = useDecisionsPrototype()
+  const [stopping, setStopping] = useState(false)
+  const draft = bindingDrafts[bindingKey]
+  if (saved) {
+    const decision = decisions.find((entry) => entry.id === saved.decisionId) ?? null
+    const label = decision?.name ?? savedName ?? t('binding.hiddenDecision')
+    const words = { yes: t('condition.yes'), no: t('condition.no'), none: t('condition.noAnswer') }
+    const summary = decision ? conditionSummary(decision.question, saved.when, words) : ''
+    const stop = () => {
+      if (stopping) return
+      setStopping(true)
+      void Promise.resolve(onStop()).finally(() => setStopping(false))
+    }
+    return (
+      <span
+        className={`inline-flex h-7 max-w-full flex-none items-center overflow-hidden rounded-md border border-(--border-default) bg-(--surface-card) ${stopping ? 'opacity-60' : ''}`}
+      >
+        <button
+          type="button"
+          data-gate-entry={bindingKey}
+          title={summary ? `${t('binding.editRules')} · ${summary}` : t('binding.editRules')}
+          aria-label={`${t('binding.editRules')}: ${label}`}
+          aria-haspopup="dialog"
+          disabled={disabled}
+          onClick={() => {
+            if (!draft) setBindingDraft(bindingKey, editDraftFor(saved, decision))
+          }}
+          className="inline-flex h-full min-w-0 cursor-pointer items-center gap-[6px] border-0 bg-transparent px-[7px] hover:bg-(--surface-hover) disabled:cursor-default"
+        >
+          <Icon name="split" size={13} className="flex-none text-(--brand)" />
+          <span className="mono min-w-0 max-w-[200px] truncate text-[11.5px] text-(--text-primary)">{label}</span>
+        </button>
+        {canWrite && (
+          <button
+            type="button"
+            title={t('binding.stop')}
+            aria-label={t('binding.stop')}
+            disabled={disabled || stopping}
+            onClick={stop}
+            className="flex h-full w-6 flex-none cursor-pointer items-center justify-center border-0 border-l border-(--border-subtle) bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-primary) disabled:cursor-default"
+          >
+            <Icon name="x" size={12} />
+          </button>
+        )}
+      </span>
+    )
+  }
+  if (!offer || !canWrite) return null
+  return (
+    <button
+      type="button"
+      data-gate-entry={bindingKey}
+      title={t('binding.addTitle')}
+      aria-haspopup="dialog"
+      disabled={disabled}
+      onClick={() =>
+        setBindingDraft(bindingKey, (current) => current ?? { decisionId: null, when: null, phase: 'editing' })
+      }
+      className="inline-flex h-7 flex-none cursor-pointer items-center gap-[5px] rounded-md border border-dashed border-(--border-strong) bg-transparent pl-[7px] pr-[9px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) hover:border-solid hover:border-(--brand) hover:bg-(--brand-soft) hover:text-(--brand-soft-text) disabled:cursor-default disabled:opacity-60"
+    >
+      <Icon name="plus" size={12} />
+      {t('binding.add')}
+    </button>
+  )
+}
+
 export function DecisionBindingStrip({
   bindingKey,
   conversation,
@@ -74,7 +189,7 @@ export function DecisionBindingStrip({
   canWrite: boolean
   /** The agent this conversation dispatches to — the gate's one fixed target. */
   agentName: string
-  /** The conversation as its row reads, for the Recent evaluations subtitle. */
+  /** The conversation as its row reads, for the modal title and the Recent evaluations subtitle. */
   channelName?: string
   padX: number
   /** The conversation's saved gate, or null while only a draft exists. */
@@ -111,26 +226,23 @@ export function DecisionBindingStrip({
     )
   }, [needsPick, decisions, bindingKey, setBindingDraft])
 
-  // Closing the editor unmounts the focused control, so focus lands on the collapsed strip's Edit (or the strip itself).
-  const rootRef = useRef<HTMLDivElement>(null)
-  const editRef = useRef<HTMLButtonElement>(null)
-  const refocus = useRef(false)
-  useEffect(() => {
-    if (draft || !refocus.current) return
-    refocus.current = false
-    const frame = requestAnimationFrame(() => (editRef.current ?? rootRef.current)?.focus())
-    return () => cancelAnimationFrame(frame)
-  }, [draft])
-  const collapse = () => {
-    refocus.current = true
+  const busy = draft?.phase === 'saving'
+  const collapse = useCallback(() => {
     setBindingDraft(bindingKey, null)
-  }
+    requestAnimationFrame(() => focusEntry(bindingKey))
+  }, [bindingKey, setBindingDraft])
+  const open = draft !== null
+  useEffect(() => {
+    if (!open || busy || historyOpen) return
+    const onKey = (event: KeyboardEvent) => event.key === 'Escape' && collapse()
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [open, busy, historyOpen, collapse])
 
-  // Recent evaluations opens beside the strip, from the collapsed gate or the editor's action row.
   const historyLink = conversation && saved && (
     <button
       type="button"
-      className="lnk self-start gap-[6px] text-[11.5px] font-medium"
+      className="lnk gap-[6px] text-[11.5px] font-medium"
       aria-haspopup="dialog"
       onClick={() => setHistoryOpen(true)}
     >
@@ -147,114 +259,61 @@ export function DecisionBindingStrip({
     />
   )
 
-  const words = { yes: t('condition.yes'), no: t('condition.no'), none: t('condition.noAnswer') }
   const savedDecision = saved ? (decisions.find((entry) => entry.id === saved.decisionId) ?? null) : null
   const savedLabel = savedDecision?.name ?? savedName ?? t('binding.hiddenDecision')
-
-  // A condition of another question type restarts with nothing selected, so the operator must choose; null asks for a Decision.
-  const edit = (decisionId: string | null) => {
-    if (!saved) return
-    if (decisionId === null) {
-      setBindingDraft(bindingKey, { decisionId: null, when: null, phase: 'editing', explicitPick: true })
-      return
-    }
-    if (savedDecision && savedDecision.question.type !== saved.when.type) {
-      const when = emptyConditionFor(savedDecision)
-      setBindingDraft(bindingKey, { decisionId, when, phase: 'editing', awaitingCondition: true })
-      return
-    }
-    setBindingDraft(bindingKey, { decisionId, when: saved.when, phase: 'editing' })
+  const edit = (pickAnother: boolean) => {
+    if (saved) setBindingDraft(bindingKey, editDraftFor(saved, pickAnother ? null : savedDecision))
   }
 
   if (!draft) {
-    if (!saved) return null
-    const warning = status !== null && WARNING_STATUS.has(status)
+    // A ready gate reads from the row's pill alone; any other status explains itself under the row.
+    if (!saved || !status || status === 'ready') return null
+    const warning = WARNING_STATUS.has(status)
     return (
       <div
-        ref={rootRef}
-        tabIndex={-1}
-        className="flex flex-col gap-2 border-b border-(--border-subtle) bg-(--surface-sunken) outline-none"
+        role="status"
+        className="flex flex-col gap-2 border-b border-(--border-subtle) bg-(--surface-sunken)"
         style={{ padding: `8px ${padX}px 10px ${padX + 22}px` }}
       >
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="badge flex-none bg-(--brand-soft) text-(--brand-soft-text)">
-            <Icon name="split" size={11} />
-            {t('byDecision')}
+        <span className="flex flex-wrap items-center gap-2">
+          <span
+            className={`badge flex-none ${
+              warning ? 'bg-(--status-paused-soft) text-(--amber-500)' : 'bg-(--surface-active) text-(--text-secondary)'
+            }`}
+          >
+            {t(`binding.status.${status}`)}
           </span>
           <span className="mono min-w-0 truncate text-[11.5px] text-(--text-primary)">{savedLabel}</span>
-          {savedDecision && (
-            <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              {conditionSummary(savedDecision.question, saved.when, words)}
-            </span>
-          )}
-          <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-            {t('binding.activatesAgent', { agent: agentName })}
+        </span>
+        {warning ? (
+          <span className="flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]">
+            <Icon name={STATUS_ICON[status]} size={14} className="mt-[2px] flex-none" />
+            <span>{t(`binding.statusBody.${status}`, { decision: savedLabel })}</span>
           </span>
-          {status && status !== 'ready' && (
-            <span
-              className={`badge flex-none ${
-                warning
-                  ? 'bg-(--status-paused-soft) text-(--amber-500)'
-                  : 'bg-(--surface-active) text-(--text-secondary)'
-              }`}
-            >
-              {t(`binding.status.${status}`)}
-            </span>
-          )}
-          <span className="flex-1" />
-          {canWrite && (
-            <button
-              ref={editRef}
-              type="button"
-              className="lnk"
-              onClick={() => edit(savedDecision ? saved.decisionId : null)}
-            >
-              {t('edit')}
-            </button>
-          )}
-        </div>
-        {status && status !== 'ready' && (
-          <div
-            role="status"
-            className={
-              warning
-                ? 'flex flex-col gap-2 rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]'
-                : 'flex flex-col gap-2'
-            }
-          >
-            {warning ? (
-              <span className="flex items-start gap-[9px]">
-                <Icon name={STATUS_ICON[status]} size={14} className="mt-[2px] flex-none" />
-                <span>{t(`binding.statusBody.${status}`, { decision: savedLabel })}</span>
-              </span>
-            ) : (
-              <Note icon={STATUS_ICON[status]}>{t(`binding.statusBody.${status}`, { decision: savedLabel })}</Note>
-            )}
-            {status === 'needs_review' && (
-              <span className="flex flex-wrap items-center gap-[14px]">
-                {canWrite && (
-                  <button type="button" className="lnk" onClick={() => edit(savedDecision ? saved.decisionId : null)}>
-                    {t('binding.repair')}
-                  </button>
-                )}
-                {savedDecision && (
-                  <Link href={orgPath(`/decisions/${encodeURIComponent(saved.decisionId)}`)} className="lnk">
-                    {t('binding.openDecision')}
-                  </Link>
-                )}
-              </span>
-            )}
-            {status === 'access_revoked' && canWrite && (
-              <span className="flex flex-wrap items-center gap-[14px]">
-                <button type="button" className="lnk" onClick={() => edit(null)}>
-                  {t('binding.chooseAnother')}
-                </button>
-              </span>
-            )}
-          </div>
+        ) : (
+          <Note icon={STATUS_ICON[status]}>{t(`binding.statusBody.${status}`, { decision: savedLabel })}</Note>
         )}
-        {historyLink}
-        {historyDrawer}
+        {status === 'needs_review' && (
+          <span className="flex flex-wrap items-center gap-[14px]">
+            {canWrite && (
+              <button type="button" className="lnk" onClick={() => edit(false)}>
+                {t('binding.repair')}
+              </button>
+            )}
+            {savedDecision && (
+              <Link href={orgPath(`/decisions/${encodeURIComponent(saved.decisionId)}`)} className="lnk">
+                {t('binding.openDecision')}
+              </Link>
+            )}
+          </span>
+        )}
+        {status === 'access_revoked' && canWrite && (
+          <span className="flex flex-wrap items-center gap-[14px]">
+            <button type="button" className="lnk" onClick={() => edit(true)}>
+              {t('binding.chooseAnother')}
+            </button>
+          </span>
+        )}
       </div>
     )
   }
@@ -273,7 +332,6 @@ export function DecisionBindingStrip({
       ? t('binding.chooseCondition')
       : (localIssues[0]?.message ?? '')
     : t('binding.pickDecision')
-  const busy = activeDraft.phase === 'saving'
   const returnTo = `${pathname}${search.toString() ? `?${search.toString()}` : ''}`
 
   // Every edit drops a failed save's error; a repair keeps waiting on the same Decision so un-toggling disables Save again.
@@ -305,170 +363,203 @@ export function DecisionBindingStrip({
   }
 
   const retryable = activeDraft.error?.kind === 'unsupported' || activeDraft.error?.kind === 'failed'
+  const dialogLabel = channelName ? `${channelName} · ${t('binding.rulesTitleBare')}` : t('binding.rulesTitleBare')
 
-  return (
-    <div
-      className="flex flex-col gap-3 border-b border-(--border-subtle) bg-(--surface-sunken)"
-      style={{ padding: `12px ${padX}px 13px ${padX + 22}px` }}
-    >
-      <fieldset disabled={!canWrite || busy} className="m-0 flex min-w-0 flex-col gap-3 border-0 p-0">
-        <div className="fld">
-          <span className="fldlbl">{t('binding.decision')}</span>
-          <div className="flex flex-wrap items-center gap-[9px]">
-            <DecisionPicker
-              decisions={decisions}
-              value={activeDraft.decisionId}
-              loading={loading}
-              disabled={!canWrite || busy}
-              triggerClassName="block w-[280px] min-w-0 max-w-full max-desktop:w-full"
-              // Re-picking the current Decision keeps the draft, so a repair is never reseeded with defaults.
-              onSelect={(entry) => {
-                if (entry.id !== activeDraft.decisionId) change(entry.id, defaultConditionFor(entry))
-              }}
-              create={{
-                href: `${orgPath('/decisions/new')}?returnTo=${encodeURIComponent(returnTo)}`,
-                onClick: () => beginInlineCreate(bindingKey)
-              }}
-            />
-            {decision && (
-              <>
-                <Link
-                  href={orgPath(`/decisions/${encodeURIComponent(decision.id)}`)}
-                  className="lnk gap-[6px] text-[11.5px] font-medium"
-                >
-                  <Icon name="pencil" size={12} />
-                  {t('viewAndEdit')}
-                </Link>
-                <span className="mono text-[11px] text-(--text-tertiary)">
-                  {t(`types.${decision.question.type}`)} · {decision.model}
-                </span>
-              </>
-            )}
-          </div>
-        </div>
-
-        {decision && when ? (
-          <div className="fld">
-            <span className="fldlbl">{t('binding.triggerWhen')}</span>
-            <DecisionConditionFields
-              question={decision.question}
-              value={when}
-              onChange={(next) => change(decision.id, next)}
-              issues={issues}
-            />
-          </div>
-        ) : decision ? (
-          <div className="fld">
-            <span className="fldlbl">{t('binding.triggerWhen')}</span>
-            <span className="flex flex-wrap items-center gap-[9px]">
-              <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                {t('binding.noInterval')}
-              </span>
-              <button
-                type="button"
-                className="lnk text-[11.5px] font-medium"
-                onClick={() => change(decision.id, defaultConditionFor(decision))}
-              >
-                {t('binding.setInterval')}
-              </button>
-            </span>
-          </div>
-        ) : (
-          <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-            {loading ? t('loading') : decisions.length ? t('binding.pickDecision') : t('binding.noDecisions')}
-          </span>
-        )}
-
-        <div className="fld">
-          <span className="fldlbl">{t('binding.activates')}</span>
-          <span className="mono text-[12.5px] text-(--text-primary)">{agentName}</span>
-        </div>
-      </fieldset>
-
-      {awaiting && <Note icon="info">{invalidText}</Note>}
-
-      {decision && invalidText && !awaiting && (
-        <div className="flex items-start gap-[9px] rounded-md border border-(--red-500) bg-(--status-error-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]">
-          <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
-          <span>{invalidText}</span>
-        </div>
-      )}
-
-      {activeDraft.phase === 'error' && activeDraft.error && (
+  return createPortal(
+    <>
+      <div className="scrim" onClick={busy ? undefined : collapse}>
         <div
-          role="alert"
-          className="flex items-start gap-[9px] rounded-md border border-(--red-500) bg-(--status-error-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]"
+          role="dialog"
+          aria-modal="true"
+          aria-label={dialogLabel}
+          className="modal max-w-[720px]"
+          onClick={(event) => event.stopPropagation()}
         >
-          <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
-          <span>{saveErrorText(t, activeDraft.error)}</span>
-        </div>
-      )}
-
-      {decision && (
-        <div className="flex flex-wrap items-center gap-[14px]">
-          <button
-            type="button"
-            className="lnk gap-[6px] text-[11.5px] font-medium"
-            onClick={() => setHelpOpen((open) => !open)}
-          >
-            <Icon name={helpOpen ? 'chevron-down' : 'chevron-right'} size={12} />
-            {t('binding.howThisWorks')}
-          </button>
-          {conversation && canWrite && (
-            <button
-              type="button"
-              className="lnk gap-[6px] text-[11.5px] font-medium"
-              aria-expanded={tryOpen}
-              onClick={() => setTryOpen((open) => !open)}
-            >
-              <Icon name={tryOpen ? 'chevron-down' : 'chevron-right'} size={12} />
-              {t('binding.tryMessage')}
+          <div className="modalhead">
+            <Icon name="split" size={16} className="flex-none text-(--text-tertiary)" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate font-sans text-[16px] font-semibold leading-normal">
+                {channelName
+                  ? t.rich('binding.rulesTitle', {
+                      channel: channelName,
+                      name: (chunks) => <span className="mono">{chunks}</span>
+                    })
+                  : t('binding.rulesTitleBare')}
+              </span>
+              {agentName && (
+                <span className="mt-[2px] block font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                  {t.rich('binding.rulesSubtitle', {
+                    agent: agentName,
+                    name: (chunks) => <span className="mono text-(--text-secondary)">{chunks}</span>
+                  })}
+                </span>
+              )}
+            </span>
+            <button type="button" className="iconbtn" aria-label={t('cancel')} disabled={busy} onClick={collapse}>
+              <Icon name="x" size={16} />
             </button>
-          )}
-        </div>
-      )}
+          </div>
+          <div className="modalbody flex flex-col gap-3">
+            <fieldset disabled={!canWrite || busy} className="m-0 flex min-w-0 flex-col gap-3 border-0 p-0">
+              <div className="fld">
+                <span className="fldlbl">{t('binding.decision')}</span>
+                <div className="flex flex-wrap items-center gap-[9px]">
+                  <DecisionPicker
+                    decisions={decisions}
+                    value={activeDraft.decisionId}
+                    loading={loading}
+                    disabled={!canWrite || busy}
+                    triggerClassName="block w-[280px] min-w-0 max-w-full max-desktop:w-full"
+                    // Re-picking the current Decision keeps the draft, so a repair is never reseeded with defaults.
+                    onSelect={(entry) => {
+                      if (entry.id !== activeDraft.decisionId) change(entry.id, defaultConditionFor(entry))
+                    }}
+                    create={{
+                      href: `${orgPath('/decisions/new')}?returnTo=${encodeURIComponent(returnTo)}`,
+                      onClick: () => beginInlineCreate(bindingKey)
+                    }}
+                  />
+                  {decision && (
+                    <>
+                      <Link
+                        href={orgPath(`/decisions/${encodeURIComponent(decision.id)}`)}
+                        className="lnk gap-[6px] text-[11.5px] font-medium"
+                      >
+                        <Icon name="pencil" size={12} />
+                        {t('viewAndEdit')}
+                      </Link>
+                      <span className="mono text-[11px] text-(--text-tertiary)">
+                        {t(`types.${decision.question.type}`)} · {decision.model}
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
 
-      {decision && helpOpen && (
-        <div className="flex flex-col gap-1">
-          <Note icon="messages-square">{t('binding.helpMentions')}</Note>
-          <Note icon="clock">{t('binding.helpHistory')}</Note>
-          <Note icon="shield-alert">{t('binding.helpUnavailable')}</Note>
-        </div>
-      )}
+              {decision && when ? (
+                <div className="fld">
+                  <span className="fldlbl">{t('binding.triggerWhen')}</span>
+                  <DecisionConditionFields
+                    question={decision.question}
+                    value={when}
+                    onChange={(next) => change(decision.id, next)}
+                    issues={issues}
+                  />
+                </div>
+              ) : decision ? (
+                <div className="fld">
+                  <span className="fldlbl">{t('binding.triggerWhen')}</span>
+                  <span className="flex flex-wrap items-center gap-[9px]">
+                    <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                      {t('binding.noInterval')}
+                    </span>
+                    <button
+                      type="button"
+                      className="lnk text-[11.5px] font-medium"
+                      onClick={() => change(decision.id, defaultConditionFor(decision))}
+                    >
+                      {t('binding.setInterval')}
+                    </button>
+                  </span>
+                </div>
+              ) : (
+                <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                  {loading ? t('loading') : decisions.length ? t('binding.pickDecision') : t('binding.noDecisions')}
+                </span>
+              )}
+            </fieldset>
 
-      {decision && when && conversation && canWrite && (
-        <DecisionGateTry
-          conversation={conversation}
-          decision={decision}
-          when={when}
-          agentName={agentName}
-          open={tryOpen}
-        />
-      )}
+            {awaiting && <Note icon="info">{invalidText}</Note>}
 
-      {canWrite && (
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            variant="primary"
-            size="sm"
-            className="max-desktop:flex-1"
-            disabled={!!invalidText || busy || !decision}
-            onClick={() => void save()}
-          >
-            {busy ? t('binding.saving') : t('save')}
-          </Button>
-          {retryable && (
-            <Button variant="secondary" size="sm" className="max-desktop:flex-1" onClick={() => void save()}>
-              {t('binding.retry')}
-            </Button>
-          )}
-          <Button variant="secondary" size="sm" className="max-desktop:flex-1" disabled={busy} onClick={collapse}>
-            {t('cancel')}
-          </Button>
-          {historyLink}
+            {decision && invalidText && !awaiting && (
+              <div className="flex items-start gap-[9px] rounded-md border border-(--red-500) bg-(--status-error-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]">
+                <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
+                <span>{invalidText}</span>
+              </div>
+            )}
+
+            {activeDraft.phase === 'error' && activeDraft.error && (
+              <div
+                role="alert"
+                className="flex items-start gap-[9px] rounded-md border border-(--red-500) bg-(--status-error-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]"
+              >
+                <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
+                <span>{saveErrorText(t, activeDraft.error)}</span>
+              </div>
+            )}
+
+            {decision && (
+              <div className="flex flex-wrap items-center gap-[14px]">
+                <button
+                  type="button"
+                  className="lnk gap-[6px] text-[11.5px] font-medium"
+                  aria-expanded={helpOpen}
+                  onClick={() => setHelpOpen((value) => !value)}
+                >
+                  <Icon name={helpOpen ? 'chevron-down' : 'chevron-right'} size={12} />
+                  {t('binding.howThisWorks')}
+                </button>
+                {conversation && canWrite && (
+                  <button
+                    type="button"
+                    className="lnk gap-[6px] text-[11.5px] font-medium"
+                    aria-expanded={tryOpen}
+                    onClick={() => setTryOpen((value) => !value)}
+                  >
+                    <Icon name={tryOpen ? 'chevron-down' : 'chevron-right'} size={12} />
+                    {t('binding.tryMessage')}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {decision && helpOpen && (
+              <div className="flex flex-col gap-1">
+                <Note icon="messages-square">{t('binding.helpMentions')}</Note>
+                <Note icon="clock">{t('binding.helpHistory')}</Note>
+                <Note icon="shield-alert">{t('binding.helpUnavailable')}</Note>
+              </div>
+            )}
+
+            {decision && when && conversation && canWrite && (
+              <DecisionGateTry
+                conversation={conversation}
+                decision={decision}
+                when={when}
+                agentName={agentName}
+                open={tryOpen}
+              />
+            )}
+
+            <div className="flex flex-wrap items-center gap-[9px]">
+              {canWrite && (
+                <>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    className="max-desktop:flex-1"
+                    disabled={!!invalidText || busy || !decision}
+                    onClick={() => void save()}
+                  >
+                    {busy ? t('binding.saving') : t('save')}
+                  </Button>
+                  {retryable && (
+                    <Button variant="secondary" size="sm" className="max-desktop:flex-1" onClick={() => void save()}>
+                      {t('binding.retry')}
+                    </Button>
+                  )}
+                </>
+              )}
+              <Button variant="secondary" size="sm" className="max-desktop:flex-1" disabled={busy} onClick={collapse}>
+                {canWrite ? t('cancel') : t('binding.close')}
+              </Button>
+              {historyLink}
+            </div>
+          </div>
         </div>
-      )}
+      </div>
       {historyDrawer}
-    </div>
+    </>,
+    document.body
   )
 }

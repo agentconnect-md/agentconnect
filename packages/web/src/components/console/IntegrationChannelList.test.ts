@@ -498,8 +498,10 @@ describe('IntegrationChannelList default dispatch control', () => {
     }
   })
 
-  it('names the default only on the mobile row, where a bare mark says nothing', () => {
-    expect(render('alice')).toContain('desktop:hidden')
+  it('names the default beside its mark on a chat row', () => {
+    const html = render('alice')
+    expect(html).toContain('>Alice</span>')
+    expect(html).not.toContain('desktop:hidden')
   })
 })
 

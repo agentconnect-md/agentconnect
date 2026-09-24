@@ -20,9 +20,8 @@ Stage 2 shared-bot Routing screen described below.
 | `packages/web/src/lib/decisions/routing-draft.ts`                  | The Routing draft, its validation, Score order and gaps, new rules, and the load/save reducer                                                   |
 | `packages/web/src/lib/decisions/routing-roster.ts`                 | `useRoutingRoster`: the shared bot, its agents and availability, and its conversations, from console or mock data                               |
 | `packages/web/src/lib/decisions/routing-evaluations.ts`            | Routing Recent evaluations projections: outcome tones, target and matched-rule text                                                             |
-| `packages/web/src/components/console/decisions/routing/`           | The Routing editor, Test routing, and routing Recent evaluations with their detail sheet                                                        |
-| `packages/web/src/components/console/views/BotRoutingView.tsx`     | A shared bot's Configuration → Routing page (`/integrations/bots/:botId/routing`)                                                               |
-| `packages/web/src/components/console/decisions/`                   | The condition editor, the per-conversation `By decision` binding strip with gate Try and Recent evaluations, and the usage list                 |
+| `packages/web/src/components/console/decisions/routing/`           | The shared-bot By decision rules modal, Test routing, and routing Recent evaluations with their detail sheet                                    |
+| `packages/web/src/components/console/decisions/`                   | The condition editor, the per-conversation `By decision` pill and rules modal with gate Try and Recent evaluations, and the usage list          |
 | `packages/web/src/components/console/views/DecisionsView.tsx`      | The Decisions list (`/decisions`)                                                                                                               |
 | `packages/web/src/components/console/views/DecisionEditorView.tsx` | One decision's editor and example sandbox (`/decisions/new`, `/decisions/:id`)                                                                  |
 
@@ -185,7 +184,7 @@ state resets on an organization switch so a draft or deletion dialog cannot carr
   editing authority and the organization role gate actions. Used by counts conversation
   gates and agent tools. Usage lists link a gate to its agent's Integrations tab, an agent
   tool to `?tab=tools`, model selection to `?tab=config`, and shared-bot routing to the bot's
-  Routing page. A delete refused with 409 lists the returned usages plus "N more you cannot see"
+  configuration (`/integrations?bot=`). A delete refused with 409 lists the returned usages plus "N more you cannot see"
   from `hiddenUsageCount`.
 - `/decisions/new` and `/decisions/:id` edit the typed question, model, and Team visibility.
   Unchanged sharing is omitted from PATCH. Saving needs no online daemon.
@@ -199,9 +198,13 @@ state resets on an organization switch so a draft or deletion dialog cannot carr
   existing credential/token attribution contract, but does not execute that agent.
 - Group conversation rows on single-owner bots offer **By decision** where the platform's
   channel-list `triggers` allow it (Linear omits it, matching the CP's `ownerAsDefault`
-  refusal). The strip reads Decision → Trigger when → Activates: [the row's agent]. Save
-  sends trigger and gate in one PATCH; Cancel restores the saved row; switching to
-  Off/Mention/Any sends the ordinary trigger PATCH, which clears the gate. Drafts live in
+  refusal). A row without a gate offers **+ Decision**; a saved gate reads as a pill naming
+  the Decision (its condition in the title), and its × returns the row to the platform's
+  first plain trigger with the ordinary trigger PATCH, which clears the gate. While a gate or
+  a shared bot's routing owns the trigger, the row's settings popover keeps Respond to listed
+  but inert ("Respond to unavailable") and its button reads the session mode alone. Either opens
+  the **[channel] · By decision rules** modal: Decision → Trigger when, for the row's agent.
+  Save sends trigger and gate in one PATCH; Cancel restores the saved row. Drafts live in
   the provider, keyed by organization, bot, and conversation, so an inline Create decision
   returns to the draft with the new Decision selected, and a failed save keeps the draft
   (and the created Decision) for Retry. Save errors map to field issues (400), no
@@ -209,12 +212,12 @@ state resets on an organization switch so a draft or deletion dialog cannot carr
   message (409 `DECISION_UNSUPPORTED_CONSUMER`).
 - A saved gate shows its status: Pending sync, Needs review (Repair condition and Open
   decision), Daemon offline, Unsupported, or Access revoked (Choose another decision);
-  Ready has no banner. Shared-bot rows do not offer By decision; a shared-bot routing
-  binding reads **Managed by [bot] routing**, linked to the bot's Routing page.
+  Ready has no banner; any other status explains itself under the row. Shared-bot rows
+  do not offer a gate; their By decision is the bot's routing (below).
 - **Try a message** in the gate editor runs `previewGate` on the conversation, not on a
   daemon the operator picks: the CP resolves the consumer's serving daemon, evaluates the
-  draft on it, and applies the draft condition. The sample is ordered history lines with
-  sender ids plus the current message. The result reads answer → condition → Would trigger
+  draft on it, and applies the draft condition. The sample is one message, with no sample
+  history. The result reads answer → condition → Would trigger
   [target] or Would skip; a provider failure shows Evaluation unavailable, continuing to the
   target, never a skip; Off, Unsupported, and Needs review show Not applied with no model
   call. Any edit to the Decision, condition, or sample dims the result and marks it stale.
@@ -226,32 +229,38 @@ state resets on an organization switch so a draft or deletion dialog cannot carr
   sender ids, requested and actual model, usage, context, answer, and evidence. Once retention
   stripped the bodies it says **Details expired** and keeps the summary. 503 reads as an
   offline daemon or, for `DAEMON_UPGRADE_REQUIRED`, an upgrade prompt.
-- Explicit mock mode runs the same strip against local prototype gates, using the real
+- Explicit mock mode runs the same gate against local prototype gates, using the real
   pure matcher with canned answers.
 
-## Routing screen
+## Shared-bot routing
 
-`/integrations/bots/:botId/routing` is a shared bot's Configuration → Routing page. It is
-entered from the bot's expanded row on Integrations (a Routing link with the routed
-channel count), from a Decision's shared-bot usage link, and from **Managed by [bot]
-routing** on a routed channel row. A bot that is not shared says so.
+A shared bot's routing has no page of its own. Its rules open in place from a conversation
+row, on an agent's Integrations tab or in the bot's roster on Integrations (whose column then
+reads Dispatch): the row's dispatch control reads the routed Decision (or the default agent),
+and its menu lists **Send every message to** the bot's agents, then **Or pick by decision**
+with the routed Decision's pill (edit, × to stop) or **+ Decision**. Stop saves the bot's
+routing without the row, handing it back to mentions with its default agent kept. A
+Decision's shared-bot usage links to the bot's configuration.
 
-- The header keeps the bot identity, its agents, the Integrations / bot / Configuration /
-  Routing location, the saved status, and **Recent evaluations**. Banners cover Pending
-  sync (saved, not yet applied), Needs review with Open decision, missing credentials
-  with a link to provider keys, an offline host, an unsupported host or relay, no
-  connected agents, paused routing, and read-only access.
-- The form reads Enabled, Decision (picker, type and model, View/Edit, inline Create
-  decision), Channels (searchable group channels; Off rows disabled with an enable link;
-  gate rows noted; the count and names Save applies to), Rules, Otherwise, notes, and the
-  footer. Removing a saved channel opens its replacement trigger (no preselection) and
-  optional default agent inline; Save waits for it.
-- Rules are numbered When / Then rows. When reuses `DecisionConditionFields`; Then is
-  Route to agent with a same-bot agent picker (identity and availability) or Do not
+- The **[channel] · By decision rules** modal names the bot and the agents it picks
+  among, the saved status when it is not Ready, and read-only access. Opening it from a row
+  puts that row in the draft's scope ("Save to apply By decision rules in this channel");
+  the rules are the bot's own, so the modal names the other routed channels they apply to.
+- The form reads Routing enabled (pause or resume the bot's routing), Decision (picker, type
+  and model, View and edit, inline Create decision — its return URL names the row, which
+  reopens on the kept draft),
+  the rules, and Otherwise, then How this works, Try a message, Save, Cancel, Recent
+  evaluations, and Open bot configuration.
+- A Choice or Boolean question whose rules each name one distinct answer reads as an answer
+  table: each answer with its description, a Choice minimum probability, and where it
+  triggers (an agent, Do not trigger, or Use Otherwise, which leaves the answer uncovered).
+  Otherwise is the table's last row: each channel's default agent, or Do not trigger.
+- Any other rule set (every Score question) is numbered When / Then rows. When reuses
+  `DecisionConditionFields`; Then is Route to agent with a same-bot agent picker (identity and availability) or Do not
   activate. Score rows sort by lower bound and uncovered ranges read "… uses Otherwise".
   Both rows of a duplicated key or an overlapping interval are marked, as the API does.
   A removed target stays as Target removed; an unavailable one keeps its selection.
-  Otherwise is fixed last and names each channel's resolved default.
+  Otherwise follows the rules.
 - The draft lives in `DecisionsPrototypeProvider` (`routingDrafts`), so an inline Create
   decision returns with the new Decision selected and a failed save keeps both the draft
   and the Decision. New configurations start as an unsaved draft with Otherwise = Do not
@@ -270,11 +279,22 @@ routing** on a routed channel row. A bot that is not shared says so.
   Decision and routing snapshots, the target constraint, input and history, model and
   usage, and each target's disposition, or **Details expired**.
 
+## Pull-request reviewers (UI preview)
+
+A watched GitHub repository's pull-request row offers **+ Decision** (every PR otherwise
+goes to all agents) or the reviewer Decision's pill with ×. It opens the
+**[repo] · By decision rules** modal with the same answer table as shared-bot routing, whose
+targets are the organization's visible agents and whose Otherwise is Every agent or Do not
+trigger. While a Decision is set, the row's @-mention trigger is unavailable (a mention
+names its agent directly), and a row on @-mention cannot start one. No consumer stores or
+evaluates it yet: the rules live in the browser tab (`code-host-review-preview.ts`) and the
+modal says so.
+
 Focused validation:
 
 ```sh
 pnpm --filter @agentconnect.md/protocol exec vitest run src/decision.test.ts src/frames/decision.test.ts --maxWorkers=1
 pnpm --filter @agentconnect.md/daemon exec vitest run test/decision-evaluations.test.ts test/decision-router.test.ts --maxWorkers=1
-pnpm --filter @agentconnect.md/web exec vitest run src/protocol-imports.leaf.test.ts src/icon-names.test.ts src/lib/decisions src/lib/integration-row.test.ts src/components/console/decisions src/components/console/IntegrationChannelList.decisions.test.tsx src/components/console/views/DecisionsView.test.tsx src/components/console/views/DecisionEditorView.test.tsx src/components/console/views/BotRoutingView.test.tsx src/components/console/views/IntegrationsView.routing.test.tsx --maxWorkers=1
+pnpm --filter @agentconnect.md/web exec vitest run src/protocol-imports.leaf.test.ts src/icon-names.test.ts src/lib/decisions src/lib/integration-row.test.ts src/components/console/decisions src/components/console/IntegrationChannelList.decisions.test.tsx src/components/console/views/DecisionsView.test.tsx src/components/console/views/DecisionEditorView.test.tsx src/components/console/IntegrationChannelList.routing.test.tsx --maxWorkers=1
 pnpm --filter @agentconnect.md/web i18n:check
 ```

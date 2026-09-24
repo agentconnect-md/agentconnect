@@ -216,7 +216,9 @@ export type RoutingEvent =
   | { type: 'EDIT'; patch: Partial<RoutingDraft> | ((draft: RoutingDraft) => RoutingDraft) }
   | { type: 'ADD_RULE'; rule: RoutingDraftRule }
   | { type: 'REMOVE_RULE'; id: string }
+  | { type: 'RESET'; detail: DecisionRoutingDetail }
   | { type: 'TOGGLE_CHANNEL'; channelId: string }
+  | { type: 'ADD_CHANNEL'; channelId: string }
   | { type: 'SET_REMOVAL'; channelId: string; removal: RoutingRemoval }
   | { type: 'SELECT_DECISION'; decisionId: string }
   | { type: 'CANCEL' }
@@ -253,6 +255,16 @@ export function routingReducer(state: RoutingEditorState, event: RoutingEvent): 
         lastAttempt: null,
         error: null
       }
+    case 'RESET':
+      // A fresh editing session: the latest saved state, with no edit or attempt carried over from another row.
+      if (state.phase === 'saving') return state
+      return {
+        phase: 'editing',
+        saved: event.detail,
+        draft: draftFromDetail(event.detail),
+        lastAttempt: null,
+        error: null
+      }
     case 'LOAD_FAIL':
       return draft ? state : { ...state, phase: 'load_error', error: event.error }
     case 'EDIT':
@@ -275,6 +287,12 @@ export function routingReducer(state: RoutingEditorState, event: RoutingEvent): 
           removals
         })
       }
+      const { [event.channelId]: _restored, ...removals } = draft.removals
+      return edited(state, { ...draft, channelIds: [...draft.channelIds, event.channelId], removals })
+    }
+    case 'ADD_CHANNEL': {
+      // Idempotent, unlike a toggle, so a repeated dispatch never takes the channel back out.
+      if (!draft || draft.channelIds.includes(event.channelId)) return state
       const { [event.channelId]: _restored, ...removals } = draft.removals
       return edited(state, { ...draft, channelIds: [...draft.channelIds, event.channelId], removals })
     }

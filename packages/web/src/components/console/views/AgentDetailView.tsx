@@ -22,6 +22,7 @@ import {
   isSetPlacementKind,
   MOCK_MODE,
   MOCK_PREFIX,
+  runtimeLabel,
   status,
   supportsModes,
   workspaceStatus,
@@ -62,6 +63,13 @@ import { AgentSecretsCard } from '@/components/console/AgentSecretsCard'
 import { AgentToolsCard } from '@/components/console/AgentToolsCard'
 import { AgentSkillsCard } from '@/components/console/AgentSkillsCard'
 import { AgentDecisionsCard } from '@/components/console/AgentDecisionsCard'
+import { CodeHostDecisionEntry } from '@/components/console/decisions/routing/CodeHostDecisionEntry'
+import {
+  codeHostReviewKey,
+  setCodeHostReviewDecision,
+  useCodeHostReviewDecisions
+} from '@/lib/decisions/code-host-review-preview'
+import type { RosterAgent } from '@/lib/decisions/routing-roster'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { IntegrationChannelList, roomGlyph, rowLabel } from '@/components/console/IntegrationChannelList'
@@ -261,6 +269,7 @@ function rowSettingsTitle(hook: HookDto): string {
 
 export default function AgentDetailView() {
   const t = useTranslations('Agents.detail')
+  const tRouting = useTranslations('Decisions.routing')
   const { decisions = [] } = useOptionalDecisionsPrototype() ?? {}
   const permissionT = useTranslations('Common.permissionModes')
   const { orgPath, activeOrg } = useOrgs()
@@ -354,6 +363,19 @@ export default function AgentDetailView() {
   const gitlabHooks = codeHostHooks.gitlab
   // One flat row per subscription still — the grouping is only the ORDER (a repo's rows adjacent) plus its add offer.
   const githubRows = orderedGithubHookRows(githubHooks)
+  // Pull-request reviewers By decision (UI preview): any visible agent can be picked, this one first.
+  const reviewDecisions = useCodeHostReviewDecisions()
+  const reviewKey = (h: HookDto) => codeHostReviewKey(activeOrg?.id, h.repoFullName ?? h.name)
+  const reviewerCandidates: RosterAgent[] = [...agents]
+    .sort((a, b) => Number(b.id === id) - Number(a.id === id))
+    .map((agent) => ({
+      id: agent.id,
+      name: agentLabel(agent),
+      available: agent.placementReady ?? agent.status === 'online',
+      icon: agent.icon ?? null,
+      runtime: agent.runtime || agent.model || ''
+    }))
+  const reviewedByDecision = (h: HookDto) => githubHookFamily(h) === 'pull_request' && reviewDecisions.has(reviewKey(h))
   const gitlabRows = orderedGitlabHookRows(gitlabHooks)
   const giteaHooks = codeHostHooks.gitea
   const giteaRows = orderedGiteaHookRows(giteaHooks)
@@ -864,12 +886,15 @@ export default function AgentDetailView() {
   // editor). Falls back to the static labels when the daemon reports no catalog.
   const defaultModelText = agentModelDisplay(capabilitySource, da.runtime, da.model)
   const selectedDecision = decisions.find((item) => item.id === da.modelSelection?.decisionId)
+  const byDecisionBadge = (
+    <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
+      <Icon name="split" size={11} />
+      {t('modelByDecision')}
+    </span>
+  )
   const modelText = da.modelSelection ? (
     <>
-      <span className="inline-flex items-center gap-1 rounded-full bg-(--brand-soft) px-2 py-1 text-[12px] font-semibold text-(--brand-soft-text)">
-        <Icon name="git-branch" size={13} />
-        {t('modelByDecision')}
-      </span>
+      {byDecisionBadge}
       {selectedDecision && <span>{selectedDecision.name}</span>}
     </>
   ) : (
@@ -1310,19 +1335,42 @@ export default function AgentDetailView() {
                     </div>
                   </div>
                 )}
-                <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
-                  <span className="text-[14px] text-(--text-tertiary) desktop:text-[13px]">
-                    {t('basics.runtimeAndModel')}
-                  </span>
-                  <span className="inline-flex items-center gap-2 text-[12.5px]">
-                    {!da.modelSelection && (
-                      <span className="imark h-6 w-6">
-                        <AgentMark model={da.runtime} />
+                {/* A fixed runtime reads as its runtime and model; By decision picks both per session, so it names the Decision. */}
+                {da.modelSelection ? (
+                  <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
+                    <span className="text-[14px] text-(--text-tertiary) desktop:text-[13px]">
+                      {t('basics.runtimeAndModel')}
+                    </span>
+                    <span className="inline-flex min-w-0 items-center gap-[7px]">
+                      {byDecisionBadge}
+                      {selectedDecision && (
+                        <span className="truncate font-sans text-[12.5px] font-medium leading-normal">
+                          {selectedDecision.name}
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
+                      <span className="text-[14px] text-(--text-tertiary) desktop:text-[13px]">
+                        {t('basics.runtime')}
                       </span>
-                    )}
-                    {modelText}
-                  </span>
-                </div>
+                      <span className="inline-flex items-center gap-[7px] font-sans text-[12.5px] font-medium leading-normal">
+                        <span className="imark h-4 w-4">
+                          <AgentMark model={da.runtime} />
+                        </span>
+                        {runtimeLabel(da.runtime)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
+                      <span className="text-[14px] text-(--text-tertiary) desktop:text-[13px]">
+                        {t('basics.model')}
+                      </span>
+                      <span className="mono text-[12.5px]">{defaultModelText}</span>
+                    </div>
+                  </>
+                )}
                 <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
                   <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
                     {t('basics.created')}
@@ -2137,15 +2185,30 @@ export default function AgentDetailView() {
                               <span className="ml-auto w-[56px] flex-none whitespace-nowrap text-right font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
                                 {ghRowPill(h)}
                               </span>
+                              {githubHookFamily(h) === 'pull_request' && (
+                                <CodeHostDecisionEntry
+                                  storeKey={reviewKey(h)}
+                                  repo={h.repoFullName ?? h.name}
+                                  agents={reviewerCandidates}
+                                  blocked={triggerModeOf(h) === 'mention'}
+                                />
+                              )}
                               {/* Trigger — the same ⚡ dropdown the IM channel rows carry, mention last. */}
                               <TriggerSelect
                                 className="w-[126px] flex-none"
                                 // Per family: the label cadence exists on issues alone, and a deployment reads its own copy.
-                                options={ghRowTriggerModes(h).map((mode) => ({
-                                  value: mode,
-                                  label: GH_TRIGGER_PILL[mode],
-                                  hint: githubTriggerTooltip(mode, da.name, githubHookFamily(h) ?? undefined)
-                                }))}
+                                // A reviewer Decision owns who reviews, so a mention (which names the agent) is unavailable.
+                                options={ghRowTriggerModes(h).map((mode) => {
+                                  const off = mode === 'mention' && reviewedByDecision(h)
+                                  return {
+                                    value: mode,
+                                    label: GH_TRIGGER_PILL[mode],
+                                    hint: off
+                                      ? tRouting('codeHost.mentionOff')
+                                      : githubTriggerTooltip(mode, da.name, githubHookFamily(h) ?? undefined),
+                                    disabled: off
+                                  }
+                                })}
                                 value={triggerModeOf(h)}
                                 onChange={(mode) => void setHookCadence(h, mode)}
                                 ariaLabel={`Trigger for ${h.repoFullName ?? h.name} ${ghRowPill(h)}`}
@@ -2170,7 +2233,16 @@ export default function AgentDetailView() {
                                       icon: 'rotate-ccw-clock' as const,
                                       label: hookRunsFor === h.id ? 'Hide recent deliveries' : 'Recent deliveries',
                                       onClick: () => setHookRunsFor(hookRunsFor === h.id ? null : h.id)
-                                    }
+                                    },
+                                    ...(reviewedByDecision(h)
+                                      ? [
+                                          {
+                                            icon: 'split' as const,
+                                            label: tRouting('codeHost.stopMenu'),
+                                            onClick: () => setCodeHostReviewDecision(reviewKey(h), null)
+                                          }
+                                        ]
+                                      : [])
                                   ]}
                                 />
                                 <button

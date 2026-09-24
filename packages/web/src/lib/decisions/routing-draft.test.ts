@@ -48,6 +48,28 @@ const run = (events: RoutingEvent[], state: RoutingEditorState = INITIAL_ROUTING
 const members = new Set(['a', 'b'])
 
 describe('routing draft', () => {
+  it('resets to the latest saved state, dropping an edit and a failed attempt from another row', () => {
+    const edited = run([
+      { type: 'LOADED', detail: detail() },
+      { type: 'ADD_CHANNEL', channelId: 'C3' },
+      { type: 'SAVE_START', body: { config: detail().config!, channelIds: ['C1', 'C2', 'C3'], removals: [] } },
+      { type: 'SAVE_FAIL', error: new Error('refused') }
+    ])
+    const reset = run([{ type: 'RESET', detail: detail({ channelIds: ['C1'] }) }], edited)
+    expect(reset.phase).toBe('editing')
+    expect(reset.lastAttempt).toBeNull()
+    expect(reset.draft!.channelIds).toEqual(['C1'])
+  })
+
+  it('adds a channel once however often the addition is dispatched', () => {
+    const state = run([
+      { type: 'LOADED', detail: detail() },
+      { type: 'ADD_CHANNEL', channelId: 'C3' },
+      { type: 'ADD_CHANNEL', channelId: 'C3' }
+    ])
+    expect(state.draft!.channelIds).toEqual(['C1', 'C2', 'C3'])
+  })
+
   it('starts a new configuration as an unsaved draft whose Otherwise is Do not activate', () => {
     const state = run([{ type: 'LOADED', detail: detail({ config: null, channelIds: [] }) }])
     expect(state.draft).toEqual({

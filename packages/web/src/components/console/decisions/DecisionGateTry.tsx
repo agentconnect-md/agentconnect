@@ -10,7 +10,6 @@ import { errorParts } from '@/lib/decisions/binding'
 import type { DecisionAnswer, DecisionCondition, DecisionDefinition } from '@agentconnect.md/protocol/decision'
 import type { DecisionConversationRef, DecisionGatePreviewResult } from '@agentconnect.md/protocol/decision-api'
 import { conditionSummary } from './DecisionConditionFields'
-import { DecisionSampleFields, type SampleLine } from './DecisionSampleFields'
 
 function Row({ label, value }: { label: ReactNode; value: ReactNode }) {
   return (
@@ -63,7 +62,6 @@ export function DecisionGateTry({
   const t = useTranslations('Decisions')
   const { api } = useDecisionsPrototype()
   const words = { yes: t('condition.yes'), no: t('condition.no'), none: t('condition.noAnswer') }
-  const [history, setHistory] = useState<SampleLine[]>([])
   const [current, setCurrent] = useState('')
   const [running, setRunning] = useState(false)
   const [failure, setFailure] = useState<Failure | null>(null)
@@ -82,10 +80,9 @@ export function DecisionGateTry({
         model: decision.model,
         question: decision.question,
         when,
-        history,
         current
       }),
-    [decision.id, decision.updatedAt, decision.providerId, decision.model, decision.question, when, history, current]
+    [decision.id, decision.updatedAt, decision.providerId, decision.model, decision.question, when, current]
   )
   const stale = result !== null && result.signature !== signature
 
@@ -97,12 +94,8 @@ export function DecisionGateTry({
     try {
       const preview = await api.previewGate(conversation, {
         decisionBinding: { type: 'gate', decisionId: decision.id, when },
-        state: {
-          history: history
-            .filter((line) => line.text.trim())
-            .map((line) => ({ sender: line.sender.trim() || '@user', text: line.text })),
-          currentMessage: { text: current.trim() }
-        }
+        // The rules modal tries one message on its own, with no sample history.
+        state: { history: [], currentMessage: { text: current.trim() } }
       })
       setResult({ signature: ran, sample: current.trim(), preview })
     } catch (cause) {
@@ -133,14 +126,24 @@ export function DecisionGateTry({
   return (
     <>
       {open && (
-        <div className="flex flex-col gap-3">
-          <DecisionSampleFields history={history} current={current} onHistory={setHistory} onCurrent={setCurrent} />
-          <div className="flex flex-wrap items-center gap-[9px]">
-            <Button variant="secondary" size="sm" disabled={!current.trim() || running} onClick={() => void run()}>
-              <Icon name="play" size={14} />
-              {running ? t('try.running') : t('binding.try')}
-            </Button>
-          </div>
+        <div className="flex flex-wrap items-start gap-[9px]">
+          <input
+            value={current}
+            onChange={(event) => setCurrent(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                event.preventDefault()
+                void run()
+              }
+            }}
+            placeholder={t('gateTry.placeholder')}
+            aria-label={t('try.current')}
+            className="inp h-8 min-h-0 min-w-[200px] flex-1"
+          />
+          <Button variant="secondary" size="sm" disabled={!current.trim() || running} onClick={() => void run()}>
+            <Icon name="play" size={14} />
+            {running ? t('try.running') : t('binding.try')}
+          </Button>
         </div>
       )}
 

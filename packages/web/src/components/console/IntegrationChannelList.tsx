@@ -1,6 +1,5 @@
 'use client'
 
-import Link from 'next/link'
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
@@ -15,11 +14,15 @@ import {
   type ChannelSettingsOption
 } from '@/components/console/ChannelSettingsPopover'
 import { useOwnerChangeGuard } from '@/components/console/OwnerChangeGuard'
-import { DecisionBindingStrip } from '@/components/console/decisions/DecisionBindingStrip'
-import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
-import { gateStatus, managedByRouting, savedGateOf, type SavedGate } from '@/lib/decisions/binding'
-import { useOrgs } from '@/lib/org-context'
-import { botRoutingPath } from '@/lib/decisions/usage-links'
+import { useChannelGates } from '@/components/console/decisions/channel-gates'
+import { managedByRouting } from '@/lib/decisions/binding'
+import {
+  DecisionRoutingModal,
+  clearRoutingResume,
+  readRoutingResume,
+  stopRouting
+} from '@/components/console/decisions/routing/DecisionRoutingModal'
+import { RoutingEntry, type DispatchRouting } from '@/components/console/DefaultDispatchPicker'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { chatPlatformName } from '@/lib/platform-labels'
 import type { WebChannelListMessage } from '@/components/console/platforms/contract'
@@ -60,9 +63,12 @@ function RowSettings({
   disabled,
   trigger,
   allowDecision,
+  gateOwnsTrigger = false,
   onTrigger,
   onSessionMode
 }: {
+  /** The row's By decision pill owns the trigger (its × leaves it), so only the session mode stays here. */
+  gateOwnsTrigger?: boolean
   channel: IntegrationChannelRow
   /** Names the room the way its platform does — one noun per card. */
   platform?: string
@@ -131,13 +137,17 @@ function RowSettings({
           }
         ] satisfies ChannelSettingsOption<SessionMode>[]
       ).filter((o) => !semantics.sessionModes || semantics.sessionModes.includes(o.value))
+  // While a decision owns the trigger, the plain choices stay listed but inert, and the footer says how to get them back.
   const groups: ChannelSettingsGroup[] = [
     {
       id: 'trigger',
       label: translate('settings.respondTo'),
-      options: respond,
+      options: gateOwnsTrigger ? respond.filter((o) => o.value !== 'decision') : respond,
       value: trigger,
-      onPick: (value) => onTrigger(value as RowTrigger)
+      onPick: (value) => onTrigger(value as RowTrigger),
+      ...(gateOwnsTrigger && {
+        locked: { label: translate('settings.respondLocked'), hint: translate('settings.respondLockedHint') }
+      })
     }
   ]
   // One mode is no choice, so a platform that offers only one shows no group for it.
@@ -152,12 +162,15 @@ function RowSettings({
       onPick: (value) => onSessionMode(value as SessionMode)
     })
   }
+  if (!groups.length) return null
   return (
     <span className="inline-flex items-center gap-[7px] max-desktop:w-full">
       {/* ⚡ is the console's one trigger glyph, on every platform's rows and the code-host rows alike. */}
-      <span title={translate('trigger.hint')} className="flex-none leading-none">
-        <Icon name="zap" size={14} color="var(--text-tertiary)" />
-      </span>
+      {!gateOwnsTrigger && (
+        <span title={translate('trigger.hint')} className="flex-none leading-none">
+          <Icon name="zap" size={14} color="var(--text-tertiary)" />
+        </span>
+      )}
       <ChannelSettingsPopover groups={groups} name={rowLabel(channel)} disabled={disabled} />
     </span>
   )
@@ -505,27 +518,28 @@ export function conversationOwners(botId: string, integrations: IntegrationRow[]
   return owners
 }
 
-/** Per-conversation default dispatch for a SHARED bot (§10.1). Every active shared
- *  conversation has exactly one owner: the agent that answers whatever its
- *  routing rules don't hand to someone else.
- *
- *  The design keeps this strictly apart from the trigger toggle (the two are separate
- *  controls, never merged) — a compact avatar + chevron whose popover
- *  READS the current default and offers exactly one action, claiming the channel
- *  for the agent whose page this is. Handing a conversation to some third agent stays
- *  in Settings → Bots, where the whole roster is in view. */
-function DefaultAgentPicker({
+/** A shared bot's per-conversation dispatch (§10.1): the default agent, or the bot's By decision routing when it owns the row. */
+function DispatchPicker({
   current,
+  members,
   viewer,
   disabled,
+  labelled,
+  routing,
   onClaim
 }: {
   /** The channel's effective default (the bot's earliest member when unset). */
   current: MemberAgent
-  /** The agent being viewed — the "Make … default" target; absent when it doesn't share this bot. */
+  /** Every agent sharing the bot, each a pickable default. */
+  members: MemberAgent[]
+  /** The agent being viewed, marked in the list; absent when it doesn't share this bot. */
   viewer?: MemberAgent
   /** Demo rows (no live integration id) render the control read-only. */
   disabled: boolean
+  /** Name the default beside its mark on desktop too, where the row has room for it. */
+  labelled: boolean
+  /** The row's By decision routing and the Decision's name when it owns the row; absent where the platform has no By decision. */
+  routing?: DispatchRouting
   onClaim: (agentId: string) => void | Promise<void>
 }) {
   const t = useTranslations('Integrations.channelList')
@@ -534,12 +548,8 @@ function DefaultAgentPicker({
   const [saving, setSaving] = useState(false)
   const btnRef = useRef<HTMLButtonElement>(null)
   const open = box !== null
-  const isViewer = viewer?.id === current.id
   const close = useCallback(() => setBox(null), [])
-  // The host cards clip their content (rounded corners over full-bleed rows), so
-  // an absolutely-positioned menu is cut off on the last row. Portal it to the
-  // body at fixed coordinates measured off the button instead — which also means
-  // it can't follow the page, so scrolling and resizing dismiss it.
+  // Host cards clip their rows, so the menu portals to fixed coordinates; scrolling and resizing dismiss it.
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && close()
@@ -557,72 +567,114 @@ function DefaultAgentPicker({
     if (open || !el) return close()
     setBox(placePopover(el.getBoundingClientRect(), window.innerWidth, window.innerHeight))
   }
-  const claim = () => {
+  const claim = (id: string) => {
     close()
-    if (!viewer || disabled || saving) return
+    if (id === current.id || disabled || saving) return
     setSaving(true)
-    Promise.resolve(onClaim(viewer.id)).finally(() => setSaving(false))
+    Promise.resolve(onClaim(id)).finally(() => setSaving(false))
   }
+  const routed = routing?.active === true
+  const routingName = routing?.name ?? translate('dispatch.routingFallback')
+  const heading =
+    'px-[9px] pb-1 pt-[6px] font-sans text-[10px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)'
   return (
     <span className="flex-none">
       <button
         ref={btnRef}
         onClick={toggle}
-        title={translate('defaultDispatch.button', { agent: current.label })}
-        aria-label={translate('defaultDispatch.button', { agent: current.label })}
+        title={
+          routed
+            ? translate('dispatch.routedButton', { name: routingName })
+            : translate('defaultDispatch.button', { agent: current.label })
+        }
+        aria-label={
+          routed
+            ? translate('dispatch.routedButton', { name: routingName })
+            : translate('defaultDispatch.button', { agent: current.label })
+        }
         aria-expanded={open}
-        className={`flex cursor-pointer items-center gap-[3px] rounded-[7px] border-0 bg-transparent p-[3px] hover:bg-(--surface-hover) ${
+        className={`flex h-7 cursor-pointer items-center gap-[6px] rounded-md border border-(--border-default) bg-(--surface-card) pl-[7px] pr-[6px] hover:border-(--border-strong) hover:bg-(--surface-hover) ${
           saving ? 'opacity-60' : ''
         }`}
       >
-        <span className="av h-[22px] w-[22px] rounded-[6px]">
-          <AgentIconView icon={current.icon} runtime={current.runtime} size={22} />
-        </span>
-        {/* The desktop row reads the avatar in context; the mobile row breaks it onto its own line, so it is named there. */}
-        <span className="mono max-w-[180px] truncate text-[12px] text-(--text-tertiary) desktop:hidden">
-          {current.label}
-        </span>
-        <Icon name="chevron-down" size={13} color="var(--text-tertiary)" />
+        {routed ? (
+          <>
+            <Icon name="split" size={13} className="flex-none text-(--brand)" />
+            <span className="mono max-w-[180px] truncate text-[11.5px] text-(--text-primary)">{routingName}</span>
+          </>
+        ) : (
+          <>
+            <span className="av h-4 w-4 rounded-[4px]">
+              <AgentIconView icon={current.icon} runtime={current.runtime} size={16} />
+            </span>
+            {/* The mobile row breaks the control onto its own line, so it is always named there. */}
+            <span
+              className={`mono max-w-[180px] truncate text-[11.5px] text-(--text-primary) ${labelled ? '' : 'desktop:hidden'}`}
+            >
+              {current.label}
+            </span>
+          </>
+        )}
+        <Icon name="chevron-down" size={11} color="var(--text-tertiary)" />
       </button>
       {box &&
         createPortal(
           <>
             <span className="fixed inset-0 z-[1090]" onClick={close} />
             <div
-              className="fixed z-[1100] min-w-[230px] rounded-[10px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
+              className="fixed z-[1100] w-max min-w-[200px] max-w-[260px] rounded-lg border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg)"
               style={box.style}
             >
-              <div className="px-[9px] pb-[5px] pt-[6px] font-sans text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
-                {translate('defaultDispatch.label')}
+              {/* Under routing, a pick only moves the agent unmatched messages fall back to. */}
+              <div className={heading}>
+                {routing && !routed ? translate('dispatch.sendTo') : translate('defaultDispatch.label')}
               </div>
-              <div className="flex items-center gap-[9px] px-[9px] py-[6px]">
-                <span className="av h-[22px] w-[22px] flex-none rounded-[6px]">
-                  <AgentIconView icon={current.icon} runtime={current.runtime} size={22} />
-                </span>
-                <span className="mono min-w-0 flex-1 truncate text-[12.5px] text-(--text-primary)">
-                  {current.label}
-                </span>
-                {isViewer && (
-                  <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
-                    {translate('defaultDispatch.thisAgent')}
+              {members.map((member) => (
+                <button
+                  key={member.id}
+                  onClick={() => claim(member.id)}
+                  disabled={disabled || saving}
+                  aria-pressed={member.id === current.id}
+                  className={`flex w-full items-center gap-2 rounded-md border-0 bg-transparent px-[9px] py-[6px] text-left hover:bg-(--surface-hover) ${
+                    disabled || saving ? 'cursor-default opacity-60' : 'cursor-pointer'
+                  }`}
+                >
+                  <span className="av h-[18px] w-[18px] flex-none rounded-[5px]">
+                    <AgentIconView icon={member.icon} runtime={member.runtime} size={18} />
                   </span>
-                )}
-              </div>
-              {viewer && !isViewer && (
+                  <span className="mono min-w-0 flex-1 truncate text-[11.5px] text-(--text-primary)">
+                    {member.label}
+                  </span>
+                  {member.id === viewer?.id && (
+                    <span className="flex-none font-sans text-[10.5px] leading-normal text-(--text-tertiary)">
+                      {translate('defaultDispatch.thisAgent')}
+                    </span>
+                  )}
+                  <Icon
+                    name="check"
+                    size={13}
+                    className={`flex-none ${member.id === current.id ? 'text-(--brand)' : 'text-transparent'}`}
+                  />
+                </button>
+              ))}
+              {routing && (
                 <>
                   <div className="my-1 h-px bg-(--border-subtle)" />
-                  <button
-                    onClick={claim}
-                    disabled={disabled || saving}
-                    className={`flex w-full items-center gap-[9px] rounded-[6px] border-0 bg-transparent px-[9px] py-[7px] text-left hover:bg-(--surface-hover) ${
-                      disabled || saving ? 'cursor-default opacity-60' : 'cursor-pointer'
-                    }`}
-                  >
-                    <Icon name="corner-down-left" size={13} color="var(--text-tertiary)" className="flex-none" />
-                    <span className="min-w-0 truncate font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
-                      {translate('defaultDispatch.makeDefault', { agent: viewer.label })}
-                    </span>
-                  </button>
+                  <div className={heading}>{translate('dispatch.orDecision')}</div>
+                  <div className="px-[9px] pb-[6px] pt-[2px]">
+                    <RoutingEntry
+                      name={routed ? routingName : null}
+                      canStop={routing.canStop}
+                      onOpen={() => {
+                        close()
+                        routing.onOpen()
+                      }}
+                      onStop={() => {
+                        close()
+                        routing.onStop()
+                      }}
+                    />
+                  </div>
                 </>
               )}
             </div>
@@ -630,27 +682,6 @@ function DefaultAgentPicker({
           document.body
         )}
     </span>
-  )
-}
-
-/** A shared bot's routing decides who answers this row, so it links there instead of offering a per-row gate. */
-function ManagedByRoutingNote({ botId, bot, padX }: { botId: string; bot: string; padX: number }) {
-  const t = useTranslations('Integrations.channelList')
-  const { orgPath } = useOrgs()
-  return (
-    <div
-      role="note"
-      className="flex items-start gap-2 border-b border-(--border-subtle) bg-(--surface-sunken) font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)"
-      style={{ padding: `9px ${padX}px 9px ${padX + 22}px` }}
-    >
-      <Icon name="split" size={13} className="mt-[2px] flex-none" />
-      <span className="flex flex-col gap-[2px]">
-        <Link href={botRoutingPath(botId, orgPath)} className="lnk">
-          {t('managedByRouting', { bot })}
-        </Link>
-        <span>{t('managedByRoutingHint')}</span>
-      </span>
-    </div>
   )
 }
 
@@ -685,17 +716,32 @@ export function IntegrationChannelList({
   const t = useTranslations('Integrations.channelList')
   const translate: ChannelListTranslator = (key, values) => t(key as never, values as never)
   const {
-    setChannelTrigger,
-    setChannelDecision,
     setChannelSessionMode,
     setChannelAgent,
     forgetChannel,
     leaveConversation,
+    refresh,
     bots,
     agents,
     integrations
   } = useConsoleData()
   const ownerGuard = useOwnerChangeGuard()
+  // The shared-bot row whose By decision rules modal is open.
+  const [routingRow, setRoutingRow] = useState<{
+    botId: string
+    channelId: string
+    name: string
+    resume?: boolean
+  } | null>(null)
+  // An inline Create decision returns naming the row whose rules modal it left; that row's list reopens it on the kept draft.
+  useEffect(() => {
+    const resumed = readRoutingResume()
+    if (!resumed || !shareable || resumed.botId !== botId) return
+    const row = channels.find((c) => c.channelId === resumed.channelId)
+    if (!row) return
+    clearRoutingResume()
+    setRoutingRow({ botId: resumed.botId, channelId: row.channelId, name: rowLabel(row), resume: true })
+  }, [botId, shareable, channels])
   // A derived roster is the platform's own list — nothing is observed into it, and nothing is dropped from here.
   const derivedRoster = channelListSemantics(platform).roster === 'derived'
   // The agents that share this bot — the candidate per-conversation defaults.
@@ -744,34 +790,13 @@ export function IntegrationChannelList({
   const dmRows = channels.filter((c) => isDirectConversation(c.kind))
   const grouped = groupBySpace(channelRows)
   // Live rows read the gate from the channel DTO; explicit mock mode keeps its local prototype gates.
-  const decisions = useOptionalDecisionsPrototype()
-  const decisionsOffered = decisions !== null
-  const mode = decisions?.api.mode
-  const drafts = decisions?.bindingDrafts ?? {}
-  // The store composes the identity (organization + bot + conversation); without it a bare channel id is only a map key.
-  const bindingKey = (c: IntegrationChannelRow) => decisions?.gateKeyFor(botId, c.channelId) ?? c.channelId
-  const mockGate = (c: IntegrationChannelRow) => (mode === 'mock' ? decisions?.gates[bindingKey(c)] : undefined)
-  const savedGate = (c: IntegrationChannelRow): SavedGate | null => {
-    if (mode !== 'mock') return savedGateOf(c)
-    const gate = mockGate(c)
-    return gate ? { decisionId: gate.decisionId, when: gate.when } : null
-  }
-  const rowTrigger = (c: IntegrationChannelRow): RowTrigger =>
-    (decisionsOffered && drafts[bindingKey(c)]) || mockGate(c) ? 'decision' : c.trigger
-  const pickTrigger = (c: IntegrationChannelRow, trigger: RowTrigger) => {
-    const key = bindingKey(c)
-    // Choosing By decision only opens a draft; nothing is written until the strip saves the gate with it.
-    if (trigger === 'decision') {
-      if (decisionsOffered)
-        decisions?.setBindingDraft(key, (current) => current ?? { decisionId: null, when: null, phase: 'editing' })
-      return
-    }
-    decisions?.setBindingDraft(key, null)
-    if (mode === 'mock') decisions?.clearGate(key)
-    // A live saved gate is trigger 'decision', so leaving it PATCHes; the server clears the binding.
-    if (trigger === c.trigger) return
-    return setChannelTrigger(integrationId!, c.channelId, trigger)
-  }
+  // The single-owner gate lives in one hook the org's bot roster shares, so the two rows cannot drift apart.
+  const gates = useChannelGates()
+  const decisions = gates.decisions
+  const decisionsOffered = gates.offered
+  const rowTrigger = (c: IntegrationChannelRow): RowTrigger => gates.rowTrigger(botId, c)
+  const pickTrigger = (c: IntegrationChannelRow, trigger: RowTrigger) =>
+    gates.pickTrigger(botId, integrationId, c, trigger)
   /**
    * Leaving, for a platform that has no per-conversation membership to leave. A
    * Discord bot is in a SERVER, so the action belongs to the band that names one —
@@ -811,52 +836,22 @@ export function IntegrationChannelList({
       </button>
     )
   }
-  // Beneath a row: the shared-bot routing note, or the gate strip while a draft or saved gate exists.
-  const decisionStrip = (c: IntegrationChannelRow): ReactNode => {
-    if (shareable && managedByRouting(c)) {
-      return (
-        <ManagedByRoutingNote
-          botId={botId ?? ''}
-          bot={bots.find((b) => b.id === botId)?.name ?? botId ?? ''}
-          padX={padX}
-        />
-      )
-    }
-    if (!decisions || !decisionsOffered) return null
-    const key = bindingKey(c)
-    const saved = savedGate(c)
-    if (!drafts[key] && !saved) return null
-    const gate = mockGate(c)
-    return (
-      <DecisionBindingStrip
-        bindingKey={key}
-        conversation={integrationId ? { integrationId, channelId: c.channelId } : null}
-        canWrite={!!integrationId && !shareable}
-        // The same owner the row's dispatch picker shows — for a shared bot, a sibling install's.
-        agentName={(defaultAgent(c) ?? (agentId ? member(agentId) : undefined))?.label ?? ''}
-        channelName={rowLabel(c)}
-        padX={padX}
-        saved={saved}
-        savedName={mode === 'live' ? (c.decision?.name ?? null) : undefined}
-        status={!saved ? null : mode === 'live' ? gateStatus(c.decision) : gate?.needsReview ? 'needs_review' : 'ready'}
-        onSave={(next) =>
-          mode === 'mock'
-            ? Promise.resolve(
-                decisions.setGate(key, {
-                  decisionId: next.decisionId,
-                  when: next.when,
-                  channelName: rowLabel(c),
-                  needsReview: false
-                })
-              )
-            : setChannelDecision(integrationId!, c.channelId, next)
-        }
-      />
-    )
-  }
+  const decisionTriggers = gates.decisionTriggers(platform)
+  // Beneath a row: the gate's status strip and rules modal while a draft or saved gate exists.
+  const decisionStrip = (c: IntegrationChannelRow): ReactNode =>
+    shareable
+      ? null
+      : gates.strip({
+          botId,
+          integrationId,
+          row: c,
+          // The same owner the row's dispatch picker shows — for a shared bot, a sibling install's.
+          agentName: (defaultAgent(c) ?? (agentId ? member(agentId) : undefined))?.label ?? '',
+          padX
+        })
   const row = (c: IntegrationChannelRow) => {
-    // One member is no choice: the picker would name this agent and offer nothing, so the row drops it.
-    const def = dispatchable ? defaultAgent(c) : undefined
+    // One member is no choice, so the row drops the picker unless the bot's routing owns the row.
+    const def = dispatchable || (shareable && managedByRouting(c)) ? defaultAgent(c) : undefined
     const label = rowLabelParts(c, platform)
     const Name = rowName(c.kind, platform)
     const trigger = rowTrigger(c)
@@ -877,37 +872,48 @@ export function IntegrationChannelList({
             )}
             {label.hint && <span className="flex-none text-(--text-tertiary)">{label.hint}</span>}
           </span>
-          <div className="ml-auto flex items-center gap-[10px] max-desktop:ml-0 max-desktop:w-full max-desktop:flex-col max-desktop:items-start">
+          <div className="ml-auto flex items-center gap-2 max-desktop:ml-0 max-desktop:w-full max-desktop:flex-col max-desktop:items-start">
+            {!shareable && gates.entry({ botId, platform, integrationId, row: c })}
             {def && (
-              <>
-                {/* The PATCH goes through THIS agent's integration on purpose:
-                  ownership of a shared (http) conversation is bot-scoped server-side —
-                  the route resolves the effective owner across every install,
-                  fences on it (`expectedOwnerAgentId`) and hands the write to
-                  `httpBot.updateConversation`, so exactly one row stays canonical no
-                  matter which install the console patched. */}
-                <DefaultAgentPicker
-                  current={def}
-                  viewer={viewer}
-                  disabled={!integrationId}
-                  onClaim={(id) =>
-                    ownerGuard.guard({ platform, from: def, toId: id, room: rowLabel(c) }, () =>
-                      setChannelAgent(integrationId!, c.channelId, id)
-                    )
-                  }
-                />
-                {/* The design separates the two controls with a hairline — default
-                  dispatch and trigger are different decisions, not one bar. */}
-                <span className="hidden h-[18px] w-px flex-none bg-(--border-subtle) desktop:block" />
-              </>
+              // The PATCH goes through THIS agent's integration: shared ownership is bot-scoped and fenced server-side.
+              <DispatchPicker
+                current={def}
+                members={members}
+                viewer={viewer}
+                disabled={!integrationId}
+                labelled={decisionTriggers && !isDirectConversation(c.kind)}
+                routing={
+                  decisionsOffered && decisionTriggers && botId && !isDirectConversation(c.kind)
+                    ? {
+                        name: c.decision?.name ?? null,
+                        active: managedByRouting(c),
+                        canStop: !!integrationId,
+                        onOpen: () => setRoutingRow({ botId, channelId: c.channelId, name: rowLabel(c) }),
+                        onStop: () =>
+                          void act(async () => {
+                            await stopRouting(decisions!, botId, c.channelId)
+                            refresh()
+                          })
+                      }
+                    : undefined
+                }
+                onClaim={(id) =>
+                  ownerGuard.guard({ platform, from: def, toId: id, room: rowLabel(c) }, () =>
+                    setChannelAgent(integrationId!, c.channelId, id)
+                  )
+                }
+              />
             )}
             <RowSettings
               channel={c}
               platform={platform}
-              disabled={!integrationId || drafts[bindingKey(c)]?.phase === 'saving'}
+              disabled={!integrationId || gates.busy(botId, c)}
               trigger={trigger}
-              // A shared bot routes by its own rules (§3.2), a router not built yet, so it gets no per-channel gate.
+              // A shared bot routes by its own rules (§3.2) from the dispatch menu, so it gets no per-channel gate.
               allowDecision={decisionsOffered && !shareable}
+              gateOwnsTrigger={
+                trigger === 'decision' && ((!!decisions && !shareable) || (shareable && managedByRouting(c)))
+              }
               onTrigger={(next) => pickTrigger(c, next)}
               onSessionMode={(mode) => setChannelSessionMode(integrationId!, c.channelId, mode)}
             />
@@ -960,6 +966,15 @@ export function IntegrationChannelList({
       {dmRows.length > 0 && groupHeader(translate('directMessages'), padX)}
       {dmRows.map(row)}
       {ownerGuard.dialog}
+      {routingRow && decisions && (
+        <DecisionRoutingModal
+          botId={routingRow.botId}
+          channelId={routingRow.channelId}
+          channelName={routingRow.name}
+          resume={routingRow.resume}
+          onClose={() => setRoutingRow(null)}
+        />
+      )}
     </>
   )
 }

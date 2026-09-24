@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import {
@@ -20,11 +20,10 @@ import { DecisionPicker } from './DecisionPicker'
 import { Button, Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 
-// The rule table's desktop columns: number, answer, probability, arrow, provider and model, actions.
-const RULE_GRID =
-  'grid grid-cols-1 items-center gap-2 desktop:grid-cols-[24px_minmax(0,1.1fr)_100px_14px_minmax(0,1fr)_76px] desktop:gap-[10px]'
 const ROW_ACTION =
-  'flex h-6 w-6 items-center justify-center rounded-[5px] text-(--text-tertiary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary) disabled:pointer-events-none disabled:opacity-35'
+  'flex h-7 w-7 items-center justify-center rounded-md text-(--text-tertiary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary) disabled:pointer-events-none disabled:opacity-35'
+const RULE_NUMBER =
+  'flex h-[22px] w-[22px] flex-none items-center justify-center rounded-md bg-(--surface-active) font-mono text-[11px] font-semibold leading-normal text-(--text-secondary)'
 
 function nextCondition(question: DecisionQuestion, rules: AgentModelSelection['rules']): DecisionCondition {
   if (question.type === 'score') return { type: 'score', min: 0, max: question.criteria.length - 1 }
@@ -35,6 +34,36 @@ function nextCondition(question: DecisionQuestion, rules: AgentModelSelection['r
   const used = rules.flatMap((rule) => (rule.when.type === 'choice' ? Object.keys(rule.when.thresholds) : []))
   const key = Object.keys(question.criteria).find((key) => !used.includes(key)) ?? Object.keys(question.criteria)[0]!
   return { type: 'choice', thresholds: { [key]: 0.5 } }
+}
+
+/** One rule or the fallback as a card: a numbered head with its actions, then its fields side by side. */
+function RuleCard({
+  number,
+  title,
+  actions,
+  invalid = false,
+  children
+}: {
+  number: ReactNode
+  title: ReactNode
+  actions?: ReactNode
+  invalid?: boolean
+  children: ReactNode
+}) {
+  return (
+    <div
+      className={`rounded-lg border bg-(--surface-card) ${invalid ? 'border-(--red-500)' : 'border-(--border-subtle)'}`}
+    >
+      <div className="flex items-center gap-2 rounded-t-lg border-b border-(--border-subtle) bg-(--surface-app) py-2 pl-3 pr-[10px]">
+        {number}
+        <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+          {title}
+        </span>
+        {actions}
+      </div>
+      <div className="grid grid-cols-1 gap-[13px] p-3 desktop:grid-cols-2">{children}</div>
+    </div>
+  )
 }
 
 export function ModelSelectionField({
@@ -106,17 +135,66 @@ export function ModelSelectionField({
       runInSandbox={runInSandbox}
     />
   )
-  const fallbackPanel = (
-    <div className="grid grid-cols-1 items-center gap-3 bg-(--surface-sunken) px-3 py-[10px] desktop:grid-cols-[minmax(0,1fr)_minmax(0,280px)]">
-      <div className="flex min-w-0 flex-col gap-[2px]">
-        <span className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
-          {t('fallbackTitle')}
-        </span>
-        <span className="font-sans text-[11.5px] leading-normal text-(--text-tertiary)">{t('fallback')}</span>
+  const fallbackCard = (
+    <RuleCard number={<span className={`${RULE_NUMBER} bg-(--surface-sunken)`}>—</span>} title={t('fallbackTitle')}>
+      <p className="m-0 self-center font-sans text-[12px] leading-[1.5] text-(--text-tertiary)">{t('fallback')}</p>
+      <div className="fld">
+        <span className="fldlbl">{t('use')}</span>
+        {fallbackPicker(true)}
       </div>
-      {fallbackPicker(true)}
-    </div>
+    </RuleCard>
   )
+  // Each question type has its own "When": one answer and its minimum, a Yes/No pick, or a score interval.
+  const whenField = (rule: AgentModelSelection['rules'][number], index: number) => {
+    if (!decision) return null
+    if (
+      rule.when.type === 'choice' &&
+      decision.question.type === 'choice' &&
+      Object.keys(rule.when.thresholds).length === 1
+    ) {
+      const [answer, probability] = Object.entries(rule.when.thresholds)[0]!
+      return (
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="min-w-0 flex-1">
+            <AnswerSelect
+              ariaLabel={t('answer', { index: index + 1 })}
+              value={answer}
+              answers={decision.question.criteria}
+              onChange={(next) =>
+                replaceRule(index, { ...rule, when: { type: 'choice', thresholds: { [next]: probability } } })
+              }
+            />
+          </div>
+          <span className="flex-none font-sans text-[11.5px] leading-normal text-(--text-tertiary)">{t('min')}</span>
+          <input
+            className="inp mn h-[30px] min-h-0 w-[58px] flex-none px-[6px] py-0 text-center text-[12px] font-medium"
+            type="number"
+            min={0}
+            max={100}
+            step={1}
+            aria-label={t('probability', { index: index + 1 })}
+            value={Math.round(probability * 100)}
+            onChange={(event) =>
+              replaceRule(index, {
+                ...rule,
+                when: { type: 'choice', thresholds: { [answer]: Number(event.target.value) / 100 } }
+              })
+            }
+          />
+          <span className="flex-none font-mono text-[11.5px] leading-normal text-(--text-tertiary)">%</span>
+        </div>
+      )
+    }
+    return (
+      <DecisionConditionFields
+        question={decision.question}
+        value={rule.when}
+        issues={[]}
+        onChange={(when) => replaceRule(index, { ...rule, when })}
+      />
+    )
+  }
+  const helpText = decision ? t(decision.question.type === 'choice' ? 'choiceHelp' : 'intervalHelp') : ''
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-3">
@@ -143,6 +221,7 @@ export function ModelSelectionField({
                 if (!value && decisions[0]) selectDecision(decisions[0].id)
               }}
             >
+              <Icon name="split" size={13} />
               {t('byDecision')}
             </button>
           </div>
@@ -155,82 +234,49 @@ export function ModelSelectionField({
         </div>
       ) : (
         <>
-          <div className="flex flex-wrap items-center gap-[10px]">
-            <DecisionPicker
-              decisions={decisions}
-              value={value?.decisionId}
-              placeholder={retained?.find((item) => item.id === value?.decisionId)?.name ?? t('chooseDecision')}
-              loading={loading}
-              onSelect={(entry) => selectDecision(entry.id)}
-              create={{ href: orgPath('/decisions/new'), newTab: true }}
-            />
-            {decision && (
-              <>
-                <span className="inline-flex h-6 min-w-0 items-center gap-[6px] rounded-[5px] border border-(--border-subtle) bg-(--surface-sunken) px-2 font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)">
-                  <Icon name="lock" size={11} className="flex-none text-(--text-tertiary)" />
-                  {t('evaluator')}
-                  <span className="truncate font-mono text-(--text-primary)">
-                    {decision.providerId} · {decision.model}
+          <div className="fld">
+            <span className="fldlbl">{t('decision')}</span>
+            <div className="flex flex-wrap items-center gap-[10px]">
+              <DecisionPicker
+                decisions={decisions}
+                value={value?.decisionId}
+                placeholder={retained?.find((item) => item.id === value?.decisionId)?.name ?? t('chooseDecision')}
+                loading={loading}
+                onSelect={(entry) => selectDecision(entry.id)}
+                create={{ href: orgPath('/decisions/new'), newTab: true }}
+              />
+              {decision && (
+                <>
+                  <a
+                    className="lnk gap-[6px] text-[11.5px] font-medium"
+                    href={orgPath(`/decisions/${decision.id}`)}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={t('openDecision', { name: decision.name })}
+                  >
+                    <Icon name="pencil" size={12} />
+                    {t('viewAndEdit')}
+                  </a>
+                  <span className="mono text-[11px] text-(--text-tertiary)">
+                    {t(`types.${decision.question.type}`)} · {decision.providerId} · {decision.model}
                   </span>
-                </span>
-                <a
-                  className={ROW_ACTION}
-                  href={orgPath(`/decisions/${decision.id}`)}
-                  target="_blank"
-                  rel="noreferrer"
-                  title={t('openDecision', { name: decision.name })}
-                  aria-label={t('openDecision', { name: decision.name })}
-                >
-                  <Icon name="arrow-up-right" size={13} />
-                </a>
-              </>
-            )}
+                </>
+              )}
+            </div>
           </div>
           {value && !decision && (
             <p className="m-0 text-[12px] text-(--text-secondary)">{loading ? t('loading') : t('retained')}</p>
           )}
-          {!decision && (
-            <div className="overflow-hidden rounded-md border border-(--border-default)">{fallbackPanel}</div>
-          )}
+          {!decision && fallbackCard}
           {value && decision && (
             <>
-              <div className="overflow-hidden rounded-md border border-(--border-default)">
-                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-(--border-subtle) bg-(--surface-app) px-3 py-[5px] font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[0.06em] text-(--text-tertiary) desktop:grid-cols-[24px_minmax(0,1.1fr)_100px_14px_minmax(0,1fr)_76px] desktop:gap-[10px]">
-                  <span className="hidden desktop:inline">#</span>
-                  <span className="flex items-center gap-1">
-                    {t(decision.question.type === 'choice' ? 'answerColumn' : 'condition')}
-                    {decision.question.type !== 'choice' && (
-                      <button
-                        type="button"
-                        className="inline-flex"
-                        title={t('intervalHelp')}
-                        aria-label={t('intervalHelp')}
-                      >
-                        <Icon name="info" size={12} />
-                      </button>
-                    )}
-                  </span>
-                  <span className="hidden items-center gap-1 desktop:flex">
-                    {decision.question.type === 'choice' && (
-                      <>
-                        {t('probabilityColumn')}
-                        <button
-                          type="button"
-                          className="inline-flex"
-                          title={t('choiceHelp')}
-                          aria-label={t('choiceHelp')}
-                        >
-                          <Icon name="info" size={12} />
-                        </button>
-                      </>
-                    )}
-                  </span>
-                  <span className="hidden desktop:inline" />
-                  <span className="hidden desktop:inline">{t('providerModel')}</span>
+              <div className="fld">
+                <span className="flex items-center justify-between gap-2">
+                  <span className="fldlbl">{t('rules')}</span>
                   <Button
                     variant="secondary"
                     size="xs"
-                    className="h-6 gap-1 justify-self-end px-2 font-sans normal-case tracking-normal"
+                    className="h-7 gap-1 px-2"
                     ariaLabel={t('addRule')}
                     disabled={value.rules.length >= 32}
                     onClick={() =>
@@ -243,112 +289,71 @@ export function ModelSelectionField({
                     <Icon name="plus" size={14} />
                     {t('add')}
                   </Button>
-                </div>
-                {value.rules.map((rule, index) => (
-                  <div key={index} className={`${RULE_GRID} border-b border-(--border-subtle) px-3 py-2`}>
-                    <span className="font-mono text-[11px] font-semibold leading-normal text-(--text-tertiary)">
-                      {index + 1}
-                    </span>
-                    {rule.when.type === 'choice' &&
-                    decision.question.type === 'choice' &&
-                    Object.keys(rule.when.thresholds).length === 1 ? (
-                      <>
-                        <AnswerSelect
-                          ariaLabel={t('answer', { index: index + 1 })}
-                          value={Object.keys(rule.when.thresholds)[0]!}
-                          answers={decision.question.criteria}
-                          onChange={(answer) =>
-                            replaceRule(index, {
-                              ...rule,
-                              when: {
-                                type: 'choice',
-                                thresholds: {
-                                  [answer]: Object.values(
-                                    (rule.when as Extract<DecisionCondition, { type: 'choice' }>).thresholds
-                                  )[0]!
-                                }
-                              }
-                            })
-                          }
-                        />
-                        <div className="flex items-center gap-[5px]">
-                          <span className="font-mono text-[12px] leading-normal text-(--text-tertiary)">≥</span>
-                          <input
-                            className="inp mn h-[30px] min-h-0 w-[58px] px-[6px] py-0 text-center text-[12px] font-medium"
-                            type="number"
-                            min={0}
-                            max={100}
-                            step={1}
-                            aria-label={t('probability', { index: index + 1 })}
-                            value={Math.round(Object.values(rule.when.thresholds)[0]! * 100)}
-                            onChange={(event) =>
-                              replaceRule(index, {
-                                ...rule,
-                                when: {
-                                  type: 'choice',
-                                  thresholds: {
-                                    [Object.keys(
-                                      (rule.when as Extract<DecisionCondition, { type: 'choice' }>).thresholds
-                                    )[0]!]: Number(event.target.value) / 100
-                                  }
-                                }
-                              })
-                            }
-                          />
-                          <span className="font-mono text-[12px] leading-normal text-(--text-tertiary)">%</span>
-                        </div>
-                      </>
-                    ) : (
-                      <div className="min-w-0 desktop:col-span-2">
-                        <DecisionConditionFields
-                          question={decision.question}
-                          value={rule.when}
-                          issues={[]}
-                          onChange={(when) => replaceRule(index, { ...rule, when })}
+                </span>
+                <div className="flex flex-col gap-[10px]">
+                  {value.rules.map((rule, index) => (
+                    <RuleCard
+                      key={index}
+                      number={<span className={RULE_NUMBER}>{index + 1}</span>}
+                      title={t('rule', { index: index + 1 })}
+                      invalid={issues.some(
+                        (issue) => issue.path[0] === 'rules' && String(issue.path[1]) === String(index)
+                      )}
+                      actions={
+                        <span className="flex flex-none items-center gap-[2px]">
+                          {([-1, 1] as const).map((step) => (
+                            <button
+                              key={step}
+                              type="button"
+                              className={ROW_ACTION}
+                              disabled={index + step < 0 || index + step >= value.rules.length}
+                              aria-label={t(step < 0 ? 'moveUp' : 'moveDown', { index: index + 1 })}
+                              onClick={() => move(index, step)}
+                            >
+                              <Icon name={step < 0 ? 'arrow-up' : 'arrow-down'} size={14} />
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            className={ROW_ACTION}
+                            aria-label={t('removeRule', { index: index + 1 })}
+                            onClick={() => onChange({ ...value, rules: value.rules.filter((_, i) => i !== index) })}
+                          >
+                            <Icon name="x" size={14} />
+                          </button>
+                        </span>
+                      }
+                    >
+                      <div className="fld min-w-0">
+                        <span className="fldlbl">{t(`when.${decision.question.type}`)}</span>
+                        {whenField(rule, index)}
+                      </div>
+                      <div className="fld min-w-0">
+                        <span className="fldlbl">{t('use')}</span>
+                        <RuntimeModelSelect
+                          dense
+                          runSettings
+                          value={{
+                            effort: fallback.effort,
+                            permissionMode: fallback.permissionMode,
+                            fastMode: fallback.fastMode,
+                            ...rule
+                          }}
+                          ariaLabel={t('ruleModel', { index: index + 1 })}
+                          source={source}
+                          runtimes={runtimes}
+                          runInSandbox={runInSandbox}
+                          onChange={(target) => replaceRule(index, { ...rule, ...target })}
                         />
                       </div>
-                    )}
-                    <Icon name="arrow-right" size={13} className="hidden text-(--text-tertiary) desktop:block" />
-                    <RuntimeModelSelect
-                      dense
-                      runSettings
-                      value={{
-                        effort: fallback.effort,
-                        permissionMode: fallback.permissionMode,
-                        fastMode: fallback.fastMode,
-                        ...rule
-                      }}
-                      ariaLabel={t('ruleModel', { index: index + 1 })}
-                      source={source}
-                      runtimes={runtimes}
-                      runInSandbox={runInSandbox}
-                      onChange={(target) => replaceRule(index, { ...rule, ...target })}
-                    />
-                    <div className="flex justify-end gap-[2px]">
-                      {([-1, 1] as const).map((step) => (
-                        <button
-                          key={step}
-                          type="button"
-                          className={ROW_ACTION}
-                          disabled={index + step < 0 || index + step >= value.rules.length}
-                          aria-label={t(step < 0 ? 'moveUp' : 'moveDown', { index: index + 1 })}
-                          onClick={() => move(index, step)}
-                        >
-                          <Icon name={step < 0 ? 'arrow-up' : 'arrow-down'} size={13} />
-                        </button>
-                      ))}
-                      <button
-                        type="button"
-                        className={ROW_ACTION}
-                        aria-label={t('removeRule', { index: index + 1 })}
-                        onClick={() => onChange({ ...value, rules: value.rules.filter((_, i) => i !== index) })}
-                      >
-                        <Icon name="x" size={13} />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-                {fallbackPanel}
+                    </RuleCard>
+                  ))}
+                  {fallbackCard}
+                </div>
+                <span className="flex items-start gap-[7px] font-sans text-[11.5px] leading-[1.5] text-(--text-tertiary)">
+                  <Icon name="info" size={12} className="mt-[2px] flex-none" />
+                  {helpText}
+                </span>
               </div>
               <RuntimeSelectionSample
                 question={decision.question}

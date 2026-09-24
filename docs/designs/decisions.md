@@ -181,7 +181,7 @@ answer never chooses another agent or clears a `!stop` mute.
 
 ### 3.2 Stage 2: shared-bot routing
 
-**Shared Bot → Configuration → Routing** owns the Decision reference,
+**A shared bot's routing** (edited from each routed conversation row) owns the Decision reference,
 answer-to-agent rules, and an Otherwise action. Channel selection defines where
 that bot-owned configuration applies; the mappings are not owned by an individual
 agent or copied into each agent's settings. Targets must be usable agents already

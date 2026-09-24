@@ -8,6 +8,8 @@ export interface TriggerOption<T extends string> {
   value: T
   label: string
   hint: string
+  /** Listed but not pickable here; its hint says why. */
+  disabled?: boolean
 }
 
 /**
@@ -86,12 +88,14 @@ export function TriggerSelect<T extends string>({
                 type="button"
                 role="menuitemradio"
                 aria-checked={o.value === value}
+                aria-disabled={o.disabled ? true : undefined}
                 title={o.hint}
-                className="fopt"
+                className={o.disabled ? 'fopt cursor-not-allowed text-(--text-tertiary) opacity-60' : 'fopt'}
                 // Every pick reaches the host, the displayed one included: a code-host row whose stored
                 // rule the menu cannot express normalizes by re-picking what it already shows. True
                 // no-ops are suppressed by the hosts, which know which of their picks are no-ops.
                 onClick={() => {
+                  if (o.disabled) return
                   close(true)
                   onChange(o.value)
                 }}

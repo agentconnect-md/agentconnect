@@ -34,13 +34,16 @@ const releaseVersion = process.env.APP_VERSION || `v${pkg.version}`
 const appVersion = sha ? `${releaseVersion}+${sha}` : releaseVersion
 const buildTime = process.env.BUILD_TIME || `${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC`
 
+// `next build` bakes rewrites into the output, so the dev proxies below never apply outside `next dev`.
+const isDev = process.env.NODE_ENV === 'development'
+
 // Dev-only same-origin proxy: with DEV_CP_PROXY_TARGET set (.env.local), /cp/* forwards
 // to that CP's public root so the browser dodges CORS (CP_URL=/cp/v1 ⇒ upstream /v1).
-const devCpProxyTarget = process.env.DEV_CP_PROXY_TARGET?.replace(/\/+$/, '')
+const devCpProxyTarget = isDev ? process.env.DEV_CP_PROXY_TARGET?.replace(/\/+$/, '') : undefined
 
 // Same, for the billing service (BILLING_URL=/billing-api). NOT /billing — `proxy.ts`
 // claims that as a console root and rewrites it to /-/billing before rewrites run.
-const devBillingProxyTarget = process.env.DEV_BILLING_PROXY_TARGET?.replace(/\/+$/, '')
+const devBillingProxyTarget = isDev ? process.env.DEV_BILLING_PROXY_TARGET?.replace(/\/+$/, '') : undefined
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {

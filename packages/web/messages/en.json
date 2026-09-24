@@ -1249,6 +1249,7 @@
     "agentConnect": "AgentConnect",
     "uninstallFirst": "Uninstall its integration first",
     "defaultDispatch": "Default dispatch",
+    "dispatch": "Dispatch",
     "directMessages": "Direct messages",
     "groupDm": "Group DM",
     "directMessage": "Direct message",
@@ -1293,8 +1294,17 @@
       "defaultDispatch": {
         "button": "Default dispatch — {agent}",
         "label": "Default dispatch",
-        "thisAgent": "this agent",
-        "makeDefault": "Make {agent} default"
+        "thisAgent": "this agent"
+      },
+      "dispatch": {
+        "sendTo": "Send every message to",
+        "orDecision": "Or pick by decision",
+        "routedButton": "Dispatch by decision — {name}",
+        "routingFallback": "By decision",
+        "editRouting": "Edit By decision rules",
+        "add": "Decision",
+        "addTitle": "Pick the agent per message with a decision",
+        "stop": "Stop using By decision in this channel"
       },
       "gatedNote": "Private agent — answers only where enabled below.",
       "linearGatedNote": "Private agent — answers only in teams where it is the default.",
@@ -1323,10 +1333,10 @@
         "sessionMode": "Session mode",
         "ariaLabel": "Settings for {name}: {value}",
         "menuLabel": "Settings for {name}",
-        "optionHint": "<b>{label}</b> — <hint></hint>"
-      },
-      "managedByRouting": "Managed by {bot} routing",
-      "managedByRoutingHint": "This bot's routing decides which agent answers here."
+        "optionHint": "<b>{label}</b> — <hint></hint>",
+        "respondLocked": "Respond to unavailable",
+        "respondLockedHint": "By decision chooses which messages get a reply and which agent answers. Remove the decision to pick a trigger here."
+      }
     },
     "github": {
       "sync": "Sync",
@@ -1773,13 +1783,6 @@
           "existing": "An unused QQ bot"
         }
       }
-    },
-    "botRouting": {
-      "title": "Routing",
-      "configure": "Configure routing",
-      "open": "Open routing",
-      "summary": "By decision · {count, plural, one {# channel} other {# channels}}",
-      "notConfigured": "Not configured"
     }
   },
   "Agents": {
@@ -2287,9 +2290,21 @@
         "providerModel": "Provider · model",
         "chooseDecision": "Choose a Decision",
         "openDecision": "Open {name} in Decisions",
-        "evaluator": "Evaluator",
+        "decision": "Decision",
+        "viewAndEdit": "View and edit",
+        "types": {
+          "choice": "Choice",
+          "boolean": "Boolean",
+          "score": "Score"
+        },
+        "when": {
+          "choice": "When the answer is",
+          "boolean": "When the answer is",
+          "score": "When the score is"
+        },
+        "use": "Use",
+        "min": "min",
         "rules": "Rules",
-        "condition": "Answer / condition",
         "answer": "Answer for rule {index}",
         "probability": "Probability for rule {index}",
         "choiceHelp": "Highest passing probability wins. Ties follow rule order.",
@@ -2321,8 +2336,6 @@
           "booleanResult": "{value} · {probability}% true",
           "text4": "The evaluator is temporarily unavailable"
         },
-        "answerColumn": "Answer",
-        "probabilityColumn": "Probability",
         "add": "Add"
       },
       "runtimeModel": {
@@ -4283,8 +4296,14 @@
       "helpMentions": "A mention does not skip the decision; it only fixes that this agent is the one that can be triggered.",
       "helpHistory": "Recent conversation history is included automatically, including messages that did not trigger the agent.",
       "helpUnavailable": "If evaluation is unavailable, eligible messages continue to the agent.",
-      "activates": "Activates",
-      "activatesAgent": "Activates {agent}",
+      "add": "Decision",
+      "addTitle": "Judge each message with a decision before this agent responds",
+      "editRules": "Edit By decision rules",
+      "stop": "Stop using By decision",
+      "rulesTitle": "<name>{channel}</name> · By decision rules",
+      "rulesTitleBare": "By decision rules",
+      "rulesSubtitle": "Decides when <name>{agent}</name> responds in this channel",
+      "close": "Close",
       "noDecisions": "No decisions yet. Create one to judge messages here.",
       "hiddenDecision": "A decision you can't view",
       "saving": "Saving…",
@@ -4372,6 +4391,7 @@
     },
     "providerModel": "Provider · model",
     "gateTry": {
+      "placeholder": "Try a message in this channel…",
       "senderLabel": "Sender of history message {index}",
       "historyLabel": "History message {index}",
       "wouldSkip": "Would skip",
@@ -4504,18 +4524,29 @@
       }
     },
     "routing": {
-      "metadata": {
-        "title": "Routing · AgentConnect"
-      },
-      "breadcrumb": {
-        "integrations": "Integrations",
-        "configuration": "Configuration",
-        "routing": "Routing"
+      "modal": {
+        "subtitle": "<name>{bot}</name> · picks among <name>{agents}</name>",
+        "unsaved": "Save to apply By decision rules in this channel.",
+        "alsoApplies": "These rules are the bot's own, so they also apply to {names}.",
+        "answer": "Answer",
+        "minProbability": "Min probability",
+        "triggers": "Triggers",
+        "minFor": "Minimum probability for {answer}",
+        "targetFor": "Target for {answer}",
+        "doNotTrigger": "Do not trigger",
+        "useOtherwise": "Use Otherwise",
+        "hiddenAgent": "An agent you cannot see",
+        "otherwiseHint": "No rule matches, or evaluation unavailable",
+        "openBot": "Open bot configuration",
+        "offIn": "{channel} is Off for {agents}. Turn it on there before routing it by decision.",
+        "offBare": "{channel} is Off. Turn it on before routing it by decision.",
+        "enabled": "Routing enabled",
+        "pausedLabel": "Routing paused",
+        "pauseHint": "Pausing stops new deliveries in every channel this bot routes, including mentions and thread replies. Running turns continue.",
+        "pausedHint": "Paused: new messages in these channels are not delivered. Turn it on and save to resume."
       },
       "title": "Routing",
-      "subtitle": "Choose which connected agents receive a message from one Decision's answer.",
       "recentEvaluations": "Recent evaluations",
-      "notShared": "Routing is available only for a shared bot that serves several agents.",
       "notFound": "This bot does not exist, or you cannot see any of its agents.",
       "loadError": "Routing could not be loaded. {message}",
       "retryLoad": "Retry",
@@ -4532,68 +4563,20 @@
         "draft": "Unsaved draft"
       },
       "banner": {
-        "pendingSync": "Saved, not yet applied. It takes effect once the evaluation host and the relay confirm it.",
-        "needsReview": "The Decision changed, so routing is off until the highlighted rules are repaired and saved.",
-        "openDecision": "Open decision",
-        "missingCredentials": "{provider} has no organization key and no eligible Cloud support, so evaluations fail and use their continuation.",
-        "insufficientCredits": "{provider} has no organization key and the organization's AC credits are exhausted, so evaluations fail and use their continuation.",
-        "unknownProvider": "The Decision's provider",
-        "providerKeys": "Open provider keys",
-        "daemonOffline": "No daemon that can evaluate this bot's conversations is connected. Routed messages wait until one reconnects.",
-        "unsupportedHost": "Upgrade the evaluation host daemon before this configuration can be activated.",
-        "unsupportedRelay": "Upgrade the relay so it can forward routed conversations before this configuration can be activated.",
-        "noAgents": "No usable agent is connected to this bot, so Route to agent rules cannot be saved.",
-        "connectAgent": "Connect an agent",
-        "paused": "Routing is paused. New messages in these channels, including mentions and thread replies, are not delivered until it is enabled again."
-      },
-      "empty": {
-        "title": "No routing yet",
-        "body": "Route each new conversation to the agents a Decision's answer selects. Nothing changes until you save.",
-        "start": "Configure routing"
-      },
-      "enabled": {
-        "label": "Enabled",
-        "pauseHint": "Pausing stops new deliveries in these channels, including mentions and thread replies. Running turns continue and control commands still work."
+        "needsReview": "The Decision changed, so routing is off until the highlighted rules are repaired and saved."
       },
       "decision": {
         "label": "Decision",
         "select": "Select a decision…",
         "summary": "{type} · {model}",
-        "edit": "Edit",
-        "view": "View",
-        "create": "Create decision",
         "required": "Choose a Decision.",
         "hidden": "A decision you cannot see",
         "typeChanged": "The Decision's question type differs from these rules. Update each rule's condition; nothing is reselected for you."
       },
-      "channels": {
-        "label": "Channels",
-        "search": "Search channels",
-        "manage": "Conversation settings",
-        "count": "{count, plural, one {# channel} other {# channels}}",
-        "none": "No channels selected. Routing applies nowhere until you add one.",
-        "offRow": "Off",
-        "enableFirst": "Enable in channel settings",
-        "gateRow": "Has its own By decision gate; adding it replaces the gate.",
-        "applyNote": "Save applies By decision to {names}.",
-        "conversationSettings": "Open the bot's conversation settings",
-        "noEligible": "This bot has no group channels yet.",
-        "hidden": "Channel names are hidden because you cannot view this bot's agents."
-      },
       "removal": {
-        "title": "Replace routing in {channel}",
-        "trigger": "Replacement trigger",
-        "triggerRequired": "Choose what {channel} uses instead.",
-        "defaultAgent": "Default agent",
-        "keep": "Keep the current default",
-        "triggers": {
-          "off": "Off",
-          "mention": "Mention",
-          "auto": "Any message"
-        }
+        "triggerRequired": "Choose what {channel} uses instead."
       },
       "rules": {
-        "title": "Rules",
         "choiceHint": "Every option meeting its threshold applies.",
         "scoreHint": "Rows sort by their lower bound; intervals must not overlap.",
         "number": "Rule {number}",
@@ -4601,9 +4584,7 @@
         "then": "Then",
         "add": "Add rule",
         "remove": "Remove rule {number}",
-        "empty": "No rules. Every message uses Otherwise.",
-        "gap": "{interval} uses Otherwise",
-        "dedupe": "Several rules can name one agent; it receives the message once."
+        "empty": "No rules. Every message uses Otherwise."
       },
       "action": {
         "label": "Action for rule {number}",
@@ -4622,10 +4603,7 @@
       "otherwise": {
         "label": "Otherwise",
         "default": "Use default agent",
-        "skip": "Do not activate",
-        "appliesHint": "Applies only when no rule matches.",
-        "perChannel": "{channel}: {agent}",
-        "noDefault": "no default agent"
+        "skip": "Do not activate"
       },
       "notes": {
         "mentions": "Mentions and thread replies are also evaluated and may be skipped.",
@@ -4633,15 +4611,10 @@
         "history": "Recent conversation history is included automatically."
       },
       "footer": {
-        "test": "Test routing",
         "cancel": "Cancel",
         "save": "Save",
         "saving": "Saving…",
-        "saved": "Saved",
-        "retry": "Retry",
-        "unsaved": "Unsaved changes",
-        "newDraft": "New configuration, not saved yet",
-        "invalid": "Fix the highlighted fields to save."
+        "retry": "Retry"
       },
       "saveError": {
         "invalid": "Check the highlighted fields and save again.",
@@ -4650,7 +4623,7 @@
         "unsupported": "The relay or the evaluation host does not support routing yet. Upgrade it, then retry.",
         "conflict": "The bot changed while you edited. {message}",
         "failed": "Save failed; your edits are kept. {message}",
-        "keptDecision": "The Decision you created is kept; Retry saves the same configuration."
+        "refused": "Couldn't save: {message}"
       },
       "try": {
         "title": "Test routing",
@@ -4763,6 +4736,22 @@
           "asConfigured": "Shown as the decision and routing read when this evaluation ran."
         },
         "subtitle": "shared bot routing"
+      },
+      "codeHost": {
+        "subtitle": "Pull requests · picks reviewers among <name>{agents}</name>",
+        "preview": "Preview: these rules stay in this browser tab and do not pick reviewers yet.",
+        "everyAgent": "Every agent",
+        "evaluatedOnce": "Evaluated once when the PR starts a session; the chosen agents keep the PR after that.",
+        "mentionsSkip": "Mentions pick the agent directly, so they skip the decision.",
+        "otherwiseEveryAgent": "Without a matching rule, Every agent reviews the PR as it does without a decision.",
+        "add": "Decision",
+        "addTitle": "Every PR goes to all agents. Add a decision to pick reviewers per PR.",
+        "addBlocked": "Mentions pick the agent directly. Switch the trigger off @-mention to add a decision.",
+        "pillTitle": "By decision · {name}. Evaluated once when the PR starts a session; the chosen agents keep the PR after that. Click to edit rules.",
+        "stop": "Stop using By decision — every PR goes to all agents",
+        "stopMenu": "Stop using decision",
+        "mentionOff": "Unavailable with a decision. Mentions pick the agent directly, so they skip the decision.",
+        "hidden": "A decision you cannot see"
       }
     }
   },
