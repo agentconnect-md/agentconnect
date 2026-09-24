@@ -8,6 +8,7 @@ import type { SecretBuilder } from 'microsandbox/native'
 import { z } from 'zod'
 import type { SpawnDriver, SpawnedRuntime, SpawnRequest } from '../acp/spawn-driver.js'
 import type { SandboxMount } from '../config/config-schema.js'
+import type { EnvironmentDescriptor } from '../execution/strategies.js'
 import { pidAlive } from '../lock.js'
 import type { Logger } from '../log.js'
 import { formatErr } from '../daemon/text.js'
@@ -63,14 +64,8 @@ for (const mount of JSON.parse(process.argv[1])) {
 }
 `
 
-export interface MicrosandboxEnvironment {
-  id: string
-  mounts: SandboxMount[]
-  workspaceRoot: string
-  secrets?: MicrosandboxSecret[]
-  /** A session this machine hosts for another member of its group: its shim is EXPOSED for the executor's pipe, never bound here (session-executors.md §6), and started with what the HOME seed points a runtime at. Absent on every ordinary environment, whose spec is therefore unchanged. */
-  hosted?: { env: Record<string, string> }
-}
+/** A VM's environment is the descriptor a strategy launcher takes (session-executors.md §11 step 3); a local one leaves `hosted` unset, so its spec is unchanged. */
+export type MicrosandboxEnvironment = EnvironmentDescriptor
 
 export type MicrosandboxExecOptions = MicrosandboxExecuteOptions
 

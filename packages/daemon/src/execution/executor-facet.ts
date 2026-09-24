@@ -31,6 +31,7 @@ import { ownCredentialEnv } from '../microsandbox/secrets.js'
 import { prepareSharedRuntimeCredentials } from '../runtimes/runtime-credentials.js'
 import { prepareRuntimeHome } from '../runtimes/runtime-home.js'
 import { PIPE_KEY_BYTES, startPipeListener, type PipeListener, type PipeListenerOptions } from './executor-pipe.js'
+import { hostedEnvironment } from './executor-vm.js'
 import { sweepStaleHostShims } from './host-shim.js'
 import {
   EXECUTION_STRATEGIES,
@@ -375,13 +376,11 @@ class Facet implements ExecutorFacet {
       if (env.stopping) await env.stopping
       if (this.stopped) throw new Error('the executor facet is stopping')
       if (env.shim || env.generation !== generation) return
-      const seed = launcher.seedsHome ? undefined : this.deps.seedHome(join(this.sessionsDir, env.leaf, 'home'))
-      const shim = await launcher.start({
-        daemonRoot: this.deps.daemonRoot,
-        sessionLeaf: env.leaf,
-        log: this.deps.log,
-        ...(seed ? { seed } : {})
-      })
+      const home = join(this.sessionsDir, env.leaf, 'home')
+      const seed = launcher.seedHome ? launcher.seedHome(home, this.deps.log) : this.deps.seedHome(home)
+      // Built from the leaf alone, whatever the strategy: `executor/<leaf>` over the session's directory (§11 step 3).
+      const environment = hostedEnvironment(this.deps.daemonRoot, env.leaf, seed || undefined)
+      const shim = await launcher.start({ environment, log: this.deps.log })
       if (this.stopped) {
         await shim.stop()
         throw new Error('the executor facet is stopping')
@@ -589,7 +588,7 @@ class Facet implements ExecutorFacet {
   private async discard(env: Environment, why: string): Promise<void> {
     try {
       // What the strategy owns beyond the directory — a VM and its disposable disks — goes first; the directory is the facet's own.
-      await this.deps.launchers[env.strategy]?.discard?.(env.leaf)
+      await this.deps.launchers[env.strategy]?.discard?.(hostedEnvironment(this.deps.daemonRoot, env.leaf).id)
       await rm(join(this.sessionsDir, env.leaf), { recursive: true, force: true })
       // The record goes last, so a discard cut short is finished by the next sweep rather than forgotten.
       rmSync(join(this.sessionsDir, `${env.leaf}.json`), { force: true })

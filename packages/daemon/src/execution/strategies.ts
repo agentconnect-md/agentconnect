@@ -1,6 +1,8 @@
 import { connect } from 'node:net'
 import type { Duplex } from 'node:stream'
+import type { SandboxMount } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
+import type { MicrosandboxSecret } from '../microsandbox/secrets.js'
 import { hostShimUnavailableReason, startHostShim, type HostShim, type HostShimInput } from './host-shim.js'
 
 /** The strategies the executor facet can prepare (session-executors.md §5); `srt` joins with R1 and `docker` later. */
@@ -100,28 +102,45 @@ export interface SessionSeed {
   env: Record<string, string>
   /** Paths on this machine: a host process already sees them, a VM must be given them. */
   paths: string[]
+  /** The placeholder substitutions a VM fixes when it starts, for values its HOME holds placeholders of (§8). */
+  secrets?: MicrosandboxSecret[]
 }
 
-/** How one strategy gives a session leaf an environment: everything above this is strategy-agnostic (§5). */
+/** The environment a launcher starts (§11 step 3): built from a leaf by the facet, or by the local placement rule for this machine's own sessions. */
+export interface EnvironmentDescriptor {
+  /** `executor/<leaf>` hosted, `<agentId>/…` local: two spaces that cannot collide, and neither changes. */
+  id: string
+  /** The directory the environment's durable state lives under. */
+  workspaceRoot: string
+  mounts: SandboxMount[]
+  secrets?: MicrosandboxSecret[]
+  /** A session this machine hosts for another member: its shim EXPOSED for the executor's pipe, never bound here (§6), and started with what the HOME seed points a runtime at. Absent on every local environment. */
+  hosted?: { env: Record<string, string> }
+}
+
+/** How one strategy starts an environment it is handed: everything above this is strategy-agnostic (§5). */
 export interface StrategyLauncher {
-  /** Seeds the session HOME itself, with protections the facet's plain seed lacks (a VM's placeholders, §8); the facet then seeds nothing. */
-  seedsHome?: boolean
-  start(input: {
-    daemonRoot: string
-    sessionLeaf: string
-    log: Logger
-    seed?: SessionSeed
-  }): Promise<SessionEnvironment>
-  /** Remove what the strategy owns beyond the session's directory — a VM and its disks; `host` owns nothing that outlives its shim. */
-  discard?(sessionLeaf: string): Promise<void>
+  /** Seeds a session HOME itself, with protections the facet's plain seed lacks (a VM's placeholders, §8), in place of that seed. */
+  seedHome?(home: string, log: Logger): SessionSeed
+  start(input: { environment: EnvironmentDescriptor; log: Logger }): Promise<SessionEnvironment>
+  /** Remove what the strategy owns beyond the environment's directory — a VM and its disks — by the environment's id; `host` owns nothing that outlives its shim. */
+  discard?(id: string): Promise<void>
 }
 
-/** The `host` strategy (§5): the shim as a plain child of this daemon, reached over the unix socket inside its private runtime root. */
-export function hostLauncher(start: (input: HostShimInput) => Promise<HostShim> = startHostShim): StrategyLauncher {
+/** The `host` strategy (§5): the shim as a plain child of this daemon, reached over the unix socket inside its private runtime root under `daemonRoot`. */
+export function hostLauncher(
+  daemonRoot: string,
+  start: (input: HostShimInput) => Promise<HostShim> = startHostShim
+): StrategyLauncher {
   return {
-    start: async ({ seed, ...input }) => {
-      // A host shim shares this machine's filesystem, so the seed's pointers are all it needs.
-      const shim = await start({ ...input, ...(seed ? { seedEnv: seed.env } : {}) })
+    start: async ({ environment, log }) => {
+      // A host shim shares this machine's filesystem, so the workspace root and the seed's pointers are all it needs.
+      const shim = await start({
+        daemonRoot,
+        workspaceRoot: environment.workspaceRoot,
+        log,
+        ...(environment.hosted ? { seedEnv: environment.hosted.env } : {})
+      })
       return {
         connect: () => connect(shim.socketPath),
         runtimeRoot: shim.runtimeRoot,

@@ -8,17 +8,20 @@ import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { ClientTransport } from '@agentconnect.md/connection'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { hostedEnvironment } from '../src/execution/executor-vm.js'
 import {
   hostShimEnv,
   hostShimUnavailableReason,
   startHostShim,
   sweepStaleHostShims,
-  type HostShim
+  type HostShim,
+  type HostShimInput
 } from '../src/execution/host-shim.js'
 import {
   agentStrategyOf,
   assertSomeStrategyAvailable,
   effectiveStrategies,
+  hostLauncher,
   machineStrategies
 } from '../src/execution/strategies.js'
 import { ShimDialer } from '../src/shim/dialer.js'
@@ -190,7 +193,9 @@ describe('host strategy shim launcher', () => {
     async () => {
       root = await mkdtemp(join(tmpdir(), 'ac-hs-'))
       const shims = await Promise.all(
-        ['sess-a', 'sess-b'].map((sessionLeaf) => startHostShim({ daemonRoot: root!, sessionLeaf, entry }))
+        ['sess-a', 'sess-b'].map((leaf) =>
+          startHostShim({ daemonRoot: root!, workspaceRoot: join(root!, 'sessions', leaf), entry })
+        )
       )
       for (const shim of shims) started.push({ shim })
       const [a, b] = shims as [HostShim, HostShim]
@@ -241,16 +246,17 @@ describe('host strategy shim launcher', () => {
     }
   )
 
-  it.skipIf(linuxOnly)('refuses a session leaf that is not one path segment', async () => {
-    await expect(startHostShim({ daemonRoot: '/nonexistent', sessionLeaf: '../x', entry })).rejects.toThrow(
-      'invalid session leaf'
-    )
+  it.skipIf(linuxOnly)('refuses a workspace root that is relative or not normalized', async () => {
+    for (const workspaceRoot of ['sessions/x', '/nonexistent/sessions/../x', '/nonexistent/sessions/x/'])
+      await expect(startHostShim({ daemonRoot: '/nonexistent', workspaceRoot, entry })).rejects.toThrow(
+        'invalid workspace root'
+      )
   })
 
   it.skipIf(!linuxOnly)('refuses to start off Linux, with the reason', async () => {
-    await expect(startHostShim({ daemonRoot: '/nonexistent', sessionLeaf: 'sess', entry })).rejects.toThrow(
-      /needs Linux.*fd-bound.*image-fixed/
-    )
+    await expect(
+      startHostShim({ daemonRoot: '/nonexistent', workspaceRoot: '/nonexistent/sessions/sess', entry })
+    ).rejects.toThrow(/needs Linux.*fd-bound.*image-fixed/)
   })
 
   it('names the reason for every platform but Linux', () => {
@@ -306,6 +312,53 @@ describe('host strategy shim launcher', () => {
     expect(env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBeUndefined()
     expect(env.HOME).toBe('/d/sessions/s/home')
     expect(env.AC_SHIM_SOCKET).toBe('/d/hs/x/shim.sock')
+  })
+})
+
+describe('the host launcher', () => {
+  const quiet = { trace() {}, debug() {}, info() {}, warn() {}, error() {} }
+  const LEAF = 'session-0123456789abcdef01234567'
+
+  /** The launcher over a stubbed shim start: what it was asked to start, and a shim that says where it is. */
+  function stubbed() {
+    const inputs: HostShimInput[] = []
+    const launcher = hostLauncher(join('/d'), async (input) => {
+      inputs.push(input)
+      return {
+        socketPath: join('/d', 'hs', 'x', 'shim.sock'),
+        runtimeRoot: join('/d', 'hs', 'x'),
+        helperRoot: '/opt/example/dist',
+        workspaceRoot: input.workspaceRoot,
+        token: 't',
+        missingHelpers: ['gitCredentialHelper'],
+        exited: new Promise(() => {}),
+        stop: async () => {}
+      }
+    })
+    return { launcher, inputs }
+  }
+
+  // session-executors.md §11 step 3: the paths come from the environment it is handed, not from a leaf.
+  it("starts the shim in the environment's workspace root with its HOME seed, its runtime root under the daemon's", async () => {
+    const { launcher, inputs } = stubbed()
+    const seed = { env: { CLAUDE_SECURESTORAGE_CONFIG_DIR: '/home/op/.claude' }, paths: ['/home/op/.claude'] }
+    const environment = await launcher.start({ environment: hostedEnvironment(join('/d'), LEAF, seed), log: quiet })
+    expect(inputs).toEqual([
+      { daemonRoot: join('/d'), workspaceRoot: join('/d', 'sessions', LEAF), seedEnv: seed.env, log: quiet }
+    ])
+    expect(environment).toMatchObject({
+      runtimeRoot: join('/d', 'hs', 'x'),
+      helperRoot: '/opt/example/dist',
+      missingHelpers: ['gitCredentialHelper']
+    })
+    // Nothing a host shim leaves behind outlives it, so there is nothing to discard.
+    expect(launcher.discard).toBeUndefined()
+  })
+
+  it('hands no seed to a shim whose environment carries none', async () => {
+    const { launcher, inputs } = stubbed()
+    await launcher.start({ environment: { id: 'x', workspaceRoot: join('/d', 'w'), mounts: [] }, log: quiet })
+    expect(inputs).toEqual([{ daemonRoot: join('/d'), workspaceRoot: join('/d', 'w'), log: quiet }])
   })
 })
 
