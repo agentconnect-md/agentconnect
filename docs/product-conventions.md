@@ -185,11 +185,12 @@ startup notice. Stages that do not run are skipped, including sandbox startup wh
 current session's own sandbox is already bound. Git clone has its own label within
 workspace preparation; checkout and skills installation use the workspace label.
 
-The console replaces one live wait line below the agent's name. Other chat platforms
-edit one message in the existing bootstrap-notice location and retain it in platform
-history. Slack keeps its native working indicator: its lifecycle API accepts a state,
-not phase text. A code-host turn adds no startup comment. Status publication is
-best-effort and never holds up initialization.
+The console replaces one live wait line below the agent's name. Slack keeps its native
+working indicator: its lifecycle API accepts a state, not phase text. Other chat
+platforms post no startup message, because it would stay in the conversation's history
+even when the turn ends silently; their typing indicator is the only wait signal. A
+code-host turn adds no startup comment. Status publication is best-effort and never
+holds up initialization.
 
 Startup notices are not recorded in the AgentConnect transcript. On success or
 cancellation, the console clears the wait. A failed console turn may retain its last

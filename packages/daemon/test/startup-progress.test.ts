@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
 import { observeStartup, withStartupPhase, shareStartup, awaitStartup } from '../src/session/startup-progress.js'
-import { StartupNotice } from '../src/platforms/startup-notice.js'
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void
@@ -60,27 +59,5 @@ describe('startup progress lifetime', () => {
     await operation
     await expect(wake.promise).resolves.toBeUndefined()
     await expect(observeStartup(report, () => awaitStartup(operation))).resolves.toBeUndefined()
-  })
-
-  it('stops queued edits on cancellation and retains a post already sent', async () => {
-    const posted = deferred<string>()
-    const conn = {
-      postMessage: vi.fn(() => posted.promise),
-      updateMessage: vi.fn(async () => {}),
-      deleteMessage: vi.fn(async () => true)
-    }
-    const notice = new StartupNotice(conn, 'channel', 'thread', (error) => {
-      throw error
-    })
-    notice.update('Preparing workspace…')
-    await Promise.resolve()
-    expect(conn.postMessage).toHaveBeenCalledOnce()
-    notice.update('Starting agent…')
-    const closed = notice.close()
-    notice.update('late update')
-    posted.resolve('notice-id')
-    await closed
-    expect(conn.deleteMessage).not.toHaveBeenCalled()
-    expect(conn.updateMessage).not.toHaveBeenCalled()
   })
 })

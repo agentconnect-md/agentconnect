@@ -354,8 +354,8 @@ between threads, and let final output replace pending intermediate edits while
 respecting the same queue. Handle 429s and transient failures with bounded backoff,
 jitter, and retry hints. Other apps or daemons can still consume the shared quota.
 
-Feedback is best effort after admission. Use the normal startup notice when
-needed; do not promise native typing indicators or reactions. Membership loss,
+Feedback is best effort after admission. Post no startup message, as on other
+chat platforms; do not promise native typing indicators or reactions. Membership loss,
 revoked credentials, missing threads, and deleted reply messages terminate or
 suspend the affected delivery with an actionable status. Keep generated output in
 the daemon transcript, subject to normal access rules; private DM output is not
