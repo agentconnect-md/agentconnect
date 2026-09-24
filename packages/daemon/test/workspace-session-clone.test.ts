@@ -1080,29 +1080,29 @@ describe('retiring a confined session', () => {
   })
 })
 
+/** A clean filter that leaves `marker` behind whenever Git runs it, bound to every path by `repo`'s own config and `info/attributes`, so nothing tracked changes. */
+function plantFilter(repo: string, marker: string): void {
+  git(repo, ['config', 'filter.probe.clean', `touch '${marker}' && cat`])
+  const attributes = resolve(repo, git(repo, ['rev-parse', '--git-path', 'info/attributes']))
+  mkdirSync(dirname(attributes), { recursive: true })
+  writeFileSync(attributes, '* filter=probe\n')
+}
+
+/** Prove the plant is live under the daemon's own local policy — `status` in `statusIn` rehashes `file` through it — then re-arm it for the call under test. */
+function expectFilterRuns(statusIn: string, file: string, marker: string): void {
+  const at = (year: number) => new Date(Date.UTC(year, 0, 1))
+  utimesSync(file, at(2001), at(2001))
+  git(statusIn, ['status', '--porcelain'])
+  expect(existsSync(marker)).toBe(true)
+  rmSync(marker)
+  utimesSync(file, at(2002), at(2002))
+}
+
+const markerIn = () => join(tempRoot('ac-session-clone-marker-'), 'ran')
+
 // A tree the runtime wrote can carry config that turns daemon Git into a command outside its sandbox; retention audits it before `status` reads the tree.
 describe('retention audits a tree’s own Git config before it inspects the tree', () => {
   const INFRA = { repoFullName: 'acme/infra', repoId: '42' }
-
-  /** A clean filter that leaves `marker` behind whenever Git runs it, bound to every path by `repo`'s own config and `info/attributes`, so nothing tracked changes. */
-  function plantFilter(repo: string, marker: string): void {
-    git(repo, ['config', 'filter.probe.clean', `touch '${marker}' && cat`])
-    const attributes = resolve(repo, git(repo, ['rev-parse', '--git-path', 'info/attributes']))
-    mkdirSync(dirname(attributes), { recursive: true })
-    writeFileSync(attributes, '* filter=probe\n')
-  }
-
-  /** Prove the plant is live under the daemon's own local policy — `status` in `statusIn` rehashes `file` through it — then re-arm it for the call under test. */
-  function expectFilterRuns(statusIn: string, file: string, marker: string): void {
-    const at = (year: number) => new Date(Date.UTC(year, 0, 1))
-    utimesSync(file, at(2001), at(2001))
-    git(statusIn, ['status', '--porcelain'])
-    expect(existsSync(marker)).toBe(true)
-    rmSync(marker)
-    utimesSync(file, at(2002), at(2002))
-  }
-
-  const markerIn = () => join(tempRoot('ac-session-clone-marker-'), 'ran')
 
   it.skipIf(process.platform === 'win32')(
     'keeps a session clone whose config could run a command, and never runs status there',
@@ -1282,6 +1282,16 @@ describe('a confined session records its cwd root in its own directory', () => {
 })
 
 describe('a session directory no row names (#2283)', () => {
+  /** Run `work` with no Git on this host's PATH, so any Git it ran would fail it rather than decide its answer. */
+  const withoutHostGit = async <T>(work: () => Promise<T>): Promise<T> => {
+    vi.stubEnv('PATH', tempRoot('ac-session-clone-no-git-'))
+    try {
+      return await work()
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  }
+
   // A plane standing in for a VM that would have to boot: the orphan judgement must never ask it.
   const refuseThePlane = () =>
     wireTestPlane(workspaces, {
@@ -1322,6 +1332,43 @@ describe('a session directory no row names (#2283)', () => {
       reason: 'unique-commits'
     })
     expect(existsSync(cwd)).toBe(true)
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps a clone a VM wrote without running this host’s Git in it',
+    async () => {
+      const agent = agentFixture()
+      serveAll(agent)
+      const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
+      const leaf = basename(leafOf(agent))
+      const marker = markerIn()
+      plantFilter(cwd, marker)
+      expectFilterRuns(cwd, join(cwd, 'README.md'), marker)
+      refuseThePlane()
+
+      expect(await withoutHostGit(() => workspaces.removeOrphanSessionDir(agent, leaf, false))).toEqual({
+        outcome: 'retained',
+        reason: 'uninspected'
+      })
+      expect(existsSync(marker)).toBe(false)
+      expect(existsSync(cwd)).toBe(true)
+    }
+  )
+
+  it('still removes a VM’s directory whose clones hold no file', async () => {
+    const agent = agentFixture()
+    serveAll(agent)
+    const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
+    const leaf = basename(leafOf(agent))
+    // What a sandbox leaves where it protected a clone that is not there: empty mountpoints only.
+    rmSync(cwd, { recursive: true })
+    mkdirSync(join(cwd, '.git'), { recursive: true })
+    refuseThePlane()
+
+    expect(await withoutHostGit(() => workspaces.removeOrphanSessionDir(agent, leaf, false))).toEqual({
+      outcome: 'removed'
+    })
+    expect(existsSync(leafOf(agent))).toBe(false)
   })
 
   it('refuses anything but a session leaf', async () => {

@@ -3384,6 +3384,28 @@ describe('Daemon session retention GC (#485)', () => {
       }
     })
 
+    it('judges a microsandbox agent’s directory without this host’s Git', async () => {
+      const daemon = await startDaemon()
+      const orphan = sessionDirOf(daemon, 'purged')
+      ;(daemon as any).usesMicrosandbox = () => true
+      ;(daemon as any).microsandbox = {
+        environmentIds: async () => [],
+        environment: () => ({ id: 'loaded' }),
+        discard: vi.fn(async () => {}),
+        collectImages: vi.fn(async () => {}),
+        stopAll: vi.fn(async () => {})
+      }
+      const judge = vi.spyOn((daemon as any).workspaces, 'removeOrphanSessionDir')
+      try {
+        await sweepRetention(daemon)
+        expect(judge).toHaveBeenCalledWith(expect.objectContaining({ id: 'bot-a' }), sessionKeyDirName('purged'), false)
+        // It holds no clone, so it goes without any Git to judge it by.
+        expect(existsSync(orphan)).toBe(false)
+      } finally {
+        await daemon.stop()
+      }
+    })
+
     it('leaves every directory alone while the manager of a sandboxed agent is down', async () => {
       const daemon = await startDaemon()
       const orphan = sessionDirOf(daemon, 'purged')

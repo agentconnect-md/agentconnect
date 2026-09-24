@@ -1686,11 +1686,11 @@ export class WorkspaceManager {
       .filter((leaf) => sessionLeafId(leaf) !== undefined)
   }
 
-  /** Remove a session directory no row names, by a session's own rules, judged on this host since a sweep never boots a VM. */
-  async removeOrphanSessionDir(agent: Agent, leaf: string): Promise<SessionWorktreeRemoval> {
+  /** Remove a session directory no row names, judged on this host since a sweep never boots a VM; `hostGit` false marks a tree a VM wrote, which this host's Git never reads. */
+  async removeOrphanSessionDir(agent: Agent, leaf: string, hostGit = true): Promise<SessionWorktreeRemoval> {
     const id = sessionLeafId(leaf)
     if (id === undefined) return { outcome: 'failed', error: `${leaf} is not a session directory` }
-    return this.removeSessionClones(agent, sessionDirIn(this.agentRootFor(agent), leaf), id, undefined, true)
+    return this.removeSessionClones(agent, sessionDirIn(this.agentRootFor(agent), leaf), id, undefined, true, hostGit)
   }
 
   // Remove one confined session's directory with every clone in it (§11) under a session worktree's rules — clean tree, no commit unreachable from a remote, review snapshots exempt — over EVERY local ref, not just HEAD: this removes the object store, so a side branch or a stash is work the checked-out branch cannot speak for.
@@ -1699,7 +1699,8 @@ export class WorkspaceManager {
     sessionDir: string,
     id: string,
     sessionKey?: string,
-    hostSide = false
+    hostSide = false,
+    hostGit = true
   ): Promise<SessionWorktreeRemoval> {
     // Asked of the filesystem holding it: a pool session's directory is on its pod, an executor's on that machine, never on this disk.
     const fs = hostSide
@@ -1709,7 +1710,7 @@ export class WorkspaceManager {
       if ((await fs.stat(sessionDir)) === 'missing') return { outcome: 'absent' }
       const canonical = await this.validateSessionDir(agent, sessionDir, sessionKey, hostSide)
       for (const clone of await sessionClonesUnder(fs, canonical)) {
-        const kept = await this.judgeSessionClone(agent, clone.path, id, fs, hostSide)
+        const kept = await this.judgeSessionClone(agent, clone.path, id, fs, hostSide, hostGit)
         if (kept) return kept
       }
       await fs.rmTree(canonical)
@@ -1725,12 +1726,15 @@ export class WorkspaceManager {
     clone: string,
     id: string,
     fs: WorkspaceFs,
-    hostSide = false
+    hostSide = false,
+    hostGit = true
   ): Promise<SessionWorktreeRemoval | undefined> {
     if ((await fs.stat(join(clone, '.git'))) === 'missing') {
       // No `.git` to interrogate: reclaim only a provably empty leftover, in one operation.
       return (await fs.rmdir(clone)) ? undefined : { outcome: 'retained', reason: 'dirty' }
     }
+    // Git parsing a VM's tree here would run outside that VM's boundary, so only a clone with no file in it can go.
+    if (!hostGit) return (await holdsNoFiles(fs, clone)) ? undefined : { outcome: 'retained', reason: 'uninspected' }
     const runner = hostSide ? hostGitRunner(clone) : this.runnerFor(agent.id, clone)
     const git = runner.withEnv(workspaceGitLocalEnv())
     // Fetched review refs mark the clone as a daemon-owned review snapshot, reset on every delivery.
@@ -3604,8 +3608,8 @@ export function foldSessionRemovals(results: readonly SessionWorktreeRemoval[]):
 export type SessionWorktreeRemoval = (
   | { outcome: 'removed' }
   | { outcome: 'absent' }
-  /** The worktree holds work the daemon must not discard — the caller keeps the session. */
-  | { outcome: 'retained'; reason: 'dirty' | 'unique-commits' | 'unsafe-config' }
+  /** The worktree holds work the daemon must not discard, or one it did not run Git in (`uninspected`) — the caller keeps the session. */
+  | { outcome: 'retained'; reason: 'dirty' | 'unique-commits' | 'unsafe-config' | 'uninspected' }
   | { outcome: 'failed'; error: string }
 ) & {
   /** Another root's worktree DID go even though the aggregate keeps the session, so a warm runtime

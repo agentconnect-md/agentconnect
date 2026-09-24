@@ -405,9 +405,11 @@ time on shared filesystems.
   loaded agent this daemon serves and retires those that no session row, dream
   or held host maps to. It applies the same rules with the daemon's own Git on
   this host and never boots a VM for the purpose. A directory that a microsandbox
-  environment still names waits until that VM is retired. An agent with work in
-  flight is skipped, and each directory is judged again inside the admission
-  fence (#2283).
+  environment still names waits until that VM is retired. Once it is retired,
+  the tree is still one the VM wrote, and this host's Git never reads it: only a
+  clone that holds no file goes, and any other clone keeps the directory, reported
+  as `uninspected`. An agent with work in flight is skipped, and each directory
+  is judged again inside the admission fence (#2283).
 - **Console push and Git reads** resolve the session root as today.
 - **Sandbox grants** are per session and exact: the clone's `.git` writable,
   its `hooks` and `config` read-only, for both the outer sandbox and a runtime's
