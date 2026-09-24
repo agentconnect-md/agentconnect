@@ -503,15 +503,12 @@ describe('probeTimeoutMs', () => {
     expect(probeTimeoutMs({ command: 'qodercli', args: ['--acp'], env: [] })).toBe(30_000)
   })
 
-  // Models the real leak: omp's own daemon escapes the adapter's process group, so it
-  // is still writing when stop() resolves and its next write restores the tree rmSync
-  // just deleted. Both delays matter: 50ms lands before the first observation point
-  // (250ms), 500ms lands AFTER it — the case an early return on a momentarily-clean
-  // stat would leak, since cleanup would already have declared success.
+  // An escaped runtime re-creates the removed root: 50ms lands before the first recheck (250ms), 500ms after it.
   it.each([50, 500])(
     'removes its temp root when a runtime re-creates it %dms after teardown',
     async (delayMs) => {
       let probeRoot = ''
+      let recreated: Promise<void> | undefined
       const results = await probeAllRuntimes(
         { a: rt },
         {
@@ -519,7 +516,12 @@ describe('probeTimeoutMs', () => {
             probeRoot = dirname(dirname(cwd))
             return fakeHost({
               onStop: () => {
-                setTimeout(() => mkdirSync(join(cwd, 'late-write'), { recursive: true }), delayMs).unref()
+                recreated = new Promise((resolve) => {
+                  setTimeout(() => {
+                    mkdirSync(join(cwd, 'late-write'), { recursive: true })
+                    resolve()
+                  }, delayMs).unref()
+                })
               }
             })
           }
@@ -528,14 +530,11 @@ describe('probeTimeoutMs', () => {
       expect(results.map((r) => r.ok)).toEqual([true])
       expect(probeRoot).not.toBe('')
 
-      // Wait for the re-creation to actually land first — asserting before it does would
-      // pass against any implementation, including one that never looks again.
-      await new Promise((resolve) => setTimeout(resolve, delayMs + 150))
+      // Await the write itself, not a fixed delay, so the absence asserted below is never vacuous.
+      await recreated
       expect(existsSync(probeRoot)).toBe(true)
 
-      // Then let the background watch reclaim it. Polling rather than hardcoding which
-      // observation point catches this delay; a cleanup that stopped early never removes
-      // the root again, so it is still there when the deadline expires.
+      // Poll rather than pin which recheck catches it; a cleanup that stopped early never removes it again.
       const deadline = Date.now() + 8_000
       while (existsSync(probeRoot) && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 50))
