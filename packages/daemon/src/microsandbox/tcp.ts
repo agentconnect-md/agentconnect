@@ -1,7 +1,7 @@
 import { Duplex } from 'node:stream'
 import { z } from 'zod'
+import { HOST_GENERATION, MessageSchema as Envelope } from './exec.js'
 
-const Envelope = z.object({ v: z.literal(7), t: z.string(), p: z.instanceof(Uint8Array) })
 const Data = z.object({ data: z.instanceof(Uint8Array) })
 const Failure = z.object({ error: z.string() })
 
@@ -13,7 +13,7 @@ export async function openGuestTcp(
 ): Promise<Duplex> {
   const { encode, decode } = await import('cborg')
   const message = (type: string, payload: unknown) =>
-    Buffer.from(encode({ v: 7, t: `core.tcp.${type}`, p: encode(payload) }))
+    Buffer.from(encode({ v: HOST_GENERATION, t: `core.tcp.${type}`, p: encode(payload) }))
   const client = await sdk.AgentClient.connectSandbox(name)
   const timer = setTimeout(() => void client.close().catch(() => {}), 10_000)
   try {

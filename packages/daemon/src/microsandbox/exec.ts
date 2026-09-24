@@ -13,7 +13,10 @@ export interface MicrosandboxExecuteOptions {
   stdin?: string
 }
 
-const MessageSchema = z.object({ v: z.literal(7), t: z.string(), p: z.instanceof(Uint8Array) })
+// agentd reads the host's protocol generation from the request, so these clients pin the one whose messages they speak.
+export const HOST_GENERATION = 7
+// Replies carry agentd's own generation; the exec and TCP messages used here are unchanged since it introduced them.
+export const MessageSchema = z.object({ v: z.number().int().min(1), t: z.string(), p: z.instanceof(Uint8Array) })
 const DataSchema = z.object({ data: z.instanceof(Uint8Array) })
 const ErrorSchema = z.object({ message: z.string() })
 const ConfigSchema = z.object({
@@ -36,7 +39,7 @@ export async function openExecStream(
 ) {
   const { decode, encode } = await import('cborg')
   const message = (type: string, payload: unknown) =>
-    Buffer.from(encode({ v: 7, t: `core.exec.${type}`, p: encode(payload) }))
+    Buffer.from(encode({ v: HOST_GENERATION, t: `core.exec.${type}`, p: encode(payload) }))
   const config = ConfigSchema.parse(await sandbox.config())
   const env = {
     ...(options.inheritEnv === false ? {} : Object.fromEntries(config.env.map(({ key, value }) => [key, value]))),
