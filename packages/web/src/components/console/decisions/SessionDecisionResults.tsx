@@ -141,9 +141,10 @@ export function CodeHostDecisionResult({
         : null,
     [decisions, provider, repoId, family]
   )
+  // The view-authorized list, bounded to this verdict: its detail read needs edit access to every member.
   const { data } = useSWR(
     source && seq !== undefined ? ['session-code-host-evaluation', ...source.key, seq] : null,
-    () => source!.get(seq!),
+    async () => (await source!.list({ cursor: seq! + 1, limit: 1 })).items.find((item) => item.seq === seq) ?? null,
     {
       revalidateOnFocus: false,
       shouldRetryOnError: false,
