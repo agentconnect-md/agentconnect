@@ -110,7 +110,7 @@ export function pullRequestModelSelectionState(
 export interface SessionModelSelectionInput {
   agentId: string
   selection: AgentModelSelection
-  supported(target: DecisionRuntimeTarget): boolean
+  supported(target: DecisionRuntimeTarget): boolean | Promise<boolean>
   signal: AbortSignal
   current(): boolean
   decision(id: string): Promise<DecisionGetReply>
@@ -167,9 +167,9 @@ export async function evaluateSessionModel(
         return []
       }
     })
-    return current() && result.evaluation.status === 'answered' && selected && input.supported(selected)
-      ? selected
-      : undefined
+    if (!current() || result.evaluation.status !== 'answered' || !selected || !(await input.supported(selected)))
+      return undefined
+    return current() ? selected : undefined
   } catch {
     input.signal.throwIfAborted()
     return undefined

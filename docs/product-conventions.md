@@ -9,6 +9,8 @@ the source of truth for cross-cutting product conventions.
 Each agent message shown as a separate block while streaming remains a separate block
 in conversation history. A transcript refresh replaces a live block only after its
 saved reply is available; saving a prompt alone must not hide an unfinished reply.
+A completed turn with no text reply retires its live work on the next transcript
+refresh after its prompt has been saved and all stream lanes finish.
 
 ## User-facing language
 

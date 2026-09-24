@@ -86,6 +86,23 @@ describe('reconcilePersistedLiveSteps', () => {
     expect(reconcilePersistedLiveSteps(live, peerRows, agentId, [])).toEqual(live)
   })
 
+  it('retires silent work after the prompt is saved and all lanes finish', () => {
+    const at = 1_785_000_000_000
+    const live = [
+      prompt('inspect', at),
+      { kind: 'tool', turnId: `u:${at}`, text: 'Read file', observedAtMs: at + 100 }
+    ] satisfies [SessionStep, SessionStep]
+    const saved = persistedPrompt(1, 'inspect', at + 10)
+    const waiting = reconcilePersistedLiveSteps(live, [saved], agentId)
+    expect(waiting).toEqual([{ ...live[0], hidden: true }, live[1]])
+    expect(reconcilePersistedLiveSteps([{ ...waiting[0]!, turnComplete: true }, waiting[1]!], [], agentId)).toEqual([])
+    expect(reconcilePersistedLiveSteps([{ ...live[0], turnComplete: true }, live[1]], [saved], agentId)).toEqual([])
+    const notice = { kind: 'notice', turnId: `u:${at}`, text: 'Approval unavailable', standing: true } as const
+    expect(
+      reconcilePersistedLiveSteps([{ ...live[0], turnComplete: true }, live[1], notice], [saved], agentId)
+    ).toEqual([notice])
+  })
+
   function persistedReply(seq: number, sender: string, text: string, ts: number, postId: string): SessionMessageDto {
     return { seq, ts: String(ts), text, sender, kind: 'text', postId }
   }

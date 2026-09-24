@@ -1824,8 +1824,13 @@ deadline. Input and provider results stay on the data plane.
 follow rule order. Boolean values cannot appear in multiple rules. Score ranges
 cannot overlap, using half-open intervals with an inclusive rubric maximum.
 No match, invalidated rules, missing definition, unavailable evaluation, or an
-unavailable/incompatible target uses the configured fallback pair. A failure to
-start that fallback remains a visible startup error.
+unavailable/incompatible target uses the configured fallback pair. A target is
+available when the serving daemon, or a group member the session could be placed
+on, runs that runtime with that model in the Agent's execution strategy, read from
+that strategy's own catalog ([session-executors.md](session-executors.md) §5); a
+model list that is empty or that no live probe has confirmed does not reject it. A
+Decision never chooses the strategy. A failure to start that fallback remains a visible startup
+error.
 
 **One configuration for the session.** The choice is resolved before executor placement,
 provider credential selection, and runtime startup. Execution uses a session-owned
@@ -1896,10 +1901,11 @@ Gate/router bundles deliver all definitions to the daemon ahead of ingress, and
 pending verdicts include child configuration in their fingerprints. Peers without
 `decision-chain-v1` cannot execute a chain; their conversations remain held.
 
-The editors let a rule choose another Decision, edit its conditions, and return
-along the path. Inside a later Decision, Save keeps its edits and returns one level,
-and Cancel discards them and returns one level. Only at the first Decision do they
-save or close the editor. The path's links return with edits kept.
+The editors let a rule choose another Decision and edit its conditions. Each later
+Decision opens as a sheet stacked over its parent. The sheet names the parent Decision
+and the rule that leads to it, and the parent's name returns to it with edits kept.
+A sheet's Save keeps its edits and returns one level. Its Cancel, ×, or Escape
+discards them and returns one level. Only the editor underneath saves or closes.
 Gate and shared-bot routing Try use the same traversal as live execution.
 Recent evaluation details retain the reached steps and their answers with the
 existing transcript retention boundary. The model-selection sample remains

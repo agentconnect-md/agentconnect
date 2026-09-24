@@ -298,7 +298,6 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
         // mid-conversation must degrade THAT source to the partial-merge notice, never stall the
         // whole tail round.
         let failed = 0
-        let fetchedAny = false
         for (const src of sources) {
           try {
             let cursor = state.cursors.get(src.sessionId) ?? null
@@ -313,7 +312,6 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
                 src.sessionId,
                 mergeSessionMessages(current, page.messages, platformTranscriptOrdering(src.platform))
               )
-              if (page.messages.length > 0) fetchedAny = true
               if (page.liveCursor !== null) {
                 cursor = page.liveCursor
                 state.cursors.set(src.sessionId, cursor)
@@ -336,7 +334,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
           conversationSourceAgentByMessageRef.current
         )
         setMsgs(merged)
-        if (tailSessionRef.current === sid && !sessionBusyRef.current && fetchedAny)
+        if (tailSessionRef.current === sid && !sessionBusyRef.current)
           reconcileLiveSteps(sid, merged, aid ?? '', state.rows.get(sid) ?? [])
       })()
         .catch(() => {

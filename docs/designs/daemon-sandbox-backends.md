@@ -112,7 +112,11 @@ executor facet reports the same table with `host` limited to Linux. Each runtime
 `facts/daemon-runtimes` carries one entry per offered strategy (`strategies`):
 availability with a reason, and for `host` and `srt` the models and `modelsSource`
 of the host probe. A `microsandbox` entry names a runtime the image lacks once the
-image has been read, and carries no models until the image probe of S2c.
+image has been read. Its models are what the runtime's selector advertised to the
+first session this machine's own VM opened for it, recorded against the image's
+identity in `microsandbox/image-models.json`; a recorded list is `cached` after a
+restart until that run's first such session confirms it, and before any session an
+entry carries no models.
 
 A session launches in its agent's strategy. One whose strategy is unavailable here
 is refused with the probe's reason, and nothing falls back to a weaker boundary;
@@ -131,11 +135,12 @@ for a group those at least one ready member offers, and refuses one it cannot ru
 with 409 and the reason. The migration runs once: an unsandboxed agent became
 `host`, a sandboxed agent with no placement became `srt`, and a placed, sandboxed
 agent takes its daemon's reported backend at that daemon's next registration.
-The console's strategy picker (S3) offers the same tables: the daemon read model
-carries each machine's own table, and an agent carries its placement's. Still
-designed: the birth strategy in the session's verdict and the executor's mismatch
-refusal (S2b), and model selection against the strategy's catalog and the image's
-model probe (S2c).
+Model selection judges a rule's target against the machines the session could land
+on, in the strategy's own catalog, and placement lands a session only where its
+runtime and model run (S2c). The console's strategy picker (S3) offers the same
+tables: the daemon read model carries each machine's own table, and an agent carries
+its placement's. Still designed: the birth strategy in the session's verdict and the
+executor's mismatch refusal (S2b).
 
 ### Shared mounts and manual conversion
 
