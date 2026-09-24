@@ -16,11 +16,19 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams()
 }))
 vi.mock('@/lib/data', async (original) => ({ ...(await original<object>()), MOCK_MODE: true }))
-// review-bot and security-bot watch acme/api's pull requests; docs-bot watches only its issues.
+// review-bot and security-bot watch acme/api's pull requests; docs-bot watches its issues and has a disabled PR hook.
+const hook = (repo: string, family: string, enabled = true) => ({
+  kind: 'github',
+  enabled,
+  name: repo,
+  repoFullName: repo,
+  family,
+  events: []
+})
 const hooks: Record<string, object[]> = {
-  a1: [{ kind: 'github', name: 'acme/api', repoFullName: 'acme/api', family: 'pull_request', events: [] }],
-  a2: [{ kind: 'github', name: 'Acme/API', repoFullName: 'Acme/API', family: 'pull_request', events: [] }],
-  a3: [{ kind: 'github', name: 'acme/api', repoFullName: 'acme/api', family: 'issues', events: [] }]
+  a1: [hook('acme/api', 'pull_request')],
+  a2: [hook('Acme/API', 'pull_request')],
+  a3: [hook('acme/api', 'issues'), hook('acme/api', 'pull_request', false)]
 }
 vi.mock('@/lib/api', async (original) => ({
   ...(await original<object>()),

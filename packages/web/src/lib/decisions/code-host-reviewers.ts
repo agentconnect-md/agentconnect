@@ -8,8 +8,9 @@ import { githubHookFamily } from '@/lib/github-events'
 import { useOrgs } from '@/lib/org-context'
 import type { RosterAgent } from './routing-roster'
 
-/** Whether a hook is a GitHub pull-request subscription on `repo` (named as its row reads it). */
+/** Whether a hook is an enabled GitHub pull-request subscription on `repo` (named as its row reads it). */
 export const watchesRepoPullRequests = (hook: HookDto, repo: string) =>
+  hook.enabled &&
   hook.kind === 'github' &&
   githubHookFamily(hook) === 'pull_request' &&
   (hook.repoFullName ?? hook.name).toLowerCase() === repo.toLowerCase()
