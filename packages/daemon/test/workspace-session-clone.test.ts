@@ -120,6 +120,7 @@ function agentFixture(
     mode?: 'git-repo' | 'from-scratch'
     githubApp?: boolean
     additionalRepos?: Array<{ repoFullName: string; repoId: string; materialize?: 'always' | 'on-demand' }>
+    additionalInstallations?: Array<{ accountLogin: string; materialize: 'decision' | 'on-demand' }>
   } = {}
 ): Agent {
   const home = tempRoot('ac-session-clone-agent-')
@@ -137,6 +138,11 @@ function agentFixture(
       gitBranch: 'main',
       ...(opts.githubApp ? { gitCredential: 'github-app' } : {}),
       additionalRepos: opts.additionalRepos ?? [],
+      additionalInstallations: (opts.additionalInstallations ?? []).map((grant) => ({
+        provider: 'github',
+        access: 'read',
+        ...grant
+      })),
       pullOnNewSession: false,
       skills: []
     },
@@ -871,6 +877,33 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
     const plain = agentFixture({ mode: 'from-scratch' })
     await workspaces.prepareSessionWorkspace(plain, confined(), { installSkills })
     expect(existsSync(join(workspaces.agentRootFor(plain), 'sessions'))).toBe(false)
+  })
+
+  it('gives a confined session of a grant-only agent its own directory to clone into, and the prompt names the accounts', async () => {
+    const agent = agentFixture({
+      mode: 'from-scratch',
+      additionalInstallations: [
+        { accountLogin: 'example-co', materialize: 'on-demand' },
+        { accountLogin: 'acme', materialize: 'decision' }
+      ]
+    })
+    serveAll(agent)
+
+    const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
+
+    const repos = join(leafOf(agent), 'repos')
+    expect(readdirSync(repos)).toEqual([])
+    const scope = { sessionKey: KEY, isolation: 'session' as const }
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, scope)).toEqual([realpathSync(repos)])
+    const block = buildWorkspaceRootsAppend(
+      await workspaces.sessionAdditionalRoots(agent, scope),
+      await workspaces.sessionOnDemandClones(agent, scope)
+    )
+    expect(block).not.toContain('Authorized but not checked out')
+    expect(block).toContain('Any repository of these GitHub accounts is authorized: acme, example-co.')
+    expect(block).toContain(
+      `\`git clone https://github.com/acme/<repo> ${join(realpathSync(repos), 'acme', '<repo>')}\``
+    )
   })
 
   it('grants a confined session its own directory alone as a workspace write root', async () => {

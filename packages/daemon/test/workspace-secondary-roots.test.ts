@@ -159,6 +159,13 @@ function agentFixture(
     pullOnNewSession?: boolean
     /** The deployment's own GitLab instance (§24.4); absent means gitlab.com. */
     gitlabHost?: string
+    /** Installation grants (agent-multi-repo-authorization.md decision 10). */
+    additionalInstallations?: Array<{
+      provider?: string
+      accountLogin: string
+      access?: 'read' | 'comment' | 'write'
+      materialize?: 'decision' | 'on-demand'
+    }>
   } = {}
 ): Agent {
   const home = tempRoot('ac-secondary-agent-')
@@ -178,6 +185,16 @@ function agentFixture(
       gitCredential: 'github-app',
       ...(overrides.agentDir !== undefined ? { agentDir: overrides.agentDir } : {}),
       additionalRepos,
+      ...(overrides.additionalInstallations !== undefined
+        ? {
+            additionalInstallations: overrides.additionalInstallations.map((grant) => ({
+              provider: 'github',
+              access: 'read',
+              materialize: 'on-demand',
+              ...grant
+            }))
+          }
+        : {}),
       pullOnNewSession: overrides.pullOnNewSession ?? true,
       skills: []
     },
@@ -878,6 +895,100 @@ describe('materialization modes (decisions 13 and 20)', () => {
     expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([
       realpathSync(clonesOf(agent, 'session-a'))
     ])
+  })
+})
+
+describe('installation grants are on demand (agent-multi-repo-authorization.md decision 10)', () => {
+  const GRANTS = [
+    { accountLogin: 'example-co', materialize: 'decision' as const },
+    { accountLogin: 'acme' },
+    { provider: 'gitlab', accountLogin: 'example-group' }
+  ]
+  const EXPECTED = [
+    {
+      hostName: 'GitHub',
+      accountLogin: 'acme',
+      repoFullName: 'acme/<repo>',
+      cloneUrl: 'https://github.com/acme/<repo>'
+    },
+    {
+      hostName: 'GitHub',
+      accountLogin: 'example-co',
+      repoFullName: 'example-co/<repo>',
+      cloneUrl: 'https://github.com/example-co/<repo>'
+    },
+    {
+      hostName: 'GitLab',
+      accountLogin: 'example-group',
+      repoFullName: 'example-group/<repo>',
+      cloneUrl: 'https://git.example.test/example-group/<repo>.git'
+    }
+  ]
+
+  it('hands a grant-only agent’s sessions a clone directory on the shared and worktree tiers, `decision` included, with each host’s own URL', async () => {
+    const agent = agentFixture([], {
+      mode: 'from-scratch',
+      gitlabHost: 'https://git.example.test',
+      additionalInstallations: GRANTS
+    })
+    serveAll(agent, {})
+    const shared = { sessionKey: 'session-shared', isolation: 'shared' as const }
+    const isolated = { sessionKey: 'session-own', isolation: 'session' as const }
+
+    const sharedCwd = await workspaces.prepareSessionWorkspace(agent, shared)
+    const isolatedCwd = await workspaces.prepareSessionWorkspace(agent, isolated)
+
+    // A grant is never expanded into roots: nothing was cloned.
+    expect(existsSync(join(workspaces.agentRootFor(agent), 'repos'))).toBe(false)
+    expect(await workspaces.additionalWorkspaceDirectories(agent, sharedCwd, shared)).toEqual([
+      realpathSync(clonesOf(agent, 'session-shared'))
+    ])
+    expect(await workspaces.additionalWorkspaceDirectories(agent, isolatedCwd, isolated)).toEqual([
+      realpathSync(clonesOf(agent, 'session-own'))
+    ])
+    expect(await workspaces.sessionOnDemandClones(agent, isolated)).toEqual({
+      path: realpathSync(clonesOf(agent, 'session-own')),
+      repositories: [],
+      installations: EXPECTED
+    })
+    // What the retention prefilter asks before it binds anything.
+    expect(workspaces.mayOwnOnDemandClones(agent, 'session-never-opened')).toBe(true)
+  })
+
+  it('lists rows and grants together, and skips a grant its host cannot address', async () => {
+    const agent = agentFixture(
+      [{ repoFullName: 'example-co/shared-library', repoId: '815', materialize: 'on-demand' }],
+      {
+        additionalInstallations: [{ accountLogin: 'acme' }, { provider: 'example-host', accountLogin: 'acme' }]
+      }
+    )
+    serveAll(agent, {})
+    const request = { sessionKey: 'session-a', isolation: 'session' as const }
+
+    await workspaces.prepareSessionWorkspace(agent, request)
+
+    expect(await workspaces.sessionOnDemandClones(agent, request)).toEqual({
+      path: realpathSync(clonesOf(agent, 'session-a')),
+      repositories: [
+        { repoFullName: 'example-co/shared-library', cloneUrl: 'https://github.com/example-co/shared-library' }
+      ],
+      installations: [EXPECTED[0]]
+    })
+  })
+
+  it('keeps an agent with only `always` rows and no grant as it was', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }], { additionalInstallations: [] })
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    const request = { sessionKey: 'session-a', isolation: 'shared' as const }
+
+    const cwd = await workspaces.prepareSessionWorkspace(agent, request)
+
+    expect(existsSync(join(workspaces.agentRootFor(agent), 'clones'))).toBe(false)
+    expect(await workspaces.sessionOnDemandClones(agent, request)).toBeUndefined()
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([
+      realpathSync(join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra', 'checkout'))
+    ])
+    expect(workspaces.mayOwnOnDemandClones(agent, 'session-never-opened')).toBe(false)
   })
 })
 

@@ -12,6 +12,7 @@ import type { ManagedCredentialScope } from '../workspace/git-injection.js'
 
 export const giteaCredentials: CodeHostCredentialModule = {
   provider: 'gitea',
+  displayName: 'Gitea',
   specGitCredential: 'gitea',
   hostFromSpec: true,
   managedHost: (spec) => giteaManagedHost(spec.giteaHost),

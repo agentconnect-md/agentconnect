@@ -1205,6 +1205,37 @@ describe('secondary roots on the pod volume', () => {
     expect(existsSync('/daemon/agents/agent-cluster/sessions')).toBe(false)
   })
 
+  it('makes a grant-only agent’s shared and session-pod sessions their clone directories', async () => {
+    const agent = clusterAgent({
+      mode: 'from-scratch',
+      additionalInstallations: [{ provider: 'github', accountLogin: 'acme', access: 'read', materialize: 'on-demand' }]
+    } as Partial<Agent['workspace']>)
+    const shared = { sessionKey: 'sess-1', isolation: 'shared' as const }
+    const sharedClones = `${POD_ROOT}/clones/${workspaces.sessionWorktreeId('sess-1')}`
+    const isolated = { sessionKey: 'sess-scratch', isolation: 'session' as const }
+
+    const sharedCwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT, shared)
+    const cwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT, isolated)
+
+    expect(await pod.stat(sharedClones)).toBe('dir')
+    expect(await workspaces.additionalWorkspaceDirectories(agent, sharedCwd, shared)).toEqual([sharedClones])
+    expect(await pod.stat(sessionDirOf('sess-scratch'))).toBe('dir')
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, isolated)).toEqual([
+      `${sessionDirOf('sess-scratch')}/repos`
+    ])
+    expect((await workspaces.sessionOnDemandClones(agent, isolated))?.installations).toEqual([
+      {
+        hostName: 'GitHub',
+        accountLogin: 'acme',
+        repoFullName: 'acme/<repo>',
+        cloneUrl: 'https://github.com/acme/<repo>'
+      }
+    ])
+    // Nothing was cloned on either pod, and nothing landed on this disk.
+    expect(calls.some((call) => call.args[0] === 'clone')).toBe(false)
+    expect(existsSync('/daemon/agents/agent-cluster/clones')).toBe(false)
+  })
+
   it('clones an on-demand repository into a session pod only as its review’s exact cwd', async () => {
     const base = 'a'.repeat(40)
     const head = 'b'.repeat(40)
