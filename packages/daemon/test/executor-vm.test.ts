@@ -144,7 +144,9 @@ describe('the microsandbox strategy launcher', () => {
 
     // Claude's placeholder covers its saved login; an environment-only key reaches a local VM as its value, and so a hosted one.
     expect(prepared[0]!.secrets).toBeUndefined()
-    expect(prepared[0]!.hosted!.env).toEqual({ ANTHROPIC_API_KEY: 'fixture-executor-env-key' })
+    // Linux also seeds the shared sign-in's pointer beside it, so only the key is asserted.
+    expect(prepared[0]!.hosted!.env.ANTHROPIC_API_KEY).toBe('fixture-executor-env-key')
+    expect(prepared[0]!.hosted!.env.NODE_EXTRA_CA_CERTS).toBeUndefined()
   })
 
   it.skipIf(process.platform !== 'linux')(
