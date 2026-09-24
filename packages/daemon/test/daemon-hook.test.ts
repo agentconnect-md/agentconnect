@@ -227,6 +227,29 @@ describe('Daemon rd/msg hook fires', () => {
       })
     }
 
+    const key = sessionKey('hook', 'example-org/example-repo', '42', AGENT_ID, 'github:1')
+    await (daemon as any).store.upsertSession({
+      key,
+      agentId: AGENT_ID,
+      platform: 'hook',
+      channel: 'example-org/example-repo',
+      thread: '42',
+      transportScope: 'github:1',
+      acpSessionId: 'acp-selected',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    await (daemon as any).store.pinDecisionModel(key, { runtime: 'codex', model: '' })
+    ;(daemon as any).runtimeFacts.names.codex = 'Codex'
+    host.modelOptions.mockReturnValue(null)
+    expect(
+      await (daemon as any).githubReviews.githubCommentAttribution(AGENT_ID, 'acp-selected', 'github')
+    ).toMatchObject({
+      runtime: 'Codex',
+      model: 'default'
+    })
+
     await daemon.stop()
   })
 

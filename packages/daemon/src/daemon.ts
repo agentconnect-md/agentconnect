@@ -10098,10 +10098,13 @@ export class Daemon {
       sessionLink: (sessionId, source) => this.sessionLink(sessionId, source),
       outwardSessionId: (agentId, acpSessionId) => this.outwardSessionIdForAcp(agentId, acpSessionId),
       runtimeNames: () => this.runtimeFacts.runtimeNames(),
-      // A hook names its session by agent + runtime id; the row's logical key picks the owning host.
-      hostForStoredSession: async (agentId, acpSessionId) => {
+      // A hook's stored selection names the runtime even after its host stops.
+      storedSessionExecution: async (agentId, acpSessionId) => {
         const rec = await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
-        return rec ? this.hostForOwner(this.sessionOwnerKey(agentId, rec.key)) : this.hosts.get(agentHostKey(agentId))
+        return {
+          host: rec ? this.hostForOwner(this.sessionOwnerKey(agentId, rec.key)) : this.hosts.get(agentHostKey(agentId)),
+          target: pinnedDecisionTarget(rec?.decisionModel)
+        }
       }
     }
   }
