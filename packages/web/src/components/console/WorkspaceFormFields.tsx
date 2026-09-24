@@ -161,7 +161,8 @@ export function WorkspaceModeField({
   return (
     <div className={fieldClassName}>
       {label !== null && <span className="fldlbl">{label ?? t('workspace')}</span>}
-      <div className="flex flex-wrap gap-[10px]">
+      {/* One row on desktop however many tiles the flags leave; mobile still wraps. */}
+      <div className="flex flex-wrap gap-[10px] desktop:flex-nowrap desktop:gap-2">
         {options.map((option) => {
           const selected = value === option.value
           return (
@@ -172,8 +173,8 @@ export function WorkspaceModeField({
               aria-pressed={selected}
               className={
                 selected
-                  ? 'ptile on flex-1 justify-center px-[13px] py-[9px]'
-                  : 'ptile flex-1 justify-center px-[13px] py-[9px]'
+                  ? 'ptile on flex-1 justify-center px-[13px] py-[9px] desktop:min-w-0 desktop:basis-0 desktop:gap-[7px] desktop:px-2'
+                  : 'ptile flex-1 justify-center px-[13px] py-[9px] desktop:min-w-0 desktop:basis-0 desktop:gap-[7px] desktop:px-2'
               }
               onClick={() => onChange(option.value)}
             >
