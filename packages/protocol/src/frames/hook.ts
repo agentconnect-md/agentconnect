@@ -112,6 +112,13 @@ export function isGithubPullRequestRevisionEvent(
   )
 }
 
+/** Actions `release:*` skips: `created` saves a draft or precedes `published`; `released`/`prereleased` restate a publish or an edit. */
+export const GITHUB_RELEASE_RESTATED_EVENTS: ReadonlySet<string> = new Set([
+  'release:created',
+  'release:released',
+  'release:prereleased'
+])
+
 /** One GitLab hook subject: issue/MR by IID, or a standalone push ref (gitlab-com-integration.md §17.2). */
 export const GitlabHookTarget = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('issue'), iid: z.number().int().positive() }),
@@ -330,7 +337,7 @@ export type PublishedHookOutput = z.infer<typeof PublishedHookOutput>
 export const HookContext = z.object({
   source: z.enum(HOOK_KINDS),
   // ── github (P2) ──
-  event: z.string().optional(), // 'issues' | 'pull_request' | 'issue_comment' | 'deployment' | 'deployment_status'
+  event: z.string().optional(), // 'issues' | 'pull_request' | 'issue_comment' | 'deployment' | 'deployment_status' | 'release'
   action: z.string().optional(), // 'opened' | 'synchronize' | 'created' | … (a deployment_status carries its state here)
   repo: z.string().optional(), // 'owner/repo'
   number: z.number().int().optional(), // issue/PR number
@@ -356,6 +363,15 @@ export const HookContext = z.object({
   environment: z.string().optional(), // 'production'
   ref: z.string().optional(), // the deployed ref, as GitHub names it
   sha: z.string().optional(), // the deployed commit
+  // ── github release (no thread: every release of the repository continues one session) ──
+  release: z
+    .object({
+      tag: z.string(), // 'v1.2.0'
+      target: z.string().optional(), // the branch or commit the tag was cut from
+      prerelease: z.boolean().optional(),
+      draft: z.boolean().optional()
+    })
+    .optional(),
   // ── webhook ──
   body: z.string().optional(), // raw body, truncated to ≤64 KiB
   truncated: z.boolean().optional()

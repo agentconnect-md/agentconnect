@@ -205,6 +205,10 @@ const GH_TRIGGER_TILES: Partial<Record<GhFamily, TriggerTile<GhTriggerMode>[]>> 
   deployment: [
     { mode: 'first', label: 'created', desc: 'A deployment is created' },
     { mode: 'every', label: 'any status', desc: 'Every status it reports — in progress, success, failure' }
+  ],
+  release: [
+    { mode: 'first', label: 'published', desc: 'A release or prerelease is published' },
+    { mode: 'every', label: GH_TRIGGER_LABEL.every, desc: 'Every publish, edit or unpublish' }
   ]
 }
 

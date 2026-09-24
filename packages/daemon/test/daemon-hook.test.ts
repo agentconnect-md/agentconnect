@@ -4496,6 +4496,56 @@ describe('buildHookMessage', () => {
       expect(text).not.toContain('The daemon owns the reply')
     })
 
+    it('a release is the repository’s releases session: titled by it, read by its tag, flags on the header', async () => {
+      const release = (action: string, flags: { prerelease?: boolean; draft?: boolean } = {}, truncated = false) =>
+        ghFire(
+          {
+            event: 'release',
+            action,
+            number: undefined,
+            title: 'v1.2.0 — faster sync',
+            labels: undefined,
+            authorAssociation: undefined,
+            senderLogin: 'github-actions[bot]',
+            htmlUrl: 'https://github.com/acme/infra/releases/tag/v1.2.0',
+            bodyExcerpt: '## Changes\n- faster sync',
+            release: { tag: 'v1.2.0', target: 'main', prerelease: false, draft: false, ...flags },
+            truncated
+          },
+          { sessionKey: 'acme/infra#releases', event: `release:${action}` }
+        )
+      const published = buildHookMessage(release('published', { prerelease: true }), 'trace')
+      expect(published).toMatchObject({
+        channel: 'acme/infra',
+        thread: 'releases',
+        threadUrl: 'https://github.com/acme/infra/releases/tag/v1.2.0',
+        initialSessionTitle: 'Releases acme/infra',
+        text: 'Published release v1.2.0'
+      })
+      expect(published.standingContext).toBeUndefined()
+      expect(published.turnBody?.codehost).toMatchObject({
+        provider: 'github',
+        event: 'release:published',
+        subject: { kind: 'release', repo: 'acme/infra', title: 'v1.2.0 — faster sync' },
+        ref: 'v1.2.0'
+      })
+      expect(published.turnBody?.codehost?.review).toBeUndefined()
+      expect(buildHookMessage(release('edited'), 'trace').text).toBe('Edited release v1.2.0')
+
+      const text = buildHookText(release('published', { prerelease: true }, true))
+      expect(text).toContain('GitHub release:published — acme/infra "v1.2.0 — faster sync"')
+      expect(text).toContain('Tag: v1.2.0')
+      expect(text).toContain('Target: main')
+      expect(text).toContain('Prerelease: true')
+      expect(text).toContain('Draft: false')
+      // The notes are third-party text: fenced, never on the header.
+      const beginAt = text.indexOf(UNTRUSTED_CONTENT_BEGIN)
+      expect(beginAt).toBeGreaterThan(text.indexOf('Draft:'))
+      expect(text.slice(beginAt)).toContain('faster sync')
+      expect(text).toContain('`gh release view v1.2.0`')
+      expect(text).not.toContain('The daemon owns the reply')
+    })
+
     it('requires a formal verdict for an authorized explicit PR review mention', async () => {
       const text = buildHookText(
         ghFire(

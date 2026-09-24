@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
 import type { Clock } from '@agentconnect.md/connection'
 import {
+  GITHUB_RELEASE_RESTATED_EVENTS,
   GITHUB_REQUEST_REVIEW_ACTION,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   isGithubPullRequestRevisionEvent,
@@ -42,7 +43,8 @@ const SUBSCRIPTION_EVENTS = new Set([
   'pull_request_review_comment',
   'push',
   'deployment',
-  'deployment_status'
+  'deployment_status',
+  'release'
 ])
 /** The events that ring the installation doorbell instead of matching. */
 const INSTALLATION_EVENTS = new Set(['installation', 'installation_repositories'])
@@ -134,6 +136,16 @@ interface GithubPayload {
     log_url?: string | null
     environment_url?: string | null
   }
+  // release deliveries — no thread; every release of the repository continues one session.
+  release?: {
+    tag_name?: string
+    target_commitish?: string
+    name?: string | null
+    body?: string | null
+    html_url?: string
+    draft?: boolean
+    prerelease?: boolean
+  }
 }
 
 /** `deployment` and `deployment_status` — one subject family, no thread, machine-authored by design. */
@@ -180,6 +192,7 @@ export interface GithubMatchCtx {
   installationId: string | undefined // String(payload.installation.id); absent ⇒ never matches
   labels: string[] // the subject's CURRENT labels (not payload.label)
   senderType: string | undefined // 'User' | 'Bot' | …
+  senderLogin?: string
   // P3 gating inputs: thread authors and the authored text; handles match locally, actor permission is always live.
   subjectAuthorLogin?: string
   subjectAuthorType?: string
@@ -247,6 +260,15 @@ export function githubTeamOwner(repository: GithubRepositoryRef | undefined): st
 
 function requestsGithubAppReviewer(login: string | undefined, appSlug: string | undefined): boolean {
   return !!login && !!appSlug && login.toLowerCase() === `${appSlug}[bot]`.toLowerCase()
+}
+
+/** Release automation is a bot by design; this App's own release is not admitted, or an agent editing its notes would re-trigger itself. */
+function isForeignBotRelease(rule: RcHookAssign, ctx: GithubMatchCtx): boolean {
+  return (
+    ctx.event === 'release' &&
+    !!rule.github?.appSlug &&
+    !requestsGithubAppReviewer(ctx.senderLogin, rule.github.appSlug)
+  )
 }
 
 function githubRuleSupportsPullRequests(rule: RcHookAssign): boolean {
@@ -331,8 +353,16 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
         ctx.eventAction === 'pull_request:converted_to_draft'))
   )
     return 'no-match'
-  // Decision 10: bots are vetoed except this App's same-repository PR revisions, and deployments, which cannot loop.
-  if (ctx.senderType === 'Bot' && !isConfiguredAppPullRequest(rule, ctx) && !isGithubDeploymentEvent(ctx.event))
+  // Decision 10: bots are vetoed except this App's same-repository PR revisions, deployments, which cannot loop, and other bots' releases.
+  if (
+    ctx.senderType === 'Bot' &&
+    !isConfiguredAppPullRequest(rule, ctx) &&
+    !isGithubDeploymentEvent(ctx.event) &&
+    !isForeignBotRelease(rule, ctx)
+  )
+    return 'no-match'
+  // A restated release action fires only on its explicit pattern, so one publish is one turn under `release:*`.
+  if (GITHUB_RELEASE_RESTATED_EVENTS.has(ctx.eventAction) && !rule.github.events.includes(ctx.eventAction))
     return 'no-match'
   // Decision 6(a): an event that cannot prove its installation does not fire.
   if (!ctx.installationId || !rule.github.installationIds.includes(ctx.installationId)) return 'no-match'
@@ -380,8 +410,11 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
   if (rule.github.mentionOnly && !summoned) return 'no-match'
   if (!labelFilterAdmits(rule.github.labelFilter, ctx.labels)) return 'no-match'
 
-  // Association labels prove nothing: thread events resolve the live role; push and deployments rely on the installation gate.
-  return ctx.event === 'push' || isGithubDeploymentEvent(ctx.event) || isInternalAppPullRequest(rule, ctx)
+  // Association labels prove nothing: thread events resolve the live role; push, deployments and releases rely on the installation gate.
+  return ctx.event === 'push' ||
+    isGithubDeploymentEvent(ctx.event) ||
+    ctx.event === 'release' ||
+    isInternalAppPullRequest(rule, ctx)
     ? 'trusted'
     : 'needs-authz'
 }
@@ -409,11 +442,12 @@ function firstUrl(...candidates: Array<string | null | undefined>): string | und
   return candidates.find((candidate): candidate is string => typeof candidate === 'string' && candidate !== '')
 }
 
-/** The trimmed envelope every fanned-out hook shares; comment, head commit or deployment status text wins as the excerpt. */
+/** The trimmed envelope every fanned-out hook shares; comment, head commit, deployment status or release notes win as the excerpt. */
 export function buildGithubContext(event: string, payload: GithubPayload): HookContext {
   const subject = payload.issue ?? payload.pull_request
   const deployment = isGithubDeploymentEvent(event) ? payload.deployment : undefined
   const status = event === 'deployment_status' ? payload.deployment_status : undefined
+  const release = event === 'release' ? payload.release : undefined
   // A review's own text is what the event says; it never falls back to the PR body.
   const review = event === 'pull_request_review' ? payload.review : undefined
   const bodySource =
@@ -422,6 +456,7 @@ export function buildGithubContext(event: string, payload: GithubPayload): HookC
     subject?.body ??
     status?.description ??
     deployment?.description ??
+    release?.body ??
     payload.head_commit?.message ??
     ''
   const excerpt = truncateUtf8(bodySource, GITHUB_BODY_EXCERPT_MAX)
@@ -434,15 +469,17 @@ export function buildGithubContext(event: string, payload: GithubPayload): HookC
     status?.log_url,
     status?.target_url,
     status?.environment_url,
-    deployment ? payload.workflow_run?.html_url : undefined
+    deployment ? payload.workflow_run?.html_url : undefined,
+    release?.html_url
   )
+  const title = subject?.title || release?.name || release?.tag_name
   return {
     source: 'github',
     event,
     ...(action ? { action } : {}),
     ...(payload.repository?.full_name ? { repo: payload.repository.full_name } : {}),
     ...(subject?.number !== undefined ? { number: subject.number } : {}),
-    ...(subject?.title ? { title: sanitizeTitle(subject.title) } : {}),
+    ...(title ? { title: sanitizeTitle(title) } : {}),
     ...(payload.sender?.login ? { senderLogin: payload.sender.login } : {}),
     ...(payload.sender?.avatar_url ? { senderAvatarUrl: payload.sender.avatar_url } : {}),
     ...((payload.comment?.author_association ?? review?.author_association ?? subject?.author_association)
@@ -471,17 +508,28 @@ export function buildGithubContext(event: string, payload: GithubPayload): HookC
     ...(deployment?.environment ? { environment: sanitizeTitle(deployment.environment) } : {}),
     ...(deployment?.ref ? { ref: sanitizeTitle(deployment.ref) } : {}),
     ...(deployment?.sha && COMMIT_SHA.test(deployment.sha) ? { sha: deployment.sha } : {}),
+    // The tag and target ride the trusted header too; the flags let the agent tell a prerelease or draft apart.
+    ...(release?.tag_name
+      ? {
+          release: {
+            tag: sanitizeTitle(release.tag_name),
+            ...(release.target_commitish ? { target: sanitizeTitle(release.target_commitish) } : {}),
+            ...(typeof release.prerelease === 'boolean' ? { prerelease: release.prerelease } : {}),
+            ...(typeof release.draft === 'boolean' ? { draft: release.draft } : {})
+          }
+        }
+      : {}),
     truncated: excerpt.truncated
   }
 }
 
-/** The body-free trusted subject/revision envelope for one rule; undefined for push and deployment, which have no subject. */
+/** The body-free trusted subject/revision envelope for one rule; undefined for push, deployment and release, which have no subject. */
 export function buildTrustedGithubMetadata(
   event: string,
   payload: GithubPayload,
   rule: RcHookAssign
 ): GithubHookMetadata | undefined {
-  if (!rule.github || event === 'push' || isGithubDeploymentEvent(event)) return undefined
+  if (!rule.github || event === 'push' || isGithubDeploymentEvent(event) || event === 'release') return undefined
   const installationId = payload.installation?.id
   const repoId = payload.repository?.id
   if (installationId === undefined || repoId === undefined || String(repoId) !== rule.github.repoId) return undefined
@@ -992,7 +1040,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
       const repoId = payload.repository?.id
       const subject = payload.issue ?? payload.pull_request
       const rules = repoId === undefined ? [] : deps.table.getByCodeHostRepo('github', String(repoId))
-      // Threads need a number, pushes a ref, deployments an environment (one session per environment).
+      // Threads need a number, pushes a ref, deployments an environment; every release of the repository shares one session.
       const environment = isGithubDeploymentEvent(event) ? payload.deployment?.environment : undefined
       const thread =
         subject?.number !== undefined
@@ -1001,7 +1049,9 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
             ? payload.ref
             : environment
               ? `deployments/${environment}`
-              : undefined
+              : event === 'release' && payload.release?.tag_name
+                ? 'releases'
+                : undefined
       if (rules.length === 0 || thread === undefined) return reply.code(202).send({ deliveryKey })
 
       const cleanupEvent = githubThreadWorktreeCleanupEvent(event, payload)
@@ -1013,6 +1063,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         installationId: payload.installation?.id !== undefined ? String(payload.installation.id) : undefined,
         labels: (subject?.labels ?? []).map((l) => l.name ?? '').filter(Boolean),
         senderType: payload.sender?.type,
+        senderLogin: payload.sender?.login,
         subjectAuthorLogin: subject?.user?.login,
         subjectAuthorType: subject?.user?.type,
         headRepoFullName: subject?.head?.repo?.full_name,
@@ -1041,10 +1092,12 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
                 .join('\n') || undefined
             : isGithubDeploymentEvent(event)
               ? (payload.deployment_status?.description ?? payload.deployment?.description ?? undefined)
-              : undefined)
+              : event === 'release'
+                ? (payload.release?.body ?? undefined)
+                : undefined)
       }
       const context = buildGithubContext(event, payload)
-      // Session affinity `prefix#<thread|ref|deployments/env>`, split on the last '#'; the compiled prefix survives renames.
+      // Session affinity `prefix#<thread|ref|deployments/env|releases>`, split on the last '#'; the compiled prefix survives renames.
       const fallbackSessionKeyPrefix = payload.repository?.full_name ?? String(repoId)
       const firedAt = new Date(deps.clock.now()).toISOString()
 

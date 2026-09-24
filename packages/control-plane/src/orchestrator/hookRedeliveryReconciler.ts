@@ -1,4 +1,5 @@
 /** Periodically redelivers eligible GitHub hooks missing a run or proven to fail before daemon admission. */
+import { GITHUB_RELEASE_RESTATED_EVENTS } from '@agentconnect.md/protocol'
 import type { Clock, TimerHandle } from '../domain/clock.js'
 import type { HookId } from '../domain/ids.js'
 import type { GhHookDeliveryPage } from '../github/service.js'
@@ -12,7 +13,8 @@ const SUBSCRIPTION_EVENTS = new Set([
   'pull_request_review_comment',
   'push',
   'deployment',
-  'deployment_status'
+  'deployment_status',
+  'release'
 ])
 /** Redeliveries requested per GUID before giving up (loop breaker). */
 const MAX_ATTEMPTS = 3
@@ -87,6 +89,8 @@ function hookMatchesEvent(hook: HookRecord, event: string, action: string | null
   // The summary says only `created` for a status; the relay matches on the state it carries, so any
   // deployment_status pattern is a conservative candidate and the relay's own filter decides.
   if (event === 'deployment_status') return hook.events.some((pattern) => pattern.startsWith('deployment_status:'))
+  // Mirror of the relay: a restated release action fires only on its explicit pattern.
+  if (GITHUB_RELEASE_RESTATED_EVENTS.has(`${event}:${action ?? ''}`)) return hook.events.includes(`${event}:${action}`)
   const matchesPattern = (candidate: string): boolean =>
     hook.events.includes(`${candidate}:${action ?? ''}`) || hook.events.includes(`${candidate}:*`)
   if (matchesPattern(event)) return true

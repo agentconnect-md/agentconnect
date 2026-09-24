@@ -235,6 +235,24 @@ describe('HookRedeliveryReconciler', () => {
     expect(createdOnly.redelivered).toEqual([])
   })
 
+  // A publish arrives as created + published + released; the relay fires the wildcard once, so only that GUID lacks a run.
+  it('offers a release wildcard only the actions it fires on, and a restated action only to its exact pattern', async () => {
+    const release = (id: string, action: string) => delivery({ id, guid: `release-${id}`, event: 'release', action })
+    const wildcard = make({
+      hooks: [ghHook({ events: ['release:*'] })],
+      deliveries: [release('1', 'created'), release('2', 'published'), release('3', 'released'), release('4', 'edited')]
+    })
+    await wildcard.reconciler.tick()
+    expect(wildcard.redelivered).toEqual(['2', '4'])
+
+    const stableOnly = make({
+      hooks: [ghHook({ events: ['release:released'] })],
+      deliveries: [release('5', 'published'), release('6', 'released')]
+    })
+    await stableOnly.reconciler.tick()
+    expect(stableOnly.redelivered).toEqual(['6'])
+  })
+
   it('conservatively redelivers possible created-cadence summons', async () => {
     const issue = make({
       hooks: [ghHook({ events: ['issues:opened'], commentFamilies: ['issues'] })],
