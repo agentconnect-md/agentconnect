@@ -22,6 +22,7 @@ import type { DecisionConversationRef } from '@agentconnect.md/protocol/decision
 import { DecisionConditionFields, conditionSummary } from './DecisionConditionFields'
 import { DecisionEvaluationsDrawer } from './DecisionEvaluationsDrawer'
 import { DecisionGateTry } from './DecisionGateTry'
+import { DecisionChip } from './DecisionChip'
 import { DecisionPicker } from './DecisionPicker'
 
 type DecisionEntry = ReturnType<typeof useDecisionsPrototype>['decisions'][number]
@@ -118,55 +119,31 @@ export function DecisionGateEntry({
       void Promise.resolve(onStop()).finally(() => setStopping(false))
     }
     return (
-      <span
-        className={`inline-flex h-7 max-w-full flex-none items-center overflow-hidden rounded-md border border-(--border-default) bg-(--surface-card) ${stopping ? 'opacity-60' : ''}`}
-      >
-        <button
-          type="button"
-          data-gate-entry={bindingKey}
-          title={summary ? `${t('binding.editRules')} · ${summary}` : t('binding.editRules')}
-          aria-label={`${t('binding.editRules')}: ${label}`}
-          aria-haspopup="dialog"
-          disabled={disabled}
-          onClick={() => {
-            if (!draft) setBindingDraft(bindingKey, editDraftFor(saved, decision))
-          }}
-          className="inline-flex h-full min-w-0 cursor-pointer items-center gap-[6px] border-0 bg-transparent px-[7px] hover:bg-(--surface-hover) disabled:cursor-default"
-        >
-          <Icon name="split" size={13} className="flex-none text-(--brand)" />
-          <span className="mono min-w-0 max-w-[200px] truncate text-[11.5px] text-(--text-primary)">{label}</span>
-        </button>
-        {canWrite && (
-          <button
-            type="button"
-            title={t('binding.stop')}
-            aria-label={t('binding.stop')}
-            disabled={disabled || stopping}
-            onClick={stop}
-            className="flex h-full w-6 flex-none cursor-pointer items-center justify-center border-0 border-l border-(--border-subtle) bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-primary) disabled:cursor-default"
-          >
-            <Icon name="x" size={12} />
-          </button>
-        )}
-      </span>
+      <DecisionChip
+        name={label}
+        label={`${t('binding.editRules')}: ${label}`}
+        title={summary ? `${t('binding.editRules')} · ${summary}` : t('binding.editRules')}
+        disabled={disabled}
+        openProps={{ 'data-gate-entry': bindingKey }}
+        onOpen={() => {
+          if (!draft) setBindingDraft(bindingKey, editDraftFor(saved, decision))
+        }}
+        remove={canWrite ? { label: t('binding.stop'), onClick: stop, busy: stopping } : undefined}
+      />
     )
   }
   if (!offer || !canWrite) return null
   return (
-    <button
-      type="button"
-      data-gate-entry={bindingKey}
+    <DecisionChip
+      name={null}
+      label={t('binding.add')}
       title={t('binding.addTitle')}
-      aria-haspopup="dialog"
       disabled={disabled}
-      onClick={() =>
+      openProps={{ 'data-gate-entry': bindingKey }}
+      onOpen={() =>
         setBindingDraft(bindingKey, (current) => current ?? { decisionId: null, when: null, phase: 'editing' })
       }
-      className="inline-flex h-7 flex-none cursor-pointer items-center gap-[5px] rounded-md border border-dashed border-(--border-strong) bg-transparent pl-[7px] pr-[9px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) hover:border-solid hover:border-(--brand) hover:bg-(--brand-soft) hover:text-(--brand-soft-text) disabled:cursor-default disabled:opacity-60"
-    >
-      <Icon name="plus" size={12} />
-      {t('binding.add')}
-    </button>
+    />
   )
 }
 

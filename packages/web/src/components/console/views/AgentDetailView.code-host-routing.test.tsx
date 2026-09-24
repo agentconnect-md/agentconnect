@@ -164,7 +164,9 @@ async function click(node: Element | null | undefined) {
 const menuItem = (label: string) =>
   [...document.querySelectorAll<HTMLElement>('button.fopt')].find((el) => el.textContent?.trim().startsWith(label))
 const entries = (scope: ParentNode) =>
-  [...scope.querySelectorAll<HTMLButtonElement>('button[aria-haspopup="dialog"]')].map((el) => el.textContent?.trim())
+  [...scope.querySelectorAll<HTMLButtonElement>('button[aria-haspopup="dialog"]')].map((el) =>
+    el.getAttribute('aria-label')
+  )
 
 beforeEach(() => {
   mocks.hooks = [row('issues', 'first'), row('pull_request', 'every')]
@@ -190,7 +192,7 @@ describe('AgentDetailView, github decision routing', () => {
     expect(mocks.fetchCodeHostRouting).toHaveBeenCalledWith('1', 'issues', 'org-1')
     expect(mocks.fetchCodeHostRouting).toHaveBeenCalledWith('1', 'pull_request', 'org-1')
     // Pull requests order first within a repository.
-    expect(entries(scope)).toEqual(['Needs a response', 'Decision'])
+    expect(entries(scope)).toEqual(['Needs a response', 'Add decision'])
   })
 
   it('locks every trigger of the routed scope on Any update, and leaves the unrouted scope alone', async () => {
@@ -203,12 +205,10 @@ describe('AgentDetailView, github decision routing', () => {
     expect(menuItem('@-mention')?.getAttribute('aria-disabled')).toBeNull()
   })
 
-  it('offers + Decision on a row that runs on @-mention', async () => {
+  it('offers the empty Decision chip on a row that runs on @-mention', async () => {
     mocks.hooks = [row('issues', 'mention')]
     const scope = await render()
-    const add = [...scope.querySelectorAll<HTMLButtonElement>('button')].find(
-      (el) => el.textContent?.trim() === 'Decision'
-    )
+    const add = scope.querySelector<HTMLButtonElement>('button[aria-label="Add decision"]')
     expect(add?.disabled).toBe(false)
   })
 
@@ -217,7 +217,7 @@ describe('AgentDetailView, github decision routing', () => {
     await click(scope.querySelector('[aria-label="More for acme/api PRs"]'))
     await click(menuItem('Stop using decision'))
     expect(mocks.deleteCodeHostRouting).toHaveBeenCalledWith('1', 'pull_request', 'org-1')
-    expect(entries(scope)).toEqual(['Decision', 'Decision'])
+    expect(entries(scope)).toEqual(['Add decision', 'Add decision'])
   })
 
   it('opens Recent evaluations from the row menu through the routing evaluation routes', async () => {

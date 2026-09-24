@@ -125,7 +125,7 @@ async function click(node: Element | undefined | null) {
 const button = (text: string) => all('button').find((node) => node.textContent?.trim() === text)
 
 async function pickRules() {
-  await click(button('Decision'))
+  await click(document.body.querySelector<HTMLButtonElement>('button[aria-label="Add decision"]'))
   await click(all('button[aria-haspopup="menu"]').find((node) => node.textContent?.includes('Select a decision…')))
   await click(all('[role="menuitemradio"]').find((node) => node.textContent?.startsWith('Needs a response')))
   await click(document.body.querySelector('button[aria-label="Target for Yes"]'))
@@ -135,7 +135,7 @@ async function pickRules() {
 describe('CodeHostDecisionEntry', () => {
   it('picks reviewers per answer among the members and keeps them as the row’s pill until ×', async () => {
     await render()
-    await click(button('Decision'))
+    await click(document.body.querySelector<HTMLButtonElement>('button[aria-label="Add decision"]'))
     const dialog = document.body.querySelector('[role="dialog"]')
     expect(dialog?.getAttribute('aria-label')).toBe('acme/api · By decision rules')
     expect(dialog?.textContent).toContain('picks reviewers among review-bot, security-bot')
@@ -148,15 +148,17 @@ describe('CodeHostDecisionEntry', () => {
     await click(
       document.body.querySelector('button[aria-label="Stop using By decision — every PR goes to all agents"]')
     )
-    expect(button('Decision')).toBeTruthy()
+    expect(document.body.querySelector<HTMLButtonElement>('button[aria-label="Add decision"]')).toBeTruthy()
   })
 
   it('words an issues row for issues', async () => {
     await render(issuesScope)
-    expect(button('Decision')?.getAttribute('title')).toBe(
+    expect(
+      document.body.querySelector<HTMLButtonElement>('button[aria-label="Add decision"]')?.getAttribute('title')
+    ).toBe(
       'Every issue goes to all agents. Add a decision to pick agents on every update; the rows then run on any update.'
     )
-    await click(button('Decision'))
+    await click(document.body.querySelector<HTMLButtonElement>('button[aria-label="Add decision"]'))
     expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain(
       'Issues · picks agents among review-bot, security-bot'
     )
@@ -194,7 +196,7 @@ describe('CodeHostDecisionEntry', () => {
       document.body.querySelector('button[aria-label="Stop using By decision — every PR goes to all agents"]')
     )
     expect(mocks.deleteCodeHostRouting).toHaveBeenCalledWith('42', 'pull_request', 'org-test')
-    expect(button('Decision')).toBeTruthy()
+    expect(document.body.querySelector<HTMLButtonElement>('button[aria-label="Add decision"]')).toBeTruthy()
   })
 
   it('keeps the modal open with the server’s rule issues on a 400', async () => {
@@ -231,6 +233,6 @@ describe('CodeHostDecisionEntry', () => {
     mocks.mockMode = false
     mocks.fetchCodeHostRouting.mockRejectedValue(new ApiError('not found', 404))
     await render()
-    expect(button('Decision')).toBeUndefined()
+    expect(document.body.querySelector<HTMLButtonElement>('button[aria-label="Add decision"]')).toBeNull()
   })
 })

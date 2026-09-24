@@ -198,11 +198,12 @@ state resets on an organization switch so a draft or deletion dialog cannot carr
   existing credential/token attribution contract, but does not execute that agent.
 - Group conversation rows on single-owner bots offer **By decision** where the platform's
   channel-list `triggers` allow it (Linear omits it, matching the CP's `ownerAsDefault`
-  refusal). A row without a gate offers **+ Decision**, its only way in, so Respond to never
-  lists By decision as a pick; a saved gate reads as a pill naming
-  the Decision (its condition in the title), and its × returns the row to the platform's
-  first plain trigger with the ordinary trigger PATCH, which clears the gate. While a gate or
-  a shared bot's routing owns the trigger, the row's settings popover keeps Respond to listed
+  refusal). Every By decision entry is one two-part **Decision chip**: empty it reads split
+  icon | +, and once bound the name fills in beside the icon and + becomes ×. A row without a
+  gate offers the empty chip, its only way in, so Respond to never lists By decision as a
+  pick; a saved gate's chip names the Decision (its condition in the title), and its ×
+  returns the row to the platform's first plain trigger with the ordinary trigger PATCH,
+  which clears the gate. While a gate or a shared bot's routing owns the trigger, the row's settings popover keeps Respond to listed
   but inert ("Respond to unavailable") and its button reads the session mode alone. Either opens
   the **[channel] · By decision rules** modal: Decision → Trigger when, for the row's agent.
   Save sends trigger and gate in one PATCH; Cancel restores the saved row. Drafts live in
@@ -239,7 +240,7 @@ A shared bot's routing has no page of its own. Its rules open in place from a co
 row, on an agent's Integrations tab or in the bot's roster on Integrations (whose column then
 reads Dispatch): the row's dispatch control reads the routed Decision (or the default agent),
 and its menu lists **Send every message to** the bot's agents, then **Or pick by decision**
-with the routed Decision's pill (edit, × to stop) or **+ Decision**. Stop saves the bot's
+with the routed Decision's chip (edit, × to stop) or the empty chip. Stop saves the bot's
 routing without the row, handing it back to mentions with its default agent kept. A
 Decision's shared-bot usage links to the bot's configuration.
 
@@ -286,8 +287,8 @@ Decision's shared-bot usage links to the bot's configuration.
 
 ## Pull-request reviewers (UI preview)
 
-A watched GitHub repository's pull-request row offers **+ Decision** (every PR otherwise
-goes to all agents) or the reviewer Decision's pill with ×. It opens the
+A watched GitHub repository's pull-request row offers the empty Decision chip (every PR
+otherwise goes to all agents) or the chip naming the reviewer Decision, with ×. It opens the
 **[repo] · By decision rules** modal with the same answer table as shared-bot routing, whose
 targets are the organization's visible agents and whose Otherwise is Every agent or Do not
 trigger. While a Decision is set, the row's @-mention trigger is unavailable (a mention

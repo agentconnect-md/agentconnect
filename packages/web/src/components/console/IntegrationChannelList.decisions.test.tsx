@@ -177,7 +177,7 @@ async function openSettings(name = 'general') {
 
 /** Open the row's + Decision entry, the one way into a new gate. */
 async function addDecision() {
-  await click(all('button').find((node) => node.textContent?.trim() === 'Decision'))
+  await click(document.body.querySelector('button[aria-label="Add decision"]'))
   await act(async () => {})
 }
 
@@ -189,7 +189,7 @@ async function pick(label: string) {
 describe('IntegrationChannelList By decision', () => {
   it('leaves By decision out of Respond to on a single-owner row, whose + Decision entry adds a gate', async () => {
     await render([group()])
-    expect(all('button').some((node) => node.textContent?.trim() === 'Decision')).toBe(true)
+    expect(Boolean(document.body.querySelector('button[aria-label="Add decision"]'))).toBe(true)
     expect(await openSettings()).not.toContain('By decision')
   })
 
@@ -203,7 +203,7 @@ describe('IntegrationChannelList By decision', () => {
 
   it("offers the + Decision gate on a shared bot whose platform gates each conversation's owner", async () => {
     await render([group()], { platform: 'linear', shareable: true, botId: 'bot-shared' })
-    expect(all('button').some((node) => node.textContent?.trim() === 'Decision')).toBe(true)
+    expect(Boolean(document.body.querySelector('button[aria-label="Add decision"]'))).toBe(true)
   })
 
   it('renders a saved DTO gate as a row pill naming its decision and condition, with no banner when ready', async () => {
@@ -216,12 +216,12 @@ describe('IntegrationChannelList By decision', () => {
 
   it('offers + Decision on an Off row too, since the gate save sets its trigger', async () => {
     await render([group({ trigger: 'off' })])
-    expect(all('button').some((node) => node.textContent?.trim() === 'Decision')).toBe(true)
+    expect(Boolean(document.body.querySelector('button[aria-label="Add decision"]'))).toBe(true)
   })
 
   it('offers + Decision on a plain row, opening the rules modal named for the channel and its agent', async () => {
     await render([group()])
-    await click(all('button').find((node) => node.textContent?.trim() === 'Decision'))
+    await click(document.body.querySelector('button[aria-label="Add decision"]'))
     const dialog = document.body.querySelector('[role="dialog"]')
     expect(dialog?.getAttribute('aria-label')).toBe('general · By decision rules')
     expect(dialog?.textContent).toContain('Decides when Billing responds in this channel')
