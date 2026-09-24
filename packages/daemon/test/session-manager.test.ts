@@ -3061,6 +3061,44 @@ it('refreshes the bounded catalog on native resume without adding it to user pro
   await store.close()
 })
 
+// multi-repository-workspaces.md decision 20: the row records the hand-out, so retention judges the directory whatever the rows say later.
+describe('SessionManager — records that a runtime was handed an on-demand clone directory', () => {
+  const clones = '/srv/agents/bot-a/clones/a1b2c3'
+  /** Hands the directory out while `handed` holds, as preparation does for an agent with a row on demand. */
+  class OnDemandProbe extends WorkspaceManager {
+    handed = true
+    override async additionalWorkspaceDirectories() {
+      return this.handed ? [clones] : []
+    }
+    override async sessionOnDemandClones() {
+      return this.handed
+        ? {
+            path: clones,
+            repositories: [{ repoFullName: 'example-co/api', cloneUrl: 'https://github.com/example-co/api' }]
+          }
+        : undefined
+    }
+  }
+
+  it('marks the row of a session handed the directory at session/new, and no other', async () => {
+    const store = await newStore()
+    const workspaces = new OnDemandProbe()
+    let minted = 0
+    const host = { newSession: vi.fn(async () => `acp-${++minted}`) } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory, workspaces })
+
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+    expect(host.newSession.mock.calls[0][4]).toEqual([clones])
+    expect((await store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-a')))?.onDemandClones).toBe(1)
+
+    workspaces.handed = false
+    await sm.handle('bot-a', msg({ ts: '200.1', thread: '200.1', text: 'other' }))
+    expect(host.newSession.mock.calls[1][4]).toEqual([])
+    expect((await store.getSession(sessionKey('slack', 'C1', '200.1', 'bot-a')))?.onDemandClones ?? null).toBeNull()
+    await store.close()
+  })
+})
+
 describe('SessionManager — standing context composed only where a prompt reads it', () => {
   const rootPath = '/srv/agents/bot-a/repos/acme/infra/checkout'
   const roots = [{ path: rootPath, repoFullName: 'acme/infra', branch: 'trunk' }]

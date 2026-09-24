@@ -1935,6 +1935,35 @@ describe('an isolated session reaches the agent pod only for work due there (#18
     }
   })
 
+  // multi-repository-workspaces.md decision 20: the row, not the rows of the agent, says a shared session had an on-demand clone directory.
+  it('judges a shared session’s on-demand clones on the agent pod by its own record once no row is on demand', async () => {
+    const pool = await poolMember()
+    try {
+      Object.assign(pool.agent.workspace, {
+        additionalRepos: [{ repoFullName: 'acme/infra', repoId: '42', materialize: 'always' }]
+      })
+      vi.spyOn(pool.inner, 'sessionRetentionActive').mockResolvedValue(false)
+      vi.spyOn(pool.inner.workspaces, 'hasOnDemandCloneDir').mockResolvedValue(true)
+      const removal = vi
+        .spyOn(pool.inner.workspaces, 'removeOnDemandClones')
+        .mockResolvedValue({ outcome: 'retained', reason: 'dirty' })
+      const shared = { key: KEY, agentId: 'bot-a', acpSessionId: null, workspaceIsolation: 'shared' }
+
+      // A shared session that was never handed one wakes nothing.
+      expect(await pool.inner.cleanupSessionWorktree(shared)).toEqual({ outcome: 'not_applicable' })
+      expect(pool.bound).toEqual([])
+
+      expect(await pool.inner.cleanupSessionWorktree({ ...shared, onDemandClones: 1 })).toEqual({
+        outcome: 'retained',
+        reason: 'dirty'
+      })
+      expect(pool.bound).toEqual([AGENT_POD])
+      expect(removal).toHaveBeenCalledWith(pool.agent, KEY)
+    } finally {
+      await pool.instance.stop()
+    }
+  })
+
   /** Retention of the session's row, with every exclusion clear, and each removal the workspace was asked for recorded by half. */
   async function retire(pool: Awaited<ReturnType<typeof poolMember>>, legacy: 'removed' | 'retained' = 'removed') {
     vi.spyOn(pool.inner, 'sessionRetentionActive').mockResolvedValue(false)

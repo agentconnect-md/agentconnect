@@ -645,6 +645,8 @@ export class SessionManager {
     // Born titled: the ingress title when the platform minted one (GitHub/GitLab hooks), else
     // the console's first-message rule — a later runtime title stays authoritative.
     const fallbackTitle = msg.initialSessionTitle?.trim() || deriveTitle(msg.text)
+    // Whether the runtime was handed an on-demand clone directory, recorded on the row once it exists (decision 20).
+    let onDemandClonesHanded = false
     // Create or re-attach the runtime session (turn/runtime-session.ts). `created` drives the
     // daemon's one-shot `event/session` start emit; the additional-MCP outcome is reported back
     // rather than written into a shared mutable.
@@ -680,11 +682,13 @@ export class SessionManager {
         Promise.resolve(
           this.deps.prepareWorkspace?.(a, warmHost, workspaceRequest) ?? this.workspaces.prepareWorkspace(a)
         ),
-      workspaceDirectories: (cwd) =>
-        this.workspaces.additionalWorkspaceDirectories(agent, cwd, {
-          sessionKey: key,
-          isolation: workspaceIsolation
-        }),
+      workspaceDirectories: async (cwd) => {
+        const scope = { sessionKey: key, isolation: workspaceIsolation }
+        const directories = await this.workspaces.additionalWorkspaceDirectories(agent, cwd, scope)
+        const onDemand = await this.workspaces.sessionOnDemandClones(agent, scope)
+        if (onDemand !== undefined && directories.includes(onDemand.path)) onDemandClonesHanded = true
+        return directories
+      },
       mcpServersFor: () =>
         this.deps.mcpServersFor?.({
           agent,
@@ -720,6 +724,11 @@ export class SessionManager {
       interrupted
     })
     rec = opened.rec
+    // So retention judges that directory with the session whatever the agent's rows say later — on a pool the only record of it off the agent pod.
+    if (onDemandClonesHanded && rec.onDemandClones !== 1) {
+      await this.deps.store.markSessionOnDemandClones(key)
+      rec = { ...rec, onDemandClones: 1 }
+    }
     const created = opened.created
     const additionalMcpServersAttached = opened.additionalMcpAttached
 

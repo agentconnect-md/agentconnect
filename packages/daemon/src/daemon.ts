@@ -19905,9 +19905,9 @@ export class Daemon {
     })
   }
 
-  /** Whether retention has a directory of this session's to judge: its on-demand clones beside the agent's roots (decision 20), shared or not, else an isolated one's worktrees or clones. */
+  /** Whether retention has a directory of this session's to judge: its on-demand clones beside the agent's roots (decision 20) — recorded on its row once handed, so later rows cannot hide them — shared or not, else an isolated one's worktrees or clones. */
   private sessionMayOwnDirectories(agent: Agent, rec: SessionRecord): boolean {
-    if (this.workspaces.mayOwnOnDemandClones(agent, rec.key)) return true
+    if (rec.onDemandClones === 1 || this.workspaces.mayOwnOnDemandClones(agent, rec.key)) return true
     return rec.workspaceIsolation !== 'shared' && this.workspaces.mayOwnSessionWorktrees(agent)
   }
 
