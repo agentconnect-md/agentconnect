@@ -364,7 +364,7 @@ export default function AgentDetailView() {
   const gitlabHooks = codeHostHooks.gitlab
   // One flat row per subscription still — the grouping is only the ORDER (a repo's rows adjacent) plus its add offer.
   const githubRows = orderedGithubHookRows(githubHooks)
-  // Pull-request reviewers By decision (UI preview): any visible agent can be picked, this one first.
+  // Pull-request reviewers By decision (UI preview): visible agents, this one first, narrowed to the repo's watchers.
   const reviewDecisions = useCodeHostReviewDecisions()
   const reviewKey = (h: HookDto) => codeHostReviewKey(activeOrg?.id, h.repoFullName ?? h.name)
   const reviewerCandidates: RosterAgent[] = [...agents]
@@ -2190,7 +2190,7 @@ export default function AgentDetailView() {
                                 <CodeHostDecisionEntry
                                   storeKey={reviewKey(h)}
                                   repo={h.repoFullName ?? h.name}
-                                  agents={reviewerCandidates}
+                                  candidates={reviewerCandidates}
                                   blocked={triggerModeOf(h) === 'mention'}
                                 />
                               )}

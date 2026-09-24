@@ -14,12 +14,13 @@ import { CodeHostDecisionModal } from './CodeHostDecisionModal'
 export function CodeHostDecisionEntry({
   storeKey,
   repo,
-  agents,
+  candidates,
   blocked
 }: {
   storeKey: string
   repo: string
-  agents: RosterAgent[]
+  /** The visible agents; the modal narrows them to this repository's pull-request watchers. */
+  candidates: RosterAgent[]
   /** The row runs on @-mention, which picks the agent directly, so no Decision can start here. */
   blocked: boolean
 }) {
@@ -31,7 +32,7 @@ export function CodeHostDecisionEntry({
   const [open, setOpen] = useState(false)
   if (!decisions) return null
   const modal = open && (
-    <CodeHostDecisionModal storeKey={storeKey} repo={repo} agents={agents} onClose={() => setOpen(false)} />
+    <CodeHostDecisionModal storeKey={storeKey} repo={repo} candidates={candidates} onClose={() => setOpen(false)} />
   )
   if (saved) {
     const name = decisions.decisions.find((entry) => entry.id === saved.decisionId)?.name ?? t('hidden')

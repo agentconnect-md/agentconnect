@@ -16,6 +16,16 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams()
 }))
 vi.mock('@/lib/data', async (original) => ({ ...(await original<object>()), MOCK_MODE: true }))
+// review-bot and security-bot watch acme/api's pull requests; docs-bot watches only its issues.
+const hooks: Record<string, object[]> = {
+  a1: [{ kind: 'github', name: 'acme/api', repoFullName: 'acme/api', family: 'pull_request', events: [] }],
+  a2: [{ kind: 'github', name: 'Acme/API', repoFullName: 'Acme/API', family: 'pull_request', events: [] }],
+  a3: [{ kind: 'github', name: 'acme/api', repoFullName: 'acme/api', family: 'issues', events: [] }]
+}
+vi.mock('@/lib/api', async (original) => ({
+  ...(await original<object>()),
+  fetchAgentHooks: vi.fn(async (agentId: string) => hooks[agentId] ?? [])
+}))
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'org-test' }, myRole: 'owner', orgPath: (path: string) => path })
 }))
@@ -28,7 +38,8 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const agents: RosterAgent[] = [
   { id: 'a1', name: 'review-bot', available: true, runtime: 'claude' },
-  { id: 'a2', name: 'security-bot', available: true, runtime: 'codex' }
+  { id: 'a2', name: 'security-bot', available: true, runtime: 'codex' },
+  { id: 'a3', name: 'docs-bot', available: true, runtime: 'claude' }
 ]
 
 beforeEach(() => resetCodeHostReviewDecisions())
@@ -47,7 +58,7 @@ async function render(blocked = false) {
     root?.render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
         <DecisionsPrototypeProvider>
-          <CodeHostDecisionEntry storeKey="org-test|acme/api" repo="acme/api" agents={agents} blocked={blocked} />
+          <CodeHostDecisionEntry storeKey="org-test|acme/api" repo="acme/api" candidates={agents} blocked={blocked} />
         </DecisionsPrototypeProvider>
       </SWRConfig>
     )
@@ -76,6 +87,10 @@ describe('CodeHostDecisionEntry', () => {
     await click(all('button[aria-haspopup="menu"]').find((node) => node.textContent?.includes('Select a decision…')))
     await click(all('[role="menuitemradio"]').find((node) => node.textContent?.startsWith('Needs a response')))
     await click(document.body.querySelector('button[aria-label="Target for Yes"]'))
+    // Only the repository's pull-request watchers are targets.
+    const targets = all('[role="menuitemradio"]').map((node) => node.textContent ?? '')
+    expect(targets.some((text) => text.includes('security-bot'))).toBe(true)
+    expect(targets.some((text) => text.includes('docs-bot'))).toBe(false)
     await click(all('[role="menuitemradio"]').find((node) => node.textContent?.includes('security-bot')))
     await click(button('Save'))
     expect(document.body.querySelector('[role="dialog"]')).toBeNull()

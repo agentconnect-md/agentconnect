@@ -8,7 +8,9 @@ import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
+import { LoadingState } from '@/components/marks'
 import { useDecisionsPrototype } from '@/lib/decisions/provider'
+import { useRepoReviewers } from '@/lib/decisions/code-host-reviewers'
 import { routingDraftIssues, type RoutingDraftRule } from '@/lib/decisions/routing-draft'
 import type { RosterAgent } from '@/lib/decisions/routing-roster'
 import {
@@ -23,15 +25,15 @@ import { RoutingRulesTable, fitsQuestion } from './RoutingRulesTable'
 export function CodeHostDecisionModal({
   storeKey,
   repo,
-  agents,
+  candidates,
   onClose
 }: {
   /** The preview store's key for this repository (`codeHostReviewKey`). */
   storeKey: string
   /** The repository as its row reads. */
   repo: string
-  /** The agents a PR can go to; without a Decision, every one of them reviews it. */
-  agents: RosterAgent[]
+  /** The visible agents; only those watching this repository's pull requests can be picked. */
+  candidates: RosterAgent[]
   onClose: () => void
 }) {
   const t = useTranslations('Decisions.routing')
@@ -41,6 +43,7 @@ export function CodeHostDecisionModal({
   const canWrite = myRole !== 'viewer'
   const { decisions, loading } = useDecisionsPrototype()
   const saved = useCodeHostReviewDecisions().get(storeKey) ?? null
+  const { loading: rostering, agents } = useRepoReviewers(repo, candidates)
   // Each opening edits a copy of the stored Decision; nothing is kept until Save.
   const [draft, setDraft] = useState<{
     decisionId: string | null
@@ -55,7 +58,7 @@ export function CodeHostDecisionModal({
     savedChannelIds: [],
     memberIds
   })
-  const canSave = canWrite && !!decision && issues.length === 0
+  const canSave = canWrite && !rostering && !!decision && issues.length === 0
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => event.key === 'Escape' && onClose()
@@ -145,7 +148,8 @@ export function CodeHostDecisionModal({
             </div>
           </div>
 
-          {question && (
+          {question && rostering && <LoadingState size={22} padding={20} />}
+          {question && !rostering && (
             <RoutingRulesTable
               question={question}
               rules={draft.rules}
