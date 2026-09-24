@@ -640,9 +640,12 @@ describe('DecisionGate', () => {
 
   it('settles a verdict queued past its deadline as timeout without calling the provider', async () => {
     const h = await harness({ limits: { providerActive: 1, deadlineMs: 50 } })
-    const a = await h.post()
+    // A second consumer of the shared slot budget holds the only slot far past b's deadline, in its own lane.
+    const holder = new DecisionGate(h.host, { ...DEFAULT_DECISION_GATE_LIMITS, deadlineMs: 60_000 }, h.gate.runtime)
+    const a = await h.post('C2')
     const b = await h.post()
-    await h.candidate(a)
+    await h.candidate(a, holder)
+    await vi.waitFor(() => expect(h.calls).toHaveLength(1), WAIT)
     await h.candidate(b)
     await vi.waitFor(
       async () =>
@@ -652,8 +655,9 @@ describe('DecisionGate', () => {
         }),
       WAIT
     )
-    expect(h.calls).toHaveLength(1)
+    expect(h.calls.map((call) => call.input.evaluationId)).toEqual([`${a.record.seq}:${AGENT}:0`])
     h.gate.close()
+    holder.close()
   })
 
   it('holds a participation admit behind a lower pending verdict of its lane', async () => {
