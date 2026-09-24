@@ -227,7 +227,8 @@ describe('Phase 5 — whole-app assembly via buildApp (REST + WS share one DB/or
         gitRepo: 'https://git.example.test/acme/infra',
         branch: 'main',
         agentDir: 'services/api',
-        additionalRepos: []
+        additionalRepos: [],
+        additionalInstallations: []
       })
     } finally {
       ws.close()

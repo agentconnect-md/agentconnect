@@ -16,6 +16,8 @@
  * Authorizing a gitlab project makes the agent a CONSUMER of it (§7.2), so the arm
  * runs the same inline account/membership ensure the workspace and hook arms run,
  * and revoking converges the membership away.
+ *
+ * Installation grants (decision 10) live here too: organization-owner writes, no per-repository attestation.
  */
 import { gitRepoLabel, type CodeHostProvider } from '@agentconnect.md/protocol'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
@@ -24,6 +26,7 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import {
   isSyntheticEmail,
+  type AgentInstallationAuthorizationRecord,
   type AgentRecord,
   type AgentRepoAuthorizationRecord,
   type RepoAccess,
@@ -39,20 +42,39 @@ import { UserAuthzDeniedError } from '../../github/user-authz.js'
 import { LogtoApiError } from '../../github/logto-identity.js'
 import { AgentId, OrgId } from '../../domain/ids.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
-import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
+import { orgOf, denyViewerWrite, denyNonOwner, ctxOf } from '../rbac.js'
 import { canView } from '../../authorization/policy.js'
 import { codeHostsOf } from '../../codehost/registry.js'
 import { Tag } from '../plugins/openapi.js'
 import { isCanonicalGithubAddress } from '../../domain/git-host.js'
 import {
+  AgentInstallationAuthDto,
+  AgentInstallationAuthListDto,
+  AgentInstallationAuthParam,
   AgentRepoAuthDto,
   AgentRepoAuthListDto,
   AgentRepoAuthParam,
+  CreateAgentInstallationAuthBody,
   CreateAgentRepoAuthBody,
   ErrorDto,
+  UpdateAgentInstallationAuthBody,
   UpdateAgentRepoAuthBody,
+  type AgentInstallationAuthDtoT,
   type AgentRepoAuthDtoT
 } from '../dto/index.js'
+
+function installationGrantToDto(g: AgentInstallationAuthorizationRecord): AgentInstallationAuthDtoT {
+  return {
+    id: g.id,
+    provider: g.provider,
+    installationId: Number(g.installationId),
+    accountLogin: g.accountLogin,
+    access: g.access,
+    materialize: g.materialize,
+    createdBy: g.createdBy && !isSyntheticEmail(g.createdBy.email) ? g.createdBy.userId : null,
+    createdAt: g.createdAt.toISOString()
+  }
+}
 
 function toDto(r: AgentRepoAuthorizationRecord): AgentRepoAuthDtoT {
   return {
@@ -112,13 +134,17 @@ export function agentRepoRoutes(deps: HttpDeps) {
     }
     const agentNotFound = (reply: FastifyReply) =>
       reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
-    // `decision` lands with the selector (multi-repository-workspaces.md decision 15); this is the one check that PR deletes.
-    const refuseDecisionMaterialize = (reply: FastifyReply, materialize: RepoMaterialization | undefined): boolean => {
+    // `decision` lands with the selector (multi-repository-workspaces.md decision 15); this is the one check that PR deletes, for rows and grants alike.
+    const refuseDecisionMaterialize = (
+      reply: FastifyReply,
+      materialize: RepoMaterialization | undefined,
+      alternatives = '`always` or `on-demand`'
+    ): boolean => {
       if (materialize !== 'decision') return false
       void reply.code(400).send({
         error: 'Bad Request',
         statusCode: 400,
-        message: 'selecting repositories by decision is not available yet; choose `always` or `on-demand`'
+        message: `selecting repositories by decision is not available yet; choose ${alternatives}`
       })
       return true
     }
@@ -681,6 +707,219 @@ export function agentRepoRoutes(deps: HttpDeps) {
         // Revoked authorization ⇒ the agent is no longer a consumer, so the §7.2
         // membership must go — and with nothing left in its root, the account retires.
         if (!redundantWorkspaceGrant) convergeManagedRepository(row.provider, orgOf(req), row.repoId)
+        await replicateUpsert(agent)
+        return reply.code(204).send(null)
+      }
+    )
+
+    // ── installation grants (agent-multi-repo-authorization.md decision 10) ──
+
+    // Writes need an editor of the agent who is an organization owner; a hidden agent still reads 404 first (no oracle).
+    const installationGrantEditor = async (
+      req: FastifyRequest,
+      reply: FastifyReply,
+      agentId: string
+    ): Promise<AgentRecord | null> => {
+      if (denyViewerWrite(req, reply)) return null
+      const agent = await getViewableAgent(req, agentId)
+      if (!agent) {
+        void agentNotFound(reply)
+        return null
+      }
+      return denyNonOwner(req, reply) ? null : agent
+    }
+    const ownGrant = async (agent: AgentRecord, id: string): Promise<AgentInstallationAuthorizationRecord | null> => {
+      const grant = await deps.repos.agentInstallationAuth.get(id)
+      return grant && grant.agentId === agent.id ? grant : null
+    }
+    const grantNotFound = (reply: FastifyReply) =>
+      reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'installation grant not found' })
+    const auditGrant = (
+      req: FastifyRequest,
+      agent: AgentRecord,
+      message: string,
+      grant: AgentInstallationAuthorizationRecord,
+      extra: Record<string, unknown> = {}
+    ): void => {
+      void deps.repos.audit
+        .append({
+          kind: 'agent_repo_change',
+          orgId: orgOf(req),
+          agentId: agent.id,
+          ...(req.principal ? { actorUserId: req.principal.userId } : {}),
+          frameType: 'gitcred/grant',
+          message,
+          details: {
+            installationAuthId: grant.id,
+            provider: grant.provider,
+            installationId: grant.installationId.toString(),
+            accountLogin: grant.accountLogin,
+            access: grant.access,
+            materialize: grant.materialize,
+            ...extra
+          }
+        })
+        .catch(() => {})
+    }
+
+    r.get(
+      '/agents/:agentId/installations',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'List an agent’s installation grants',
+          description:
+            'Installation grants on this agent: each authorizes every repository one of the organization’s GitHub App installations covers, including repositories created later, at one access tier. A grant is never expanded into repository authorizations; `materialize` is `on-demand` (credentials only) or `decision`. Gated by the agent’s visibility.',
+          operationId: 'listAgentInstallationAuthorizations',
+          params: z.object({ agentId: z.string() }),
+          response: { 200: AgentInstallationAuthListDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await getViewableAgent(req, req.params.agentId)
+        if (!agent) return agentNotFound(reply)
+        return (await deps.repos.agentInstallationAuth.listForAgent(agent.id)).map(installationGrantToDto)
+      }
+    )
+
+    r.post(
+      '/agents/:agentId/installations',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Authorize an installation for an agent',
+          description:
+            'Grant the agent every repository a live, unsuspended GitHub App installation claimed by this organization covers, at one tier (`read` by default); an explicit repository authorization on a covered repository keeps its own tier. Only an organization owner may do this, and no per-repository permission check runs. `materialize` defaults to `on-demand`; `decision` is rejected until the per-session selector ships, and `always` is never accepted. An agent holds at most one grant per installation.',
+          operationId: 'createAgentInstallationAuthorization',
+          params: z.object({ agentId: z.string() }),
+          body: CreateAgentInstallationAuthBody,
+          response: { 200: AgentInstallationAuthDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await installationGrantEditor(req, reply, req.params.agentId)
+        if (!agent) return
+        if (refuseDecisionMaterialize(reply, req.body.materialize, '`on-demand`')) return
+        if (!deps.github) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'GitHub App is not configured on this deployment (GITHUB_APP_*)'
+          })
+        }
+        const installationId = BigInt(req.body.installationId)
+        // The org-fenced live list: an unknown id, another organization's claim and a revoked one all read as absent.
+        const installation = (await deps.repos.githubInstallation.listForOrg(orgOf(req))).find(
+          (row) => row.installationId === installationId
+        )
+        if (!installation) {
+          return reply.code(400).send({
+            error: 'Bad Request',
+            statusCode: 400,
+            message: "not one of this organization's GitHub App installations"
+          })
+        }
+        if (installation.suspendedAt) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: `the ${installation.accountLogin} installation is suspended on GitHub`
+          })
+        }
+        const held = await deps.repos.agentInstallationAuth.listForAgent(agent.id)
+        if (held.some((grant) => grant.installationId === installationId)) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: `the ${installation.accountLogin} installation is already authorized for this agent — upgrade that grant or remove it to lower the tier`
+          })
+        }
+        const grant = await deps.repos.agentInstallationAuth.create({
+          agentId: agent.id,
+          installationId,
+          accountLogin: installation.accountLogin,
+          access: req.body.access,
+          materialize: req.body.materialize,
+          ...(req.principal ? { createdByUserId: req.principal.userId } : {})
+        })
+        auditGrant(
+          req,
+          agent,
+          `installation ${grant.accountLogin} authorized (${grant.access}, ${grant.materialize})`,
+          grant
+        )
+        await replicateUpsert(agent)
+        return installationGrantToDto(grant)
+      }
+    )
+
+    r.patch(
+      '/agents/:agentId/installations/:id',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Update an installation grant',
+          description:
+            'Raise an installation grant to a stronger access tier, change how its repositories are materialized (`on-demand`; `decision` is rejected until the per-session selector ships), or both. At least one field is required. Lowering the tier requires revoking and granting again. Organization owners only; the change re-projects the agent’s spec.',
+          operationId: 'updateAgentInstallationAuthorization',
+          params: AgentInstallationAuthParam,
+          body: UpdateAgentInstallationAuthBody,
+          response: { 200: AgentInstallationAuthDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await installationGrantEditor(req, reply, req.params.agentId)
+        if (!agent) return
+        const grant = await ownGrant(agent, req.params.id)
+        if (!grant) return grantNotFound(reply)
+        if (refuseDecisionMaterialize(reply, req.body.materialize, '`on-demand`')) return
+        const rank = { read: 0, comment: 1, write: 2 } as const
+        if (req.body.access !== undefined && rank[req.body.access] < rank[grant.access]) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'revoke and authorize this installation again to lower its access tier'
+          })
+        }
+        const updated = await deps.repos.agentInstallationAuth.update(grant.id, {
+          ...(req.body.access !== undefined ? { access: req.body.access } : {}),
+          ...(req.body.materialize !== undefined ? { materialize: req.body.materialize } : {})
+        })
+        if (!updated) return grantNotFound(reply)
+        if (updated.access !== grant.access || updated.materialize !== grant.materialize) {
+          auditGrant(
+            req,
+            agent,
+            `installation ${updated.accountLogin} authorization changed (${grant.access}, ${grant.materialize} → ${updated.access}, ${updated.materialize})`,
+            updated,
+            { previousAccess: grant.access, previousMaterialize: grant.materialize }
+          )
+          await replicateUpsert(agent)
+        }
+        return installationGrantToDto(updated)
+      }
+    )
+
+    r.delete(
+      '/agents/:agentId/installations/:id',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Revoke an installation grant',
+          description:
+            'Remove the grant. Repositories it alone covered are denied on their next credential request; already-minted tokens live out their expiry of at most one hour. Organization owners only.',
+          operationId: 'deleteAgentInstallationAuthorization',
+          params: AgentInstallationAuthParam,
+          response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await installationGrantEditor(req, reply, req.params.agentId)
+        if (!agent) return
+        const grant = await ownGrant(agent, req.params.id)
+        if (!grant) return grantNotFound(reply)
+        if (!(await deps.repos.agentInstallationAuth.remove(grant.id))) return grantNotFound(reply)
+        auditGrant(req, agent, `installation ${grant.accountLogin} authorization revoked`, grant)
         await replicateUpsert(agent)
         return reply.code(204).send(null)
       }

@@ -201,6 +201,8 @@ function make(
     grantDuringWorkspaceActivate?: { repoFullName: string; repoId: bigint }
     /** The grant `setWorkspaceRepoId` finds redundant and deletes after the activation. */
     redundantGrant?: { repoFullName: string; repoId: bigint }
+    /** An installation grant that commits inside the detach → workspace-CAS window. */
+    installationGrantDuringWorkspaceCas?: { accountLogin: string }
   } = {}
 ) {
   let current: AgentRecord = {
@@ -211,6 +213,7 @@ function make(
     ...(opts.placement ?? {})
   }
   let grants: Array<{ repoFullName: string; repoId: bigint }> = opts.redundantGrant ? [opts.redundantGrant] : []
+  let installationGrants: Array<{ accountLogin: string }> = []
   let cronRows = [cron]
   const calls: string[] = []
   const activations: AgentActivate[] = []
@@ -236,6 +239,10 @@ function make(
       // per-agent revision counter, so the CAS below commits on top of ITS revision.
       if (opts.grantDuringWorkspaceCas) {
         grants = [...grants, opts.grantDuringWorkspaceCas]
+        current = { ...current, configRevision: current.configRevision + 1n }
+      }
+      if (opts.installationGrantDuringWorkspaceCas) {
+        installationGrants = [...installationGrants, opts.installationGrantDuringWorkspaceCas]
         current = { ...current, configRevision: current.configRevision + 1n }
       }
       current = {
@@ -366,7 +373,21 @@ function make(
       // Reads `grants` on every call, so a mid-move write is observable to a re-read.
       {
         listForAgent: async () => grants.map((grant) => ({ ...grant, access: 'read' }))
-      } as unknown as ConstructorParameters<typeof AgentSpecAssembler>[7]
+      } as unknown as ConstructorParameters<typeof AgentSpecAssembler>[7],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      // The installation grants, read the same way.
+      {
+        listForAgent: async () =>
+          installationGrants.map((grant) => ({
+            ...grant,
+            provider: 'github',
+            access: 'read',
+            materialize: 'on-demand'
+          }))
+      } as unknown as ConstructorParameters<typeof AgentSpecAssembler>[12]
     ),
     crons: { listForAgent: async () => cronRows } as unknown as ConstructorParameters<
       typeof AgentMoveService
@@ -484,6 +505,23 @@ describe('AgentMoveService', () => {
     expect(BigInt(t.activations[0]!.spec.configRevision!)).toBeGreaterThan(before)
   })
 
+  it('re-reads the installation grants after the workspace CAS with the allowlist', async () => {
+    const t = make({ installationGrantDuringWorkspaceCas: { accountLogin: 'example-org' } })
+    const before = t.current().configRevision
+
+    await t.service.setWorkspace(t.current(), GITHUB_WORKSPACE, WORKSPACE_REPO_ID)
+
+    // A grant is its own list: it rides beside `additionalRepos`, never inside it.
+    expect(t.activations).toHaveLength(1)
+    expect(t.activations[0]?.spec.workspace).toMatchObject({
+      additionalRepos: [],
+      additionalInstallations: [
+        { provider: 'github', accountLogin: 'example-org', access: 'read', materialize: 'on-demand' }
+      ]
+    })
+    expect(BigInt(t.activations[0]!.spec.configRevision!)).toBeGreaterThan(before + 1n)
+  })
+
   it('re-reads the repository allowlist after the rollback CAS as well', async () => {
     const t = make({
       rejectWorkspaceActivate: true,
@@ -578,7 +616,8 @@ describe('AgentMoveService', () => {
       mode: 'scratch',
       isolation: 'shared',
       gitCredential: 'github-app',
-      additionalRepos: []
+      additionalRepos: [],
+      additionalInstallations: []
     })
     expect(BigInt(t.activations[1]!.spec.configRevision!)).toBeGreaterThan(
       BigInt(t.activations[0]!.spec.configRevision!)

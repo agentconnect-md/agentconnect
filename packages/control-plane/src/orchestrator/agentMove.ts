@@ -23,6 +23,7 @@ import {
   type Ack,
   type AgentActivate,
   type DutyAgentBundle,
+  type AgentAdditionalInstallation,
   type AgentAdditionalRepo,
   type AgentSkillEntry,
   type HookRoutingProjection,
@@ -158,9 +159,10 @@ interface MoveBundle {
    * target daemon.
    */
   organizationEnvironment: OrganizationEnvironmentValues
-  /** The agent's authorized additional repositories — pinned for the same reason
-   *  as skills: a bare project() would ship [] and clear them on the target. */
+  /** The agent's authorized additional repositories, pinned like skills: a bare project() would clear them on the target. */
   additionalRepos: AgentAdditionalRepo[]
+  /** The agent's installation grants, pinned beside the allowlist and re-read with it. */
+  additionalInstallations: AgentAdditionalInstallation[]
   /** Whether an enabled gitlab hook rides the agent — the §24.4 consumer no other
    *  bundle field reveals, and the host must be on the spec before the agent spawns. */
   gitlabHook: boolean
@@ -513,14 +515,10 @@ export class AgentMoveService {
       }
     }
 
-    // Everything sent from here on carries a POST-CAS `configRevision`, so the repository
-    // allowlist has to be read after the CAS too. Its writers — the grant routes and the
-    // asynchronous rename repair — advance the same per-agent counter without holding this
-    // section, so replaying the pre-detach list at the newer revision is exactly the
-    // equal-revision/different-content violation the daemon refuses on every reconnect.
+    // Every send from here carries the post-CAS revision, so both grant lists are re-read after it: their writers bump the same counter.
     let postCas: MoveBundle
     try {
-      postCas = { ...bundle, additionalRepos: await this.deps.specs.additionalReposOf(converted) }
+      postCas = { ...bundle, ...(await this.deps.specs.workspaceGrantsOf(converted)) }
     } catch (err) {
       throw new AgentMoveFailed(
         'workspace edit could not re-read the authorized repositories; retry the same edit',
@@ -779,17 +777,10 @@ export class AgentMoveService {
         'workspace edit was rejected but the agent changed before rollback; manual recovery is required'
       )
     }
-    // The RESTORED row, not the pre-edit copy: the rollback advanced its revision past the rejected
-    // edit's, and the daemon's fence refuses a bundle whose spec is not newer than the one it just
-    // applied. Replaying `original` therefore could not restore anything the target had accepted —
-    // every rejected edit ended fail-closed with the agent staged and offline.
-    //
-    // The list is read against THAT row for the same reason the forward activation reads it after
-    // its own CAS: a grant writer that committed while the rejected activation was in flight sits
-    // under this restore's revision, so the caller's copy would ship stale content at it.
+    // The RESTORED row (its rollback advanced the revision) with both grant lists read against it; an older bundle is refused by the daemon's fence.
     let restoredBundle: MoveBundle
     try {
-      restoredBundle = { ...bundle, additionalRepos: await this.deps.specs.additionalReposOf(restored) }
+      restoredBundle = { ...bundle, ...(await this.deps.specs.workspaceGrantsOf(restored)) }
     } catch (err) {
       throw new AgentMoveFailClosed(
         'workspace edit was rejected and the authorized repositories could not be re-read for its rollback',
@@ -892,7 +883,7 @@ export class AgentMoveService {
       skills,
       managedSkills,
       organizationEnvironment,
-      additionalRepos,
+      { additionalRepos, additionalInstallations },
       gitlabHook,
       hookRoutings
     ] = await Promise.all([
@@ -902,7 +893,7 @@ export class AgentMoveService {
       this.deps.specs.skillsOf(agent),
       this.deps.specs.managedSkillsOf(agent),
       this.deps.specs.organizationEnvironmentOf(agent),
-      this.deps.specs.additionalReposOf(agent),
+      this.deps.specs.workspaceGrantsOf(agent),
       this.deps.specs.gitlabHookOf(agent),
       this.deps.specs.hookRoutingsOf(agent)
     ])
@@ -942,6 +933,7 @@ export class AgentMoveService {
       managedSkills,
       organizationEnvironment,
       additionalRepos,
+      additionalInstallations,
       gitlabHook,
       ...(hookRoutings !== undefined ? { hookRoutings } : {})
     }
@@ -962,7 +954,8 @@ export class AgentMoveService {
         bundle.additionalRepos,
         bundle.gitlabHook,
         false,
-        bundle.hookRoutings
+        bundle.hookRoutings,
+        bundle.additionalInstallations
       ),
       integrations: bundle.integrations.map(({ spec }) => spec),
       crons: bundle.crons

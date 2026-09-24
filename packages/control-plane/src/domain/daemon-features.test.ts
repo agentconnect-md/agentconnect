@@ -105,6 +105,7 @@ describe('§17.3 snapshot projection gate predicate', () => {
 })
 
 describe('§8 per-peer workspace encoding', () => {
+  const GRANT = { provider: 'github', accountLogin: 'example-org', access: 'read', materialize: 'on-demand' } as const
   const gitSpec = (credential?: { provider: 'github' } | { provider: 'gitlab'; projectId: string }) =>
     ({
       workspace: {
@@ -114,16 +115,18 @@ describe('§8 per-peer workspace encoding', () => {
         branch: 'release',
         agentDir: 'api',
         ...(credential ? { credential } : {}),
-        additionalRepos: []
+        additionalRepos: [],
+        additionalInstallations: [GRANT]
       }
     }) satisfies Pick<AgentSpec, 'workspace'>
-  /** Every legacy arm keeps the shared half verbatim; only the host-shaped tail differs. */
+  /** Every legacy arm keeps the shared half verbatim, installation grants included; only the host-shaped tail differs. */
   const legacyTail = {
     isolation: 'shared',
     gitRepo: 'https://gitlab.example.test/example-group/example-project.git',
     branch: 'release',
     agentDir: 'api',
-    additionalRepos: []
+    additionalRepos: [],
+    additionalInstallations: [GRANT]
   }
 
   it('leaves the host-neutral arm alone for a peer that advertises workspace-git-v1', () => {
@@ -155,7 +158,7 @@ describe('§8 per-peer workspace encoding', () => {
 
   it('is identity for a scratch workspace, whatever the peer advertises', () => {
     const scratch = {
-      workspace: { mode: 'scratch', isolation: 'shared', additionalRepos: [] }
+      workspace: { mode: 'scratch', isolation: 'shared', additionalRepos: [], additionalInstallations: [] }
     } satisfies Pick<AgentSpec, 'workspace'>
     expect(encodeSpecWorkspaceForPeer(scratch, [])).toBe(scratch)
     expect(encodeSpecWorkspaceForPeer({}, [])).toEqual({})
@@ -164,7 +167,13 @@ describe('§8 per-peer workspace encoding', () => {
 
 describe('hook routings per peer (code-host-decisions.md §3.3)', () => {
   const spec = {
-    workspace: { mode: 'scratch', isolation: 'shared', gitCredential: 'github-app', additionalRepos: [] },
+    workspace: {
+      mode: 'scratch',
+      isolation: 'shared',
+      gitCredential: 'github-app',
+      additionalRepos: [],
+      additionalInstallations: []
+    },
     hookRoutings: []
   } satisfies Pick<AgentSpec, 'workspace' | 'hookRoutings'>
 

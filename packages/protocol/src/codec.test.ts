@@ -417,7 +417,8 @@ describe('agent spec / CRUD frames (CP→daemon spec sync)', () => {
       mode: 'scratch',
       isolation: 'shared',
       gitCredential: 'github-app',
-      additionalRepos: []
+      additionalRepos: [],
+      additionalInstallations: []
     })
   })
 

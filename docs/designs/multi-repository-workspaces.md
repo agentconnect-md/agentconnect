@@ -3,8 +3,9 @@
 > **Status:** Implemented, on self-hosted daemons (phases 1–6) and on cluster
 > (pod) daemons (phase 7), `gh` in the pod included. Per-authorization
 > materialization below is implemented for `always` and `on-demand` rows
-> (decisions 13 and 20); installation grants and the repository selector
-> (decisions 14–19) are **proposed, not implemented**.
+> (decisions 13 and 20); installation grants (decision 14) have their
+> control-plane half, and the repository selector (decisions 15–19) is
+> **proposed, not implemented**.
 >
 > Before this design an agent's workspace was exactly one repository.
 > Additional repositories existed only as an authorization allowlist
@@ -261,7 +262,8 @@ no root for a secondary repository on a cluster agent.
 > step 1 has landed: the `materialize` column, its REST surface and its
 > projection (`always` and `on-demand` only), the daemon checking out only
 > `always` rows with decision 20's clone directory, and **Always** or **On
-> demand** on each row in the console. Decisions 14–19 have not.
+> demand** on each row in the console. Decision 14 has its control-plane half
+> (change-map step 2); decisions 15–19 have not landed.
 
 Decision 1 scales with the number of rows. An organization with a few hundred
 repositories that authorizes them all — or that holds an installation grant
@@ -355,6 +357,11 @@ turn's path, in the same class as `gitcred/request` and the model-selection
    the root picker.
 2. **Installation grants** — [agent-multi-repo-authorization.md](agent-multi-repo-authorization.md)
    decision 10, independently mergeable; `on-demand` only until step 3.
+   _Landed:_ the control-plane half — the grant table, its owner-only routes,
+   `additionalInstallations` projected beside `additionalRepos` (never expanded
+   into it), the mint and hook gates, and the refusal that names the grant.
+   _Pending:_ the daemon reading the field (standing context, on-demand clones)
+   and the console.
 3. **`decision`** — the evaluator pair on the agent, the roster request and
    reply frames, chunked question generation, the selection rule, the snapshot,
    evidence recording, the readiness gate, and **By decision** on rows and

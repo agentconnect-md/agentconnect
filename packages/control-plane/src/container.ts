@@ -132,6 +132,7 @@ import {
   PgGithubInstallationRepo,
   PgGithubInstallStateStore,
   PgAgentRepoAuthorizationRepo,
+  PgAgentInstallationAuthorizationRepo,
   PgCodeHostRepositoryRepo,
   PgCodeHostTrustedActorRepo,
   PgCodeHostRunProjectionRepo,
@@ -517,6 +518,7 @@ export function buildContainer(
     githubInstallation: new PgGithubInstallationRepo(prisma),
     githubInstallState: new PgGithubInstallStateStore(prisma),
     agentRepoAuth: new PgAgentRepoAuthorizationRepo(prisma),
+    agentInstallationAuth: new PgAgentInstallationAuthorizationRepo(prisma),
     codeHostRepository: new PgCodeHostRepositoryRepo(prisma),
     codeHostTrustedActor: new PgCodeHostTrustedActorRepo(prisma),
     gitlabConnection: new PgGitlabConnectionRepo(prisma),
@@ -665,7 +667,9 @@ export function buildContainer(
     gitlabAppCfg?.baseUrl,
     repos.hook,
     giteaCfg.baseUrl,
-    { routings: repos.codeHostDecisionRouting, hooks: repos.hook }
+    { routings: repos.codeHostDecisionRouting, hooks: repos.hook },
+    // The installation grants projected beside the allowlist, never expanded into it.
+    repos.agentInstallationAuth
   )
 
   // Browser webchat token mint/verify (§10, A4): a short-lived HS256 JWT bound to
@@ -1109,6 +1113,7 @@ export function buildContainer(
         installations: repos.githubInstallation,
         installState: repos.githubInstallState,
         repoAuths: repos.agentRepoAuth,
+        installationAuths: repos.agentInstallationAuth,
         skillSources: repos.skillSource,
         agents: repos.agent,
         onInstallationFactsChanged: wakeGithubReviewProjections,
@@ -1801,6 +1806,7 @@ export function buildContainer(
       presetAgent: repos.presetAgent,
       githubInstallation: repos.githubInstallation,
       agentRepoAuth: repos.agentRepoAuth,
+      agentInstallationAuth: repos.agentInstallationAuth,
       codeHostRepository: repos.codeHostRepository,
       codeHostTrustedActor: repos.codeHostTrustedActor,
       gitlabConnection: repos.gitlabConnection,

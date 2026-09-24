@@ -249,4 +249,17 @@ describe('AgentSchema defaults', () => {
       { repoFullName: 'example-group/example-project', repoId: '4455667', provider: 'gitlab', materialize: 'on-demand' }
     ])
   })
+
+  it('round-trips the CP-replicated installation grants, defaulting to none', () => {
+    const base = { id: 'x', name: 'x', status: 'active', runtime: 'claude', integrations: [] }
+    const workspace = { mode: 'from-scratch', path: './workspace' }
+
+    expect(AgentSchema.parse({ ...base, workspace }).workspace.additionalInstallations).toEqual([])
+    expect(
+      AgentSchema.parse({
+        ...base,
+        workspace: { ...workspace, additionalInstallations: [{ accountLogin: 'example-org', access: 'comment' }] }
+      }).workspace.additionalInstallations
+    ).toEqual([{ provider: 'github', accountLogin: 'example-org', access: 'comment', materialize: 'on-demand' }])
+  })
 })

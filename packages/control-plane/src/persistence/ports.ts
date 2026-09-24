@@ -4344,6 +4344,47 @@ export interface AgentRepoAuthorizationRepo {
   ): Promise<void>
 }
 
+// Installation grants (agent-multi-repo-authorization.md decision 10): every repository one claimed installation covers.
+
+/** The two ways a grant may materialize (multi-repository-workspaces.md decision 14): never `always`. */
+export type InstallationMaterialization = Exclude<RepoMaterialization, 'always'>
+
+export interface AgentInstallationAuthorizationRecord {
+  id: string
+  agentId: AgentId
+  provider: 'github' // GitHub-only in this version
+  installationId: bigint // GitHub-side installation id; the organization's claim is re-checked on every use
+  accountLogin: string // display, projected onto the spec
+  access: RepoAccess
+  materialize: InstallationMaterialization
+  createdAt: Date
+  createdBy: AgentCreator | null
+}
+
+/** Every write that changes the projection (all of them) advances the owning agent's config revision in the same transaction. */
+export interface AgentInstallationAuthorizationRepo {
+  create(input: {
+    agentId: AgentId
+    installationId: bigint
+    accountLogin: string
+    access: RepoAccess
+    materialize?: InstallationMaterialization // absent ⇒ on-demand
+    createdByUserId?: string
+  }): Promise<AgentInstallationAuthorizationRecord>
+  get(id: string): Promise<AgentInstallationAuthorizationRecord | null>
+  /** The agent's grants, oldest first — the console list AND the mint-gate read (viewer-free). */
+  listForAgent(agentId: AgentId): Promise<AgentInstallationAuthorizationRecord[]>
+  /** Change the tier and/or materialization in one transaction; null when the row is gone. */
+  update(
+    id: string,
+    patch: { access?: RepoAccess; materialize?: InstallationMaterialization }
+  ): Promise<AgentInstallationAuthorizationRecord | null>
+  /** Best-effort display refresh from the installation row; never fails a mint. */
+  updateAccountLogin(id: string, accountLogin: string): Promise<void>
+  /** False when no such row existed. */
+  remove(id: string): Promise<boolean>
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // BotSecretStore (C5) — the ONLY read/write path for token material.
 // Every value passes through the configured SecretCipher: `none` stores

@@ -225,7 +225,13 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
         // PATCH is the seeded agent's first configuration write.
         configRevision: '1',
         // The additional-repository allowlist rides the workspace; always shipped so a revoke replicates.
-        workspace: { mode: 'scratch', isolation: 'shared', gitCredential: 'github-app', additionalRepos: [] }
+        workspace: {
+          mode: 'scratch',
+          isolation: 'shared',
+          gitCredential: 'github-app',
+          additionalRepos: [],
+          additionalInstallations: []
+        }
       }
     })
 
@@ -305,7 +311,8 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
       isolation: 'shared',
       gitRepo: 'https://github.com/acme/monorepo',
       branch: 'main',
-      additionalRepos: []
+      additionalRepos: [],
+      additionalInstallations: []
     })
   })
 
@@ -334,7 +341,8 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
       branch: 'main',
       agentDir: 'services/api',
       credential: { provider: 'github' },
-      additionalRepos: []
+      additionalRepos: [],
+      additionalInstallations: []
     })
   })
 

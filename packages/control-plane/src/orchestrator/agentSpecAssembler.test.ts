@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest'
 import { GITLAB_DEFAULT_BASE_URL, type AgentAdditionalRepo } from '@agentconnect.md/protocol'
 import { AgentSpecAssembler, gitlabHost } from './agentSpecAssembler.js'
 import type {
+  AgentInstallationAuthorizationRepo,
   AgentRepoAuthorizationRepo,
   AgentRecord,
   AgentSecretStore,
@@ -316,6 +317,83 @@ describe('AgentSpecAssembler', () => {
     const spec = specs.project(AGENT, {}, [], [], undefined, pinned)
 
     expect(spec.workspace).toMatchObject({ additionalRepos: pinned })
+  })
+
+  it('projects installation grants beside the allowlist on both modes, sorted, never expanded into it', async () => {
+    const installations: Pick<AgentInstallationAuthorizationRepo, 'listForAgent'> = {
+      listForAgent: async (agentId) =>
+        (
+          [
+            ['example-org', 'write', 'decision'],
+            ['acme', 'read', 'on-demand']
+          ] as const
+        ).map(([accountLogin, access, materialize], index) => ({
+          id: `grant-${index}`,
+          agentId,
+          provider: 'github' as const,
+          installationId: BigInt(12345 + index),
+          accountLogin,
+          access,
+          materialize,
+          createdAt: new Date(0),
+          createdBy: null
+        }))
+    }
+    const specs = new AgentSpecAssembler(
+      storeWith({}),
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      repoAuthWith([['acme/infra', 4711n]]),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      installations
+    )
+
+    for (const workspace of [AGENT.workspace, GITHUB_WORKSPACE]) {
+      const spec = await specs.assemble({ ...AGENT, workspace })
+      expect(spec.workspace?.additionalRepos).toEqual([
+        { repoFullName: 'acme/infra', repoId: '4711', provider: 'github', materialize: 'always' }
+      ])
+      expect(spec.workspace?.additionalInstallations).toEqual([
+        { provider: 'github', accountLogin: 'acme', access: 'read', materialize: 'on-demand' },
+        { provider: 'github', accountLogin: 'example-org', access: 'write', materialize: 'decision' }
+      ])
+    }
+    expect(await specs.workspaceGrantsOf(AGENT)).toMatchObject({
+      additionalRepos: [{ repoFullName: 'acme/infra' }],
+      additionalInstallations: [{ accountLogin: 'acme' }, { accountLogin: 'example-org' }]
+    })
+    // No grant dependency at all still ships the empty list, as `additionalRepos` does.
+    expect((await assemblerWith(repoAuthWith([])).assemble(AGENT)).workspace).toMatchObject({
+      additionalInstallations: []
+    })
+  })
+
+  it('project trusts caller-snapshotted installation grants (the move bundle pins them)', () => {
+    const pinned = [
+      { provider: 'github', accountLogin: 'example-org', access: 'comment', materialize: 'on-demand' } as const
+    ]
+
+    const spec = new AgentSpecAssembler(storeWith({})).project(
+      AGENT,
+      {},
+      [],
+      [],
+      undefined,
+      [],
+      false,
+      false,
+      undefined,
+      [...pinned]
+    )
+
+    expect(spec.workspace).toMatchObject({ additionalRepos: [], additionalInstallations: pinned })
   })
 
   it('derives the §24.4 host from each consumer in turn, and from none', () => {

@@ -203,6 +203,7 @@ model User {
   modifiedHooks                    HookDef[]                  @relation("HookModifiedBy")
   addedTrustedActors               CodeHostTrustedActor[]     @relation("CodeHostTrustedActorAddedBy")
   createdRepoAuths                 AgentRepoAuthorization[]   @relation("AgentRepoAuthCreatedBy")
+  createdInstallationAuths         AgentInstallationAuthorization[] @relation("AgentInstallationAuthCreatedBy")
   gitlabConnections                GitlabConnection[]         @relation("GitlabConnectionUser")
   githubRepoIdentity               GithubRepoIdentity?
   githubRepoIdentityState          GithubRepoIdentityState?
@@ -908,6 +909,7 @@ model Agent {
   hooks                 HookDef[]
   integrations          Integration[]
   repoAuths             AgentRepoAuthorization[]
+  installationAuths     AgentInstallationAuthorization[]
   secrets               AgentSecret[]
   webchatConversations  WebchatConversation[]
   webchatParticipations WebchatConversationAgent[]
@@ -1031,6 +1033,26 @@ model AgentRepoAuthorization {
   @@unique([agentId, provider, repoId])
   @@index([agentId])
   @@map("agent_repo_authorization")
+}
+
+/// Agent access to every repository a GitHub App installation covers, at one tier (agent-multi-repo-authorization.md decision 10).
+model AgentInstallationAuthorization {
+  id              String              @id @default(uuid()) @db.Uuid
+  agentId         String              @db.Uuid
+  provider        String              @default("github") // GitHub-only in this version (DB CHECK)
+  installationId  BigInt // GitHub-side installation id; the organization's claim is re-checked on every use
+  accountLogin    String // display, projected onto the spec; refreshed from the installation row
+  access          RepoAccess // projected onto the spec, so a change advances the agent's config revision
+  materialize     RepoMaterialization @default(on_demand) // decision | on-demand; never always (DB CHECK, decision 14)
+  createdByUserId String? // audit: the organization owner who granted it
+  createdAt       DateTime            @default(now()) @db.Timestamptz(6)
+
+  agent     Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  createdBy User? @relation("AgentInstallationAuthCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([agentId, provider, installationId], map: "agent_installation_authorization_installation_key")
+  @@index([agentId])
+  @@map("agent_installation_authorization")
 }
 
 /// Provider-qualified repository catalog (gitlab-com-integration.md §8.1) — the

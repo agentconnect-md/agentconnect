@@ -55,6 +55,7 @@ import type {
   PresetAgentStore,
   GithubInstallationRepo,
   AgentRepoAuthorizationRepo,
+  AgentInstallationAuthorizationRepo,
   CodeHostRepositoryRepo,
   CodeHostTrustedActorRepo,
   GitlabConnectionRepo,
@@ -284,6 +285,8 @@ export interface HttpDeps {
     /** Explicit non-workspace repo grants per agent (issue #457) — the agent
      *  Repositories card + the github-hook watch-repo gate. */
     agentRepoAuth: AgentRepoAuthorizationRepo
+    /** Installation grants per agent (decision 10) — every repository one claimed installation covers. */
+    agentInstallationAuth: AgentInstallationAuthorizationRepo
     /** Provider-qualified repository catalog (gitlab-com-integration.md §8.1) — readers-first write side. */
     codeHostRepository: CodeHostRepositoryRepo
     /** Per-repository "Trusted users" — the maintainer vouch the hook gates read beside the role check. */

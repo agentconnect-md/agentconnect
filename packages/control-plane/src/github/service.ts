@@ -18,6 +18,8 @@ import type {
   GithubInstallationRecord,
   GithubInstallationRepo,
   GithubInstallStateStore,
+  AgentInstallationAuthorizationRecord,
+  AgentInstallationAuthorizationRepo,
   AgentRecord,
   AgentRepo,
   AgentRepoAuthorizationRepo,
@@ -105,6 +107,8 @@ export interface GithubServiceDeps {
    *  `gitcred/request` naming a non-workspace repo. Absent (older test
    *  harnesses) ⇒ non-workspace requests are denied. */
   repoAuths?: AgentRepoAuthorizationRepo
+  /** Installation grants (decision 10), consulted after rows and skill sources; absent ⇒ none. */
+  installationAuths?: Pick<AgentInstallationAuthorizationRepo, 'listForAgent' | 'updateAccountLogin'>
   /** Private skill sources (shared-skills.md §3): an agent that enables a private
    *  source is thereby authorized to READ that repository, so the daemon can
    *  acquire it with a repository-scoped contents:read token. Absent ⇒ private
@@ -130,6 +134,13 @@ const MAX_DELIVERY_PAGES = 10
 // The remedy rides the first refusal: it is what an agent reports to its user, so it must say what to change.
 const NOT_AUTHORIZED_FOR_AGENT =
   "is not authorized for this agent — add it under Additional repositories in the agent's workspace settings"
+// Named only where the owner has a live installation this organization claimed, which an owner can grant whole.
+const OR_AUTHORIZE_ITS_INSTALLATION = ', or authorize its installation'
+const NOT_COVERED_BY_INSTALLATION = 'is not covered by the installation — give the GitHub App access to it first'
+
+function notAuthorizedForAgent(repoFullName: string, installationGrantable: boolean): string {
+  return `${repoFullName} ${NOT_AUTHORIZED_FOR_AGENT}${installationGrantable ? OR_AUTHORIZE_ITS_INSTALLATION : ''}`
+}
 
 type RepoPageLookup = { ins: GithubInstallationRecord; page: number; perPage: number }
 
@@ -165,9 +176,8 @@ function toFacts(ins: GhInstallation): GithubInstallationFacts {
 }
 
 export interface ResolvedAgentRepoAuthorization {
-  /** `skill-source`: implied by a private skill source the agent enables
-   *  (shared-skills.md §3) — always read-only, never a review/comment subject. */
-  kind: 'workspace' | 'additional' | 'skill-source'
+  /** `skill-source`: a private skill source, read-only and never a review subject; `installation`: an installation grant's tier, like a row. */
+  kind: 'workspace' | 'additional' | 'skill-source' | 'installation'
   repoId: bigint
   repoFullName: string
   access: RepoAccess
@@ -682,14 +692,7 @@ export class GithubService {
    * one (read workspace ⇒ read-only issues/PR scopes and no Actions;
    * write workspace ⇒ Actions write).
    *
-   * `requestedRepo` (issue #457): absent / equal to an App-backed workspace repo
-   * ⇒ the workspace path above, byte-identical. Any OTHER repo must be covered
-   * by an AgentRepoAuthorization row — including every repo used from a scratch
-   * workspace. Rows match by full name (fast path) or, after a rename, by
-   * NUMERIC repo id through the owner's installation. Each repo resolves its own
-   * installation, so grants span installations naturally; the row's access tier
-   * drives the per-capability clamp. No row ⇒ SCOPE_DENIED — the daemon treats a
-   * repo-keyed denial as a short-TTL negative, not the agent-terminal kind.
+   * `requestedRepo` (issue #457): absent or the App-backed workspace ⇒ the workspace path; any other repo needs a row, a private skill source, or an installation grant, in that order, else SCOPE_DENIED.
    *
    * `requestedAccess` is the v2 access FLOOR (gitlab-com-integration.md §17.1): a caller may ask for
    * LESS than the tier, never more. Absent ⇒ the tier itself, which is what every GitHub caller asks
@@ -790,15 +793,13 @@ export class GithubService {
     }
   }
 
-  /**
-   * Shared repo-id-first authorization resolver for gitcred, formal reviews,
-   * and CP-owned Checks. A repo name is only an endpoint/display hint: the
-   * numeric GitHub id must match either the workspace id or an explicit grant.
-   */
+  /** Repo-id-first resolver for hook effects, reviews, auto-merge and Checks: the workspace's id, a row's, or one an installation grant covers. */
   async resolveAgentRepoAuthorization(
     agent: AgentRecord,
     repoId: bigint,
-    repoFullName: string
+    repoFullName: string,
+    // False for CP-owned Checks: revoking a row tombstones its Checks, and a grant has no per-repository cleanup.
+    opts: { installationGrants?: boolean } = {}
   ): Promise<ResolvedAgentRepoAuthorization> {
     const [owner, repo] = repoFullName.split('/')
     if (!owner || !repo) throw new GitCredDeniedError('invalid github repository name', 'SCOPE_DENIED', false)
@@ -858,7 +859,20 @@ export class GithubService {
       (row) => row.provider === 'github' && row.repoId === repoId
     )
     if (!auth) {
-      throw new GitCredDeniedError(`${repoFullName} ${NOT_AUTHORIZED_FOR_AGENT}`, 'SCOPE_DENIED', false)
+      // The ref above resolved through this very installation, which is the coverage proof an installation grant needs.
+      const grant =
+        opts.installationGrants === false
+          ? undefined
+          : (await this.installationGrantsOf(agent)).find((row) => row.installationId === installation.installationId)
+      if (grant) {
+        await this.refreshGrantLogin(grant, installation)
+        return { kind: 'installation', repoId, repoFullName: ref.fullName, access: grant.access, installation }
+      }
+      throw new GitCredDeniedError(
+        notAuthorizedForAgent(repoFullName, opts.installationGrants !== false),
+        'SCOPE_DENIED',
+        false
+      )
     }
     if (auth.repoFullName !== ref.fullName) {
       await this.deps.repoAuths?.updateFullName(auth.id, ref.fullName).catch(() => {})
@@ -877,7 +891,9 @@ export class GithubService {
     const resolved = await this.resolveAgentRepoAuthorization(agent, repoId, repoFullName)
     const allowed =
       resolved.access === 'write' ||
-      (resolved.kind === 'additional' && resolved.access === 'comment' && event === 'COMMENT')
+      ((resolved.kind === 'additional' || resolved.kind === 'installation') &&
+        resolved.access === 'comment' &&
+        event === 'COMMENT')
     if (!allowed) {
       throw new GitCredDeniedError(`repository authorization does not allow ${event}`, 'SCOPE_DENIED', false)
     }
@@ -990,7 +1006,7 @@ export class GithubService {
     repoId: bigint,
     repoFullName: string
   ): Promise<{ cred: MintedGitCred; resolved: ResolvedAgentRepoAuthorization }> {
-    let resolved = await this.resolveAgentRepoAuthorization(agent, repoId, repoFullName)
+    let resolved = await this.resolveAgentRepoAuthorization(agent, repoId, repoFullName, { installationGrants: false })
     if (resolved.access !== 'write') {
       throw new GitCredDeniedError('informational Checks require write repository authorization', 'SCOPE_DENIED', false)
     }
@@ -1090,8 +1106,7 @@ export class GithubService {
         ? []
         : await resolvePrivateSkillSourceRepos(agent, this.deps.skillSources).catch(() => [])
     const skillExact = skillRepos.find((row) => row.repoFullName.toLowerCase() === repoFullName.toLowerCase())
-    // Never probe an unrelated owner merely because the daemon named it. A
-    // same-owner grant is enough to justify the slow rename lookup below.
+    // Never probe an unrelated owner merely because the daemon named it: a same-owner row, or a grant on its live installation, justifies it.
     const renameCandidates = grants.filter(
       (row) => row.repoFullName.split('/')[0]?.toLowerCase() === owner.toLowerCase()
     )
@@ -1100,17 +1115,24 @@ export class GithubService {
     )
     const workspaceRenameCandidate =
       agent.workspaceRepoId !== undefined && workspaceOwner?.toLowerCase() === owner.toLowerCase()
+    const installation = await this.deps.installations.liveByOrgAndAccount(agent.orgId, owner)
+    // Grants come after rows and skill sources (decision 10); one whose installation is gone still names its account, to deny as a lease.
+    const installationGrants = exact || skillExact ? [] : await this.installationGrantsOf(agent)
+    const grant = installation
+      ? installationGrants.find((row) => row.installationId === installation.installationId)
+      : installationGrants.find((row) => row.accountLogin.toLowerCase() === owner.toLowerCase())
     if (
       !exact &&
       !skillExact &&
       renameCandidates.length === 0 &&
       skillRenameCandidates.length === 0 &&
-      !workspaceRenameCandidate
+      !workspaceRenameCandidate &&
+      !grant
     ) {
-      throw new GitCredDeniedError(`${repoFullName} ${NOT_AUTHORIZED_FOR_AGENT}`, 'SCOPE_DENIED', false)
+      const grantable = installation !== null && !installation.suspendedAt
+      throw new GitCredDeniedError(notAuthorizedForAgent(repoFullName, grantable), 'SCOPE_DENIED', false)
     }
 
-    const installation = await this.deps.installations.liveByOrgAndAccount(agent.orgId, owner)
     if (!installation || installation.suspendedAt) {
       throw new GitCredDeniedError(`no live github installation covers ${owner}`, 'LEASE_DENIED', false)
     }
@@ -1135,16 +1157,13 @@ export class GithubService {
 
     const ref = await this.repoRefFor(installation, owner, repo)
     if (!ref) {
-      throw new GitCredDeniedError(
-        `${repoFullName} is not covered by the installation — give the GitHub App access to it first`,
-        'SCOPE_DENIED',
-        false
-      )
+      throw new GitCredDeniedError(`${repoFullName} ${NOT_COVERED_BY_INSTALLATION}`, 'SCOPE_DENIED', false)
     }
+    // Once probed, identity is the resolved id across every owner: an account rename leaves a row or the workspace under its old owner, and its own tier must still win over a grant's.
     if (
       workspace.mode === 'git' &&
       workspace.credential?.provider === 'github' &&
-      workspaceRenameCandidate &&
+      agent.workspaceRepoId !== undefined &&
       ref.repoId === agent.workspaceRepoId
     ) {
       return {
@@ -1155,17 +1174,19 @@ export class GithubService {
         installation
       }
     }
-    const renamed = renameCandidates.find((row) => row.repoId === ref.repoId)
+    const renamed = grants.find((row) => row.repoId === ref.repoId)
     if (!renamed) {
-      // The daemon verifies a skill source's numeric identity before any name-based
-      // read, so a renamed private skill repo arrives here under its OLD name with
-      // the id the registry still carries; the CP's PATCH re-bind is what moves the
-      // stored slug, and the token is minted for the id regardless.
-      const renamedSkill = skillRenameCandidates.find((row) => row.repoId === ref.repoId)
+      // A renamed private skill repo arrives under its OLD name with the id the registry still carries; the token is minted for the id regardless.
+      const renamedSkill = skillRepos.find((row) => row.repoId === ref.repoId)
       if (renamedSkill) {
         return { kind: 'skill-source', repoId: renamedSkill.repoId, repoFullName, access: 'read', installation }
       }
-      throw new GitCredDeniedError(`${repoFullName} ${NOT_AUTHORIZED_FOR_AGENT}`, 'SCOPE_DENIED', false)
+      // The grant's tier, minted by the resolved id; the echo keeps the requested name for the daemon's guard.
+      if (grant) {
+        await this.refreshGrantLogin(grant, installation)
+        return { kind: 'installation', repoId: ref.repoId, repoFullName, access: grant.access, installation }
+      }
+      throw new GitCredDeniedError(notAuthorizedForAgent(repoFullName, true), 'SCOPE_DENIED', false)
     }
     if (renamed.repoFullName !== ref.fullName) {
       await this.deps.repoAuths?.updateFullName(renamed.id, ref.fullName).catch(() => {})
@@ -1177,6 +1198,21 @@ export class GithubService {
       access: renamed.access,
       installation
     }
+  }
+
+  private async installationGrantsOf(agent: AgentRecord): Promise<AgentInstallationAuthorizationRecord[]> {
+    return ((await this.deps.installationAuths?.listForAgent(agent.id)) ?? []).filter(
+      (row) => row.provider === 'github'
+    )
+  }
+
+  /** Best-effort: the projected login follows the installation row, as a row's name follows a rename. */
+  private async refreshGrantLogin(
+    grant: AgentInstallationAuthorizationRecord,
+    installation: GithubInstallationRecord
+  ): Promise<void> {
+    if (grant.accountLogin === installation.accountLogin) return
+    await this.deps.installationAuths?.updateAccountLogin(grant.id, installation.accountLogin).catch(() => {})
   }
 
   private async mintChecksWithFactsRetry(

@@ -5,9 +5,56 @@
  */
 import { describe, expect, it } from 'vitest'
 import { WORKSPACE_GIT_V1_FEATURE } from '../consts.js'
-import { AgentAdditionalRepo, AgentSpec, AgentWorkspace, RepoMaterialization } from './agent.js'
+import {
+  AgentAdditionalInstallation,
+  AgentAdditionalRepo,
+  AgentSpec,
+  AgentWorkspace,
+  RepoMaterialization
+} from './agent.js'
 
 const REPO = 'https://gitlab.example.test/gitlab/example-group/example-project.git'
+
+describe('additionalInstallations (agent-multi-repo-authorization.md decision 10)', () => {
+  const variants = [
+    { mode: 'scratch' },
+    { mode: 'git', gitRepo: 'https://github.com/example-org/example-repo' },
+    { mode: 'github', gitRepo: 'https://github.com/example-org/example-repo' },
+    { mode: 'gitlab', gitRepo: REPO, projectId: '9' }
+  ]
+
+  it('decodes every variant without the field as no grants, so an older control plane’s spec decodes unchanged', () => {
+    for (const variant of variants) {
+      expect(AgentWorkspace.parse(variant).additionalInstallations).toEqual([])
+    }
+  })
+
+  it('defaults a grant to github and `on-demand`, and keeps an explicit value', () => {
+    expect(AgentAdditionalInstallation.parse({ accountLogin: 'example-org', access: 'read' })).toEqual({
+      provider: 'github',
+      accountLogin: 'example-org',
+      access: 'read',
+      materialize: 'on-demand'
+    })
+    for (const variant of variants) {
+      const parsed = AgentWorkspace.parse({
+        ...variant,
+        additionalInstallations: [{ accountLogin: 'example-org', access: 'comment', materialize: 'decision' }]
+      })
+      expect(parsed.additionalInstallations).toEqual([
+        { provider: 'github', accountLogin: 'example-org', access: 'comment', materialize: 'decision' }
+      ])
+      expect(parsed.additionalRepos).toEqual([])
+    }
+  })
+
+  it('strips an unknown key but refuses a tier outside the three', () => {
+    expect(
+      AgentAdditionalInstallation.parse({ accountLogin: 'example-org', access: 'write', installationId: '12345' })
+    ).not.toHaveProperty('installationId')
+    expect(() => AgentAdditionalInstallation.parse({ accountLogin: 'example-org', access: 'admin' })).toThrow()
+  })
+})
 
 describe('additionalRepos `materialize` (multi-repository-workspaces.md decision 13)', () => {
   it('names the three modes on the wire', () => {
@@ -54,7 +101,8 @@ describe('§3 AgentWorkspace `git` arm', () => {
       gitRepo: REPO,
       branch: 'main',
       credential: { provider: 'gitlab', projectId: '5' },
-      additionalRepos: []
+      additionalRepos: [],
+      additionalInstallations: []
     })
   })
 
