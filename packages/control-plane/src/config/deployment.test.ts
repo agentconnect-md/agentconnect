@@ -51,6 +51,7 @@ describe('applyDeploymentEnvironment', () => {
           CORS_ORIGIN: 'https://console.example.test',
           OIDC_ISSUER: 'https://old-login.example.test/oidc',
           GITHUB_APP_ID: '123',
+          GITHUB_APP_CLIENT_SECRET: 'old-client-secret',
           GITHUB_APP_SLUG: 'old-app',
           GITHUB_APP_PRIVATE_KEY_B64: 'old-key',
           SLACK_PLATFORM_APP_ID: 'AOLD'
@@ -69,6 +70,7 @@ describe('applyDeploymentEnvironment', () => {
     })
     expect(config.OIDC_ISSUER).toBe('https://old-login.example.test/oidc')
     expect(config.GITHUB_APP_ID).toBeUndefined()
+    expect(config.GITHUB_APP_CLIENT_SECRET).toBeUndefined()
     expect(config.SLACK_PLATFORM_APP_ID).toBeUndefined()
   })
 
@@ -124,6 +126,7 @@ describe('applyDeploymentEnvironment', () => {
       OIDC_AUDIENCE: 'https://api.example.test',
       GITHUB_APP_ID: 123,
       GITHUB_APP_PRIVATE_KEY_B64: 'github-key',
+      GITHUB_APP_CLIENT_SECRET: 'connector-only',
       SLACK_PLATFORM_CLIENT_SECRET: 'slack-client-secret',
       FEISHU_PLATFORM_APP_ID: 'cli_feishu',
       FEISHU_PLATFORM_APP_SECRET: 'feishu-secret',

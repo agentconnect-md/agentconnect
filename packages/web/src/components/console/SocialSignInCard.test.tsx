@@ -16,7 +16,8 @@ vi.mock('@/lib/api', () => ({
   createMySocialIdentityAuthorization: vi.fn(),
   resolveMySocialConnectorId: vi.fn(),
   linkMySocialIdentity: vi.fn(),
-  unlinkMySocialIdentity: vi.fn()
+  unlinkMySocialIdentity: vi.fn(),
+  unlinkMyGithubRepoAccess: vi.fn()
 }))
 
 vi.mock('@/lib/auth', () => ({
@@ -32,7 +33,12 @@ vi.mock('@/lib/logto-account', async (importOriginal) => {
 
 import SocialSignInCard from './SocialSignInCard'
 import { LogtoAccountError } from '@/lib/logto-account'
-import { createMySocialIdentityAuthorization, fetchMySocialAccount, resolveMySocialConnectorId } from '@/lib/api'
+import {
+  createMySocialIdentityAuthorization,
+  fetchMySocialAccount,
+  resolveMySocialConnectorId,
+  unlinkMyGithubRepoAccess
+} from '@/lib/api'
 
 const ACCOUNT_KEY = 'logto-account-sign-in-methods'
 let root: Root | undefined
@@ -116,6 +122,28 @@ afterEach(async () => {
 })
 
 describe('SocialSignInCard account state', () => {
+  it('keeps repository access outside sign-in methods and allows disconnecting without removing the last login', async () => {
+    window.__AC_ENV = { SOCIAL_PROVIDERS: 'github,google' }
+    vi.mocked(fetchMySocialAccount).mockResolvedValue({
+      identities: [{ target: 'google', userId: 'google-user' }],
+      githubRepoIdentity: { githubUserId: '123', login: 'octocat' },
+      hasSecurityVerificationMethod: false
+    })
+    await renderCard({ autoAuthorize: { target: 'github', purpose: 'link' } })
+    await waitUntil(() => button('Disconnect') !== undefined)
+    const signIn = container!.querySelector('#sign-in-methods')!
+    expect(signIn.textContent).not.toContain('octocat')
+    expect(button('Unlink')).toBeUndefined()
+    expect(createMySocialIdentityAuthorization).not.toHaveBeenCalled()
+    vi.mocked(fetchMySocialAccount).mockResolvedValue({
+      identities: [{ target: 'google', userId: 'google-user' }],
+      hasSecurityVerificationMethod: false
+    })
+    await act(async () => button('Disconnect')!.click())
+    await waitUntil(() => button('Disconnect') === undefined)
+    expect(unlinkMyGithubRepoAccess).toHaveBeenCalledOnce()
+  })
+
   it('offers configured Lark and Feishu identities through the shared link flow', async () => {
     window.__AC_ENV = { SOCIAL_PROVIDERS: 'lark,feishu' }
     vi.mocked(fetchMySocialAccount).mockResolvedValue({ identities: [], hasSecurityVerificationMethod: false })

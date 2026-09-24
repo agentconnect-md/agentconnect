@@ -201,6 +201,8 @@ model User {
   addedTrustedActors               CodeHostTrustedActor[]     @relation("CodeHostTrustedActorAddedBy")
   createdRepoAuths                 AgentRepoAuthorization[]   @relation("AgentRepoAuthCreatedBy")
   gitlabConnections                GitlabConnection[]         @relation("GitlabConnectionUser")
+  githubRepoIdentity               GithubRepoIdentity?
+  githubRepoIdentityState          GithubRepoIdentityState?
   giteaConnections                 GiteaConnection[]          @relation("GiteaConnectionCreatedBy")
   slackConfigs                     SlackUserConfig[]
   createdInviteLinks               OrgInviteLink[]            @relation("OrgInviteLinkCreatedBy")
@@ -212,6 +214,31 @@ model User {
   authorizedEnvironmentAssignments OrganizationEnvironmentAssignment[] @relation("OrgEnvAuthorizedBy")
 
   @@map("app_user")
+}
+
+// Repository identity is user-scoped and may be shared by separately authenticated AC accounts.
+model GithubRepoIdentity {
+  userId       String   @id
+  githubUserId BigInt
+  login        String
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(6)
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([githubUserId])
+  @@map("github_repo_identity")
+}
+
+// One pending, single-use authorization per user; the verifier passes through SecretCipher.
+model GithubRepoIdentityState {
+  nonce     String   @id
+  userId    String   @unique
+  verifier  String
+  expiresAt DateTime @db.Timestamptz(6)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@map("github_repo_identity_state")
 }
 
 // A deleted account's identity boundary: tokens issued at or before `cutoffAt` are

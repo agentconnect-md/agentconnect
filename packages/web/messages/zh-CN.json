@@ -218,6 +218,9 @@
     },
     "social": {
       "title": "登录方式",
+      "repoAccessTitle": "GitHub 仓库访问",
+      "repoAccessOnly": "仅用于仓库访问。使用 GitHub 登录仍会进入原账号。",
+      "disconnectRepo": "断开连接",
       "description": "可将多个社交账户关联到同一个 AgentConnect 个人资料。",
       "retry": "重试",
       "linked": "已关联",
@@ -902,6 +905,10 @@
       "signingIn": "正在登录…"
     },
     "socialCallback": {
+      "repoConflict": "这个 GitHub 账号已关联其他 AgentConnect 账号。你可以继续连接，用于当前账号的仓库访问。使用 GitHub 登录仍会进入原账号。",
+      "continueForRepoAccess": "继续连接仓库",
+      "connectingRepo": "正在连接 GitHub 仓库…",
+      "repoAuthorizationFailed": "未能连接 GitHub 仓库访问。请返回个人资料页重试。",
       "linking": "正在关联登录账户…",
       "expired": "账户关联请求已过期。请返回个人资料页重试。",
       "updating": "正在更新 {provider} 授权…",

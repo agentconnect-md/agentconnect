@@ -4437,6 +4437,8 @@ export interface MySocialIdentityDto {
 
 export interface MySocialAccountDto {
   identities: MySocialIdentityDto[]
+  githubRepoIdentity?: { githubUserId: string; login: string }
+  githubRepoAccessAvailable?: boolean
   /** Drives whether linking has to collect an ownership code first; Logto
    *  answers 403 to an identity change the caller has not re-proven. */
   hasSecurityVerificationMethod: boolean
@@ -4522,6 +4524,18 @@ export async function linkMySocialIdentity(connectorId: string, connectorData: R
 
 export async function unlinkMySocialIdentity(target: string): Promise<void> {
   await apiDelete(`/me/social-identities/${encodeURIComponent(target)}`)
+}
+
+export function createMyGithubRepoAccessAuthorization(): Promise<{ state: string; authorizationUri: string }> {
+  return apiPost('/me/social-identities/github/repo-access/authorization', {})
+}
+
+export function linkMyGithubRepoAccess(code: string, state: string): Promise<{ githubUserId: string; login: string }> {
+  return apiPost('/me/social-identities/github/repo-access', { code, state })
+}
+
+export async function unlinkMyGithubRepoAccess(): Promise<void> {
+  await apiDelete('/me/social-identities/github/repo-access')
 }
 
 // ── closed-beta admission (waitlist-and-login.md) ─────────────────────────────

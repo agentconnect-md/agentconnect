@@ -40,6 +40,7 @@ export {
 } from './repositories/gitea.repo.js'
 export { PgCodeHostReviewLeaseRepo } from './repositories/code-host-review.repo.js'
 export { PgSocialIdentityMutationGate } from './repositories/social-identity-mutation.gate.js'
+export { PgGithubRepoIdentityStore } from './repositories/github-repo-identity.repo.js'
 export { PgAssignmentRepo } from './repositories/assignment.repo.js'
 export { PgSessionRepo } from './repositories/session.repo.js'
 export { PgSessionPullRequestFeedbackRepo } from './repositories/session-pull-request-feedback.repo.js'

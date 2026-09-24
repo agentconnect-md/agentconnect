@@ -4,15 +4,23 @@ import { useEffect, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui'
 import { Spinner } from '@/components/marks'
-import { linkMySocialIdentity, refreshMySocialIdentities } from '@/lib/api'
+import {
+  createMyGithubRepoAccessAuthorization,
+  fetchMySocialAccount,
+  linkMyGithubRepoAccess,
+  linkMySocialIdentity,
+  refreshMySocialIdentities
+} from '@/lib/api'
 import { forgetOwnershipProof } from '@/lib/ownership-proof'
 import {
   LogtoAccountError,
   accountErrorMessage,
+  isGithubIdentityConflict,
   renewSocialIdentityToken,
   saveSocialIdentity,
   takeSocialLinkFlow,
-  verifySocialVerification
+  verifySocialVerification,
+  writeSocialLinkFlow
 } from '@/lib/logto-account'
 
 export default function SocialAccountCallback() {
@@ -21,6 +29,24 @@ export default function SocialAccountCallback() {
   const [error, setError] = useState<string>()
   const [returnTo, setReturnTo] = useState('/')
   const [workingMessage, setWorkingMessage] = useState(() => t('linking'))
+  const [canConnectRepo, setCanConnectRepo] = useState(false)
+  const [connectingRepo, setConnectingRepo] = useState(false)
+
+  const continueForRepoAccess = async () => {
+    setConnectingRepo(true)
+    try {
+      const { state, authorizationUri } = await createMyGithubRepoAccessAuthorization()
+      if (
+        !writeSocialLinkFlow({ purpose: 'repo-access', providerName: 'GitHub', state, returnTo, createdAt: Date.now() })
+      ) {
+        throw new Error('browser state unavailable')
+      }
+      window.location.assign(authorizationUri)
+    } catch {
+      setError(t('repoAuthorizationFailed'))
+      setConnectingRepo(false)
+    }
+  }
 
   useEffect(() => {
     if (started.current) return
@@ -51,15 +77,40 @@ export default function SocialAccountCallback() {
 
     const providerResponse = Object.fromEntries(params.entries())
 
+    if (flow.purpose === 'repo-access') {
+      setWorkingMessage(t('connectingRepo'))
+      linkMyGithubRepoAccess(params.get('code') ?? '', flow.state)
+        .then(() => window.location.replace(flow.returnTo))
+        .catch(() => setError(t('repoAuthorizationFailed')))
+      return
+    }
+
+    const reportFailure = (caught: unknown) => {
+      setError(
+        accountErrorMessage(caught, {
+          providerName: flow.providerName,
+          operation: flow.purpose === 'reauthorize' ? 'reauthorize' : 'link'
+        })
+      )
+      if (isGithubIdentityConflict(caught, flow)) {
+        void fetchMySocialAccount()
+          .then((account) => {
+            if (account.githubRepoAccessAvailable && !account.githubRepoIdentity) {
+              setError(t('repoConflict'))
+              setCanConnectRepo(true)
+            }
+          })
+          .catch(() => undefined)
+      }
+    }
+
     // `direct`: the CP owns both legs, so hand it the provider's response and
     // let it finish. Nothing here needs an ownership proof.
     if (flow.mode === 'direct') {
       linkMySocialIdentity(flow.connectorId, providerResponse)
         .then(() => refreshMySocialIdentities().catch(() => undefined))
         .then(() => window.location.replace(flow.returnTo))
-        .catch((caught) => {
-          setError(accountErrorMessage(caught, { providerName: flow.providerName, operation: 'link' }))
-        })
+        .catch(reportFailure)
       return
     }
 
@@ -89,14 +140,7 @@ export default function SocialAccountCallback() {
       .then(() => refreshMySocialIdentities().catch(() => undefined))
       // Return to the initiating Profile view after either linking or renewing.
       .then(() => window.location.replace(flow.returnTo))
-      .catch((caught) => {
-        setError(
-          accountErrorMessage(caught, {
-            providerName: flow.providerName,
-            operation: flow.purpose === 'reauthorize' ? 'reauthorize' : 'link'
-          })
-        )
-      })
+      .catch(reportFailure)
   }, [t])
 
   return (
@@ -104,8 +148,13 @@ export default function SocialAccountCallback() {
       <div className="m-auto flex max-w-[420px] flex-col items-center gap-[18px] px-6 text-center font-sans text-[14px] font-normal leading-[1.6] text-(--text-secondary)">
         {!error ? <Spinner size={48} /> : null}
         <div>{error ?? workingMessage}</div>
+        {canConnectRepo ? (
+          <Button disabled={connectingRepo} onClick={() => void continueForRepoAccess()}>
+            {connectingRepo ? t('connectingRepo') : t('continueForRepoAccess')}
+          </Button>
+        ) : null}
         {error ? (
-          <Button variant="secondary" onClick={() => window.location.replace(returnTo)}>
+          <Button variant="secondary" disabled={connectingRepo} onClick={() => window.location.replace(returnTo)}>
             {t('backToProfile')}
           </Button>
         ) : null}

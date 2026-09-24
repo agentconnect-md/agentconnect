@@ -69,6 +69,7 @@ import { githubHookRunSubject } from './github/hook-run-subject.js'
 import { githubProjectionIntent } from './github/projection-intent.js'
 import { HookRedeliveryReconciler } from './orchestrator/hookRedeliveryReconciler.js'
 import { LogtoIdentityService, resolveLogtoMgmtConfig } from './github/logto-identity.js'
+import { GithubRepoIdentityService } from './github/repo-identity.js'
 import { GithubUserAuthzService } from './github/user-authz.js'
 import { type Clock, systemClock } from './domain/clock.js'
 import { K8sHttp } from '@agentconnect.md/k8s-client'
@@ -147,6 +148,7 @@ import {
   PgGiteaWebhookSecretStore,
   PgCodeHostReviewLeaseRepo,
   PgSocialIdentityMutationGate,
+  PgGithubRepoIdentityStore,
   PgCronRepo,
   PgDutyGroupRepo,
   PgMemberSetRepo,
@@ -1563,19 +1565,44 @@ export function buildContainer(
     : undefined
 
   const logtoMgmtCfg = resolveLogtoMgmtConfig(config)
-  const logtoIdentity =
+  const socialIdentityMutations = new PgSocialIdentityMutationGate(prisma)
+  const githubRepoIdentity =
+    github && logtoMgmtCfg && config.OIDC_ISSUER
+      ? new GithubRepoIdentityService({
+          store: new PgGithubRepoIdentityStore(prisma),
+          mutations: socialIdentityMutations,
+          clock,
+          cipher: secretCipher,
+          github,
+          assertLinkable: (sub) => logtoIdentity!.assertGithubRepoLinkable(sub),
+          invalidate: (sub) => logtoIdentity!.forgetGithubLogin(sub),
+          ...(config.GITHUB_APP_CLIENT_ID && config.GITHUB_APP_CLIENT_SECRET && webAppUrl
+            ? {
+                oauth: {
+                  clientId: config.GITHUB_APP_CLIENT_ID,
+                  clientSecret: config.GITHUB_APP_CLIENT_SECRET,
+                  redirectUri: new URL('/auth/social/callback', webAppUrl).toString()
+                }
+              }
+            : {})
+        })
+      : undefined
+  const logtoIdentity: LogtoIdentityService | undefined =
     logtoMgmtCfg && config.OIDC_ISSUER
       ? new LogtoIdentityService(
           logtoMgmtCfg,
           clock,
-          new PgSocialIdentityMutationGate(prisma),
+          socialIdentityMutations,
           undefined,
           {
             // Lazy over `http.log` (assigned below; only ever called at lookup time).
             debug: (o, m) => http.log.debug(o, m),
             info: (o, m) => http.log.info(o, m)
           },
-          { identityTtlMs: config.SESSION_ACCESS_IDENTITY_TTL_SEC * 1000 }
+          {
+            identityTtlMs: config.SESSION_ACCESS_IDENTITY_TTL_SEC * 1000,
+            ...(githubRepoIdentity ? { githubRepoIdentity } : {})
+          }
         )
       : undefined
   const githubUserAuthz =
@@ -1806,6 +1833,7 @@ export function buildContainer(
     ...(sessionPullRequestLink ? { sessionPullRequestLink } : {}),
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
     ...(logtoIdentity ? { logtoIdentity } : {}),
+    ...(githubRepoIdentity ? { githubRepoIdentity } : {}),
     sessionAccessPlugins: [slackSessionAccess, githubSessionAccess, feishuSessionAccess],
     ...(iconStore ? { iconStore } : {}),
     ...(connectors ? { connectors } : {}),

@@ -94,7 +94,7 @@ export function useGithubProfileLinked(): boolean | undefined {
     shouldRetryOnError: false
   })
   if (!data) return undefined
-  return data.identities.some((i) => i.target === 'github')
+  return Boolean(data.githubRepoIdentity) || data.identities.some((i) => i.target === 'github')
 }
 
 // Backs hiding the "Connect GitHub" step: whether this deployment's GitHub App

@@ -33,6 +33,23 @@ export interface SocialLinkFlow {
   createdAt: number
 }
 
+export interface GithubRepoAccessFlow {
+  purpose: 'repo-access'
+  state: string
+  providerName: 'GitHub'
+  returnTo: string
+  createdAt: number
+}
+
+type AccountLinkFlow = SocialLinkFlow | GithubRepoAccessFlow
+
+export function isGithubIdentityConflict(error: unknown, flow: AccountLinkFlow): boolean {
+  if (flow.purpose === 'repo-access' || flow.purpose === 'reauthorize' || flow.target !== 'github') return false
+  if (!(error instanceof Error)) return false
+  const failure = error as Error & { status?: number; code?: string }
+  return (failure.status === 409 || failure.status === 422) && failure.code === 'user.identity_already_in_use'
+}
+
 /** Something the user has to be told, which is only ever a failure: the card
  *  renders the linked accounts, so a success needs no words. */
 export interface AccountNotice {
@@ -197,7 +214,7 @@ export function createSocialState(): string {
 }
 
 /** Save only the short-lived connector choice and CSRF state in this tab. */
-export function writeSocialLinkFlow(flow: SocialLinkFlow): boolean {
+export function writeSocialLinkFlow(flow: AccountLinkFlow): boolean {
   try {
     const value = JSON.stringify(flow)
     sessionStorage.setItem(SOCIAL_FLOW_KEY, value)
@@ -207,12 +224,16 @@ export function writeSocialLinkFlow(flow: SocialLinkFlow): boolean {
   }
 }
 
-export function takeSocialLinkFlow(): SocialLinkFlow | undefined {
+export function takeSocialLinkFlow(): AccountLinkFlow | undefined {
   try {
     const value = sessionStorage.getItem(SOCIAL_FLOW_KEY)
     sessionStorage.removeItem(SOCIAL_FLOW_KEY)
     if (!value) return undefined
     const flow = asRecord(JSON.parse(value))
+    if (flow.purpose === 'repo-access') {
+      if (typeof flow.state !== 'string' || flow.providerName !== 'GitHub' || !validFlowReturn(flow)) return undefined
+      return flow as unknown as GithubRepoAccessFlow
+    }
     if (
       typeof flow.state !== 'string' ||
       typeof flow.connectorId !== 'string' ||
@@ -226,11 +247,7 @@ export function takeSocialLinkFlow(): SocialLinkFlow | undefined {
       (flow.target !== undefined && typeof flow.target !== 'string') ||
       (flow.purpose === 'reauthorize' && (typeof flow.target !== 'string' || flow.target.length === 0)) ||
       typeof flow.providerName !== 'string' ||
-      typeof flow.returnTo !== 'string' ||
-      !flow.returnTo.startsWith('/') ||
-      flow.returnTo.startsWith('//') ||
-      typeof flow.createdAt !== 'number' ||
-      Date.now() - flow.createdAt > SOCIAL_FLOW_TTL_MS
+      !validFlowReturn(flow)
     ) {
       return undefined
     }
@@ -238,6 +255,17 @@ export function takeSocialLinkFlow(): SocialLinkFlow | undefined {
   } catch {
     return undefined
   }
+}
+
+function validFlowReturn(flow: Record<string, unknown>): boolean {
+  return (
+    typeof flow.returnTo === 'string' &&
+    flow.returnTo.startsWith('/') &&
+    !flow.returnTo.startsWith('//') &&
+    !flow.returnTo.includes('\\') &&
+    typeof flow.createdAt === 'number' &&
+    Date.now() - flow.createdAt <= SOCIAL_FLOW_TTL_MS
+  )
 }
 
 export function accountErrorMessage(
