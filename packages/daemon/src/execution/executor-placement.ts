@@ -71,14 +71,17 @@ export function placeSession(input: {
   holderCapacity: number
   /** The CP's answer; undefined ⇒ it could not be asked, and the session stays home. */
   answer?: ExecutorCandidatesResult
+  /** A lost executor being replaced (§7): it is no candidate, and the holder cannot take a placed session back, so only the rest are ordered. */
+  replacing?: string
 }): Placement {
-  const { ask, answer } = input
+  const { ask, answer, replacing } = input
   if (ask.isolation !== 'session') return { stayedHome: 'shared_session' }
   if (ask.memoryDaemonHomed) return { stayedHome: 'memory_daemon_homed' }
   if (!answer) return { stayedHome: 'control_plane_unreachable' }
   const holder: Fill = { hosted: input.holderHostedSessions, capacity: Math.max(0, input.holderCapacity) }
   const eligible: Array<{ fill: Fill; choice: PlacementChoice }> = []
   for (const candidate of answer.candidates) {
+    if (candidate.daemonId === replacing) continue
     const strategy = strategyFor(ask, candidate)
     // No endpoint means nothing to dial, whatever the table says.
     if (!strategy || !candidate.endpoint || !authenticates(candidate, ask.runtime)) continue
@@ -88,7 +91,7 @@ export function placeSession(input: {
     })
   }
   if (eligible.length === 0) return { stayedHome: emptyReason(answer) }
-  const hint = answer.currentExecutorDaemonId
+  const hint = replacing === undefined ? answer.currentExecutorDaemonId : undefined
   // A member already at capacity would answer `full`; the hinted one may still hold this session's environment, so it decides.
   const open = eligible.filter(({ fill, choice }) => choice.daemonId === hint || fill.hosted < fill.capacity)
   if (open.length === 0) return { stayedHome: 'candidates_full' }
@@ -96,7 +99,9 @@ export function placeSession(input: {
   // The hint wins over the rule: a successor attaches to the environment its predecessor left rather than re-placing the work in it (§7).
   const hinted = ordered.findIndex(({ choice }) => choice.daemonId === hint)
   if (hinted >= 0) ordered.unshift(...ordered.splice(hinted, 1))
-  else if (compareFill(holder, ordered[0]!.fill) <= 0) return { stayedHome: 'holder_least_loaded' }
+  else if (replacing === undefined && compareFill(holder, ordered[0]!.fill) <= 0) {
+    return { stayedHome: 'holder_least_loaded' }
+  }
   return { spread: ordered.map(({ choice }) => choice) }
 }
 

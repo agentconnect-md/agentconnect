@@ -228,6 +228,31 @@ describe('capacity', () => {
     expect(placement).toEqual({ spread: [{ daemonId: 'b', strategy: 'host' }] })
   })
 
+  it('replaces a lost executor with a live member even when the holder would be less full', () => {
+    // The holder cannot take a placed session back, so its own load is not compared (§7).
+    const placement = placeSession({
+      ask: ASK,
+      holderHostedSessions: 2,
+      holderCapacity: 8,
+      replacing: 'lost',
+      answer: answer([candidate('b', { capacity: 2 })], { currentExecutorDaemonId: 'lost' })
+    })
+    expect(placement).toEqual({ spread: [{ daemonId: 'b', strategy: 'host' }] })
+  })
+
+  it('never offers the lost executor as its own replacement', () => {
+    const placement = placeSession({
+      ask: ASK,
+      holderHostedSessions: 0,
+      holderCapacity: 4,
+      replacing: 'lost',
+      answer: answer([candidate('lost'), candidate('b', { capacity: 1, hostedSessions: 1 })], {
+        currentExecutorDaemonId: 'lost'
+      })
+    })
+    expect(placement).toEqual({ stayedHome: 'candidates_full' })
+  })
+
   it('weighs a member that reports no capacity like the holder', () => {
     const placement = placeSession({
       ask: ASK,
