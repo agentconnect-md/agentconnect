@@ -1198,6 +1198,18 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       reconnectAttempts.current.delete(id)
       streamCursors.current.delete(cursorKey)
       syncBusyLanes(id)
+      const finishedTurnId = result.done.turnId
+      if (
+        !lanesOf(id).some((key) => {
+          const cursor = streamCursors.current.get(key)
+          return (cursor?.turnId ?? cursor?.requestedTurnId) === finishedTurnId
+        })
+      )
+        mutateSteps(id, (steps) =>
+          steps.map((step) =>
+            step.kind === 'msg' && step.turnId === finishedTurnId ? { ...step, turnComplete: true } : step
+          )
+        )
       if (agentId && result.done.turnId) {
         const rec = finishedTurnLanes.current.get(id)
         if (rec && rec.turnId === result.done.turnId) rec.agents.add(agentId)
@@ -1231,6 +1243,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       applyTitle,
       deltaBuffer,
       failStream,
+      mutateSteps,
       participantName,
       pushStep,
       retireWaitNotice,

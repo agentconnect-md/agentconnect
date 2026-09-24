@@ -1164,6 +1164,8 @@ export interface SessionStep {
   who?: string
   /** Keep a confirmed live prompt as a reconciliation anchor without showing it twice. */
   hidden?: boolean
+  /** All stream lanes for this prompt have finished. */
+  turnComplete?: boolean
   /** One streamed message segment; consecutive ACP messages never share this id. */
   segmentId?: string
   /** Stable identity of the turn this step belongs to — the wire/user turnId for a live webchat

@@ -61,6 +61,7 @@ let openPlayground: ReturnType<typeof usePlayground>['openPlayground']
 let getPgQueue: ReturnType<typeof usePlayground>['getPgQueue']
 let pgCancelQueued: ReturnType<typeof usePlayground>['pgCancelQueued']
 let getLiveSteps: ReturnType<typeof usePlayground>['getLiveSteps']
+let reconcileLiveSteps: ReturnType<typeof usePlayground>['reconcileLiveSteps']
 let pgAttach: ReturnType<typeof usePlayground>['pgAttach']
 let pgAnswerElicitation: ReturnType<typeof usePlayground>['pgAnswerElicitation']
 let pgAppRpc: ReturnType<typeof usePlayground>['pgAppRpc']
@@ -79,6 +80,7 @@ function Probe() {
   getPgQueue = pg.getPgQueue
   pgCancelQueued = pg.pgCancelQueued
   getLiveSteps = pg.getLiveSteps
+  reconcileLiveSteps = pg.reconcileLiveSteps
   pgAttach = pg.pgAttach
   pgAnswerElicitation = pg.pgAnswerElicitation
   pgAppRpc = pg.pgAppRpc
@@ -1293,13 +1295,13 @@ describe('mid-turn steering', () => {
     }
   }
 
-  async function openSteerableStream() {
+  async function openSteerableStream(participants?: Array<{ agentId: string; name: string; primary?: boolean }>) {
     SteerSocket.instances = []
     Reflect.set(globalThis, 'WebSocket', SteerSocket)
     const api = await import('@/lib/api')
     vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
     await act(async () => {
-      pgSend('s1', 'agent-1', 'hello', 'c1')
+      pgSend('s1', 'agent-1', 'hello', 'c1', participants)
     })
     const socket = SteerSocket.instances[0]!
     await act(async () => {
@@ -1323,6 +1325,65 @@ describe('mid-turn steering', () => {
   const frames = (socket: SteerSocket) =>
     socket.send.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
   const feed = (socket: SteerSocket, message: unknown) => socket.onmessage?.({ data: JSON.stringify(message) })
+
+  it('retires a completed tool-only turn when its saved prompt arrives', async () => {
+    const { socket, turnId } = await openSteerableStream()
+    act(() => {
+      feed(socket, {
+        type: 'output',
+        output: {
+          turnId,
+          agentId: 'agent-1',
+          index: 1,
+          event: { kind: 'tool_call', toolCallId: 'tc-1', title: 'Read file', status: 'completed' }
+        }
+      })
+    })
+    expect(getLiveSteps('s1').some((step) => step.kind === 'tool')).toBe(true)
+    act(() => {
+      feed(socket, { type: 'done', done: { turnId, agentId: 'agent-1', lastIndex: 1 } })
+      reconcileLiveSteps(
+        's1',
+        [{ seq: 1, ts: String(Date.now()), sender: 'user', kind: 'text', text: 'hello' }],
+        'agent-1'
+      )
+    })
+    expect(getLiveSteps('s1').filter((step) => step.turnId === turnId)).toEqual([])
+  })
+
+  it('keeps a silent turn live until its other participant finishes', async () => {
+    const { socket, turnId } = await openSteerableStream([
+      { agentId: 'agent-1', name: 'one', primary: true },
+      { agentId: 'agent-2', name: 'two' }
+    ])
+    act(() => {
+      feed(socket, {
+        type: 'output',
+        output: {
+          turnId,
+          agentId: 'agent-2',
+          index: 0,
+          event: { kind: 'tool_call', toolCallId: 'tc-2', title: 'Read file', status: 'completed' }
+        }
+      })
+      feed(socket, { type: 'done', done: { turnId, agentId: 'agent-1', lastIndex: 0 } })
+      reconcileLiveSteps(
+        's1',
+        [{ seq: 1, ts: String(Date.now()), sender: 'user', kind: 'text', text: 'hello' }],
+        'agent-1'
+      )
+    })
+    expect(
+      getLiveSteps('s1')
+        .filter((step) => step.turnId === turnId)
+        .map((step) => step.kind)
+    ).toEqual(['tool'])
+    act(() => {
+      feed(socket, { type: 'done', done: { turnId, agentId: 'agent-2', lastIndex: 0 } })
+      reconcileLiveSteps('s1', [], 'agent-1')
+    })
+    expect(getLiveSteps('s1').filter((step) => step.turnId === turnId)).toEqual([])
+  })
 
   it('keeps consecutive reply messages separate even without a tool event between them', async () => {
     const { socket, turnId } = await openSteerableStream()
