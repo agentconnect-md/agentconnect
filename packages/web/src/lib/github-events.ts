@@ -110,17 +110,23 @@ export function githubTriggerTooltip(mode: GhTriggerMode, agentName: string, fam
   }
 }
 
-/** The trigger menu's footer copy; PR and issue rows read the design's wording, other families their tooltip. */
+/** The trigger menu's footer copy: the design's short wording, held to what the relay's rule verdict fires on. */
 export function githubTriggerDescription(mode: GhTriggerMode, agentName: string, fam?: GhFamily): string {
   if (fam !== 'pull_request' && fam !== 'issues') return githubTriggerTooltip(mode, agentName, fam)
   const issue = fam === 'issues'
   switch (mode) {
     case 'first':
-      return issue ? 'Runs when a new issue is filed.' : 'Runs when a PR is opened or marked ready for review.'
+      return issue
+        ? 'Runs when a new issue is filed, and on later @-mentions of the agent.'
+        : 'Runs when a PR is opened, and on later @-mentions of the agent.'
     case 'every':
-      return issue ? 'Runs on every edit and comment.' : 'Runs on every push and comment.'
+      return issue
+        ? 'Runs when an issue is filed and on every comment. Edits, closes and reopens are ignored.'
+        : 'Runs when a PR is opened, on every push, and on every comment.'
     case 'mention':
-      return `Runs only when the agent is @-mentioned on the ${issue ? 'issue' : 'PR'}.`
+      return issue
+        ? 'Runs when the agent or the GitHub App is @-mentioned on the issue.'
+        : 'Runs when the agent or the GitHub App is @-mentioned on the PR, or the App is asked to review.'
   }
 }
 
