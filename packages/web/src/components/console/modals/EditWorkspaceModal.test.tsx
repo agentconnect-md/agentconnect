@@ -1,10 +1,23 @@
+// @vitest-environment happy-dom
+import { act } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { AgentRepoAuthDto } from '@/lib/api'
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const repositoryModal = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }))
+const mocks = vi.hoisted(() => ({ updateAgentRepo: vi.fn() }))
 
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (path: string) => path }) }))
 vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ orgSetIds: new Set<string>() }) }))
+vi.mock('@/lib/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api')>()),
+  fetchGithubInstallations: vi.fn(async () => ({ enabled: false, installations: [] })),
+  fetchGithubInstallUrl: vi.fn(async () => null),
+  updateAgentRepo: mocks.updateAgentRepo
+}))
 vi.mock('@/components/console/modals/AddAgentRepoModal', () => ({
   default: (props: Record<string, unknown>) => {
     repositoryModal.props = props
@@ -64,5 +77,88 @@ describe('EditWorkspaceModal repository access', () => {
       initialAccess: 'write',
       workspaceContext: true
     })
+  })
+})
+
+const row = (over: Partial<AgentRepoAuthDto> = {}): AgentRepoAuthDto => ({
+  id: 'repo-auth-1',
+  repoFullName: 'example-org/example-repo',
+  access: 'read',
+  materialize: 'always',
+  createdBy: 'user-1',
+  createdAt: '2026-09-01T00:00:00.000Z',
+  ...over
+})
+
+let root: Root | undefined
+let host: HTMLDivElement | undefined
+
+afterEach(async () => {
+  if (root) await act(async () => root?.unmount())
+  host?.remove()
+  root = undefined
+  host = undefined
+  mocks.updateAgentRepo.mockReset()
+})
+
+async function render(authorized: AgentRepoAuthDto[], onAuthorizedChange = vi.fn()) {
+  host = document.createElement('div')
+  document.body.append(host)
+  root = createRoot(host)
+  await act(async () => {
+    root?.render(
+      <EditWorkspaceModal
+        agent={agent}
+        authorized={authorized}
+        onAuthorizedChange={onAuthorizedChange}
+        onClose={() => undefined}
+        onChanged={() => undefined}
+      />
+    )
+  })
+  return onAuthorizedChange
+}
+
+const checkout = (label: string) =>
+  Array.from(document.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Checkout"] button')).find(
+    (button) => button.textContent === label
+  )
+
+describe('EditWorkspaceModal repository checkout', () => {
+  it('shows each row’s checkout, an older CP’s row as Always', async () => {
+    await render([
+      row({ materialize: undefined }),
+      row({ id: 'repo-auth-2', repoFullName: 'example-org/second', materialize: 'on-demand' })
+    ])
+    const groups = document.querySelectorAll('[role="group"][aria-label="Checkout"]')
+    expect(groups).toHaveLength(2)
+    expect(groups[0]?.querySelector('[aria-pressed="true"]')?.textContent).toBe('Always')
+    expect(groups[1]?.querySelector('[aria-pressed="true"]')?.textContent).toBe('On demand')
+    expect(document.body.textContent).not.toContain('By decision')
+  })
+
+  it('switches a row to On demand with a materialize-only PATCH', async () => {
+    mocks.updateAgentRepo.mockResolvedValue(row({ materialize: 'on-demand' }))
+    const onAuthorizedChange = await render([row()])
+    await act(async () => checkout('On demand')?.click())
+
+    expect(mocks.updateAgentRepo).toHaveBeenCalledWith('agent-a', 'repo-auth-1', { materialize: 'on-demand' })
+    expect(onAuthorizedChange).toHaveBeenCalledWith([row({ materialize: 'on-demand' })])
+    expect(checkout('On demand')?.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('keeps the row and names the failure when the switch is refused', async () => {
+    mocks.updateAgentRepo.mockRejectedValue(new Error('authorization not found'))
+    await render([row()])
+    await act(async () => checkout('On demand')?.click())
+
+    expect(document.body.textContent).toContain('authorization not found')
+    expect(checkout('Always')?.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('sends nothing when the current checkout is clicked again', async () => {
+    await render([row()])
+    await act(async () => checkout('Always')?.click())
+    expect(mocks.updateAgentRepo).not.toHaveBeenCalled()
   })
 })

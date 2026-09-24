@@ -534,18 +534,21 @@ reports "no GitHub access at all" for a repository that merely lacks a row:
      Return 409 when it would remove workspace write authority required by an
      enabled formal review or Check.
    - Beside it, summarize each additional repository with `repoFullName` and its
-     access tier. The workspace repository itself appears here only when the
-     workspace is App-backed, where the installation makes it implicit; a manual
-     checkout is represented solely by its explicit grant, if one exists.
+     access tier, badging read-only a checkout other than **Always**. The
+     workspace repository itself appears here only when the workspace is
+     App-backed, where the installation makes it implicit; a manual checkout is
+     represented solely by its explicit grant, if one exists.
    - The same Edit workspace dialog lists, adds, and deletes additional repository
-     grants. Card and hook-editor shortcuts open that dialog directly at its
+     grants, and switches each row's checkout between **Always** and **On
+     demand**. Card and hook-editor shortcuts open that dialog directly at its
      authorization step, so every context keeps the fast path without creating a
      second repository-management surface.
    - "Authorize repository" reuses the installation/repository picker and list
      filtering, offers access options defaulting to read, describes each level,
-     warns on write blast radius, and reuses `/access` preflight.
-   - The card is visible under `canView`; add and delete require `canEdit` and a
-     non-viewer role.
+     warns on write blast radius, and reuses `/access` preflight. Beside access it
+     offers the checkout, defaulting to **Always**; shortcuts keep that default.
+   - The card is visible under `canView`; add, delete, and a checkout change
+     require `canEdit` and a non-viewer role.
    - The same section lists installation grants as "All repositories in
      `<account>`" with the tier badge and revoke action, and "Authorize an
      installation" offers the organization's live installations with the same

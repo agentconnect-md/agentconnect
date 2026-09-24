@@ -12,8 +12,19 @@ let container: HTMLDivElement | undefined
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
-function grant(repoFullName: string, access: AgentRepoAuthDto['access'] = 'write'): AgentRepoAuthDto {
-  return { id: `grant-${repoFullName}`, repoFullName, access, createdBy: null, createdAt: '2026-08-01T00:00:00.000Z' }
+function grant(
+  repoFullName: string,
+  access: AgentRepoAuthDto['access'] = 'write',
+  materialize?: AgentRepoAuthDto['materialize']
+): AgentRepoAuthDto {
+  return {
+    id: `grant-${repoFullName}`,
+    repoFullName,
+    access,
+    ...(materialize ? { materialize } : {}),
+    createdBy: null,
+    createdAt: '2026-08-01T00:00:00.000Z'
+  }
 }
 
 afterEach(async () => {
@@ -71,12 +82,12 @@ describe('workspaceRepoParamRewrite', () => {
 })
 
 describe('WorkspaceRepoPicker', () => {
-  it('lists the workspace first, then every authorized repository with its access tier', async () => {
+  it('lists the workspace first, then every authorized repository with its access tier and checkout', async () => {
     await render(
       <WorkspaceRepoPicker
         primaryLabel="acme/primary-service"
         primaryIsRepo
-        repos={[grant('acme/infra'), grant('example-co/shared-library', 'read')]}
+        repos={[grant('acme/infra'), grant('example-co/shared-library', 'read', 'on-demand')]}
         selectedRepo={null}
         onChange={vi.fn()}
       />
@@ -86,7 +97,7 @@ describe('WorkspaceRepoPicker', () => {
     expect(choices().map((choice) => choice.textContent)).toEqual([
       'acme/primary-serviceworkspace',
       'acme/infrawrite',
-      'example-co/shared-libraryread'
+      'example-co/shared-libraryreadOn demand'
     ])
     // The workspace is the selected root until a repository is picked.
     expect(choices()[0]?.getAttribute('aria-checked')).toBe('true')

@@ -6055,6 +6055,9 @@ export function deleteGiteaRepository(id: string): Promise<GiteaRepositoryRemova
  *  hook write-back shape); `read`/`write` are uniform across capabilities. */
 export type RepoAccess = 'read' | 'comment' | 'write'
 
+/** How sessions stand in a grant: `always` checks it out as a secondary root, `on-demand` grants credentials only. */
+export type RepoMaterialize = 'always' | 'decision' | 'on-demand'
+
 export interface AgentRepoAuthDto {
   id: string
   /** Which host numbers `repoId`. Absent on an older CP, where every grant is GitHub. */
@@ -6062,6 +6065,8 @@ export interface AgentRepoAuthDto {
   repoId?: string // rename-proof numeric repository/project id (absent on an older CP)
   repoFullName: string // owner/repo as GitHub cases it, or the GitLab project path (refreshed on rename)
   access: RepoAccess
+  /** Absent on an older CP, where every grant is checked out. */
+  materialize?: RepoMaterialize
   createdBy: string | null // authorizer's userId (resolved to a name / "You" in the UI); null for key-created
   createdAt: string // ISO-8601
 }
@@ -6069,6 +6074,11 @@ export interface AgentRepoAuthDto {
 /** Which host a grant row names — an older CP omits the field and means GitHub. */
 export function repoAuthProvider(row: AgentRepoAuthDto): CodeHostProvider {
   return row.provider ?? 'github'
+}
+
+/** How a grant row is materialized — an older CP omits the field and means `always`. */
+export function repoAuthMaterialize(row: AgentRepoAuthDto): RepoMaterialize {
+  return row.materialize ?? 'always'
 }
 
 // Gated by the agent's visibility server-side (404 for an agent you can't see) —
@@ -6086,9 +6096,9 @@ export async function createAgentRepo(
   // One arm per host: a GitHub repository by full name, a GitLab project or a Gitea
   // repository by its numeric id (a display path is never a match key).
   input:
-    | { repoFullName: string; access: RepoAccess }
-    | { provider: 'gitlab'; projectId: string; access: RepoAccess }
-    | { provider: 'gitea'; repoId: string; access: RepoAccess }
+    | { repoFullName: string; access: RepoAccess; materialize?: RepoMaterialize }
+    | { provider: 'gitlab'; projectId: string; access: RepoAccess; materialize?: RepoMaterialize }
+    | { provider: 'gitea'; repoId: string; access: RepoAccess; materialize?: RepoMaterialize }
 ): Promise<AgentRepoAuthDto> {
   const path = `${orgBase()}/agents/${encodeURIComponent(agentId)}/repos`
   const res = await authenticatedFetch(
@@ -6106,7 +6116,8 @@ export async function createAgentRepo(
 export async function updateAgentRepo(
   agentId: string,
   repoAuthId: string,
-  input: { access: RepoAccess }
+  // Either field alone, or both; the CP requires at least one.
+  input: { access: RepoAccess; materialize?: RepoMaterialize } | { access?: RepoAccess; materialize: RepoMaterialize }
 ): Promise<AgentRepoAuthDto> {
   const path = `${orgBase()}/agents/${encodeURIComponent(agentId)}/repos/${encodeURIComponent(repoAuthId)}`
   const res = await authenticatedFetch(

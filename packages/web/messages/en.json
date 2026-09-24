@@ -1528,7 +1528,14 @@
         "workingSubdirectory": "Working subdirectory (optional)",
         "workingSubdirectoryPlaceholder": "services/api",
         "workingSubdirectoryAriaLabel": "Working subdirectory",
-        "repoRoot": "repo root"
+        "repoRoot": "repo root",
+        "checkout": "Checkout",
+        "materializeAlways": "Always",
+        "materializeOnDemand": "On demand",
+        "materializeByDecision": "By decision",
+        "materializeAlwaysTitle": "Checked out beside the workspace in every session",
+        "materializeOnDemandTitle": "Cloned by the agent when a session needs it",
+        "materializeByDecisionTitle": "Checked out when a session is about it"
       },
       "listenFor": "Listen for",
       "alreadyWatched": "already watched",

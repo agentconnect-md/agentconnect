@@ -9,7 +9,8 @@ vi.mock('swr', () => ({
 vi.mock('@/lib/api', () => ({
   creatorLabel: () => 'Dana Reyes',
   fetchAgentRepos: vi.fn(),
-  repoAuthProvider: (row: { provider?: string }) => row.provider ?? 'github'
+  repoAuthProvider: (row: { provider?: string }) => row.provider ?? 'github',
+  repoAuthMaterialize: (row: { materialize?: string }) => row.materialize ?? 'always'
 }))
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace: vi.fn() }),
@@ -101,6 +102,28 @@ describe('workspace repository authority', () => {
     // the shared Edit workspace dialog rather than a second inline flow.
     expect(html).not.toContain('Revoke access')
     expect(html).toContain('comment access')
+  })
+
+  it('badges an on-demand grant read-only on the card, and leaves the default unmarked', () => {
+    repos.rows = [
+      { id: 'g1', repoFullName: 'example-org/tools', access: 'read', createdBy: 'u1' },
+      { id: 'g2', repoFullName: 'example-org/docs', access: 'read', materialize: 'on-demand', createdBy: 'u1' }
+    ]
+    const html = renderToStaticMarkup(<WorkspaceCard agent={agent({ mode: 'scratch' })} />)
+    expect(html).not.toContain('>Always<')
+    expect(html).toContain('>On demand<')
+    expect(html).toContain('Cloned by the agent when a session needs it')
+    // Switching lives in Edit workspace, so the card renders no segment even for an editor.
+    expect(html).not.toContain('aria-pressed')
+  })
+
+  it('shows a non-editor the checkout without any way to change it', () => {
+    repos.rows = [{ id: 'g2', repoFullName: 'example-org/docs', access: 'read', materialize: 'on-demand' }]
+    const html = renderToStaticMarkup(<WorkspaceCard agent={agent({ mode: 'scratch' }, { canEdit: false })} />)
+    expect(html).toContain('>On demand<')
+    expect(html).not.toContain('aria-pressed')
+    expect(html).not.toContain('Edit workspace')
+    expect(html).not.toContain('Authorize repository')
   })
 
   it('leaves a scratch workspace with no implicit repository', () => {

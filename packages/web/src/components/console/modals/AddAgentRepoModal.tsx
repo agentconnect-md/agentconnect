@@ -5,7 +5,7 @@
 // one picker per code host — GitHub repositories across the org's App
 // installations, GitLab projects the connection administers, Gitea repositories
 // the organization's bot administers — plus an access choice, preflighted against
-// the per-user identity-assertion gate when the deployment has one. Picking a
+// the per-user identity-assertion gate when the deployment has one, and a checkout choice. Picking a
 // GitLab project that is not set up yet runs its provisioning saga inline before
 // the selection lands; a Gitea repository is bound by the grant itself (§6).
 //
@@ -30,7 +30,8 @@ import {
   GithubPrivateReposNotice,
   GitlabNoProjectsNotice,
   GitlabProjectField,
-  GitlabProjectOption
+  GitlabProjectOption,
+  RepositoryMaterializeField
 } from '@/components/console/WorkspaceFormFields'
 import { matchGiteaRepositories, type GiteaRepositoryChoice } from '@/lib/gitea-repositories'
 import { matchGitlabProjects, type GitlabProjectChoice } from '@/lib/gitlab-projects'
@@ -50,7 +51,8 @@ import {
   type GithubInstallationDto,
   type GithubRepoAccess,
   type GithubRepoDto,
-  type RepoAccess
+  type RepoAccess,
+  type RepoMaterialize
 } from '@/lib/api'
 
 /** Which host the picker is offering. Grants are provider-qualified (§8.1), so the offer IS the provider axis. */
@@ -147,6 +149,7 @@ export default function AddAgentRepoModal({
   const [pickOpen, setPickOpen] = useState(false)
   const [q, setQ] = useState('')
   const [access, setAccess] = useState<RepoAccess>(initialAccess ?? 'read')
+  const [materialize, setMaterialize] = useState<RepoMaterialize>('always')
   // Per-user authz preflight for the picked repo. null = unknown/loading —
   // never blocks; the CP re-checks at create either way.
   const [probe, setProbe] = useState<GithubRepoAccess | null>(null)
@@ -341,16 +344,16 @@ export default function AddAgentRepoModal({
     {
       github: {
         ready: !!pick && !isWorkspace(pick) && !isAuthorized(pick) && !uncovered && !probeDenies,
-        input: { repoFullName: pick, access }
+        input: { repoFullName: pick, access, materialize }
       },
       gitlab: {
         ready: !!glPick && glTakenBy(glPick) === null && gl.provisioning === null,
-        input: { provider: 'gitlab', projectId: glPick, access }
+        input: { provider: 'gitlab', projectId: glPick, access, materialize }
       },
       gitea: {
         // Nothing to wait for: an unadded repository is bound by the grant itself (gitea-integration.md §6).
         ready: !!gtPick && gtTakenBy(gtPick) === null,
-        input: { provider: 'gitea', repoId: gtPick, access }
+        input: { provider: 'gitea', repoId: gtPick, access, materialize }
       }
     }
   const canSubmit = grantSubmit[provider].ready
@@ -489,6 +492,7 @@ export default function AddAgentRepoModal({
               )
             })}
           </div>
+          <RepositoryMaterializeField value={materialize} onChange={setMaterialize} />
         </>
       ),
     github: () =>
@@ -719,6 +723,7 @@ export default function AddAgentRepoModal({
               )
             })}
           </div>
+          <RepositoryMaterializeField value={materialize} onChange={setMaterialize} />
 
           {uncovered && (
             <div className="mb-4 flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
@@ -830,6 +835,7 @@ export default function AddAgentRepoModal({
               )
             })}
           </div>
+          <RepositoryMaterializeField value={materialize} onChange={setMaterialize} />
         </>
       )
   }

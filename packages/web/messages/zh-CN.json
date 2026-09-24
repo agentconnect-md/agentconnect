@@ -1528,7 +1528,14 @@
         "workingSubdirectory": "工作子目录（可选）",
         "workingSubdirectoryPlaceholder": "services/api",
         "workingSubdirectoryAriaLabel": "工作子目录",
-        "repoRoot": "仓库根目录"
+        "repoRoot": "仓库根目录",
+        "checkout": "检出",
+        "materializeAlways": "始终",
+        "materializeOnDemand": "按需",
+        "materializeByDecision": "由 Decision 选择",
+        "materializeAlwaysTitle": "每个会话都在工作区旁检出",
+        "materializeOnDemandTitle": "会话需要时由 Agent 克隆",
+        "materializeByDecisionTitle": "会话与之相关时检出"
       },
       "listenFor": "监听对象",
       "alreadyWatched": "已监听",
