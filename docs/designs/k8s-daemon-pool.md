@@ -267,6 +267,12 @@ old requests already in flight when the successor takes over. Work holds belong
 to the immutable launch, so an old operation's release cannot drop a successor's
 hold on the same Sandbox. Failure to stamp ownership prevents launch publication.
 
+Terminal channel loss retires the binding but keeps its launch in the idle sweep
+with the original activity floor and ownership fence. A later acquisition or
+watcher query binds at a fresh generation; a failed acquisition leaves the old
+reclamation record intact. Suspension, confirmed deletion, or duty departure drops
+that record. Disconnected session pods participate in the same agent-wide release.
+
 A cached launch is checked against Kubernetes before an unheld acquisition reuses
 it. If its Sandbox is gone, the driver drops that exact launch and its channel,
 then reads the claim again before taking a lease. A workspace operation already

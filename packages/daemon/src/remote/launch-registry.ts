@@ -23,17 +23,7 @@ export interface LaunchRegistryDeps {
   clock: Clock
 }
 
-/**
- * Which subjects this member holds a Sandbox for, and whether it still may.
- *
- * Three subject-keyed maps that only make sense together: the launches themselves — the sole
- * subject → sandboxName translation layer — the monotonic release fence an acquisition compares
- * itself against, and the in-flight takeover re-derivations that dedupe concurrent adopters.
- *
- * The registry owns those primitives only. Invalidating a launch alongside the driver's session
- * and workspace-root state is one invariant spanning both, so its ORCHESTRATION stays in the
- * `K8sDriver` methods that own the other halves.
- */
+// Cache launches and fence pending publication and adoption across local releases.
 export class LaunchRegistry<L extends Launch = Launch> {
   private readonly launches = new Map<string, L>()
   private readonly publishing = new Map<string, { releasedAt: number; sandboxUid: string; run: Promise<L> }>()

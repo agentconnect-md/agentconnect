@@ -9,7 +9,7 @@ import { agentHostKey, hostKeyDirName, sessionHostKey, type HostKey } from '../s
 import { buildCpClientDeps } from '../src/cp/cp-client-deps.js'
 import { K8sDriver } from '../src/k8s/driver.js'
 import { fenceFakeSandbox } from './fake-sandbox-fence.js'
-import type { SandboxFence } from '../src/k8s/sandbox-api.js'
+import type { SandboxFence, Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
 import {
   agentSandboxSubject,
   sandboxClaimName,
@@ -17,7 +17,6 @@ import {
   sandboxSubjectForPath,
   sandboxSubjectSessionLeaf
 } from '../src/k8s/sandbox-identity.js'
-import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
 import type { ShimConnection } from '../src/shim/connection.js'
 import { SANDBOX_CHECKOUT_DIR } from '../src/shim/sandbox-paths.js'

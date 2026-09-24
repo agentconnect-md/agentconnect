@@ -26,7 +26,7 @@ export class SandboxLease {
   /** Live work per Sandbox: binds, workspace preparation, and runtimes that have not exited. */
   private readonly busy = new Map<SandboxLaunch, number>()
   // Serialize even no-op decisions, which could otherwise overtake a pending mode write.
-  private readonly modeQueue = new Map<string, Promise<void>>()
+  private readonly modeQueue = new Map<SandboxLaunch, Promise<void>>()
   // Gate only the subject being suspended; sibling sessions remain available.
   private readonly suspending = new Map<string, { launch: SandboxLaunch; done: Promise<void>; open: () => void }>()
   /** What to run once the last hold on a Sandbox goes, per Sandbox — see `whenReleased`. */
@@ -88,14 +88,13 @@ export class SandboxLease {
     }
   }
 
-  // Serialize transitions of the same Sandbox; the immutable launch fences each queued operation.
+  // Serialize each launch's transitions; the server generation fence separates different launches.
   queueMode(launch: SandboxLaunch, desired: OperatingMode): Promise<OperatingMode | undefined> {
-    const { sandboxName } = launch
-    const previous = this.modeQueue.get(sandboxName) ?? Promise.resolve()
+    const previous = this.modeQueue.get(launch) ?? Promise.resolve()
     const next = previous.catch(() => undefined).then(() => this.applyMode(launch, desired))
     // Keep the chain even when a link rejects, so a failed transition cannot strand the queue.
     this.modeQueue.set(
-      sandboxName,
+      launch,
       next.then(
         () => undefined,
         () => undefined
@@ -107,7 +106,7 @@ export class SandboxLease {
   // An old holder's late releases and gates must not affect a successor's launch.
   forgetSandbox(launch: SandboxLaunch): void {
     this.busy.delete(launch)
-    this.modeQueue.delete(launch.sandboxName)
+    this.modeQueue.delete(launch)
     this.onReleased.delete(launch)
     const gate = this.suspending.get(launch.subject)
     if (gate?.launch === launch) {

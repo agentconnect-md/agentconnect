@@ -2,10 +2,15 @@ import { describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { FakeClock } from '@agentconnect.md/connection'
 import { K8sDriver, type K8sDriverDeps } from '../src/k8s/driver.js'
-import { SANDBOX_LAUNCH_GENERATION, type SandboxFence } from '../src/k8s/sandbox-api.js'
+import {
+  SANDBOX_LAUNCH_GENERATION,
+  type SandboxFence,
+  GuardedResumeRejectedError,
+  type Sandbox,
+  type SandboxClaim
+} from '../src/k8s/sandbox-api.js'
 import { LaunchTimer, type ClusterMetrics, type LaunchPath, type LaunchStage } from '../src/metrics/cluster-metrics.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
-import { GuardedResumeRejectedError, type Sandbox, type SandboxClaim } from '../src/k8s/sandbox-api.js'
 import { fakeGenerations } from './fake-generations.js'
 
 type AwaitChannel = (

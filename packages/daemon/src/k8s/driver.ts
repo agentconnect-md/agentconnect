@@ -70,6 +70,8 @@ const DEFAULT_READY_TIMEOUT_MS = 90_000
 export class K8sDriver implements SpawnDriver {
   private readonly metrics: ClusterMetrics
   private readonly registry: LaunchRegistry<SandboxLaunch>
+  // A lost channel needs a fresh binding, while its pod still belongs to this member's idle sweep.
+  private readonly disconnected = new Map<string, SandboxLaunch>()
   private readonly lease: SandboxLease
   private readonly binder: ChannelBinder<SandboxLaunch>
   private readonly shim: RemoteShimDriver<SandboxLaunch>
@@ -84,7 +86,7 @@ export class K8sDriver implements SpawnDriver {
     this.lease = new SandboxLease({
       api: deps.api,
       warmPoolName: deps.warmPoolName,
-      isCurrent: (launch) => this.registry.currentLaunch(launch.subject) === launch,
+      isCurrent: (launch) => this.ownedLaunch(launch.subject) === launch,
       log: deps.log,
       metrics: this.metrics
     })
@@ -204,34 +206,31 @@ export class K8sDriver implements SpawnDriver {
     return this.recordLaunch(subject, sandboxUid, sandboxName, claimUid)
   }
 
-  private recordLaunch(
+  private async recordLaunch(
     subject: SandboxSubject,
     sandboxUid: string,
     sandboxName: string,
     claimUid: string
   ): Promise<SandboxLaunch> {
-    return this.registry.recordLaunch(subject, sandboxUid, { sandboxName, claimUid }, (launch) =>
+    const launch = await this.registry.recordLaunch(subject, sandboxUid, { sandboxName, claimUid }, (launch) =>
       this.deps.api.fenceSandbox(sandboxName, launch)
     )
+    const disconnected = this.disconnected.get(subject)
+    if (disconnected) {
+      this.disconnected.delete(subject)
+      this.lease.forgetSandbox(disconnected)
+    }
+    return launch
   }
 
-  /**
-   * Re-stamp every claim this member holds a launch for, so a claim in USE never looks like a leak.
-   *
-   * The stamp cannot be an admission marker alone. `ensureSandbox` returns from the launch registry
-   * without touching the API, and `adoptSessions` caches a Running claim this member never admitted,
-   * so a member can serve a session indefinitely without writing to its claim. A sweep that snapshotted
-   * the session's row as absent would then still match on `resourceVersion` when the row came back, and
-   * take a live pod's volume. Refreshed well inside the sweep's grace, the stamp means "last seen in
-   * use by a member", which is the fact the sweep actually needs.
-   *
-   * Best effort by construction: one claim's failure never stops the rest, and nothing here is on a
-   * turn's path — a refresh that does not land costs freshness, and the next tick tries again.
-   */
+  private ownedLaunch(subject: string): SandboxLaunch | undefined {
+    return this.registry.currentLaunch(subject) ?? this.disconnected.get(subject)
+  }
+
+  // Refresh every owned claim so orphan collection cannot mistake a reused or disconnected pod for a leak.
   async refreshAdmissionStamps(): Promise<void> {
-    // Best effort, unlike a publication fence: a claim retired under this member is on its way out, and
-    // a write that does not land costs freshness the next tick restores, never a launch.
-    for (const { subject } of this.registry.launched()) {
+    // Best effort: failed refreshes retry on the next tick without blocking the remaining claims.
+    for (const { subject } of this.launched()) {
       const outcome = await this.writeStamp(subject)
       if (outcome === 'failed') {
         this.deps.log.debug?.(`cluster: could not refresh the stamp on claim ${this.claimName(subject)}`)
@@ -409,7 +408,7 @@ export class K8sDriver implements SpawnDriver {
   // Whether the pod that should hold this subject's channel is up — what tells an unbound channel apart
   // from a lost one. It takes the caller's `signal`: a stalled API server must abort the read.
   async sandboxReadiness(subject: string, opts: { signal?: AbortSignal } = {}): Promise<SandboxReadiness> {
-    const launch = this.registry.currentLaunch(subject)
+    const launch = this.ownedLaunch(subject)
     if (!launch) return 'absent'
     const sandbox = await readIfPresent(() => this.deps.api.getSandbox(launch.sandboxName, opts))
     if (!sandbox) {
@@ -433,7 +432,7 @@ export class K8sDriver implements SpawnDriver {
 
   // Suspend a quiet subject's Sandbox, keeping object and volume; session and launch drop TOGETHER once the write lands, so the replacement binds at a fresh generation.
   async suspendIfIdle(subject: string): Promise<'suspended' | 'busy' | 'absent'> {
-    const launch = this.registry.currentLaunch(subject)
+    const launch = this.ownedLaunch(subject)
     return launch ? await this.suspendLaunch(subject, launch) : 'absent'
   }
 
@@ -441,7 +440,7 @@ export class K8sDriver implements SpawnDriver {
   private async suspendLaunch(subject: string, launch: SandboxLaunch): Promise<'suspended' | 'busy' | 'absent'> {
     return await this.lease
       .suspendIfIdle(launch, () => {
-        if (this.registry.currentLaunch(subject) === launch) {
+        if (this.ownedLaunch(subject) === launch) {
           this.binder.dropSession(subject)
           this.forgetLaunch(subject)
         }
@@ -473,8 +472,8 @@ export class K8sDriver implements SpawnDriver {
   /** Suspend the subject's pod if it is still not up a full pod-up bound after its launch, with no channel ever bound to it here; `absent` when it is no such pod. */
   // The idle sweep judges such a pod apart from the agent's activity: it serves nothing and holds its node's resources while it waits.
   async suspendIfStalled(subject: string): Promise<'suspended' | 'busy' | 'absent'> {
-    const launch = this.registry.currentLaunch(subject)
-    const unbound = (): boolean => this.registry.currentLaunch(subject) === launch && !this.binder.sessionFor(subject)
+    const launch = this.ownedLaunch(subject)
+    const unbound = (): boolean => this.ownedLaunch(subject) === launch && !this.binder.sessionFor(subject)
     if (!launch || !unbound() || this.clock.now() - launch.since < this.podUpTimeoutMs) return 'absent'
     if ((await this.sandboxReadiness(subject)) !== 'starting') return 'absent'
     // Re-judged after the read, in the tick that opens the gate: a bind or a replacement that landed during it wins.
@@ -483,12 +482,19 @@ export class K8sDriver implements SpawnDriver {
 
   /** Subjects this daemon holds a Sandbox for, and since when — the idle sweep's candidates. */
   launched(): Array<{ subject: SandboxSubject; agentId: string; since: number }> {
-    return this.registry.launched()
+    return [
+      ...this.registry.launched(),
+      ...[...this.disconnected.values()]
+        .filter(({ subject }) => !this.registry.currentLaunch(subject))
+        .map(({ subject, agentId, since }) => ({ subject, agentId, since }))
+    ]
   }
 
   /** The session pods of the agent this member holds a launch for. */
   sessionSubjectsOf(agentId: string): SandboxSubject[] {
-    return this.registry.subjectsOf(agentId).filter((subject) => sandboxSubjectSessionLeaf(subject) !== undefined)
+    return this.launched()
+      .filter((launch) => launch.agentId === agentId && sandboxSubjectSessionLeaf(launch.subject) !== undefined)
+      .map(({ subject }) => subject)
   }
 
   /** Move this subject's Sandbox to a mode, through the lease's per-Sandbox transition queue. */
@@ -502,18 +508,16 @@ export class K8sDriver implements SpawnDriver {
   }
 
   private async checkMissingLaunch(launch: SandboxLaunch): Promise<void> {
-    if (this.registry.currentLaunch(launch.subject) !== launch) return
+    if (this.ownedLaunch(launch.subject) !== launch) return
     const sandbox = await readIfPresent(() => this.deps.api.getSandbox(launch.sandboxName))
     if (!sandbox) this.forgetMissingLaunch(launch.subject, launch)
   }
 
   private forgetMissingLaunch(subject: string, launch: SandboxLaunch): void {
-    if (this.registry.currentLaunch(subject) !== launch) return
+    if (this.ownedLaunch(subject) !== launch) return
     this.binder.loseChannel(subject, 'sandbox no longer exists')
     this.binder.forget(subject)
-    this.registry.forgetLaunch(subject)
-    this.lease.forgetSandbox(launch)
-    this.deps.revokeChannel?.(subject)
+    this.forgetLaunch(subject)
     this.deps.log.warn(`cluster: sandbox ${launch.sandboxName} is gone — forgetting the launch of ${subject}`)
   }
 
@@ -544,13 +548,14 @@ export class K8sDriver implements SpawnDriver {
 
   /** Bind the channel of a Running pod this member ALREADY launched — a takeover records one with none — claiming and waking nothing; undefined when it holds no such pod. */
   async bindLaunched(subject: SandboxSubject): Promise<ShimSession | undefined> {
-    const launch = this.registry.currentLaunch(subject)
-    const current = (): boolean => this.registry.currentLaunch(subject) === launch && !this.lease.suspensionOf(subject)
+    let launch = this.ownedLaunch(subject)
+    const current = (): boolean => this.ownedLaunch(subject) === launch && !this.lease.suspensionOf(subject)
     if (!launch || !current()) return undefined
     const attached = this.binder.sessionFor(subject)
     if (attached?.isAttached()) return attached
     // Only a pod that is up: binding resumes the Sandbox, so a stalled or suspended one would be woken, not asked.
     if ((await this.sandboxReadiness(subject)) !== 'ready' || !current()) return undefined
+    if (this.disconnected.get(subject) === launch) launch = await this.resumeSandbox(subject, launch.claimUid)
     await this.binder.bindChannel(subject, launch, undefined, this.grantsFor(subject))
     return this.binder.sessionFor(subject)
   }
@@ -578,22 +583,23 @@ export class K8sDriver implements SpawnDriver {
   /** "No longer served here", not removal: launch, session, root and holds go; claim and volume stay. */
   release(subject: string): void {
     this.registry.bumpRelease(subject)
-    const launch = this.registry.forgetLaunch(subject)
-    if (launch) this.lease.forgetSandbox(launch)
+    this.forgetLaunch(subject)
     // Otherwise `runsInSandbox` keeps answering true for a pod that is not this member's to use.
     this.binder.forget(subject)
-    this.deps.revokeChannel?.(subject)
   }
 
   /** Release every pod of the agent this member holds: its own and its sessions'. */
   releaseAgentSandboxes(agentId: string): void {
-    for (const subject of this.registry.subjectsOf(agentId)) this.release(subject)
+    for (const launch of this.launched()) if (launch.agentId === agentId) this.release(launch.subject)
     this.release(agentSandboxSubject(agentId))
   }
 
-  // A lost pod is an unplanned suspension, not a new state: the next turn re-runs the wake path.
+  // Relinquish reclamation only after suspension, deletion, or departure.
   forgetLaunch(subject: string): void {
+    const launch = this.ownedLaunch(subject)
     this.registry.forgetLaunch(subject)
+    this.disconnected.delete(subject)
+    if (launch) this.lease.forgetSandbox(launch)
     this.deps.revokeChannel?.(subject)
   }
 
@@ -631,9 +637,12 @@ export class K8sDriver implements SpawnDriver {
     this.binder.onChannelBound(connection)
   }
 
-  // Report that a subject's channel is gone, so its runtime learns rather than hanging. Session and
-  // launch drop TOGETHER: a revived sandbox must never bind to a lost session.
+  // Retire the binding, retaining its fenced launch solely for idle reclamation until a fresh acquisition succeeds.
   onChannelLost(subject: string, reason: string): void {
-    if (this.binder.loseChannel(subject, reason)) this.forgetLaunch(subject)
+    const launch = this.registry.currentLaunch(subject)
+    if (!this.binder.loseChannel(subject, reason) || !launch || this.registry.currentLaunch(subject) !== launch) return
+    this.registry.forgetLaunch(subject)
+    this.disconnected.set(subject, launch)
+    this.deps.revokeChannel?.(subject)
   }
 }

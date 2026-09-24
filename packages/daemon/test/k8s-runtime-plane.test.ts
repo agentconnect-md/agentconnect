@@ -26,10 +26,9 @@ import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimServer } from '../src/shim/server.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
-import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
+import type { Sandbox, SandboxClaim, SandboxFence } from '../src/k8s/sandbox-api.js'
 import { fakeGenerations } from './fake-generations.js'
 import { fenceFakeSandbox } from './fake-sandbox-fence.js'
-import type { SandboxFence } from '../src/k8s/sandbox-api.js'
 
 /**
  * The assembly itself, which is the thing that did not exist: every part of the k8s path was

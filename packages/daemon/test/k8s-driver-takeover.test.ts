@@ -140,6 +140,42 @@ async function sharedStore(): Promise<LocalStore> {
 }
 
 describe('sandbox launches follow the duty', () => {
+  it('keeps a disconnected pod reclaimable when acquiring a fresh binding fails', async () => {
+    const { api, state } = await cluster()
+    const store = await sharedStore()
+    const { driver } = member(api, store, new FakeClock())
+    await driver.ensureBoundChannel(AGENT)
+    const candidates = driver.launched()
+    driver.onChannelLost(AGENT, 'reconnect window elapsed')
+    expect(driver.currentLaunch(AGENT)).toBeUndefined()
+    expect(driver.sessionFor(AGENT)).toBeUndefined()
+    expect(driver.launched()).toEqual(candidates)
+    vi.spyOn(api, 'fenceSandbox').mockRejectedValueOnce(new Error('API unavailable'))
+    await expect(driver.ensureSandbox(AGENT)).rejects.toThrow('API unavailable')
+    expect(driver.launched()).toEqual(candidates)
+    expect(await driver.suspendIfIdle(AGENT)).toBe('suspended')
+    expect(state.mode).toBe('Suspended')
+    expect(state.claim).toBeDefined()
+    expect(driver.launched()).toEqual([])
+    await store.close()
+  })
+
+  it('rebinds a disconnected pod at a fresh generation before querying its watchers', async () => {
+    const { api, state } = await cluster()
+    const store = await sharedStore()
+    const { driver, dialed } = member(api, store, new FakeClock())
+    await driver.ensureBoundChannel(AGENT)
+    driver.onChannelLost(AGENT, 'reconnect window elapsed')
+    const ensure = vi.spyOn(api, 'ensureClaim')
+    expect((await driver.bindLaunched(AGENT))?.isAttached()).toBe(true)
+    expect(dialed.map((record) => record.generation)).toEqual([1, 2])
+    expect(ensure).not.toHaveBeenCalled()
+    expect(driver.launched()).toHaveLength(1)
+    expect(state.modeWrites).toEqual([])
+    expect(state.mode).toBe('Running')
+    await store.close()
+  })
+
   it.each(['read', 'write'] as const)('rejects an old suspension paused at the %s across takeover', async (pauseAt) => {
     const { api, state } = await cluster()
     const store = await sharedStore()

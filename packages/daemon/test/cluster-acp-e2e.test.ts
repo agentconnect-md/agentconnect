@@ -5,13 +5,17 @@ import { Backoff, FakeClock } from '@agentconnect.md/connection'
 import { AcpHost } from '../src/acp/acp-host.js'
 import { K8sDriver } from '../src/k8s/driver.js'
 import { fenceFakeSandbox } from './fake-sandbox-fence.js'
-import type { SandboxFence } from '../src/k8s/sandbox-api.js'
+import {
+  type SandboxFence,
+  GuardedResumeRejectedError,
+  type Sandbox,
+  type SandboxClaim
+} from '../src/k8s/sandbox-api.js'
 import type { ShimConnection } from '../src/shim/connection.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimDialer } from '../src/shim/dialer.js'
 import { ShimServer } from '../src/shim/server.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
-import { GuardedResumeRejectedError, type Sandbox, type SandboxClaim } from '../src/k8s/sandbox-api.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
 import { fakeGenerations } from './fake-generations.js'
 import { waitBudget } from './wait-support.js'
