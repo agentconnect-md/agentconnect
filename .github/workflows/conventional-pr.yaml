@@ -1,0 +1,31 @@
+name: Conventional PR
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  conventional-pr:
+    name: Conventional PR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check title and at least one commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^()]+\))?!?: [^[:space:]].*$'
+          if ! grep -Eq "$pattern" <<< "$PR_TITLE"; then
+            echo '::error::Use a Conventional Commits PR title (for example, fix: describe the change).'
+            exit 1
+          fi
+          commit_titles=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/commits" --jq '.[].commit.message | split("\n")[0]')
+          if ! grep -Eq "$pattern" <<< "$commit_titles"; then
+            echo '::error::At least one commit must use a Conventional Commits subject.'
+            exit 1
+          fi
