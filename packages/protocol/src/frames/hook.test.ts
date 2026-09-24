@@ -510,7 +510,7 @@ describe('code-host Decision routing shapes (code-host-decisions.md §3-§5)', (
       routing: {
         routingId: ROUTING_ID,
         decisionId: DECISION_ID,
-        candidates: [{ hookId: HOOK_ID, agentId: AGENT_ID, via: 'implicit' }]
+        candidates: [{ hookId: HOOK_ID, agentId: AGENT_ID }]
       },
       context: { source: 'github', subject: { authorLogin: 'octo', state: 'open', draft: false, body: 'Steps' } }
     })

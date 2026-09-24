@@ -15,15 +15,12 @@ import { CodeHostDecisionModal } from './CodeHostDecisionModal'
 export function CodeHostDecisionEntry({
   routing,
   agents,
-  blocked,
   onOpenEvaluations
 }: {
   /** The scope's routing read; null while the CP cannot serve it. */
   routing: CodeHostRoutingDto | null | undefined
   /** The scope's members as rule targets. */
   agents: RosterAgent[]
-  /** The row runs on @-mention, which picks the agent directly, so no Decision can start here. */
-  blocked: boolean
   /** Opens the routing's Recent evaluations. */
   onOpenEvaluations?: () => void
 }) {
@@ -114,9 +111,8 @@ export function CodeHostDecisionEntry({
     <>
       <button
         type="button"
-        title={blocked ? t('addBlocked') : t('addTitle', { family })}
+        title={t('addTitle', { family })}
         aria-haspopup="dialog"
-        disabled={blocked}
         onClick={() => setOpen(true)}
         className="inline-flex h-[26px] flex-none cursor-pointer items-center gap-1 rounded-md border border-dashed border-(--border-strong) bg-transparent pl-[6px] pr-2 font-sans text-[11px] font-medium leading-normal text-(--text-secondary) hover:border-solid hover:border-(--brand) hover:bg-(--brand-soft) hover:text-(--brand-soft-text) disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-dashed disabled:hover:border-(--border-strong) disabled:hover:bg-transparent disabled:hover:text-(--text-secondary)"
       >

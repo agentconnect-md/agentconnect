@@ -583,6 +583,18 @@ describe('HookService — Decision routing (code-host-decisions.md §3.2-§3.3)'
     })
   })
 
+  it('compiles a routed rule on every update, setting aside its own cadence and mention-only mode', async () => {
+    const mentionOnly = hook({ ...github, events: ['issues:opened', 'issue_comment:created'], mentionOnly: true })
+    const routed = await build(record()).compile(mentionOnly)
+    expect(routed?.github).toMatchObject({
+      events: ['issues:*', 'issue_comment:created'],
+      commentFamilies: ['issues'],
+      mentionOnly: false
+    })
+    const paused = await build(record({ enabled: false })).compile(mentionOnly)
+    expect(paused?.github).toMatchObject({ events: ['issues:opened', 'issue_comment:created'], mentionOnly: true })
+  })
+
   it('keeps routing on a scope needing review, so the host holds it', async () => {
     expect((await build(record({ needsReview: true })).compile(github))?.routing?.routingId).toBe(ROUTING)
   })

@@ -1190,12 +1190,15 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
 
       // Routing (code-host-decisions.md §4): a routed rule that would fire becomes a candidate of its scope instead.
       const threadFamily = githubEventFamily(ctx)
-      const mentionCandidates =
+      // A routed rule is never narrowed by a mention: its scope's Decision chooses, a mentioned agent included.
+      const routed = (rule: RcHookAssign) => rule.routing !== undefined && threadFamily !== undefined
+      const unrouted = rules.filter((rule) => !routed(rule))
+      const narrowed = new Set(
         ctx.eventAction === 'pull_request:review_requested'
-          ? rules
-          : githubMentionCandidates(rules, ctx.mentionText, ctx.teamOwnerLogin)
-      // githubMentionCandidates returns its input unchanged unless a targeted @agent mention narrowed it.
-      const mentionNarrowed = mentionCandidates !== rules
+          ? unrouted
+          : githubMentionCandidates(unrouted, ctx.mentionText, ctx.teamOwnerLogin)
+      )
+      const mentionCandidates = rules.filter((rule) => routed(rule) || narrowed.has(rule))
       const routeCandidates = new Map<string, Map<string, GithubRouteCandidate>>()
       const authzTasks: Promise<void>[] = []
 
@@ -1227,7 +1230,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         }
         if (routing) {
           const scope = routeCandidates.get(routing.routingId) ?? new Map<string, GithubRouteCandidate>()
-          scope.set(rule.hookId, { rule, via: mentionNarrowed ? 'mention' : 'implicit' })
+          scope.set(rule.hookId, { rule })
           routeCandidates.set(routing.routingId, scope)
           return
         }

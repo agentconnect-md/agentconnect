@@ -164,8 +164,6 @@ export function decisionEvidenceText(evidence: DecisionEvidence): string {
 const HOOK_ROUTE_REASON_TEXT: Record<HookRouteSelection['reason'], string> = {
   decision: "a routing rule matched the Decision's answer and named you",
   otherwise: 'no routing rule matched, and Otherwise delivers to every watching agent',
-  mention: 'you were @-mentioned directly, so no Decision was evaluated',
-  thread: 'an earlier routing verdict selected you for this thread',
   unavailable: 'the Decision could not be evaluated, so every watching agent receives the event'
 }
 

@@ -18,6 +18,15 @@ export function isRoutingFamily(family: string | null | undefined): family is Co
   return (CODE_HOST_ROUTING_FAMILIES as readonly string[]).includes(family ?? '')
 }
 
+/** A routed scope fires on every update (code-host-decisions.md §4); the hook's own cadence and mention-only mode are set aside. */
+export function routedCadence(family: CodeHostRoutingFamily): {
+  events: string[]
+  commentFamilies: CodeHostRoutingFamily[]
+  mentionOnly: false
+} {
+  return { events: [`${family}:*`, 'issue_comment:created'], commentFamilies: [family], mentionOnly: false }
+}
+
 type MemberHook = Pick<HookRecord, 'id' | 'agentId' | 'kind' | 'enabled' | 'repoId' | 'family'>
 
 /** A scope's members: every enabled GitHub hook on the repository whose one subject family is the scope's. */

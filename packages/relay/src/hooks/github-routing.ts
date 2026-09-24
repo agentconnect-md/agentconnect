@@ -27,10 +27,9 @@ const ROUTING_REQUEST = { ackTimeoutMs: HOOK_ROUTING_ACK_TIMEOUT_MS, maxTries: 1
 
 export type GithubThreadFamily = 'issues' | 'pull_request'
 
-/** One rule that would fire, and whether a targeted @agent mention narrowed the fan-out to it. */
+/** One routed rule that would fire; the host's Decision chooses among them. */
 export interface GithubRouteCandidate {
   rule: RcHookAssign
-  via: RdHookRouteCandidate['via']
 }
 
 /** The thread family a numbered-thread event belongs to; comments and reviews take their subject's. */
@@ -93,7 +92,7 @@ export function githubRecordOnlyEligible(hostRule: RcHookAssign, ctx: GithubMatc
 
 /** The wire candidates, one per hook, in fire order. */
 export function githubRouteCandidates(candidates: readonly GithubRouteCandidate[]): RdHookRouteCandidate[] {
-  return candidates.map(({ rule, via }) => ({ hookId: rule.hookId, agentId: rule.agentId, via }))
+  return candidates.map(({ rule }) => ({ hookId: rule.hookId, agentId: rule.agentId }))
 }
 
 /** The provider-failure fallback's evidence: every candidate fires as without a Decision. */

@@ -951,8 +951,8 @@ describe('github ingress', () => {
           routingId: ROUTING,
           decisionId: DECISION,
           candidates: [
-            { hookId: HOOK, agentId: AGENT, via: 'implicit' },
-            { hookId: HOOK_B, agentId: AGENT_B, via: 'implicit' }
+            { hookId: HOOK, agentId: AGENT },
+            { hookId: HOOK_B, agentId: AGENT_B }
           ]
         }
       })
@@ -968,7 +968,7 @@ describe('github ingress', () => {
       expect(h.reports).toEqual([expect.objectContaining({ hookId: HOOK_B, status: 'accepted' })])
     })
 
-    it('marks a candidate kept by a targeted @agent mention, and still addresses the host rule', async () => {
+    it('keeps every routed rule a candidate when a targeted @agent mention names one of them', async () => {
       const github = { events: ['issue_comment:created'], commentFamilies: ['issues' as const] }
       h.table.upsert(routed({}, { ...github, agentName: 'review-alpha' }))
       h.table.upsert(routed(peer, { ...github, agentName: 'review-beta' }))
@@ -977,13 +977,14 @@ describe('github ingress', () => {
         comment({ comment: { body: '@review-beta take this', author_association: 'MEMBER' } })
       )
       await flush()
-      expect(hostCopies()).toEqual([
-        expect.objectContaining({
-          hookId: HOOK,
-          routing: expect.objectContaining({ candidates: [{ hookId: HOOK_B, agentId: AGENT_B, via: 'mention' }] })
-        })
-      ])
-      expect(fires()).toEqual([expect.objectContaining({ hookId: HOOK_B, routeSelection: expect.anything() })])
+      expect(hostCopies()).toHaveLength(1)
+      expect(hostCopies()[0]?.routing?.candidates).toHaveLength(2)
+      expect(hostCopies()[0]?.routing?.candidates).toEqual(
+        expect.arrayContaining([
+          { hookId: HOOK, agentId: AGENT },
+          { hookId: HOOK_B, agentId: AGENT_B }
+        ])
+      )
     })
 
     it('fires nothing when the host holds the event', async () => {
@@ -1071,7 +1072,7 @@ describe('github ingress', () => {
       await flush()
       expect(hostCopies()).toEqual([
         expect.objectContaining({
-          routing: expect.objectContaining({ candidates: [{ hookId: HOOK, agentId: AGENT, via: 'implicit' }] })
+          routing: expect.objectContaining({ candidates: [{ hookId: HOOK, agentId: AGENT }] })
         })
       ])
       expect(fires()).toEqual([expect.objectContaining({ hookId: HOOK_C, msgId: `${HOOK_C}:gh-delivery-1` })])
@@ -1092,13 +1093,13 @@ describe('github ingress', () => {
           .filter((d) => (d.msg as RdMsgHook).routing)
           .map((d) => [d.daemonId, (d.msg as RdMsgHook).routing!.routingId, (d.msg as RdMsgHook).routing!.candidates])
       ).toEqual([
-        [DAEMON, ROUTING, [{ hookId: HOOK, agentId: AGENT, via: 'implicit' }]],
+        [DAEMON, ROUTING, [{ hookId: HOOK, agentId: AGENT }]],
         [
           DAEMON_B,
           ROUTING_PR,
           [
-            { hookId: HOOK_B, agentId: AGENT_B, via: 'implicit' },
-            { hookId: HOOK_C, agentId: AGENT_C, via: 'implicit' }
+            { hookId: HOOK_B, agentId: AGENT_B },
+            { hookId: HOOK_C, agentId: AGENT_C }
           ]
         ]
       ])
@@ -1180,7 +1181,7 @@ describe('github ingress', () => {
       ])
     })
 
-    it('records an event whose mention picked an agent outside the scope, which fires unrouted', async () => {
+    it('lets a mention narrow only unrouted rules, while the routed scope still judges the event', async () => {
       const github = { events: ['issue_comment:created'], commentFamilies: ['issues' as const] }
       h.table.upsert(routed({}, { ...github, agentName: 'review-alpha' }))
       h.table.upsert(rule({ hookId: HOOK_C, agentId: AGENT_C }, { ...github, agentName: 'review-gamma' }))
@@ -1189,9 +1190,14 @@ describe('github ingress', () => {
         comment({ comment: { body: '@review-gamma take this', author_association: 'MEMBER' } })
       )
       await flush()
-      expect(hostCopies()).toEqual([expect.objectContaining({ routing: expect.objectContaining({ candidates: [] }) })])
-      expect(fires()).toEqual([expect.objectContaining({ hookId: HOOK_C })])
-      expect(fires()[0]).not.toHaveProperty('routeSelection')
+      expect(hostCopies()).toEqual([
+        expect.objectContaining({
+          routing: expect.objectContaining({ candidates: [{ hookId: HOOK, agentId: AGENT }] })
+        })
+      ])
+      expect(fires().filter((m) => m.hookId === HOOK_C)).toEqual([
+        expect.not.objectContaining({ routeSelection: expect.anything() })
+      ])
     })
 
     it('records a PR review for a pull-request scope, carrying the review text', async () => {

@@ -71,9 +71,7 @@ export const DEFAULT_HOOK_ROUTER_LIMITS = {
   deadlineMs: DEFAULT_DECISION_GATE_LIMITS.deadlineMs,
   /** How long a redelivery waits past a foreign pending verdict's deadline before taking it over. */
   takeoverGraceMs: 1_000,
-  pollMs: 100,
-  /** Earlier verdicts read for the thread's owners. */
-  threadVerdicts: 100
+  pollMs: 100
 }
 
 const TERMINAL = new Set(['admitted', 'skipped', 'canceled'])
@@ -101,7 +99,7 @@ export function hookRoutingFingerprint(projection: HookRoutingProjection): strin
   })
 }
 
-/** The evaluation host's choice for one routed code-host event: record first, then mention, thread, or one Decision. */
+/** The evaluation host's choice for one routed code-host event: record first, then one Decision. */
 export class HookRouter {
   private readonly inflight = new Map<string, Promise<HookRouteOutcome>>()
 
@@ -166,39 +164,8 @@ export class HookRouter {
     })
     if (!reserved.verdict) return { accepted: false, reason: 'durability' }
     if (!reserved.created) return await this.awaitExisting(reserved.verdict)
-    const row = reserved.verdict
-    const mentioned = candidates.filter((c) => c.via === 'mention')
-    if (mentioned.length > 0) return await this.finish(row, config, mentioned, 'mention', { evaluated: false })
-    const owners = await this.threadOwners(row, record.thread)
-    if (owners.size > 0)
-      return await this.finish(
-        row,
-        config,
-        candidates.filter((c) => owners.has(c.agentId)),
-        'thread',
-        { evaluated: false }
-      )
-    return await this.evaluate(row, config, msg, record.thread)
-  }
-
-  /** The agents an earlier verdict of this routing selected in the same thread. */
-  private async threadOwners(row: DecisionVerdictRow, thread: string | null): Promise<Set<string>> {
-    const owners = new Set<string>()
-    if (thread === null) return owners
-    const earlier = await this.host.store().routerVerdictsInThread({
-      orgId: row.orgId,
-      channel: row.channel,
-      subject: row.subject,
-      thread,
-      beforeSeq: row.seq,
-      limit: this.limits.threadVerdicts
-    })
-    for (const verdict of earlier) {
-      if (verdict.state !== 'admitted') continue
-      for (const target of parseJson<HookRouteTarget[]>(verdict.targetsJson) ?? [])
-        if (typeof target?.agentId === 'string') owners.add(target.agentId)
-    }
-    return owners
+    // Every event is judged: a mention and the thread's earlier choice are context, never a shortcut.
+    return await this.evaluate(reserved.verdict, config, msg, record.thread)
   }
 
   private async evaluate(

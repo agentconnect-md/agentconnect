@@ -75,15 +75,11 @@ function dto(scope: CodeHostRoutingScope, partial: Partial<CodeHostRoutingDto> =
   return { ...scope, config: null, status: null, members, evaluationAgentId: 'a1', ...partial }
 }
 
-function Harness({ scope, blocked }: { scope: CodeHostRoutingScope; blocked: boolean }) {
+function Harness({ scope }: { scope: CodeHostRoutingScope }) {
   const { routings } = useCodeHostRoutings([scope], members)
   const routing = routings[codeHostScopeId(scope)]
   return (
-    <CodeHostDecisionEntry
-      routing={routing}
-      agents={routing ? routingTargets(routing.members, () => undefined) : []}
-      blocked={blocked}
-    />
+    <CodeHostDecisionEntry routing={routing} agents={routing ? routingTargets(routing.members, () => undefined) : []} />
   )
 }
 
@@ -101,7 +97,7 @@ afterEach(async () => {
   container = undefined
 })
 
-async function render(scope: CodeHostRoutingScope = prScope, blocked = false) {
+async function render(scope: CodeHostRoutingScope = prScope) {
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
@@ -109,7 +105,7 @@ async function render(scope: CodeHostRoutingScope = prScope, blocked = false) {
     root?.render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
         <DecisionsPrototypeProvider>
-          <Harness scope={scope} blocked={blocked} />
+          <Harness scope={scope} />
         </DecisionsPrototypeProvider>
       </SWRConfig>
     )
@@ -158,17 +154,12 @@ describe('CodeHostDecisionEntry', () => {
   it('words an issues row for issues', async () => {
     await render(issuesScope)
     expect(button('Decision')?.getAttribute('title')).toBe(
-      'Every issue goes to all agents. Add a decision to pick agents per issue.'
+      'Every issue goes to all agents. Add a decision to pick agents on every update; the rows then run on any update.'
     )
     await click(button('Decision'))
     expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain(
       'Issues · picks agents among review-bot, security-bot'
     )
-  })
-
-  it('offers no decision while the row runs on @-mention', async () => {
-    await render(prScope, true)
-    expect((button('Decision') as HTMLButtonElement | undefined)?.disabled).toBe(true)
   })
 
   it('PUTs the rules and DELETEs them against the live API', async () => {

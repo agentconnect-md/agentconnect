@@ -2229,7 +2229,6 @@ export default function AgentDetailView() {
                                     id,
                                     tRouting('codeHost.hiddenAgent')
                                   )}
-                                  blocked={triggerModeOf(h) === 'mention'}
                                   onOpenEvaluations={() => openRoutingEvaluations(h)}
                                 />
                               )}
@@ -2237,24 +2236,26 @@ export default function AgentDetailView() {
                               <TriggerSelect
                                 className="w-[126px] flex-none"
                                 // Per family: the label cadence exists on issues alone, and a deployment reads its own copy.
-                                // A routing Decision owns who takes the thread, so a mention (which names the agent) is unavailable.
+                                // A routed scope runs on every update and its Decision picks the agents, so the row's own cadence is locked.
                                 options={ghRowTriggerModes(h).map((mode) => {
-                                  const off = mode === 'mention' && routedByDecision(h)
+                                  const off = routedByDecision(h)
                                   return {
                                     value: mode,
                                     label: GH_TRIGGER_PILL[mode],
                                     hint: off
-                                      ? tRouting('codeHost.mentionOff')
+                                      ? tRouting('codeHost.triggerLocked')
                                       : githubTriggerTooltip(mode, da.name, githubHookFamily(h) ?? undefined),
                                     description: off
-                                      ? tRouting('codeHost.mentionOff')
+                                      ? tRouting('codeHost.triggerLocked')
                                       : githubTriggerDescription(mode, da.name, githubHookFamily(h) ?? undefined),
                                     disabled: off
                                   }
                                 })}
                                 heading={t('integrations.runOn')}
-                                value={triggerModeOf(h)}
-                                onChange={(mode) => void setHookCadence(h, mode)}
+                                value={routedByDecision(h) ? 'every' : triggerModeOf(h)}
+                                onChange={(mode) => {
+                                  if (!routedByDecision(h)) void setHookCadence(h, mode)
+                                }}
                                 ariaLabel={`Trigger for ${h.repoFullName ?? h.name} ${ghRowPill(h)}`}
                                 hint="Trigger — when this agent runs"
                                 busy={hookBusy === h.id}

@@ -4749,13 +4749,12 @@
       "codeHost": {
         "subtitle": "{family, select, pull_request {Pull requests · picks reviewers among <name>{agents}</name>} other {Issues · picks agents among <name>{agents}</name>}}",
         "everyAgent": "Every agent",
-        "evaluatedOnce": "Evaluated once when the {family, select, pull_request {PR} other {issue}} starts a session; the chosen agents keep it after that.",
-        "mentionsSkip": "Mentions pick the agent directly, so they skip the decision.",
+        "evaluatedOnce": "Evaluated on every update of the {family, select, pull_request {PR} other {issue}}; each event goes to the agents the decision picks.",
+        "mentionsSkip": "A mention does not pick the agent: mentioned events are judged too, and the decision's choice wins.",
         "otherwiseEveryAgent": "{family, select, pull_request {Without a matching rule, every agent reviews the PR as it does without a decision.} other {Without a matching rule, every agent takes the issue as it does without a decision.}}",
         "add": "Decision",
-        "addTitle": "{family, select, pull_request {Every PR goes to all agents. Add a decision to pick reviewers per PR.} other {Every issue goes to all agents. Add a decision to pick agents per issue.}}",
-        "addBlocked": "Mentions pick the agent directly. Switch the trigger off @-mention to add a decision.",
-        "pillTitle": "By decision · {name}. Evaluated once when the {family, select, pull_request {PR} other {issue}} starts a session; the chosen agents keep it after that. Click to edit rules.",
+        "addTitle": "{family, select, pull_request {Every PR goes to all agents. Add a decision to pick reviewers on every update; the rows then run on any update.} other {Every issue goes to all agents. Add a decision to pick agents on every update; the rows then run on any update.}}",
+        "pillTitle": "By decision · {name}. Every update of the {family, select, pull_request {PR} other {issue}} is judged, and the decision picks who takes it. Click to edit rules.",
         "pillStatusTitle": "By decision · {name} · {status}. Click to review the rules.",
         "statusBody": {
           "needs_review": "{decision} changed and these rules no longer fit its answers. New {family, select, pull_request {pull requests} other {issues}} on this repository are held until you save the rules again.",
@@ -4764,10 +4763,10 @@
         "stop": "Stop using By decision — every {family, select, pull_request {PR} other {issue}} goes to all agents",
         "stopMenu": "Stop using decision",
         "stopError": "Couldn't stop using the decision. {message}",
-        "mentionOff": "Unavailable with a decision. Mentions pick the agent directly, so they skip the decision.",
         "hidden": "A decision you cannot see",
         "forbidden": "Your role cannot change this repository's routing: it needs edit access to every agent watching it.",
-        "hiddenAgent": "An agent you cannot see"
+        "hiddenAgent": "An agent you cannot see",
+        "triggerLocked": "Set by the decision: every update is judged, so this row's own trigger does not apply."
       }
     }
   },

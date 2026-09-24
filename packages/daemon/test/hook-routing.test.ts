@@ -63,9 +63,9 @@ const projection = (over: Partial<HookRoutingProjection['config']> = {}): HookRo
 })
 
 const ALL: RdHookRouteCandidate[] = [
-  { hookId: HOOK, agentId: AGENT, via: 'implicit' },
-  { hookId: HOOK_B, agentId: AGENT_B, via: 'implicit' },
-  { hookId: HOOK_C, agentId: AGENT_C, via: 'implicit' }
+  { hookId: HOOK, agentId: AGENT },
+  { hookId: HOOK_B, agentId: AGENT_B },
+  { hookId: HOOK_C, agentId: AGENT_C }
 ]
 
 const fire = (over: Partial<RdMsgHook> = {}): RdMsgHook => ({
@@ -228,33 +228,23 @@ describe('hook router (host choice)', () => {
     await h.store.close()
   })
 
-  it('fires a mentioned candidate directly, without evaluating', async () => {
+  it('judges a mentioned event like any other, so the Decision target wins over the mention', async () => {
     const h = await harness()
-    const outcome = await (await h.post('@agent-a look', [{ ...ALL[0]!, via: 'mention' }, ALL[1]!])).choose()
-    expect(h.agentsOf(outcome)).toEqual([HOOK])
-    if (outcome.accepted) {
-      expect(outcome.targets[0]!.selection.reason).toBe('mention')
-      expect(outcome.targets[0]!.selection.verdictSeq).toBeUndefined()
-    }
-    expect(h.evaluate).not.toHaveBeenCalled()
+    const outcome = await (await h.post('@agent-a look')).choose()
+    expect(h.agentsOf(outcome)).toEqual([HOOK_B, HOOK_C])
+    if (outcome.accepted) expect(outcome.targets[0]!.selection.reason).toBe('decision')
+    expect(h.evaluate).toHaveBeenCalledTimes(1)
     await h.store.close()
   })
 
-  it('keeps a thread with the agents an earlier verdict selected, and re-evaluates a thread nobody owns', async () => {
+  it('judges every event of a thread again, so a later update can go elsewhere', async () => {
     const h = await harness()
+    expect(h.agentsOf(await (await h.post('first')).choose())).toEqual([HOOK_B, HOOK_C])
     h.evaluate.mockResolvedValueOnce(NO_MATCH)
-    const orphan = await (await h.post('first', ALL, '42', projection({ otherwise: { type: 'skip' } }))).choose()
-    expect(orphan).toEqual({ accepted: true, targets: [] })
-    h.evaluate.mockResolvedValueOnce(MATCH_BOTH)
-    expect(h.agentsOf(await (await h.post('second')).choose())).toEqual([HOOK_B, HOOK_C])
+    const later = await (await h.post('second')).choose()
+    expect(h.agentsOf(later)).toEqual([HOOK, HOOK_B, HOOK_C])
+    if (later.accepted) expect(later.targets[0]!.selection.reason).toBe('otherwise')
     expect(h.evaluate).toHaveBeenCalledTimes(2)
-    const later = await (await h.post('third', [ALL[0]!, ALL[1]!])).choose()
-    expect(h.agentsOf(later)).toEqual([HOOK_B])
-    if (later.accepted) expect(later.targets[0]!.selection.reason).toBe('thread')
-    // Another thread is its own.
-    h.evaluate.mockResolvedValueOnce(NO_MATCH)
-    expect(h.agentsOf(await (await h.post('elsewhere', ALL, '7')).choose())).toEqual([HOOK, HOOK_B, HOOK_C])
-    expect(h.evaluate).toHaveBeenCalledTimes(3)
     await h.store.close()
   })
 

@@ -193,22 +193,23 @@ describe('AgentDetailView, github decision routing', () => {
     expect(entries(scope)).toEqual(['Needs a response', 'Decision'])
   })
 
-  it('locks the @-mention trigger only on the routed scope', async () => {
+  it('locks every trigger of the routed scope on Any update, and leaves the unrouted scope alone', async () => {
     const scope = await render()
     await click(scope.querySelector('[aria-label="Trigger for acme/api PRs"]'))
-    expect(menuItem('@-mention')?.getAttribute('aria-disabled')).toBe('true')
+    for (const mode of ['Opened', 'Any update', '@-mention'])
+      expect(menuItem(mode)?.getAttribute('aria-disabled')).toBe('true')
     await click(scope.querySelector('[aria-label="Trigger for acme/api PRs"]'))
     await click(scope.querySelector('[aria-label="Trigger for acme/api Issues"]'))
     expect(menuItem('@-mention')?.getAttribute('aria-disabled')).toBeNull()
   })
 
-  it('blocks + Decision while the row runs on @-mention', async () => {
+  it('offers + Decision on a row that runs on @-mention', async () => {
     mocks.hooks = [row('issues', 'mention')]
     const scope = await render()
     const add = [...scope.querySelectorAll<HTMLButtonElement>('button')].find(
       (el) => el.textContent?.trim() === 'Decision'
     )
-    expect(add?.disabled).toBe(true)
+    expect(add?.disabled).toBe(false)
   })
 
   it('stops the routing from the row menu with a DELETE', async () => {

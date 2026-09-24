@@ -22,8 +22,12 @@ take each new issue or PR from a typed judgment, the way a shared bot routes a n
 - An event is judged **once**, on one **evaluation host**, never once per agent. The host records
   it in its channel record, evaluates, and returns the selected hooks to the relay, which fires them
   through the ordinary hook path.
-- The chosen agents keep the thread: later events of the same issue or PR go to them without
-  another evaluation. A targeted @-mention names its agent directly and skips the Decision.
+- **The Decision rules the scope.** Every event is judged, including later updates of the same
+  issue or PR and events that @-mention an agent; when the Decision's target differs from the
+  mentioned agent, the Decision's target takes the event.
+- **A routed scope runs on every update.** While routing is enabled, the scope's rows ignore their
+  own trigger mode (Opened, Any update, @-mention) and fire on any update; label filters still
+  apply.
 
 Linear gains By decision on its team conversations through the existing chat gate (§6).
 
@@ -32,9 +36,9 @@ Linear gains By decision on its team conversations through the existing chat gat
 - **Evaluation stays on the data plane.** A daemon calls the model; the CP distributes
   configuration and proxies bounded evaluation reads; the relay forwards and fans out. Event
   content never enters CP storage.
-- **A Decision never grants permission.** Candidates are exactly the hooks the relay's existing
-  filters, bot veto, installation gate, and maintainer authorization would fire. Routing only
-  narrows that set.
+- **A Decision never grants permission.** Candidates are exactly the hooks that pass the bot veto,
+  installation gate, label filter, and maintainer authorization under the scope's Any update
+  cadence (§4). The Decision only chooses among them.
 - **One storage model.** The host records events in the channel record (`transcript`) and its
   verdicts in `decision_verdict`, as the shared-bot router does. No new daemon table exists.
 - **Same failure policy as IM routing.** A provider failure keeps the eligible delivery on its
@@ -85,12 +89,18 @@ Routing needs `hook-decision-routing-v1` on the relay and on the host daemon.
 
 ## 4. Relay: candidates and the host copy
 
-For a GitHub event on a repository, the relay runs every rule's existing verdict, mention narrowing,
-and live maintainer check unchanged. Rules without `routing` fire as today. For each routing scope
-the event belongs to (its family: issues, or pull requests including their comments and reviews):
+The CP compiles every rule of an enabled routing scope with the scope's **Any update** cadence —
+events `<family>:*` and `issue_comment:created`, comment family `<family>`, `mentionOnly: false` —
+whatever trigger mode the hook row stores; the stored mode is kept and applies again when routing
+is paused or removed. Label filters, the lifecycle-noise and bot vetoes, the installation gate, and
+the maintainer check apply unchanged. A native App reviewer request is a candidate like any other.
 
-1. The **candidates** are the scope's rules that would fire. A candidate kept by a targeted
-   `@agent` mention is marked `via: mention`.
+For a GitHub event on a repository, the relay runs every rule's verdict and live maintainer check.
+Rules without `routing` fire as today, including mention narrowing. For each routing scope the
+event belongs to (its family: issues, or pull requests including their comments and reviews):
+
+1. The **candidates** are the scope's rules that would fire. A targeted `@agent` mention does not
+   narrow them: the mentioned agent's rule and every other routed rule stay candidates.
 2. The relay sends **one** host copy: an `rd/msg` hook addressed to the evaluation agent's own rule
    in the scope, with `routing: { routingId, decisionId, candidates }`. It waits for the `rd/ack`
    with a routing timeout longer than the Decision deadline.
@@ -98,8 +108,8 @@ the event belongs to (its family: issues, or pull requests including their comme
    fires exactly those through the ordinary path (`dispatchHookFire`, run reports, retries), with
    `routeSelection` on each delivery. A non-selected candidate gets no run.
 
-Thread events with no candidate — the filters rejected it, a mention excluded the rule, the
-maintainer check refused the actor, a third-party PR is held — still reach the host as a
+Thread events with no candidate — the filters rejected it, the maintainer check refused the actor,
+a third-party PR is held — still reach the host as a
 **record-only** copy (`candidates: []`), so the thread's history is complete, as an IM host sees
 every message in its conversation. Bot-authored events are recorded too; they cannot fire. The
 relay does not wait for a record-only ack and reports nothing for it. Thread cleanup, relay
@@ -118,24 +128,21 @@ For a host copy the daemon:
    A record-only copy stops here.
 2. **Resolves** the routing from `hookRoutings`. A missing projection or a different `decisionId`
    answers `accepted: false` (pending sync) and the relay fires nothing.
-3. **Chooses**, in order:
-   - candidates `via: mention` → exactly those, reason `mention`, no evaluation;
-   - earlier verdicts of this routing for this thread selected agents → every agent they selected,
-     among the candidates, reason `thread`, no evaluation (possibly none this time);
-   - otherwise **one** evaluation of the Decision against the thread state (§5.1), matched against
-     every rule with the shared-bot matcher: all matching rules' agents among the candidates, reason
-     `decision`. A matching **Do not activate** rule contributes no agent and is not a veto; when
-     every match is a skip, nobody is selected. Only when **no** rule matches does Otherwise apply:
-     every candidate (reason `otherwise`) or nobody. `unavailable` → every candidate, reason
-     `unavailable`.
+3. **Chooses** with **one** evaluation of the Decision against the thread state (§5.1) — for every
+   event, whether or not it mentions an agent or an earlier event of the thread selected someone —
+   matched against every rule with the shared-bot matcher: all matching rules' agents among the candidates, reason
+   `decision`. A matching **Do not activate** rule contributes no agent and is not a veto; when
+   every match is a skip, nobody is selected. Only when **no** rule matches does Otherwise apply:
+   every candidate (reason `otherwise`) or nobody. `unavailable` → every candidate, reason
+   `unavailable`.
 4. **Persists** the verdict in `decision_verdict` with subject `hook-router:<routingId>`,
    `integrationId = routingId`, the frozen input and answer, and the selected targets in
    `targetsJson`; the host's choice is final once written, and a redelivery of the same host copy
    returns it without evaluating again.
 5. **Replies** `rd/ack` with `hookRoute.targets`.
 
-A thread whose evaluation selected nobody has no owner yet, so its next event is evaluated again.
-Once a verdict selects agents, the thread stays with them. A selected agent receives the event as
+Each event of a thread is judged on its own, so a later update may go to different agents than an
+earlier one; the thread's history (§5.1) is how the Decision sees what came before. A selected agent receives the event as
 an ordinary hook fire whose prompt carries the selection as evidence; because skipped and
 record-only events sit in the host's channel record, the host agent's first turn in the thread also
 gets them through gap replay, and every agent can read the thread from GitHub.
@@ -174,8 +181,7 @@ cuts the current message. `context.reasons` names each trim (`history_limit`, `b
 `subject_body_trimmed`).
 
 History begins when routing was enabled and has gaps while the host was offline; a new host on a
-separate SQLite store starts with partial history and no thread choices, so a thread's next event is
-evaluated again. Comments older than the routing are not fetched from the GitHub API.
+separate SQLite store starts with partial history. Comments older than the routing are not fetched from the GitHub API.
 
 ## 6. Linear
 
@@ -211,8 +217,8 @@ conversations; shared-bot routing stays refused.
   and `integrationId = channel = routingId`.
 - The console's issue and pull-request rows carry the routing entry: a Decision pill (or
   `+ Decision`) opening the rules modal — Decision picker, answer-to-agent table, Otherwise — with
-  the scope's members as targets. While a scope is routed, the row's **@-mention** trigger mode is
-  unavailable, because a mention picks its agent directly.
+  the scope's members as targets. While a scope is routed, the row's trigger modes are locked and it
+  reads **Any update**, because the Decision judges every update.
 - A selected fire's run appears in the hook's run history as usual; a non-selected candidate has no
   run.
 
@@ -231,9 +237,11 @@ conversations; shared-bot routing stays refused.
 - Protocol: the new optional fields round-trip, and older shapes still decode.
 - CP: routing validation and members, `needs_review` after a Decision edit, delete protection, host
   choice and recomputation, relay and daemon feature fences, the evaluation routes' access checks.
-- Relay: candidates and mention marking, one host copy per scope, fan-out of exactly the selected
+- CP: the Any update cadence on routed rules and the stored mode after pausing.
+- Relay: candidates unnarrowed by a mention, one host copy per scope, fan-out of exactly the selected
   hooks, record-only copies and their eligibility, the host-unavailable fallback, the feature fence.
-- Daemon: record-only recording; mention, thread and decision choices; Otherwise and
+- Daemon: record-only recording; a mentioned event judged like any other; each event of a thread
+  judged again; Otherwise and
   `unavailable`; a redelivered host copy returning the stored choice; the state builder; the
   evaluation reader's scoping.
-- Web: the routing entry and modal against the API, the mention lock, and Recent evaluations.
+- Web: the routing entry and modal against the API, the trigger lock, and Recent evaluations.

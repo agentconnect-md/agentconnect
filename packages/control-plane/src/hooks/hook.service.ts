@@ -39,7 +39,7 @@ import { hookRuleSupported, type RelayControlSender } from '../orchestrator/rela
 import { PLACEMENT_ONLY, type PlacementResolver } from '../orchestrator/placementResolver.js'
 import type { RelayChannel } from '../ws/relay-registry.js'
 import { toDbPlatform } from '../persistence/platform.js'
-import { isRoutingFamily } from './hook-routing.js'
+import { isRoutingFamily, routedCadence } from './hook-routing.js'
 
 /** The narrow agent read the compiler needs (placement lookup). */
 export interface HookAgentReads {
@@ -295,6 +295,17 @@ export class HookService {
     // A routed scope without a live host leaves the pool rather than firing unrouted.
     const routing = await this.routingOf(hook)
     if (routing === null) return null
+    // Empty stored comment families keep the published API's legacy repo-wide meaning, so the optional field is omitted.
+    const cadence =
+      routing && isRoutingFamily(hook.family)
+        ? routedCadence(hook.family)
+        : {
+            events: hook.events,
+            commentFamilies: hook.commentFamilies.filter(
+              (family): family is 'issues' | 'pull_request' => family !== 'merge_request'
+            ),
+            mentionOnly: hook.mentionOnly
+          }
     return {
       ...base,
       kind: 'github',
@@ -303,21 +314,11 @@ export class HookService {
         repoId: hook.repoId.toString(),
         repoFullName: hook.repoFullName,
         sessionKeyPrefix: hook.githubSessionKey ?? hook.repoFullName,
-        events: hook.events,
-        // Empty is the published API's legacy repo-wide comment behavior; omit
-        // the optional wire field so older persisted rows keep that meaning.
-        // The filter is a type proof: a github row only ever stores its own vocabulary.
-        ...(hook.commentFamilies.length > 0
-          ? {
-              commentFamilies: hook.commentFamilies.filter(
-                (family): family is 'issues' | 'pull_request' => family !== 'merge_request'
-              )
-            }
-          : {}),
+        events: cadence.events,
+        ...(cadence.commentFamilies.length > 0 ? { commentFamilies: cadence.commentFamilies } : {}),
         labelFilter: hook.labelFilter,
-        // P3: the App slug broadcasts to every matching rule; the immutable
-        // agent slug targets this rule. Thread actors also pass live maintainer auth.
-        mentionOnly: hook.mentionOnly,
+        // The App slug broadcasts to every matching rule; the immutable agent slug targets this one.
+        mentionOnly: cadence.mentionOnly,
         ...(this.appSlug ? { appSlug: this.appSlug } : {}),
         agentName: agent.name,
         installationIds: valid.map((i) => i.installationId.toString())

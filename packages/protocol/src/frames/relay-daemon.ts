@@ -644,11 +644,10 @@ export function hookSubjectSessionKey(hookId: string, subjectKey: string): strin
   return `${hookId}:${HOOK_SUBJECT_SEGMENT}:${subjectKey}`
 }
 
-/** One watching hook a routed event would fire, and whether a targeted @-mention picked it directly. */
+/** One watching hook a routed event would fire; the Decision chooses among them, a mention included. */
 export const RdHookRouteCandidate = z.object({
   hookId: z.string().uuid(),
-  agentId: z.string().uuid(),
-  via: z.enum(['mention', 'implicit'])
+  agentId: z.string().uuid()
 })
 export type RdHookRouteCandidate = z.infer<typeof RdHookRouteCandidate>
 
@@ -660,12 +659,12 @@ export const RdHookRouting = z.object({
 })
 export type RdHookRouting = z.infer<typeof RdHookRouting>
 
-/** Why a routed hook fired: the Decision's answer, Otherwise, a direct mention, the thread's earlier choice, or a provider failure. */
+/** Why a routed hook fired: the Decision's answer, Otherwise, or a provider failure. */
 export const HookRouteSelection = z.object({
   routingId: z.string().uuid(),
   decisionId: z.string().uuid(),
-  reason: z.enum(['decision', 'otherwise', 'mention', 'thread', 'unavailable']),
-  // The host's verdict row, for Recent evaluations; absent when no evaluation ran.
+  reason: z.enum(['decision', 'otherwise', 'unavailable']),
+  // The host's verdict row, for Recent evaluations; absent on the relay's host-unavailable fallback.
   verdictSeq: z.number().int().nonnegative().optional(),
   question: DecisionQuestion.optional(),
   answer: DecisionAnswer.optional(),
