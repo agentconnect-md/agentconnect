@@ -4489,7 +4489,7 @@
         },
         "rawRequest": "原始请求",
         "rawResponse": "原始响应",
-        "rawSize": "{count} 字符",
+        "rawSize": "{count, plural, other {# 字符}}",
         "rawTruncated": "已截断为前 {count} 个字符。",
         "rawMissing": "未记录",
         "copy": "复制",
