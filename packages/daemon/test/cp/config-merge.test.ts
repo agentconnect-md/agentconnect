@@ -47,6 +47,15 @@ describe('mergeConfigPush', () => {
     expect(r).toEqual({ applied: [], ignored: ['sandbox.share'] })
   })
 
+  // How much of a machine its group may use is its owner's to set, like sandbox.share: placement reads it as that machine's capacity.
+  it('never lets a push move limits.maxConcurrentSessions', () => {
+    const cfg = baseCfg()
+    const before = cfg.limits.maxConcurrentSessions
+    const r = mergeConfigPush(cfg, { 'limits.maxConcurrentSessions': 1 })
+    expect(cfg.limits.maxConcurrentSessions).toBe(before)
+    expect(r).toEqual({ applied: [], ignored: ['limits.maxConcurrentSessions'] })
+  })
+
   it('ignores controlPlane.heartbeatMs (CP-authoritative via auth/ok, not config/push)', () => {
     const cfg = baseCfg()
     const defaultMs = cfg.controlPlane.heartbeatMs

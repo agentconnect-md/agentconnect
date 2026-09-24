@@ -82,7 +82,7 @@ export interface ExecutorFacetDeps {
   strategies: () => Record<ExecutionStrategy, StrategyAvailability>
   /** How each strategy starts one session's environment (§5); a strategy with no launcher here is one this facet cannot prepare. */
   launchers: Partial<Record<ExecutionStrategy, StrategyLauncher>>
-  /** `limits.maxConcurrentSessions`, read per request because `config/push` may move it. */
+  /** `limits.maxConcurrentSessions`: local config only, which `config/push` cannot move. */
   capacity: () => number
   /** This machine's own live isolated sessions: part of the load a holder compares, never refused themselves. */
   ownSessions: () => number

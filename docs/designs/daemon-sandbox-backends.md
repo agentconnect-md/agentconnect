@@ -1056,6 +1056,12 @@ and `execution/executor-pipe.ts`; `daemon.ts` only wires it.
 { "sandbox": { "share": true } }
 ```
 
+**How much it lends.** `limits.maxConcurrentSessions` is this machine's capacity, and
+holders place each new session where it would be least full for its capacity
+(session-executors.md §6). In a group of unequal machines, size each one in its own
+config file — for example `8`, `2` and `1` — and the larger machine takes the larger
+share; left at the default everywhere, placement is "fewest sessions wins".
+
 **What it lends.** CPU and disk, and — the part that is easy to miss — this
 machine's **runtime sign-in**: a session placed here runs under whatever runtime
 login or API-key configuration this machine has. Each launch that starts the shim
