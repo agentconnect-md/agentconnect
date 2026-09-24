@@ -1200,7 +1200,8 @@ the cache and stops requesting.
    through `GET /user/{account_id}` using the relevant installation token, so
    a renamed handle cannot permanently substitute another GitHub user. Its
    binding is read from PostgreSQL on every fallback; resolved handles have a
-   bounded 60-second cache. Existing session-access leases and runtime
+   bounded 60-second cache that also honors callers' shorter identity leases
+   and explicit refreshes. Existing session-access leases and runtime
    installation-token lifetimes remain unchanged. The Profile returns this connection separately
    from `identities`, preserving the sign-in-method contract for older clients.
 

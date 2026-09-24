@@ -26,7 +26,7 @@ const OAUTH = {
 }
 const installation = { installationId: 42n } as GithubInstallationRecord
 const users = new Map<string, Record<string, object>>()
-const clock = new FakeClock()
+const clock = new FakeClock(Date.UTC(2026, 0, 1))
 const store = new PgGithubRepoIdentityStore(prisma)
 const github = { userById: vi.fn(async () => ({ id: 123n, login: 'octocat' })) }
 const calls: Array<{ url: string; init?: RequestInit }> = []
@@ -204,9 +204,14 @@ describe('repository-only GitHub identity', () => {
       await service.repo.complete(sub, sub, 'code', state)
     }
     expect(await prisma.githubRepoIdentity.count()).toBe(2)
+    expect(await service.identity.githubLoginFor('second', undefined, installation)).toBe('octocat')
     github.userById.mockResolvedValue({ id: 123n, login: 'renamed' })
-    expect(await service.identity.githubLoginFor('second', undefined, installation)).toBe('renamed')
+    clock.advance(1_000)
+    expect(await service.identity.githubLoginFor('second', undefined, installation)).toBe('octocat')
+    expect(await service.identity.githubLoginFor('second', 1_000, installation)).toBe('renamed')
     expect(github.userById).toHaveBeenCalledWith(installation, 123n)
+    github.userById.mockResolvedValue({ id: 123n, login: 'renamed-again' })
+    expect(await service.identity.githubLoginFor('second', 0, installation)).toBe('renamed-again')
     await prisma.user.delete({ where: { id: 'second' } })
     expect(await prisma.githubRepoIdentity.count()).toBe(1)
   })

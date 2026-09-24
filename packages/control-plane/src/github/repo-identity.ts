@@ -19,7 +19,7 @@ export interface GithubRepoIdentitySummary {
 
 export interface GithubRepoIdentityLookup {
   summaryForSubject(sub: string): Promise<GithubRepoIdentitySummary | undefined>
-  loginForSubject(sub: string, installation: GithubInstallationRecord): Promise<string | null>
+  loginForSubject(sub: string, installation: GithubInstallationRecord, maxAgeMs?: number): Promise<string | null>
   clearBySubject(sub: string): Promise<void>
 }
 
@@ -47,6 +47,7 @@ interface GithubRepoIdentityDeps {
 
 const UserDto = z.object({ id: z.number().int().positive().safe(), login: z.string().min(1) })
 const STATE_TTL_MS = 10 * 60_000
+const LOGIN_TTL_MS = 60_000
 
 // Repository-only identities never become sign-in methods or replace a linked social identity.
 export class GithubRepoIdentityService implements GithubRepoIdentityLookup {
@@ -59,7 +60,7 @@ export class GithubRepoIdentityService implements GithubRepoIdentityLookup {
   constructor(private readonly deps: GithubRepoIdentityDeps) {
     this.logins = new LRUCache({
       ...cacheOptions(deps.clock, 10_000),
-      ttl: 60_000,
+      ttl: LOGIN_TTL_MS,
       fetchMethod: async (_key, _stale, { context }) => ({
         login: (await deps.github.userById(context.installation, context.id))?.login ?? null
       })
@@ -75,11 +76,18 @@ export class GithubRepoIdentityService implements GithubRepoIdentityLookup {
     return identity ? { githubUserId: String(identity.githubUserId), login: identity.login } : undefined
   }
 
-  async loginForSubject(sub: string, installation: GithubInstallationRecord): Promise<string | null> {
+  async loginForSubject(
+    sub: string,
+    installation: GithubInstallationRecord,
+    maxAgeMs?: number
+  ): Promise<string | null> {
     // Read the binding on every fallback so connect/disconnect is visible across CP replicas.
     const identity = await this.deps.store.findBySubject(sub)
     if (!identity) return null
-    const user = await this.logins.fetch(`${installation.installationId}:${identity.githubUserId}`, {
+    const key = `${installation.installationId}:${identity.githubUserId}`
+    const age = LOGIN_TTL_MS - this.logins.getRemainingTTL(key)
+    const user = await this.logins.fetch(key, {
+      ...(maxAgeMs !== undefined && age >= maxAgeMs ? { forceRefresh: true } : {}),
       context: { installation, id: identity.githubUserId }
     })
     return user?.login ?? null

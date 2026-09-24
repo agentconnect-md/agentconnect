@@ -279,7 +279,7 @@ export class LogtoIdentityService {
       identity = await this.pendingLogin(sub)
     }
     if (identity.login || !identity.repoAccessAllowed || !installation) return identity.login
-    return this.opts?.githubRepoIdentity?.loginForSubject(sub, installation) ?? null
+    return this.opts?.githubRepoIdentity?.loginForSubject(sub, installation, maxAgeMs) ?? null
   }
 
   // Share one upstream read across blocking misses and refresh-ahead requests.
